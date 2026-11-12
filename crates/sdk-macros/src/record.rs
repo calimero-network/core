@@ -3,7 +3,8 @@
 //! The derive implements `calimero_sdk::Record` and serde for the struct: field names
 //! are camelCase in both CBOR (stored values) and JSON (results); `u64`/`i64` fields are
 //! integers in CBOR and decimal strings in JSON (D20, Ruling 25). `partition` is reserved
-//! and refused (D48).
+//! and refused (D48). It also implements `AbiType`: the record's JSON shape, for the ABI's
+//! `types`.
 
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
@@ -11,7 +12,7 @@ use syn::meta::ParseNestedMeta;
 use syn::punctuated::Punctuated;
 use syn::{DeriveInput, Fields, Ident, LitStr, Token};
 
-use crate::types::{camel, check_wire, wire, Wire};
+use crate::types::{abi_type, camel, canonical, check_wire, probe_slice, probes, wire, Wire};
 
 /// A named set of fields, as written: `by_owner = ["owner", "name_key"]`.
 struct FieldSet {
@@ -219,6 +220,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
         }
     });
     let idents: Vec<&Ident> = fields.iter().map(|(ident, _)| ident).collect();
+    let abi_type_impl = abi_type_impl(name, &fields);
     let ser = format_ident!("__{}Ser", name, span = Span::call_site());
     let de = format_ident!("__{}De", name, span = Span::call_site());
 
@@ -243,6 +245,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                     .collect()
             }
         }
+
+        #abi_type_impl
 
         const _: () = {
             use #sdk::__private::serde;
@@ -275,4 +279,31 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
             }
         };
     })
+}
+
+/// `AbiType` for a record: every field, camelCase, typed as the ABI spells it (the record's
+/// JSON writes `u64`/`i64` as decimal strings and bytes as base64url, as the ABI types say).
+fn abi_type_impl(name: &Ident, fields: &[(Ident, &syn::Type)]) -> TokenStream {
+    let sdk = crate::sdk::path();
+    let list: Vec<serde_json::Value> = fields
+        .iter()
+        .map(|(ident, ty)| serde_json::json!([camel(&ident.to_string()), abi_type(ty)]))
+        .collect();
+    let shape = canonical(&serde_json::json!({ "kind": "record", "fields": list }));
+    let skip = [name.clone()];
+    let deps: Vec<TokenStream> = fields
+        .iter()
+        .flat_map(|(_, ty)| probes(ty, &skip, &[]))
+        .collect();
+    let deps = probe_slice(&deps);
+    let key = name.to_string();
+    quote! {
+        impl #sdk::abi::AbiType for #name {
+            const DEF: &'static #sdk::abi::TypeDef = &#sdk::abi::TypeDef {
+                name: #key,
+                shape: #shape,
+                deps: #deps,
+            };
+        }
+    }
 }

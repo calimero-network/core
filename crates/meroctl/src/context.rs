@@ -4,11 +4,12 @@
 
 use std::path::PathBuf;
 
+use calimero_client::types::{Access, AppCreateRequest, AppUpgradeRequest};
 use clap::{Subcommand, ValueEnum};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 
-use crate::env::{json_arg, Env};
+use crate::env::{json_arg, to_json, DevPasskey, Env};
 
 #[derive(Debug, Subcommand)]
 pub enum ContextCmd {
@@ -188,6 +189,7 @@ pub enum PresenceCmd {
 
 pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
     let client = &env.client;
+    let apps = client.apps();
     Ok(match cmd {
         ContextCmd::Create {
             name,
@@ -218,36 +220,26 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             if package.is_none() && bundle.is_none() {
                 eyre::bail!("from what? --package, --bundle or --path");
             }
-            let mut body = json!({
-                "name": name,
-                "package": package,
-                "version": version,
-                "service": service,
-                "bundle": bundle,
-                "org": namespace,
-            });
-            if let Some(p) = params {
-                body["initArgs"] = json_arg(&p)?;
+            let body = AppCreateRequest {
+                name: Some(name),
+                package,
+                version,
+                service,
+                bundle,
+                org: namespace,
+                init_args: params.as_deref().map(json_arg).transpose()?,
+                access: group.map(|team| Access::Team { team }),
+                ..AppCreateRequest::default()
+            };
+            let created = apps.create(body).await?;
+            if let Some(alias) = alias {
+                let _ = client.auth().alias_set(&alias, &created.app_id).await?;
             }
-            if let Some(team) = group {
-                body["access"] = json!({ "kind": "team", "team": team });
-            }
-            let created = client.post("apps", body).await?;
-            if let (Some(alias), Some(app)) = (alias, created["appId"].as_str()) {
-                let _ = client.set_alias(&alias, app).await?;
-            }
-            created
+            to_json(&created)?
         }
-        ContextCmd::List { package } => match package {
-            Some(p) => client.get(&format!("apps?package={p}")).await?,
-            None => client.get("apps").await?,
-        },
-        ContextCmd::Get { context } => {
-            client
-                .get(&format!("apps/{}", env.app(&context).await?))
-                .await?
-        }
-        ContextCmd::Delete { context } => client.delete_app(&env.app(&context).await?).await?,
+        ContextCmd::List { package } => to_json(&apps.list(package.as_deref(), None).await?)?,
+        ContextCmd::Get { context } => to_json(&apps.get(&env.app(&context).await?).await?)?,
+        ContextCmd::Delete { context } => to_json(&apps.delete(&env.app(&context).await?).await?)?,
         ContextCmd::Update {
             context,
             version,
@@ -258,12 +250,17 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             dev_passkey,
         } => {
             let app = env.app(&context).await?;
-            let body = json!({
-                "bundle": bundle, "package": package, "version": version,
-                "service": service, "migrate": migrate,
-            });
-            env.post_approved(&format!("apps/{app}/upgrade"), body, dev_passkey.as_deref())
-                .await?
+            let body = AppUpgradeRequest {
+                bundle,
+                package,
+                version,
+                service,
+                migrate,
+            };
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = apps.upgrade(&app, body, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
         }
         ContextCmd::Transfer {
             context,
@@ -271,12 +268,10 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             dev_passkey,
         } => {
             let app = env.app(&context).await?;
-            env.post_approved(
-                &format!("apps/{app}/transfer"),
-                json!({ "to": to }),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = apps.transfer(&app, &to, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
         }
         ContextCmd::Move {
             context,
@@ -285,12 +280,12 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             dev_passkey,
         } => {
             let app = env.app(&context).await?;
-            env.post_approved(
-                &format!("apps/{app}/move"),
-                json!({ "toOrg": namespace, "bringMembers": bring_members }),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = apps
+                .app_move(&app, &namespace, Some(bring_members), pk.get())
+                .await;
+            pk.save()?;
+            to_json(&out?)?
         }
         ContextCmd::Watch {
             context,
@@ -304,17 +299,25 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             }
             return Ok(Value::Null);
         }
-        ContextCmd::Alias(AliasCmd::Add { alias, context }) => {
-            client.set_alias(&alias, &env.app(&context).await?).await?
+        ContextCmd::Alias(AliasCmd::Add { alias, context }) => to_json(
+            &client
+                .auth()
+                .alias_set(&alias, &env.app(&context).await?)
+                .await?,
+        )?,
+        ContextCmd::Alias(AliasCmd::Remove { alias }) => {
+            to_json(&client.auth().alias_delete(&alias).await?)?
         }
-        ContextCmd::Alias(AliasCmd::Remove { alias }) => client.delete_alias(&alias).await?,
-        ContextCmd::Alias(AliasCmd::Get { alias }) => client.alias(&alias).await?,
-        ContextCmd::Alias(AliasCmd::List) => client.aliases().await?,
-        ContextCmd::Use { context } => {
-            client
-                .set_alias("default", &env.app(&context).await?)
-                .await?
+        ContextCmd::Alias(AliasCmd::Get { alias }) => {
+            to_json(&client.auth().alias_get(&alias).await?)?
         }
+        ContextCmd::Alias(AliasCmd::List) => to_json(&client.auth().alias_list().await?)?,
+        ContextCmd::Use { context } => to_json(
+            &client
+                .auth()
+                .alias_set("default", &env.app(&context).await?)
+                .await?,
+        )?,
         ContextCmd::Access {
             context,
             kind,
@@ -322,41 +325,40 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
             accounts,
         } => {
             let access = match kind {
-                AccessKind::Owner => json!({ "kind": "owner" }),
-                AccessKind::Org => json!({ "kind": "org" }),
-                AccessKind::Public => json!({ "kind": "public" }),
-                AccessKind::Team => json!({
-                    "kind": "team",
-                    "team": group.ok_or_else(|| eyre::eyre!("which team? --group"))?,
-                }),
-                AccessKind::Accounts => json!({ "kind": "accounts", "accounts": accounts }),
+                AccessKind::Owner => Access::Owner,
+                AccessKind::Org => Access::Org,
+                AccessKind::Public => Access::Public,
+                AccessKind::Team => Access::Team {
+                    team: group.ok_or_else(|| eyre::eyre!("which team? --group"))?,
+                },
+                AccessKind::Accounts => Access::Accounts { accounts },
             };
-            client
-                .post(
-                    &format!("apps/{}/access", env.app(&context).await?),
-                    json!({ "access": access }),
-                )
-                .await?
+            to_json(&apps.access(&env.app(&context).await?, access).await?)?
         }
-        ContextCmd::Metadata { context, metadata } => {
-            client
-                .set_app_metadata(&env.app(&context).await?, json_arg(&metadata)?)
-                .await?
+        ContextCmd::Metadata { context, metadata } => to_json(
+            &apps
+                .metadata(&env.app(&context).await?, json_arg(&metadata)?)
+                .await?,
+        )?,
+        ContextCmd::Storage { context } => {
+            to_json(&apps.storage(&env.app(&context).await?).await?)?
         }
-        ContextCmd::Storage { context } => client.app_storage(&env.app(&context).await?).await?,
-        ContextCmd::Abi { context } => client.app_abi(&env.app(&context).await?).await?,
+        ContextCmd::Abi { context } => to_json(&apps.abi(&env.app(&context).await?).await?)?,
         ContextCmd::Presence(PresenceCmd::List { context }) => {
-            client.presence(&env.app(&context).await?).await?
+            to_json(&apps.presence_get(&env.app(&context).await?).await?)?
         }
         ContextCmd::Presence(PresenceCmd::Publish {
             context,
             seq,
             state,
         }) => {
-            let state = state.map(hex::decode).transpose()?;
-            client
-                .publish_presence(&env.app(&context).await?, seq, state.as_deref())
-                .await?
+            // Hex, checked and written lower-case; none sends `null`, which retracts.
+            let state = state.map(|s| hex::decode(s).map(hex::encode)).transpose()?;
+            to_json(
+                &apps
+                    .presence_publish(&env.app(&context).await?, seq, Some(state.as_deref()))
+                    .await?,
+            )?
         }
         ContextCmd::Presence(PresenceCmd::Stream { context, limit }) => {
             let stream = client.presence_stream(&env.app(&context).await?).await?;

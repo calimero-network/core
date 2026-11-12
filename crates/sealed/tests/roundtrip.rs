@@ -346,6 +346,65 @@ async fn an_identified_handshake_with_another_nodes_key_is_refused() {
     assert_eq!(r.status(), 400);
 }
 
+/// Anonymous handshakes past their limit are refused `503`, and a peer still
+/// opens its identified session while they go on: the two draw on separate
+/// budgets.
+#[tokio::test]
+async fn a_flood_of_anonymous_handshakes_leaves_peers_their_own() {
+    let (url, transport, _h) = serve(SealedOptions::default()).await;
+    let http = reqwest::Client::new();
+    let handshake = url.join("sealed/v2/handshake").unwrap();
+    // Well-formed NK requests whose ephemeral key is zero: charged, then refused.
+    let flood = [&[2u8][..], &transport.public_key(), &[0u8; 48]].concat();
+    let (refused_tx, mut refused) = tokio::sync::watch::channel(false);
+    let flooders: Vec<_> = (0..8)
+        .map(|_| {
+            let (http, handshake, flood, refused_tx) = (
+                http.clone(),
+                handshake.clone(),
+                flood.clone(),
+                refused_tx.clone(),
+            );
+            tokio::spawn(async move {
+                loop {
+                    let r = http
+                        .post(handshake.clone())
+                        .body(flood.clone())
+                        .send()
+                        .await;
+                    if r.is_ok_and(|r| r.status() == 503) {
+                        let _sent = refused_tx.send(true);
+                    }
+                }
+            })
+        })
+        .collect();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        refused.wait_for(|refused| *refused),
+    )
+    .await
+    .expect("anonymous handshakes are limited")
+    .unwrap();
+
+    // One identified handshake, sent once (the client would retry a `503`).
+    let mut noise = snow::Builder::new("Noise_IK_25519_AESGCM_SHA256".parse().unwrap())
+        .prologue(b"calimero/sealed-http/v2")
+        .local_private_key(&[7; 32])
+        .remote_public_key(&transport.public_key())
+        .build_initiator()
+        .unwrap();
+    let mut message_1 = vec![0u8; 96];
+    let len = noise.write_message(&[], &mut message_1).unwrap();
+    message_1.truncate(len);
+    let body = [&[3u8][..], &transport.public_key(), &message_1].concat();
+    let r = http.post(handshake).body(body).send().await.unwrap();
+    for flooder in flooders {
+        flooder.abort();
+    }
+    assert_eq!(r.status(), 200);
+}
+
 const SALT: &[u8] = b"salt";
 const INFO: &[u8] = b"info";
 

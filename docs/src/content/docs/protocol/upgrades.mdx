@@ -293,7 +293,7 @@ every feature gated it stays at zero.
 | `renameOrg` | `RenameOrg`, renaming an organization; an earlier release cannot read it | 1.0.0-rc.16 |
 | `teamMembersBatch` | `SetTeamMembers` and `RemoveTeamMembers`, a member's rows in several teams at once; an earlier release cannot read them | 1.0.0-rc.16 |
 | `appTeamChildTeams` | `ScopeApps` naming one app team's `childTeams`; an earlier `ScopeApp` refuses unknown fields | 1.0.0-rc.16 |
-| `attributeByRelease` | `AttributeByRelease`, the system leader's one-time mark after which an app's upgrades, publisher and release approvals follow the release it runs; an earlier release cannot read it. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.16 |
+| `attributeByRelease` | `AttributeByRelease`, the system leader's one-time mark after which an app's upgrades, publisher and release approvals follow the release it runs; an earlier release cannot read it. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.19 |
 | `clusterVersion` | `SetClusterVersion` | 1.0.0-rc.16 |
 
 The rc.15 features were added before the gate: on a cluster whose every node

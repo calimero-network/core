@@ -217,7 +217,8 @@ fn unknown() -> ApiError {
     ApiError::new(404, UNKNOWN_CODE, "no such upload: begin another")
 }
 
-fn refusal(status: u16, code: &str, message: &str, next: usize) -> ApiError {
+/// A refusal that names the next part the session expects (`details.next`).
+pub(crate) fn refusal(status: u16, code: &str, message: &str, next: usize) -> ApiError {
     ApiError::new(status, code, message).with_details(json!({ "next": next }))
 }
 
@@ -409,12 +410,11 @@ impl Node {
         match self.upload_op_local(&g, &app, account, &op).await {
             Ok(v) => Ok(v),
             Err(Upload::Refused(e) | Upload::Unknown(e)) => Err(e),
-            Err(Upload::Elsewhere(Some(addr))) => Err(ApiError::new(
-                421,
-                super::files::NOT_LEADER,
+            Err(Upload::Elsewhere(Some(addr))) => Err(crate::api::not_leader(
                 "send this to the app group's leader",
-            )
-            .with_details(json!({ "leaderUrl": addr }))),
+                None,
+                &addr,
+            )),
             Err(Upload::Elsewhere(None)) => Err(ApiError::unavailable("the app has no leader yet")),
         }
     }

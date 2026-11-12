@@ -1,0 +1,2515 @@
+{
+  "components": {
+    "parameters": {
+      "app": {
+        "description": "The app instance's id.",
+        "in": "path",
+        "name": "app",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "responses": {
+      "AppError": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "oneOf": [
+                {
+                  "properties": {
+                    "details": {
+                      "properties": {
+                        "code": {
+                          "const": "Forbidden"
+                        },
+                        "fields": {
+                          "$ref": "#/components/schemas/ForbiddenError"
+                        },
+                        "index": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "fields"
+                      ],
+                      "type": "object"
+                    },
+                    "error": {
+                      "const": "APP_ERROR"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "details"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "details": {
+                      "properties": {
+                        "code": {
+                          "const": "Invalid"
+                        },
+                        "fields": {
+                          "$ref": "#/components/schemas/InvalidError"
+                        },
+                        "index": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "fields"
+                      ],
+                      "type": "object"
+                    },
+                    "error": {
+                      "const": "APP_ERROR"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "details"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "details": {
+                      "properties": {
+                        "code": {
+                          "const": "NotFound"
+                        },
+                        "fields": {
+                          "$ref": "#/components/schemas/NotFoundError"
+                        },
+                        "index": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "fields"
+                      ],
+                      "type": "object"
+                    },
+                    "error": {
+                      "const": "APP_ERROR"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "details"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "details": {
+                      "properties": {
+                        "code": {
+                          "const": "Rejected"
+                        },
+                        "fields": {
+                          "$ref": "#/components/schemas/RejectedError"
+                        },
+                        "index": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "fields"
+                      ],
+                      "type": "object"
+                    },
+                    "error": {
+                      "const": "APP_ERROR"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "details"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "details": {
+                      "properties": {
+                        "code": {
+                          "const": "Unknown"
+                        },
+                        "fields": {
+                          "$ref": "#/components/schemas/UnknownError"
+                        },
+                        "index": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "fields"
+                      ],
+                      "type": "object"
+                    },
+                    "error": {
+                      "const": "APP_ERROR"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message",
+                    "details"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "$ref": "#/components/schemas/Trap"
+                }
+              ]
+            }
+          }
+        },
+        "description": "The app refused the call (`APP_ERROR`, one of its declared errors) or the run trapped (`TRAP`)."
+      },
+      "BadRequest": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiError"
+            }
+          }
+        },
+        "description": "The request is malformed (`BAD_REQUEST`), names a reserved method (`RESERVED_METHOD`), or carries an approval for another call (`WRONG_CHALLENGE`)."
+      },
+      "ConfirmRequired": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ConfirmRequired"
+            }
+          }
+        },
+        "description": "`CONFIRM_REQUIRED`: approve the call with the passkey and send it again with `confirm`."
+      },
+      "Forbidden": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiError"
+            }
+          }
+        },
+        "description": "The caller may not call this method of this app (`FORBIDDEN`), or the app is read-only."
+      },
+      "Gone": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiError"
+            }
+          }
+        },
+        "description": "`UNSUPPORTED_ENGINE`: the app is an SDK 0.12 app, which this node no longer runs."
+      },
+      "NotFound": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiError"
+            }
+          }
+        },
+        "description": "No such app here."
+      },
+      "RateLimited": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiError"
+            }
+          }
+        },
+        "description": "`RATE_LIMITED`: a public method's rate, or the node's limits."
+      },
+      "Unauthorized": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiError"
+            }
+          }
+        },
+        "description": "No valid session or API key, and the method is not public."
+      },
+      "Unavailable": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ApiError"
+            }
+          }
+        },
+        "description": "`UNAVAILABLE` or `TIMEOUT`: retry with the same idempotency key."
+      }
+    },
+    "schemas": {
+      "ActionFailedEvent": {
+        "properties": {
+          "actionId": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "actionId",
+          "method",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "Adjacent": {
+        "oneOf": [
+          {
+            "properties": {
+              "c": {
+                "type": "string"
+              },
+              "t": {
+                "const": "Text"
+              }
+            },
+            "required": [
+              "t",
+              "c"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "t": {
+                "const": "Empty"
+              }
+            },
+            "required": [
+              "t"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-calimero-abi-type": "Adjacent"
+      },
+      "ApiError": {
+        "properties": {
+          "details": {},
+          "error": {
+            "description": "A stable code, e.g. `NOT_FOUND`.",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message"
+        ],
+        "type": "object"
+      },
+      "BlobOfArgs": {
+        "description": "The arguments of `blobOf`, by name.",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "type": "object"
+      },
+      "BlobOfRequest": {
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/BlobOfArgs"
+          },
+          "consistency": {
+            "default": "strong",
+            "description": "`strong` reads the leader's latest state; `stale` any replica at least as new as `minIndex`.",
+            "enum": [
+              "strong",
+              "stale"
+            ],
+            "type": "string"
+          },
+          "minIndex": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "type": "object"
+      },
+      "BlobOfResponse": {
+        "properties": {
+          "index": {
+            "description": "The log index the answer reflects.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "contentEncoding": "base64url",
+                "description": "Bytes, base64url without padding.",
+                "pattern": "^[A-Za-z0-9_-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "index",
+          "result",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "CallEvent": {
+        "oneOf": [
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/ActionFailedEvent"
+              },
+              "kind": {
+                "const": "ActionFailed"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/CreatedEvent"
+              },
+              "kind": {
+                "const": "Created"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/DefaultEvent"
+              },
+              "kind": {
+                "const": "Default"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/WipedEvent"
+              },
+              "kind": {
+                "const": "Wiped"
+              }
+            },
+            "required": [
+              "kind",
+              "data"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Confirm": {
+        "description": "The passkey's approval of this exact call: the 412's challenge id and the WebAuthn assertion over its challenge.",
+        "properties": {
+          "assertion": {
+            "properties": {
+              "authenticatorData": {
+                "type": "string"
+              },
+              "clientDataJson": {
+                "type": "string"
+              },
+              "credentialId": {
+                "type": "string"
+              },
+              "signature": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "credentialId",
+              "authenticatorData",
+              "clientDataJson",
+              "signature"
+            ],
+            "type": "object"
+          },
+          "challengeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "challengeId",
+          "assertion"
+        ],
+        "type": "object"
+      },
+      "ConfirmRequired": {
+        "properties": {
+          "details": {
+            "properties": {
+              "allowCredentials": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "challenge": {
+                "contentEncoding": "base64url",
+                "type": "string"
+              },
+              "challengeId": {
+                "type": "string"
+              },
+              "rpId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "challengeId",
+              "challenge",
+              "rpId",
+              "allowCredentials"
+            ],
+            "type": "object"
+          },
+          "error": {
+            "const": "CONFIRM_REQUIRED"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message",
+          "details"
+        ],
+        "type": "object"
+      },
+      "CountArgs": {
+        "description": "The arguments of `count`, by name.",
+        "properties": {
+          "stale": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "stale"
+        ],
+        "type": "object"
+      },
+      "CountRequest": {
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/CountArgs"
+          },
+          "consistency": {
+            "default": "strong",
+            "description": "`strong` reads the leader's latest state; `stale` any replica at least as new as `minIndex`.",
+            "enum": [
+              "strong",
+              "stale"
+            ],
+            "type": "string"
+          },
+          "minIndex": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "type": "object"
+      },
+      "CountResponse": {
+        "properties": {
+          "index": {
+            "description": "The log index the answer reflects.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "result": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          }
+        },
+        "required": [
+          "index",
+          "result",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "CreatedEvent": {
+        "properties": {
+          "id": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          },
+          "item": {
+            "$ref": "#/components/schemas/Item"
+          }
+        },
+        "required": [
+          "id",
+          "item"
+        ],
+        "type": "object"
+      },
+      "DefaultEvent": {
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "description": "A u64 as a decimal string (0..=18446744073709551615).",
+                "pattern": "^(0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-calimero-type": "u64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blob": {
+            "contentEncoding": "base64url",
+            "description": "Bytes, base64url without padding.",
+            "pattern": "^[A-Za-z0-9_-]*$",
+            "type": "string"
+          },
+          "delta": {
+            "description": "A i64 as a decimal string (-9223372036854775808..=9223372036854775807).",
+            "pattern": "^(0|-?[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "i64"
+          },
+          "pair": {
+            "items": false,
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer",
+                "x-calimero-type": "u32"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          }
+        },
+        "required": [
+          "blob",
+          "delta",
+          "pair"
+        ],
+        "type": "object"
+      },
+      "Either": {
+        "oneOf": [
+          {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer",
+            "x-calimero-type": "u32"
+          },
+          {
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-calimero-abi-type": "Either"
+      },
+      "EventFrame": {
+        "oneOf": [
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/ActionFailedEvent"
+              },
+              "event": {
+                "const": "ActionFailed"
+              },
+              "id": {
+                "description": "`<index>:<seq>`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "event",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/CreatedEvent"
+              },
+              "event": {
+                "const": "Created"
+              },
+              "id": {
+                "description": "`<index>:<seq>`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "event",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/DefaultEvent"
+              },
+              "event": {
+                "const": "Default"
+              },
+              "id": {
+                "description": "`<index>:<seq>`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "event",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/WipedEvent"
+              },
+              "event": {
+                "const": "Wiped"
+              },
+              "id": {
+                "description": "`<index>:<seq>`.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "event",
+              "data"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "EventsArgs": {
+        "description": "The arguments of `events`, by name.",
+        "properties": {
+          "default": {
+            "anyOf": [
+              {
+                "contentEncoding": "base64url",
+                "description": "Bytes, base64url without padding.",
+                "pattern": "^[A-Za-z0-9_-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "in": {
+            "type": "string"
+          },
+          "when": {
+            "anyOf": [
+              {
+                "description": "A i64 as a decimal string (-9223372036854775808..=9223372036854775807).",
+                "pattern": "^(0|-?[1-9][0-9]*)$",
+                "type": "string",
+                "x-calimero-type": "i64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "in"
+        ],
+        "type": "object"
+      },
+      "EventsRequest": {
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/EventsArgs"
+          },
+          "idempotencyKey": {
+            "description": "A retry with the same key is answered once, from the first run.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "type": "object"
+      },
+      "EventsResponse": {
+        "properties": {
+          "events": {
+            "description": "The events the call emitted that the caller is in the audience of.",
+            "items": {
+              "$ref": "#/components/schemas/CallEvent"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "The log index the answer reflects.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "result": {
+            "items": false,
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer",
+                "x-calimero-type": "u32"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          }
+        },
+        "required": [
+          "index",
+          "result",
+          "events",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "EverythingArgs": {
+        "description": "The arguments of `everything`, by name.",
+        "properties": {
+          "balance": {
+            "description": "A i64 as a decimal string (-9223372036854775808..=9223372036854775807).",
+            "pattern": "^(0|-?[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "i64"
+          },
+          "big": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          },
+          "blob": {
+            "contentEncoding": "base64url",
+            "description": "Bytes, base64url without padding.",
+            "pattern": "^[A-Za-z0-9_-]*$",
+            "type": "string"
+          },
+          "byId": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "type": "object"
+          },
+          "count": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer",
+            "x-calimero-type": "u32"
+          },
+          "delta": {
+            "maximum": 127,
+            "minimum": -128,
+            "type": "integer",
+            "x-calimero-type": "i8"
+          },
+          "digest": {
+            "items": {
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer",
+              "x-calimero-type": "u8"
+            },
+            "maxItems": 32,
+            "minItems": 32,
+            "type": "array"
+          },
+          "flag": {
+            "type": "boolean"
+          },
+          "huge": {
+            "description": "A u128 as a JSON number; it encodes only within 64 bits, and JavaScript loses precision past 2^53.",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer",
+            "x-calimero-type": "u128"
+          },
+          "item": {
+            "$ref": "#/components/schemas/Item"
+          },
+          "letter": {
+            "maxLength": 1,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maybe": {
+            "anyOf": [
+              {
+                "description": "A u64 as a decimal string (0..=18446744073709551615).",
+                "pattern": "^(0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-calimero-type": "u64"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "medium": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer",
+            "x-calimero-type": "u16"
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "nested": {
+            "anyOf": [
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/Item"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offset": {
+            "format": "int32",
+            "maximum": 2147483647,
+            "minimum": -2147483648,
+            "type": "integer",
+            "x-calimero-type": "i32"
+          },
+          "page": {
+            "$ref": "#/components/schemas/Page_Item"
+          },
+          "pair": {
+            "items": false,
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer",
+                "x-calimero-type": "u32"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "precise": {
+            "format": "double",
+            "type": "number"
+          },
+          "ratio": {
+            "format": "float",
+            "type": "number"
+          },
+          "scores": {
+            "additionalProperties": {
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer",
+              "x-calimero-type": "u32"
+            },
+            "type": "object"
+          },
+          "size": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer",
+            "x-calimero-type": "usize"
+          },
+          "small": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer",
+            "x-calimero-type": "u8"
+          },
+          "title": {
+            "type": "string"
+          },
+          "unique": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          }
+        },
+        "required": [
+          "flag",
+          "small",
+          "medium",
+          "count",
+          "big",
+          "huge",
+          "size",
+          "delta",
+          "offset",
+          "balance",
+          "ratio",
+          "precise",
+          "letter",
+          "title",
+          "blob",
+          "names",
+          "pair",
+          "digest",
+          "scores",
+          "byId",
+          "unique",
+          "item",
+          "page"
+        ],
+        "type": "object"
+      },
+      "EverythingRequest": {
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/EverythingArgs"
+          },
+          "idempotencyKey": {
+            "description": "A retry with the same key is answered once, from the first run.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "type": "object"
+      },
+      "EverythingResponse": {
+        "properties": {
+          "events": {
+            "description": "The events the call emitted that the caller is in the audience of.",
+            "items": {
+              "$ref": "#/components/schemas/CallEvent"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "The log index the answer reflects.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "result": {
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "index",
+          "result",
+          "events",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ForbiddenError": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "FromPeerArgs": {
+        "description": "The arguments of `fromPeer`, by name.",
+        "properties": {
+          "note": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "type": "object"
+      },
+      "FromPeerRequest": {
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/FromPeerArgs"
+          },
+          "idempotencyKey": {
+            "description": "A retry with the same key is answered once, from the first run.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "type": "object"
+      },
+      "FromPeerResponse": {
+        "properties": {
+          "events": {
+            "description": "The events the call emitted that the caller is in the audience of.",
+            "items": {
+              "$ref": "#/components/schemas/CallEvent"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "The log index the answer reflects.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "result": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "index",
+          "result",
+          "events",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "Id": {
+        "type": "string",
+        "x-calimero-abi-type": "Id"
+      },
+      "InvalidError": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "field": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "type": "object"
+      },
+      "Item": {
+        "properties": {
+          "id": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "tags",
+          "status"
+        ],
+        "type": "object",
+        "x-calimero-abi-type": "Item"
+      },
+      "LookupArgs": {
+        "description": "The arguments of `lookup`, by name.",
+        "properties": {
+          "id": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "LookupRequest": {
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/LookupArgs"
+          },
+          "consistency": {
+            "default": "strong",
+            "description": "`strong` reads the leader's latest state; `stale` any replica at least as new as `minIndex`.",
+            "enum": [
+              "strong",
+              "stale"
+            ],
+            "type": "string"
+          },
+          "minIndex": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "type": "object"
+      },
+      "LookupResponse": {
+        "properties": {
+          "index": {
+            "description": "The log index the answer reflects.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Item"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "index",
+          "result",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "Marker": {
+        "type": "null",
+        "x-calimero-abi-type": "Marker"
+      },
+      "NotFoundError": {
+        "properties": {
+          "id": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "Page_Item": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "type": "array"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next"
+        ],
+        "type": "object",
+        "x-calimero-abi-type": "Page<Item>"
+      },
+      "Point": {
+        "items": false,
+        "maxItems": 2,
+        "minItems": 2,
+        "prefixItems": [
+          {
+            "format": "double",
+            "type": "number"
+          },
+          {
+            "format": "double",
+            "type": "number"
+          }
+        ],
+        "type": "array",
+        "x-calimero-abi-type": "Point"
+      },
+      "Receipt": {
+        "description": "The answering node's signature over the app, the index and the result's hash.",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "key": {
+            "type": "string"
+          },
+          "node": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "resultHash": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app",
+          "index",
+          "resultHash",
+          "node",
+          "key",
+          "signature"
+        ],
+        "type": "object"
+      },
+      "RejectedError": {
+        "properties": {
+          "0": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "0"
+        ],
+        "type": "object"
+      },
+      "SecretArgs": {
+        "description": "The arguments of `secret`, by name.",
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "SecretRequest": {
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/SecretArgs"
+          },
+          "confirm": {
+            "$ref": "#/components/schemas/Confirm"
+          },
+          "idempotencyKey": {
+            "description": "A retry with the same key is answered once, from the first run.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "SecretResponse": {
+        "properties": {
+          "events": {
+            "description": "The events the call emitted that the caller is in the audience of.",
+            "items": {
+              "$ref": "#/components/schemas/CallEvent"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "The log index the answer reflects.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "result": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "result",
+          "events",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "ShapesArgs": {
+        "description": "The arguments of `shapes`, by name.",
+        "properties": {
+          "adjacent": {
+            "$ref": "#/components/schemas/Adjacent"
+          },
+          "either": {
+            "$ref": "#/components/schemas/Either"
+          },
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "marker": {
+            "$ref": "#/components/schemas/Marker"
+          },
+          "point": {
+            "$ref": "#/components/schemas/Point"
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          },
+          "tagged": {
+            "$ref": "#/components/schemas/Tagged"
+          },
+          "tree": {
+            "$ref": "#/components/schemas/Tree"
+          }
+        },
+        "required": [
+          "status",
+          "tagged",
+          "adjacent",
+          "either",
+          "id",
+          "point",
+          "marker",
+          "tree"
+        ],
+        "type": "object"
+      },
+      "ShapesRequest": {
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/ShapesArgs"
+          },
+          "consistency": {
+            "default": "strong",
+            "description": "`strong` reads the leader's latest state; `stale` any replica at least as new as `minIndex`.",
+            "enum": [
+              "strong",
+              "stale"
+            ],
+            "type": "string"
+          },
+          "minIndex": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "type": "object"
+      },
+      "ShapesResponse": {
+        "properties": {
+          "index": {
+            "description": "The log index the answer reflects.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "result": {
+            "$ref": "#/components/schemas/Tree"
+          }
+        },
+        "required": [
+          "index",
+          "result",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "Status": {
+        "oneOf": [
+          {
+            "const": "Open"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "Closed": {
+                "properties": {
+                  "at": {
+                    "description": "A u64 as a decimal string (0..=18446744073709551615).",
+                    "pattern": "^(0|[1-9][0-9]*)$",
+                    "type": "string",
+                    "x-calimero-type": "u64"
+                  }
+                },
+                "required": [
+                  "at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "Closed"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "Moved": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "Moved"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "Span": {
+                "items": false,
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer",
+                    "x-calimero-type": "u32"
+                  },
+                  {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer",
+                    "x-calimero-type": "u32"
+                  }
+                ],
+                "type": "array"
+              }
+            },
+            "required": [
+              "Span"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-calimero-abi-type": "Status"
+      },
+      "Tagged": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "draft"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "at": {
+                "description": "A u64 as a decimal string (0..=18446744073709551615).",
+                "pattern": "^(0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-calimero-type": "u64"
+              },
+              "type": {
+                "const": "published"
+              }
+            },
+            "required": [
+              "type",
+              "at"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-calimero-abi-type": "Tagged"
+      },
+      "Trap": {
+        "properties": {
+          "details": {
+            "properties": {
+              "detail": {},
+              "index": {
+                "type": "integer"
+              },
+              "kind": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "error": {
+            "const": "TRAP"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "message",
+          "details"
+        ],
+        "type": "object"
+      },
+      "Tree": {
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/Tree"
+            },
+            "type": "array"
+          },
+          "value": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer",
+            "x-calimero-type": "u32"
+          }
+        },
+        "required": [
+          "value",
+          "children"
+        ],
+        "type": "object",
+        "x-calimero-abi-type": "Tree"
+      },
+      "UnknownError": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "WipeArgs": {
+        "description": "The arguments of `wipe`, by name.",
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "WipeRequest": {
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/WipeArgs"
+          },
+          "confirm": {
+            "$ref": "#/components/schemas/Confirm"
+          },
+          "idempotencyKey": {
+            "description": "A retry with the same key is answered once, from the first run.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "WipeResponse": {
+        "properties": {
+          "events": {
+            "description": "The events the call emitted that the caller is in the audience of.",
+            "items": {
+              "$ref": "#/components/schemas/CallEvent"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "The log index the answer reflects.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "result": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "index",
+          "result",
+          "events",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "WipedEvent": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "session": {
+        "description": "A passkey session's token or an API key, as `Authorization: Bearer`, inside the sealed channel.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "Generated from the app's ABI (its `calimero:abi` section). Every request and answer travels inside the node's sealed channel, after the client has verified the node's attestation: use mero-js or calimero-client-py as the transport (the typed clients `mero-app-build codegen` writes do), not plain HTTP. `POST /apps/{app}/methods/{name}` runs exactly as `POST /apps/{app}/intents` (a call) or `POST /apps/{app}/views` (a view) with the same `method`: the same authentication, gating, passkey step-up and limits. Errors are `{ error, message, details }`.",
+    "title": "kitchen-sink",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/apps/{app}/events": {
+      "get": {
+        "description": "Server-sent events: the committed events from log index `from`, then live ones. Each frame's `event` is the event's name, `id` is `<index>:<seq>` and `data` its fields as JSON. A subscriber receives only the events it is in the audience of.",
+        "operationId": "events",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventFrame"
+                }
+              }
+            },
+            "description": "An event stream."
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "summary": "The app's events",
+        "tags": [
+          "events"
+        ]
+      }
+    },
+    "/apps/{app}/methods/blobOf": {
+      "post": {
+        "description": "A view: runs as `POST /apps/{app}/views` with `method: \"blobOf\"`.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "operationId": "blobOf",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BlobOfRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BlobOfResponse"
+                }
+              }
+            },
+            "description": "The method ran."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "422": {
+            "$ref": "#/components/responses/AppError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "view `blobOf`",
+        "tags": [
+          "view"
+        ],
+        "x-calimero-method": {
+          "confirm": false,
+          "kind": "view",
+          "public": false
+        }
+      }
+    },
+    "/apps/{app}/methods/count": {
+      "post": {
+        "description": "A view: runs as `POST /apps/{app}/views` with `method: \"count\"`.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "operationId": "count",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CountResponse"
+                }
+              }
+            },
+            "description": "The method ran."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "422": {
+            "$ref": "#/components/responses/AppError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "view `count`",
+        "tags": [
+          "view"
+        ],
+        "x-calimero-method": {
+          "confirm": false,
+          "kind": "view",
+          "public": false
+        }
+      }
+    },
+    "/apps/{app}/methods/events": {
+      "post": {
+        "description": "A call: runs as `POST /apps/{app}/intents` with `method: \"events\"`.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "operationId": "events",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsResponse"
+                }
+              }
+            },
+            "description": "The method ran."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "422": {
+            "$ref": "#/components/responses/AppError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "call `events`",
+        "tags": [
+          "call"
+        ],
+        "x-calimero-method": {
+          "confirm": false,
+          "kind": "call",
+          "public": false
+        }
+      }
+    },
+    "/apps/{app}/methods/everything": {
+      "post": {
+        "description": "A call: runs as `POST /apps/{app}/intents` with `method: \"everything\"`.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "operationId": "everything",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EverythingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EverythingResponse"
+                }
+              }
+            },
+            "description": "The method ran."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "422": {
+            "$ref": "#/components/responses/AppError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "call `everything`",
+        "tags": [
+          "call"
+        ],
+        "x-calimero-method": {
+          "confirm": false,
+          "kind": "call",
+          "public": false
+        }
+      }
+    },
+    "/apps/{app}/methods/fromPeer": {
+      "post": {
+        "description": "A call: runs as `POST /apps/{app}/intents` with `method: \"fromPeer\"`.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "operationId": "fromPeer",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FromPeerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FromPeerResponse"
+                }
+              }
+            },
+            "description": "The method ran."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "422": {
+            "$ref": "#/components/responses/AppError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "call `fromPeer`",
+        "tags": [
+          "call"
+        ],
+        "x-calimero-method": {
+          "allowApps": [
+            "*"
+          ],
+          "allowSystem": true,
+          "confirm": false,
+          "kind": "call",
+          "public": false
+        }
+      }
+    },
+    "/apps/{app}/methods/lookup": {
+      "post": {
+        "description": "A view: runs as `POST /apps/{app}/views` with `method: \"lookup\"`.\n\nPublic: callers who are not signed in may call it.\n\nRate-limited to 10/s per caller (`429 RATE_LIMITED`).\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "operationId": "lookup",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LookupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LookupResponse"
+                }
+              }
+            },
+            "description": "The method ran."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "422": {
+            "$ref": "#/components/responses/AppError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "security": [
+          {},
+          {
+            "session": []
+          }
+        ],
+        "summary": "view `lookup`",
+        "tags": [
+          "view"
+        ],
+        "x-calimero-method": {
+          "confirm": false,
+          "kind": "view",
+          "public": true,
+          "rate": "10/s"
+        }
+      }
+    },
+    "/apps/{app}/methods/secret": {
+      "post": {
+        "description": "A call: runs as `POST /apps/{app}/intents` with `method: \"secret\"`.\n\nNeeds the account holder's passkey: the first request is answered `412 CONFIRM_REQUIRED` with a challenge; send the same request again with `confirm` (the challenge id and the passkey's assertion over it).\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "operationId": "secret",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretResponse"
+                }
+              }
+            },
+            "description": "The method ran."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "412": {
+            "$ref": "#/components/responses/ConfirmRequired"
+          },
+          "422": {
+            "$ref": "#/components/responses/AppError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "view `secret`",
+        "tags": [
+          "view"
+        ],
+        "x-calimero-method": {
+          "confirm": true,
+          "kind": "view",
+          "public": false
+        }
+      }
+    },
+    "/apps/{app}/methods/shapes": {
+      "post": {
+        "description": "A view: runs as `POST /apps/{app}/views` with `method: \"shapes\"`.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "operationId": "shapes",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShapesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShapesResponse"
+                }
+              }
+            },
+            "description": "The method ran."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "422": {
+            "$ref": "#/components/responses/AppError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "view `shapes`",
+        "tags": [
+          "view"
+        ],
+        "x-calimero-method": {
+          "confirm": false,
+          "kind": "view",
+          "public": false
+        }
+      }
+    },
+    "/apps/{app}/methods/wipe": {
+      "post": {
+        "description": "A call: runs as `POST /apps/{app}/intents` with `method: \"wipe\"`.\n\nNeeds the account holder's passkey: the first request is answered `412 CONFIRM_REQUIRED` with a challenge; send the same request again with `confirm` (the challenge id and the passkey's assertion over it).\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "operationId": "wipe",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WipeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WipeResponse"
+                }
+              }
+            },
+            "description": "The method ran."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "412": {
+            "$ref": "#/components/responses/ConfirmRequired"
+          },
+          "422": {
+            "$ref": "#/components/responses/AppError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "call `wipe`",
+        "tags": [
+          "call"
+        ],
+        "x-calimero-method": {
+          "confirm": true,
+          "kind": "call",
+          "public": false
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "session": []
+    }
+  ],
+  "tags": [
+    {
+      "description": "Writes: each runs once, in order, through the app's log.",
+      "name": "call"
+    },
+    {
+      "description": "Reads: answered from the app's state without writing.",
+      "name": "view"
+    },
+    {
+      "description": "The app's committed events, then live.",
+      "name": "events"
+    }
+  ],
+  "x-calimero": {
+    "abiVersion": 1,
+    "stateVersion": 2,
+    "world": "calimero:app@0.5.1"
+  }
+}

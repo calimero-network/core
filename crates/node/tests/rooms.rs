@@ -3,6 +3,14 @@
 //! `minIndex` and hide titles), spec `docs/specs/app-runtime-v0.14.md` section 12.
 //! A4 (the fault test) runs against real processes: `tests/fault/rooms_fault.py`.
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 mod common;
 
 use std::collections::{BTreeMap, HashMap};

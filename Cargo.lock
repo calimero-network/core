@@ -660,9 +660,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-app-abi"
+version = "0.0.0"
+dependencies = [
+ "calimero-bundle",
+ "eyre",
+ "flate2",
+ "serde_json",
+ "tar",
+ "wasmparser 0.263.0",
+]
+
+[[package]]
 name = "calimero-app-build"
 version = "0.0.0"
 dependencies = [
+ "calimero-app-abi",
  "calimero-app-wit",
  "eyre",
  "serde_json",
@@ -803,6 +816,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-client-gen"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "calimero-git-hooks"
 version = "0.0.0"
 
@@ -876,6 +898,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "borsh",
+ "calimero-app-abi",
  "calimero-app-build",
  "calimero-app-downloader",
  "calimero-app-engine-wasmtime",
@@ -2443,9 +2466,9 @@ checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 
 [[package]]
 name = "flate2"
-version = "1.1.10"
+version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
+checksum = "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
@@ -3758,6 +3781,7 @@ name = "mero-sign"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "calimero-app-abi",
  "calimero-bundle",
  "calimero-utils-fs",
  "clap",

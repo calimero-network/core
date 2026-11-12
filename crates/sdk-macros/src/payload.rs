@@ -11,7 +11,7 @@ use quote::{quote, ToTokens};
 use serde_json::{Map, Value};
 use syn::{Fields, Item, ItemEnum};
 
-use crate::types::{abi_type, camel, canonical, check_wire, wire, Wire};
+use crate::types::{abi_type, camel, canonical, check_wire, probe_slice, probes, wire, Wire};
 
 /// What the payload enum becomes.
 #[derive(Clone, Copy)]
@@ -70,6 +70,7 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
     let name = &item.ident;
     let mut abi = Map::new();
     let mut arms = Vec::new();
+    let mut type_deps = Vec::new();
     for variant in &item.variants {
         let vname = &variant.ident;
         // A unit variant or a braced one; a tuple variant is refused (D63).
@@ -92,6 +93,7 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
         for (field, bind) in fields {
             let key = camel(&bind.to_string());
             check_wire(&field.ty)?;
+            type_deps.extend(probes(&field.ty, &[], &[]));
             let _ = fields_abi.insert(key.clone(), Value::String(abi_type(&field.ty)));
             let value = match wire(&field.ty) {
                 Some(Wire::Bytes) => quote! {
@@ -144,9 +146,11 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
         });
     }
     let abi = canonical(&Value::Object(abi));
-    let (konst, trait_impl) = match kind {
+    let types = probe_slice(&type_deps);
+    let (konst, types_konst, trait_impl) = match kind {
         Payload::Error => (
             quote!(__CALIMERO_ABI_ERRORS),
+            quote!(__CALIMERO_ABI_ERROR_TYPES),
             quote! {
                 impl ::core::convert::From<#name> for #sdk::AppError {
                     fn from(e: #name) -> Self {
@@ -164,6 +168,7 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
         ),
         Payload::Event => (
             quote!(__CALIMERO_ABI_EVENTS),
+            quote!(__CALIMERO_ABI_EVENT_TYPES),
             quote! {
                 impl #sdk::app::AppEvent for #name {
                     fn encode(
@@ -186,6 +191,11 @@ pub fn expand(kind: Payload, item: &ItemEnum) -> syn::Result<TokenStream> {
         #[doc(hidden)]
         #[allow(non_upper_case_globals, dead_code)]
         pub const #konst: &str = #abi;
+
+        /// The app types this module's fields refer to, for the ABI's `types`.
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals, dead_code)]
+        pub const #types_konst: &[::core::option::Option<&#sdk::abi::TypeDef>] = #types;
     })
 }
 

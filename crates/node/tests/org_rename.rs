@@ -6,6 +6,14 @@
 //! below admin is refused, and someone outside it is answered as if it did
 //! not exist.
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use serde_json::{json, Value};

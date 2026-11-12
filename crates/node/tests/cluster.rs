@@ -2,6 +2,14 @@
 //! sealed channels, with the kv fixture component (the cluster itself is in
 //! `harness/cluster.rs`, shared with `benches/cluster_throughput.rs`).
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1164,7 +1172,7 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         .unwrap_err();
     assert!(e.to_string().starts_with("404"), "{e}");
     let _ = alice.uninstall_package("com.test.kv", None).await.unwrap();
-    assert_eq!(alice.packages().await.unwrap(), json!([]));
+    assert!(alice.packages().list().await.unwrap().packages.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1216,19 +1224,14 @@ async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
 /// The names of the packages `cl` lists, with the versions it sees of each.
 async fn listed(cl: &Client) -> BTreeMap<String, Vec<String>> {
     cl.packages()
+        .list()
         .await
         .unwrap()
-        .as_array()
-        .unwrap()
-        .iter()
+        .packages
+        .into_iter()
         .map(|p| {
-            let versions = p["versions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v["version"].as_str().unwrap().to_owned())
-                .collect();
-            (p["package"].as_str().unwrap().to_owned(), versions)
+            let versions = p.versions.into_iter().map(|v| v.version).collect();
+            (p.package, versions)
         })
         .collect()
 }
@@ -2837,6 +2840,160 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
         .is_ok());
 }
 
+/// A session opened on a package's frontend manages nothing of the account:
+/// no organization, team, member or invite, and not even its own package's
+/// apps' lifetime or access. The same person on the cluster's origin can.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_frontend_session_manages_no_organization_and_no_app() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut home_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+    let html: &[u8] = b"<!doctype html><html><body></body></html>";
+    let _ = alice
+        .upload_package(mpk_full(
+            "com.test.site",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            &[("frontend/index.html", html)],
+            None,
+        ))
+        .await
+        .unwrap();
+    let app = alice
+        .post(
+            "apps",
+            json!({ "name": "mine", "package": "com.test.site" }),
+        )
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = alice
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            json!({ "role": "member" }),
+            &mut home_key,
+        )
+        .await
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Alice signed in on the package's frontend origin: a bound session.
+    let label = calimero_node::app_host::label("com.test.site");
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let origin = format!("http://{label}.localhost:{port}");
+    let site = c.client(0);
+    let mut site_key = SoftAuthenticator::with_key(&home_key, "localhost", &origin);
+    let _s = site.sign_in(&mut site_key).await.unwrap();
+    let _ = site
+        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .await
+        .unwrap();
+
+    let forbidden = |what: &str, r: Result<Value, Error>| {
+        let e = r.expect_err(what);
+        assert!(matches!(e, Error::Api { status: 403, .. }), "{what}: {e}");
+    };
+    forbidden(
+        "create an organization",
+        site.post("orgs", json!({ "name": "Evil" })).await,
+    );
+    forbidden(
+        "add a member",
+        site.post(
+            &format!("orgs/{org}/members"),
+            json!({ "account": bob_id, "role": "admin" }),
+        )
+        .await,
+    );
+    forbidden(
+        "remove a member",
+        site.delete(&format!("orgs/{org}/members/{bob_id}")).await,
+    );
+    forbidden(
+        "create a team",
+        site.post(
+            &format!("orgs/{org}/teams"),
+            json!({ "name": "t", "join": "invite" }),
+        )
+        .await,
+    );
+    forbidden(
+        "set capabilities",
+        site.post(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "capabilities": 0 }),
+        )
+        .await,
+    );
+    forbidden(
+        "set a member's rows in several teams",
+        site.post(
+            &format!("orgs/{org}/members/{bob_id}/teams"),
+            json!({ "teams": [{ "team": "x" }] }),
+        )
+        .await,
+    );
+    forbidden(
+        "rename the organization",
+        site.post(&format!("orgs/{org}/name"), json!({ "name": "Evil" }))
+            .await,
+    );
+    forbidden(
+        "give a member every app added later",
+        site.post(
+            &format!("orgs/{org}/all-apps"),
+            json!({ "account": bob_id, "allApps": true }),
+        )
+        .await,
+    );
+    forbidden(
+        "mint an invite",
+        site.post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+            .await,
+    );
+    forbidden(
+        "redeem an invite",
+        site.post(&format!("invites/{token}/redeem"), json!({}))
+            .await,
+    );
+    forbidden(
+        "change an app's access",
+        site.post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "public" } }),
+        )
+        .await,
+    );
+    forbidden("delete an app", site.delete(&format!("apps/{app}")).await);
+    let still = alice.get(&format!("apps/{app}")).await.unwrap();
+    assert_ne!(still["access"]["kind"], json!("public"), "{still}");
+
+    // On the cluster's own origin the same account still can.
+    let _ = alice
+        .post(
+            &format!("apps/{app}/access"),
+            json!({ "access": { "kind": "public" } }),
+        )
+        .await
+        .unwrap();
+    let _ = alice.delete(&format!("apps/{app}")).await.unwrap();
+}
+
 // ---------------------------------------------------------------- joining nodes
 
 /// A node registered with `/ops/nodes` after the cluster started joins the
@@ -3712,6 +3869,34 @@ async fn the_cluster_key_goes_only_to_the_address_of_a_node_the_cluster_knows() 
         format!("{e:#}").contains("another mero-tee release"),
         "{e:#}"
     );
+}
+
+/// Once the cluster is founded, its directory says which nodes hold K_c: an id
+/// that only a node's own `--peers` lists (not registered, not a member) is
+/// not one, whatever address that list gives for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_cluster_key_goes_only_to_registered_nodes_after_genesis() {
+    use calimero_node::cluster_key::Request;
+
+    let elsewhere = format!("http://127.0.0.1:{}/", free_port());
+    let c = Cluster::start_with(3, |config| {
+        if config.node_id == 3 {
+            let _prev = config.peers.insert(9, elsewhere.clone());
+        }
+    })
+    .await;
+    let ask = serde_json::to_value(Request {
+        cluster: c.name.clone(),
+        node: 9,
+        token: hex::encode([1_u8; 32]),
+    })
+    .unwrap();
+    let e = c
+        .client(2)
+        .post("internal/cluster-key", ask)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("not a node of this cluster"), "{e}");
 }
 
 /// Ownership transfer: the owner hands an app to another account

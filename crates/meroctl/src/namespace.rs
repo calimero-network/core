@@ -3,10 +3,14 @@
 
 use std::path::PathBuf;
 
+use calimero_client::types::{
+    InviteCreateRequest, Org, OrgMembersDetail, OrgRole, OutboundSelection,
+    OutboundSelectionManifest, TeamJoin,
+};
 use clap::{Subcommand, ValueEnum};
 use serde_json::{json, Value};
 
-use crate::env::{json_arg, Env};
+use crate::env::{json_arg, to_json, DevPasskey, Env};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Role {
@@ -18,12 +22,12 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn wire(self) -> &'static str {
+    pub fn wire(self) -> OrgRole {
         match self {
-            Self::Guest => "guest",
-            Self::Member => "member",
-            Self::Admin => "admin",
-            Self::Owner => "owner",
+            Self::Guest => OrgRole::Guest,
+            Self::Member => OrgRole::Member,
+            Self::Admin => OrgRole::Admin,
+            Self::Owner => OrgRole::Owner,
         }
     }
 }
@@ -37,10 +41,10 @@ pub enum Join {
 }
 
 impl Join {
-    pub fn wire(self) -> &'static str {
+    pub fn wire(self) -> TeamJoin {
         match self {
-            Self::Open => "everyone",
-            Self::Restricted => "invite",
+            Self::Open => TeamJoin::Everyone,
+            Self::Restricted => TeamJoin::Invite,
         }
     }
 }
@@ -197,22 +201,24 @@ pub enum MetadataCmd {
 }
 
 /// An organization's record (`GET /orgs/{org}`).
-pub async fn org(env: &Env, namespace: &str) -> eyre::Result<Value> {
-    Ok(env.client.get(&format!("orgs/{namespace}")).await?)
+pub async fn org(env: &Env, namespace: &str) -> eyre::Result<Org> {
+    Ok(env.client.orgs().get(namespace).await?)
 }
 
 pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
-    let client = &env.client;
+    let orgs = env.client.orgs();
     Ok(match cmd {
-        NamespaceCmd::Create { name } => client.post("orgs", json!({ "name": name })).await?,
-        NamespaceCmd::Get { namespace } => client.get(&format!("orgs/{namespace}")).await?,
-        NamespaceCmd::List => json!({ "namespaces": client.me().await?["orgs"] }),
+        NamespaceCmd::Create { name } => to_json(&orgs.create(&name, None).await?)?,
+        NamespaceCmd::Get { namespace } => to_json(&org(env, &namespace).await?)?,
+        NamespaceCmd::List => json!({ "namespaces": env.client.auth().me().await?.orgs }),
         NamespaceCmd::Delete {
             namespace,
             dev_passkey,
         } => {
-            env.delete_approved(&format!("orgs/{namespace}"), dev_passkey.as_deref())
-                .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs.delete(&namespace, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
         }
         NamespaceCmd::Invite {
             namespace,
@@ -222,100 +228,95 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             uses,
             dev_passkey,
         } => {
-            env.post_approved(
-                &format!("orgs/{namespace}/invites"),
-                json!({ "role": role.wire(), "teams": groups, "ttlSecs": ttl_secs, "uses": uses }),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let body = InviteCreateRequest {
+                role: role.wire(),
+                teams: Some(groups),
+                ttl_secs,
+                uses: uses.map(u64::from),
+                all_apps: None,
+            };
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs.invite_create(&namespace, body, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
         }
-        NamespaceCmd::Join { token } => {
-            client
-                .post(&format!("invites/{token}/redeem"), json!({}))
-                .await?
-        }
+        NamespaceCmd::Join { token } => to_json(&orgs.invite_redeem(&token).await?)?,
         NamespaceCmd::Leave {
             namespace,
             dev_passkey,
         } => {
-            let me = client.me().await?;
-            let account = me["accountId"].as_str().unwrap_or_default();
-            env.delete_approved(
-                &format!("orgs/{namespace}/members/{account}"),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let account = env.client.auth().me().await?.account_id;
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs.remove_member(&namespace, &account, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
         }
         NamespaceCmd::Groups { namespace } => {
-            json!({ "groups": org(env, &namespace).await?["teams"] })
+            json!({ "groups": org(env, &namespace).await?.teams })
         }
         NamespaceCmd::CreateGroup {
             namespace,
             name,
             parent,
             join,
-        } => {
-            client
-                .post(
-                    &format!("orgs/{namespace}/teams"),
-                    json!({ "name": name, "parent": parent, "join": join.wire() }),
-                )
-                .await?
-        }
+        } => to_json(
+            &orgs
+                .team_create(&namespace, &name, join.wire(), parent.as_deref())
+                .await?,
+        )?,
         NamespaceCmd::Members(MembersCmd::List {
             namespace,
             security: false,
         }) => {
-            json!({ "members": org(env, &namespace).await?["members"] })
+            json!({ "members": org(env, &namespace).await?.members })
         }
         NamespaceCmd::Members(MembersCmd::List {
             namespace,
             security: true,
-        }) => client.org_members_security(&namespace).await?,
+        }) => to_json(
+            &orgs
+                .members(&namespace, Some(OrgMembersDetail::Security))
+                .await?,
+        )?,
         NamespaceCmd::Members(MembersCmd::Add {
             namespace,
             account,
             role,
             dev_passkey,
         }) => {
-            env.post_approved(
-                &format!("orgs/{namespace}/members"),
-                json!({ "account": account, "role": role.wire() }),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs
+                .set_member(&namespace, &account, role.wire(), pk.get())
+                .await;
+            pk.save()?;
+            to_json(&out?)?
         }
         NamespaceCmd::Members(MembersCmd::Remove {
             namespace,
             account,
             dev_passkey,
         }) => {
-            env.delete_approved(
-                &format!("orgs/{namespace}/members/{account}"),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs.remove_member(&namespace, &account, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
         }
         NamespaceCmd::Metadata(MetadataCmd::Get { namespace }) => {
-            json!({ "metadata": org(env, &namespace).await?["metadata"] })
+            json!({ "metadata": org(env, &namespace).await?.metadata })
         }
         NamespaceCmd::Metadata(MetadataCmd::Set {
             namespace,
             metadata,
-        }) => {
-            client
-                .set_org_metadata(&namespace, json_arg(&metadata)?)
-                .await?
-        }
+        }) => to_json(&orgs.metadata(&namespace, json_arg(&metadata)?).await?)?,
         NamespaceCmd::MemberMetadata {
             namespace,
             account,
             metadata,
-        } => {
-            client
-                .set_member_metadata(&namespace, &account, json_arg(&metadata)?)
-                .await?
-        }
+        } => to_json(
+            &orgs
+                .member_metadata(&namespace, &account, json_arg(&metadata)?)
+                .await?,
+        )?,
         NamespaceCmd::Capabilities {
             namespace,
             capabilities,
@@ -323,12 +324,18 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             group,
             dev_passkey,
         } => {
-            env.post_approved(
-                &format!("orgs/{namespace}/capabilities"),
-                json!({ "account": account, "team": group, "capabilities": capabilities }),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs
+                .capabilities(
+                    &namespace,
+                    u64::from(capabilities),
+                    account.as_deref(),
+                    group.as_deref(),
+                    pk.get(),
+                )
+                .await;
+            pk.save()?;
+            to_json(&out?)?
         }
         NamespaceCmd::Outbound {
             namespace,
@@ -355,30 +362,43 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
     })
 }
 
+/// The prefixes of an outbound approval: those named, else every prefix the
+/// package's latest release declares (`"manifest"`).
+pub fn prefixes(named: &[String]) -> OutboundSelection {
+    if named.is_empty() {
+        OutboundSelection::Manifest(OutboundSelectionManifest::Manifest)
+    } else {
+        OutboundSelection::List(named.to_vec())
+    }
+}
+
 /// The owner approves outbound prefixes (an org's, or the account's own).
 pub async fn outbound(
     env: &Env,
     namespace: Option<&str>,
     package: &str,
-    prefixes: &[String],
+    named: &[String],
     replace: bool,
     dev_passkey: Option<PathBuf>,
 ) -> eyre::Result<Value> {
-    let path = match namespace {
-        Some(ns) => format!("orgs/{ns}/outbound"),
-        None => "auth/outbound".to_owned(),
+    let selection = Some(prefixes(named));
+    let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+    let out = match namespace {
+        Some(ns) => {
+            env.client
+                .orgs()
+                .outbound_approval(ns, package, selection, Some(replace), pk.get())
+                .await
+        }
+        None => {
+            env.client
+                .auth()
+                .account_outbound_approval(package, selection, Some(replace), pk.get())
+                .await
+        }
     };
-    let prefixes = if prefixes.is_empty() {
-        json!("manifest")
-    } else {
-        json!(prefixes)
-    };
-    env.post_approved(
-        &path,
-        json!({ "package": package, "prefixes": prefixes, "replace": replace }),
-        dev_passkey.as_deref(),
-    )
-    .await
+    pk.save()?;
+    to_json(&out?)
 }
 
 /// The owner approves a mero-tee release (an org's apps, or the account's own).
@@ -388,10 +408,21 @@ pub async fn approve_release(
     version: &str,
     dev_passkey: Option<PathBuf>,
 ) -> eyre::Result<Value> {
-    let path = match namespace {
-        Some(ns) => format!("orgs/{ns}/releases"),
-        None => "auth/releases".to_owned(),
+    let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+    let out = match namespace {
+        Some(ns) => {
+            env.client
+                .orgs()
+                .release_approval(ns, version, None, pk.get())
+                .await
+        }
+        None => {
+            env.client
+                .auth()
+                .account_release_approval(version, None, pk.get())
+                .await
+        }
     };
-    env.post_approved(&path, json!({ "version": version }), dev_passkey.as_deref())
-        .await
+    pk.save()?;
+    to_json(&out?)
 }
