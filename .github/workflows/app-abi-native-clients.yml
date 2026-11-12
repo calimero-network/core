@@ -1,4 +1,4 @@
-name: App ABI clients
+name: App ABI native clients
 
 # The Swift and Kotlin clients `mero-app-build codegen` writes, compiled with warnings as
 # errors against the SDK releases they are written for (scripts/check-app-abi-clients.py):
@@ -12,7 +12,7 @@ on:
     paths:
       - "crates/app-abi/**"
       - "scripts/check-app-abi-clients.py"
-      - ".github/workflows/app-abi-clients.yml"
+      - ".github/workflows/app-abi-native-clients.yml"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
@@ -21,7 +21,7 @@ on:
     paths:
       - "crates/app-abi/**"
       - "scripts/check-app-abi-clients.py"
-      - ".github/workflows/app-abi-clients.yml"
+      - ".github/workflows/app-abi-native-clients.yml"
       - "!**/*.md"
       - "!**/*.mdx"
   workflow_dispatch:
@@ -30,7 +30,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: app-abi-clients-${{ github.ref }}
+  group: app-abi-native-clients-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

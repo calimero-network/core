@@ -48,7 +48,7 @@
   against `tests/golden/`. Refresh a fixture from a build: extract the component's
   `calimero:abi` section.
 - The Swift and Kotlin goldens must compile with warnings as errors against the SDK releases
-  they target: `.github/workflows/app-abi-clients.yml` runs
+  they target: `.github/workflows/app-abi-native-clients.yml` runs
   `scripts/check-app-abi-clients.py swift|kotlin` (macOS / Android SDK) on a change here.
   Moving to a new SDK release moves `SWIFT_SDK_VERSION` / `KOTLIN_SDK_REF` there.
 

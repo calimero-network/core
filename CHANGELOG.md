@@ -15,7 +15,7 @@
   the ABI's JSON forms (u64/i64 as decimal strings, bytes base64url) behind
   `UInt64`/`ULong`, `Int64`/`Long` and `Data`/`ByteArray`, and the app's events
   and errors as typed enums and sealed interfaces (`Event`, `Refusal`). The
-  `App ABI clients` workflow compiles the golden clients against both SDKs with
+  `App ABI native clients` workflow compiles the golden clients against both SDKs with
   warnings as errors.
 
 ## [1.0.0-rc.16] - 2026-11-12
