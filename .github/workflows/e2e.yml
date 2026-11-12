@@ -405,7 +405,10 @@ jobs:
             esac
             version=${image##*:}
           else
-            version=$(gh api "repos/$REPO/releases?per_page=20" --jq '[.[] | select(.draft | not)][0].tag_name')
+            # The newest release that published merod: a tagged release whose build
+            # failed (1.0.0-rc.16) has no binaries and no image to pull.
+            version=$(gh api "repos/$REPO/releases?per_page=20" \
+              --jq '[.[] | select(.draft | not) | select(any(.assets[]; .name | startswith("merod_")))][0].tag_name')
             image="ghcr.io/${OWNER,,}/merod:$version"
           fi
           docker pull --platform linux/amd64 "$image"
