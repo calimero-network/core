@@ -15,35 +15,494 @@ import MeroKit
 /// its own idempotency key, so `confirm` methods, `appEvents` and an `idempotencyKey` throw
 /// `MeroAppBackendUnsupported`. A refusal throws `AppError`; `Refusal(_:)` types it.
 public struct KitchenSinkClient: Sendable {
-    /// The app type `Adjacent`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Adjacent = JSONValue
 
-    /// The app type `Either`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Either = JSONValue
+    /// The app type `Adjacent`.
+    public enum Adjacent: Codable, Sendable, Equatable {
+        /// `Text`.
+        case text(String)
+        /// `Empty`.
+        case empty
+        /// `Pair`.
+        case pair(UInt32, UInt32)
+        /// `Labeled`.
+        case labeled(label: String, at: UInt64?)
 
-    /// The app type `Id`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Id = JSONValue
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: Key.self)
+            let tag = try container.decode(String.self, forKey: Key("t"))
+            switch tag {
+            case "Text":
+                let v0 = try container.decode(String.self, forKey: Key("c"))
+                self = .text(v0)
+            case "Empty":
+                self = .empty
+            case "Pair":
+                var items = try container.nestedUnkeyedContainer(forKey: Key("c"))
+                let v0 = try items.decode(UInt32.self)
+                let v1 = try items.decode(UInt32.self)
+                guard items.isAtEnd else { throw DecodingError.dataCorruptedError(in: items, debugDescription: "Adjacent: expected 2 items") }
+                self = .pair(v0, v1)
+            case "Labeled":
+                let fields = try container.nestedContainer(keyedBy: Key.self, forKey: Key("c"))
+                let v0 = try fields.decode(String.self, forKey: Key("label"))
+                let v1 = try fields.decodeIfPresent(DecimalString<UInt64>.self, forKey: Key("at"))?.value
+                self = .labeled(label: v0, at: v1)
+            default:
+                throw DecodingError.dataCorruptedError(forKey: Key("t"), in: container, debugDescription: "Adjacent: unknown variant \(tag)")
+            }
+        }
 
-    /// The app type `Item`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Item = JSONValue
+        public func encode(to encoder: Encoder) throws {
+            switch self {
+            case .text(let v0):
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode("Text", forKey: Key("t"))
+                try container.encode(v0, forKey: Key("c"))
+            case .empty:
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode("Empty", forKey: Key("t"))
+            case .pair(let v0, let v1):
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode("Pair", forKey: Key("t"))
+                var items = container.nestedUnkeyedContainer(forKey: Key("c"))
+                try items.encode(v0)
+                try items.encode(v1)
+            case .labeled(let v0, let v1):
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode("Labeled", forKey: Key("t"))
+                var fields = container.nestedContainer(keyedBy: Key.self, forKey: Key("c"))
+                try fields.encode(v0, forKey: Key("label"))
+                try fields.encode(v1.map { DecimalString($0) }, forKey: Key("at"))
+            }
+        }
+    }
 
-    /// The app type `Marker`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Marker = JSONValue
+    /// The app type `Choice`.
+    public enum Choice<T: Codable & Sendable & Equatable>: Codable, Sendable, Equatable {
+        /// `one`.
+        case one(value: T)
+        /// `zero`.
+        case zero
 
-    /// The app type `Page<Item>`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Page_Item = JSONValue
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: Key.self)
+            let tag = try container.decode(String.self, forKey: Key("kind"))
+            switch tag {
+            case "one":
+                let v0 = try container.decode(T.self, forKey: Key("value"))
+                self = .one(value: v0)
+            case "zero":
+                self = .zero
+            default:
+                throw DecodingError.dataCorruptedError(forKey: Key("kind"), in: container, debugDescription: "Choice: unknown variant \(tag)")
+            }
+        }
 
-    /// The app type `Point`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Point = JSONValue
+        public func encode(to encoder: Encoder) throws {
+            switch self {
+            case .one(let v0):
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode("one", forKey: Key("kind"))
+                try container.encode(v0, forKey: Key("value"))
+            case .zero:
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode("zero", forKey: Key("kind"))
+            }
+        }
+    }
 
-    /// The app type `Status`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Status = JSONValue
+    /// The app type `Either`.
+    public enum Either: Codable, Sendable, Equatable {
+        /// `Num`.
+        case num(UInt32)
+        /// `Named`.
+        case named(name: String)
+        /// `Pair`.
+        case pair(UInt32, String)
+        /// `Blank`.
+        case blank
 
-    /// The app type `Tagged`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Tagged = JSONValue
+        public init(from decoder: Decoder) throws {
+            do {
+                let v0 = try decoder.singleValueContainer().decode(UInt32.self)
+                self = .num(v0)
+                return
+            } catch {}
+            do {
+                let fields = try decoder.container(keyedBy: Key.self)
+                let v0 = try fields.decode(String.self, forKey: Key("name"))
+                self = .named(name: v0)
+                return
+            } catch {}
+            do {
+                var items = try decoder.unkeyedContainer()
+                let v0 = try items.decode(UInt32.self)
+                let v1 = try items.decode(String.self)
+                guard items.isAtEnd else { throw DecodingError.dataCorruptedError(in: items, debugDescription: "Either: expected 2 items") }
+                self = .pair(v0, v1)
+                return
+            } catch {}
+            if (try? decoder.singleValueContainer().decodeNil()) == true {
+                self = .blank
+                return
+            }
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Either: no variant fits"))
+        }
 
-    /// The app type `Tree`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Tree = JSONValue
+        public func encode(to encoder: Encoder) throws {
+            switch self {
+            case .num(let v0):
+                var single = encoder.singleValueContainer()
+                try single.encode(v0)
+            case .named(let v0):
+                var fields = encoder.container(keyedBy: Key.self)
+                try fields.encode(v0, forKey: Key("name"))
+            case .pair(let v0, let v1):
+                var items = encoder.unkeyedContainer()
+                try items.encode(v0)
+                try items.encode(v1)
+            case .blank:
+                var single = encoder.singleValueContainer()
+                try single.encodeNil()
+            }
+        }
+    }
+
+    /// The app type `Expr`.
+    public indirect enum Expr: Codable, Sendable, Equatable {
+        /// `Lit`.
+        case lit(Int64)
+        /// `Neg`.
+        case neg(Expr)
+        /// `Add`.
+        case add(Expr, Expr)
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: Key.self)
+            guard container.allKeys.count == 1, let key = container.allKeys.first else {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Expr: expected one variant"))
+            }
+            switch key.stringValue {
+            case "Lit":
+                let v0 = try container.decode(DecimalString<Int64>.self, forKey: key).value
+                self = .lit(v0)
+            case "Neg":
+                let v0 = try container.decode(Expr.self, forKey: key)
+                self = .neg(v0)
+            case "Add":
+                var items = try container.nestedUnkeyedContainer(forKey: key)
+                let v0 = try items.decode(Expr.self)
+                let v1 = try items.decode(Expr.self)
+                guard items.isAtEnd else { throw DecodingError.dataCorruptedError(in: items, debugDescription: "Expr: expected 2 items") }
+                self = .add(v0, v1)
+            default:
+                throw DecodingError.dataCorruptedError(forKey: key, in: container, debugDescription: "Expr: unknown variant \(key.stringValue)")
+            }
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            switch self {
+            case .lit(let v0):
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode(DecimalString(v0), forKey: Key("Lit"))
+            case .neg(let v0):
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode(v0, forKey: Key("Neg"))
+            case .add(let v0, let v1):
+                var container = encoder.container(keyedBy: Key.self)
+                var items = container.nestedUnkeyedContainer(forKey: Key("Add"))
+                try items.encode(v0)
+                try items.encode(v1)
+            }
+        }
+    }
+
+    /// The app type `Id`.
+    public struct Id: Codable, Sendable, Equatable {
+        public var value: String
+
+        public init(
+            _ value: String
+        ) {
+            self.value = value
+        }
+
+        public init(from decoder: Decoder) throws {
+            let v0 = try decoder.singleValueContainer().decode(String.self)
+            self.value = v0
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var single = encoder.singleValueContainer()
+            try single.encode(self.value)
+        }
+    }
+
+    /// The app type `Item`.
+    public struct Item: Codable, Sendable, Equatable {
+        public var id: UInt64
+        public var title: String
+        public var tags: [String]
+        public var note: String?
+        public var status: Status
+
+        public init(
+            id: UInt64,
+            title: String,
+            tags: [String],
+            note: String? = nil,
+            status: Status
+        ) {
+            self.id = id
+            self.title = title
+            self.tags = tags
+            self.note = note
+            self.status = status
+        }
+
+        public init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: Key.self)
+            let v0 = try fields.decode(DecimalString<UInt64>.self, forKey: Key("id")).value
+            let v1 = try fields.decode(String.self, forKey: Key("title"))
+            let v2 = try fields.decode([String].self, forKey: Key("tags"))
+            let v3 = try fields.decodeIfPresent(String.self, forKey: Key("note"))
+            let v4 = try fields.decode(Status.self, forKey: Key("status"))
+            self.id = v0
+            self.title = v1
+            self.tags = v2
+            self.note = v3
+            self.status = v4
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var fields = encoder.container(keyedBy: Key.self)
+            try fields.encode(DecimalString(self.id), forKey: Key("id"))
+            try fields.encode(self.title, forKey: Key("title"))
+            try fields.encode(self.tags, forKey: Key("tags"))
+            try fields.encodeIfPresent(self.note, forKey: Key("note"))
+            try fields.encode(self.status, forKey: Key("status"))
+        }
+    }
+
+    /// The app type `Marker`.
+    public struct Marker: Codable, Sendable, Equatable {
+        public init() {}
+
+        public init(from decoder: Decoder) throws {
+            guard try decoder.singleValueContainer().decodeNil() else {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Marker: expected null"))
+            }
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var single = encoder.singleValueContainer()
+            try single.encodeNil()
+        }
+    }
+
+    /// The app type `Page`.
+    public struct Page<T: Codable & Sendable & Equatable>: Codable, Sendable, Equatable {
+        public var items: [T]
+        public var next: String?
+
+        public init(
+            items: [T],
+            next: String? = nil
+        ) {
+            self.items = items
+            self.next = next
+        }
+
+        public init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: Key.self)
+            let v0 = try fields.decode([T].self, forKey: Key("items"))
+            let v1 = try fields.decodeIfPresent(String.self, forKey: Key("next"))
+            self.items = v0
+            self.next = v1
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var fields = encoder.container(keyedBy: Key.self)
+            try fields.encode(self.items, forKey: Key("items"))
+            try fields.encode(self.next, forKey: Key("next"))
+        }
+    }
+
+    /// The app type `Point`.
+    public struct Point: Codable, Sendable, Equatable {
+        public var v0: Double
+        public var v1: Double
+
+        public init(
+            _ v0: Double,
+            _ v1: Double
+        ) {
+            self.v0 = v0
+            self.v1 = v1
+        }
+
+        public init(from decoder: Decoder) throws {
+            var items = try decoder.unkeyedContainer()
+            let v0 = try items.decode(Double.self)
+            let v1 = try items.decode(Double.self)
+            guard items.isAtEnd else { throw DecodingError.dataCorruptedError(in: items, debugDescription: "Point: expected 2 items") }
+            self.v0 = v0
+            self.v1 = v1
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var items = encoder.unkeyedContainer()
+            try items.encode(self.v0)
+            try items.encode(self.v1)
+        }
+    }
+
+    /// The app type `Status`.
+    public enum Status: Codable, Sendable, Equatable {
+        /// `Open`.
+        case `open`
+        /// `Closed`.
+        case closed(at: UInt64)
+        /// `Moved`.
+        case moved(String)
+        /// `Span`.
+        case span(UInt32, UInt32)
+
+        public init(from decoder: Decoder) throws {
+            if let name = try? decoder.singleValueContainer().decode(String.self) {
+                switch name {
+                case "Open":
+                    self = .`open`
+                default:
+                    throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Status: unknown variant \(name)"))
+                }
+                return
+            }
+            let container = try decoder.container(keyedBy: Key.self)
+            guard container.allKeys.count == 1, let key = container.allKeys.first else {
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Status: expected one variant"))
+            }
+            switch key.stringValue {
+            case "Open":
+                self = .`open`
+            case "Closed":
+                let fields = try container.nestedContainer(keyedBy: Key.self, forKey: key)
+                let v0 = try fields.decode(DecimalString<UInt64>.self, forKey: Key("at")).value
+                self = .closed(at: v0)
+            case "Moved":
+                let v0 = try container.decode(String.self, forKey: key)
+                self = .moved(v0)
+            case "Span":
+                var items = try container.nestedUnkeyedContainer(forKey: key)
+                let v0 = try items.decode(UInt32.self)
+                let v1 = try items.decode(UInt32.self)
+                guard items.isAtEnd else { throw DecodingError.dataCorruptedError(in: items, debugDescription: "Status: expected 2 items") }
+                self = .span(v0, v1)
+            default:
+                throw DecodingError.dataCorruptedError(forKey: key, in: container, debugDescription: "Status: unknown variant \(key.stringValue)")
+            }
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            switch self {
+            case .`open`:
+                var single = encoder.singleValueContainer()
+                try single.encode("Open")
+            case .closed(let v0):
+                var container = encoder.container(keyedBy: Key.self)
+                var fields = container.nestedContainer(keyedBy: Key.self, forKey: Key("Closed"))
+                try fields.encode(DecimalString(v0), forKey: Key("at"))
+            case .moved(let v0):
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode(v0, forKey: Key("Moved"))
+            case .span(let v0, let v1):
+                var container = encoder.container(keyedBy: Key.self)
+                var items = container.nestedUnkeyedContainer(forKey: Key("Span"))
+                try items.encode(v0)
+                try items.encode(v1)
+            }
+        }
+    }
+
+    /// The app type `Tagged`.
+    public enum Tagged: Codable, Sendable, Equatable {
+        /// `draft`.
+        case draft
+        /// `published`.
+        case published(at: UInt64)
+        /// `wrapped`.
+        case wrapped(Item)
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: Key.self)
+            let tag = try container.decode(String.self, forKey: Key("type"))
+            switch tag {
+            case "draft":
+                self = .draft
+            case "published":
+                let v0 = try container.decode(DecimalString<UInt64>.self, forKey: Key("at")).value
+                self = .published(at: v0)
+            case "wrapped":
+                let v0 = try decoder.singleValueContainer().decode(Item.self)
+                self = .wrapped(v0)
+            default:
+                throw DecodingError.dataCorruptedError(forKey: Key("type"), in: container, debugDescription: "Tagged: unknown variant \(tag)")
+            }
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            switch self {
+            case .draft:
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode("draft", forKey: Key("type"))
+            case .published(let v0):
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode("published", forKey: Key("type"))
+                try container.encode(DecimalString(v0), forKey: Key("at"))
+            case .wrapped(let v0):
+                guard case .object(_)? = try? JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(v0)) else {
+                    throw EncodingError.invalidValue(v0, .init(codingPath: encoder.codingPath, debugDescription: "Tagged: serde tags only an object internally"))
+                }
+                try v0.encode(to: encoder)
+                var container = encoder.container(keyedBy: Key.self)
+                try container.encode("wrapped", forKey: Key("type"))
+            }
+        }
+    }
+
+    /// The app type `Tree`.
+    public struct Tree: Codable, Sendable, Equatable {
+        public var value: UInt32
+        public var children: [Tree]
+        @Indirect public var parent: Tree?
+
+        public init(
+            value: UInt32,
+            children: [Tree],
+            parent: Tree? = nil
+        ) {
+            self.value = value
+            self.children = children
+            self.parent = parent
+        }
+
+        public init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: Key.self)
+            let v0 = try fields.decode(UInt32.self, forKey: Key("value"))
+            let v1 = try fields.decode([Tree].self, forKey: Key("children"))
+            let v2 = try fields.decodeIfPresent(Tree.self, forKey: Key("parent"))
+            self.value = v0
+            self.children = v1
+            self.parent = v2
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var fields = encoder.container(keyedBy: Key.self)
+            try fields.encode(self.value, forKey: Key("value"))
+            try fields.encode(self.children, forKey: Key("children"))
+            try fields.encodeIfPresent(self.parent, forKey: Key("parent"))
+        }
+    }
 
     private enum Transport: Sendable {
         case client(CalimeroClient, String)
@@ -133,7 +592,7 @@ public struct KitchenSinkClient: Sendable {
         byId: [String: String],
         unique: [String],
         item: Item,
-        page: Page_Item,
+        page: Page<Item>,
         nested: [Item?]? = nil,
         idempotencyKey: String? = nil
     ) async throws -> [Item] {
@@ -210,6 +669,8 @@ public struct KitchenSinkClient: Sendable {
         point: Point,
         marker: Marker,
         tree: Tree,
+        expr: Expr,
+        choice: Choice<Item>,
         stale: Bool = false,
         minIndex: Int = 0
     ) async throws -> Tree {
@@ -222,6 +683,8 @@ public struct KitchenSinkClient: Sendable {
         args.add("point", point)
         args.add("marker", marker)
         args.add("tree", tree)
+        args.add("expr", expr)
+        args.add("choice", choice)
         let result = try await invokeView("shapes", args, stale: stale, minIndex: minIndex, as: Tree.self)
         return result
     }
@@ -495,8 +958,30 @@ public struct KitchenSinkClient: Sendable {
         try JSONDecoder().decode(Answer<Wire>.self, from: answer).result
     }
 
+    /// A property that holds the type it is in, boxed so that type has a size.
+    @propertyWrapper
+    public enum Indirect<Value: Sendable & Equatable>: Sendable, Equatable {
+        indirect case wrapped(Value)
+
+        public init(wrappedValue: Value) {
+            self = .wrapped(wrappedValue)
+        }
+
+        public var wrappedValue: Value {
+            get {
+                switch self {
+                case .wrapped(let value):
+                    return value
+                }
+            }
+            set {
+                self = .wrapped(newValue)
+            }
+        }
+    }
+
     /// `tuple<..>` of 2: a JSON array `[v0, ..]`.
-    public struct Tuple2<T0: Codable & Sendable, T1: Codable & Sendable>: Codable, Sendable {
+    public struct Tuple2<T0: Codable & Sendable & Equatable, T1: Codable & Sendable & Equatable>: Codable, Sendable, Equatable {
         public var v0: T0
         public var v1: T1
 

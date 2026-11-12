@@ -40,7 +40,8 @@ const STOP_WAIT: Duration = Duration::from_secs(2); // How long [`RunningJob::st
 const SWEEP_EVERY: Duration = Duration::from_secs(1); // How often finished and abandoned runs are looked for
 
 pub use runs::{
-    CANCEL_WAIT, MAX_ASSIGNMENT_BYTES, MAX_RUN_INPUTS, NEED_BUNDLE, TOKEN_HEADER, UNKNOWN_RUN,
+    CANCEL_WAIT, MAX_ASSIGNMENT_BYTES, MAX_PIPELINE_RUN_INPUTS, NEED_BUNDLE, TOKEN_HEADER,
+    UNKNOWN_RUN,
 };
 
 /// What a job node is started with: nothing of a cluster's storage or keys.

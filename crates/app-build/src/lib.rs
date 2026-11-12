@@ -15,6 +15,8 @@ use wasmparser::ComponentTypeRef;
 use wasmparser::Parser;
 use wasmparser::Payload;
 
+pub mod codegen;
+
 /// Name of the custom section carrying the app's ABI JSON.
 pub const ABI_SECTION: &str = "calimero:abi";
 

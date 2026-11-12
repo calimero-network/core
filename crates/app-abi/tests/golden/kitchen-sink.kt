@@ -33,42 +33,13 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.serializer
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
-
-/** The app type `Adjacent`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Adjacent = JsonElement
-
-/** The app type `Either`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Either = JsonElement
-
-/** The app type `Id`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Id = JsonElement
-
-/** The app type `Item`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Item = JsonElement
-
-/** The app type `Marker`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Marker = JsonElement
-
-/** The app type `Page<Item>`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Page_Item = JsonElement
-
-/** The app type `Point`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Point = JsonElement
-
-/** The app type `Status`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Status = JsonElement
-
-/** The app type `Tagged`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Tagged = JsonElement
-
-/** The app type `Tree`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Tree = JsonElement
 
 /**
  * The app's methods.
@@ -168,7 +139,7 @@ class KitchenSinkClient private constructor(
         byId: Map<String, String>,
         unique: List<String>,
         item: Item,
-        page: Page_Item,
+        page: Page<Item>,
         nested: List<Item?>? = null,
         idempotencyKey: String? = null,
     ): List<Item> =
@@ -197,12 +168,12 @@ class KitchenSinkClient private constructor(
                 put("scores", encode(MapSerializer(String.serializer(), UInt.serializer()), scores))
                 put("byId", encode(MapSerializer(String.serializer(), String.serializer()), byId))
                 put("unique", encode(ListSerializer(String.serializer()), unique))
-                put("item", encode(serializer<Item>(), item))
-                put("page", encode(serializer<Page_Item>(), page))
-                put("nested", encode(ListSerializer(serializer<Item>().nullable).nullable, nested))
+                put("item", encode(Item.serializer(), item))
+                put("page", encode(Page.serializer(Item.serializer()), page))
+                put("nested", encode(ListSerializer(Item.serializer().nullable).nullable, nested))
             },
             idempotencyKey,
-            ListSerializer(serializer<Item>()),
+            ListSerializer(Item.serializer()),
         )
 
     /** call `fromPeer`. */
@@ -233,7 +204,7 @@ class KitchenSinkClient private constructor(
             },
             stale,
             minIndex,
-            serializer<Item>().nullable,
+            Item.serializer().nullable,
         )
 
     /** view `secret`; [passkey] approves it (`confirm`). */
@@ -259,24 +230,28 @@ class KitchenSinkClient private constructor(
         point: Point,
         marker: Marker,
         tree: Tree,
+        expr: Expr,
+        choice: Choice<Item>,
         stale: Boolean = false,
         minIndex: Long = 0,
     ): Tree =
         invokeView(
             "shapes",
             buildJsonObject {
-                put("status", encode(serializer<Status>(), status))
-                put("tagged", encode(serializer<Tagged>(), tagged))
-                put("adjacent", encode(serializer<Adjacent>(), adjacent))
-                put("either", encode(serializer<Either>(), either))
-                put("id", encode(serializer<Id>(), id))
-                put("point", encode(serializer<Point>(), point))
-                put("marker", encode(serializer<Marker>(), marker))
-                put("tree", encode(serializer<Tree>(), tree))
+                put("status", encode(Status.serializer(), status))
+                put("tagged", encode(Tagged.serializer(), tagged))
+                put("adjacent", encode(Adjacent.serializer(), adjacent))
+                put("either", encode(Either.serializer(), either))
+                put("id", encode(Id.serializer(), id))
+                put("point", encode(Point.serializer(), point))
+                put("marker", encode(Marker.serializer(), marker))
+                put("tree", encode(Tree.serializer(), tree))
+                put("expr", encode(Expr.serializer(), expr))
+                put("choice", encode(Choice.serializer(Item.serializer()), choice))
             },
             stale,
             minIndex,
-            serializer<Tree>(),
+            Tree.serializer(),
         )
 
     /** call `wipe`; [passkey] approves it (`confirm`). */
@@ -388,7 +363,7 @@ class KitchenSinkClient private constructor(
             ): Event =
                 when (kind) {
                     "ActionFailed" -> ActionFailed(actionId = field(data, "actionId", String.serializer()), method = field(data, "method", String.serializer()), reason = field(data, "reason", String.serializer()))
-                    "Created" -> Created(id = field(data, "id", U64AsString), item = field(data, "item", serializer<Item>()))
+                    "Created" -> Created(id = field(data, "id", U64AsString), item = field(data, "item", Item.serializer()))
                     "Default" -> Default(at = field(data, "at", U64AsString.nullable), blob = field(data, "blob", Base64Url), delta = field(data, "delta", I64AsString), pair = field(data, "pair", Tuple2Serializer(UInt.serializer(), String.serializer())))
                     "Wiped" -> Wiped
                     else -> Unknown(kind, data)
@@ -447,6 +422,598 @@ class KitchenSinkClient private constructor(
                 } catch (e: IllegalArgumentException) {
                     Unknown_(error.appCode, error.fields)
                 }
+        }
+    }
+
+    /** The app type `Adjacent`. */
+    sealed interface Adjacent {
+        /** `Text`. */
+        data class Text(
+            val value: String,
+        ) : Adjacent
+
+        /** `Empty`. */
+        data object Empty : Adjacent
+
+        /** `Pair`. */
+        data class Pair(
+            val v0: UInt,
+            val v1: UInt,
+        ) : Adjacent
+
+        /** `Labeled`. */
+        data class Labeled(
+            val label: String,
+            val at: ULong?,
+        ) : Adjacent
+
+        companion object {
+            /** `Adjacent`'s JSON form. */
+            fun serializer(): KSerializer<Adjacent> = Wire
+
+            private object Wire : KSerializer<Adjacent> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Adjacent,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        when (value) {
+                            is Text -> buildJsonObject {
+                                put("t", JsonPrimitive("Text"))
+                                put("c", encode(String.serializer(), value.value))
+                            }
+                            is Empty -> buildJsonObject {
+                                put("t", JsonPrimitive("Empty"))
+                            }
+                            is Pair -> buildJsonObject {
+                                put("t", JsonPrimitive("Pair"))
+                                put("c", JsonArray(listOf(encode(UInt.serializer(), value.v0), encode(UInt.serializer(), value.v1))))
+                            }
+                            is Labeled -> buildJsonObject {
+                                put("t", JsonPrimitive("Labeled"))
+                                put("c", buildJsonObject {
+                                    put("label", encode(String.serializer(), value.label))
+                                    put("at", encode(U64AsString.nullable, value.at))
+                                })
+                            }
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Adjacent {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val name = tag(data, "t", "Adjacent")
+                    val content = obj(data, "Adjacent")["c"] ?: JsonNull
+                    return when (name) {
+                        "Text" -> Text(decode(String.serializer(), content))
+                        "Empty" -> Empty
+                        "Pair" -> {
+                            val items = items(content, 2, "Adjacent")
+                            Pair(
+                                decode(UInt.serializer(), items[0]),
+                                decode(UInt.serializer(), items[1]),
+                            )
+                        }
+                        "Labeled" -> {
+                            val fields = obj(content, "Adjacent")
+                            Labeled(
+                                label = field(fields, "label", String.serializer()),
+                                at = field(fields, "at", U64AsString.nullable),
+                            )
+                        }
+                        else -> throw SerializationException("Adjacent: unknown variant $name")
+                    }
+                }
+            }
+        }
+    }
+
+    /** The app type `Choice`. */
+    sealed interface Choice<out T> {
+        /** `one`. */
+        data class One<T>(
+            val value: T,
+        ) : Choice<T>
+
+        /** `zero`. */
+        data object Zero : Choice<Nothing>
+
+        companion object {
+            /** `Choice`'s JSON form, each parameter's by its serializer. */
+            fun <T> serializer(tSerializer: KSerializer<T>): KSerializer<Choice<T>> = Wire(tSerializer)
+
+            private class Wire<T>(
+                private val tSerializer: KSerializer<T>,
+            ) : KSerializer<Choice<T>> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Choice<T>,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        when (value) {
+                            is One -> buildJsonObject {
+                                put("kind", JsonPrimitive("one"))
+                                put("value", encode(tSerializer, value.value))
+                            }
+                            is Zero -> buildJsonObject {
+                                put("kind", JsonPrimitive("zero"))
+                            }
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Choice<T> {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val name = tag(data, "kind", "Choice")
+                    return when (name) {
+                        "one" -> One<T>(value = field(data, "value", tSerializer))
+                        "zero" -> Zero
+                        else -> throw SerializationException("Choice: unknown variant $name")
+                    }
+                }
+            }
+        }
+    }
+
+    /** The app type `Either`. */
+    sealed interface Either {
+        /** `Num`. */
+        data class Num(
+            val value: UInt,
+        ) : Either
+
+        /** `Named`. */
+        data class Named(
+            val name: String,
+        ) : Either
+
+        /** `Pair`. */
+        data class Pair(
+            val v0: UInt,
+            val v1: String,
+        ) : Either
+
+        /** `Blank`. */
+        data object Blank : Either
+
+        companion object {
+            /** `Either`'s JSON form. */
+            fun serializer(): KSerializer<Either> = Wire
+
+            private object Wire : KSerializer<Either> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Either,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        when (value) {
+                            is Num -> encode(UInt.serializer(), value.value)
+                            is Named -> buildJsonObject {
+                                put("name", encode(String.serializer(), value.name))
+                            }
+                            is Pair -> JsonArray(listOf(encode(UInt.serializer(), value.v0), encode(String.serializer(), value.v1)))
+                            is Blank -> JsonNull
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Either {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    return attempt {
+                            Num(decode(UInt.serializer(), data))
+                        }
+                        ?: attempt {
+                            val fields = obj(data, "Either")
+                            Named(name = field(fields, "name", String.serializer()))
+                        }
+                        ?: attempt {
+                            val items = items(data, 2, "Either")
+                            Pair(
+                                decode(UInt.serializer(), items[0]),
+                                decode(String.serializer(), items[1]),
+                            )
+                        }
+                        ?: attempt {
+                            if (data !is JsonNull) throw SerializationException("Either: expected null")
+                            Blank
+                        }
+                        ?: throw SerializationException("Either: no variant fits")
+                }
+            }
+        }
+    }
+
+    /** The app type `Expr`. */
+    sealed interface Expr {
+        /** `Lit`. */
+        data class Lit(
+            val value: Long,
+        ) : Expr
+
+        /** `Neg`. */
+        data class Neg(
+            val value: Expr,
+        ) : Expr
+
+        /** `Add`. */
+        data class Add(
+            val v0: Expr,
+            val v1: Expr,
+        ) : Expr
+
+        companion object {
+            /** `Expr`'s JSON form. */
+            fun serializer(): KSerializer<Expr> = Wire
+
+            private object Wire : KSerializer<Expr> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Expr,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        when (value) {
+                            is Lit -> JsonObject(mapOf("Lit" to encode(I64AsString, value.value)))
+                            is Neg -> JsonObject(mapOf("Neg" to encode(Expr.serializer(), value.value)))
+                            is Add -> JsonObject(mapOf("Add" to JsonArray(listOf(encode(Expr.serializer(), value.v0), encode(Expr.serializer(), value.v1)))))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Expr {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val (name, content) = external(data, "Expr")
+                    return when (name) {
+                        "Lit" -> Lit(decode(I64AsString, content))
+                        "Neg" -> Neg(decode(Expr.serializer(), content))
+                        "Add" -> {
+                            val items = items(content, 2, "Expr")
+                            Add(
+                                decode(Expr.serializer(), items[0]),
+                                decode(Expr.serializer(), items[1]),
+                            )
+                        }
+                        else -> throw SerializationException("Expr: unknown variant $name")
+                    }
+                }
+            }
+        }
+    }
+
+    /** The app type `Id`. */
+    data class Id(
+        val value: String,
+    ) {
+        companion object {
+            /** `Id`'s JSON form. */
+            fun serializer(): KSerializer<Id> = Wire
+
+            private object Wire : KSerializer<Id> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Id,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        encode(String.serializer(), value.value),
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Id {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    return Id(decode(String.serializer(), data))
+                }
+            }
+        }
+    }
+
+    /** The app type `Item`. */
+    data class Item(
+        val id: ULong,
+        val title: String,
+        val tags: List<String>,
+        val note: String? = null,
+        val status: Status,
+    ) {
+        companion object {
+            /** `Item`'s JSON form. */
+            fun serializer(): KSerializer<Item> = Wire
+
+            private object Wire : KSerializer<Item> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Item,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        buildJsonObject {
+                            put("id", encode(U64AsString, value.id))
+                            put("title", encode(String.serializer(), value.title))
+                            put("tags", encode(ListSerializer(String.serializer()), value.tags))
+                            if (value.note != null) put("note", encode(String.serializer().nullable, value.note))
+                            put("status", encode(Status.serializer(), value.status))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Item {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val fields = obj(data, "Item")
+                    return Item(
+                        id = field(fields, "id", U64AsString),
+                        title = field(fields, "title", String.serializer()),
+                        tags = field(fields, "tags", ListSerializer(String.serializer())),
+                        note = field(fields, "note", String.serializer().nullable),
+                        status = field(fields, "status", Status.serializer()),
+                    )
+                }
+            }
+        }
+    }
+
+    /** The app type `Marker`. */
+    data object Marker {
+        /** `Marker`'s JSON form. */
+        fun serializer(): KSerializer<Marker> = Wire
+
+        private object Wire : KSerializer<Marker> {
+            override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+            override fun serialize(
+                encoder: Encoder,
+                value: Marker,
+            ) {
+                (encoder as JsonEncoder).encodeJsonElement(
+                    JsonNull,
+                )
+            }
+
+            override fun deserialize(decoder: Decoder): Marker {
+                val data = (decoder as JsonDecoder).decodeJsonElement()
+                if (data !is JsonNull) throw SerializationException("Marker: expected null")
+                return Marker
+            }
+        }
+    }
+
+    /** The app type `Page`. */
+    data class Page<T>(
+        val items: List<T>,
+        val next: String? = null,
+    ) {
+        companion object {
+            /** `Page`'s JSON form, each parameter's by its serializer. */
+            fun <T> serializer(tSerializer: KSerializer<T>): KSerializer<Page<T>> = Wire(tSerializer)
+
+            private class Wire<T>(
+                private val tSerializer: KSerializer<T>,
+            ) : KSerializer<Page<T>> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Page<T>,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        buildJsonObject {
+                            put("items", encode(ListSerializer(tSerializer), value.items))
+                            put("next", encode(String.serializer().nullable, value.next))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Page<T> {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val fields = obj(data, "Page")
+                    return Page<T>(
+                        items = field(fields, "items", ListSerializer(tSerializer)),
+                        next = field(fields, "next", String.serializer().nullable),
+                    )
+                }
+            }
+        }
+    }
+
+    /** The app type `Point`. */
+    data class Point(
+        val v0: Double,
+        val v1: Double,
+    ) {
+        companion object {
+            /** `Point`'s JSON form. */
+            fun serializer(): KSerializer<Point> = Wire
+
+            private object Wire : KSerializer<Point> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Point,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        JsonArray(listOf(encode(Double.serializer(), value.v0), encode(Double.serializer(), value.v1))),
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Point {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val items = items(data, 2, "Point")
+                    return Point(
+                        decode(Double.serializer(), items[0]),
+                        decode(Double.serializer(), items[1]),
+                    )
+                }
+            }
+        }
+    }
+
+    /** The app type `Status`. */
+    sealed interface Status {
+        /** `Open`. */
+        data object Open : Status
+
+        /** `Closed`. */
+        data class Closed(
+            val at: ULong,
+        ) : Status
+
+        /** `Moved`. */
+        data class Moved(
+            val value: String,
+        ) : Status
+
+        /** `Span`. */
+        data class Span(
+            val v0: UInt,
+            val v1: UInt,
+        ) : Status
+
+        companion object {
+            /** `Status`'s JSON form. */
+            fun serializer(): KSerializer<Status> = Wire
+
+            private object Wire : KSerializer<Status> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Status,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        when (value) {
+                            is Open -> JsonPrimitive("Open")
+                            is Closed -> JsonObject(mapOf("Closed" to buildJsonObject {
+                                put("at", encode(U64AsString, value.at))
+                            }))
+                            is Moved -> JsonObject(mapOf("Moved" to encode(String.serializer(), value.value)))
+                            is Span -> JsonObject(mapOf("Span" to JsonArray(listOf(encode(UInt.serializer(), value.v0), encode(UInt.serializer(), value.v1)))))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Status {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val (name, content) = external(data, "Status")
+                    return when (name) {
+                        "Open" -> Open
+                        "Closed" -> {
+                            val fields = obj(content, "Status")
+                            Closed(at = field(fields, "at", U64AsString))
+                        }
+                        "Moved" -> Moved(decode(String.serializer(), content))
+                        "Span" -> {
+                            val items = items(content, 2, "Status")
+                            Span(
+                                decode(UInt.serializer(), items[0]),
+                                decode(UInt.serializer(), items[1]),
+                            )
+                        }
+                        else -> throw SerializationException("Status: unknown variant $name")
+                    }
+                }
+            }
+        }
+    }
+
+    /** The app type `Tagged`. */
+    sealed interface Tagged {
+        /** `draft`. */
+        data object Draft : Tagged
+
+        /** `published`. */
+        data class Published(
+            val at: ULong,
+        ) : Tagged
+
+        /** `wrapped`. */
+        data class Wrapped(
+            val value: Item,
+        ) : Tagged
+
+        companion object {
+            /** `Tagged`'s JSON form. */
+            fun serializer(): KSerializer<Tagged> = Wire
+
+            private object Wire : KSerializer<Tagged> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Tagged,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        when (value) {
+                            is Draft -> buildJsonObject {
+                                put("type", JsonPrimitive("draft"))
+                            }
+                            is Published -> buildJsonObject {
+                                put("type", JsonPrimitive("published"))
+                                put("at", encode(U64AsString, value.at))
+                            }
+                            is Wrapped -> tagged("type", "wrapped", encode(Item.serializer(), value.value), "Tagged")
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Tagged {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val name = tag(data, "type", "Tagged")
+                    return when (name) {
+                        "draft" -> Draft
+                        "published" -> Published(at = field(data, "at", U64AsString))
+                        "wrapped" -> Wrapped(decode(Item.serializer(), data))
+                        else -> throw SerializationException("Tagged: unknown variant $name")
+                    }
+                }
+            }
+        }
+    }
+
+    /** The app type `Tree`. */
+    data class Tree(
+        val value: UInt,
+        val children: List<Tree>,
+        val parent: Tree? = null,
+    ) {
+        companion object {
+            /** `Tree`'s JSON form. */
+            fun serializer(): KSerializer<Tree> = Wire
+
+            private object Wire : KSerializer<Tree> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Tree,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        buildJsonObject {
+                            put("value", encode(UInt.serializer(), value.value))
+                            put("children", encode(ListSerializer(Tree.serializer()), value.children))
+                            if (value.parent != null) put("parent", encode(Tree.serializer().nullable, value.parent))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Tree {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val fields = obj(data, "Tree")
+                    return Tree(
+                        value = field(fields, "value", UInt.serializer()),
+                        children = field(fields, "children", ListSerializer(Tree.serializer())),
+                        parent = field(fields, "parent", Tree.serializer().nullable),
+                    )
+                }
+            }
         }
     }
 
@@ -540,5 +1107,65 @@ class KitchenSinkClient private constructor(
             name: String,
             serializer: KSerializer<T>,
         ): T = json.decodeFromJsonElement(serializer, (data as? JsonObject)?.get(name) ?: JsonNull)
+
+        /** [block]'s value, or `null` when it does not read (an untagged variant that does not fit). */
+        private fun <T> attempt(block: () -> T): T? =
+            try {
+                block()
+            } catch (e: IllegalArgumentException) {
+                null
+            }
+
+        private fun <T> decode(
+            serializer: KSerializer<T>,
+            data: JsonElement,
+        ): T = json.decodeFromJsonElement(serializer, data)
+
+        /** An externally tagged variant's name and data: `"Name"`, or `{ "Name": data }`. */
+        private fun external(
+            data: JsonElement,
+            what: String,
+        ): Pair<String, JsonElement> =
+            when {
+                data is JsonPrimitive && data.isString -> data.content to JsonNull
+                data is JsonObject && data.size == 1 -> data.entries.first().let { it.key to it.value }
+                else -> throw SerializationException("$what: expected a variant name or an object with one key")
+            }
+
+        /** [data] as an array of exactly [n] items. */
+        private fun items(
+            data: JsonElement,
+            n: Int,
+            what: String,
+        ): JsonArray {
+            val items = data as? JsonArray ?: throw SerializationException("$what: expected an array")
+            if (items.size != n) throw SerializationException("$what: expected $n items, got ${items.size}")
+            return items
+        }
+
+        /** [data] as an object. */
+        private fun obj(
+            data: JsonElement,
+            what: String,
+        ): JsonObject = data as? JsonObject ?: throw SerializationException("$what: expected an object")
+
+        /** The variant name at [key] of a tagged enum's object. */
+        private fun tag(
+            data: JsonElement,
+            key: String,
+            what: String,
+        ): String {
+            val tag = obj(data, what)[key] as? JsonPrimitive
+            if (tag == null || !tag.isString) throw SerializationException("$what: no `$key`")
+            return tag.content
+        }
+
+        /** An internally tagged variant: [data]'s fields with the tag [key] = [name] first. */
+        private fun tagged(
+            key: String,
+            name: String,
+            data: JsonElement,
+            what: String,
+        ): JsonObject = JsonObject(mapOf(key to JsonPrimitive(name)) + obj(data, what))
     }
 }

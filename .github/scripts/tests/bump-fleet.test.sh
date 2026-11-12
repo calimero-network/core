@@ -770,6 +770,69 @@ expect_exit 0 "a tag that cannot be resolved still lets the rest of the bump thr
 expect_file "$R" "CORE_REF=$OLDREF" "  ...but CORE_REF is left as it was"
 expect_file "$UNCLAIMED" 'apps/chat/mobile/e2e/run-relay.sh' "  ...and it is named in the report"
 
+# The apps repository pins the client generator (mero-app-build) in
+# scripts/install-mero-app-build.sh and commits the clients it writes; the bump
+# moves the pin and reruns every package's `codegen` with the release's binary.
+# Stubs stand in for both: pnpm runs the one app's codegen, and the generator
+# writes what version it is into the client.
+mkgenerator() {
+  local d="$1" tag="$2"
+  printf '[workspace.dependencies]\ncalimero-sdk = { git = "https://github.com/calimero-network/core", tag = "0.11.0-rc.1" }\n\n[workspace.metadata.mero-apps]\nmin-runtime-version = "0.11.0-rc.1"\nmerod-image = "ghcr.io/calimero-network/merod:0.11.0-rc.1"\n' \
+    > "$d/Cargo.toml"
+  mkdir -p "$d/apps/kv/logic" "$d/apps/kv/app/src/generated" "$d/scripts"
+  printf '[package.metadata.calimero]\nmin-runtime-version = "0.11.0-rc.1"\n' > "$d/apps/kv/logic/Cargo.toml"
+  printf '#!/usr/bin/env bash\n# installs calimero-network/core mero-app-build at the tag below\nset -euo pipefail\n\nTAG="${MERO_APP_BUILD_TAG:-%s}"\nROOT="${MERO_APP_BUILD_ROOT:-$HOME/.cargo}"\n' "$tag" \
+    > "$d/scripts/install-mero-app-build.sh"
+  printf 'written by 0.11.0-rc.1\n' > "$d/apps/kv/app/src/generated/client.ts"
+}
+STUBS="$ROOT/stubs"; mkdir -p "$STUBS/pnpm" "$STUBS/gen" "$STUBS/old-gen"
+printf '#!/usr/bin/env bash\n[ "$*" = "-r --if-present run codegen" ] || exit 9\ncd apps/kv/app && mero-app-build codegen\n' > "$STUBS/pnpm/pnpm"
+printf '#!/usr/bin/env bash\ncase "$1" in\n  --version) echo "mero-app-build %s" ;;\n  codegen) echo "written by %s" > src/generated/client.ts ;;\nesac\n' 0.11.0-rc.2 0.11.0-rc.2 \
+  > "$STUBS/gen/mero-app-build"
+printf '#!/usr/bin/env bash\necho "mero-app-build 0.11.0-rc.1"\n' > "$STUBS/old-gen/mero-app-build"
+chmod +x "$STUBS/pnpm/pnpm" "$STUBS/gen/mero-app-build" "$STUBS/old-gen/mero-app-build"
+
+D=$(mkfixture generator); mkgenerator "$D" 0.11.0-rc.1; commit "$D"
+G="$D/scripts/install-mero-app-build.sh"
+C="$D/apps/kv/app/src/generated/client.ts"
+CH="$ROOT/changed-generator.txt"
+UNCLAIMED="$ROOT/unclaimed-generator.txt"
+expect_exit 0 "the generator pin moves and the committed clients are regenerated" \
+  env PATH="$STUBS/pnpm:$PATH" MERO_APP_BUILD_BIN="$STUBS/gen/mero-app-build" \
+  CHANGED_FILES_OUT="$CH" UNCLAIMED_OUT="$UNCLAIMED" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$G" 'TAG="${MERO_APP_BUILD_TAG:-0.11.0-rc.2}"' "  the pin is the release"
+expect_file "$C" 'written by 0.11.0-rc.2' "  the client is the release generator's"
+expect_file "$CH" 'scripts/install-mero-app-build.sh' "  the installer is staged with the bump"
+expect_file "$CH" 'apps/kv/app/src/generated/client.ts' "  ...and so is the regenerated client"
+expect_absent "$UNCLAIMED" 'NOT REGENERATED' "  ...and nothing is left to regenerate by hand"
+
+D=$(mkfixture generator-no-codegen); mkgenerator "$D" 0.11.0-rc.1; commit "$D"
+UNCLAIMED="$ROOT/unclaimed-generator-no-codegen.txt"
+expect_exit 0 "--no-codegen still moves the generator pin" \
+  env PATH="$STUBS/pnpm:$PATH" MERO_APP_BUILD_BIN="$STUBS/gen/mero-app-build" UNCLAIMED_OUT="$UNCLAIMED" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock --no-codegen
+expect_file "$D/scripts/install-mero-app-build.sh" ':-0.11.0-rc.2}' "  the pin is the release"
+expect_file "$D/apps/kv/app/src/generated/client.ts" 'written by 0.11.0-rc.1' "  ...the client is left"
+expect_file "$UNCLAIMED" 'pnpm -r --if-present run codegen' "  ...and the report says how to regenerate it"
+
+D=$(mkfixture generator-wrong-binary); mkgenerator "$D" 0.11.0-rc.1; commit "$D"
+UNCLAIMED="$ROOT/unclaimed-generator-wrong.txt"
+expect_exit 0 "a generator that is not the release's is not run" \
+  env PATH="$STUBS/pnpm:$PATH" MERO_APP_BUILD_BIN="$STUBS/old-gen/mero-app-build" UNCLAIMED_OUT="$UNCLAIMED" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$D/apps/kv/app/src/generated/client.ts" 'written by 0.11.0-rc.1' "  ...the client is left"
+expect_file "$UNCLAIMED" 'NOT REGENERATED' "  ...and it is named in the report"
+
+D=$(mkfixture generator-ahead); mkgenerator "$D" 0.11.0-rc.3; commit "$D"
+CH="$ROOT/changed-generator-ahead.txt"
+expect_exit 0 "a generator pin ahead of the release is left where it is" \
+  env PATH="$STUBS/pnpm:$PATH" MERO_APP_BUILD_BIN="$STUBS/gen/mero-app-build" CHANGED_FILES_OUT="$CH" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$D/scripts/install-mero-app-build.sh" ':-0.11.0-rc.3}' "  the pin still runs ahead"
+expect_file "$D/apps/kv/app/src/generated/client.ts" 'written by 0.11.0-rc.1' "  ...and the client is not rewritten"
+expect_absent "$CH" 'install-mero-app-build.sh' "  ...nor staged"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

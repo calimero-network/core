@@ -72,6 +72,7 @@ fn release(package: &str) -> Vec<u8> {
         upgrades: None,
         outbound: Vec::new(),
         services: None,
+        pipelines: Vec::new(),
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();

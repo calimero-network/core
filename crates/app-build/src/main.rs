@@ -23,10 +23,15 @@ fn write(out: &Path, bytes: &[u8]) -> EyreResult<()> {
 
 fn main() -> EyreResult<ExitCode> {
     let mut args = env::args().skip(1);
-    let usage = "usage: mero-app-build <crate-dir> [--out <file>] [--compute-out <file>] [--target-dir <dir>]\n       mero-app-build codegen ...\n       mero-app-build abi-diff ...";
+    let usage = "usage: mero-app-build <crate-dir> [--out <file>] [--compute-out <file>] [--target-dir <dir>]\n       mero-app-build codegen ...\n       mero-app-build abi-diff ...\n       mero-app-build --version";
     let first = args.next().ok_or_else(|| eyre::eyre!(usage))?;
     // A crate directory named like a subcommand is passed as `./codegen`.
     match first.as_str() {
+        "--version" | "-V" => {
+            // The release, not `CARGO_PKG_VERSION`: that is the workspace placeholder `0.0.0`.
+            println!("mero-app-build {}", env!("CALIMERO_RELEASE_VERSION"));
+            return Ok(ExitCode::SUCCESS);
+        }
         "codegen" => {
             abi_tools::codegen(args)?;
             return Ok(ExitCode::SUCCESS);

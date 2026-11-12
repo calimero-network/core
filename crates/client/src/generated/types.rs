@@ -1261,6 +1261,40 @@ impl<'de> Deserialize<'de> for AppExecutor {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppComponents {
+    /// `computeOnly`.
+    ComputeOnly,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppComponents {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::ComputeOnly => "computeOnly",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppComponents {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppComponents {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "computeOnly" => Self::ComputeOnly,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppRestoreSource {
     pub name: String,
@@ -1306,6 +1340,8 @@ pub struct App {
     #[serde(rename = "computeBundle")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute_bundle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub components: Option<AppComponents>,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub metadata: Value,
     #[serde(rename = "lastUpgrade")]
@@ -2486,6 +2522,20 @@ pub struct FileInfoResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ExportsExportResponse {
+    pub app: String,
+    pub id: String,
+    pub size: u64,
+    pub sha256: String,
+    pub segments: Vec<String>,
+    pub ephemeral: String,
+    pub wrapped: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct IntentsResponseEventsItem {
     pub kind: String,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
@@ -2599,6 +2649,86 @@ pub struct AppMoveResponse {
     pub added: Vec<String>,
     #[serde(rename = "revokedInvites")]
     pub revoked_invites: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelinesCancelResponse {
+    pub run: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelineReceiptReceiptResponse {
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub receipt: Value,
+    pub node: String,
+    pub signature: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelinesRetryRequestLimitsValue {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuel: Option<u64>,
+    #[serde(rename = "memoryMib")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<u64>,
+    #[serde(rename = "wallSecs")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelinesRetryResponse {
+    pub run: String,
+    #[serde(rename = "retryOf")]
+    pub retry_of: String,
+    #[serde(rename = "worstCase")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_case: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelinesEstimateRunResponseStepsValue {
+    pub runs: String,
+    pub fuel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelinesEstimateRunResponse {
+    pub steps: BTreeMap<String, PipelinesEstimateRunResponseStepsValue>,
+    pub fuel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<String>,
+    #[serde(rename = "priceVersion")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_version: Option<u64>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelinesStartResponse {
+    pub run: String,
+    #[serde(rename = "worstCase")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_case: Option<String>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -2739,6 +2869,38 @@ pub struct AppXcallsResponse {
     pub pending: u64,
     #[serde(rename = "deadLetters")]
     pub dead_letters: Vec<DeadLetter>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelinesValidateResponseErrorsItem {
+    pub path: String,
+    pub code: String,
+    pub message: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PipelinesValidateResponse {
+    pub ok: bool,
+    pub errors: Vec<PipelinesValidateResponseErrorsItem>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub pipeline: Option<Value>,
+    #[serde(rename = "worstCaseFuel")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_case_fuel: Option<String>,
+    #[serde(rename = "worstCaseCost")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worst_case_cost: Option<String>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -4060,6 +4222,50 @@ pub struct OpsPoolsSetRequestPoolsValue {
     pub max_memory_mib: u64,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpsPricesGetResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u64>,
+    #[serde(rename = "fuelPerVcpuSecond")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuel_per_vcpu_second: Option<u64>,
+    #[serde(rename = "vcpuSecond")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcpu_second: Option<u64>,
+    #[serde(rename = "gibSecond")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gib_second: Option<u64>,
+    #[serde(rename = "connectorGib")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connector_gib: Option<u64>,
+    #[serde(rename = "storageGibMonth")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_gib_month: Option<u64>,
+    #[serde(rename = "egressGib")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress_gib: Option<u64>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpsPricesSetRequestTable {
+    pub version: u64,
+    #[serde(rename = "fuelPerVcpuSecond")]
+    pub fuel_per_vcpu_second: u64,
+    #[serde(rename = "vcpuSecond")]
+    pub vcpu_second: u64,
+    #[serde(rename = "gibSecond")]
+    pub gib_second: u64,
+    #[serde(rename = "connectorGib")]
+    pub connector_gib: u64,
+    #[serde(rename = "storageGibMonth")]
+    pub storage_gib_month: u64,
+    #[serde(rename = "egressGib")]
+    pub egress_gib: u64,
+}
+
 /// The limits `POST /ops/quotas` changes, each optional: without `org`, the cluster's (those `GET /ops/quotas` answers, `maxFuelPerDeveloperPerDay` a decimal string); with `org`, one payer's (`maxConcurrentRuns`, `computeFuel` a decimal string, `maxFileBytes`; `null` clears one). `orgs` is ignored. Any other property is refused `400 UNKNOWN_QUOTA`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -4715,6 +4921,21 @@ pub struct PackageInstallResponse {
     #[serde(rename = "signerId")]
     pub signer_id: String,
     pub services: BTreeMap<String, String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PackagePipelinesResponseValue {
+    pub hash: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    #[serde(rename = "worstCaseFuel")]
+    pub worst_case_fuel: Value,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub modules: Value,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub pipeline: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

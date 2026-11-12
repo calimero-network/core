@@ -251,6 +251,82 @@ The sizes and hashes follow the same rule as the single run.
   Hitting the fuel or memory cap ends the run failed with `fuel` or `memory`; nothing is recorded as done and no output is registered.
   The wall cap is a lost attempt (see CA25), because how fast a machine runs is not the app's doing.
 
+## Pipeline runs
+
+A release that registers pipelines (`pipelines` in its manifest, checked at install) can run them in the group of any app made from it, compute-only apps included.
+A pipeline that names `sources`, `sinks`, `publish`, `notify` or an input's `accept`, `maxFileSize`, `format` or `schema` is refused with `NOT_IN_V1`, as are `when`, `runIf`, `uses`, `loops` and `variables`: the engine runs none of them.
+`POST /apps/{app}/pipelines/{name}/runs { inputs, params }` starts one and answers `202 { run }`.
+The node judges the request against the pinned pipeline before logging anything: `NO_SUCH_PIPELINE`, `BAD_INPUTS` (an input unbound, past its `maxItems`, or a file the app does not hold), `BAD_PARAMS` (typed, within `min`, `max` and `enum`, defaults filled), `TOO_MANY_PIPELINE_RUNS` (8 running per app, `429`), `PIPELINES_NEED_ONE_SERVICE` and `409 CLUSTER_NOT_UPGRADED` until every node runs this release.
+The run pins the release's pipeline by hash and its compute component, so an upgrade of the app changes neither a run that started before it.
+A step's work is ordinary compute runs (`RunRecord.pipeline` names the step), so placement, retries, caps, quotas and billing are the run driver's, unchanged.
+Their ids are `<run>.<step>.<index>`, and they have no result method: the step keeps the job's result (at most 64 KiB) and its outputs, which are held until the pipeline run's record is dropped (the last 64 finished runs are kept).
+The leader decides each pending step and logs it as a `pipelineStep` entry (start with its first runs, skipped, upstream failed, cancelled, or failed with a code); apply accepts the first decision for a step, so a leader that changes mid-run never runs a step twice.
+A step starts when every step it needs succeeded; one whose need failed is `upstreamFailed`; the run is `succeeded` when every step succeeded or was skipped, `succeededWithFailures` when besides that a fan-out tolerated failed items, `cancelled` when it was cancelled, else `failed`.
+A step that cannot be built fails with `TOO_MANY_ITEMS`, `TOO_MANY_INPUTS` (past 10,000 files), `ARGS_TOO_LARGE`, `RUN_TOO_LARGE` (one run's arguments and inputs past what one decision may carry), `BAD_REF`, `NO_RESULT`, `BAD_RESULT` or `RESULTS_TOO_LARGE`; a pipeline whose definition cannot be found fails its steps with `PIPELINE_UNAVAILABLE`.
+
+### Fan-out
+
+`forEach: inputs.x` makes one item per file of that input, `forEach: <step>.outputs` one per output file of that step in item order, and `forEach: <step>.results` one per result of that fan-out step (each a JSON value).
+No items skips the step, and more than `maxItems` fails it with `TOO_MANY_ITEMS` before any run starts.
+`batch: b` groups the items in order into runs of at most `b`, so a failed run fails all of its items.
+The runs start in waves: the first decision records how many runs the step will have, and a `more` decision starts the next indices while the step runs, so at most `maxParallel` of its runs are active and never more than the app has room for.
+Run ids are `<run>.<step>.<index>`, so a decision repeated after a change of leader changes nothing.
+The input order of a fan-out run is the step's `inputs` references in the order written, with the run's item files where `item` stands, or first when `item` is not listed.
+A step with no `inputs` gets just its item files.
+In `args`, `item` is the item: a result's JSON value, or a file's id (a list of them when `batch` is above 1).
+`<step>.outputs` and `<step>.results` are always in item order, whatever order the runs ended in.
+`collect: <fan-out step>.outputs` is one run whose inputs are all of that step's outputs in item order, then the step's other `inputs`.
+A step keeps its results only while they total at most 1 MiB (`MAX_STEP_RESULTS_BYTES`); past that it still succeeds, but a step that refers to `<step>.results` fails with `RESULTS_TOO_LARGE`.
+`allowFailures` (a count, or a percentage of the items rounded down) lets the step succeed with `failedItems` recorded and only the successful runs' outputs and results kept; one item over it, the step stops creating runs, cancels its active runs and fails.
+Without it any failed item does that.
+`failFast: true` on the pipeline cancels every other step at the first failed one and ends the run `failed`.
+A step's `pool` places its runs: they take places on that pool's job nodes only, and a run whose pool has no job node waits.
+A step without `pool` is placed by its memory, in the smallest pool that fits.
+A named pool is used only once every node runs this release; until then its runs are placed by memory.
+`GET /apps/{app}/pipeline-runs/{run}` answers the record, `GET /apps/{app}/pipeline-runs` the recent ones, and `POST /apps/{app}/pipeline-runs/{run}/cancel` stops a run.
+Output sizes, hashes and step results are shown only to those who may list the app's files.
+
+### Step cache
+
+A step run whose compute component, method, arguments and input contents equal those of an earlier successful run in the same app reuses that run's outputs and result: it makes no run record, no job and no usage.
+Inputs are compared by the SHA-256 of their plaintext, so the same content under another file id is a hit; those hashes never leave the app.
+The leader makes the key when it builds a run and looks it up before deciding the step; apply checks that the entry and every output are still held and takes the hit as a finished run.
+`cache: false` on a step turns it off for that step.
+Modules are assumed deterministic for equal inputs, so a module whose output varies must be run with `cache: false`.
+Caps are not part of the key: an output that succeeded under some caps is the same under any, which is what lets a retry with raised limits reuse the items that already succeeded.
+The view shows `cached` per step (every run of it was a hit) and `cachedItems`, the items of a fan-out answered from the cache.
+An entry holds its outputs for at most 7 days after it was written or last used and the app keeps at most 4096; the oldest go first, judged by the timestamps of the applied entries, and the outputs then follow normal file retention.
+A start that names a file id the app does not hold answers `410 OUTPUT_EXPIRED`, which cannot tell a file that expired from one that never existed.
+
+### Retries
+
+Below the pipeline a step run is already retried by the run driver: a lost job node, or an attempt that is refused or fails attestation, gets up to three attempts, and the lost ones are unbilled.
+A fuel, memory, trap or app-error failure is final for that run and is never retried automatically.
+`POST /apps/{app}/pipeline-runs/{run}/retry { limits?, maxCost? }` starts a new pipeline run from an ended one: the same pipeline at the same release version, hash and compute component (even if the app upgraded since), the same inputs and params, `retryOf` set, and the given per-step limits replacing the pipeline's own for those fields.
+An override above the method's cap is `400 LIMIT_EXCEEDS_CAP` and a step the pipeline lacks is `400 BAD_LIMITS`; a run that is still running is `409 STILL_RUNNING`.
+Steps and items that succeeded before are step cache hits and cost nothing, so only failed or unfinished work runs again; the cache key leaves caps out for that reason.
+The inputs must still be held: a retry after they were forgotten answers `410 OUTPUT_EXPIRED`.
+
+### Cost cap
+
+`maxCost` (a decimal string of micro-units) on a start caps what the run may owe.
+It needs the operator's price table (`409 NO_PRICE_TABLE` without one) and is priced by it: the node copies the table onto the run, with the pipeline's `worstCase` under it, which the start answers, so apply never reads system state.
+The cap stops admission and does not refuse the plan: a run whose `worstCase` is above `maxCost` still starts.
+Before every `start` or `more` decision the leader counts what the run may owe: the priced usage of its finished runs (never above `runCost` of their caps) plus the worst case of every active run, and starts only the runs that fit.
+When the next run does not fit, the step is failed with `COST_CAP`: the runs already going finish and are paid for, no more start, dependents are `upstreamFailed` and the run ends `failed`.
+Apply judges the same sum again from the record alone and refuses a decision that would pass the cap.
+Cached runs cost nothing.
+The view shows `cost` (`maxCost`, `priceVersion`, `table`, `worstCase`), `costSoFar` and each step's `cost`.
+
+### Validate and estimate
+
+Both are reads: nothing is logged and nothing is stored.
+`POST /pipelines/validate { source, package?, version? }` lists every problem of a pipeline source, each with its `path` and stable `code`.
+Alone it judges the structure; with a release the caller sees (`404` otherwise) it also checks against what installing that release would build: its compute methods as `self`, its module pins resolved as install resolves them, and the cluster's pools.
+A valid answer carries the canonical pipeline, `worstCaseFuel` and, with a price table, `worstCaseCost`.
+`POST /apps/{app}/pipelines/{name}/estimate` answers the runs, fuel and cost per step for the file counts given (ids are only counted, never checked for being held).
+A `forEach` over `inputs.x` makes `ceil(min(count, maxItems) / batch)` runs, and one over a step's outputs keeps `maxItems`; with no counts it is the worst case.
+
 ## Usage and billing
 
 The job node measures CPU seconds, peak memory times wall time (GiB-seconds) and fuel used, and signs them in its report.
@@ -267,6 +343,7 @@ A job node exposes no usage series.
 | Fuel of a run | 10^12 | `MAX_COMPUTE_FUEL` |
 | Arguments of a start | 64 KiB | `MAX_COMPUTE_ARGS_BYTES` |
 | Inputs of a run | 64 files, 2 GiB in all | `MAX_RUN_INPUTS`, `MAX_RUN_INPUT_BYTES` |
+| Inputs of a run a pipeline builds | 10,000 files, 2 GiB in all | `MAX_PIPELINE_RUN_INPUTS`, `MAX_RUN_INPUT_BYTES` |
 | One file (input or output) | 2 GiB | `MAX_FILE_BYTES` |
 | All files written by one compute run | 2 GiB | `MAX_COMPUTE_FILE_BYTES` |
 | All files written by one call | 64 MiB | `MAX_RUN_FILE_BYTES` |

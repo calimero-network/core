@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use calimero_client::types::{
-    OpsOrgUpgradeRequest, OpsPoolsSetRequestPoolsValue, OpsQuotasSetRequest,
-    OpsRegisterNodeRequestRole, OpsUpgradeRequest,
+    OpsOrgUpgradeRequest, OpsPoolsSetRequestPoolsValue, OpsPricesSetRequestTable,
+    OpsQuotasSetRequest, OpsRegisterNodeRequestRole, OpsUpgradeRequest,
 };
 use calimero_client::OperatorSigner;
 use clap::{Subcommand, ValueEnum};
@@ -97,6 +97,13 @@ pub enum OpsCmd {
     /// Set the compute pools, JSON `{ name: { runsPerNode, maxMemoryMib } }`.
     SetPools {
         pools: String,
+    },
+    /// The operator's price table, `{}` until one is set.
+    Prices,
+    /// Set the price table, JSON `{ version, fuelPerVcpuSecond, vcpuSecond, gibSecond,
+    /// connectorGib, storageGibMonth, egressGib }`; the version must be the current one plus one.
+    SetPrices {
+        table: String,
     },
     Quotas,
     /// Replace the quotas with this JSON.
@@ -243,6 +250,11 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             let pools: BTreeMap<String, OpsPoolsSetRequestPoolsValue> =
                 serde_json::from_value(json_arg(&pools)?)?;
             decided(ops.pools_set(pools, operator).await)?
+        }
+        OpsCmd::Prices => to_json(&ops.prices_get().await?)?,
+        OpsCmd::SetPrices { table } => {
+            let table: OpsPricesSetRequestTable = serde_json::from_value(json_arg(&table)?)?;
+            decided(ops.prices_set(table, operator).await)?
         }
         OpsCmd::Quotas => to_json(&ops.quotas_get().await?)?,
         OpsCmd::SetQuotas { quotas } => {
