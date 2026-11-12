@@ -2,7 +2,23 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.19] - 2026-11-12
+
 ### Added
+
+- **Pipelines on job nodes** (#4900). A package can ship only a compute
+  component and declare pipelines (`pipelines/*.yaml`, a
+  DAG of compute steps over sealed files), compiled and checked at install. Runs
+  start with `POST /apps/{app}/pipelines/{name}/runs` (owner or org members, an
+  optional `maxCost`) and are planned by the app's group: fan-out (`batch`,
+  `collect`, `allowFailures`, `failFast`), a step cache, other packages' modules
+  and named pools. Read runs with `GET .../pipeline-runs`, `/events` (SSE,
+  metadata only) and a signed `/receipt`; retry with `POST .../retry`; export an
+  output with `POST /apps/{app}/files/{id}/export` (its data key re-wrapped to the
+  requester's key); plan with `POST /pipelines/validate` and `.../estimate`. The
+  operator sets prices with `GET`/`POST /ops/prices`. New log entries are gated by
+  the cluster version (since 1.0.0-rc.19); entries and snapshots written before read unchanged.
+  meroctl gains `ops prices`, `ops set-prices` and `app pipelines`.
 
 - **Generated TypeScript clients answer a call's log index and events, run over a
   call-only transport, and type `init`'s arguments** (`calimero-app-abi`).
@@ -102,6 +118,24 @@
   `start_recovery`, `verify_app_cluster`, `upload_file`, `events`,
   `presence_stream`) are unchanged.
 ### Security
+
+- **An app is judged by the release it runs** (#4935). Upgrade authority,
+  publisher and release approvals were read from the bundle record, which keeps
+  the first release recorded as shipping a WASM hash, so an app whose WASM another
+  release also shipped could be judged by that release. They now follow the
+  app's own release (`SystemState::governing_release`). A release whose service
+  or compute WASM already ships in another package signed by a different key is
+  refused (`409 SHIPS_IN_OTHER_PACKAGE`); one signer may reuse its WASM across its
+  own packages. The rule holds from an `AttributeByRelease` entry the first system
+  leader writes (the `attributeByRelease` feature, since 1.0.0-rc.19); earlier
+  entries replay as logged.
+- **Hardening** (#4942). A package signed with the development signer is refused
+  outside `--dev` (`403 DEV_SIGNED_PACKAGE`). A read-only caller's synchronous
+  cross-app call is refused (a view is still allowed). An empty operator token
+  never authenticates, and merod refuses an empty `--ops-token` or an
+  `--ops-token-sha256` of the empty string. meroctl's and merod's secret files are
+  rewritten owner-only. `verify_evidence` refuses debug TDs, as
+  `verify_attestation` does. `/internal/usage` answers identified peers only.
 
 - **Receipt-key quotes bind the cluster and node.** A `purpose=receipts`
   quote's report data is now `nonce || SHA-256("calimero.tee-attest.receipt-key.v3"
