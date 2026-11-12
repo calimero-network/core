@@ -21,7 +21,18 @@ meroctl account api-key create --label ci --upgrades my-app --ttl-secs 7776000
 # { "keyId": "…", "key": "cal_…" }   shown once: store it as a CI secret
 ```
 
-From JavaScript: `client.createApiKey({ label: 'ci', upgrades: { app }, ttlSecs }, passkey)`.
+From JavaScript:
+
+```ts
+import { browserPasskey, passkeyConfirm } from '@calimero-network/mero-js';
+
+const { key } = await client.auth.apikeyCreate(
+  { label: 'ci', upgrades: { app }, ttlSecs: 7776000 },
+  { confirm: passkeyConfirm(browserPasskey()) },
+);
+```
+
+
 The key is bound to the app, the package the app runs (or `--package`), and
 that package's pinned signer, all of which the passkey approves. It takes no
 other scope.
@@ -36,7 +47,14 @@ export CALIMERO_API_KEY=cal_…
 meroctl context update <app-id> --version 1.4.0
 ```
 
-or `ci.useApiKey(key); await ci.upgradeApp(app, { version: '1.4.0' })`. The
+or, from a Node script:
+
+```ts
+ci.useApiKey(process.env.CALIMERO_API_KEY!);
+await ci.apps.upgrade({ app, version: '1.4.0' });
+```
+
+The
 node installs the release from the registry if it does not have it yet
 (verifying its signature and the pinned signer), then upgrades.
 
@@ -55,7 +73,7 @@ Only push signed releases of that package to that app:
 
 ## Revoking and auditing
 
-`meroctl account api-key revoke <key-id>` (or `revokeApiKey`), approved with
+`meroctl account api-key revoke <key-id>` (or `client.auth.apikeyRevoke({ key })`), approved with
 a passkey, stops it on
 every node at once; it also ends at its TTL (at most one year: prefer a short
 one and rotate). Each upgrade it makes is recorded on the app's `lastUpgrade`

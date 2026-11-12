@@ -58,9 +58,9 @@ node refuses its bundles and answers `410 UNSUPPORTED_ENGINE` for an app it left
 
 - [build-utils](build-utils/AGENTS.md) (`calimero-build-utils`) - `build.rs` helpers: release version, git and rustc metadata.
 - [git-hooks](git-hooks/AGENTS.md) (`calimero-git-hooks`) - installs `.githooks/pre-commit` on any build.
-- `utils/fs` (`calimero-utils-fs`) - writing an owner-only secret file on Unix and Windows; used by `tools/mero-sign`.
+- `utils/fs` (`calimero-utils-fs`) - writing an owner-only secret file on Unix and Windows; used by `merod`, `meroctl` and `tools/mero-sign`.
 
-Tools (`mero-sign`, `mero-compute`, `search-bench`) are under [`../tools`](../tools/AGENTS.md).
+Tools (`mero-sign`, `mero-compute`, `client-gen`, `search-bench`) are under [`../tools`](../tools/AGENTS.md).
 
 ## Removed crates
 

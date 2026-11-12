@@ -8,6 +8,7 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import ContribCrateLayers from '../../../components/diagrams/ContribCrateLayers.astro';
 
 This page orients you in the workspace: the two binaries, what is
 inside a node, and the path a call takes. The full crate list is in the
@@ -22,23 +23,37 @@ inside a node, and the path a call takes. The full crate list is in the
 
 Everything a node does is in `calimero-node` (`crates/node`).
 
+## The crates in layers
+
+<ContribCrateLayers />
+
+Each band depends only on the bands below it (read from each crate's
+`[dependencies]`). The node links everything from the engine down; the SDK
+crates (`calimero-sdk`, `calimero-sdk-macros`, `calimero-app-sdk`) are built into
+an app's component for `wasm32-wasip2` and never linked by `merod`; the app and
+the node meet only at the `calimero:app` WIT world (`calimero-app-wit`). The
+[crate guide](/contribute/crate-guide/) says what each one is.
+
 ## Inside a node
 
 | Part | Where | Does |
 | --- | --- | --- |
 | Log engine | `calimero-log` | Multi-group Raft (openraft) over one sealed RocksDB per node: logs, votes, state, blobs and snapshots. |
-| System group | `node/src/system.rs` (group 1), commands by area in `system/<area>.rs` | The fleet, app directory, packages and bundle hashes, accounts, passkeys, API keys, refresh tokens, session keys, organizations, teams, invites, quotas, governance. Commands carry their actor and are authorized in `apply`, so the log decides. Kept in memory, checkpointed with snapshots. |
-| App groups | `node/src/app.rs` | One Raft group per app instance on its replicas. State lives on disk as hidden rows of the group; only a small head is in memory. |
-| Engine | `node/component.rs` over `calimero-app-engine-wasmtime` | Run a call's component on the leader against the applied state and return `{ result, diff, events }`. |
-| Node | `node/src/node.rs`, `membership.rs` | Routing to leaders, placement, system voter promotion, reconciling hosted groups with the directory, xcalls and timers, blob replication, backups. |
-| API | `node/src/api.rs`, handlers by area in `api/<area>.rs` | The HTTP routes (`router`, merging each area's `routes()`): `/auth`, `/packages`, `/bundles`, `/apps`, `/orgs`, `/invites`, `/ops`, `/internal`. |
+| System group | `crates/node/src/system.rs` (group 1), commands by area in `system/<area>.rs` | The fleet, app directory, packages and bundle hashes, accounts, passkeys, API keys, refresh tokens, session keys, organizations, teams, invites, quotas, governance. Commands carry their actor and are authorized in `apply`, so the log decides. Kept in memory, checkpointed with snapshots. |
+| App groups | `crates/node/src/app.rs`, `component.rs` | One Raft group per app instance on its replicas. State lives on disk as hidden rows of the group; only a small head is in memory. |
+| Engine | `crates/node/src/node/component.rs` over `calimero-app-engine-wasmtime` and `calimero-app-host` | Run a call's component on the leader against the applied state and return `{ result, diff, events }`. |
+| Node | `crates/node/src/node.rs`, `membership.rs`, `placement.rs` | Routing to leaders, placement, system voter promotion, reconciling hosted groups with the directory, xcalls and timers, blob replication, backups. |
+| API | `crates/node/src/api.rs`, handlers by area in `api/<area>.rs` | The HTTP routes (`router`, merging each area's `routes()`): `/auth`, `/packages`, `/bundles`, `/apps`, `/orgs`, `/invites`, `/deployments`, `/deployers`, `/pipelines`, `/package-origins`, `/publishers`, `/releases`, `/sign-up`, `/consent`, `/recover`, `/ops`, `/internal` (peers only); the document is `docs/public/openapi.json`. |
 | Sealed transport | `calimero-sealed` | Wraps the router from outside; opens sealed requests and routes them afresh. |
 | Identity | `calimero-identity` | WebAuthn verification, session tokens, API keys, confirm challenges. |
 | Attestation | `calimero-tee-attestation`, `calimero-client::attest`, `calimero-tee-release` | Quote generation, and the one verification clients and peers share. |
-| Packages | `node/src/packages.rs`, `calimero-bundle`, `calimero-app-downloader` | Signed `.mpk` verification and registry fetches. |
+| Packages | `crates/node/src/packages.rs`, `calimero-bundle`, `calimero-app-downloader` | Signed `.mpk` verification and registry fetches. |
+| Compute and pipelines | `crates/node/src/component/runs.rs`, `component/pipelines.rs`, `node/component/compute.rs`, `job_node.rs`, `calimero-pipeline` | Compute runs queued in the system group and run on job nodes (`merod run --job-node`) over sealed files; pipelines compiled at install and driven by the app's leader. |
+| Consent page | `crates/node/src/consent_page.rs` | The node's own page where a person approves what an app asks (releases, upgrades, outbound, organizations). |
+| Backups and recovery | `crates/node/src/backup.rs`, `recovery_disk.rs`, `node/restore.rs` | Sealed snapshot backups, restore and founding again, and the recovery disk (`--recovery-dir`) sealed to each holder's backup key. |
 | Outbound | `calimero-outbound` | The gated HTTPS client a run may use. |
-| Search, presence, frontends | `services.rs`, `presence.rs`, `app_host.rs`, `calimero-search` | Derived in-memory search indexes, ephemeral presence, app frontends on their own origins. |
-| Storage key | `node/src/kms.rs`, `calimero-kms-client` | K_r from mero-kms. |
+| Search, presence, frontends | `crates/node/src/component/search.rs`, `presence.rs`, `app_host.rs`, `calimero-search` | Derived in-memory search indexes, ephemeral presence, app frontends on their own origins. |
+| Storage key | `crates/node/src/kms.rs`, `calimero-kms-client` | K_r from mero-kms. |
 
 ## The path of a call
 
@@ -58,7 +73,7 @@ Everything a node does is in `calimero-node` (`crates/node`).
     { from: 0, to: 1, label: 'sealed POST /apps/{app}/intents' },
     { from: 1, to: 1, label: 'open envelope, principal, gate (fresh system read)' },
     { from: 1, to: 2, label: 'forward over a sealed peer channel' },
-    { from: 2, to: 2, label: 'Executor runs WASM over an overlay' },
+    { from: 2, to: 2, label: 'runs the component on wasmtime' },
     { from: 2, to: 3, label: 'append { call, outcome { result, diff, events } }' },
     { from: 3, to: 3, label: 'apply the diff (no re-execution)' },
     { from: 2, to: 1, label: 'committed result', dashed: true },
@@ -90,6 +105,6 @@ deletes it.
 
 <Aside type="note">
   This is the map, not the territory. Read `crates/node/AGENTS.md` for the
-  node's full mental model, and each crate's `src/lib.rs` docs before relying on
-  a boundary.
+  node's full mental model, and each crate's `src/lib.rs` docs (`crates/<crate>/src/lib.rs`)
+  before relying on a boundary.
 </Aside>

@@ -24,8 +24,10 @@ of one a node's data still holds; such an app can still be listed and deleted.
   `{ version }`, and delete with `DELETE /apps/{app}`. Raw WASM uploads
   (`POST /bundles`) are for development clusters only too.
 - **Instances.** An app instance (what `meroctl` calls a *context*) is created with
-  `POST /apps { name, bundle, initArgs, org?, access? }`.
-  `initArgs` (JSON) is what `#[app::init]` receives; a failed init answers
+  `POST /apps { name, bundle, initArgs, org?, access? }` (or `{ name, package,
+  version }`). Every instance is in an organization: naming none puts it in the
+  creator's personal organization, made at sign-up (`meroctl context create`
+  without `--namespace`). `initArgs` (JSON) is what `#[app::init]` receives; a failed init answers
   `422 INIT_FAILED` instead of leaving a dead instance.
 - **Identity.** `env::caller()` is the caller: an account, an API key (with its
   account), another app, or the system. There are no devices: each passkey on an
@@ -69,8 +71,8 @@ of one a node's data still holds; such an app can still be listed and deleted.
   cluster's deployment gave outbound approvals (its governance, which
   `verify_app_cluster` reports). By the owner: `POST /orgs/{org}/outbound`
   (your own apps': your personal organization's) `{ package, prefixes: "manifest" |
-  [...], replace }`, with a passkey assertion (`approve_outbound` in the Rust
-  client). By the operator: `POST /ops/outbound`. Until then
+  [...], replace }`, with a passkey assertion (`client.orgs().outbound_approval(..)` in the
+  Rust client, `client.orgs.outboundApproval(..)` in mero-js). By the operator: `POST /ops/outbound`. Until then
   the request is refused with `NotApproved` (or `AwaitingApproval` for a prefix
   a later release added), which the app can show. Secrets the operator holds
   (`{{secret:NAME}}`) are filled in by the node and redacted from the answer.

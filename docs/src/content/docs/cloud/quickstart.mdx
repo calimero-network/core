@@ -1,9 +1,39 @@
 ---
 title: Quickstart
-description: Run a local cluster, deploy an app, call it from the CLI, JavaScript and Python.
+description: Run a local cluster, sign up, deploy an app into your personal organization and call it from the CLI, JavaScript and Python.
 sidebar:
   order: 2
 ---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+From nothing to a running app: a local cluster, an account (which comes with
+its own organization), an app instance in it, and calls from the terminal and
+from code.
+
+<SeqDiagram
+  id="d-start-first-app"
+  title="From sign-up to a running app"
+  lanes={[
+    { label: 'You (meroctl / client)', color: '#f0883e' },
+    { label: 'Any node', color: '#58a6ff' },
+    { label: 'System group', color: '#a5ff11' },
+    { label: 'App group (3 replicas)', color: '#a371f7' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'GET /attestation: verify the quote, open the sealed channel' },
+    { from: 0, to: 1, label: 'sign up with a passkey (register, then confirm)' },
+    { from: 1, to: 2, label: 'CreateAccount + your personal organization, one entry' },
+    { from: 0, to: 1, label: 'upload the bundle (dev) or install PACKAGE@VERSION' },
+    { from: 1, to: 2, label: 'record the bundle hash (bytes in every blob store)' },
+    { from: 0, to: 1, label: 'POST /apps { name, bundle } (no org named)' },
+    { from: 1, to: 2, label: 'CreateApp in your personal organization, placed on 3 nodes' },
+    { from: 2, to: 3, label: 'replicas form the app group; init runs', dashed: true },
+    { from: 0, to: 1, label: 'call set / view get' },
+    { from: 1, to: 3, label: 'forwarded to the app leader, appended, applied' },
+    { from: 1, to: 0, label: 'result + signed receipt', dashed: true, color: '#3fb950' },
+  ]}
+/>
 
 ## 1. A local cluster
 
@@ -22,7 +52,7 @@ On macOS, run a node in Docker instead
 ([Install](/operate/install/#first-run-on-macos-a-node-in-docker)) and use its
 URL below.
 
-## 2. Install, create and call from the terminal
+## 2. Sign up, deploy and call from the terminal
 
 ```bash
 cargo install --path crates/meroctl
@@ -30,52 +60,95 @@ cargo install --path crates/meroctl
 # for this node only, so it cannot carry over to a real cluster.
 meroctl node add local http://127.0.0.1:2501/ --allow-mock
 
+# A new passkey file signs up: an account and its personal organization.
 meroctl login --dev-passkey ./dev-passkey.json --name ada
-meroctl app install --path kv_store.wasm   # a dev bundle; a signed .mpk installs a package
-meroctl context create --bundle <hash> --name kv --alias kv
+meroctl whoami            # orgs: [{ "name": "Personal", "personal": true, ... }]
+
+# Install the bundle and create an instance; naming no organization puts it in
+# your personal one.
+meroctl context create --path kv_store.wasm --name kv --alias kv
 meroctl call --context kv set --args '{"key":"a","value":"1"}'
 meroctl call --context kv get --args '{"key":"a"}' --view
-meroctl context watch kv
+meroctl context watch kv --limit 1        # the committed events, as JSON lines
+
+# A read-only API key for a script, approved with your passkey.
 meroctl account api-key create --context kv --read-only --dev-passkey ./dev-passkey.json
+```
+
+To share an app, create it in an organization of its own and invite people:
+
+```bash
+meroctl namespace create Acme                          # answers { "orgId": ... }
+meroctl context create --path kv_store.wasm --name team-kv --namespace <org-id>
+meroctl namespace invite <org-id> --role member --uses 1 --dev-passkey ./dev-passkey.json
+# the invitee, signed in on their own: meroctl namespace join <token>
 ```
 
 In `meroctl`, an `app` is a signed package, a `context` an app instance, a
 `namespace` an organization, a `group` one of its teams, `account` you (each
 passkey is one of your devices) and `ops` the operator
-([glossary](/protocol/glossary/)).
+([glossary](/protocol/glossary/)). Every app instance is in an organization:
+the personal one each account gets at sign-up, or one it created or joined.
 `--dev-passkey` keeps a passkey in a file, which only a development cluster
 accepts. Against a real cluster, use an API key made in the console
 (`CALIMERO_API_KEY`) and name the images you trust:
 `--tee-profiles <profile> [--min-release <version>]`. The release floor defaults
 to the client's `DEFAULT_MIN_RELEASE`, and debug profiles are refused unless you
 pass `--allow-debug-profiles`. Install apps there as signed packages
-(`meroctl app install PACKAGE@VERSION`); raw bundles are for development
-clusters.
+(`meroctl app install PACKAGE@VERSION`, then `meroctl context create --package
+PACKAGE --name NAME`); raw bundles are for development clusters.
 
 ## 3. From code
+
+### JavaScript (mero-js)
+
+In a page served from `http://localhost:3000` or `http://localhost:5173` (the
+origins `merod local` allows for passkeys), with the bundle's bytes in `wasm`:
 
 ```ts
 import { CalimeroClient, browserPasskey } from '@calimero-network/mero-js';
 
+// merod local sends mock quotes: allow them explicitly, for this client only.
 const client = new CalimeroClient({ baseUrl: 'http://127.0.0.1:2501', policy: { allowMock: true } });
-await client.signUp(browserPasskey(), 'ada');
+
+await client.signUp(browserPasskey(), 'ada'); // or client.signIn(browserPasskey())
 const { hash: bundle } = await client.packages.bundlePut({ body: wasm, contentType: 'application/wasm' });
-const { appId: app } = await client.apps.create({ name: 'kv', bundle });
+const { appId: app } = await client.apps.create({ name: 'kv', bundle }); // your personal organization
+
 await client.apps.call({ app, method: 'set', args: { key: 'a', value: '1' } });
-for await (const ev of client.events(app)) console.log(ev.kind, ev.data);
+const { result } = await client.apps.view({ app, method: 'get', args: { key: 'a' } });
+for await (const ev of client.events(app)) console.log(ev);
 ```
+
+On Calimero Cloud, reach a cluster by name and install a signed release from
+its registry instead of uploading a bundle; every node the directory names is
+attested under your policy first:
+
+```ts
+const cloud = await CalimeroClient.connect({
+  cluster: 'eu-shared-1',
+  policy: { release: { minReleaseVersion: '2.3.109' } },
+});
+await cloud.signIn(browserPasskey());
+await cloud.packages.install({ package: 'com.example.kv', version: '1.0.0' });
+const { appId } = await cloud.apps.create({ name: 'kv', package: 'com.example.kv', version: '1.0.0' });
+```
+
+A script uses an API key (`client.useApiKey('cal_...')`) instead of a passkey.
+The [mero-js docs](https://calimero-network.github.io/mero-js/) cover the rest.
+
+### Python (calimero-client-py)
 
 ```python
 from calimero_client_py import Client
 
 client = Client("http://127.0.0.1:2501", allow_mock=True)
-client.use_api_key("cal_...")
+client.use_api_key("cal_...")   # the key `meroctl account api-key create` printed
 print(client.apps.view(app=app_id, method="get", args={"key": "a"}).to_dict()["result"])
 ```
 
-The apps repo's `apps/kv-store/app-cloud` is a complete browser frontend (passkey
-sign-in, a store per user, live events) with a Playwright test that drives a real
-passkey ceremony through Chromium's virtual authenticator.
+For a complete browser frontend (passkey sign-in, live events), see the
+`apps` repository's `apps/kv-store/app`, built on mero-js.
 
 ## 4. Scenario tests and the process suite
 
@@ -100,6 +173,7 @@ every step.
 
 - [Writing apps](/cloud/apps/) for what an app sees on a cluster, and
   [Build](/build/) for the SDK.
+- [Deploy from CI](/cloud/deploy-from-ci/) to upgrade an app from a pipeline.
 - [Install & first run](/operate/install/) and [Deployment](/operate/deployment/)
   to run real nodes.
 - [Testing strategy](/contribute/testing/) for the in-process cluster tests, the
