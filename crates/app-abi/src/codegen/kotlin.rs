@@ -7,7 +7,16 @@
 //! `data class`, an enum a `sealed interface` of its variants, a generic type a generic one, each
 //! with a hand-written serializer (`Item.serializer()`, `Page.serializer(Item.serializer())`:
 //! no compiler plugin) that follows its serde tagging (external, internal, adjacent, untagged).
-//! A type the ABI does not describe stays its JSON (`JsonElement`).
+//! Each is annotated `@Serializable(with = ..)`, naming that serializer, so kotlinx's
+//! `serializer<T>()` finds it: by reflection on the companion's `serializer()`, which kotlinx's
+//! bundled R8 rules keep for `@Serializable` classes, or, for a module that applies the
+//! kotlinx.serialization compiler plugin (`serialization_plugin`), by the plugin's intrinsic,
+//! with no reflection. The plugin writes `serializer()` itself for a `@Serializable` class, so
+//! with it the file declares none (a hand-written one would clash with the plugin's).
+//! A type the ABI does not describe stays its JSON: `JsonElement`, under no name of its own (a
+//! top-level alias would clash with an app type of that name in the package).
+//!
+//! An optional argument left `null` is not sent: the SDK reads a missing argument as `None`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -51,7 +60,7 @@ const KEYWORDS: &[&str] = &[
 ];
 
 /// The simple names the file imports, declares or uses from `kotlin.*`: an app type named like
-/// one is renamed, since its alias would shadow it in the package.
+/// one is renamed, since its nested declaration would shadow it in the client.
 const RESERVED_TYPES: &[&str] = &[
     "Any",
     "AppError",
@@ -98,6 +107,7 @@ const RESERVED_TYPES: &[&str] = &[
     "PrimitiveSerialDescriptor",
     "Refusal",
     "SerialDescriptor",
+    "Serializable",
     "SerializationException",
     "Short",
     "String",
@@ -138,6 +148,7 @@ import com.calimero.mero.app.MeroAppBackend
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -220,9 +231,9 @@ const WIRE: &str = r#"
 struct Kt<'a> {
     abi: &'a AppAbi,
     names: Names,
-    /// App types the ABI does not describe, met so far: Kotlin name to ABI text.
-    named: BTreeMap<String, String>,
-    /// App types it describes, met so far: Kotlin name to entry name and entry.
+    /// Whether the module applies the kotlinx.serialization plugin, which writes `serializer()`.
+    plugin: bool,
+    /// App types the ABI describes, met so far: Kotlin name to entry name and entry.
     described: BTreeMap<String, (String, &'a TypeDef)>,
     /// The generic parameters in scope (inside a generic entry's declaration).
     params: Vec<String>,
@@ -237,21 +248,15 @@ fn int_type(int: Int) -> &'static str {
         Int::U8 => "UByte",
         Int::U16 => "UShort",
         Int::U32 | Int::Usize => "UInt",
-        Int::U64 | Int::U128 => "ULong",
+        Int::U64 | Int::U128 | Int::U64Number => "ULong",
         Int::I8 => "Byte",
         Int::I16 => "Short",
         Int::I32 | Int::Isize => "Int",
-        Int::I64 | Int::I128 => "Long",
+        Int::I64 | Int::I128 | Int::I64Number => "Long",
     }
 }
 
 impl Kt<'_> {
-    fn named(&mut self, text: &str) -> String {
-        let (name, _) = self.names.named(text);
-        let _ = self.named.insert(name.clone(), text.to_owned());
-        name
-    }
-
     /// The Kotlin type of an ABI type.
     fn ty(&mut self, ty: &Type) -> String {
         match ty {
@@ -282,14 +287,14 @@ impl Kt<'_> {
             }
             Type::Map(_, value) => format!("Map<String, {}>", self.ty(value)),
             Type::Named(text) if self.params.contains(text) => text.clone(),
-            Type::Named(text) => match self.described(ty) {
+            Type::Named(_) => match self.described(ty) {
                 Some((name, args)) if args.is_empty() => name,
                 Some((name, args)) => {
                     let args: Vec<String> = args.iter().map(|a| self.ty(a)).collect();
                     format!("{name}<{}>", args.join(", "))
                 }
-                // A type the ABI names without its shape: its alias is `JsonElement`.
-                None => self.named(text),
+                // A type the ABI names without its shape: its JSON.
+                None => "JsonElement".to_owned(),
             },
         }
     }
@@ -321,17 +326,14 @@ impl Kt<'_> {
                 format!("MapSerializer(String.serializer(), {})", self.ser(value))
             }
             Type::Named(text) if self.params.contains(text) => param_serializer(text),
-            Type::Named(text) => match self.described(ty) {
+            Type::Named(_) => match self.described(ty) {
                 Some((name, args)) => {
                     let args: Vec<String> = args.iter().map(|a| self.ser(a)).collect();
                     format!("{name}.serializer({})", args.join(", "))
                 }
-                // Its alias is `JsonElement`. Never `serializer<T>()`: inside a declaration's
-                // companion, `serializer` is the companion's own.
-                None => {
-                    let _ = self.named(text);
-                    "JsonElement.serializer()".to_owned()
-                }
+                // Its JSON. Never `serializer<T>()`: inside a declaration's companion,
+                // `serializer` is the companion's own.
+                None => "JsonElement.serializer()".to_owned(),
             },
         }
     }
@@ -807,17 +809,21 @@ impl Kt<'_> {
                 ", each parameter's by its serializer".to_owned()
             }
         );
-        if params.is_empty() {
+        // With the plugin, the plugin writes `serializer()` from `@Serializable(with = Wire)`.
+        if !self.plugin && params.is_empty() {
             let _ = writeln!(out, "{pad}fun serializer(): KSerializer<{ty}> = Wire\n");
-            let _ = writeln!(out, "{pad}private object Wire : KSerializer<{ty}> {{");
-        } else {
+        } else if !self.plugin {
             let _ = writeln!(
                 out,
                 "{pad}fun {generics}serializer({}): KSerializer<{ty}> = Wire({})\n",
                 args.join(", "),
                 names.join(", ")
             );
-            let _ = writeln!(out, "{pad}private class Wire<{}>(", params.join(", "));
+        }
+        if params.is_empty() {
+            let _ = writeln!(out, "{pad}internal object Wire : KSerializer<{ty}> {{");
+        } else {
+            let _ = writeln!(out, "{pad}internal class Wire<{}>(", params.join(", "));
             for a in &args {
                 let _ = writeln!(out, "{pad}    private val {a},");
             }
@@ -883,6 +889,7 @@ impl Kt<'_> {
                 }
                 let _ = write!(deserialize, "return {made}");
                 if arity(&data) == 0 {
+                    let _ = writeln!(out, "    @Serializable(with = {name}.Wire::class)");
                     let _ = writeln!(out, "    data object {name} {{");
                     self.serializer(&mut out, name, &[], &serialize, &deserialize, "        ");
                     let _ = writeln!(out, "    }}");
@@ -890,6 +897,10 @@ impl Kt<'_> {
                     if self.has_bytes(&data) {
                         let _ = writeln!(out, "    @Suppress(\"ArrayInDataClass\")");
                     }
+                    let _ = writeln!(
+                        out,
+                        "    @Serializable(with = {name}.Companion.Wire::class)"
+                    );
                     let _ = writeln!(out, "    data class {name}{generics}(");
                     self.constructor(&mut out, &data, "    ", true);
                     let _ = writeln!(out, "    ) {{\n        companion object {{");
@@ -949,6 +960,10 @@ impl Kt<'_> {
         } else {
             (String::new(), String::new(), name.to_owned())
         };
+        let _ = writeln!(
+            out,
+            "    @Serializable(with = {name}.Companion.Wire::class)"
+        );
         let _ = writeln!(out, "    sealed interface {name}{out_params} {{");
         for c in &cases {
             let _ = writeln!(out, "        /** `{}`. */", c.wire);
@@ -1141,7 +1156,7 @@ impl Kt<'_> {
     }
 }
 
-pub(super) fn module(abi: &AppAbi, class: &str, package: &str) -> String {
+pub(super) fn module(abi: &AppAbi, class: &str, package: &str, plugin: bool) -> String {
     let mut names = Names::new(abi);
     names.reserve(RESERVED_TYPES.iter().copied());
     names.reserve([class]);
@@ -1152,7 +1167,7 @@ pub(super) fn module(abi: &AppAbi, class: &str, package: &str) -> String {
     let mut kt = Kt {
         abi,
         names,
-        named: BTreeMap::new(),
+        plugin,
         described: BTreeMap::new(),
         params: Vec::new(),
         tuples: BTreeSet::new(),
@@ -1188,11 +1203,13 @@ pub(super) fn module(abi: &AppAbi, class: &str, package: &str) -> String {
             let ty = kt.ty(t);
             let default = if t.is_optional() { " = null" } else { "" };
             sig.push(format!("{arg}: {ty}{default}"));
-            puts.push(format!(
-                "put({}, encode({}, {arg}))",
-                string_literal(p),
-                kt.ser(t)
-            ));
+            let put = format!("put({}, encode({}, {arg}))", string_literal(p), kt.ser(t));
+            // An unset optional argument is left out: the SDK reads it as `None`.
+            puts.push(if t.is_optional() {
+                format!("if ({arg} != null) {put}")
+            } else {
+                put
+            });
         }
         if view {
             sig.push("stale: Boolean = false".into());
@@ -1350,7 +1367,6 @@ pub(super) fn module(abi: &AppAbi, class: &str, package: &str) -> String {
         .iter()
         .map(|t| (*t).to_owned())
         .chain(kt.described.keys().cloned())
-        .chain(kt.named.keys().cloned())
         .chain([class.to_owned()])
         .collect();
     let described: Vec<(String, (String, &TypeDef))> = kt
@@ -1377,12 +1393,6 @@ pub(super) fn module(abi: &AppAbi, class: &str, package: &str) -> String {
     let _ = writeln!(out, "package {package}\n");
     out.push_str(IMPORTS);
     out.push('\n');
-    for (name, text) in &kt.named {
-        let _ = writeln!(
-            out,
-            "/** The app type `{text}`: the ABI names it without its shape, so it is its JSON. */\ntypealias {name} = JsonElement\n"
-        );
-    }
     let _ = writeln!(
         out,
         "/**
@@ -1547,7 +1557,7 @@ mod tests {
         Kt {
             abi,
             names: Names::new(abi),
-            named: BTreeMap::new(),
+            plugin: false,
             described: BTreeMap::new(),
             params: Vec::new(),
             tuples: BTreeSet::new(),
@@ -1594,8 +1604,15 @@ mod tests {
                 "Tuple2<UInt, String>",
                 "Tuple2Serializer(UInt.serializer(), String.serializer())",
             ),
-            ("Item", "Item", "JsonElement.serializer()"),
-            ("Page<Item>", "Page_Item", "JsonElement.serializer()"),
+            ("Item", "JsonElement", "JsonElement.serializer()"),
+            ("Page<Item>", "JsonElement", "JsonElement.serializer()"),
+            ("u64_number", "ULong", "ULong.serializer()"),
+            ("option<i64_number>", "Long?", "Long.serializer().nullable"),
+            (
+                "byte_list",
+                "List<UByte>",
+                "ListSerializer(UByte.serializer())",
+            ),
             ("unit", "JsonElement", "JsonElement.serializer()"),
         ];
         for (abi, ty, ser) in cases {
@@ -1604,7 +1621,6 @@ mod tests {
             assert_eq!(kt.ser(&t), ser, "{abi}");
         }
         assert_eq!(kt.tuples, BTreeSet::from([2]));
-        assert_eq!(kt.named.keys().collect::<Vec<_>>(), ["Item", "Page_Item"]);
     }
 
     #[test]
@@ -1618,6 +1634,13 @@ mod tests {
     fn an_app_type_named_like_a_kotlin_type_is_renamed() {
         let mut kt = kt();
         kt.names.reserve(RESERVED_TYPES.iter().copied());
+        let abi = AppAbi::from_json(&serde_json::json!({
+            "abiVersion": 1,
+            "methods": {},
+            "types": { "Flow": { "kind": "unit" }, "String2": { "kind": "unit" } },
+        }))
+        .unwrap();
+        kt.abi = Box::leak(Box::new(abi));
         assert_eq!(kt.ty(&Type::parse("String2")), "String2");
         assert_eq!(kt.ty(&Type::Named("Flow".into())), "FlowType");
     }
@@ -1633,7 +1656,7 @@ mod tests {
             "events": { "Default": { "blob": "option<bytes>" } },
         }))
         .unwrap();
-        let out = module(&abi, "AppClient", "calimero.generated.app");
+        let out = module(&abi, "AppClient", "calimero.generated.app", false);
         for expected in [
             r#"        data class NotFound(\n            val id: ULong,\n        ) : Refusal"#,
             r#"        data class Rejected(\n            val _0: String,\n        ) : Refusal"#,
@@ -1663,10 +1686,13 @@ mod tests {
             },
         }))
         .unwrap();
-        let out = module(&abi, "AppClient", "calimero.generated.app");
+        let out = module(&abi, "AppClient", "calimero.generated.app", false);
         for expected in [
-            "typealias Raw = JsonElement",
-            "    data class Item(\n        val id: ULong,\n        val raw: Raw,\n    ) {",
+            "    @Serializable(with = Item.Companion.Wire::class)\n    data class Item(\n        val id: ULong,\n        val raw: JsonElement,\n    ) {",
+            "    @Serializable(with = Page.Companion.Wire::class)\n    data class Page<T>(",
+            "    @Serializable(with = Either.Companion.Wire::class)\n    sealed interface Either {",
+            "internal object Wire : KSerializer<Item>",
+            "internal class Wire<T>(",
             r#"put("raw", encode(JsonElement.serializer(), value.raw))"#,
             "    data class Page<T>(",
             "fun <T> serializer(tSerializer: KSerializer<T>): KSerializer<Page<T>> = Wire(tSerializer)",
@@ -1678,5 +1704,28 @@ mod tests {
             assert!(out.contains(expected), "{expected} not in\n{out}");
         }
         assert!(!out.contains("private fun external("), "{out}");
+        // No top-level alias that an app type of the same name in the package would clash with.
+        assert!(!out.contains("typealias"), "{out}");
+    }
+
+    /// An optional argument left `null` is not sent; a required one always is.
+    #[test]
+    fn unset_optional_arguments_are_left_out() {
+        let abi = AppAbi::from_json(&serde_json::json!({
+            "abiVersion": 1,
+            "methods": { "set": { "kind": "call", "params": [["id", "u64"], ["note", "option<string>"]] } },
+        }))
+        .unwrap();
+        let out = module(&abi, "AppClient", "calimero.generated.app", false);
+        assert!(
+            out.contains(r#"put("id", encode(U64AsString, id))"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                r#"if (note != null) put("note", encode(String.serializer().nullable, note))"#
+            ),
+            "{out}"
+        );
     }
 }

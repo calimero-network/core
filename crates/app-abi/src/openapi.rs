@@ -687,6 +687,13 @@ fn int_schema(int: Int) -> Value {
         )
         .into();
     }
+    if matches!(int, Int::U64Number | Int::I64Number) {
+        s["description"] = format!(
+            "A {} as a JSON number, as plain serde writes it; JavaScript loses precision past 2^53.",
+            int.name()
+        )
+        .into();
+    }
     s
 }
 

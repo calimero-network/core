@@ -16,6 +16,7 @@ import com.calimero.mero.app.MeroAppBackend
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -350,6 +351,7 @@ class RoomsClient private constructor(
     }
 
     /** The app type `Booking`. */
+    @Serializable(with = Booking.Companion.Wire::class)
     data class Booking(
         val id: String,
         val roomId: String,
@@ -363,7 +365,7 @@ class RoomsClient private constructor(
             /** `Booking`'s JSON form. */
             fun serializer(): KSerializer<Booking> = Wire
 
-            private object Wire : KSerializer<Booking> {
+            internal object Wire : KSerializer<Booking> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -401,6 +403,7 @@ class RoomsClient private constructor(
     }
 
     /** The app type `SlotView`. */
+    @Serializable(with = SlotView.Companion.Wire::class)
     data class SlotView(
         val start: ULong,
         val end: ULong,
@@ -412,7 +415,7 @@ class RoomsClient private constructor(
             /** `SlotView`'s JSON form. */
             fun serializer(): KSerializer<SlotView> = Wire
 
-            private object Wire : KSerializer<SlotView> {
+            internal object Wire : KSerializer<SlotView> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(

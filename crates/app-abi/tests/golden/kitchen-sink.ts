@@ -53,6 +53,15 @@ export interface Page<T> {
 /** The app type `Point`. */
 export type Point = [number, number];
 
+/** The app type `Stats`. */
+export interface Stats {
+  views: number;
+  delta: number;
+  pixels: number[];
+  peak?: number | null;
+  label?: string;
+}
+
 /** The app type `Status`. */
 export type Status =
   | 'Open'
@@ -72,6 +81,9 @@ export interface Tree {
   children: Tree[];
   parent?: Tree | null;
 }
+
+/** The app type `Opaque`: the ABI names it without its shape. */
+export type Opaque = unknown;
 
 /** The arguments of the app's `init`: `initArgs` of `client.apps.create`. */
 export interface InitArgs {
@@ -135,6 +147,15 @@ export interface FromPeerArgs {
 /** The arguments of `lookup`. */
 export interface LookupArgs {
   id: string;
+}
+
+/** The arguments of `plain`. */
+export interface PlainArgs {
+  stats: Stats;
+  counts: number[];
+  pixels: number[];
+  limit?: number | null;
+  extra: Opaque;
 }
 
 /** The arguments of `shapes`. */
@@ -295,6 +316,8 @@ export interface KitchenSinkApi {
   fromPeer(args: FromPeerArgs, options?: CallOptions): Promise<null>;
   /** view `lookup`; public. */
   lookup(args: LookupArgs, options?: ViewOptions): Promise<Item | null>;
+  /** call `plain`. */
+  plain(args: PlainArgs, options?: CallOptions): Promise<Stats>;
   /** view `secret`; a passkey approves it (`options.confirm`, else the client's own). */
   secret(options?: CallOptions): Promise<string>;
   /** view `shapes`. */
@@ -322,6 +345,8 @@ export interface KitchenSinkRawApi {
   fromPeer(args: FromPeerArgs, options?: CallOptions): Promise<CallAnswer<null>>;
   /** view `lookup`; public. */
   lookup(args: LookupArgs, options?: ViewOptions): Promise<ViewAnswer<Item | null>>;
+  /** call `plain`. */
+  plain(args: PlainArgs, options?: CallOptions): Promise<CallAnswer<Stats>>;
   /** view `secret`; a passkey approves it (`options.confirm`, else the client's own). */
   secret(options?: CallOptions): Promise<CallAnswer<string>>;
   /** view `shapes`. */
@@ -355,6 +380,7 @@ export class KitchenSinkClient<T extends AppCallTransport = AppTransport> implem
       everything: (args, options = {}) => this.#call<Item[]>('everything', args, options),
       fromPeer: (args, options = {}) => this.#call<null>('fromPeer', args, options),
       lookup: (args, options = {}) => this.#view<Item | null>('lookup', args, options),
+      plain: (args, options = {}) => this.#call<Stats>('plain', args, options),
       secret: (options = {}) => this.#call<string>('secret', {}, options),
       shapes: (args, options = {}) => this.#view<Tree>('shapes', args, options),
       wipe: (args, options = {}) => this.#call<null>('wipe', args, options),
@@ -417,6 +443,11 @@ export class KitchenSinkClient<T extends AppCallTransport = AppTransport> implem
   /** view `lookup`; public. */
   async lookup(args: LookupArgs, options: ViewOptions = {}): Promise<Item | null> {
     return (await this.#view<Item | null>('lookup', args, options)).result;
+  }
+
+  /** call `plain`. */
+  async plain(args: PlainArgs, options: CallOptions = {}): Promise<Stats> {
+    return (await this.#call<Stats>('plain', args, options)).result;
   }
 
   /** view `secret`; a passkey approves it (`options.confirm`, else the client's own). */

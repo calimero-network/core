@@ -1,12 +1,13 @@
 //! Golden files: each `tests/fixtures/<app>.abi.json` (the `calimero:abi` of an example app
 //! under `apps/`, or a crafted one covering every type) against its OpenAPI document and
-//! typed clients (TypeScript, Python, Swift, Kotlin) in `tests/golden/`.
+//! typed clients (TypeScript, Python, Swift, Kotlin) in `tests/golden/`; the kitchen-sink's Kotlin
+//! client also as written for the kotlinx.serialization plugin (`kitchen-sink.plugin.kt`).
 //! `UPDATE_GOLDEN=1 cargo test -p calimero-app-abi` rewrites them; review the diff.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use calimero_app_abi::codegen::{kotlin, python, swift, typescript, Target};
+use calimero_app_abi::codegen::{kotlin, python, swift, typescript, KotlinOptions, Target};
 use calimero_app_abi::openapi::{document, Info};
 use calimero_app_abi::AppAbi;
 use serde_json::Value;
@@ -77,9 +78,24 @@ fn generated_documents_and_clients_match_the_golden_files() {
         );
         check(
             &golden.join(format!("{app}.kt")),
-            &kotlin(&abi, &target, None),
+            &kotlin(&abi, &target, &KotlinOptions::default()),
             &mut stale,
         );
+        // The same client for a module that applies the kotlinx.serialization plugin.
+        if *app == "kitchen-sink" {
+            check(
+                &golden.join(format!("{app}.plugin.kt")),
+                &kotlin(
+                    &abi,
+                    &target,
+                    &KotlinOptions {
+                        serialization_plugin: true,
+                        ..KotlinOptions::default()
+                    },
+                ),
+                &mut stale,
+            );
+        }
     }
     assert!(
         stale.is_empty(),

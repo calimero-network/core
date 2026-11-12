@@ -16,7 +16,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use calimero_app_abi::codegen::{kotlin, kotlin_package, python, swift, typescript, Target};
+use calimero_app_abi::codegen::{
+    kotlin, kotlin_package, python, swift, typescript, KotlinOptions, Target,
+};
 use calimero_app_abi::load::{load_one, load_path, Loaded};
 use calimero_app_abi::openapi::{document, Info};
 use eyre::{bail, eyre, Result as EyreResult};
@@ -72,6 +74,9 @@ pub struct Codegen {
     pub service: Option<String>,
     /// The Kotlin package.
     pub package: Option<String>,
+    /// Whether the Kotlin client is compiled with the kotlinx.serialization plugin
+    /// ([`KotlinOptions::serialization_plugin`]).
+    pub kotlin_serialization_plugin: bool,
     /// Whether to write `openapi.json` beside the client.
     pub openapi: bool,
 }
@@ -85,6 +90,7 @@ impl Codegen {
             name: None,
             service: None,
             package: None,
+            kotlin_serialization_plugin: false,
             openapi: true,
         }
     }
@@ -176,7 +182,14 @@ impl Codegen {
             )?,
             Lang::Kotlin => write(
                 dir.join(format!("{}.kt", target.class())),
-                &kotlin(&loaded.abi, &target, package),
+                &kotlin(
+                    &loaded.abi,
+                    &target,
+                    &KotlinOptions {
+                        package,
+                        serialization_plugin: self.kotlin_serialization_plugin,
+                    },
+                ),
             )?,
         }
         Ok(())

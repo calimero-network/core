@@ -16,6 +16,7 @@ import com.calimero.mero.app.MeroAppBackend
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -107,8 +108,8 @@ class KitchenSinkClient private constructor(
             "events",
             buildJsonObject {
                 put("in", encode(String.serializer(), `in`))
-                put("default", encode(Base64Url.nullable, default))
-                put("when", encode(I64AsString.nullable, `when`))
+                if (default != null) put("default", encode(Base64Url.nullable, default))
+                if (`when` != null) put("when", encode(I64AsString.nullable, `when`))
             },
             idempotencyKey,
             Tuple2Serializer(UInt.serializer(), String.serializer()),
@@ -161,7 +162,7 @@ class KitchenSinkClient private constructor(
                 put("letter", encode(String.serializer(), letter))
                 put("title", encode(String.serializer(), title))
                 put("blob", encode(Base64Url, blob))
-                put("maybe", encode(U64AsString.nullable, maybe))
+                if (maybe != null) put("maybe", encode(U64AsString.nullable, maybe))
                 put("names", encode(ListSerializer(String.serializer()), names))
                 put("pair", encode(Tuple2Serializer(UInt.serializer(), String.serializer()), pair))
                 put("digest", encode(ListSerializer(UByte.serializer()), digest))
@@ -170,7 +171,7 @@ class KitchenSinkClient private constructor(
                 put("unique", encode(ListSerializer(String.serializer()), unique))
                 put("item", encode(Item.serializer(), item))
                 put("page", encode(Page.serializer(Item.serializer()), page))
-                put("nested", encode(ListSerializer(Item.serializer().nullable).nullable, nested))
+                if (nested != null) put("nested", encode(ListSerializer(Item.serializer().nullable).nullable, nested))
             },
             idempotencyKey,
             ListSerializer(Item.serializer()),
@@ -205,6 +206,28 @@ class KitchenSinkClient private constructor(
             stale,
             minIndex,
             Item.serializer().nullable,
+        )
+
+    /** call `plain`. */
+    suspend fun plain(
+        stats: Stats,
+        counts: List<ULong>,
+        pixels: List<UByte>,
+        limit: Long? = null,
+        extra: JsonElement,
+        idempotencyKey: String? = null,
+    ): Stats =
+        invokeCall(
+            "plain",
+            buildJsonObject {
+                put("stats", encode(Stats.serializer(), stats))
+                put("counts", encode(ListSerializer(ULong.serializer()), counts))
+                put("pixels", encode(ListSerializer(UByte.serializer()), pixels))
+                if (limit != null) put("limit", encode(Long.serializer().nullable, limit))
+                put("extra", encode(JsonElement.serializer(), extra))
+            },
+            idempotencyKey,
+            Stats.serializer(),
         )
 
     /** view `secret`; [passkey] approves it (`confirm`). */
@@ -263,7 +286,7 @@ class KitchenSinkClient private constructor(
         invokeConfirmed(
             "wipe",
             buildJsonObject {
-                put("reason", encode(String.serializer().nullable, reason))
+                if (reason != null) put("reason", encode(String.serializer().nullable, reason))
             },
             passkey,
             idempotencyKey,
@@ -426,6 +449,7 @@ class KitchenSinkClient private constructor(
     }
 
     /** The app type `Adjacent`. */
+    @Serializable(with = Adjacent.Companion.Wire::class)
     sealed interface Adjacent {
         /** `Text`. */
         data class Text(
@@ -451,7 +475,7 @@ class KitchenSinkClient private constructor(
             /** `Adjacent`'s JSON form. */
             fun serializer(): KSerializer<Adjacent> = Wire
 
-            private object Wire : KSerializer<Adjacent> {
+            internal object Wire : KSerializer<Adjacent> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -511,6 +535,7 @@ class KitchenSinkClient private constructor(
     }
 
     /** The app type `Choice`. */
+    @Serializable(with = Choice.Companion.Wire::class)
     sealed interface Choice<out T> {
         /** `one`. */
         data class One<T>(
@@ -524,7 +549,7 @@ class KitchenSinkClient private constructor(
             /** `Choice`'s JSON form, each parameter's by its serializer. */
             fun <T> serializer(tSerializer: KSerializer<T>): KSerializer<Choice<T>> = Wire(tSerializer)
 
-            private class Wire<T>(
+            internal class Wire<T>(
                 private val tSerializer: KSerializer<T>,
             ) : KSerializer<Choice<T>> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
@@ -560,6 +585,7 @@ class KitchenSinkClient private constructor(
     }
 
     /** The app type `Either`. */
+    @Serializable(with = Either.Companion.Wire::class)
     sealed interface Either {
         /** `Num`. */
         data class Num(
@@ -584,7 +610,7 @@ class KitchenSinkClient private constructor(
             /** `Either`'s JSON form. */
             fun serializer(): KSerializer<Either> = Wire
 
-            private object Wire : KSerializer<Either> {
+            internal object Wire : KSerializer<Either> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -630,6 +656,7 @@ class KitchenSinkClient private constructor(
     }
 
     /** The app type `Expr`. */
+    @Serializable(with = Expr.Companion.Wire::class)
     sealed interface Expr {
         /** `Lit`. */
         data class Lit(
@@ -651,7 +678,7 @@ class KitchenSinkClient private constructor(
             /** `Expr`'s JSON form. */
             fun serializer(): KSerializer<Expr> = Wire
 
-            private object Wire : KSerializer<Expr> {
+            internal object Wire : KSerializer<Expr> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -688,6 +715,7 @@ class KitchenSinkClient private constructor(
     }
 
     /** The app type `Id`. */
+    @Serializable(with = Id.Companion.Wire::class)
     data class Id(
         val value: String,
     ) {
@@ -695,7 +723,7 @@ class KitchenSinkClient private constructor(
             /** `Id`'s JSON form. */
             fun serializer(): KSerializer<Id> = Wire
 
-            private object Wire : KSerializer<Id> {
+            internal object Wire : KSerializer<Id> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -716,6 +744,7 @@ class KitchenSinkClient private constructor(
     }
 
     /** The app type `Item`. */
+    @Serializable(with = Item.Companion.Wire::class)
     data class Item(
         val id: ULong,
         val title: String,
@@ -727,7 +756,7 @@ class KitchenSinkClient private constructor(
             /** `Item`'s JSON form. */
             fun serializer(): KSerializer<Item> = Wire
 
-            private object Wire : KSerializer<Item> {
+            internal object Wire : KSerializer<Item> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -761,11 +790,12 @@ class KitchenSinkClient private constructor(
     }
 
     /** The app type `Marker`. */
+    @Serializable(with = Marker.Wire::class)
     data object Marker {
         /** `Marker`'s JSON form. */
         fun serializer(): KSerializer<Marker> = Wire
 
-        private object Wire : KSerializer<Marker> {
+        internal object Wire : KSerializer<Marker> {
             override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
             override fun serialize(
@@ -786,6 +816,7 @@ class KitchenSinkClient private constructor(
     }
 
     /** The app type `Page`. */
+    @Serializable(with = Page.Companion.Wire::class)
     data class Page<T>(
         val items: List<T>,
         val next: String? = null,
@@ -794,7 +825,7 @@ class KitchenSinkClient private constructor(
             /** `Page`'s JSON form, each parameter's by its serializer. */
             fun <T> serializer(tSerializer: KSerializer<T>): KSerializer<Page<T>> = Wire(tSerializer)
 
-            private class Wire<T>(
+            internal class Wire<T>(
                 private val tSerializer: KSerializer<T>,
             ) : KSerializer<Page<T>> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
@@ -824,6 +855,7 @@ class KitchenSinkClient private constructor(
     }
 
     /** The app type `Point`. */
+    @Serializable(with = Point.Companion.Wire::class)
     data class Point(
         val v0: Double,
         val v1: Double,
@@ -832,7 +864,7 @@ class KitchenSinkClient private constructor(
             /** `Point`'s JSON form. */
             fun serializer(): KSerializer<Point> = Wire
 
-            private object Wire : KSerializer<Point> {
+            internal object Wire : KSerializer<Point> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -856,7 +888,54 @@ class KitchenSinkClient private constructor(
         }
     }
 
+    /** The app type `Stats`. */
+    @Serializable(with = Stats.Companion.Wire::class)
+    data class Stats(
+        val views: ULong,
+        val delta: Long,
+        val pixels: List<UByte>,
+        val peak: ULong? = null,
+        val label: String? = null,
+    ) {
+        companion object {
+            /** `Stats`'s JSON form. */
+            fun serializer(): KSerializer<Stats> = Wire
+
+            internal object Wire : KSerializer<Stats> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Stats,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        buildJsonObject {
+                            put("views", encode(ULong.serializer(), value.views))
+                            put("delta", encode(Long.serializer(), value.delta))
+                            put("pixels", encode(ListSerializer(UByte.serializer()), value.pixels))
+                            if (value.peak != null) put("peak", encode(ULong.serializer().nullable, value.peak))
+                            if (value.label != null) put("label", encode(String.serializer().nullable, value.label))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Stats {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val fields = obj(data, "Stats")
+                    return Stats(
+                        views = field(fields, "views", ULong.serializer()),
+                        delta = field(fields, "delta", Long.serializer()),
+                        pixels = field(fields, "pixels", ListSerializer(UByte.serializer())),
+                        peak = field(fields, "peak", ULong.serializer().nullable),
+                        label = field(fields, "label", String.serializer().nullable),
+                    )
+                }
+            }
+        }
+    }
+
     /** The app type `Status`. */
+    @Serializable(with = Status.Companion.Wire::class)
     sealed interface Status {
         /** `Open`. */
         data object Open : Status
@@ -881,7 +960,7 @@ class KitchenSinkClient private constructor(
             /** `Status`'s JSON form. */
             fun serializer(): KSerializer<Status> = Wire
 
-            private object Wire : KSerializer<Status> {
+            internal object Wire : KSerializer<Status> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -925,6 +1004,7 @@ class KitchenSinkClient private constructor(
     }
 
     /** The app type `Tagged`. */
+    @Serializable(with = Tagged.Companion.Wire::class)
     sealed interface Tagged {
         /** `draft`. */
         data object Draft : Tagged
@@ -943,7 +1023,7 @@ class KitchenSinkClient private constructor(
             /** `Tagged`'s JSON form. */
             fun serializer(): KSerializer<Tagged> = Wire
 
-            private object Wire : KSerializer<Tagged> {
+            internal object Wire : KSerializer<Tagged> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -979,6 +1059,7 @@ class KitchenSinkClient private constructor(
     }
 
     /** The app type `Tree`. */
+    @Serializable(with = Tree.Companion.Wire::class)
     data class Tree(
         val value: UInt,
         val children: List<Tree>,
@@ -988,7 +1069,7 @@ class KitchenSinkClient private constructor(
             /** `Tree`'s JSON form. */
             fun serializer(): KSerializer<Tree> = Wire
 
-            private object Wire : KSerializer<Tree> {
+            internal object Wire : KSerializer<Tree> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(

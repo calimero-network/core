@@ -91,4 +91,18 @@ final class KitchenSinkRoundTripTests: XCTestCase {
         refused(#"{"id":"1","title":"t","tags":[]}"#, Client.Item.self)
         refused("[1.5]", Client.Point.self)
     }
+
+    func testPlainSerdeNumbersAndByteLists() throws {
+        // `u64_number`/`i64_number` are JSON numbers and `byte_list` an array of them; an
+        // optional field left out stays out.
+        try roundTrip(
+            #"{"views":9007199254740993,"delta":-9007199254740993,"pixels":[0,255]}"#,
+            Client.Stats(views: 9_007_199_254_740_993, delta: -9_007_199_254_740_993, pixels: [0, 255])
+        )
+        try roundTrip(
+            #"{"views":1,"delta":2,"pixels":[],"peak":3,"label":"l"}"#,
+            Client.Stats(views: 1, delta: 2, pixels: [], peak: 3, label: "l")
+        )
+        refused(#"{"views":1,"delta":2,"pixels":"AAE"}"#, Client.Stats.self)
+    }
 }

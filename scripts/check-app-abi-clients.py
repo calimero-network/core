@@ -14,7 +14,9 @@ Swift: a package with one target per golden (each its own module, as an app give
 service's client one), depending on swift-sdk at SWIFT_SDK_VERSION, and a test target with the
 round-trip tests.
 Kotlin: kotlin-sdk's tag KOTLIN_SDK_REF is cloned and the goldens compiled as a module of that
-build, depending on `:mero-core`, with the round-trip tests as its unit tests.
+build, depending on `:mero-core`, with the round-trip tests as its unit tests; the `*.plugin.kt`
+goldens (`--kotlin-serialization-plugin`) in a second module that applies the kotlinx.serialization
+compiler plugin, with the same tests.
 """
 
 import os
@@ -110,23 +112,33 @@ def kotlin(work):
         ],
         work,
     )
-    module = sdk / "golden-clients"
-    source = module / "src" / "main" / "kotlin"
-    source.mkdir(parents=True)
-    for golden in sorted(GOLDEN.glob("*.kt")):
-        shutil.copy(golden, source / f"{module_name(golden.stem)}Client.kt")
-    tests = module / "src" / "test" / "kotlin"
-    tests.mkdir(parents=True)
-    for test in sorted((NATIVE_TESTS / "kotlin").glob("*.kt")):
-        shutil.copy(test, tests / test.name)
-    (module / "build.gradle.kts").write_text(
-        """plugins {
+    # The goldens as written for a module without the kotlinx.serialization plugin, and the
+    # kitchen-sink's as written for one with it (`*.plugin.kt`, `--kotlin-serialization-plugin`):
+    # each compiled the way it is meant to be, with the same round-trip tests.
+    modules = [
+        ("golden-clients", [g for g in sorted(GOLDEN.glob("*.kt")) if not g.name.endswith(".plugin.kt")], ""),
+        ("golden-clients-plugin", sorted(GOLDEN.glob("*.plugin.kt")), "\n    alias(libs.plugins.kotlin.serialization)"),
+    ]
+    tasks = []
+    for name, goldens, plugin in modules:
+        module = sdk / name
+        source = module / "src" / "main" / "kotlin"
+        source.mkdir(parents=True)
+        for golden in goldens:
+            stem = golden.name.removesuffix(".plugin.kt").removesuffix(".kt")
+            shutil.copy(golden, source / f"{module_name(stem)}Client.kt")
+        tests = module / "src" / "test" / "kotlin"
+        tests.mkdir(parents=True)
+        for test in sorted((NATIVE_TESTS / "kotlin").glob("*.kt")):
+            shutil.copy(test, tests / test.name)
+        (module / "build.gradle.kts").write_text(
+            """plugins {
     alias(libs.plugins.android.library)
-    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.android)PLUGIN
 }
 
 android {
-    namespace = "network.calimero.goldenclients"
+    namespace = "network.calimero.NAMESPACE"
     compileSdk = 34
 
     defaultConfig {
@@ -149,20 +161,12 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     testImplementation(libs.junit)
 }
-"""
-    )
-    with open(sdk / "settings.gradle.kts", "a") as settings:
-        settings.write('\ninclude(":golden-clients")\n')
-    run(
-        [
-            "./gradlew",
-            "--no-daemon",
-            "--stacktrace",
-            ":golden-clients:compileReleaseKotlin",
-            ":golden-clients:testReleaseUnitTest",
-        ],
-        sdk,
-    )
+""".replace("PLUGIN", plugin).replace("NAMESPACE", name.replace("-", ""))
+        )
+        with open(sdk / "settings.gradle.kts", "a") as settings:
+            settings.write(f'\ninclude(":{name}")\n')
+        tasks += [f":{name}:compileReleaseKotlin", f":{name}:testReleaseUnitTest"]
+    run(["./gradlew", "--no-daemon", "--stacktrace", *tasks], sdk)
 
 
 def main():

@@ -7,6 +7,8 @@
 //! a record a `struct`, an enum an `enum` whose `init(from:)` / `encode(to:)` follow its serde
 //! tagging (external, internal, adjacent, untagged), a generic type a generic one. A type the ABI
 //! does not describe stays its JSON (`JSONValue`).
+//!
+//! An optional argument left `nil` is not sent: the SDK reads a missing argument as `None`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -324,6 +326,9 @@ impl Sw<'_> {
             Type::Int(Int::I16) => "Int16".into(),
             Type::Int(Int::I32 | Int::Isize) => "Int32".into(),
             Type::Int(Int::I128) => "Int64".into(),
+            // A JSON number: Swift's own `Codable` form.
+            Type::Int(Int::U64Number) => "UInt64".into(),
+            Type::Int(Int::I64Number) => "Int64".into(),
             Type::Float(false) => "Float".into(),
             Type::Float(true) => "Double".into(),
             Type::Char | Type::String => "String".into(),
@@ -1299,11 +1304,15 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
             let ty = sw.ty(t, true);
             let default = if t.is_optional() { " = nil" } else { "" };
             sig.push(format!("{arg}: {ty}{default}"));
-            adds.push(format!(
-                "args.add({}, {})",
-                string_literal(p),
-                to_wire(t, &arg)
-            ));
+            // An unset optional argument is left out: the SDK reads it as `None`.
+            adds.push(match t {
+                Type::Option(inner) => format!(
+                    "if let value = {arg} {{ args.add({}, {}) }}",
+                    string_literal(p),
+                    to_wire(inner, "value")
+                ),
+                _ => format!("args.add({}, {})", string_literal(p), to_wire(t, &arg)),
+            });
         }
         let (call, extra) = if view {
             sig.push("stale: Bool = false".into());

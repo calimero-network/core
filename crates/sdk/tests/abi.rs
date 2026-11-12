@@ -249,6 +249,14 @@ fn abi_types_carry_the_shapes_methods_answer_and_the_json_matches() {
                 "params": ["T"],
                 "fields": [["items", "list<T>"], ["nextCursor", "option<string>"]],
             },
+            "Tally": {
+                "kind": "record",
+                "fields": [
+                    ["total", "u64_number"],
+                    ["shots", "byte_list"],
+                    ["note", "option<string>", { "optional": true }],
+                ],
+            },
             "Slot": {
                 "kind": "enum",
                 "tag": "state",
@@ -286,6 +294,25 @@ fn abi_types_carry_the_shapes_methods_answer_and_the_json_matches() {
     assert_eq!(
         ok_json(&app.view("slot", &args(json!({ "id": "none" })))),
         json!({ "items": [{ "state": "free" }], "nextCursor": null })
+    );
+}
+
+#[test]
+fn plain_serde_types_travel_as_their_abi_says() {
+    let abi_json = built().abi.clone().expect("component carries an ABI");
+    assert_eq!(
+        abi_json["methods"]["echoTally"]["params"],
+        json!([["tally", "Tally"]])
+    );
+    // `u64_number`: a JSON number past 2^53; `byte_list`: an array of numbers; `note`
+    // (`default`) left out.
+    let mut app = App::new();
+    assert_eq!(
+        ok_json(&app.view(
+            "echoTally",
+            &args(json!({ "tally": { "total": 9_007_199_254_740_993_u64, "shots": [0, 255] } })),
+        )),
+        json!({ "total": 9_007_199_254_740_993_u64, "shots": [0, 255], "note": null })
     );
 }
 

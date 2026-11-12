@@ -44,6 +44,15 @@
       ],
       "returns": "Tree",
       "confirm": false, "public": false, "allowSystem": false
+    },
+    "plain": {
+      "kind": "call",
+      "params": [
+        ["stats", "Stats"], ["counts", "list<u64_number>"], ["pixels", "byte_list"],
+        ["limit", "option<i64_number>"], ["extra", "Opaque"]
+      ],
+      "returns": "Stats",
+      "confirm": false, "public": false, "allowSystem": false
     }
   },
   "errors": { "NotFound": { "id": "u64" }, "Forbidden": {}, "Invalid": { "field": "string", "detail": "option<string>" }, "Rejected": { "0": "string" }, "Unknown": {} },
@@ -76,6 +85,13 @@
     "Marker": { "kind": "unit" },
     "Page": { "kind": "record", "params": ["T"], "fields": [["items", "list<T>"], ["next", "option<string>"]] },
     "Point": { "kind": "tuple", "items": ["f64", "f64"] },
+    "Stats": {
+      "kind": "record",
+      "fields": [
+        ["views", "u64_number"], ["delta", "i64_number"], ["pixels", "byte_list"],
+        ["peak", "option<u64_number>", { "optional": true }], ["label", "string", { "optional": true }]
+      ]
+    },
     "Status": {
       "kind": "enum",
       "variants": [{ "name": "Open" }, { "name": "Closed", "fields": [["at", "u64"]] }, { "name": "Moved", "type": "string" }, { "name": "Span", "items": ["u32", "u32"] }]

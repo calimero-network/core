@@ -28,8 +28,18 @@ fn main() -> EyreResult<ExitCode> {
     // A crate directory named like a subcommand is passed as `./codegen`.
     match first.as_str() {
         "--version" | "-V" => {
-            // The release, not `CARGO_PKG_VERSION`: that is the workspace placeholder `0.0.0`.
-            println!("mero-app-build {}", env!("CALIMERO_RELEASE_VERSION"));
+            // The release, not `CARGO_PKG_VERSION`: that is the workspace placeholder `0.0.0`;
+            // then the source it was built from (`git describe`, commit).
+            println!(
+                "mero-app-build {} ({}, {})",
+                env!("CALIMERO_RELEASE_VERSION"),
+                env!("CALIMERO_BUILD_DESCRIBE"),
+                env!("CALIMERO_BUILD_COMMIT")
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
+        "--help" | "-h" => {
+            println!("{usage}");
             return Ok(ExitCode::SUCCESS);
         }
         "codegen" => {
