@@ -8,14 +8,7 @@
 //! gone at once. A deployment's managers see only counts of its customer
 //! organizations' members (`tests/deployments.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
+use calimero_client::types::OrgMembersDetail;
 use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use serde_json::{json, Value};
@@ -27,7 +20,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{signed_up, Cluster, ORIGIN};
+use harness::{signed_up, typed, wire, Cluster, ORIGIN};
 
 /// The keys a member's row may carry, and no other.
 const KEYS: [&str; 8] = [
@@ -42,14 +35,14 @@ const KEYS: [&str; 8] = [
 ];
 
 async fn id(c: &Client) -> String {
-    c.me().await.unwrap()["accountId"]
+    c.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned()
 }
 
 async fn new_org(owner: &Client, name: &str) -> String {
-    owner.post("orgs", json!({ "name": name })).await.unwrap()["orgId"]
+    owner.orgs().create(name, None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -58,16 +51,15 @@ async fn new_org(owner: &Client, name: &str) -> String {
 /// `who` joins `org` at `role`, invited by `admin`.
 async fn join(admin: &Client, pk: &mut SoftAuthenticator, org: &str, role: &str, who: &Client) {
     let token = admin
-        .post_confirmed(&format!("orgs/{org}/invites"), json!({ "role": role }), pk)
+        .orgs()
+        .invite_create(org, typed(json!({ "role": role })), Some(&mut *pk))
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
         .to_owned();
-    let _ok = who
-        .post(&format!("invites/{token}/redeem"), json!({}))
-        .await
-        .unwrap();
+    let _ok = who.orgs().invite_redeem(&token).await.unwrap();
 }
 
 #[allow(
@@ -75,7 +67,10 @@ async fn join(admin: &Client, pk: &mut SoftAuthenticator, org: &str, role: &str,
     reason = "the client's own error type, as its `get` returns it"
 )]
 async fn members(c: &Client, org: &str) -> Result<Value, calimero_client::Error> {
-    c.get(&format!("orgs/{org}/members?detail=security")).await
+    c.orgs()
+        .members(org, Some(OrgMembersDetail::Security))
+        .await
+        .map(wire)
 }
 
 /// The listed row of `account`, if any.
@@ -106,16 +101,18 @@ async fn admins_see_their_members_lockout_risk_and_nothing_more() {
     join(&alice, &mut alice_pk, &org, "member", &bob).await;
     join(&alice, &mut alice_pk, &org, "admin", &carol).await;
     let _ok = bob
-        .set_member_metadata(&org, &bob_id, json!({ "name": "Bob B." }))
+        .orgs()
+        .member_metadata(&org, &bob_id, json!({ "name": "Bob B." }))
         .await
         .unwrap();
     // Bob names his device: a label is his alone.
-    let bob_cred = bob.me().await.unwrap()["passkeyId"]
+    let bob_cred = bob.auth().me().await.map(wire).unwrap()["passkeyId"]
         .as_str()
         .unwrap()
         .to_owned();
     let _ok = bob
-        .label_passkey(&bob_cred, "Bob's work laptop")
+        .auth()
+        .passkey_label(&bob_cred, "Bob's work laptop")
         .await
         .unwrap();
 
@@ -148,8 +145,10 @@ async fn admins_see_their_members_lockout_risk_and_nothing_more() {
         let _cred = bob.add_passkey(&mut key, &mut bob_pk).await.unwrap();
     }
     let _code = bob
-        .post_confirmed("auth/recovery", json!({}), &mut bob_pk)
+        .auth()
+        .recovery_create(Some(&mut bob_pk))
         .await
+        .map(wire)
         .unwrap();
     let b = row(&members(&alice, &org).await.unwrap(), &bob_id).unwrap();
     assert_eq!(b["passkeys"], "3+", "{b}");
@@ -159,21 +158,25 @@ async fn admins_see_their_members_lockout_risk_and_nothing_more() {
     let e = members(&bob, &org).await.unwrap_err();
     assert!(status(&e).starts_with("403"), "{e}");
     let (_key_id, key) = alice
-        .create_api_key(json!({ "label": "ci" }), &mut alice_pk)
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), Some(&mut alice_pk))
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
     let machine = c.client(1);
     machine.use_api_key(&key).await;
     let e = members(&machine, &org).await.unwrap_err();
     assert!(status(&e).starts_with("403"), "{e}");
     // Without `detail=security` there is no listing.
-    let e = alice.get(&format!("orgs/{org}/members")).await.unwrap_err();
+    let e = alice.orgs().members(&org, None).await.unwrap_err();
     assert!(status(&e).starts_with("400"), "{e}");
 
     // Removed: gone from the listing, and no longer a reader of it.
     let _ok = alice
-        .delete_confirmed(&format!("orgs/{org}/members/{bob_id}"), &mut alice_pk)
+        .orgs()
+        .remove_member(&org, &bob_id, Some(&mut alice_pk))
         .await
+        .map(wire)
         .unwrap();
     let list = members(&carol, &org).await.unwrap();
     assert!(row(&list, &bob_id).is_none(), "{list}");

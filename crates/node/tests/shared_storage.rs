@@ -5,15 +5,8 @@
 //! Builds the component `apps/kv-store-with-shared-storage` from this checkout
 //! (cached under `$CARGO_TARGET_DIR/app-components`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
-use calimero_client::{Client, Consistency};
+use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::Client;
 use serde_json::{json, Value};
 
 #[path = "harness/cluster.rs"]
@@ -23,14 +16,21 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{signed_up, Cluster};
+use harness::{signed_up, typed, wire, Cluster};
 
 fn shared_kv_wasm() -> Vec<u8> {
     harness::fixture("apps/kv-store-with-shared-storage")
 }
 
 async fn map_get(cl: &Client, app: &str, key: &str) -> Value {
-    cl.view(app, "mapGet", json!({ "key": key }), Consistency::Strong)
+    cl.apps()
+        .view(
+            app,
+            "mapGet",
+            Some(json!({ "key": key })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap()
         .result
@@ -42,30 +42,40 @@ async fn a_non_writers_map_write_is_refused_and_a_writers_lands() {
     // Alice creates the app, so `init` makes her the map's only writer.
     let (alice, _a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let bundle = alice.upload_bundle(shared_kv_wasm()).await.unwrap();
-    let created = alice
-        .post("apps", json!({ "name": "shared-kv", "bundle": bundle }))
+    let bundle = alice
+        .packages()
+        .bundle_put(shared_kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = alice
+        .apps()
+        .create(typed(json!({ "name": "shared-kv", "bundle": bundle })))
+        .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     let _ok = alice
-        .post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "accounts", "accounts": [bob_id] } }),
+        .apps()
+        .access(
+            &app,
+            typed(json!({ "kind": "accounts", "accounts": [bob_id] })),
         )
         .await
         .unwrap();
 
     // Bob may call the app, but he is not in the map's writer set.
     let forged = bob
+        .apps()
         .call(
             &app,
             "mapSet",
-            json!({ "key": "evil", "value": "forged" }),
+            Some(json!({ "key": "evil", "value": "forged" })),
+            None,
             None,
         )
         .await;
@@ -85,10 +95,12 @@ async fn a_non_writers_map_write_is_refused_and_a_writers_lands() {
 
     // The writer's write still lands, and every caller reads it.
     let _ok = alice
+        .apps()
         .call(
             &app,
             "mapSet",
-            json!({ "key": "theme", "value": "dark" }),
+            Some(json!({ "key": "theme", "value": "dark" })),
+            None,
             None,
         )
         .await

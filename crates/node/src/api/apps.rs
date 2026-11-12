@@ -248,16 +248,18 @@ async fn app_create(
     let confirm_methods: Vec<String> = Vec::new();
     // Past a release deadline the app's approver has not met, no new app;
     // `CreateApp` asks again at the same time.
-    if let Some(stall) =
-        node.sys(|s| s.stalled_for_bundle(&bundle, body.org.as_deref(), &owner, now))
-    {
+    if let Some(stall) = node.sys(|s| {
+        let governing = s.governing(release.as_ref(), &bundle, now);
+        s.stalled_for_release(governing, body.org.as_deref(), &owner, now)
+    }) {
         return Err(crate::node::stalled(&stall));
     }
     // Only nodes on an approved release (the publisher's, the owner's for an
     // unbound package, or the operator's where the deployment gave it
     // release approvals) may hold the app.
     let approved = node.sys(|s| {
-        s.approved_for_bundle(&bundle, body.org.as_deref(), &owner)
+        let governing = s.governing(release.as_ref(), &bundle, now);
+        s.approved_for_release(governing, body.org.as_deref(), &owner)
             .cloned()
     });
     // Nor a node whose runtime is older than the release needs.

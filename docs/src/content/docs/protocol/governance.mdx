@@ -105,7 +105,9 @@ which releases may receive it:
   every package it publishes, its customers' included. An app whose package's
   key is not bound yet, or that runs a raw bundle, is judged by its owning
   organization's set, or its owner account's outside one
-  (`SystemState::approved_for_bundle`). The release of the node an organization
+  (`SystemState::approved_for_release`). The package is that of the release
+  the instance runs (`AppRecord::release`), never merely of whichever release
+  first shipped the same WASM. The release of the node an organization
   was created through, or an account signed up through, is approved from the
   start.
 - **Changing it.** `POST /orgs/{org}/releases` `{ version, approved }` by a

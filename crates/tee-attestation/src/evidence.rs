@@ -21,7 +21,7 @@ use crate::quote::Quote;
 use crate::error::AttestationError;
 #[cfg(feature = "mock-attestation")]
 use crate::generate::{create_mock_quote, is_mock_quote, MOCK_QUOTE_HEADER};
-use crate::verify::parse_tdx_quote;
+use crate::verify::{is_debug_td, parse_tdx_quote};
 
 /// What an offline check of attestation evidence established.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,7 +53,8 @@ pub struct EvidenceVerdict {
 /// # Errors
 /// - `QuoteParsingFailed` if the quote does not parse;
 /// - `CollateralFetchFailed` if a real quote comes without collateral;
-/// - `QuoteVerificationFailed` if the signature chain does not verify;
+/// - `QuoteVerificationFailed` if the signature chain does not verify, or the
+///   quote is from a debug TD (`TDATTRIBUTES.DEBUG`);
 /// - `ApplicationHashMismatch` if the quote binds a different key.
 pub fn verify_evidence(
     quote_bytes: &[u8],
@@ -67,6 +68,13 @@ pub fn verify_evidence(
     }
 
     let tdx_quote = parse_tdx_quote(quote_bytes)?;
+    // As `verify_attestation`: a debug TD reports a production TD's
+    // measurements while its host can read its memory.
+    if is_debug_td(&tdx_quote.body.tdattributes) {
+        return Err(AttestationError::QuoteVerificationFailed(
+            "the quote is from a debug TD".to_owned(),
+        ));
+    }
     let collateral = collateral.ok_or_else(|| {
         AttestationError::CollateralFetchFailed(
             "evidence for a real quote must carry the collateral it was appraised against"

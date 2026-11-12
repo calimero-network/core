@@ -2,18 +2,11 @@
 //! sealed channels, with the kv fixture component (the cluster itself is in
 //! `harness/cluster.rs`, shared with `benches/cluster_throughput.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use calimero_client::{Client, Consistency, Error, Policy};
+use calimero_client::types::{AppCreateRequest, OrgRole, TeamJoin, ViewsRequestConsistency};
+use calimero_client::{Client, Error, Policy, Request};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::run;
 use futures_util::StreamExt;
@@ -22,7 +15,8 @@ use serde_json::{json, Value};
 #[path = "harness/cluster.rs"]
 mod harness;
 
-use harness::{free_port, kv_wasm, node_config, signed_up, Cluster, ORIGIN};
+use harness::{free_port, kv_wasm, node_config, signed_up, typed, wire, Cluster, ORIGIN};
+use reqwest::Method;
 
 const EVENTUALLY_DEADLINE: Duration = Duration::from_secs(60); // sized for a loaded CI runner
 
@@ -65,12 +59,17 @@ impl Cluster {
         let at = self.nodes.iter().position(Option::is_some).unwrap();
         let _ = ops_at(self, at)
             .await
-            .post_operator_signed(
-                "ops/nodes",
-                json!({ "id": id, "addr": url, "zone": "" }),
-                &harness::operator_sign,
+            .ops()
+            .register_node(
+                id,
+                &url,
+                Some(""),
+                None,
+                None,
+                Some(&harness::operator_sign),
             )
             .await
+            .map(wire)
             .unwrap();
         self.nodes.push(Some(starting.await.unwrap().unwrap()));
         self._dirs.push(dir);
@@ -117,7 +116,14 @@ async fn set_through(cl: &Client, app: &str, key: &str, value: &str) -> Result<(
     let mut wrote = Err(String::new());
     for _ in 0..100 {
         wrote = cl
-            .call(app, "set", json!({ "key": key, "value": value }), None)
+            .apps()
+            .call(
+                app,
+                "set",
+                Some(json!({ "key": key, "value": value })),
+                None,
+                None,
+            )
             .await
             .map(|_| ())
             .map_err(|e| e.to_string());
@@ -245,14 +251,19 @@ async fn a_removed_nodes_sessions_are_refused() {
     let session = without_refresh(full.clone());
     let other = c.client(0);
     other.use_session(session).await;
-    let _me = other.me().await.expect("another node takes the session");
+    let _me = other
+        .auth()
+        .me()
+        .await
+        .expect("another node takes the session");
 
     let mut removed = false;
     for _ in 0..100 {
         let leader = system_leader(&c).await;
         if ops_at(&c, leader)
             .await
-            .delete_operator_signed(&format!("ops/nodes/{new_id}"), &harness::operator_sign)
+            .ops()
+            .remove_node(&new_id.to_string(), Some(&harness::operator_sign))
             .await
             .is_ok()
         {
@@ -264,7 +275,7 @@ async fn a_removed_nodes_sessions_are_refused() {
     assert!(removed, "node {new_id} was never removed");
     let mut answer = Ok(Value::Null);
     for _ in 0..50 {
-        answer = other.me().await;
+        answer = other.auth().me().await.map(wire);
         if answer.is_err() {
             break;
         }
@@ -279,8 +290,10 @@ async fn a_removed_nodes_sessions_are_refused() {
     let refreshing = c.client(0);
     refreshing.use_session(full.clone()).await;
     let me = refreshing
+        .auth()
         .me()
         .await
+        .map(wire)
         .expect("the client refreshes the session on its own");
     assert!(me["accountId"].is_string(), "{me}");
     let now = refreshing.session().await.unwrap();
@@ -298,8 +311,10 @@ async fn a_sign_in_begun_on_one_node_finishes_on_another() {
     let (_alice, mut pk) = signed_up(&c, 0, "alice").await;
     let begin = c
         .client(0)
-        .post("auth/passkey/login/begin", json!({}))
+        .auth()
+        .login_begin(None)
         .await
+        .map(wire)
         .unwrap();
     let challenge =
         calimero_identity::from_b64url(begin["options"]["challenge"].as_str().unwrap()).unwrap();
@@ -309,14 +324,16 @@ async fn a_sign_in_begun_on_one_node_finishes_on_another() {
     });
     let s = c
         .client(1)
-        .post("auth/passkey/login/finish", finish.clone())
+        .transport()
+        .json(Request::new(Method::POST, "auth/passkey/login/finish").json(finish.clone()))
         .await
         .unwrap();
     assert!(s["sessionToken"].is_string(), "{s}");
     for i in [0, 2] {
         let e = c
             .client(i)
-            .post("auth/passkey/login/finish", finish.clone())
+            .transport()
+            .json(Request::new(Method::POST, "auth/passkey/login/finish").json(finish.clone()))
             .await
             .unwrap_err();
         assert_eq!(e.code(), Some("UNKNOWN_CHALLENGE"), "{e}");
@@ -436,38 +453,46 @@ async fn a_quota_post_changes_only_what_it_names() {
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
     let _ok = ops
-        .post_operator_signed(
-            "ops/quotas",
-            json!({ "maxAccounts": 7 }),
-            &harness::operator_sign,
+        .ops()
+        .quotas_set(
+            typed(json!({ "maxAccounts": 7 })),
+            Some(&harness::operator_sign),
         )
         .await
         .unwrap();
     let _ok = ops
-        .post_operator_signed(
-            "ops/quotas",
-            json!({ "maxOrgsPerAccount": 3 }),
-            &harness::operator_sign,
+        .ops()
+        .quotas_set(
+            typed(json!({ "maxOrgsPerAccount": 3 })),
+            Some(&harness::operator_sign),
         )
         .await
         .unwrap();
-    let q = ops.get("ops/quotas").await.unwrap();
+    let q = ops.ops().quotas_get().await.map(wire).unwrap();
     assert_eq!(q["maxAccounts"], json!(7), "{q}");
     assert_eq!(q["maxOrgsPerAccount"], json!(3), "{q}");
     let e = ops
-        .post_operator_signed(
-            "ops/quotas",
-            json!({ "maxAcounts": 1 }),
-            &harness::operator_sign,
+        .transport()
+        .approved(
+            Request::new(Method::POST, "ops/quotas").json(json!({ "maxAcounts": 1 })),
+            None,
+            Some(&harness::operator_sign),
         )
         .await
         .unwrap_err();
     assert!(e.to_string().contains("maxAcounts"), "{e}");
-    assert_eq!(ops.get("ops/quotas").await.unwrap(), q);
+    assert_eq!(ops.ops().quotas_get().await.map(wire).unwrap(), q);
 }
 
 async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
-    cl.view(app, method, args, Consistency::Strong)
+    cl.apps()
+        .view(
+            app,
+            method,
+            Some(args),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap()
         .result
@@ -491,10 +516,27 @@ fn conflicts(c: &Cluster) -> u64 {
 async fn the_first_call_after_a_leader_change_commits_without_a_rerun() {
     let mut c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
     let _r = alice
-        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "a", "value": "1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let after_init = conflicts(&c);
@@ -508,7 +550,14 @@ async fn the_first_call_after_a_leader_change_commits_without_a_rerun() {
     let mut done = false;
     for _ in 0..40 {
         if alice_other
-            .call(&app, "set", json!({ "key": "a", "value": "2" }), None)
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "a", "value": "2" })),
+                None,
+                None,
+            )
             .await
             .is_ok()
         {
@@ -530,16 +579,22 @@ async fn the_first_call_after_a_leader_change_commits_without_a_rerun() {
 }
 
 async fn deploy(cl: &Client, name: &str, wasm: Vec<u8>, options: Value) -> (String, String) {
-    let bundle = cl.upload_bundle(wasm).await.unwrap();
-    let mut body = json!({ "name": name, "bundle": bundle });
-    if let (Some(o), Some(b)) = (options.as_object(), body.as_object_mut()) {
-        b.extend(o.clone());
-    }
-    let created = cl.post("apps", body).await.unwrap();
-    (
-        created["appId"].as_str().unwrap().to_owned(),
-        created["contextId"].as_str().unwrap().to_owned(),
-    )
+    let bundle = cl
+        .packages()
+        .bundle_put(wasm)
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = cl
+        .apps()
+        .create(AppCreateRequest {
+            name: Some(name.to_owned()),
+            bundle: Some(bundle),
+            ..typed(options)
+        })
+        .await
+        .unwrap();
+    (created.app_id, created.context_id)
 }
 
 /// Poll a strong view until `done` holds (follow-ups run after their entry).
@@ -554,7 +609,14 @@ async fn eventually(
     let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
     while tokio::time::Instant::now() < deadline {
         if let Ok(v) = cl
-            .view(app, method, args.clone(), Consistency::Strong)
+            .apps()
+            .view(
+                app,
+                method,
+                Some(args.clone()),
+                Some(ViewsRequestConsistency::Strong),
+                None,
+            )
             .await
         {
             if done(&v.result) {
@@ -576,11 +638,12 @@ async fn a_blob_too_large_to_reach_the_other_nodes_is_refused_up_front() {
     let (alice, _a) = signed_up(&c, 0, "alice").await;
     let (files, _) = deploy(&alice, "files", kv_wasm(), json!({})).await;
     let e = alice
-        .upload_blob(&files, vec![7u8; 48 * 1024 * 1024])
+        .apps()
+        .blob_upload(&files, vec![7u8; 48 * 1024 * 1024], None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("TOO_LARGE"), "{e}");
-    let listed = alice.get(&format!("apps/{files}/blobs")).await.unwrap();
+    let listed = alice.apps().blob_list(&files).await.map(wire).unwrap();
     assert_eq!(listed["blobs"], json!([]), "{listed}");
 }
 
@@ -595,7 +658,8 @@ async fn an_upload_past_the_sealed_cap_is_answered_413() {
     let cap = calimero_sealed::server::MAX_SEALED_BYTES;
     for size in [cap + 1, 100 << 20] {
         let e = alice
-            .upload_blob(&files, vec![7u8; size])
+            .apps()
+            .blob_upload(&files, vec![7u8; size], None)
             .await
             .unwrap_err();
         let Error::Api {
@@ -608,12 +672,19 @@ async fn an_upload_past_the_sealed_cap_is_answered_413() {
         assert!(message.contains("64 MiB"), "{e}");
     }
     // The session still works after a refusal.
-    let listed = alice.get(&format!("apps/{files}/blobs")).await.unwrap();
+    let listed = alice.apps().blob_list(&files).await.map(wire).unwrap();
     assert_eq!(listed["blobs"], json!([]), "{listed}");
 }
 
 async fn set(cl: &Client, app: &str, v: &str) -> Result<(), Box<calimero_client::Error>> {
-    cl.call(app, "set", json!({ "key": "k", "value": v }), None)
+    cl.apps()
+        .call(
+            app,
+            "set",
+            Some(json!({ "key": "k", "value": v })),
+            None,
+            None,
+        )
         .await
         .map(drop)
         .map_err(Box::new)
@@ -630,38 +701,35 @@ async fn an_owner_opening_their_own_invite_leaves_it_for_the_invitee() {
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (carol, _c) = signed_up(&c, 2, "carol").await;
-    let org = alice.post("orgs", json!({ "name": "Docs" })).await.unwrap()["orgId"]
+    let org = alice.orgs().create("Docs", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let token = alice
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "member" }),
-            &mut a,
-        )
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut a))
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
         .to_owned();
-    let redeem = format!("invites/{token}/redeem");
-    let own = alice.post(&redeem, json!({})).await.unwrap();
+    let own = alice.orgs().invite_redeem(&token).await.map(wire).unwrap();
     assert_eq!(own["org"], json!(org), "{own}");
-    let joined = bob.post(&redeem, json!({})).await.unwrap();
+    let joined = bob.orgs().invite_redeem(&token).await.map(wire).unwrap();
     assert_eq!(joined["org"], json!(org), "{joined}");
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let alice_id = alice.me().await.unwrap()["accountId"]
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let listed = alice.get(&format!("orgs/{org}")).await.unwrap();
+    let listed = alice.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(listed["members"][&bob_id], "member", "{listed}");
     assert_eq!(listed["members"][&alice_id], "owner", "{listed}");
-    let e = carol.post(&redeem, json!({})).await.unwrap_err();
+    let e = carol.orgs().invite_redeem(&token).await.unwrap_err();
     assert_eq!(e.code(), Some("REJECTED"), "{e}");
     assert!(e.to_string().contains("used up"), "{e}");
 }
@@ -678,26 +746,21 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
     let c = Cluster::start(3).await;
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
-    let org = alice.post("orgs", json!({ "name": "Docs" })).await.unwrap()["orgId"]
+    let org = alice.orgs().create("Docs", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let token = alice
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "member" }),
-            &mut a,
-        )
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut a))
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
         .to_owned();
-    let _r = bob
-        .post(&format!("invites/{token}/redeem"), json!({}))
-        .await
-        .unwrap();
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let _r = bob.orgs().invite_redeem(&token).await.unwrap();
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -705,104 +768,119 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
         let e = e.to_string();
         assert!(e.contains(why), "{e}");
     };
-    let bundle = bob.upload_bundle(kv_wasm()).await.unwrap();
+    let bundle = bob
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
 
-    let in_org = json!({ "org": org });
+    let in_org = |name: &str| AppCreateRequest {
+        name: Some(name.to_owned()),
+        bundle: Some(bundle.clone()),
+        org: Some(org.clone()),
+        ..AppCreateRequest::default()
+    };
     refused(
-        bob.create_app("b", &bundle, in_org.clone())
-            .await
-            .unwrap_err(),
+        bob.apps().create(in_org("b")).await.unwrap_err(),
         "CREATE_APP",
     );
     refused(
-        bob.post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "member" }),
-            &mut bob_pk,
-        )
-        .await
-        .unwrap_err(),
+        bob.orgs()
+            .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut bob_pk))
+            .await
+            .unwrap_err(),
         "INVITE_MEMBERS",
     );
 
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/capabilities"),
-            json!({
-                "account": bob_id,
-                "capabilities": CREATE_APP | INVITE_MEMBERS | MANAGE_APPLICATION,
-            }),
-            &mut a,
+        .orgs()
+        .capabilities(
+            &org,
+            u64::from(CREATE_APP | INVITE_MEMBERS | MANAGE_APPLICATION),
+            Some(&bob_id),
+            None,
+            Some(&mut a),
         )
         .await
         .unwrap();
-    let _bobs = bob.create_app("b", &bundle, in_org.clone()).await.unwrap();
+    let _bobs = bob.apps().create(in_org("b")).await.unwrap();
     let _invite = bob
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "member" }),
-            &mut bob_pk,
-        )
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut bob_pk))
         .await
         .unwrap();
     // Never above the member's own role.
     refused(
-        bob.post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "admin" }),
-            &mut bob_pk,
-        )
-        .await
-        .unwrap_err(),
+        bob.orgs()
+            .invite_create(&org, typed(json!({ "role": "admin" })), Some(&mut bob_pk))
+            .await
+            .unwrap_err(),
         "above your own role",
     );
     // Another's org app: only with MANAGE_APPLICATION.
-    let alices = alice.create_app("a", &bundle, in_org).await.unwrap();
-    let next = bob.upload_bundle(variant(&kv_wasm(), "v2")).await.unwrap();
+    let alices = alice
+        .apps()
+        .create(in_org("a"))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let next = bob
+        .packages()
+        .bundle_put(variant(&kv_wasm(), "v2"))
+        .await
+        .map(|b| b.hash)
+        .unwrap();
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "account": bob_id, "capabilities": CREATE_APP | INVITE_MEMBERS }),
-            &mut a,
+        .orgs()
+        .capabilities(
+            &org,
+            u64::from(CREATE_APP | INVITE_MEMBERS),
+            Some(&bob_id),
+            None,
+            Some(&mut a),
         )
         .await
         .unwrap();
     refused(
-        bob.post_confirmed(
-            &format!("apps/{alices}/upgrade"),
-            json!({ "bundle": next }),
-            &mut bob_pk,
-        )
-        .await
-        .unwrap_err(),
+        bob.apps()
+            .upgrade(&alices, typed(json!({ "bundle": next })), Some(&mut bob_pk))
+            .await
+            .unwrap_err(),
         "MANAGE_APPLICATION",
     );
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "account": bob_id, "capabilities": MANAGE_APPLICATION }),
-            &mut a,
+        .orgs()
+        .capabilities(
+            &org,
+            u64::from(MANAGE_APPLICATION),
+            Some(&bob_id),
+            None,
+            Some(&mut a),
         )
         .await
         .unwrap();
     let _upgraded = bob
-        .post_confirmed(
-            &format!("apps/{alices}/upgrade"),
-            json!({ "bundle": next }),
-            &mut bob_pk,
-        )
+        .apps()
+        .upgrade(&alices, typed(json!({ "bundle": next })), Some(&mut bob_pk))
         .await
         .unwrap();
     // Never a personal app.
-    let personal = alice.create_app("p", &bundle, json!({})).await.unwrap();
-    refused(
-        bob.post_confirmed(
-            &format!("apps/{personal}/upgrade"),
-            json!({ "bundle": next }),
-            &mut bob_pk,
-        )
+    let personal = alice
+        .apps()
+        .create(typed(json!({ "name": "p", "bundle": &bundle })))
         .await
-        .unwrap_err(),
+        .map(|a| a.app_id)
+        .unwrap();
+    refused(
+        bob.apps()
+            .upgrade(
+                &personal,
+                typed(json!({ "bundle": next })),
+                Some(&mut bob_pk),
+            )
+            .await
+            .unwrap_err(),
         "403",
     );
 }
@@ -986,23 +1064,34 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
     );
 
     // Production nodes take no raw WASM: it carries no publisher signature.
-    let e = alice.upload_bundle(kv.clone()).await.unwrap_err();
+    let e = alice
+        .packages()
+        .bundle_put(kv.clone())
+        .await
+        .map(|b| b.hash)
+        .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
     // Nor an uploaded package, signed or not, from an account or the
     // operator: every release comes from the registry, so any node that lacks
     // it fetches it there, and none lives only where it was uploaded.
     let signed = mpk("com.test.kv", "1.0.0", &kv, &publisher);
-    let e = alice.upload_package(signed.clone()).await.unwrap_err();
+    let e = alice.packages().upload(signed.clone()).await.unwrap_err();
     assert_eq!(e.code(), Some("UPLOADS_DISABLED"), "{e}");
     let e = ops_at(&c, 0)
         .await
-        .ops_upload_package(signed)
+        .ops()
+        .package_upload(signed)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("UPLOADS_DISABLED"), "{e}");
 
     // Install by name; the node that installs it verifies it first.
-    let installed = alice.install_package("com.test.kv", "1.0.0").await.unwrap();
+    let installed = alice
+        .packages()
+        .install("com.test.kv", "1.0.0")
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(installed["version"], json!("1.0.0"));
     assert_eq!(
         installed["signerId"],
@@ -1011,15 +1100,23 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         ))
     );
     let created = alice
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "kv", "package": "com.test.kv", "version": "1.0.0" }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     let _ = alice
-        .call(&app, "set", json!({ "key": "k", "value": "v1" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -1030,11 +1127,13 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         let cl = c.client(i);
         cl.use_session(session.clone()).await;
         let v = cl
+            .apps()
             .view(
                 &app,
                 "get",
-                json!({ "key": "k" }),
-                Consistency::Stale { min_index: 0 },
+                Some(json!({ "key": "k" })),
+                Some(ViewsRequestConsistency::Stale),
+                Some(0),
             )
             .await
             .unwrap();
@@ -1050,7 +1149,8 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         mpk("com.test.kv", "1.1.0", &kv, &intruder),
     );
     let e = alice
-        .install_package("com.test.kv", "1.1.0")
+        .packages()
+        .install("com.test.kv", "1.1.0")
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
@@ -1082,7 +1182,8 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
     ));
     registry.publish("com.test.kv", "1.2.0", tampered);
     let e = alice
-        .install_package("com.test.kv", "1.2.0")
+        .packages()
+        .install("com.test.kv", "1.2.0")
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_PACKAGE"), "{e}");
@@ -1095,14 +1196,32 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         mpk("com.test.kv", "1.0.1", &v101, &publisher),
     );
     let up = alice
-        .upgrade_app(&app, json!({ "version": "1.0.1" }), &mut alice_key)
+        .apps()
+        .upgrade(
+            &app,
+            typed(json!({ "version": "1.0.1" })),
+            Some(&mut alice_key),
+        )
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(up["status"], json!("ok"), "{up}");
-    let listed = alice.get("apps?package=com.test.kv").await.unwrap();
+    let listed = alice
+        .apps()
+        .list(Some("com.test.kv"), None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(listed["apps"][0]["version"], json!("1.0.1"), "{listed}");
     let v = alice
-        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "get",
+            Some(json!({ "key": "k" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(v.result, json!("v1"), "state survives the upgrade");
@@ -1115,13 +1234,18 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         "2.0.0",
         mpk("com.test.kv", "2.0.0", &v2, &publisher),
     );
-    let _ = alice.install_package("com.test.kv", "2.0.0").await.unwrap();
-    let created = alice
-        .post(
-            "apps",
-            json!({ "name": "kv2", "package": "com.test.kv", "version": "2.0.0" }),
-        )
+    let _ = alice
+        .packages()
+        .install("com.test.kv", "2.0.0")
         .await
+        .unwrap();
+    let created = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "kv2", "package": "com.test.kv", "version": "2.0.0" }),
+        ))
+        .await
+        .map(wire)
         .unwrap();
     let app2 = created["appId"].as_str().unwrap().to_owned();
     let swapped = variant(&kv, "swap");
@@ -1135,11 +1259,13 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         let cl = c.client(i);
         cl.use_session(session.clone()).await;
         match cl
+            .apps()
             .view(
                 &app2,
                 "get",
-                json!({ "key": "k" }),
-                Consistency::Stale { min_index: 0 },
+                Some(json!({ "key": "k" })),
+                Some(ViewsRequestConsistency::Stale),
+                Some(0),
             )
             .await
         {
@@ -1157,22 +1283,31 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
 
     // Uninstall: refused while an app runs the release, done once none does.
     let e = alice
-        .uninstall_package("com.test.kv", Some("1.0.1"))
+        .packages()
+        .version_uninstall("com.test.kv", "1.0.1")
         .await
         .unwrap_err();
     assert!(e.to_string().contains("still runs"), "{e}");
     let _ = alice
-        .uninstall_package("com.test.kv", Some("1.0.0"))
+        .packages()
+        .version_uninstall("com.test.kv", "1.0.0")
         .await
         .unwrap();
-    let _ = alice.delete_app(&app).await.unwrap();
-    let _ = alice.delete_app(&app2).await.unwrap();
+    let _ = alice.apps().delete(&app).await.unwrap();
+    let _ = alice.apps().delete(&app2).await.unwrap();
     let e = alice
-        .call(&app, "set", json!({ "key": "k", "value": "x" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "x" })),
+            None,
+            None,
+        )
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("404"), "{e}");
-    let _ = alice.uninstall_package("com.test.kv", None).await.unwrap();
+    let _ = alice.packages().uninstall("com.test.kv").await.unwrap();
     assert!(alice.packages().list().await.unwrap().packages.is_empty());
 }
 
@@ -1185,21 +1320,32 @@ async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
 
     // An unsigned archive is refused.
     let unsigned = pack(&[("app.wasm", kv.clone())]);
-    let e = alice.upload_package(unsigned).await.unwrap_err();
+    let e = alice.packages().upload(unsigned).await.unwrap_err();
     assert_eq!(e.code(), Some("BAD_PACKAGE"), "{e}");
 
     let installed = alice
-        .upload_package(mpk("com.test.up", "0.1.0", &kv, &publisher))
+        .packages()
+        .upload(mpk("com.test.up", "0.1.0", &kv, &publisher))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(installed["package"], json!("com.test.up"));
     let created = alice
-        .post("apps", json!({ "name": "up", "package": "com.test.up" }))
+        .apps()
+        .create(typed(json!({ "name": "up", "package": "com.test.up" })))
         .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     let _ = alice
-        .call(&app, "set", json!({ "key": "a", "value": "b" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "a", "value": "b" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let session = alice.session().await.unwrap();
@@ -1207,19 +1353,51 @@ async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
         let cl = c.client(i);
         cl.use_session(session.clone()).await;
         let v = cl
+            .apps()
             .view(
                 &app,
                 "get",
-                json!({ "key": "a" }),
-                Consistency::Stale { min_index: 0 },
+                Some(json!({ "key": "a" })),
+                Some(ViewsRequestConsistency::Stale),
+                Some(0),
             )
             .await
             .unwrap();
         assert_eq!(v.result, json!("b"), "node {i}");
     }
-    let p = alice.package("com.test.up").await.unwrap();
+    let p = alice.packages().get("com.test.up").await.map(wire).unwrap();
     assert_eq!(p["latest"], json!("0.1.0"));
     assert_eq!(p["versions"][0]["source"], json!("upload"));
+}
+
+/// `mero-sign --dev`'s key has a public seed, so a release it signed proves
+/// nothing about its publisher: only a development node takes one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_dev_signed_package_is_refused_outside_development() {
+    let dev = ed25519_dalek::SigningKey::from_bytes(&calimero_identity::sha256(
+        b"calimero-dev-signing-key-v1",
+    ));
+    let kv = kv_wasm();
+
+    let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let e = alice
+        .packages()
+        .upload(mpk("com.test.dev", "0.1.0", &kv, &dev))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("DEV_SIGNED_PACKAGE"), "{e}");
+    assert!(alice.packages().list().await.unwrap().packages.is_empty());
+    drop(c);
+
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let installed = alice
+        .packages()
+        .upload(mpk("com.test.dev", "0.1.0", &kv, &dev))
+        .await
+        .unwrap();
+    assert_eq!(installed.signer_id, calimero_bundle::DEV_SIGNER_ID);
 }
 
 /// The names of the packages `cl` lists, with the versions it sees of each.
@@ -1259,35 +1437,31 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (amy, _m) = signed_up(&c, 1, "amy").await;
     let (bob, _b) = signed_up(&c, 2, "bob").await;
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let acme = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let acme = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let invite = alice
-        .post_confirmed(
-            &format!("orgs/{acme}/invites"),
-            json!({ "role": "member" }),
-            &mut a,
-        )
+        .orgs()
+        .invite_create(&acme, typed(json!({ "role": "member" })), Some(&mut a))
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
         .to_owned();
-    let _r = amy
-        .post(&format!("invites/{invite}/redeem"), json!({}))
-        .await
-        .unwrap();
-    let _o = bob.post("orgs", json!({ "name": "Bobco" })).await.unwrap();
+    let _r = amy.orgs().invite_redeem(&invite).await.unwrap();
+    let _o = bob.orgs().create("Bobco", None).await.unwrap();
 
     // Alice uploads a private package (no registry has it).
     let secret = variant(&kv, "secret");
     let _ = alice
-        .upload_package(mpk("com.acme.secret", "1.0.0", &secret, &publisher))
+        .packages()
+        .upload(mpk("com.acme.secret", "1.0.0", &secret, &publisher))
         .await
         .unwrap();
     let only_secret = BTreeMap::from([("com.acme.secret".to_owned(), vec!["1.0.0".to_owned()])]);
@@ -1296,40 +1470,50 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
 
     // Bob, in another organization, sees nothing of it.
     assert_eq!(listed(&bob).await, BTreeMap::new());
-    let e = bob.package("com.acme.secret").await.unwrap_err();
+    let e = bob.packages().get("com.acme.secret").await.unwrap_err();
     assert!(e.to_string().starts_with("404"), "{e}");
     // Approving its outbound hosts answers as for a missing package, before
     // any passkey ceremony.
     for package in ["com.acme.secret", "com.never.installed"] {
         let e = bob
-            .post("auth/outbound", json!({ "package": package }))
+            .auth()
+            .account_outbound_approval(package, None, None, None)
             .await
             .unwrap_err();
         assert!(e.to_string().starts_with("404"), "{package}: {e}");
     }
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
-    let ops_listed = ops.get("ops/packages").await.unwrap()["packages"].clone();
+    let ops_listed = ops.ops().package_list().await.map(wire).unwrap()["packages"].clone();
     assert_eq!(ops_listed, json!([]), "the operator installed none");
 
     // Creating from it answers as for a release the cluster lacks.
-    let named = |package: &str, version: Option<&str>| json!({ "name": "x", "package": package, "version": version });
+    let named = |package: &str, version: Option<&str>| AppCreateRequest {
+        name: Some("x".to_owned()),
+        package: Some(package.to_owned()),
+        version: version.map(str::to_owned),
+        ..AppCreateRequest::default()
+    };
     let hidden = bob
-        .post("apps", named("com.acme.secret", Some("1.0.0")))
+        .apps()
+        .create(named("com.acme.secret", Some("1.0.0")))
         .await
         .unwrap_err();
     let missing = bob
-        .post("apps", named("com.never.installed", Some("1.0.0")))
+        .apps()
+        .create(named("com.never.installed", Some("1.0.0")))
         .await
         .unwrap_err();
     assert!(hidden.to_string().starts_with("404"), "{hidden}");
     assert_eq!(hidden.code(), missing.code(), "{hidden} / {missing}");
     let hidden = bob
-        .post("apps", named("com.acme.secret", None))
+        .apps()
+        .create(named("com.acme.secret", None))
         .await
         .unwrap_err();
     let missing = bob
-        .post("apps", named("com.never.installed", None))
+        .apps()
+        .create(named("com.never.installed", None))
         .await
         .unwrap_err();
     assert_eq!(hidden.code(), Some("VERSION_REQUIRED"), "{hidden}");
@@ -1337,11 +1521,13 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     // Its WASM's hash is no way in either.
     let hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&secret));
     let by_hash = bob
-        .post("apps", json!({ "name": "x", "bundle": hash }))
+        .apps()
+        .create(typed(json!({ "name": "x", "bundle": hash })))
         .await
         .unwrap_err();
     let unknown = bob
-        .post("apps", json!({ "name": "x", "bundle": "00".repeat(32) }))
+        .apps()
+        .create(typed(json!({ "name": "x", "bundle": "00".repeat(32) })))
         .await
         .unwrap_err();
     assert_eq!(by_hash.to_string(), unknown.to_string());
@@ -1350,25 +1536,21 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
 
     // Alice and Amy create apps from it.
     let _ = alice
-        .post("apps", named("com.acme.secret", Some("1.0.0")))
+        .apps()
+        .create(named("com.acme.secret", Some("1.0.0")))
         .await
+        .map(wire)
         .unwrap();
     let shared = amy
-        .post(
-            "apps",
-            json!({
-                "name": "shared", "package": "com.acme.secret",
-                "access": { "kind": "accounts", "accounts": [bob_id] },
-            }),
-        )
-        .await
+        .apps().create(typed(json!({ "name": "shared", "package": "com.acme.secret", "access": { "kind": "accounts", "accounts": [bob_id] } })))
+        .await.map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
     // Once Bob reaches an app running it, he sees that release.
     assert_eq!(listed(&bob).await, only_secret, "Bob reaches {shared}");
-    let _ = amy.delete_app(&shared).await.unwrap();
+    let _ = amy.apps().delete(&shared).await.unwrap();
     assert_eq!(listed(&bob).await, BTreeMap::new());
 
     // A registry release is private to its installers too; Bob installing the
@@ -1378,16 +1560,26 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
         "1.0.0",
         mpk("com.test.kv", "1.0.0", &kv, &publisher),
     );
-    let _ = alice.install_package("com.test.kv", "1.0.0").await.unwrap();
+    let _ = alice
+        .packages()
+        .install("com.test.kv", "1.0.0")
+        .await
+        .unwrap();
     assert!(!listed(&bob).await.contains_key("com.test.kv"));
-    let _ = bob.install_package("com.test.kv", "1.0.0").await.unwrap();
+    let _ = bob
+        .packages()
+        .install("com.test.kv", "1.0.0")
+        .await
+        .unwrap();
     assert_eq!(
         listed(&bob).await,
         BTreeMap::from([("com.test.kv".to_owned(), vec!["1.0.0".to_owned()])])
     );
     let _ = bob
-        .post("apps", named("com.test.kv", Some("1.0.0")))
+        .apps()
+        .create(named("com.test.kv", Some("1.0.0")))
         .await
+        .map(wire)
         .unwrap();
 
     // The operator lists only the releases it installed; those are the
@@ -1399,13 +1591,11 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
         mpk("com.test.ops", "1.0.0", &ops_kv, &publisher),
     );
     let _ = ops
-        .post(
-            "ops/packages/install",
-            json!({ "package": "com.test.ops", "version": "1.0.0" }),
-        )
+        .ops()
+        .package_install("com.test.ops", "1.0.0")
         .await
         .unwrap();
-    let ops_listed = ops.get("ops/packages").await.unwrap()["packages"].clone();
+    let ops_listed = ops.ops().package_list().await.map(wire).unwrap()["packages"].clone();
     let names: Vec<&str> = ops_listed
         .as_array()
         .unwrap()
@@ -1432,7 +1622,7 @@ async fn a_reused_refresh_token_revokes_the_session_on_a_lagging_node() {
         thief.use_session(stolen).await;
         let e = thief.refresh().await.unwrap_err().to_string();
         assert!(e.contains("already used"), "round {round}: {e}");
-        let e = owner.me().await.unwrap_err().to_string();
+        let e = owner.auth().me().await.unwrap_err().to_string();
         assert!(e.starts_with("401"), "round {round}: {e}");
     }
 }
@@ -1448,17 +1638,18 @@ async fn sessions_confirmations_and_key_scopes_hold() {
     let phone_cred = laptop.add_passkey(&mut phone_key, &mut pk).await.unwrap();
     let phone = c.client(1);
     let _s = phone.sign_in(&mut phone_key).await.unwrap();
-    assert!(phone.me().await.is_ok());
+    assert!(phone.auth().me().await.is_ok());
     let _ok = laptop
-        .delete_confirmed(&format!("auth/passkeys/{phone_cred}"), &mut pk)
+        .auth()
+        .passkey_remove(&phone_cred, Some(&mut pk))
         .await
         .unwrap();
-    let e = phone.me().await.unwrap_err();
+    let e = phone.auth().me().await.unwrap_err();
     assert!(e.to_string().starts_with("401"), "{e}");
     let e = phone.refresh().await.unwrap_err();
     assert!(e.to_string().starts_with("401"), "{e}");
     assert!(
-        laptop.me().await.is_ok(),
+        laptop.auth().me().await.is_ok(),
         "the other device stays signed in"
     );
 
@@ -1469,14 +1660,21 @@ async fn sessions_confirmations_and_key_scopes_hold() {
     thief.use_session(before).await;
     let e = thief.refresh().await.unwrap_err();
     assert!(e.to_string().contains("already used"), "{e}");
-    let e = laptop.me().await.unwrap_err();
+    let e = laptop.auth().me().await.unwrap_err();
     assert!(e.to_string().starts_with("401"), "{e}");
 
     // 6. A confirm method (the kv fixture's `clear`) does not answer through /views.
     let (bob, mut pk) = signed_up(&c, 0, "bob").await;
     let (app, _ctx) = deploy(&bob, "kv", kv_wasm(), json!({})).await;
     let e = bob
-        .view(&app, "clear", json!({}), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "clear",
+            Some(json!({})),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
@@ -1484,22 +1682,40 @@ async fn sessions_confirmations_and_key_scopes_hold() {
 
     // 7. A read-only key installs nothing; an app-scoped key starts no app.
     let (_id, read_only) = bob
-        .create_api_key(json!({ "readOnly": true }), &mut pk)
+        .auth()
+        .apikey_create(typed(json!({ "readOnly": true })), Some(&mut pk))
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
     let svc = c.client(0);
     svc.use_api_key(&read_only).await;
-    let e = svc.upload_bundle(kv_wasm()).await.unwrap_err();
+    let e = svc
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
     let (_id, scoped) = bob
-        .create_api_key(json!({ "apps": [app], "methods": ["set"] }), &mut pk)
+        .auth()
+        .apikey_create(
+            typed(json!({ "apps": [app], "methods": ["set"] })),
+            Some(&mut pk),
+        )
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
     let svc = c.client(0);
     svc.use_api_key(&scoped).await;
-    let bundle = bob.upload_bundle(kv_wasm()).await.unwrap();
+    let bundle = bob
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
     let e = svc
-        .post("apps", json!({ "name": "new", "bundle": bundle }))
+        .apps()
+        .create(typed(json!({ "name": "new", "bundle": bundle })))
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
@@ -1518,13 +1734,20 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     .await;
     let (alice, mut key) = signed_up(&c, 0, "alice").await;
     assert_eq!(
-        alice.me().await.unwrap()["approvedReleases"],
+        alice.auth().me().await.map(wire).unwrap()["approvedReleases"],
         json!(["1.0.0"])
     );
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let created = alice
-        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     let mut replicas: Vec<u64> = serde_json::from_value(created["replicas"].clone()).unwrap();
@@ -1535,7 +1758,14 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
         "the unapproved node is placed nothing"
     );
     let _ = alice
-        .call(&app, "set", json!({ "key": "k", "value": "v1" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -1549,24 +1779,23 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     };
     let e = ops(0)
         .await
-        .post_operator_signed(
-            &format!("ops/apps/{app}/replicas"),
-            json!({ "replicas": [1, 2, 3] }),
-            &harness::operator_sign,
-        )
+        .ops()
+        .set_replicas(&app, typed(json!([1, 2, 3])), Some(&harness::operator_sign))
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
 
     // An upgrade needs the owner's passkey over this upgrade.
     let e = alice
-        .post(&format!("apps/{app}/upgrade"), json!({ "bundle": bundle }))
+        .apps()
+        .upgrade(&app, typed(json!({ "bundle": bundle })), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
     let (bob, _bob_key) = signed_up(&c, 1, "bob").await;
     let e = bob
-        .post(&format!("apps/{app}/upgrade"), json!({ "bundle": bundle }))
+        .apps()
+        .upgrade(&app, typed(json!({ "bundle": bundle })), None)
         .await
         .unwrap_err();
     assert!(
@@ -1576,17 +1805,16 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
 
     // The owner approves 2.0.0: now the app may move there, and node 3 serves it.
     let _ok = alice
-        .approve_release(None, "2.0.0", &mut key)
+        .auth()
+        .account_release_approval("2.0.0", None, Some(&mut key))
         .await
+        .map(wire)
         .unwrap();
     let leader = c.app_leader(&app).unwrap();
     let _moved = ops(leader)
         .await
-        .post_operator_signed(
-            &format!("ops/apps/{app}/replicas"),
-            json!({ "replicas": [1, 2, 3] }),
-            &harness::operator_sign,
-        )
+        .ops()
+        .set_replicas(&app, typed(json!([1, 2, 3])), Some(&harness::operator_sign))
         .await
         .unwrap();
     let session = alice.session().await.unwrap();
@@ -1595,11 +1823,13 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     let mut seen = None;
     for _ in 0..100 {
         if let Ok(v) = on3
+            .apps()
             .view(
                 &app,
                 "get",
-                json!({ "key": "k" }),
-                Consistency::Stale { min_index: 0 },
+                Some(json!({ "key": "k" })),
+                Some(ViewsRequestConsistency::Stale),
+                Some(0),
             )
             .await
         {
@@ -1614,24 +1844,31 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
 
     // Withdrawn again: node 3 is sent nothing new.
     let _ok = alice
-        .post_confirmed(
-            "auth/releases",
-            json!({ "version": "2.0.0", "approved": false }),
-            &mut key,
-        )
+        .auth()
+        .account_release_approval("2.0.0", Some(false), Some(&mut key))
         .await
+        .map(wire)
         .unwrap();
     let _ = alice
-        .call(&app, "set", json!({ "key": "k", "value": "v2" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v2" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_secs(2)).await;
     let v = on3
+        .apps()
         .view(
             &app,
             "get",
-            json!({ "key": "k" }),
-            Consistency::Stale { min_index: 0 },
+            Some(json!({ "key": "k" })),
+            Some(ViewsRequestConsistency::Stale),
+            Some(0),
         )
         .await
         .unwrap();
@@ -1648,10 +1885,14 @@ async fn put_in_zones(c: &Cluster, zones: &[&str]) {
     ops.use_api_key("ops-secret").await;
     for (i, zone) in zones.iter().enumerate() {
         let _ = ops
-            .post_operator_signed(
-                "ops/nodes",
-                json!({ "id": i as u64 + 1, "addr": c.urls[i], "zone": zone }),
-                &harness::operator_sign,
+            .ops()
+            .register_node(
+                i as u64 + 1,
+                &c.urls[i],
+                Some(zone),
+                None,
+                None,
+                Some(&harness::operator_sign),
             )
             .await
             .unwrap();
@@ -1675,8 +1916,10 @@ async fn put_in_zones(c: &Cluster, zones: &[&str]) {
 /// The replicas `POST /apps` placed a new kv app on, sorted.
 async fn placed(cl: &Client, bundle: &str, name: &str) -> Vec<u64> {
     let created = cl
-        .post("apps", json!({ "name": name, "bundle": bundle }))
+        .apps()
+        .create(typed(json!({ "name": name, "bundle": bundle })))
         .await
+        .map(wire)
         .unwrap();
     let mut replicas: Vec<u64> = serde_json::from_value(created["replicas"].clone()).unwrap();
     replicas.sort_unstable();
@@ -1693,7 +1936,12 @@ async fn a_new_app_is_placed_across_zones() {
     let c = Cluster::start(4).await;
     put_in_zones(&c, &["a", "a", "b", "c"]).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
 
     // Nothing is placed yet: node 1 (lower id) for zone a, then b and c.
     assert_eq!(placed(&alice, &bundle, "first").await, vec![1, 3, 4]);
@@ -1715,7 +1963,12 @@ async fn placement_across_zones_keeps_to_approved_releases() {
     .await;
     put_in_zones(&c, &["a", "a", "b", "c"]).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
     assert_eq!(placed(&alice, &bundle, "kv").await, vec![1, 2, 3]);
 }
 
@@ -1732,17 +1985,31 @@ async fn answers_carry_receipts_from_attested_replicas() {
     assert_eq!(keys.len(), 3, "every replica attests");
 
     let call = alice
-        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
-    let receipt = call.receipt.clone().unwrap();
+    let receipt = call.receipt.clone();
     assert!(receipt.verify(&keys[&receipt.node], &call.result));
 
     let view = alice
-        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "get",
+            Some(json!({ "key": "k" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
-    let receipt = view.receipt.clone().unwrap();
+    let receipt = view.receipt.clone();
     assert_eq!(receipt.index, view.index);
     assert!(receipt.verify(&keys[&receipt.node], &view.result));
     assert!(!receipt.verify(&keys[&receipt.node], &json!("forged")));
@@ -1770,17 +2037,29 @@ async fn the_nodes_own_commands_cannot_be_called_as_methods() {
         json!({ "access": { "kind": "public" } }),
     )
     .await;
-    let other = alice.upload_bundle(variant(&kv, "other")).await.unwrap();
-    let before = alice.get(&format!("apps/{public}")).await.unwrap()["bundle"].clone();
+    let other = alice
+        .packages()
+        .bundle_put(variant(&kv, "other"))
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let before = alice.apps().get(&public).await.map(wire).unwrap()["bundle"].clone();
 
     for (who, caller) in [("bob", &bob), ("the owner", &alice)] {
         let r = caller
-            .call(&public, "__upgrade", json!({ "bundle": other }), None)
+            .apps()
+            .call(
+                &public,
+                "__upgrade",
+                Some(json!({ "bundle": other })),
+                None,
+                None,
+            )
             .await;
         assert!(r.is_err(), "{who} upgraded through /intents: {r:?}");
     }
     assert_eq!(
-        alice.get(&format!("apps/{public}")).await.unwrap()["bundle"],
+        alice.apps().get(&public).await.map(wire).unwrap()["bundle"],
         before,
         "the bundle is unchanged"
     );
@@ -1788,30 +2067,41 @@ async fn the_nodes_own_commands_cannot_be_called_as_methods() {
     // Alice's private blob, and bob's own app.
     let (private, _) = deploy(&alice, "private", kv.clone(), json!({})).await;
     let up = alice
-        .upload_blob(&private, b"alice's".to_vec())
+        .apps()
+        .blob_upload(&private, b"alice's".to_vec(), None)
         .await
+        .map(wire)
         .unwrap();
     let id = up["id"].as_str().unwrap().to_owned();
     let (mine, _) = deploy(&bob, "mine", kv.clone(), json!({})).await;
     for method in ["__blob", "__blob_forget", "__blob_revoke"] {
         let r = bob
-            .call(&mine, method, json!({ "id": id, "size": 7 }), None)
+            .apps()
+            .call(
+                &mine,
+                method,
+                Some(json!({ "id": id, "size": 7 })),
+                None,
+                None,
+            )
             .await;
         assert!(r.is_err(), "{method} through /intents: {r:?}");
     }
     assert!(
-        bob.download_blob(&mine, &id).await.is_err(),
+        bob.apps().blob_download(&mine, &id, None).await.is_err(),
         "bob cannot read alice's blob through his app"
     );
     assert!(
-        bob.view(
-            &public,
-            "__upgrade",
-            json!({}),
-            calimero_client::Consistency::Strong
-        )
-        .await
-        .is_err(),
+        bob.apps()
+            .view(
+                &public,
+                "__upgrade",
+                Some(json!({})),
+                Some(ViewsRequestConsistency::Strong),
+                None,
+            )
+            .await
+            .is_err(),
         "nor as a view"
     );
 }
@@ -1871,7 +2161,14 @@ async fn a_write_too_large_for_the_log_is_refused_at_once_on_every_node() {
             let started = std::time::Instant::now();
             let big = "x".repeat(size);
             let r = cl
-                .call(&app, "set", json!({ "key": "big", "value": big }), None)
+                .apps()
+                .call(
+                    &app,
+                    "set",
+                    Some(json!({ "key": "big", "value": big })),
+                    None,
+                    None,
+                )
                 .await;
             let e = r.expect_err("an entry over the cap is refused");
             // A component's arguments are capped below the log's entry cap.
@@ -1912,18 +2209,23 @@ async fn the_operator_installs_the_releases_it_upgrades_to() {
     ops.use_api_key("ops-secret").await;
 
     let first = ops
-        .ops_upload_package(mpk("com.test.ops", "1.0.0", &kv, &publisher))
+        .ops()
+        .package_upload(mpk("com.test.ops", "1.0.0", &kv, &publisher))
         .await
+        .map(wire)
         .unwrap_or_else(|e| panic!("the operator installs a release: {e}"));
     assert_eq!(first["version"], "1.0.0");
     let created = alice
-        .post("apps", json!({ "name": "kv", "package": "com.test.ops" }))
+        .apps()
+        .create(typed(json!({ "name": "kv", "package": "com.test.ops" })))
         .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
 
     let _ = ops
-        .ops_upload_package(mpk(
+        .ops()
+        .package_upload(mpk(
             "com.test.ops",
             "1.1.0",
             &variant(&kv, "next"),
@@ -1931,7 +2233,7 @@ async fn the_operator_installs_the_releases_it_upgrades_to() {
         ))
         .await
         .unwrap();
-    let listed = ops.get("ops/packages").await.unwrap();
+    let listed = ops.ops().package_list().await.map(wire).unwrap();
     assert!(listed.to_string().contains("1.1.0"), "{listed}");
     let _ = harness::ops_signed(
         &ops,
@@ -1940,27 +2242,34 @@ async fn the_operator_installs_the_releases_it_upgrades_to() {
     )
     .await
     .unwrap_or_else(|e| panic!("the operator upgrades to its release: {e}"));
-    let a = alice.get("apps?package=com.test.ops").await.unwrap();
+    let a = alice
+        .apps()
+        .list(Some("com.test.ops"), None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(a["apps"][0]["version"], "1.1.0", "{a}");
 
     // A release an account installed stays that account's.
     let _ = alice
-        .upload_package(mpk("com.test.mine", "1.0.0", &kv, &publisher))
+        .packages()
+        .upload(mpk("com.test.mine", "1.0.0", &kv, &publisher))
         .await
+        .map(wire)
         .unwrap();
-    assert!(ops
-        .ops_uninstall_package("com.test.mine", None)
-        .await
-        .is_err());
+    assert!(ops.ops().package_uninstall("com.test.mine").await.is_err());
     // Its own, unused one goes.
     let _ = ops
-        .ops_uninstall_package("com.test.ops", Some("1.0.0"))
+        .ops()
+        .package_version_uninstall("com.test.ops", "1.0.0")
         .await
+        .map(wire)
         .unwrap();
     // Without the token, nothing.
     assert!(c
         .client(2)
-        .ops_upload_package(mpk("com.test.ops", "1.2.0", &kv, &publisher))
+        .ops()
+        .package_upload(mpk("com.test.ops", "1.2.0", &kv, &publisher))
         .await
         .is_err());
 }
@@ -1998,10 +2307,16 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         let (alice, mut pk) = signed_up(&c, 0, "alice").await;
         let kv = kv_wasm();
         let (app, _ctx) = deploy(&alice, "kv", kv.clone(), json!({})).await;
-        let next = alice.upload_bundle(variant(&kv, "next")).await.unwrap();
+        let next = alice
+            .packages()
+            .bundle_put(variant(&kv, "next"))
+            .await
+            .map(|b| b.hash)
+            .unwrap();
         let publisher = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let _ = alice
-            .upload_package(mpk_declaring(
+            .packages()
+            .upload(mpk_declaring(
                 "com.test.gov",
                 "0.1.0",
                 &variant(&kv, "pkg"),
@@ -2017,11 +2332,10 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
         assert_eq!(proven.governance, g, "{g:?}");
         let nonce = calimero_identity::random::<32>();
         let docs = alice
-            .get(&format!(
-                "apps/{app}/attestation?nonce={}",
-                hex::encode(nonce)
-            ))
+            .apps()
+            .attestation(&app, &hex::encode(nonce))
             .await
+            .map(wire)
             .unwrap();
         let mut doc: calimero_client::attest::AttestationDoc =
             serde_json::from_value(docs["replicas"][0]["attestation"].clone()).unwrap();
@@ -2065,7 +2379,7 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
 
         let ops = c.client(1);
         ops.use_api_key("ops-secret").await;
-        let status = ops.get("ops/status").await.unwrap();
+        let status = ops.ops().status().await.map(wire).unwrap();
         assert_eq!(status["governance"], json!(g), "{g:?}");
 
         // App upgrades: exactly one of the two may.
@@ -2081,17 +2395,26 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             "{g:?}: {by_operator:?}"
         );
         let by_owner = alice
-            .upgrade_app(&app, json!({ "bundle": next }), &mut pk)
-            .await;
+            .apps()
+            .upgrade(&app, typed(json!({ "bundle": next })), Some(&mut pk))
+            .await
+            .map(wire);
         assert_eq!(by_owner.is_ok(), !op(g.app_upgrades), "{g:?}: {by_owner:?}");
-        let a = alice.get(&format!("apps/{app}")).await.unwrap();
+        let a = alice.apps().get(&app).await.map(wire).unwrap();
         assert_eq!(
             a["bundle"],
             json!(next),
             "{g:?}: upgraded by whoever holds it"
         );
         let _ = alice
-            .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "k", "value": "v" })),
+                None,
+                None,
+            )
             .await
             .unwrap();
 
@@ -2103,7 +2426,11 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             op(g.releases),
             "{g:?}: {ops_release:?}"
         );
-        let owner_release = alice.approve_release(None, "9.0.0", &mut pk).await;
+        let owner_release = alice
+            .auth()
+            .account_release_approval("9.0.0", None, Some(&mut pk))
+            .await
+            .map(wire);
         assert_eq!(
             owner_release.is_ok(),
             !op(g.releases),
@@ -2119,8 +2446,15 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             "{g:?}: {ops_outbound:?}"
         );
         let owner_outbound = alice
-            .approve_outbound(None, "com.test.gov", None, false, &mut pk)
-            .await;
+            .auth()
+            .account_outbound_approval(
+                "com.test.gov",
+                Some(typed(json!("manifest"))),
+                Some(false),
+                Some(&mut pk),
+            )
+            .await
+            .map(wire);
         assert_eq!(
             owner_outbound.is_ok(),
             !op(g.outbound),
@@ -2132,7 +2466,7 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
 // ---------------------------------------------------------------- orgs, metadata
 
 async fn account_id(cl: &Client) -> String {
-    cl.me().await.unwrap()["accountId"]
+    cl.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -2148,118 +2482,131 @@ async fn org_metadata_labels_and_deletion_work_like_v1() {
     let (bob, _bpk) = signed_up(&c, 1, "bob").await;
     let bob_id = account_id(&bob).await;
     let alice_id = account_id(&alice).await;
-    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let org = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let _ = alice
-        .post_confirmed(
-            &format!("orgs/{org}/members"),
-            json!({ "account": bob_id, "role": "member" }),
-            &mut apk,
-        )
+        .orgs()
+        .set_member(&org, &bob_id, OrgRole::Member, Some(&mut apk))
         .await
         .unwrap();
 
     // Organization metadata: an admin's; a member reads it.
     let _ = alice
-        .set_org_metadata(&org, json!({ "logo": "acme.svg" }))
+        .orgs()
+        .metadata(&org, json!({ "logo": "acme.svg" }))
         .await
+        .map(wire)
         .unwrap();
     assert!(bob
-        .set_org_metadata(&org, json!({ "logo": "x" }))
+        .orgs()
+        .metadata(&org, json!({ "logo": "x" }))
         .await
         .is_err());
-    let o = bob.get(&format!("orgs/{org}")).await.unwrap();
+    let o = bob.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(o["metadata"]["logo"], json!("acme.svg"));
 
     // Member metadata: the member's own, or an admin's; not another member's.
     let _ = bob
-        .set_member_metadata(&org, &bob_id, json!({ "title": "Engineer" }))
+        .orgs()
+        .member_metadata(&org, &bob_id, json!({ "title": "Engineer" }))
         .await
+        .map(wire)
         .unwrap();
     assert!(bob
-        .set_member_metadata(&org, &alice_id, json!({ "title": "x" }))
+        .orgs()
+        .member_metadata(&org, &alice_id, json!({ "title": "x" }))
         .await
         .is_err());
     let _ = alice
-        .set_member_metadata(&org, &bob_id, json!({ "title": "Lead" }))
+        .orgs()
+        .member_metadata(&org, &bob_id, json!({ "title": "Lead" }))
         .await
         .unwrap();
-    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    let o = alice.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(o["memberMetadata"][&bob_id]["title"], json!("Lead"));
     // Over 16 KiB is refused.
     let big = "x".repeat(17 * 1024);
     assert!(alice
-        .set_org_metadata(&org, json!({ "big": big }))
+        .orgs()
+        .metadata(&org, json!({ "big": big }))
         .await
         .is_err());
 
     // App metadata: its owner's or an org admin's; it reads back with the app.
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app = alice
-        .post(
-            "apps",
-            json!({ "name": "kv", "bundle": bundle, "org": org, "metadata": { "icon": "a" } }),
-        )
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "kv", "bundle": bundle, "org": org, "metadata": { "icon": "a" } }),
+        ))
+        .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
     assert_eq!(
-        alice.get(&format!("apps/{app}")).await.unwrap()["metadata"]["icon"],
+        alice.apps().get(&app).await.map(wire).unwrap()["metadata"]["icon"],
         json!("a")
     );
     assert!(bob
-        .set_app_metadata(&app, json!({ "icon": "b" }))
+        .apps()
+        .metadata(&app, json!({ "icon": "b" }))
         .await
         .is_err());
     let _ = alice
-        .set_app_metadata(&app, json!({ "icon": "c" }))
+        .apps()
+        .metadata(&app, json!({ "icon": "c" }))
         .await
         .unwrap();
     assert_eq!(
-        bob.get(&format!("apps/{app}")).await.unwrap()["metadata"]["icon"],
+        bob.apps().get(&app).await.map(wire).unwrap()["metadata"]["icon"],
         json!("c")
     );
 
     // Passkey labels.
-    let cred = alice.me().await.unwrap()["passkeys"][0]["id"]
+    let cred = alice.auth().me().await.map(wire).unwrap()["passkeys"][0]["id"]
         .as_str()
         .unwrap()
         .to_owned();
-    let _ = alice.label_passkey(&cred, "laptop").await.unwrap();
+    let _ = alice.auth().passkey_label(&cred, "laptop").await.unwrap();
     assert_eq!(
-        alice.me().await.unwrap()["passkeys"][0]["label"],
+        alice.auth().me().await.map(wire).unwrap()["passkeys"][0]["label"],
         json!("laptop")
     );
-    assert!(bob.label_passkey(&cred, "mine").await.is_err());
+    assert!(bob.auth().passkey_label(&cred, "mine").await.is_err());
 
     // Deleting the organization: only the owner, with a passkey; its apps go.
     let invite = alice
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "member" }),
-            &mut apk,
-        )
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut apk))
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(bob.delete(&format!("orgs/{org}")).await.is_err());
-    let e = alice.delete(&format!("orgs/{org}")).await.unwrap_err();
+    assert!(bob.orgs().delete(&org, None).await.is_err());
+    let e = alice.orgs().delete(&org, None).await.unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
-    let gone = alice.delete_org(&org, &mut apk).await.unwrap();
-    assert_eq!(gone["apps"], json!([app]));
-    assert!(alice.get(&format!("orgs/{org}")).await.is_err());
-    assert!(alice.get(&format!("apps/{app}")).await.is_err());
-    let (carol, _cpk) = signed_up(&c, 2, "carol").await;
-    assert!(carol
-        .post(&format!("invites/{invite}/redeem"), json!({}))
+    let gone = alice
+        .orgs()
+        .delete(&org, Some(&mut apk))
         .await
-        .is_err());
+        .map(wire)
+        .unwrap();
+    assert_eq!(gone["apps"], json!([app]));
+    assert!(alice.orgs().get(&org).await.is_err());
+    assert!(alice.apps().get(&app).await.is_err());
+    let (carol, _cpk) = signed_up(&c, 2, "carol").await;
+    assert!(carol.orgs().invite_redeem(&invite).await.is_err());
 }
 
 // ---------------------------------------------------------------- blobs, storage
@@ -2281,40 +2628,67 @@ async fn blobs_list_and_delete_and_storage_is_inspectable() {
     .await;
     let (a2, _) = deploy(&alice, "two", kv_wasm(), json!({})).await;
     let bytes = b"the same picture".to_vec();
-    let up = alice.upload_blob(&a1, bytes.clone()).await.unwrap();
+    let up = alice
+        .apps()
+        .blob_upload(&a1, bytes.clone(), None)
+        .await
+        .map(wire)
+        .unwrap();
     let id = up["id"].as_str().unwrap().to_owned();
-    let _ = alice.upload_blob(&a2, bytes.clone()).await.unwrap();
-    let other = alice.upload_blob(&a1, b"another".to_vec()).await.unwrap();
+    let _ = alice
+        .apps()
+        .blob_upload(&a2, bytes.clone(), None)
+        .await
+        .unwrap();
+    let other = alice
+        .apps()
+        .blob_upload(&a1, b"another".to_vec(), None)
+        .await
+        .map(wire)
+        .unwrap();
 
-    let listed = alice.list_blobs(&a1).await.unwrap();
+    let listed = alice.apps().blob_list(&a1).await.map(wire).unwrap();
     assert_eq!(listed["blobs"].as_array().unwrap().len(), 2, "{listed}");
-    let info = alice.blob_info(&a1, &id).await.unwrap();
+    let info = alice.apps().blob_info(&a1, &id).await.map(wire).unwrap();
     assert_eq!(info["size"], json!(bytes.len()));
     // The base58 id apps print works too.
     let b58 = up["blobId"].as_str().unwrap();
-    assert_eq!(alice.blob_info(&a1, b58).await.unwrap()["id"], json!(id));
+    assert_eq!(
+        alice.apps().blob_info(&a1, b58).await.map(wire).unwrap()["id"],
+        json!(id)
+    );
 
     let _ = alice
-        .call(&a1, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &a1,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
-    let storage = alice.app_storage(&a1).await.unwrap();
+    let storage = alice.apps().storage(&a1).await.map(wire).unwrap();
     assert_eq!(storage["blobs"], json!(2), "{storage}");
     assert_eq!(storage["blobBytes"], json!(bytes.len() + b"another".len()));
     assert!(storage["keys"].as_u64().unwrap() >= 1, "{storage}");
-    let abi = alice.app_abi(&a1).await.unwrap();
+    let abi = alice.apps().abi(&a1).await.map(wire).unwrap();
     assert!(abi.get("bundle").is_some(), "{abi}");
-    let usage = alice.usage().await.unwrap();
+    let usage = alice.auth().usage().await.map(wire).unwrap();
     assert_eq!(usage["apps"], json!(2), "{usage}");
     assert!(usage["quotas"]["maxAppsPerAccount"].as_u64().is_some());
 
     // Only the owner (or an org admin) deletes; a caller of a public app cannot.
-    assert!(bob.delete_blob(&a1, &id).await.is_err());
-    let _ = alice.delete_blob(&a1, &id).await.unwrap();
-    assert!(alice.blob_info(&a1, &id).await.is_err());
-    assert!(alice.download_blob(&a1, &id).await.is_err());
+    assert!(bob.apps().blob_delete(&a1, &id).await.is_err());
+    let _ = alice.apps().blob_delete(&a1, &id).await.unwrap();
+    assert!(alice.apps().blob_info(&a1, &id).await.is_err());
+    assert!(alice.apps().blob_download(&a1, &id, None).await.is_err());
     // The other app holds the same bytes: they stay everywhere they were.
-    assert_eq!(alice.download_blob(&a2, &id).await.unwrap(), bytes);
+    assert_eq!(
+        alice.apps().blob_download(&a2, &id, None).await.unwrap(),
+        bytes
+    );
     let held_somewhere = |c: &Cluster| {
         c.nodes
             .iter()
@@ -2325,12 +2699,16 @@ async fn blobs_list_and_delete_and_storage_is_inspectable() {
     assert!(held_somewhere(&c) >= 2, "a majority kept the shared bytes");
 
     // Once the last app lets it go, no node keeps the bytes.
-    let _ = alice.delete_blob(&a2, &id).await.unwrap();
+    let _ = alice.apps().blob_delete(&a2, &id).await.map(wire).unwrap();
     assert_eq!(held_somewhere(&c), 0, "the bytes outlived every app");
     // The app's other blob is untouched.
     let other_id = other["id"].as_str().unwrap();
     assert_eq!(
-        alice.download_blob(&a1, other_id).await.unwrap(),
+        alice
+            .apps()
+            .blob_download(&a1, other_id, None)
+            .await
+            .unwrap(),
         b"another".to_vec()
     );
 }
@@ -2339,7 +2717,7 @@ async fn blobs_list_and_delete_and_storage_is_inspectable() {
 
 async fn finished_run(cl: &Client, org: &str, run: &str) -> Value {
     for _ in 0..200 {
-        let r = cl.upgrade_run(org, run).await.unwrap();
+        let r = cl.orgs().upgrade_status(org, run).await.map(wire).unwrap();
         if r["finished"] == json!(true) {
             return r;
         }
@@ -2357,21 +2735,24 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
     let kv = kv_wasm();
     let _ = alice
-        .upload_package(mpk("com.test.kv", "0.1.0", &kv, &publisher))
+        .packages()
+        .upload(mpk("com.test.kv", "0.1.0", &kv, &publisher))
         .await
         .unwrap();
-    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let org = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let team = |name: &str, parent: Option<&str>| {
         let alice = &alice;
         let org = org.clone();
-        let body = json!({ "name": name, "join": "invite", "parent": parent });
+        let (name, parent) = (name.to_owned(), parent.map(str::to_owned));
         async move {
             alice
-                .post(&format!("orgs/{org}/teams"), body)
+                .orgs()
+                .team_create(&org, &name, TeamJoin::Invite, parent.as_deref())
                 .await
+                .map(wire)
                 .unwrap()["teamId"]
                 .as_str()
                 .unwrap()
@@ -2384,12 +2765,8 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     let mut apps = BTreeMap::new();
     for (name, t) in [("top", &eng), ("below", &web), ("elsewhere", &ops)] {
         let app = alice
-            .post(
-                "apps",
-                json!({ "name": name, "package": "com.test.kv", "org": org,
-                        "access": { "kind": "team", "team": t } }),
-            )
-            .await
+            .apps().create(typed(json!({ "name": name, "package": "com.test.kv", "org": org, "access": { "kind": "team", "team": t } })))
+            .await.map(wire)
             .unwrap()["appId"]
             .as_str()
             .unwrap()
@@ -2397,18 +2774,16 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
         let _prev = apps.insert(name, app);
     }
     let _ = alice
-        .upload_package(mpk("com.test.kv", "0.2.0", &variant(&kv, "v2"), &publisher))
+        .packages()
+        .upload(mpk("com.test.kv", "0.2.0", &variant(&kv, "v2"), &publisher))
         .await
+        .map(wire)
         .unwrap();
 
     // Eng and the teams below it, not ops.
     let run = alice
-        .upgrade_org(
-            &org,
-            json!({ "package": "com.test.kv", "version": "0.2.0", "team": eng, "cascade": true }),
-            &mut pk,
-        )
-        .await
+        .orgs().upgrade(&org, typed(json!({ "package": "com.test.kv", "version": "0.2.0", "team": eng, "cascade": true })), Some(&mut pk))
+        .await.map(wire)
         .unwrap();
     let run_id = run["runId"].as_str().unwrap().to_owned();
     assert_eq!(run["apps"].as_array().unwrap().len(), 2, "{run}");
@@ -2416,21 +2791,25 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     assert_eq!(done["done"].as_array().unwrap().len(), 2, "{done}");
     assert_eq!(done["failed"], json!({}));
     for name in ["top", "below"] {
-        let a = alice.get(&format!("apps/{}", apps[name])).await.unwrap();
+        let a = alice.apps().get(&apps[name]).await.map(wire).unwrap();
         assert_eq!(a["lastUpgrade"]["ok"], json!(true), "{name}: {a}");
         assert_eq!(a["lastUpgrade"]["run"], json!(run_id));
     }
     let untouched = alice
-        .get(&format!("apps/{}", apps["elsewhere"]))
+        .apps()
+        .get(&apps["elsewhere"])
         .await
+        .map(wire)
         .unwrap();
     assert!(untouched.get("lastUpgrade").is_none(), "{untouched}");
     // Still serving after the run.
     let _ = alice
+        .apps()
         .call(
             &apps["below"],
             "set",
-            json!({ "key": "k", "value": "v" }),
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
             None,
         )
         .await
@@ -2440,55 +2819,63 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     // component's upgrade that names a migration is refused (D38).
     let _ = alice
         // A bundle of its own: an app's package is the first release naming its bundle.
-        .upload_package(mpk(
+        .packages().upload(mpk(
             "com.test.checked",
             "1.0.0",
             &variant(&kv, "checked-v1"),
             &publisher,
         ))
-        .await
+        .await.map(wire)
         .unwrap();
     let checked = alice
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "checked", "package": "com.test.checked", "org": org }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
     for k in ["x", "y"] {
         let _ = alice
-            .call(&checked, "set", json!({ "key": k, "value": k }), None)
+            .apps()
+            .call(
+                &checked,
+                "set",
+                Some(json!({ "key": k, "value": k })),
+                None,
+                None,
+            )
             .await
             .unwrap();
     }
     let _ = alice
-        .upload_package(mpk(
+        .packages()
+        .upload(mpk(
             "com.test.checked",
             "2.0.0",
             &variant(&kv, "checked-v2"),
             &publisher,
         ))
         .await
+        .map(wire)
         .unwrap();
     let run = alice
-        .upgrade_org(
-            &org,
-            json!({ "package": "com.test.checked", "version": "2.0.0", "migrate": "migrate_v1" }),
-            &mut pk,
-        )
-        .await
+        .orgs().upgrade(&org, typed(json!({ "package": "com.test.checked", "version": "2.0.0", "migrate": "migrate_v1" })), Some(&mut pk))
+        .await.map(wire)
         .unwrap();
     let failed = finished_run(&alice, &org, run["runId"].as_str().unwrap()).await;
     assert!(failed["failed"].get(&checked).is_some(), "{failed}");
-    let a = alice.get(&format!("apps/{checked}")).await.unwrap();
+    let a = alice.apps().get(&checked).await.map(wire).unwrap();
     assert_eq!(a["lastUpgrade"]["ok"], json!(false), "{a}");
     assert_ne!(a["lastUpgrade"]["error"], Value::Null, "{a}");
     let retry = alice
-        .retry_upgrade_run(&org, run["runId"].as_str().unwrap(), &mut pk)
+        .orgs()
+        .upgrade_retry(&org, run["runId"].as_str().unwrap(), Some(&mut pk), None)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(retry["apps"], json!([checked]), "{retry}");
     let again = finished_run(&alice, &org, retry["runId"].as_str().unwrap()).await;
@@ -2497,23 +2884,31 @@ async fn org_upgrades_run_report_and_retry_and_aliases_name_apps() {
     assert_eq!(again["done"], json!([checked]), "{again}");
 
     // Aliases: this account's names for apps.
-    let _ = alice.set_alias("main", &apps["top"]).await.unwrap();
+    let _ = alice
+        .auth()
+        .alias_set("main", &apps["top"])
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(
-        alice.alias("main").await.unwrap()["appId"],
+        alice.auth().alias_get("main").await.map(wire).unwrap()["appId"],
         json!(apps["top"])
     );
     assert_eq!(
-        alice.aliases().await.unwrap()["aliases"]["main"],
+        alice.auth().alias_list().await.map(wire).unwrap()["aliases"]["main"],
         json!(apps["top"])
     );
     let (bob, _bpk) = signed_up(&c, 1, "bob").await;
-    assert!(bob.alias("main").await.is_err(), "aliases are per account");
     assert!(
-        bob.set_alias("x", &apps["top"]).await.is_err(),
+        bob.auth().alias_get("main").await.is_err(),
+        "aliases are per account"
+    );
+    assert!(
+        bob.auth().alias_set("x", &apps["top"]).await.is_err(),
         "an app bob cannot reach"
     );
-    let _ = alice.delete_alias("main").await.unwrap();
-    assert!(alice.alias("main").await.is_err());
+    let _ = alice.auth().alias_delete("main").await.unwrap();
+    assert!(alice.auth().alias_get("main").await.is_err());
 }
 
 // ---------------------------------------------------------------- presence
@@ -2543,7 +2938,8 @@ async fn presence_reaches_every_node_and_expires() {
     assert_eq!(snap, json!([]));
 
     let _ = alice
-        .publish_presence(&app, 1, Some(b"cursor:3"))
+        .apps()
+        .presence_publish(&app, 1, Some(Some(hex::encode(b"cursor:3")).as_deref()))
         .await
         .unwrap();
     let (_, kind, d) = tokio::time::timeout(Duration::from_secs(5), stream.next())
@@ -2556,7 +2952,7 @@ async fn presence_reaches_every_node_and_expires() {
     // A third node has it too.
     let mut seen = false;
     for _ in 0..100 {
-        if carol.presence(&app).await.unwrap()["present"]
+        if carol.apps().presence_get(&app).await.map(wire).unwrap()["present"]
             .as_array()
             .unwrap()
             .len()
@@ -2571,32 +2967,44 @@ async fn presence_reaches_every_node_and_expires() {
 
     // An older seq does not win; a retract shows alice leaving.
     let _ = alice
-        .publish_presence(&app, 0, Some(b"stale"))
+        .apps()
+        .presence_publish(&app, 0, Some(Some(hex::encode(b"stale")).as_deref()))
+        .await
+        .map(wire)
+        .unwrap();
+    let _ = alice
+        .apps()
+        .presence_publish(&app, 2, Some(None))
         .await
         .unwrap();
-    let _ = alice.publish_presence(&app, 2, None).await.unwrap();
     let (_, _, d) = tokio::time::timeout(Duration::from_secs(5), stream.next())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(d["state"], Value::Null, "{d}");
-    assert_eq!(bob.presence(&app).await.unwrap()["present"], json!([]));
+    assert_eq!(
+        bob.apps().presence_get(&app).await.map(wire).unwrap()["present"],
+        json!([])
+    );
 
     // Heartbeats keep an entry alive past the TTL on every node; silence ends it.
     let _ = alice
-        .publish_presence(&app, 3, Some(b"here"))
+        .apps()
+        .presence_publish(&app, 3, Some(Some(hex::encode(b"here")).as_deref()))
         .await
+        .map(wire)
         .unwrap();
     for _ in 0..4 {
         tokio::time::sleep(Duration::from_secs(2)).await;
         let _ = alice
-            .publish_presence(&app, 3, Some(b"here"))
+            .apps()
+            .presence_publish(&app, 3, Some(Some(hex::encode(b"here")).as_deref()))
             .await
             .unwrap();
     }
     for cl in [&bob, &carol] {
         assert_eq!(
-            cl.presence(&app).await.unwrap()["present"]
+            cl.apps().presence_get(&app).await.map(wire).unwrap()["present"]
                 .as_array()
                 .unwrap()
                 .len(),
@@ -2609,7 +3017,10 @@ async fn presence_reaches_every_node_and_expires() {
     ))
     .await;
     for cl in [&alice, &bob, &carol] {
-        assert_eq!(cl.presence(&app).await.unwrap()["present"], json!([]));
+        assert_eq!(
+            cl.apps().presence_get(&app).await.map(wire).unwrap()["present"],
+            json!([])
+        );
     }
 }
 
@@ -2627,7 +3038,8 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
     let html: &[u8] = b"<!doctype html><html><head><script type=\"module\" src=\"./assets/app.js\"></script></head><body></body></html>";
     let _ = alice
-        .upload_package(mpk_full(
+        .packages()
+        .upload(mpk_full(
             "com.test.site",
             "0.1.0",
             &kv_wasm(),
@@ -2642,7 +3054,8 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
         .await
         .unwrap();
     let _ = alice
-        .upload_package(mpk(
+        .packages()
+        .upload(mpk(
             "com.test.other",
             "0.1.0",
             &variant(&kv_wasm(), "o"),
@@ -2651,11 +3064,12 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
         .await
         .unwrap();
     let other = alice
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "other", "package": "com.test.other", "access": { "kind": "public" } }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
@@ -2737,34 +3151,50 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
     let mut carol_key = SoftAuthenticator::new("localhost", &origin);
     let _s = carol.sign_up(&mut carol_key, "carol").await.unwrap();
     let mine = carol
-        .post(
-            "apps",
-            json!({ "name": "mine", "package": "com.test.site" }),
-        )
+        .apps()
+        .create(typed(json!({ "name": "mine", "package": "com.test.site" })))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
     let _ = carol
-        .call(&mine, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &mine,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     // Not another package's app, even a public one; not the account's keys.
     assert!(carol
-        .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &other,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None
+        )
         .await
         .is_err());
-    assert!(carol.get(&format!("apps/{other}")).await.is_err());
+    assert!(carol.apps().get(&other).await.is_err());
     assert!(carol
-        .post("apps", json!({ "name": "x", "package": "com.test.other" }))
+        .apps()
+        .create(typed(json!({ "name": "x", "package": "com.test.other" })))
         .await
         .is_err());
     assert!(carol
-        .create_api_key(json!({ "label": "k" }), &mut carol_key)
+        .auth()
+        .apikey_create(typed(json!({ "label": "k" })), Some(&mut carol_key))
         .await
+        .map(|k| (k.key_id, k.key))
         .is_err());
-    let listed = carol.get("apps").await.unwrap();
+    let listed = carol.apps().list(None, None).await.map(wire).unwrap();
     assert!(
         listed["apps"]
             .as_array()
@@ -2776,11 +3206,20 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
     // The binding survives a refresh.
     let _ = carol.refresh().await.unwrap();
     assert!(carol
-        .create_api_key(json!({ "label": "k" }), &mut carol_key)
+        .auth()
+        .apikey_create(typed(json!({ "label": "k" })), Some(&mut carol_key))
         .await
+        .map(|k| (k.key_id, k.key))
         .is_err());
     assert!(carol
-        .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &other,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None
+        )
         .await
         .is_err());
 
@@ -2834,16 +3273,32 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
     let mut there_key = SoftAuthenticator::with_key(&carol_key, "localhost", &cluster_origin);
     let _s = carol_there.sign_in(&mut there_key).await.unwrap();
     let _ = carol_there
-        .call(&mine, "set", json!({ "key": "k", "value": "w" }), None)
+        .apps()
+        .call(
+            &mine,
+            "set",
+            Some(json!({ "key": "k", "value": "w" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert!(carol_there
-        .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &other,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None
+        )
         .await
         .is_err());
     assert!(carol_there
-        .create_api_key(json!({ "label": "k" }), &mut there_key)
+        .auth()
+        .apikey_create(typed(json!({ "label": "k" })), Some(&mut there_key))
         .await
+        .map(|k| (k.key_id, k.key))
         .is_err());
 
     // The same person on the cluster's own origin is not bound.
@@ -2851,12 +3306,21 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
     let mut home_key = SoftAuthenticator::with_key(&there_key, "localhost", ORIGIN);
     let _s = carol_home.sign_in(&mut home_key).await.unwrap();
     let _ = carol_home
-        .call(&other, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &other,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert!(carol_home
-        .create_api_key(json!({ "label": "k" }), &mut home_key)
+        .auth()
+        .apikey_create(typed(json!({ "label": "k" })), Some(&mut home_key))
         .await
+        .map(|k| (k.key_id, k.key))
         .is_ok());
 }
 
@@ -2870,7 +3334,8 @@ async fn a_frontend_session_manages_no_organization_and_no_app() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
     let html: &[u8] = b"<!doctype html><html><body></body></html>";
     let _ = alice
-        .upload_package(mpk_full(
+        .packages()
+        .upload(mpk_full(
             "com.test.site",
             "0.1.0",
             &kv_wasm(),
@@ -2882,32 +3347,33 @@ async fn a_frontend_session_manages_no_organization_and_no_app() {
         .await
         .unwrap();
     let app = alice
-        .post(
-            "apps",
-            json!({ "name": "mine", "package": "com.test.site" }),
-        )
+        .apps()
+        .create(typed(json!({ "name": "mine", "package": "com.test.site" })))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let org = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let token = alice
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "member" }),
-            &mut home_key,
+        .orgs()
+        .invite_create(
+            &org,
+            typed(json!({ "role": "member" })),
+            Some(&mut home_key),
         )
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
         .to_owned();
     let (bob, _b) = signed_up(&c, 1, "bob").await;
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -2920,7 +3386,14 @@ async fn a_frontend_session_manages_no_organization_and_no_app() {
     let mut site_key = SoftAuthenticator::with_key(&home_key, "localhost", &origin);
     let _s = site.sign_in(&mut site_key).await.unwrap();
     let _ = site
-        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -2930,88 +3403,84 @@ async fn a_frontend_session_manages_no_organization_and_no_app() {
     };
     forbidden(
         "create an organization",
-        site.post("orgs", json!({ "name": "Evil" })).await,
+        site.orgs().create("Evil", None).await.map(wire),
     );
     forbidden(
         "add a member",
-        site.post(
-            &format!("orgs/{org}/members"),
-            json!({ "account": bob_id, "role": "admin" }),
-        )
-        .await,
+        site.orgs()
+            .set_member(&org, &bob_id, OrgRole::Admin, None)
+            .await
+            .map(wire),
     );
     forbidden(
         "remove a member",
-        site.delete(&format!("orgs/{org}/members/{bob_id}")).await,
+        site.orgs()
+            .remove_member(&org, &bob_id, None)
+            .await
+            .map(wire),
     );
     forbidden(
         "create a team",
-        site.post(
-            &format!("orgs/{org}/teams"),
-            json!({ "name": "t", "join": "invite" }),
-        )
-        .await,
+        site.orgs()
+            .team_create(&org, "t", TeamJoin::Invite, None)
+            .await
+            .map(wire),
     );
     forbidden(
         "set capabilities",
-        site.post(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "capabilities": 0 }),
-        )
-        .await,
+        site.orgs()
+            .capabilities(&org, 0, None, None, None)
+            .await
+            .map(wire),
     );
     forbidden(
         "set a member's rows in several teams",
-        site.post(
-            &format!("orgs/{org}/members/{bob_id}/teams"),
-            json!({ "teams": [{ "team": "x" }] }),
-        )
-        .await,
+        site.orgs()
+            .member_set_teams(&org, &bob_id, typed(json!([{ "team": "x" }])), None)
+            .await
+            .map(wire),
     );
     forbidden(
         "rename the organization",
-        site.post(&format!("orgs/{org}/name"), json!({ "name": "Evil" }))
-            .await,
+        site.orgs().rename(&org, "Evil", None).await.map(wire),
     );
     forbidden(
         "give a member every app added later",
-        site.post(
-            &format!("orgs/{org}/all-apps"),
-            json!({ "account": bob_id, "allApps": true }),
-        )
-        .await,
+        site.orgs()
+            .all_apps(&org, &bob_id, true, None)
+            .await
+            .map(wire),
     );
     forbidden(
         "mint an invite",
-        site.post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
-            .await,
+        site.orgs()
+            .invite_create(&org, typed(json!({ "role": "member" })), None)
+            .await
+            .map(wire),
     );
     forbidden(
         "redeem an invite",
-        site.post(&format!("invites/{token}/redeem"), json!({}))
-            .await,
+        site.orgs().invite_redeem(&token).await.map(wire),
     );
     forbidden(
         "change an app's access",
-        site.post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "public" } }),
-        )
-        .await,
+        site.apps()
+            .access(&app, typed(json!({ "kind": "public" })))
+            .await
+            .map(wire),
     );
-    forbidden("delete an app", site.delete(&format!("apps/{app}")).await);
-    let still = alice.get(&format!("apps/{app}")).await.unwrap();
+    forbidden("delete an app", site.apps().delete(&app).await.map(wire));
+    let still = alice.apps().get(&app).await.map(wire).unwrap();
     assert_ne!(still["access"]["kind"], json!("public"), "{still}");
 
     // On the cluster's own origin the same account still can.
     let _ = alice
-        .post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "public" } }),
-        )
+        .apps()
+        .access(&app, typed(json!({ "kind": "public" })))
         .await
+        .map(wire)
         .unwrap();
-    let _ = alice.delete(&format!("apps/{app}")).await.unwrap();
+    let _ = alice.apps().delete(&app).await.unwrap();
 }
 
 // ---------------------------------------------------------------- joining nodes
@@ -3025,7 +3494,14 @@ async fn a_node_added_to_a_running_cluster_hosts_replicas() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
     let _ = alice
-        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "a", "value": "1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let new = c.join().await;
@@ -3033,10 +3509,14 @@ async fn a_node_added_to_a_running_cluster_hosts_replicas() {
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
     let _ = ops
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": new_id, "addr": c.urls[new], "zone": "b" }),
-            &harness::operator_sign,
+        .ops()
+        .register_node(
+            new_id,
+            &c.urls[new],
+            Some("b"),
+            None,
+            None,
+            Some(&harness::operator_sign),
         )
         .await
         .unwrap();
@@ -3059,7 +3539,7 @@ async fn a_node_added_to_a_running_cluster_hosts_replicas() {
     assert!(status.learners.contains(&new_id), "{status:?}");
 
     // The operator moves a replica onto it, and it serves the app.
-    let replicas: Vec<u64> = alice.get(&format!("apps/{app}")).await.unwrap()["replicas"]
+    let replicas: Vec<u64> = alice.apps().get(&app).await.map(wire).unwrap()["replicas"]
         .as_array()
         .unwrap()
         .iter()
@@ -3070,11 +3550,8 @@ async fn a_node_added_to_a_running_cluster_hosts_replicas() {
     let ops_leader = c.client(app_leader);
     ops_leader.use_api_key("ops-secret").await;
     let _ = ops_leader
-        .post_operator_signed(
-            &format!("ops/apps/{app}/replicas"),
-            json!({ "replicas": new_set }),
-            &harness::operator_sign,
-        )
+        .ops()
+        .set_replicas(&app, typed(json!(new_set)), Some(&harness::operator_sign))
         .await
         .unwrap();
     let session = alice.session().await.unwrap();
@@ -3083,11 +3560,13 @@ async fn a_node_added_to_a_running_cluster_hosts_replicas() {
     let mut served = Value::Null;
     for _ in 0..100 {
         if let Ok(v) = cl
+            .apps()
             .view(
                 &app,
                 "get",
-                json!({ "key": "a" }),
-                Consistency::Stale { min_index: 0 },
+                Some(json!({ "key": "a" })),
+                Some(ViewsRequestConsistency::Stale),
+                Some(0),
             )
             .await
         {
@@ -3115,10 +3594,14 @@ async fn a_replica_move_sent_to_a_node_without_the_app_writes_nothing() {
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
     let _ = ops
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": new_id, "addr": c.urls[new], "zone": "b" }),
-            &harness::operator_sign,
+        .ops()
+        .register_node(
+            new_id,
+            &c.urls[new],
+            Some("b"),
+            None,
+            None,
+            Some(&harness::operator_sign),
         )
         .await
         .unwrap();
@@ -3129,21 +3612,22 @@ async fn a_replica_move_sent_to_a_node_without_the_app_writes_nothing() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let before = alice.get(&format!("apps/{app}")).await.unwrap()["replicas"].clone();
+    let before = alice.apps().get(&app).await.map(wire).unwrap()["replicas"].clone();
     let outside = c.client(new);
     outside.use_api_key("ops-secret").await;
     let e = outside
-        .post_operator_signed(
-            &format!("ops/apps/{app}/replicas"),
-            json!({ "replicas": [2, 3, new_id] }),
-            &harness::operator_sign,
+        .ops()
+        .set_replicas(
+            &app,
+            typed(json!([2, 3, new_id])),
+            Some(&harness::operator_sign),
         )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NOT_LEADER"), "{e}");
     assert!(e.details().unwrap()["leaderUrl"].is_string(), "{e}");
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let after = alice.get(&format!("apps/{app}")).await.unwrap()["replicas"].clone();
+    let after = alice.apps().get(&app).await.map(wire).unwrap()["replicas"].clone();
     assert_eq!(before, after, "nothing was written");
     assert!(joined.hosted(&app).is_none(), "no empty group was started");
 }
@@ -3175,7 +3659,7 @@ async fn the_cluster_version_rises_to_what_every_node_supports() {
     let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
     let mut placement = Value::Null;
     while tokio::time::Instant::now() < deadline {
-        placement = ops.get("ops/placement").await.unwrap();
+        placement = ops.ops().placement().await.map(wire).unwrap();
         if placement["clusterVersion"] == supported && logged_everywhere(&c) {
             break;
         }
@@ -3201,6 +3685,22 @@ async fn the_cluster_version_rises_to_what_every_node_supports() {
             seen.join("\n")
         );
     }
+
+    // At it, the leader writes the release-attribution mark
+    // (`attributeByRelease`) once the cluster holds anything, and every
+    // replica applies it.
+    let _alice = signed_up(&c, 0, "alice").await;
+    let marked = |c: &Cluster| {
+        c.nodes
+            .iter()
+            .flatten()
+            .all(|n| n.node.sys(|s| s.attributes_by_release))
+    };
+    let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
+    while tokio::time::Instant::now() < deadline && !marked(&c) {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(marked(&c), "the release-attribution mark was not written");
 
     // A node on this build supports it, so it joins and learns it.
     let new = c.join().await;
@@ -3228,7 +3728,14 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
     let _ = alice
-        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "a", "value": "1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let new = c.join().await;
@@ -3242,10 +3749,14 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
     };
     let _ = ops(0)
         .await
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": new_id, "addr": c.urls[new], "zone": "b" }),
-            &harness::operator_sign,
+        .ops()
+        .register_node(
+            new_id,
+            &c.urls[new],
+            Some("b"),
+            None,
+            None,
+            Some(&harness::operator_sign),
         )
         .await
         .unwrap();
@@ -3268,13 +3779,15 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
 
     let e = ops(leader)
         .await
-        .delete_operator_signed(&format!("ops/nodes/{gone_id}"), &harness::operator_sign)
+        .ops()
+        .remove_node(&gone_id.to_string(), Some(&harness::operator_sign))
         .await
         .unwrap_err();
     assert!(e.to_string().contains("replica"), "{e}");
     let e = ops(gone)
         .await
-        .delete_operator_signed(&format!("ops/nodes/{gone_id}"), &harness::operator_sign)
+        .ops()
+        .remove_node(&gone_id.to_string(), Some(&harness::operator_sign))
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("421"), "{e}");
@@ -3284,16 +3797,14 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
     let app_leader = c.app_leader(&app).unwrap();
     let _ = ops(app_leader)
         .await
-        .post_operator_signed(
-            &format!("ops/apps/{app}/replicas"),
-            json!({ "replicas": keep }),
-            &harness::operator_sign,
-        )
+        .ops()
+        .set_replicas(&app, typed(json!(keep)), Some(&harness::operator_sign))
         .await
         .unwrap();
     let _ = ops(leader)
         .await
-        .delete_operator_signed(&format!("ops/nodes/{gone_id}"), &harness::operator_sign)
+        .ops()
+        .remove_node(&gone_id.to_string(), Some(&harness::operator_sign))
         .await
         .unwrap();
     let node = &c.nodes[leader].as_ref().unwrap().node;
@@ -3309,7 +3820,14 @@ async fn a_node_is_removed_once_no_app_keeps_a_replica_on_it() {
     assert!(node.sys(|s| !s.nodes.contains_key(&gone_id)));
     // The app keeps serving.
     let v = alice
-        .view(&app, "get", json!({ "key": "a" }), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "get",
+            Some(json!({ "key": "a" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(v.result, json!("1"));
@@ -3324,7 +3842,7 @@ async fn ops_at(c: &Cluster, i: usize) -> Client {
 
 /// The node ids `cl` sees in `ops/placement` for `app`, and each node's app count.
 async fn placement(cl: &Client, app: &str) -> (Vec<u64>, BTreeMap<u64, u64>) {
-    let p = cl.get("ops/placement").await.unwrap();
+    let p = cl.ops().placement().await.map(wire).unwrap();
     let replicas = p["apps"]
         .as_array()
         .unwrap()
@@ -3379,13 +3897,22 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     )
     .await;
     let _ = alice
-        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "a", "value": "1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     // A blob, held by node 1 alone for now.
     let blob = alice
-        .upload_blob(&app, b"held by one node".to_vec())
+        .apps()
+        .blob_upload(&app, b"held by one node".to_vec(), None)
         .await
+        .map(wire)
         .unwrap()["id"]
         .as_str()
         .unwrap()
@@ -3414,12 +3941,17 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     let two = c.join().await;
     let _ = ops_at(&c, 0)
         .await
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": 2, "addr": c.urls[two], "zone": "b" }),
-            &harness::operator_sign,
+        .ops()
+        .register_node(
+            2,
+            &c.urls[two],
+            Some("b"),
+            None,
+            None,
+            Some(&harness::operator_sign),
         )
         .await
+        .map(wire)
         .unwrap();
     for _ in 0..200 {
         if first.system.status().learners.contains(&2) {
@@ -3436,12 +3968,17 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     let three = c.join().await;
     let _ = ops_at(&c, 0)
         .await
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": 3, "addr": c.urls[three], "zone": "c" }),
-            &harness::operator_sign,
+        .ops()
+        .register_node(
+            3,
+            &c.urls[three],
+            Some("c"),
+            None,
+            None,
+            Some(&harness::operator_sign),
         )
         .await
+        .map(wire)
         .unwrap();
     let mut voters = Vec::new();
     for _ in 0..300 {
@@ -3463,22 +4000,18 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     let leader = c.app_leader(&app).unwrap();
     let moved = ops_at(&c, leader)
         .await
-        .post_operator_signed(
-            &format!("ops/apps/{app}/replicas"),
-            json!({ "replicas": [1, 2, 3] }),
-            &harness::operator_sign,
-        )
+        .ops()
+        .set_replicas(&app, typed(json!([1, 2, 3])), Some(&harness::operator_sign))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(moved["status"]["voters"], json!([1, 2, 3]), "{moved}");
     let again = ops_at(&c, leader)
         .await
-        .post_operator_signed(
-            &format!("ops/apps/{app}/replicas"),
-            json!({ "replicas": [3, 2, 1] }),
-            &harness::operator_sign,
-        )
+        .ops()
+        .set_replicas(&app, typed(json!([3, 2, 1])), Some(&harness::operator_sign))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(again["unchanged"], json!(true), "{again}");
     let (replicas, _) = placement(&ops_at(&c, 1).await, &app).await;
@@ -3498,7 +4031,14 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
             let _ = alice2.refresh().await;
         }
         wrote = alice2
-            .call(&app, "set", json!({ "key": "b", "value": "2" }), None)
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "b", "value": "2" })),
+                None,
+                None,
+            )
             .await
             .map_err(|e| e.to_string());
         if wrote.is_ok() {
@@ -3509,14 +4049,25 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     let _ = wrote.expect("a call commits after node 1 stopped");
     // The move handed the bundle and the blob over: node 1 held them alone.
     assert_eq!(
-        alice2.download_blob(&app, &blob).await.unwrap(),
+        alice2
+            .apps()
+            .blob_download(&app, &blob, None)
+            .await
+            .unwrap(),
         b"held by one node".to_vec()
     );
     // Through a node that did not take the write (the kv fixture's `get` is not
     // `#[app::public]`, so the reader signs in).
     let (reader, _r) = signed_up(&c, 2, "reader").await;
     let v = reader
-        .view(&app, "get", json!({ "key": "b" }), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "get",
+            Some(json!({ "key": "b" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(v.result, json!("2"), "a read through another node");
@@ -3525,12 +4076,17 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     let four = c.join().await;
     let _ = ops_at(&c, 1)
         .await
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": 4, "addr": c.urls[four], "zone": "b" }),
-            &harness::operator_sign,
+        .ops()
+        .register_node(
+            4,
+            &c.urls[four],
+            Some("b"),
+            None,
+            None,
+            Some(&harness::operator_sign),
         )
         .await
+        .map(wire)
         .unwrap();
     let mut st = c.nodes[1].as_ref().unwrap().node.system.status();
     for _ in 0..200 {
@@ -3548,7 +4104,13 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     assert_eq!(st.voters, vec![1, 2, 3], "no growth past 3: {st:?}");
     let (_, counts) = placement(&ops_at(&c, 1).await, &app).await;
     assert_eq!(counts.get(&4), Some(&0), "{counts:?}");
-    let p = ops_at(&c, 2).await.get("ops/placement").await.unwrap();
+    let p = ops_at(&c, 2)
+        .await
+        .ops()
+        .placement()
+        .await
+        .map(wire)
+        .unwrap();
     let n4 = p["nodes"]
         .as_array()
         .unwrap()
@@ -3572,12 +4134,10 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
         };
         moved = ops_at(&c, leader)
             .await
-            .post_operator_signed(
-                &format!("ops/apps/{app}/replicas"),
-                json!({ "replicas": [2, 3, 4] }),
-                &harness::operator_sign,
-            )
+            .ops()
+            .set_replicas(&app, typed(json!([2, 3, 4])), Some(&harness::operator_sign))
             .await
+            .map(wire)
             .map_err(|e| e.to_string());
         if moved.is_ok() {
             break;
@@ -3594,11 +4154,13 @@ async fn a_cluster_started_on_one_node_grows_and_survives_losing_it() {
     let mut served = Value::Null;
     for _ in 0..100 {
         if let Ok(v) = on_four
+            .apps()
             .view(
                 &app,
                 "get",
-                json!({ "key": "a" }),
-                Consistency::Stale { min_index: 0 },
+                Some(json!({ "key": "a" })),
+                Some(ViewsRequestConsistency::Stale),
+                Some(0),
             )
             .await
         {
@@ -3624,44 +4186,48 @@ async fn replica_moves_are_idempotent_and_one_at_a_time() {
     let new = c.join().await;
     let _ = ops_at(&c, 0)
         .await
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": 4, "addr": c.urls[new] }),
-            &harness::operator_sign,
+        .ops()
+        .register_node(
+            4,
+            &c.urls[new],
+            None,
+            None,
+            None,
+            Some(&harness::operator_sign),
         )
         .await
+        .map(wire)
         .unwrap();
     let leader = c.app_leader(&app).unwrap();
     let lead = ops_at(&c, leader).await;
-    let path = format!("ops/apps/{app}/replicas");
 
     let same = lead
-        .post_operator_signed(
-            &path,
-            json!({ "replicas": [1, 2, 3] }),
-            &harness::operator_sign,
-        )
+        .ops()
+        .set_replicas(&app, typed(json!([1, 2, 3])), Some(&harness::operator_sign))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(same["unchanged"], json!(true), "{same}");
 
     // Two moves at once, both keeping the leader: one runs, one is refused.
     let me = leader as u64 + 1;
     let others: Vec<u64> = (1..=3).filter(|id| *id != me).collect();
-    let a = json!({ "replicas": [me, others[0], 4] });
-    let b = json!({ "replicas": [me, others[1], 4] });
     let second = ops_at(&c, leader).await;
     let (ra, rb) = tokio::join!(
-        lead.post_operator_signed(&path, a, &harness::operator_sign),
-        second.post_operator_signed(&path, b, &harness::operator_sign)
+        lead.ops()
+            .set_replicas(&app, vec![me, others[0], 4], Some(&harness::operator_sign)),
+        second
+            .ops()
+            .set_replicas(&app, vec![me, others[1], 4], Some(&harness::operator_sign))
     );
+    let (ra, rb) = (ra.map(wire), rb.map(wire));
     let (won, lost) = match (ra, rb) {
         (Ok(w), Err(l)) | (Err(l), Ok(w)) => (w, l),
         other => panic!("exactly one move runs: {other:?}"),
     };
     assert_eq!(lost.code(), Some("MOVE_IN_PROGRESS"), "{lost}");
     let voters = won["status"]["voters"].clone();
-    let recorded = alice.get(&format!("apps/{app}")).await.unwrap()["replicas"].clone();
+    let recorded = alice.apps().get(&app).await.map(wire).unwrap()["replicas"].clone();
     let mut recorded: Vec<u64> = recorded
         .as_array()
         .unwrap()
@@ -3687,7 +4253,14 @@ async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let (kv, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
     let _ = alice
-        .call(&kv, "set", json!({ "key": "a", "value": "1" }), None)
+        .apps()
+        .call(
+            &kv,
+            "set",
+            Some(json!({ "key": "a", "value": "1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let old_leader = c.app_leader(&kv).unwrap();
@@ -3734,12 +4307,10 @@ async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
             if let Some(leader) = c.app_leader(app) {
                 match ops_at(&c, leader)
                     .await
-                    .post_operator_signed(
-                        &format!("ops/apps/{app}/replicas"),
-                        json!({ "replicas": next_ids }),
-                        &harness::operator_sign,
-                    )
+                    .ops()
+                    .set_replicas(app, typed(json!(next_ids)), Some(&harness::operator_sign))
                     .await
+                    .map(wire)
                 {
                     Ok(v) => {
                         moved = Some(v);
@@ -3760,11 +4331,10 @@ async fn nodes_on_the_next_release_keep_the_data_of_the_ones_before() {
             if let Some(leader) = sys_leader(&c) {
                 match ops_at(&c, leader)
                     .await
-                    .delete_operator_signed(
-                        &format!("ops/nodes/{}", gone + 1),
-                        &harness::operator_sign,
-                    )
+                    .ops()
+                    .remove_node(&(gone + 1).to_string(), Some(&harness::operator_sign))
                     .await
+                    .map(wire)
                 {
                     Ok(_) => {
                         removed = true;
@@ -3818,7 +4388,10 @@ async fn the_cluster_key_goes_only_to_the_address_of_a_node_the_cluster_knows() 
     // Node 2's id: the key goes to node 2's address, which (running already)
     // takes no delivery, and the asker gets no key.
     let e = cl
-        .post("internal/cluster-key", ask(&name, 2))
+        .transport()
+        .json(
+            calimero_client::Request::new(Method::POST, "internal/cluster-key").json(ask(&name, 2)),
+        )
         .await
         .unwrap_err();
     assert!(e.to_string().contains("could not be delivered"), "{e}");
@@ -3826,12 +4399,19 @@ async fn the_cluster_key_goes_only_to_the_address_of_a_node_the_cluster_knows() 
         c.nodes[0].as_ref().unwrap().node.cluster_key()
     )));
     let e = cl
-        .post("internal/cluster-key", ask(&name, 9))
+        .transport()
+        .json(
+            calimero_client::Request::new(Method::POST, "internal/cluster-key").json(ask(&name, 9)),
+        )
         .await
         .unwrap_err();
     assert!(e.to_string().contains("not a node of this cluster"), "{e}");
     let e = cl
-        .post("internal/cluster-key", ask("elsewhere", 2))
+        .transport()
+        .json(
+            calimero_client::Request::new(Method::POST, "internal/cluster-key")
+                .json(ask("elsewhere", 2)),
+        )
         .await
         .unwrap_err();
     assert!(e.to_string().contains("another cluster"), "{e}");
@@ -3843,12 +4423,18 @@ async fn the_cluster_key_goes_only_to_the_address_of_a_node_the_cluster_knows() 
         .unwrap();
     let _ = ops_at(&c, leader)
         .await
-        .delete_operator_signed(&format!("ops/nodes/{new_id}"), &harness::operator_sign)
+        .ops()
+        .remove_node(&new_id.to_string(), Some(&harness::operator_sign))
         .await
+        .map(wire)
         .unwrap();
     let e = c
         .client(leader)
-        .post("internal/cluster-key", ask(&name, new_id))
+        .transport()
+        .json(
+            calimero_client::Request::new(Method::POST, "internal/cluster-key")
+                .json(ask(&name, new_id)),
+        )
         .await
         .unwrap_err();
     assert!(e.to_string().contains("not a node of this cluster"), "{e}");
@@ -3897,7 +4483,8 @@ async fn the_cluster_key_goes_only_to_registered_nodes_after_genesis() {
     .unwrap();
     let e = c
         .client(2)
-        .post("internal/cluster-key", ask)
+        .transport()
+        .json(calimero_client::Request::new(Method::POST, "internal/cluster-key").json(ask))
         .await
         .unwrap_err();
     assert!(e.to_string().contains("not a node of this cluster"), "{e}");
@@ -3910,28 +4497,27 @@ async fn an_owner_transfers_an_app_with_their_passkey() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
     let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
     let e = alice
-        .post(&format!("apps/{app}/transfer"), json!({ "to": bob_id }))
+        .apps()
+        .transfer(&app, &bob_id, None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
-    let e = bob
-        .post(&format!("apps/{app}/transfer"), json!({ "to": bob_id }))
-        .await
-        .unwrap_err();
+    let e = bob.apps().transfer(&app, &bob_id, None).await.unwrap_err();
     assert!(!e.to_string().contains("CONFIRM_REQUIRED"), "{e}");
-    let _ = alice
-        .transfer_app(&app, &bob_id, &mut alice_pk)
+    alice
+        .apps()
+        .transfer(&app, &bob_id, Some(&mut alice_pk))
         .await
         .unwrap();
-    let a = bob.get(&format!("apps/{app}")).await.unwrap();
+    let a = bob.apps().get(&app).await.map(wire).unwrap();
     assert_eq!(a["owner"], json!(bob_id), "{a}");
-    assert!(alice.delete(&format!("apps/{app}")).await.is_err());
+    assert!(alice.apps().delete(&app).await.is_err());
 }
 
 /// `--ops-token-sha256`: the node holds only the token's hash, and the token
@@ -3949,17 +4535,17 @@ async fn the_ops_token_can_be_given_as_a_hash_and_metrics_count() {
     let (_app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
     let ops = c.client(0);
     ops.use_api_key("hashed-secret").await;
-    assert!(ops.get("ops/status").await.is_ok());
+    assert!(ops.ops().status().await.is_ok());
     let wrong = c.client(0);
     wrong.use_api_key(&hash).await;
     assert!(
-        wrong.get("ops/status").await.is_err(),
+        wrong.ops().status().await.is_err(),
         "the hash is not the credential"
     );
     wrong.use_api_key("ops-secret").await;
-    assert!(wrong.get("ops/status").await.is_err());
+    assert!(wrong.ops().status().await.is_err());
 
-    let metrics = ops.get_text("ops/metrics").await.unwrap();
+    let metrics = ops.ops().metrics().await.unwrap();
     assert!(metrics.contains("calimero_apps 1"), "{metrics}");
     assert!(metrics.contains("calimero_accounts 1"), "{metrics}");
     assert!(metrics.contains("calimero_system_voters 3"), "{metrics}");
@@ -3967,10 +4553,28 @@ async fn the_ops_token_can_be_given_as_a_hash_and_metrics_count() {
         metrics.contains("# TYPE calimero_hosted_groups gauge"),
         "{metrics}"
     );
-    assert!(
-        alice.get_text("ops/metrics").await.is_err(),
-        "operators only"
-    );
+    assert!(alice.ops().metrics().await.is_err(), "operators only");
+}
+
+/// An empty ops token, or the hash of one, is never a credential: a request
+/// with no `Authorization` header would carry exactly that.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_empty_ops_token_opens_nothing() {
+    use sha2::Digest;
+    let empty_hash = hex::encode(sha2::Sha256::digest(b""));
+    for (token, hash) in [(Some(String::new()), None), (None, Some(empty_hash))] {
+        let c = Cluster::start_with(3, |cfg| {
+            cfg.ops_token = token.clone();
+            cfg.ops_token_sha256 = hash.clone();
+        })
+        .await;
+        let anyone = c.client(0);
+        let e = anyone.ops().status().await.unwrap_err();
+        assert!(e.to_string().starts_with("403"), "{e}");
+        anyone.use_api_key("").await;
+        let e = anyone.ops().status().await.unwrap_err();
+        assert!(e.to_string().starts_with("403"), "{e}");
+    }
 }
 
 /// `--metrics-listen`: the same counts as `/ops/metrics`, in plain HTTP on an
@@ -4029,11 +4633,11 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
     })
     .await;
     let (alice, _pk) = signed_up(&c, 0, "alice-the-billed").await;
-    let alice_id = alice.me().await.unwrap()["accountId"]
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let org = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -4041,10 +4645,12 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
     let (personal, _) = deploy(&alice, "mine", kv_wasm(), json!({})).await;
     for i in 0..3 {
         let _ = alice
+            .apps()
             .call(
                 &app,
                 "set",
-                json!({ "key": format!("k{i}"), "value": "v" }),
+                Some(json!({ "key": format!("k{i}"), "value": "v" })),
+                None,
                 None,
             )
             .await
@@ -4052,13 +4658,27 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
     }
     for _ in 0..2 {
         let v = alice
-            .view(&app, "get", json!({ "key": "k0" }), Consistency::Strong)
+            .apps()
+            .view(
+                &app,
+                "get",
+                Some(json!({ "key": "k0" })),
+                Some(ViewsRequestConsistency::Strong),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(v.result, json!("v"));
     }
     let _ = alice
-        .call(&personal, "set", json!({ "key": "a", "value": "b" }), None)
+        .apps()
+        .call(
+            &personal,
+            "set",
+            Some(json!({ "key": "a", "value": "b" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -4191,7 +4811,14 @@ async fn a_stopped_nodes_store_can_be_inspected() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
     let _ = alice
-        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "a", "value": "1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     c.stop(1).await;
@@ -4220,40 +4847,48 @@ async fn the_client_creates_from_a_package_deletes_confirmed_and_signs_out_every
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let _ = alice
-        .upload_package(mpk("com.test.client", "1.0.0", &kv_wasm(), &publisher))
+        .packages()
+        .upload(mpk("com.test.client", "1.0.0", &kv_wasm(), &publisher))
         .await
         .unwrap();
     let app = alice
-        .create_app_from_package("kv", "com.test.client", Some("1.0.0"), None, json!({}))
+        .apps()
+        .create(typed(
+            json!({ "name": "kv", "package": "com.test.client", "version": "1.0.0" }),
+        ))
         .await
+        .map(|a| a.app_id)
         .unwrap();
     let _ = alice
-        .call(&app, "set", json!({ "key": "a", "value": "1" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "a", "value": "1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
-    let org = alice
-        .post("orgs", json!({ "name": "doomed" }))
-        .await
-        .unwrap()["orgId"]
+    let org = alice.orgs().create("doomed", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let path = format!("orgs/{org}");
-    let refused = alice.delete(&path).await.unwrap_err();
+    let refused = alice.orgs().delete(&org, None).await.unwrap_err();
     assert_eq!(refused.code(), Some("CONFIRM_REQUIRED"));
-    let _ = alice.delete_confirmed(&path, &mut pk).await.unwrap();
+    let _ = alice.orgs().delete(&org, Some(&mut pk)).await.unwrap();
     let status = |e: calimero_client::Error| match e {
         calimero_client::Error::Api { status, .. } => status,
         calimero_client::Error::WrongNode { .. } => 421,
         calimero_client::Error::Transport(e) => panic!("{e}"),
     };
-    assert_eq!(status(alice.get(&path).await.unwrap_err()), 404);
+    assert_eq!(status(alice.orgs().get(&org).await.unwrap_err()), 404);
 
     let laptop = c.client(1);
     let _s = laptop.sign_in(&mut pk).await.unwrap();
-    let _ = alice.sign_out_everywhere().await.unwrap();
-    assert_eq!(status(laptop.get("auth/me").await.unwrap_err()), 401);
+    let _ = alice.auth().logout_all().await.unwrap();
+    assert_eq!(status(laptop.auth().me().await.unwrap_err()), 401);
 }
 
 /// D70: the client gives every call a key of its own (resent unchanged on a
@@ -4264,11 +4899,25 @@ async fn calls_without_a_key_each_run_once() {
     let (alice, _pk) = signed_up(&c, 1, "alice").await;
     let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
     let a = alice
-        .call(&app, "set", json!({ "key": "k", "value": "1" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let b = alice
-        .call(&app, "set", json!({ "key": "k", "value": "1" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert!(
@@ -4278,20 +4927,24 @@ async fn calls_without_a_key_each_run_once() {
         b.index
     );
     let again = alice
+        .apps()
         .call(
             &app,
             "set",
-            json!({ "key": "k", "value": "2" }),
+            Some(json!({ "key": "k", "value": "2" })),
             Some("mine"),
+            None,
         )
         .await
         .unwrap();
     let replay = alice
+        .apps()
         .call(
             &app,
             "set",
-            json!({ "key": "k", "value": "3" }),
+            Some(json!({ "key": "k", "value": "3" })),
             Some("mine"),
+            None,
         )
         .await
         .unwrap();
@@ -4306,20 +4959,37 @@ async fn access_changed_through_one_node_holds_at_once_through_another() {
     let c = Cluster::start(3).await;
     let (alice, _a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
-    let access = format!("apps/{app}/access");
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
     for round in 0..20 {
         let _ok = alice
-            .post(&access, json!({ "access": { "kind": "owner" } }))
+            .apps()
+            .access(&app, typed(json!({ "kind": "owner" })))
             .await
             .unwrap();
         let refused = bob
-            .call(&app, "set", json!({ "key": "k", "value": "no" }), None)
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "k", "value": "no" })),
+                None,
+                None,
+            )
             .await
             .expect_err("a revoked account is refused at once");
         assert_eq!(
@@ -4328,14 +4998,22 @@ async fn access_changed_through_one_node_holds_at_once_through_another() {
             "round {round}: {refused}"
         );
         let _ok = alice
-            .post(
-                &access,
-                json!({ "access": { "kind": "accounts", "accounts": [bob_id] } }),
+            .apps()
+            .access(
+                &app,
+                typed(json!({ "kind": "accounts", "accounts": [bob_id] })),
             )
             .await
             .unwrap();
         let _r = bob
-            .call(&app, "set", json!({ "key": "k", "value": "yes" }), None)
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "k", "value": "yes" })),
+                None,
+                None,
+            )
             .await
             .unwrap_or_else(|e| {
                 panic!("round {round}: a granted account is admitted at once: {e}")
@@ -4350,28 +5028,30 @@ async fn access_changed_through_one_node_holds_at_once_through_another() {
 async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice-the-metrics-user").await;
-    let alice_id = alice.me().await.unwrap()["accountId"]
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
     let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
     for i in 0..3 {
         let _ = alice
+            .apps()
             .call(
                 &app,
                 "set",
-                json!({ "key": format!("k{i}"), "value": "v" }),
+                Some(json!({ "key": format!("k{i}"), "value": "v" })),
+                None,
                 None,
             )
             .await
             .unwrap();
     }
-    let refused = alice.get("apps/no-such-app").await.expect_err("404");
+    let refused = alice.apps().get("no-such-app").await.expect_err("404");
     assert_eq!(refused.code(), Some("NOT_FOUND"), "{refused}");
 
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
-    let metrics = ops.get_text("ops/metrics").await.unwrap();
+    let metrics = ops.ops().metrics().await.unwrap();
     let line = |prefix: &str| {
         metrics
             .lines()
@@ -4434,11 +5114,25 @@ async fn wasm_runs_and_a_calls_run_and_commit_are_timed() {
     let (alice, _pk) = signed_up(&c, 0, "alice-the-timed").await;
     let (app, _) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
     let _ = alice
-        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let v = alice
-        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "get",
+            Some(json!({ "key": "k" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(v.result, json!("v"));
@@ -4491,7 +5185,7 @@ const APPROVE_RELEASES: u32 = 1 << 10;
 
 /// An account's id, from `/auth/me`.
 async fn id_of(cl: &Client) -> String {
-    cl.me().await.unwrap()["accountId"]
+    cl.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -4506,20 +5200,19 @@ async fn join(
     role: &str,
 ) {
     let token = inviter
-        .post_confirmed(&format!("orgs/{org}/invites"), json!({ "role": role }), pk)
+        .orgs()
+        .invite_create(org, typed(json!({ "role": role })), Some(&mut *pk))
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
         .to_owned();
-    let _r = who
-        .post(&format!("invites/{token}/redeem"), json!({}))
-        .await
-        .unwrap();
+    let _r = who.orgs().invite_redeem(&token).await.unwrap();
 }
 
 async fn new_org(cl: &Client, name: &str) -> String {
-    cl.post("orgs", json!({ "name": name })).await.unwrap()["orgId"]
+    cl.orgs().create(name, None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -4546,36 +5239,42 @@ async fn approving_an_organizations_releases_needs_approve_releases() {
     join((&alice, &mut alice_pk), &bob, &org, "member").await;
     join((&alice, &mut alice_pk), &carol, &org, "admin").await;
     let bob_id = id_of(&bob).await;
-    let caps = format!("orgs/{org}/capabilities");
 
     let e = bob
-        .approve_release(Some(&org), "9.0.0", &mut bob_pk)
+        .orgs()
+        .release_approval(&org, "9.0.0", None, Some(&mut bob_pk))
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
     assert!(e.to_string().contains("APPROVE_RELEASES"), "{e}");
 
     let _ok = alice
-        .post_confirmed(
-            &caps,
-            json!({ "account": bob_id, "capabilities": APPROVE_RELEASES }),
-            &mut alice_pk,
+        .orgs()
+        .capabilities(
+            &org,
+            u64::from(APPROVE_RELEASES),
+            Some(&bob_id),
+            None,
+            Some(&mut alice_pk),
         )
         .await
         .unwrap();
     let _ok = bob
-        .approve_release(Some(&org), "9.0.0", &mut bob_pk)
+        .orgs()
+        .release_approval(&org, "9.0.0", None, Some(&mut bob_pk))
         .await
         .unwrap();
     let _ok = carol
-        .approve_release(Some(&org), "9.1.0", &mut carol_pk)
+        .orgs()
+        .release_approval(&org, "9.1.0", None, Some(&mut carol_pk))
         .await
         .unwrap();
     let _ok = alice
-        .approve_release(Some(&org), "9.2.0", &mut alice_pk)
+        .orgs()
+        .release_approval(&org, "9.2.0", None, Some(&mut alice_pk))
         .await
         .unwrap();
-    let view = alice.get(&format!("orgs/{org}")).await.unwrap();
+    let view = alice.orgs().get(&org).await.map(wire).unwrap();
     let approvers: Vec<String> = serde_json::from_value(view["releaseApprovers"].clone()).unwrap();
     assert!(approvers.contains(&bob_id), "{view}");
     assert_eq!(approvers.len(), 3, "{view}");
@@ -4587,28 +5286,29 @@ async fn approving_an_organizations_releases_needs_approve_releases() {
     }
 
     let _ok = alice
-        .post_confirmed(
-            &caps,
-            json!({ "account": bob_id, "capabilities": 0 }),
-            &mut alice_pk,
-        )
+        .orgs()
+        .capabilities(&org, 0, Some(&bob_id), None, Some(&mut alice_pk))
         .await
+        .map(wire)
         .unwrap();
     let e = bob
-        .approve_release(Some(&org), "9.3.0", &mut bob_pk)
+        .orgs()
+        .release_approval(&org, "9.3.0", None, Some(&mut bob_pk))
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "revoked: {e}");
 
     let e = dan
-        .approve_release(Some(&org), "9.3.0", &mut dan_pk)
+        .orgs()
+        .release_approval(&org, "9.3.0", None, Some(&mut dan_pk))
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("404"), "an outsider: {e}");
 
     let e = ops(&c)
         .await
-        .post("ops/releases", json!({ "version": "9.4.0" }))
+        .ops()
+        .release("9.4.0", None, None)
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "the operator: {e}");
@@ -4639,16 +5339,37 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     .await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
     set(&alice, &app, "v1").await.unwrap();
 
     // Announced for later: nothing changes yet, and anyone can read it.
     let _ok = set_deadline(&c, Some("2999-01-01T00:00:00Z"))
         .await
         .unwrap();
-    let _early = alice.create_app("early", &bundle, json!({})).await.unwrap();
-    let public = c.client(1).get("releases").await.unwrap();
+    let _early = alice
+        .apps()
+        .create(typed(json!({ "name": "early", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let public = c
+        .client(1)
+        .public()
+        .releases_public()
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(
         public["deadlines"][0]["version"],
         json!("2.0.0"),
@@ -4660,15 +5381,18 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     );
     let e = ops(&c)
         .await
-        .post("ops/releases/2.0.0/deadline", json!({ "after": "soon" }))
+        .ops()
+        .release_deadline("2.0.0", Some("soon"), None)
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("400"), "{e}");
 
     // Bob approves 2.0.0 in time; then the deadline passes.
     let _ok = bob
-        .approve_release(None, "2.0.0", &mut bob_pk)
+        .auth()
+        .account_release_approval("2.0.0", None, Some(&mut bob_pk))
         .await
+        .map(wire)
         .unwrap();
     let _ok = set_deadline(&c, Some("2001-01-01T00:00:00Z"))
         .await
@@ -4680,24 +5404,30 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     };
     stopped(
         alice
-            .create_app("late", &bundle, json!({}))
+            .apps()
+            .create(typed(json!({ "name": "late", "bundle": &bundle })))
             .await
+            .map(|a| a.app_id)
             .unwrap_err(),
     );
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
     stopped(
         alice
-            .upload_package(mpk("com.test.late", "0.1.0", &kv_wasm(), &publisher))
+            .packages()
+            .upload(mpk("com.test.late", "0.1.0", &kv_wasm(), &publisher))
             .await
             .unwrap_err(),
     );
     let next = alice
-        .upload_bundle(variant(&kv_wasm(), "v2"))
+        .packages()
+        .bundle_put(variant(&kv_wasm(), "v2"))
         .await
+        .map(|b| b.hash)
         .unwrap();
     stopped(
         alice
-            .post(&format!("apps/{app}/upgrade"), json!({ "bundle": next }))
+            .apps()
+            .upgrade(&app, typed(json!({ "bundle": next })), None)
             .await
             .unwrap_err(),
     );
@@ -4709,21 +5439,32 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     );
 
     // Bob, who approved, carries on: on the newer node only.
-    let bobs = bob.upload_bundle(kv_wasm()).await.unwrap();
-    let created = bob
-        .post("apps", json!({ "name": "b", "bundle": bobs }))
+    let bobs = bob
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = bob
+        .apps()
+        .create(typed(json!({ "name": "b", "bundle": bobs })))
+        .await
+        .map(wire)
         .unwrap();
     assert_eq!(created["replicas"], json!([3]), "{created}");
 
     // Approving lifts it for Alice at once.
     let _ok = alice
-        .approve_release(None, "2.0.0", &mut alice_pk)
+        .auth()
+        .account_release_approval("2.0.0", None, Some(&mut alice_pk))
         .await
+        .map(wire)
         .unwrap();
     let created = alice
-        .post("apps", json!({ "name": "late", "bundle": bundle }))
+        .apps()
+        .create(typed(json!({ "name": "late", "bundle": bundle })))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(created["replicas"], json!([3]), "{created}");
 
@@ -4731,12 +5472,19 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
     // Unsigned, it is not lifted; the operator's signature lifts it.
     let e = ops(&c)
         .await
-        .delete("ops/releases/2.0.0/deadline")
+        .ops()
+        .release_deadline_lift("2.0.0", None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
     let _ok = set_deadline(&c, None).await.unwrap();
-    let public = c.client(1).get("releases").await.unwrap();
+    let public = c
+        .client(1)
+        .public()
+        .releases_public()
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(public["deadlines"], json!([]), "{public}");
 }
 
@@ -4746,7 +5494,12 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
 async fn publisher_binding(cl: &Client, key: &ed25519_dalek::SigningKey, org: &str) -> Value {
     use ed25519_dalek::Signer as _;
     let signer = calimero_bundle::derive_signer_id_did_key(key.verifying_key().as_bytes());
-    let next = cl.get(&format!("publishers/{signer}")).await.unwrap();
+    let next = cl
+        .public()
+        .publisher_binding(&signer)
+        .await
+        .map(wire)
+        .unwrap();
     let message = format!(
         "calimero-publisher-binding/v1\n{}\n{org}\n{signer}\n{}",
         next["cluster"].as_str().unwrap(),
@@ -4785,19 +5538,21 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
     };
     let kv = kv_wasm();
     let first = release("1.0.0", &kv, Publisher);
-    let _ok = pam.upload_package(first.clone()).await.unwrap();
-    let _ok = cora.upload_package(first).await.unwrap();
+    let _ok = pam.packages().upload(first.clone()).await.unwrap();
+    let _ok = cora.packages().upload(first).await.unwrap();
     let inst = cora
-        .create_app_from_package("i", "com.test.pub", None, None, json!({ "org": customer }))
+        .apps()
+        .create(typed(
+            json!({ "name": "i", "package": "com.test.pub", "org": customer }),
+        ))
         .await
+        .map(|a| a.app_id)
         .unwrap();
 
     // Until the key is bound, nobody upgrades a `publisher` package.
     let e = cora
-        .post(
-            &format!("apps/{inst}/upgrade"),
-            json!({ "version": "1.0.0" }),
-        )
+        .apps()
+        .upgrade(&inst, typed(json!({ "version": "1.0.0" })), None)
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("409"), "{e}");
@@ -4810,9 +5565,10 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
 
     // Only the key's own signature over this organization's binding counts.
     let e = cora
-        .post_confirmed(
-            &format!("orgs/{customer}/publishers"),
-            publisher_binding(&cora, &key, &publisher).await,
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{customer}/publishers"))
+                .json(publisher_binding(&cora, &key, &publisher).await),
             &mut cora_pk,
         )
         .await
@@ -4820,14 +5576,15 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
     assert!(e.to_string().starts_with("403"), "{e}");
     let binding = publisher_binding(&pam, &key, &publisher).await;
     let _ok = pam
-        .post_confirmed(
-            &format!("orgs/{publisher}/publishers"),
-            binding.clone(),
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{publisher}/publishers"))
+                .json(binding.clone()),
             &mut pam_pk,
         )
         .await
         .unwrap();
-    let view = pam.get(&format!("orgs/{publisher}")).await.unwrap();
+    let view = pam.orgs().get(&publisher).await.map(wire).unwrap();
     assert_eq!(view["publishes"][0], binding["signerId"]);
     // Bound: the publisher's approvals now decide the customer's instance.
     let a = reported_app(&cora, &format!("orgs/{customer}/apps"), &inst).await;
@@ -4840,9 +5597,9 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
     assert_eq!(a["upgradesHeldBy"], json!("publisher"), "{a}");
     // The same signature again is spent.
     let e = pam
-        .post_confirmed(
-            &format!("orgs/{publisher}/publishers"),
-            binding,
+        .transport()
+        .confirmed(
+            Request::new(Method::POST, format!("orgs/{publisher}/publishers")).json(binding),
             &mut pam_pk,
         )
         .await
@@ -4850,38 +5607,41 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
     assert!(e.to_string().starts_with("403"), "{e}");
 
     let _ok = pam
-        .upload_package(release("1.1.0", &variant(&kv, "v2"), Publisher))
+        .packages()
+        .upload(release("1.1.0", &variant(&kv, "v2"), Publisher))
         .await
         .unwrap();
     // The customer no longer upgrades it.
     let e = cora
-        .post_confirmed(
-            &format!("apps/{inst}/upgrade"),
-            json!({ "version": "1.1.0" }),
-            &mut cora_pk,
+        .apps()
+        .upgrade(
+            &inst,
+            typed(json!({ "version": "1.1.0" })),
+            Some(&mut cora_pk),
         )
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
     // The publisher does, for every instance.
     let run = pam
-        .post_confirmed(
-            &format!("orgs/{publisher}/packages/com.test.pub/upgrade"),
-            json!({ "version": "1.1.0" }),
-            &mut pam_pk,
-        )
+        .orgs()
+        .publisher_upgrade(&publisher, "com.test.pub", "1.1.0", None, Some(&mut pam_pk))
         .await
+        .map(wire)
         .unwrap();
     let run = finished_run(&pam, &publisher, run["runId"].as_str().unwrap()).await;
     assert_eq!(run["done"], json!([inst]), "{run}");
 
     // Upgrades go to owners in a later release, never back.
     let _ok = pam
-        .upload_package(release("1.2.0", &variant(&kv, "v3"), Owner))
+        .packages()
+        .upload(release("1.2.0", &variant(&kv, "v3"), Owner))
         .await
+        .map(wire)
         .unwrap();
     let e = pam
-        .upload_package(release("1.3.0", &variant(&kv, "v4"), Publisher))
+        .packages()
+        .upload(release("1.3.0", &variant(&kv, "v4"), Publisher))
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("409"), "{e}");
@@ -4896,7 +5656,11 @@ async fn reported_app(cl: &Client, route: &str, app: &str) -> Value {
     for _ in 0..100 {
         let sep = if route.contains('?') { '&' } else { '?' };
         let page = cl
-            .get(&format!("{route}{sep}limit=1{after}"))
+            .transport()
+            .json(Request::new(
+                Method::GET,
+                format!("{route}{sep}limit=1{after}"),
+            ))
             .await
             .unwrap_or_else(|e| panic!("{route}: {e}"));
         let apps = page["apps"].as_array().unwrap();
@@ -4933,28 +5697,29 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
     let alice_id = account_id(&alice).await;
     let bob_id = account_id(&bob).await;
     let org = alice
-        .post("orgs", json!({ "name": "Acme Secret Org" }))
+        .orgs()
+        .create("Acme Secret Org", None)
         .await
+        .map(wire)
         .unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let _ = alice
-        .post_confirmed(
-            &format!("orgs/{org}/members"),
-            json!({ "account": bob_id, "role": "member" }),
-            &mut apk,
-        )
+        .orgs()
+        .set_member(&org, &bob_id, OrgRole::Member, Some(&mut apk))
         .await
         .unwrap();
     let kv = kv_wasm();
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let _ = alice
-        .upload_package(mpk("com.test.track", "1.0.0", &kv, &publisher))
+        .packages()
+        .upload(mpk("com.test.track", "1.0.0", &kv, &publisher))
         .await
         .unwrap();
     let _ = alice
-        .upload_package(mpk(
+        .packages()
+        .upload(mpk(
             "com.test.track",
             "1.1.0",
             &variant(&kv, "next"),
@@ -4963,21 +5728,13 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
         .await
         .unwrap();
     let created = alice
-        .post(
-            "apps",
-            json!({
-                "name": "tracked-secret-name",
-                "package": "com.test.track",
-                "version": "1.0.0",
-                "org": org,
-                "access": { "kind": "org" },
-            }),
-        )
-        .await
+        .apps().create(typed(json!({ "name": "tracked-secret-name", "package": "com.test.track", "version": "1.0.0", "org": org, "access": { "kind": "org" } })))
+        .await.map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     let _ = alice
-        .upgrade_app(&app, json!({ "version": "1.1.0" }), &mut apk)
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.1.0" })), Some(&mut apk))
         .await
         .unwrap();
 
@@ -5005,13 +5762,13 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
         assert_eq!(r["release"], json!("1.0.0"), "{a}");
         assert_eq!(r["approved"], json!(true), "{a}");
     }
-    let report = ops.get("ops/apps").await.unwrap();
+    let report = ops.ops().apps(None, None).await.map(wire).unwrap();
     assert_eq!(
         report["governance"]["appUpgrades"],
         json!("owner"),
         "{report}"
     );
-    let orgs = ops.get("ops/orgs").await.unwrap();
+    let orgs = ops.ops().orgs(None, None).await.map(wire).unwrap();
     let o = orgs["orgs"]
         .as_array()
         .unwrap()
@@ -5033,13 +5790,13 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
         );
     }
     // The placement read keeps its shape.
-    let p = ops.get("ops/placement").await.unwrap();
+    let p = ops.ops().placement().await.map(wire).unwrap();
     assert!(p["apps"][0].get("replicas").is_some(), "{p}");
     assert!(p["nodes"][0].get("release").is_some(), "{p}");
 
     // A member: the package, who upgraded it, and the release not approved yet.
     let route = format!("orgs/{org}/apps");
-    let m = bob.get(&route).await.unwrap();
+    let m = bob.orgs().apps(&org, None, None).await.map(wire).unwrap();
     assert_eq!(m["scope"], json!({ "kind": "org", "org": org }), "{m}");
     assert_eq!(m["approvedReleases"], json!(["1.0.0"]), "{m}");
     assert_eq!(m["governance"]["releases"], json!("owner"), "{m}");
@@ -5071,9 +5828,9 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
     assert_eq!(a["lastUpgrade"]["actorKind"], json!("owner"), "{a}");
     assert_eq!(a["lastUpgrade"]["actor"], json!(alice_id), "{a}");
     // Someone outside the organization reads nothing of it.
-    let e = carol.get(&route).await.unwrap_err();
+    let e = carol.orgs().apps(&org, None, None).await.unwrap_err();
     assert!(e.to_string().starts_with("404"), "{e}");
-    let e = ops.get(&route).await.unwrap_err();
+    let e = ops.orgs().apps(&org, None, None).await.unwrap_err();
     assert!(
         e.to_string().starts_with("401") || e.to_string().starts_with("404"),
         "{e}"
@@ -5081,12 +5838,14 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
 
     // The owner approves 2.0.0: both views show it.
     let _ = alice
-        .approve_release(Some(&org), "2.0.0", &mut apk)
+        .orgs()
+        .release_approval(&org, "2.0.0", None, Some(&mut apk))
         .await
+        .map(wire)
         .unwrap();
-    let m = bob.get(&route).await.unwrap();
+    let m = bob.orgs().apps(&org, None, None).await.map(wire).unwrap();
     assert_eq!(m["approvedReleases"], json!(["1.0.0", "2.0.0"]), "{m}");
-    let orgs = ops.get("ops/orgs").await.unwrap();
+    let orgs = ops.ops().orgs(None, None).await.map(wire).unwrap();
     assert!(
         orgs["orgs"]
             .as_array()
@@ -5099,16 +5858,22 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
     // An account's own app: its approvals, the releases it has not approved,
     // and the newer release it could upgrade to.
     let mine = alice
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "mine", "package": "com.test.track", "version": "1.0.0" }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let own = alice.get("auth/apps").await.unwrap();
+    let own = alice
+        .auth()
+        .account_apps(None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(own["scope"], json!({ "kind": "account" }), "{own}");
     assert_eq!(own["approvedReleases"], json!(["1.0.0"]), "{own}");
     assert!(
@@ -5128,10 +5893,19 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
         "an organization's app is not the account's own: {own}"
     );
     // Another account sees none of alice's.
-    let theirs = carol.get("auth/apps").await.unwrap();
+    let theirs = carol
+        .auth()
+        .account_apps(None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(theirs["apps"], json!([]), "{theirs}");
     // The page size is bounded.
-    let e = alice.get("auth/apps?limit=100000").await.unwrap_err();
+    let e = alice
+        .auth()
+        .account_apps(None, Some(100_000))
+        .await
+        .unwrap_err();
     assert!(e.to_string().starts_with("400"), "{e}");
 }
 
@@ -5153,18 +5927,22 @@ async fn an_operator_upgrade_is_reported_as_the_operators() {
     let ops = c.client(1);
     ops.use_api_key("ops-secret").await;
     let _ = ops
-        .ops_upload_package(mpk("com.test.opsup", "1.0.0", &kv, &publisher))
+        .ops()
+        .package_upload(mpk("com.test.opsup", "1.0.0", &kv, &publisher))
         .await
         .unwrap();
     let app = alice
-        .post("apps", json!({ "name": "kv", "package": "com.test.opsup" }))
+        .apps()
+        .create(typed(json!({ "name": "kv", "package": "com.test.opsup" })))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
     let _ = ops
-        .ops_upload_package(mpk(
+        .ops()
+        .package_upload(mpk(
             "com.test.opsup",
             "1.1.0",
             &variant(&kv, "next"),
@@ -5201,7 +5979,12 @@ async fn an_operator_upgrade_is_reported_as_the_operators() {
     assert_eq!(a["lastUpgrade"]["actorKind"], json!("operator"), "{a}");
     assert_eq!(a["lastUpgrade"]["actor"], json!("operator"), "{a}");
     assert_eq!(a["availableVersions"], json!([]), "{a}");
-    let own = alice.get("auth/apps").await.unwrap();
+    let own = alice
+        .auth()
+        .account_apps(None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(own["governance"]["appUpgrades"], json!("operator"), "{own}");
 }
 
@@ -5216,16 +5999,13 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
     let (alice, mut apk) = signed_up(&c, 0, "alice").await;
     let (bob, _bpk) = signed_up(&c, 1, "bob").await;
     let bob_id = account_id(&bob).await;
-    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let org = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let _ = alice
-        .post_confirmed(
-            &format!("orgs/{org}/members"),
-            json!({ "account": bob_id, "role": "member" }),
-            &mut apk,
-        )
+        .orgs()
+        .set_member(&org, &bob_id, OrgRole::Member, Some(&mut apk))
         .await
         .unwrap();
     // One WASM, three releases whose frontends differ.
@@ -5234,7 +6014,8 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
     for version in ["1.0.0", "1.1.0", "1.2.0"] {
         let page = format!("<p>{version}");
         let _ = alice
-            .upload_package(mpk_full(
+            .packages()
+            .upload(mpk_full(
                 "com.test.fe",
                 version,
                 &wasm,
@@ -5249,11 +6030,12 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
 
     // Created at 1.1.0: it runs 1.1.0, not the first release shipping its WASM.
     let mine = alice
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "mine", "package": "com.test.fe", "version": "1.1.0" }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
@@ -5261,7 +6043,7 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
     let a = reported_app(&alice, "auth/apps", &mine).await;
     assert_eq!(a["package"]["version"], json!("1.1.0"), "{a}");
     assert_eq!(a["availableVersions"], json!(["1.2.0"]), "{a}");
-    let record = alice.get(&format!("apps/{mine}")).await.unwrap();
+    let record = alice.apps().get(&mine).await.map(wire).unwrap();
     assert_eq!(
         record["release"],
         json!({ "package": "com.test.fe", "version": "1.1.0" }),
@@ -5270,15 +6052,14 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
 
     // Moving to 1.2.0 (same WASM) needs the owner's passkey, as any upgrade.
     let e = alice
-        .post(
-            &format!("apps/{mine}/upgrade"),
-            json!({ "version": "1.2.0" }),
-        )
+        .apps()
+        .upgrade(&mine, typed(json!({ "version": "1.2.0" })), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
     let _ = alice
-        .upgrade_app(&mine, json!({ "version": "1.2.0" }), &mut apk)
+        .apps()
+        .upgrade(&mine, typed(json!({ "version": "1.2.0" })), Some(&mut apk))
         .await
         .unwrap();
     let a = reported_app(&alice, "auth/apps", &mine).await;
@@ -5293,21 +6074,22 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
     );
     // Still serving.
     let _ = alice
-        .call(&mine, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &mine,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     // An org app: a member without MANAGE_APPLICATION may not move it, even
     // to a release with the same WASM; the owner's org run does.
     let shared = alice
-        .post(
-            "apps",
-            json!({
-                "name": "shared", "package": "com.test.fe", "version": "1.0.0",
-                "org": org, "access": { "kind": "org" },
-            }),
-        )
-        .await
+        .apps().create(typed(json!({ "name": "shared", "package": "com.test.fe", "version": "1.0.0", "org": org, "access": { "kind": "org" } })))
+        .await.map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
@@ -5316,20 +6098,20 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
     let a = reported_app(&bob, &route, &shared).await;
     assert_eq!(a["package"]["version"], json!("1.0.0"), "{a}");
     let e = bob
-        .post(
-            &format!("apps/{shared}/upgrade"),
-            json!({ "version": "1.1.0" }),
-        )
+        .apps()
+        .upgrade(&shared, typed(json!({ "version": "1.1.0" })), None)
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
     let run = alice
-        .upgrade_org(
+        .orgs()
+        .upgrade(
             &org,
-            json!({ "package": "com.test.fe", "version": "1.1.0" }),
-            &mut apk,
+            typed(json!({ "package": "com.test.fe", "version": "1.1.0" })),
+            Some(&mut apk),
         )
         .await
+        .map(wire)
         .unwrap();
     let run_id = run["runId"].as_str().unwrap().to_owned();
     let done = finished_run(&alice, &org, &run_id).await;
@@ -5353,28 +6135,36 @@ async fn credentials_memberships_and_the_fleet_are_approved_where_they_are_made(
     let c = Cluster::start(3).await;
     let (alice, mut apk) = signed_up(&c, 0, "alice").await;
     let (bob, _bpk) = signed_up(&c, 1, "bob").await;
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
 
     // An API key: 412, then the passkey; the key works.
     let e = alice
-        .post("auth/apikeys", json!({ "label": "ci" }))
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
     let (_id, key) = alice
-        .create_api_key(json!({ "label": "ci" }), &mut apk)
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), Some(&mut apk))
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
     let agent = c.client(2);
     agent.use_api_key(&key).await;
-    assert_eq!(agent.me().await.unwrap()["via"], json!("apiKey"));
+    assert_eq!(
+        agent.auth().me().await.map(wire).unwrap()["via"],
+        json!("apiKey")
+    );
     // An API key cannot make another, nor approve a step-up.
     let e = agent
-        .create_api_key(json!({ "label": "more" }), &mut apk)
+        .auth()
+        .apikey_create(typed(json!({ "label": "more" })), Some(&mut apk))
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
 
@@ -5389,20 +6179,25 @@ async fn credentials_memberships_and_the_fleet_are_approved_where_they_are_made(
     let mut phone = SoftAuthenticator::new("localhost", ORIGIN);
     let phone_id = alice.add_passkey(&mut phone, &mut apk).await.unwrap();
     assert_eq!(
-        alice.me().await.unwrap()["passkeys"]
+        alice.auth().me().await.map(wire).unwrap()["passkeys"]
             .as_array()
             .unwrap()
             .len(),
         2
     );
     let e = alice
-        .delete(&format!("auth/passkeys/{phone_id}"))
+        .auth()
+        .passkey_remove(&phone_id, None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
-    let _ok = alice.remove_passkey(&phone_id, &mut apk).await.unwrap();
+    let _ok = alice
+        .auth()
+        .passkey_remove(&phone_id, Some(&mut apk))
+        .await
+        .unwrap();
     assert_eq!(
-        alice.me().await.unwrap()["passkeys"]
+        alice.auth().me().await.map(wire).unwrap()["passkeys"]
             .as_array()
             .unwrap()
             .len(),
@@ -5410,68 +6205,70 @@ async fn credentials_memberships_and_the_fleet_are_approved_where_they_are_made(
     );
 
     // An invite and a role: 412 first.
-    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let org = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let invites = format!("orgs/{org}/invites");
     let e = alice
-        .post(&invites, json!({ "role": "member" }))
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "member" })), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
     let token = alice
-        .post_confirmed(&invites, json!({ "role": "member" }), &mut apk)
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut apk))
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
         .to_owned();
-    let _joined = bob
-        .post(&format!("invites/{token}/redeem"), json!({}))
-        .await
-        .unwrap();
-    let members = format!("orgs/{org}/members");
+    let _joined = bob.orgs().invite_redeem(&token).await.unwrap();
     let promote = json!({ "account": bob_id, "role": "admin" });
-    let e = alice.post(&members, promote.clone()).await.unwrap_err();
+    let e = alice
+        .transport()
+        .json(Request::new(Method::POST, format!("orgs/{org}/members")).json(promote.clone()))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
     let _ok = alice
-        .post_confirmed(&members, promote, &mut apk)
+        .orgs()
+        .set_member(&org, &bob_id, OrgRole::Admin, Some(&mut apk))
         .await
         .unwrap();
-    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    let o = alice.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(o["members"][&bob_id], json!("admin"), "{o}");
 
     // The operator: 428 first, then signed.
     let ops = ops_at(&c, 0).await;
     let e = ops
-        .post("ops/quotas", json!({ "maxAccounts": 9 }))
+        .ops()
+        .quotas_set(typed(json!({ "maxAccounts": 9 })), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
     let d = e.details().unwrap();
     assert_eq!(d["method"], json!("__set_quotas"), "{d}");
     let _ok = ops
-        .post_operator_signed(
-            "ops/quotas",
-            json!({ "maxAccounts": 9 }),
-            &harness::operator_sign,
+        .ops()
+        .quotas_set(
+            typed(json!({ "maxAccounts": 9 })),
+            Some(&harness::operator_sign),
         )
         .await
         .unwrap();
     assert_eq!(
-        ops.get("ops/quotas").await.unwrap()["maxAccounts"],
+        ops.ops().quotas_get().await.map(wire).unwrap()["maxAccounts"],
         json!(9)
     );
     let e = ops
-        .post(
-            "ops/nodes",
-            json!({ "id": 9, "addr": "http://127.0.0.1:9/" }),
-        )
+        .ops()
+        .register_node(9, "http://127.0.0.1:9/", None, None, None, None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
-    let e = ops.delete("ops/nodes/3").await.unwrap_err();
+    let e = ops.ops().remove_node("3", None).await.unwrap_err();
     assert!(
         matches!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED" | "NOT_LEADER")),
         "{e}"
@@ -5502,7 +6299,7 @@ async fn a_raft_message_for_another_node_is_refused_and_the_group_stays_healthy(
     let ops = c.client(reached);
     ops.use_api_key("ops-secret").await;
     let misaddressed = || async {
-        let text = ops.get_text("ops/metrics").await.unwrap();
+        let text = ops.ops().metrics().await.unwrap();
         let count = |reason: &str| -> u64 {
             let prefix = format!("calimero_raft_misaddressed_total{{reason=\"{reason}\"}} ");
             text.lines()
@@ -5692,7 +6489,7 @@ async fn an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart() {
         );
     }
     assert_eq!(reported_last_write(&alice, "auth/apps", &app).await, at);
-    let storage = alice.get(&format!("apps/{app}/storage")).await.unwrap();
+    let storage = alice.apps().storage(&app).await.map(wire).unwrap();
     assert_eq!(storage["lastWriteAt"], json!(at), "{storage}");
 
     // A replica restarted on its data directory reads the same time back

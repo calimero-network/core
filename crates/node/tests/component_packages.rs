@@ -4,24 +4,17 @@
 //! A package whose WASM is a component runs on the component executor like a raw
 //! component upload does.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 mod common;
 
 use std::collections::BTreeMap;
 
-use calimero_client::{Client, Consistency};
+use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::types::{Components, Executor};
 use common::{
-    mpk_named_service, mpk_needing, mpk_parts, mpk_with, mpk_with_pipelines, signed_up, Cluster,
-    PUBLISHER,
+    mpk_named_service, mpk_needing, mpk_parts, mpk_with, mpk_with_pipelines, signed_up, typed,
+    wire, Cluster, PUBLISHER,
 };
 use serde_json::{json, Value};
 
@@ -59,35 +52,43 @@ async fn serve_registry(files: BTreeMap<String, Vec<u8>>) -> String {
 /// An org of `owner`'s, with Rooms created in it from `package@version`; Rooms then
 /// takes a room (an admin's call), refuses the same room again, and answers a view.
 async fn run_rooms_from(c: &Cluster, owner: &Client, package: &str, version: &str) {
-    let org = owner.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let org = owner.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let created = owner
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "rooms", "package": package, "version": version, "org": org }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     let record = c.nodes[0].as_ref().unwrap().node.app(&app).await.unwrap();
     assert_eq!(record.executor, Executor::Component, "a component package");
     let added = owner
+        .apps()
         .call(
             &app,
             "addRoom",
-            json!({ "id": "r1", "name": "Blue", "capacity": 4 }),
+            Some(json!({ "id": "r1", "name": "Blue", "capacity": 4 })),
+            None,
             None,
         )
         .await
         .unwrap();
-    assert!(added.receipt.is_some(), "the answer carries a receipt");
+    assert!(
+        !added.receipt.signature.is_empty(),
+        "the answer carries a receipt"
+    );
     let e = owner
+        .apps()
         .call(
             &app,
             "addRoom",
-            json!({ "id": "r1", "name": "Blue", "capacity": 4 }),
+            Some(json!({ "id": "r1", "name": "Blue", "capacity": 4 })),
+            None,
             None,
         )
         .await
@@ -95,7 +96,14 @@ async fn run_rooms_from(c: &Cluster, owner: &Client, package: &str, version: &st
     assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
     assert_eq!(e.details().unwrap()["code"], "Duplicate", "{e}");
     let mine = owner
-        .view(&app, "myBookings", json!({}), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "myBookings",
+            Some(json!({})),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(mine.result, Value::Array(Vec::new()));
@@ -123,11 +131,18 @@ async fn rooms_installs_and_runs_as_an_uploaded_signed_package() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
     let rooms = common::rooms();
     // Production nodes take no raw WASM, component or not.
-    let e = owner.upload_bundle(rooms.clone()).await.unwrap_err();
+    let e = owner
+        .packages()
+        .bundle_put(rooms.clone())
+        .await
+        .map(|b| b.hash)
+        .unwrap_err();
     assert!(e.to_string().starts_with("403"), "{e}");
     let installed = owner
-        .upload_package(mpk("com.test.rooms", "1.0.0", &rooms, &publisher))
+        .packages()
+        .upload(mpk("com.test.rooms", "1.0.0", &rooms, &publisher))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(installed["version"], json!("1.0.0"));
     run_rooms_from(&c, &owner, "com.test.rooms", "1.0.0").await;
@@ -149,8 +164,10 @@ async fn rooms_installs_and_runs_from_the_registry() {
     .await;
     let (owner, _pk) = signed_up(&c, 0, "owner").await;
     let installed = owner
-        .install_package("com.test.rooms", "1.0.0")
+        .packages()
+        .install("com.test.rooms", "1.0.0")
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(installed["version"], json!("1.0.0"));
     run_rooms_from(&c, &owner, "com.test.rooms", "1.0.0").await;
@@ -183,15 +200,18 @@ async fn compute_cluster() -> (Cluster, Client, SoftAuthenticator) {
 async fn install(owner: &Client, version: &str, wasm: &[u8], compute: Option<&[u8]>) -> Value {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     owner
-        .upload_package(mpk_with("com.test.compute", version, wasm, compute, &key))
+        .packages()
+        .upload(mpk_with("com.test.compute", version, wasm, compute, &key))
         .await
+        .map(wire)
         .unwrap()
 }
 
 async fn refused(owner: &Client, wasm: &[u8], compute: &[u8]) -> calimero_client::Error {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     owner
-        .upload_package(mpk_with(
+        .packages()
+        .upload(mpk_with(
             "com.test.compute",
             "1.0.0",
             wasm,
@@ -204,11 +224,12 @@ async fn refused(owner: &Client, wasm: &[u8], compute: &[u8]) -> calimero_client
 
 async fn create(owner: &Client, version: &str) -> String {
     let created = owner
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "compute", "package": "com.test.compute", "version": version }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap();
     created["appId"].as_str().unwrap().to_owned()
 }
@@ -237,7 +258,14 @@ async fn a_release_with_both_components_records_both_and_its_app_runs_calls() {
     assert_eq!(record.bundle, main_hash);
     assert_eq!(record.compute_bundle.as_deref(), Some(job_hash.as_str()));
     let done = owner
-        .view(&app, "done", json!({}), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "done",
+            Some(json!({})),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(done.result, json!("0"));
@@ -258,7 +286,14 @@ async fn a_release_without_a_compute_artifact_installs_and_its_app_runs_calls() 
     let app = create(&owner, "1.0.0").await;
     assert_eq!(node.app(&app).await.unwrap().compute_bundle, None);
     let done = owner
-        .view(&app, "done", json!({}), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "done",
+            Some(json!({})),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(done.result, json!("0"));
@@ -310,7 +345,8 @@ async fn a_compute_component_cannot_be_a_services_main_component() {
     let job = both.compute.clone().unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let e = owner
-        .upload_package(mpk("com.test.compute", "1.0.0", &job, &key))
+        .packages()
+        .upload(mpk("com.test.compute", "1.0.0", &job, &key))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_BUNDLE"), "{e}");
@@ -346,8 +382,10 @@ async fn the_running_releases_compute_hash_follows_an_upgrade() {
     assert_eq!(in_group(), Some(sha256_hex(&job)));
     for (version, expect) in [("1.0.1", Some(sha256_hex(&job2))), ("1.0.2", None)] {
         let up = owner
-            .upgrade_app(&app, json!({ "version": version }), &mut pk)
+            .apps()
+            .upgrade(&app, typed(json!({ "version": version })), Some(&mut pk))
             .await
+            .map(wire)
             .unwrap();
         assert_eq!(up["status"], "ok", "{up}");
         assert_eq!(up["compute"], json!(expect.is_some()), "{up}");
@@ -370,26 +408,48 @@ async fn an_app_created_or_upgraded_by_bundle_hash_takes_that_releases_compute_c
     let node = &c.nodes[0].as_ref().unwrap().node;
     let by_hash = |wasm: &[u8]| json!({ "name": "compute", "bundle": sha256_hex(wasm) });
 
-    let created = owner.post("apps", by_hash(&both.app)).await.unwrap();
+    let created = owner
+        .apps()
+        .create(typed(by_hash(&both.app)))
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(created["compute"], json!(true), "{created}");
     let app = created["appId"].as_str().unwrap().to_owned();
     let running = || async { node.app(&app).await.unwrap().compute_bundle };
     assert_eq!(running().await, Some(sha256_hex(&job)));
 
     let up = owner
-        .upgrade_app(&app, json!({ "bundle": sha256_hex(&main2) }), &mut pk)
+        .apps()
+        .upgrade(
+            &app,
+            typed(json!({ "bundle": sha256_hex(&main2) })),
+            Some(&mut pk),
+        )
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(up["compute"], json!(true), "{up}");
     assert_eq!(running().await, Some(sha256_hex(&job2)));
 
     let up = owner
-        .upgrade_app(&app, json!({ "bundle": sha256_hex(&main3) }), &mut pk)
+        .apps()
+        .upgrade(
+            &app,
+            typed(json!({ "bundle": sha256_hex(&main3) })),
+            Some(&mut pk),
+        )
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(up["compute"], json!(false), "{up}");
     assert_eq!(running().await, None);
-    let plain = owner.post("apps", by_hash(&main3)).await.unwrap();
+    let plain = owner
+        .apps()
+        .create(typed(by_hash(&main3)))
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(plain["compute"], json!(false), "{plain}");
 }
 
@@ -402,10 +462,10 @@ async fn a_bundle_hash_shared_by_releases_with_different_compute_is_ambiguous() 
     install(&owner, "1.0.0", &both.app, Some(&job)).await;
     install(&owner, "1.0.1", &both.app, Some(&job2)).await;
     let e = owner
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "compute", "bundle": sha256_hex(&both.app) }),
-        )
+        ))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("AMBIGUOUS_COMPUTE"), "{e}");
@@ -435,8 +495,10 @@ async fn a_release_that_changes_only_compute_code_gives_its_app_its_own_compute_
         Some(sha256_hex(&job))
     );
     let up = owner
-        .upgrade_app(&app, json!({ "version": "1.0.1" }), &mut pk)
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.0.1" })), Some(&mut pk))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(up["status"], "ok", "{up}");
     assert_eq!(
@@ -453,7 +515,8 @@ async fn install_compute_only(
 ) -> Result<Value, Box<calimero_client::Error>> {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     owner
-        .upload_package(mpk_parts(
+        .packages()
+        .upload(mpk_parts(
             "com.test.job",
             version,
             None,
@@ -462,20 +525,22 @@ async fn install_compute_only(
             &key,
         ))
         .await
+        .map(wire)
         .map_err(Box::new)
 }
 
 async fn create_compute_only(owner: &Client, version: &str) -> String {
-    let org = owner.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let org = owner.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let created = owner
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "job", "package": "com.test.job", "version": version, "org": org }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap();
     created["appId"].as_str().unwrap().to_owned()
 }
@@ -558,12 +623,20 @@ async fn a_compute_only_app_answers_no_app_component_to_calls_and_views() {
     });
 
     let e = owner
-        .call(&app, "digest", json!({}), None)
+        .apps()
+        .call(&app, "digest", Some(json!({})), None, None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NO_APP_COMPONENT"), "{e}");
     let e = owner
-        .view(&app, "done", json!({}), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "done",
+            Some(json!({})),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NO_APP_COMPONENT"), "{e}");
@@ -592,7 +665,14 @@ async fn an_app_package_installs_exactly_as_before() {
         .get("components")
         .is_none());
     let done = owner
-        .view(&app, "done", json!({}), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "done",
+            Some(json!({})),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(done.result, json!("0"));
@@ -606,7 +686,7 @@ async fn switching_components_on_upgrade_is_refused() {
     let job2 = patched(&job, |a| a["build"] = json!(2));
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let publish = |version: &str, wasm: Option<&[u8]>, compute: &[u8]| {
-        owner.upload_package(mpk_parts(
+        owner.packages().upload(mpk_parts(
             "com.test.job",
             version,
             wasm,
@@ -623,8 +703,10 @@ async fn switching_components_on_upgrade_is_refused() {
     // Compute-only to compute-only moves the directory record.
     let app = create_compute_only(&owner, "1.0.0").await;
     let up = owner
-        .upgrade_app(&app, json!({ "version": "1.1.0" }), &mut pk)
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.1.0" })), Some(&mut pk))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(up["status"], "ok", "{up}");
     let record = node.app(&app).await.unwrap();
@@ -633,7 +715,8 @@ async fn switching_components_on_upgrade_is_refused() {
 
     // Compute-only to a release with an app component is refused.
     let e = owner
-        .upgrade_app(&app, json!({ "version": "2.0.0" }), &mut pk)
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "2.0.0" })), Some(&mut pk))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("COMPONENTS_CHANGED"), "{e}");
@@ -641,17 +724,23 @@ async fn switching_components_on_upgrade_is_refused() {
 
     // And the other way.
     let with_app = owner
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "both", "package": "com.test.job", "version": "2.0.0" }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
     let e = owner
-        .upgrade_app(&with_app, json!({ "version": "1.0.0" }), &mut pk)
+        .apps()
+        .upgrade(
+            &with_app,
+            typed(json!({ "version": "1.0.0" })),
+            Some(&mut pk),
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("COMPONENTS_CHANGED"), "{e}");
@@ -674,7 +763,8 @@ async fn install_with_pipelines(
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let job = common::components("compute").compute.clone().unwrap();
     owner
-        .upload_package(mpk_with_pipelines(
+        .packages()
+        .upload(mpk_with_pipelines(
             "com.test.job",
             "1.0.0",
             None,
@@ -683,6 +773,7 @@ async fn install_with_pipelines(
             &key,
         ))
         .await
+        .map(wire)
         .map_err(Box::new)
 }
 
@@ -701,8 +792,10 @@ async fn a_compute_only_package_with_a_pipeline_installs_and_lists_it() {
     let canonical =
         calimero_pipeline::canonical_json(&calimero_pipeline::compile(PIPELINE).unwrap());
     let listed = owner
-        .get("packages/com.test.job/1.0.0/pipelines")
+        .packages()
+        .pipelines("com.test.job", "1.0.0")
         .await
+        .map(wire)
         .unwrap();
     let p1 = &listed["p1"];
     assert_eq!(p1["hash"], sha256_hex(&canonical));
@@ -721,7 +814,11 @@ async fn a_compute_only_package_with_a_pipeline_installs_and_lists_it() {
         node.pipeline_json(&sha256_hex(&canonical)).await.unwrap(),
         canonical
     );
-    let none = owner.get("packages/com.test.job/9.9.9/pipelines").await;
+    let none = owner
+        .packages()
+        .pipelines("com.test.job", "9.9.9")
+        .await
+        .map(wire);
     assert_eq!(none.unwrap_err().code(), Some("NOT_FOUND"));
 }
 
@@ -785,7 +882,8 @@ async fn pipelines_are_refused_when_malformed_duplicated_or_without_one_compute_
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let both = common::components("compute");
     let e = owner
-        .upload_package(mpk_with_pipelines(
+        .packages()
+        .upload(mpk_with_pipelines(
             "com.test.job",
             "1.0.0",
             Some(&both.app),
@@ -805,7 +903,7 @@ async fn pipelines_are_refused_when_malformed_duplicated_or_without_one_compute_
         &[("pipelines/p1.yaml", PIPELINE)],
         &key,
     );
-    let e = owner.upload_package(named).await.unwrap_err();
+    let e = owner.packages().upload(named).await.unwrap_err();
     assert_eq!(e.code(), Some("PIPELINES_NEED_ONE_SERVICE"), "{e}");
 }
 
@@ -831,12 +929,18 @@ async fn a_package_with_pipelines_waits_until_every_node_runs_this_release() {
         )
     };
     let e = owner
-        .upload_package(with_app(&[("pipelines/p1.yaml", PIPELINE)]))
+        .packages()
+        .upload(with_app(&[("pipelines/p1.yaml", PIPELINE)]))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CLUSTER_NOT_UPGRADED"), "{e}");
     // A release without pipelines installs as before.
-    owner.upload_package(with_app(&[])).await.unwrap();
+    owner
+        .packages()
+        .upload(with_app(&[]))
+        .await
+        .map(wire)
+        .unwrap();
 }
 
 const MODULE_PACKAGE: &str = "com.test.module";
@@ -856,7 +960,8 @@ fn module_component(build: u64) -> Vec<u8> {
 async fn install_module(owner: &Client, version: &str, build: u64) -> Value {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     owner
-        .upload_package(mpk_parts(
+        .packages()
+        .upload(mpk_parts(
             MODULE_PACKAGE,
             version,
             None,
@@ -865,6 +970,7 @@ async fn install_module(owner: &Client, version: &str, build: u64) -> Value {
             &key,
         ))
         .await
+        .map(wire)
         .unwrap()
 }
 
@@ -884,7 +990,8 @@ async fn install_user(
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let job = common::components("compute").compute.clone().unwrap();
     owner
-        .upload_package(mpk_with_pipelines(
+        .packages()
+        .upload(mpk_with_pipelines(
             "com.test.job",
             version,
             None,
@@ -893,13 +1000,16 @@ async fn install_user(
             &key,
         ))
         .await
+        .map(wire)
         .map_err(Box::new)
 }
 
 async fn pins(owner: &Client, version: &str) -> Value {
     let listed = owner
-        .get(&format!("packages/com.test.job/{version}/pipelines"))
+        .packages()
+        .pipelines("com.test.job", version)
         .await
+        .map(wire)
         .unwrap();
     listed["p1"]["modules"].clone()
 }
@@ -959,7 +1069,8 @@ async fn a_module_the_installer_cannot_see_is_unknown() {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let app = common::components("compute");
     let _installed = owner
-        .upload_package(mpk_with(
+        .packages()
+        .upload(mpk_with(
             "com.test.noncompute",
             "1.0.0",
             &app.app,
@@ -1004,19 +1115,22 @@ async fn uninstalling_a_pinned_module_is_refused_until_its_user_is_gone() {
         .unwrap();
 
     let e = owner
-        .uninstall_package(MODULE_PACKAGE, Some("1.0.0"))
+        .packages()
+        .version_uninstall(MODULE_PACKAGE, "1.0.0")
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("MODULE_IN_USE"), "{e}");
     let e = owner
-        .uninstall_package(MODULE_PACKAGE, None)
+        .packages()
+        .uninstall(MODULE_PACKAGE)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("MODULE_IN_USE"), "{e}");
 
-    let _gone = owner.uninstall_package("com.test.job", None).await.unwrap();
+    let _gone = owner.packages().uninstall("com.test.job").await.unwrap();
     let _gone = owner
-        .uninstall_package(MODULE_PACKAGE, Some("1.0.0"))
+        .packages()
+        .version_uninstall(MODULE_PACKAGE, "1.0.0")
         .await
         .unwrap();
 }
@@ -1083,7 +1197,8 @@ async fn mixed_runtimes() -> (Cluster, Client, SoftAuthenticator, String, String
         ),
     ] {
         let _installed = owner
-            .upload_package(mpk_needing(
+            .packages()
+            .upload(mpk_needing(
                 "com.test.runtime",
                 version,
                 &wasm,
@@ -1098,11 +1213,12 @@ async fn mixed_runtimes() -> (Cluster, Client, SoftAuthenticator, String, String
     let mut apps = Vec::new();
     for name in ["on-new-nodes", "on-node-4"] {
         let created = owner
-            .post(
-                "apps",
+            .apps()
+            .create(typed(
                 json!({ "name": name, "package": "com.test.runtime", "version": "1.0.0" }),
-            )
+            ))
             .await
+            .map(wire)
             .unwrap();
         apps.push(created["appId"].as_str().unwrap().to_owned());
     }
@@ -1119,7 +1235,12 @@ async fn mixed_runtimes() -> (Cluster, Client, SoftAuthenticator, String, String
 
 /// `app`'s entry in the account's own report (`GET /auth/apps`).
 async fn reported(owner: &Client, app: &str) -> Value {
-    let report = owner.get("auth/apps").await.unwrap();
+    let report = owner
+        .auth()
+        .account_apps(None, None)
+        .await
+        .map(wire)
+        .unwrap();
     report["apps"]
         .as_array()
         .unwrap()
@@ -1159,7 +1280,8 @@ async fn an_upgrade_needing_a_newer_runtime_than_a_replica_has_is_refused_and_re
 
     let before = node.app(&on_old).await.unwrap().bundle;
     let e = owner
-        .upgrade_app(&on_old, json!({ "version": "1.1.0" }), &mut pk)
+        .apps()
+        .upgrade(&on_old, typed(json!({ "version": "1.1.0" })), Some(&mut pk))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("RUNTIME_TOO_OLD"), "{e}");
@@ -1178,8 +1300,10 @@ async fn an_upgrade_needing_a_newer_runtime_than_a_replica_has_is_refused_and_re
 
     // The app whose replicas all run a new enough runtime upgrades.
     let up = owner
-        .upgrade_app(&on_new, json!({ "version": "1.1.0" }), &mut pk)
+        .apps()
+        .upgrade(&on_new, typed(json!({ "version": "1.1.0" })), Some(&mut pk))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(up["status"], "ok", "{up}");
 }
@@ -1193,11 +1317,12 @@ async fn placement_and_moves_keep_an_app_off_nodes_below_its_runtime() {
     let node = &c.nodes[0].as_ref().unwrap().node;
     // Loads are now 2, 2, 1, 1: by load alone the next app would take node 4.
     let created = owner
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "needs-new", "package": "com.test.runtime", "version": "1.1.0" }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     assert_eq!(node.app(&app).await.unwrap().replicas, vec![1, 2, 3]);
