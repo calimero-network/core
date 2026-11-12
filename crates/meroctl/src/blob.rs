@@ -54,12 +54,7 @@ pub async fn run(cmd: BlobCmd, env: &Env) -> eyre::Result<Value> {
         BlobCmd::List { context } => to_json(&apps.blob_list(&env.app(&context).await?).await?)?,
         BlobCmd::Upload { file, context } => to_json(
             &apps
-                .blob_upload(
-                    &env.app(&context).await?,
-                    "application/octet-stream",
-                    read_file(&file)?,
-                    None,
-                )
+                .blob_upload(&env.app(&context).await?, read_file(&file)?, None)
                 .await?,
         )?,
         BlobCmd::Download {
