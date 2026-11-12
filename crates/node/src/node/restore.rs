@@ -252,6 +252,8 @@ impl Node {
         let (name, key) = system;
         let opened =
             super::off_workers(|| disk::read(&disk::path_in(&at, name)?)).map_err(refused)?;
+        self.check_recovery_attestation(name, &opened.header)
+            .await?;
         let h = &opened.header;
         if h.kind != Kind::System || h.holder != BackupHolder::Operator {
             return Err(refused(eyre::eyre!(
@@ -277,6 +279,8 @@ impl Node {
         for (file, key) in code {
             let opened =
                 super::off_workers(|| disk::read(&disk::path_in(&at, file)?)).map_err(refused)?;
+            self.check_recovery_attestation(file, &opened.header)
+                .await?;
             let Some(hash) = opened
                 .header
                 .hash
@@ -301,6 +305,82 @@ impl Node {
             .map_err(|e| ApiError::unavailable(&format!("{e:#}")))?;
         info!(file = %name, index, apps, accounts, "founded the cluster again from its recovery disk; restore each app from its own file");
         Ok(json!({ "apps": apps, "accounts": accounts, "index": index }))
+    }
+
+    /// A recovery file's header was written by attested hardware: its
+    /// signing key is a node's receipt key, attested (`purpose=receipts`)
+    /// under the policy this node holds its peers to. The signature itself
+    /// was checked when the file was read; this is what makes it a node's.
+    pub(crate) async fn check_recovery_attestation(
+        &self,
+        name: &str,
+        header: &crate::recovery_disk::Header,
+    ) -> Result<(), ApiError> {
+        calimero_client::recovery::verify_attestation(header, &self.config.peer_policy())
+            .await
+            .map(|_governance| ())
+            .map_err(|e| {
+                ApiError::bad_request(
+                    "UNATTESTED_RECOVERY_FILE",
+                    &format!("{name} was not written by an attested node: {e:#}"),
+                )
+            })
+    }
+
+    /// Before a recovery file of `app_id` seeds its group: put every segment
+    /// its sealed files list, from beside it in `at`, into this node's store,
+    /// each checked against its hash; and answer how to wrap their data keys
+    /// again, `(old file key, this cluster's)`. Refused while a segment is
+    /// missing or altered: the restored app could not open that file, and its
+    /// replicas could not be handed it.
+    pub(crate) fn load_recovery_segments(
+        &self,
+        at: &std::path::Path,
+        app_id: &str,
+        opened: &crate::recovery_disk::Opened,
+        key: &[u8; 32],
+    ) -> Result<([u8; 32], [u8; 32]), ApiError> {
+        use crate::node::recovery_disk::{segment_file, segments_of_row};
+        let bad = |e: eyre::Report| ApiError::bad_request("BAD_RECOVERY_FILE", &format!("{e:#}"));
+        let mut segments = Vec::new();
+        let meta = super::off_workers(|| {
+            opened.app(key, |row| {
+                segments.extend(segments_of_row(&row));
+                Ok(())
+            })
+        })
+        .map_err(bad)?;
+        let old: [u8; 32] = hex::decode(&meta.file_key)
+            .ok()
+            .and_then(|k| k.try_into().ok())
+            .ok_or_else(|| bad(eyre::eyre!("the app file names no file key")))?;
+        let mut missing = 0_usize;
+        for hash in segments {
+            if self.engine.get_segment(&hash).ok().flatten().is_some() {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(at.join(segment_file(&hash))) else {
+                missing += 1;
+                continue;
+            };
+            if hex::encode(ring::digest::digest(&ring::digest::SHA256, &bytes)) != hash {
+                missing += 1;
+                continue;
+            }
+            self.engine
+                .put_segment(&hash, &bytes)
+                .map_err(|e| ApiError::internal(&e.to_string()))?;
+        }
+        if missing > 0 {
+            return Err(ApiError::new(
+                409,
+                "RECOVERY_SEGMENTS_MISSING",
+                &format!(
+                    "{missing} segment(s) of {app_id}'s files are missing or altered on the recovery disk"
+                ),
+            ));
+        }
+        Ok((old, crate::backup::file_key(&self.cluster_key, app_id)))
     }
 
     /// Keep code a recovery file holds in this node's store, its hash checked

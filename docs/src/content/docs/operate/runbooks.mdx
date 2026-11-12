@@ -335,7 +335,11 @@ operator signs to admit it. The organization, its people and their passkeys,
 its apps and its backup key come back; the people sign in with the passkeys
 they had. It is refused when the cluster holds any of them already.
 
-Not yet: sealed files (uploads), which are not on the disk.
+Sealed files (uploads) come back with their apps: their segments are on the
+disk beside the app's files, as stored, and a restore refuses (`409
+RECOVERY_SEGMENTS_MISSING`) while one is missing or altered. Every file a
+recovery uses must carry an attestation of the node that wrote it which this
+node accepts under its peer policy (`400 UNATTESTED_RECOVERY_FILE`).
 
 ## Disaster recovery: the system group lost its majority
 

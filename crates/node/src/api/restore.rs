@@ -148,6 +148,8 @@ pub(super) async fn recover_holder(
     };
 
     let (slice_file, slice_key) = open(&b.slice, Kind::Holder)?;
+    node.check_recovery_attestation(&b.slice.file, &slice_file.header)
+        .await?;
     let body = off_workers(|| slice_file.whole(&slice_key)).map_err(bad)?;
     let slice: HolderSlice = serde_json::from_slice(&body)
         .map_err(|e| bad(eyre::eyre!("{} holds no slice: {e}", b.slice.file)))?;
@@ -156,22 +158,29 @@ pub(super) async fn recover_holder(
     let mut files = Vec::new();
     for f in &b.apps {
         let (opened, key) = open(f, Kind::App)?;
+        node.check_recovery_attestation(&f.file, &opened.header)
+            .await?;
         let app_id = opened.header.app.clone().unwrap_or_default();
         if !slice.apps.contains_key(&app_id)
-            || files.iter().any(|(id, ..): &(String, _, _)| *id == app_id)
+            || files
+                .iter()
+                .any(|(id, ..): &(String, _, _, _)| *id == app_id)
         {
             return Err(bad(eyre::eyre!(
                 "{} is not one more app of the slice",
                 f.file
             )));
         }
-        // The key must open it before the operator is asked to sign.
-        let _meta = off_workers(|| opened.app(&key, |_| Ok(()))).map_err(bad)?;
-        files.push((app_id, opened, key));
+        // The key must open it, and its files' segments be here, before the
+        // operator is asked to sign.
+        let wrap = node.load_recovery_segments(&at, &app_id, &opened, &key)?;
+        files.push((app_id, opened, key, wrap));
     }
     let mut code = Vec::new();
     for f in &b.code {
         let (opened, key) = open(f, Kind::Code)?;
+        node.check_recovery_attestation(&f.file, &opened.header)
+            .await?;
         let hash = opened.header.hash.clone().unwrap_or_default();
         let bytes = off_workers(|| opened.whole(&key)).map_err(bad)?;
         if hex::encode(ring::digest::digest(&ring::digest::SHA256, &bytes)) != hash {
@@ -193,7 +202,7 @@ pub(super) async fn recover_holder(
     });
     let imported: Vec<ImportedApp> = files
         .iter()
-        .map(|(app_id, opened, _)| ImportedApp {
+        .map(|(app_id, opened, ..)| ImportedApp {
             app_id: app_id.clone(),
             replicas: replicas.clone(),
             source: RestoreSource {
@@ -231,7 +240,7 @@ pub(super) async fn recover_holder(
         })
         .await?;
     let mut restored = Vec::new();
-    for (app_id, opened, key) in files {
+    for (app_id, opened, key, (old_key, new_key)) in files {
         let group = out["apps"]
             .as_array()
             .and_then(|a| a.iter().find(|x| x["app"] == app_id.as_str()))
@@ -245,7 +254,15 @@ pub(super) async fn recover_holder(
         let index = opened.header.index;
         let done = node
             .seed_with(&app_id, group, index, backup, |g| {
-                g.replace_state_rows(|stage| opened.app(&key, stage).map(|_meta| ()))
+                g.replace_state_rows(|stage| {
+                    opened
+                        .app(&key, |row| {
+                            stage(crate::node::recovery_disk::rewrap_row(
+                                row, &app_id, &old_key, &new_key,
+                            )?)
+                        })
+                        .map(|_meta| ())
+                })
             })
             .await?;
         restored.push(done);
@@ -389,6 +406,8 @@ async fn ops_restore_recovery(
     let holder = node.sys(|s| s.backup_holder(&app));
     let at = disk::holder_dir(&dir, &holder);
     let opened = off_workers(|| disk::read(&disk::path_in(&at, &r.file)?)).map_err(bad)?;
+    node.check_recovery_attestation(&r.file, &opened.header)
+        .await?;
     let h = &opened.header;
     if h.kind != Kind::App || h.app.as_deref() != Some(app_id.as_str()) {
         return Err(bad(eyre::eyre!(
@@ -457,6 +476,7 @@ async fn ops_restore_recovery(
             "this app's replicas are being moved or restored; retry once that answers",
         ));
     };
+    let (old_key, new_key) = node.load_recovery_segments(&at, &app_id, &opened, &key)?;
     let index = h.index;
     let backup = json!({
         "name": r.file,
@@ -480,8 +500,17 @@ async fn ops_restore_recovery(
         let group = out["group"]
             .as_u64()
             .ok_or_else(|| ApiError::internal("the restore recorded no group"))?;
+        let id = app_id.clone();
         node.seed_with(&app_id, group, index, backup, |g| {
-            g.replace_state_rows(|stage| opened.app(&key, stage).map(|_meta| ()))
+            g.replace_state_rows(|stage| {
+                opened
+                    .app(&key, |row| {
+                        stage(crate::node::recovery_disk::rewrap_row(
+                            row, &id, &old_key, &new_key,
+                        )?)
+                    })
+                    .map(|_meta| ())
+            })
         })
         .await
         .map(Json)

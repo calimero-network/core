@@ -7864,3 +7864,43 @@ fn an_organizations_slice_is_imported_once_with_the_operators_signature() {
     let proof = signed("cluster", "__recover_holder", &args);
     assert_eq!(refused(&mut m, import(proof)), ALREADY_HERE);
 }
+
+/// Setting an organization's backup key is judged on the state when it
+/// applies: a member granted MANAGE_APPLICATION org-wide may, and once
+/// removed from the organization may not, whatever they held before.
+#[test]
+fn a_removed_member_no_longer_sets_the_organizations_backup_key() {
+    let (mut m, _alice, mut bob, _carol) = proven_cluster();
+    let _prev = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .capabilities
+        .insert("bob".into(), crate::types::caps::MANAGE_APPLICATION);
+    let holder = BackupHolder::Org("org".into());
+    let key = "ab".repeat(32);
+    let c = consent(
+        &mut bob,
+        "org:org",
+        "__set_backup_key",
+        &json!({ "publicKey": key }),
+    );
+    let _ok = m
+        .run(set_backup_key(holder.clone(), &key, "bob", c))
+        .unwrap();
+    assert_eq!(m.state.backup_keys["org:org"].set_by, "bob");
+    let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
+    let other = "cd".repeat(32);
+    let c = consent(
+        &mut bob,
+        "org:org",
+        "__set_backup_key",
+        &json!({ "publicKey": other }),
+    );
+    assert_eq!(
+        refused(&mut m, set_backup_key(holder, &other, "bob", c)),
+        NOT_BACKUP_HOLDER
+    );
+    assert_eq!(m.state.backup_keys["org:org"].public_key, key);
+}

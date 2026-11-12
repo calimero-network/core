@@ -11089,7 +11089,7 @@
             }
           },
           "400": {
-            "description": "`BAD_BACKUP`; `BAD_RECOVERY_FILE`; `BAD_RECOVERY_KEY`; `BAD_REQUEST`: the request is malformed; `NOT_A_REPLICA_NODE`",
+            "description": "`BAD_BACKUP`; `BAD_RECOVERY_FILE`; `BAD_RECOVERY_KEY`; `BAD_REQUEST`: the request is malformed; `NOT_A_REPLICA_NODE`; `UNATTESTED_RECOVERY_FILE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11102,7 +11102,8 @@
               "BAD_RECOVERY_FILE",
               "BAD_RECOVERY_KEY",
               "BAD_REQUEST",
-              "NOT_A_REPLICA_NODE"
+              "NOT_A_REPLICA_NODE",
+              "UNATTESTED_RECOVERY_FILE"
             ]
           },
           "401": {
@@ -11146,7 +11147,7 @@
             ]
           },
           "409": {
-            "description": "`BACKUP_FROM_NEWER_RELEASE`; `BUNDLE_GONE`; `MOVE_IN_PROGRESS`; `NO_BACKUP_DIR`; `UNKNOWN_BACKUP_FORMAT`; `UPGRADE_PENDING`",
+            "description": "`BACKUP_FROM_NEWER_RELEASE`; `BUNDLE_GONE`; `MOVE_IN_PROGRESS`; `NO_BACKUP_DIR`; `RECOVERY_SEGMENTS_MISSING`; `UNKNOWN_BACKUP_FORMAT`; `UPGRADE_PENDING`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11159,6 +11160,7 @@
               "BUNDLE_GONE",
               "MOVE_IN_PROGRESS",
               "NO_BACKUP_DIR",
+              "RECOVERY_SEGMENTS_MISSING",
               "UNKNOWN_BACKUP_FORMAT",
               "UPGRADE_PENDING"
             ]
@@ -14122,7 +14124,7 @@
             }
           },
           "400": {
-            "description": "`BAD_RECOVERY_FILE`; `BAD_RECOVERY_KEY`; `TOO_MANY_FILES`",
+            "description": "`BAD_RECOVERY_FILE`; `BAD_RECOVERY_KEY`; `TOO_MANY_FILES`; `UNATTESTED_RECOVERY_FILE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -14133,7 +14135,8 @@
             "x-calimero-codes": [
               "BAD_RECOVERY_FILE",
               "BAD_RECOVERY_KEY",
-              "TOO_MANY_FILES"
+              "TOO_MANY_FILES",
+              "UNATTESTED_RECOVERY_FILE"
             ]
           },
           "401": {
@@ -21775,7 +21778,7 @@
             }
           },
           "400": {
-            "description": "`BAD_RECOVERY_FILE`; `BAD_RECOVERY_KEY`; `BAD_REQUEST`: the request is malformed; `NOT_A_REPLICA_NODE`; `TOO_MANY_FILES`",
+            "description": "`BAD_RECOVERY_FILE`; `BAD_RECOVERY_KEY`; `BAD_REQUEST`: the request is malformed; `NOT_A_REPLICA_NODE`; `TOO_MANY_FILES`; `UNATTESTED_RECOVERY_FILE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -21788,7 +21791,8 @@
               "BAD_RECOVERY_KEY",
               "BAD_REQUEST",
               "NOT_A_REPLICA_NODE",
-              "TOO_MANY_FILES"
+              "TOO_MANY_FILES",
+              "UNATTESTED_RECOVERY_FILE"
             ]
           },
           "403": {
@@ -21805,7 +21809,7 @@
             ]
           },
           "409": {
-            "description": "`FEATURE_NOT_ACTIVE`; `NO_BACKUP_DIR`",
+            "description": "`FEATURE_NOT_ACTIVE`; `NO_BACKUP_DIR`; `RECOVERY_SEGMENTS_MISSING`",
             "content": {
               "application/json": {
                 "schema": {
@@ -21815,7 +21819,8 @@
             },
             "x-calimero-codes": [
               "FEATURE_NOT_ACTIVE",
-              "NO_BACKUP_DIR"
+              "NO_BACKUP_DIR",
+              "RECOVERY_SEGMENTS_MISSING"
             ]
           },
           "428": {

@@ -1205,8 +1205,14 @@ is its command line.
   here. `GET /ops/recovery-files` lists headers and signatures, never keys. Tests:
   `tests/recovery_disk.rs`, `recovery_disk::tests`, `backup_keys_are_set_by_whoever_upgrades_the_apps`,
   `an_organizations_slice_is_imported_once_with_the_operators_signature`,
-  `portable_rows_seed_a_group_under_another_clusters_key` (calimero-log). Sealed files
-  (segments) are not on the disk yet.
+  `portable_rows_seed_a_group_under_another_clusters_key` (calimero-log). Sealed files: each
+  segment an app's files list is copied beside its files as stored (`seg-<hash>`,
+  `write_recovery_segment`; unlisted ones go after `SEGMENT_KEEP`), loaded back and checked
+  by hash before a restore (`Node::load_recovery_segments`, `409 RECOVERY_SEGMENTS_MISSING`),
+  and each file's data key is wrapped again under the new cluster's file key
+  (`node::recovery_disk::rewrap_row`, from `AppMeta::file_key`). Every recovery file used
+  is attested under the peer policy (`Node::check_recovery_attestation`,
+  `400 UNATTESTED_RECOVERY_FILE`).
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.

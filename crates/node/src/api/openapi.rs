@@ -1461,13 +1461,13 @@ fn operations() -> Vec<Op> {
             .json::<super::restore::RestoreBody>("{ backup?: string, recovery?: { file: string, key: string }, operatorProof?: #OperatorProof }")
             .ok("{ app: string, group: uint, rows: uint, backup: any, status: string }")
             .operator()
-            .errors(&[(400, "BAD_BACKUP"), (400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "BAD_REQUEST"), (400, "NOT_A_REPLICA_NODE"), (403, "FORBIDDEN"), (404, "BACKUP_NOT_FOUND"), (409, "BACKUP_FROM_NEWER_RELEASE"), (409, "BUNDLE_GONE"), (409, "MOVE_IN_PROGRESS"), (409, "NO_BACKUP_DIR"), (409, "UNKNOWN_BACKUP_FORMAT"), (409, "UPGRADE_PENDING")]),
+            .errors(&[(400, "BAD_BACKUP"), (400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "BAD_REQUEST"), (400, "NOT_A_REPLICA_NODE"), (400, "UNATTESTED_RECOVERY_FILE"), (403, "FORBIDDEN"), (404, "BACKUP_NOT_FOUND"), (409, "BACKUP_FROM_NEWER_RELEASE"), (409, "BUNDLE_GONE"), (409, "MOVE_IN_PROGRESS"), (409, "NO_BACKUP_DIR"), (409, "RECOVERY_SEGMENTS_MISSING"), (409, "UNKNOWN_BACKUP_FORMAT"), (409, "UPGRADE_PENDING")]),
         post("/recover/holder", "restore::recover_holder", Anyone, "Bring an organization's or account's apps back from its recovery files")
             .about("Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.")
             .json::<super::restore::RecoverHolderBody>("{ holder: string, slice: { file: string, key: string }, apps?: { file: string, key: string }[], code?: { file: string, key: string }[], operatorProof?: #OperatorProof }")
             .ok("{ apps: any }")
             .operator()
-            .errors(&[(400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "BAD_REQUEST"), (400, "NOT_A_REPLICA_NODE"), (400, "TOO_MANY_FILES"), (409, "FEATURE_NOT_ACTIVE"), (409, "NO_BACKUP_DIR")]),
+            .errors(&[(400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "BAD_REQUEST"), (400, "NOT_A_REPLICA_NODE"), (400, "TOO_MANY_FILES"), (400, "UNATTESTED_RECOVERY_FILE"), (409, "FEATURE_NOT_ACTIVE"), (409, "NO_BACKUP_DIR"), (409, "RECOVERY_SEGMENTS_MISSING")]),
         get("/ops/recovery-files", "restore::ops_recovery_files", Ops, "The recovery files a node reads")
             .about("In `--recover-from`, else `--recovery-dir`, of `holder` (`operator`, the default; `org:<id>`; `account:<id>`): each file's name, its header as signed (JSON text) and the node's Ed25519 signature over `calimero.recovery-backup.v1\\0` and those bytes (hex), for the holder's device to check before it opens a key with its own.")
             .query::<super::restore::RecoveryFilesQuery>("{ holder?: string }")
@@ -1477,7 +1477,7 @@ fn operations() -> Vec<Op> {
             .about("On the founder started with `--bootstrap --recover-from DIR`, its system state empty: the newest `system` file in `DIR/operator/` and the apps' `code` files, each with the data key the operator opened from it (hex). Checked as founding from backups is (governance, operator key, no node of the old cluster answering), then the system group is seeded; each app waits for `POST /ops/apps/{app}/restore { recovery }`.")
             .json::<super::restore::RecoverBody>("{ system: { file: string, key: string }, code?: { file: string, key: string }[] }")
             .ok("{ apps: uint, accounts: uint, index: uint }")
-            .errors(&[(400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "TOO_MANY_FILES"), (409, "NOT_RECOVERING"), (409, "OLD_CLUSTER_ANSWERS"), (409, "OTHER_DEPLOYMENT")]),
+            .errors(&[(400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "TOO_MANY_FILES"), (400, "UNATTESTED_RECOVERY_FILE"), (409, "NOT_RECOVERING"), (409, "OLD_CLUSTER_ANSWERS"), (409, "OTHER_DEPLOYMENT")]),
         get("/ops/backup-key", "ops_backup_key", Ops, "The operator's backup key")
             .about("The X25519 public key every app's recovery-disk backups are sealed to where the operator upgrades apps (`key`, `null` while none is set).")
             .ok("#BackupKeyAnswer"),

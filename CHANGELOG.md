@@ -28,8 +28,12 @@
   file, its apps' files and their code over the sealed channel, and the operator
   admits it with a signature over `cluster / __recover_holder / { holder, slice,
   apps }`; the org, its people (who sign in with the passkeys they had), its apps
-  and its backup key are added, refused where any of them is here already. Not
-  yet: sealed files (uploads) on the disk. `calimero-log` gains `read_snapshot_rows` and
+  and its backup key are added, refused where any of them is here already. Sealed files come along: their segments are copied to the disk as they are
+  stored (ciphertext under each file's own key), checked against their hash when
+  read back, and each file's data key is wrapped again under the new cluster's
+  file key (`409 RECOVERY_SEGMENTS_MISSING` while one is missing). Every file a
+  recovery uses must carry an attestation the node accepts under its peer
+  policy (`400 UNATTESTED_RECOVERY_FILE`). `calimero-log` gains `read_snapshot_rows` and
   `Group::replace_state_rows` (state rows that move between cluster keys).
 - **Every app has an OpenAPI document, typed clients and a breaking-change check**
   (`calimero-app-abi`). `GET /apps/{app}/openapi.json` (the access of

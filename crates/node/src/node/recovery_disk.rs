@@ -26,6 +26,69 @@ use crate::system::{BackupHolder, SystemState};
 /// How often the recovery disk is written.
 pub const RECOVERY_EVERY: Duration = Duration::from_secs(300);
 
+/// How long a segment no held app lists stays on the disk: an older app
+/// file kept beside the newest (`KEEP`) may still name it.
+pub const SEGMENT_KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
+
+/// The name of a sealed file's segment on the disk, beside its app's files.
+/// Segments are ciphertext under each file's own data key, which is wrapped
+/// under the app's file key, which only the sealed app file carries: they are
+/// copied as they are, and checked against their hash when read back.
+#[must_use]
+pub fn segment_file(hash: &str) -> String {
+    format!("seg-{hash}")
+}
+
+/// The segments a portable row of an app's state names: those of the sealed
+/// file its blob record holds.
+#[must_use]
+pub fn segments_of_row(row: &calimero_log::PortableRow) -> Vec<String> {
+    use crate::app::rows;
+    use crate::component::blobs::BlobRecord;
+    match row {
+        calimero_log::PortableRow::Hidden { tag, key, value }
+            if *tag == rows::CBLOB && key.len() == 32 =>
+        {
+            serde_json::from_slice::<BlobRecord>(value)
+                .ok()
+                .and_then(|r| r.file)
+                .map(|f| f.segments)
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// A portable row of `app_id`'s state for a cluster whose file key is `new`:
+/// a sealed file's data key, wrapped under the file key it was written
+/// under (`old`, from the app file's `AppMeta`), is wrapped again.
+pub fn rewrap_row(
+    row: calimero_log::PortableRow,
+    app_id: &str,
+    old: &[u8; 32],
+    new: &[u8; 32],
+) -> EyreResult<calimero_log::PortableRow> {
+    use crate::app::rows;
+    use crate::component::blobs::BlobRecord;
+    let calimero_log::PortableRow::Hidden { tag, key, value } = row else {
+        return Ok(row);
+    };
+    if tag != rows::CBLOB || key.len() != 32 || old == new {
+        return Ok(calimero_log::PortableRow::Hidden { tag, key, value });
+    }
+    let mut record: BlobRecord = serde_json::from_slice(&value)?;
+    let Some(file) = record.file.as_mut() else {
+        return Ok(calimero_log::PortableRow::Hidden { tag, key, value });
+    };
+    let data_key = crate::files::unwrap_key(old, app_id, &file.wrapped_key.0)?;
+    file.wrapped_key = calimero_log::Bytes(crate::files::wrap_key(new, app_id, &data_key)?);
+    Ok(calimero_log::PortableRow::Hidden {
+        tag,
+        key,
+        value: serde_json::to_vec(&record)?,
+    })
+}
+
 /// What the writer keeps between passes.
 #[derive(Default)]
 pub(crate) struct RecoveryWriter {
@@ -123,6 +186,9 @@ impl Node {
             hex::decode(&key.public_key).ok()?.try_into().ok()
         };
 
+        // The segments each holder's directory must keep, by directory.
+        let mut listed: HashMap<std::path::PathBuf, std::collections::HashSet<String>> =
+            HashMap::new();
         // Each app this node holds, at its latest snapshot.
         let groups: Vec<_> = self
             .apps
@@ -182,10 +248,28 @@ impl Node {
                 pass.written += 1;
             }
             let _pruned = disk::prune(&at, &prefix)?;
+            let segments: Vec<String> = g.read_local(|m, _| {
+                m.state
+                    .component
+                    .blobs
+                    .records
+                    .values()
+                    .filter_map(|r| r.file.as_ref())
+                    .flat_map(|f| f.segments.clone())
+                    .collect()
+            });
+            for hash in &segments {
+                pass.written += usize::from(self.write_recovery_segment(&at, hash)?);
+            }
+            listed.entry(at.clone()).or_default().extend(segments);
             for hash in std::iter::once(&app.bundle).chain(app.compute_bundle.as_ref()) {
                 pass.written +=
                     usize::from(self.write_recovery_code(&at, &holder, &to, &signer, hash)?);
             }
+        }
+
+        for (at, keep) in &listed {
+            let _gone = super::off_workers(|| prune_segments(at, keep))?;
         }
 
         // Each holder's slice of the system state; the operator's is the
@@ -234,6 +318,25 @@ impl Node {
         Ok(pass)
     }
 
+    /// Copy segment `hash` of a sealed file into `at` once, as it is stored;
+    /// answers whether it did (`false`: there already, or not held here yet).
+    fn write_recovery_segment(&self, at: &Path, hash: &str) -> EyreResult<bool> {
+        let path = at.join(segment_file(hash));
+        if path.exists() {
+            return Ok(false);
+        }
+        let Some(bytes) = self.engine.get_segment(hash)? else {
+            return Ok(false);
+        };
+        let tmp = at.join(format!(".{}.tmp", segment_file(hash)));
+        super::off_workers(|| {
+            std::fs::create_dir_all(at)?;
+            std::fs::write(&tmp, &bytes)?;
+            std::fs::rename(&tmp, &path)
+        })?;
+        Ok(true)
+    }
+
     /// Write bundle `hash` to `holder`'s directory once; answers whether it
     /// wrote it (`false`: there already, or not held here).
     fn write_recovery_code(
@@ -255,4 +358,29 @@ impl Node {
         let wrote = super::off_workers(|| disk::write(at, subject, to, signer, |out| out(&bytes)))?;
         Ok(wrote.is_some())
     }
+}
+
+/// Delete the segments in `at` no held app lists (`keep`) that were written
+/// more than [`SEGMENT_KEEP`] ago. Answers how many went.
+fn prune_segments(at: &Path, keep: &std::collections::HashSet<String>) -> EyreResult<usize> {
+    let Ok(entries) = std::fs::read_dir(at) else {
+        return Ok(0);
+    };
+    let mut gone = 0;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(hash) = name.strip_prefix("seg-") else {
+            continue;
+        };
+        if keep.contains(hash) {
+            continue;
+        }
+        let age = entry.metadata()?.modified()?.elapsed().unwrap_or_default();
+        if age > SEGMENT_KEEP {
+            std::fs::remove_file(entry.path())?;
+            gone += 1;
+        }
+    }
+    Ok(gone)
 }

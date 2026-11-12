@@ -302,6 +302,14 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
         .unwrap()
         .to_owned();
     let holder = BackupHolder::Account(account.clone());
+    // A sealed file of the app: its segments go to the disk beside the app's
+    // file, and its data key comes back wrapped under the new cluster's key.
+    let plain: Vec<u8> = (0..5_000_u32).map(|i| (i % 251) as u8).collect();
+    let uploaded = alice
+        .upload_file(&kv, std::io::Cursor::new(plain.clone()), plain.len() as u64)
+        .await
+        .unwrap();
+    let file_id = uploaded["id"].as_str().unwrap().to_owned();
 
     let (secret, public) = disk::new_keypair();
     let set = alice
@@ -330,14 +338,14 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
     let mut written = 0;
     for _ in 0..100 {
         written += survivor.write_recovery().await.unwrap().written;
-        if written >= 3 {
+        if written >= 4 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(
-        written >= 3,
-        "the account's slice, its app and code: {written}"
+        written >= 4,
+        "the account's slice, its app, code and a segment: {written}"
     );
     let disk_copy = tempfile::tempdir().unwrap();
     copy_dir(
@@ -392,8 +400,28 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
         .unwrap_err();
     assert!(e.to_string().contains("holds that"), "{e}");
 
+    // The file is back, its segment handed to every replica, and its data
+    // key opens under this cluster's file key.
+    let founder = new.nodes[0].as_ref().unwrap().node.clone();
+    let wrapped = founder
+        .hosted(&kv)
+        .unwrap()
+        .read_local(|m, _| {
+            m.state
+                .component
+                .blobs
+                .records
+                .values()
+                .find_map(|r| r.file.as_ref().map(|f| f.wrapped_key.0.clone()))
+        })
+        .expect("the restored app holds its file");
+    let file_key = calimero_node::backup::file_key(founder.cluster_key(), &kv);
+    assert!(calimero_node::files::unwrap_key(&file_key, &kv, &wrapped).is_ok());
+
     let cl = new.client(1);
     let _session = cl.sign_in(&mut pk).await.unwrap();
+    let info = cl.get(&format!("apps/{kv}/files/{file_id}")).await.unwrap();
+    assert_eq!(info["size"], json!(5_000));
     assert_eq!(cl.get("auth/me").await.unwrap()["accountId"], account);
     let got = cl
         .view(&kv, "get", json!({ "key": "a" }), Consistency::Strong)
