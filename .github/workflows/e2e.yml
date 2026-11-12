@@ -130,6 +130,7 @@ jobs:
           targets: wasm32-wasip2
           shared-key: ci-checks
           save-if: false
+          sccache: true
 
       # ci-checks' required `scope` job checks discovery with a script; it must see what
       # the runner sees.
@@ -145,6 +146,10 @@ jobs:
           SCENARIO_SHARD: ${{ matrix.shard }}/2
           SCENARIO_FUZZY_SECONDS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '900' || inputs.soak_seconds || '10' }}
         run: cargo test -p calimero-node --test scenarios -- --test-threads 2
+
+      - name: sccache stats
+        if: ${{ !cancelled() }}
+        run: sccache --show-stats || true
 
   # Process-level tests on real `merod run --dev` processes, one per node: a crash,
   # a frozen node and a restart; a frozen leader under a 10 s budget; organizations
@@ -171,6 +176,7 @@ jobs:
           targets: wasm32-wasip2
           shared-key: release
           save-if: false
+          sccache: true
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -249,6 +255,7 @@ jobs:
           targets: wasm32-wasip2
           shared-key: release
           save-if: false
+          sccache: true
 
       - name: Install mero-app-build
         run: scripts/install-mero-app-build.sh
@@ -338,6 +345,7 @@ jobs:
           targets: wasm32-wasip2
           shared-key: ci-checks
           save-if: false
+          sccache: true
 
       # The fixtures' builder, and the local runner compute-redact's output is checked against.
       - name: Install mero-app-build and mero-compute
@@ -501,6 +509,7 @@ jobs:
           targets: wasm32-unknown-unknown
           shared-key: release
           save-if: false
+          sccache: true
 
       - name: Setup cargo mero
         if: hashFiles('.github/actions/setup-cargo-mero/action.yml') != ''
@@ -546,6 +555,7 @@ jobs:
           targets: wasm32-unknown-unknown,wasm32-wasip2
           shared-key: release
           save-if: false
+          sccache: true
 
       - name: Setup cargo mero
         if: hashFiles('.github/actions/setup-cargo-mero/action.yml') != ''
@@ -583,6 +593,7 @@ jobs:
           targets: wasm32-unknown-unknown,wasm32-wasip2
           shared-key: release
           save-if: false
+          sccache: true
 
       - name: Setup cargo mero
         if: hashFiles('.github/actions/setup-cargo-mero/action.yml') != ''
@@ -707,6 +718,7 @@ jobs:
           targets: wasm32-wasip2
           shared-key: ci-checks
           save-if: false
+          sccache: true
 
       # KV_STORE_WASM is the kv component (apps/v2-fixtures/kv: set, get, len,
       # and `clear`, a confirm method it declares itself).

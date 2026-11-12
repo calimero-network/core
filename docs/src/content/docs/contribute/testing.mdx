@@ -646,6 +646,12 @@ cargo test -p calimero-node --test upgrade_replay
 
 ## In CI
 
+Every job runs on a standard GitHub-hosted runner (4 cores). The Rust jobs of
+`ci-checks.yml` and `e2e.yml` restore their rust-cache group (the dependencies)
+and compile through sccache, backed by the Actions cache, so a workspace crate
+whose inputs did not change is not compiled again; a job's `sccache stats` step
+shows its hit rate. `release.yml` never uses sccache: what it builds ships.
+
 `.github/workflows/e2e.yml` runs on every PR that touches code, and nightly on
 master (a merge into master does not run it again: its PR did, and the nightly
 runs all of it with the long soak; a merge into the release branch does):

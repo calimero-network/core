@@ -139,6 +139,7 @@ jobs:
           components: rustfmt, clippy
           shared-key: ci-checks
           save-if: false
+          sccache: true
 
       - name: Cargo format
         run: cargo fmt --check
@@ -174,6 +175,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
 
+      - name: sccache stats
+        if: ${{ !cancelled() }}
+        run: sccache --show-stats || true
+
   # The only job that saves `ci-checks`; the others restore it read-only.
   rust-test:
     name: Rust tests
@@ -193,6 +198,7 @@ jobs:
         with:
           shared-key: ci-checks
           save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity' }}
+          sccache: true
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
@@ -277,6 +283,10 @@ jobs:
             cargo build --manifest-path "$manifest" --release --target wasm32-wasip2
           done
 
+      - name: sccache stats
+        if: ${{ !cancelled() }}
+        run: sccache --show-stats || true
+
   rust-features:
     name: Rust feature-gated tests
     needs: scope
@@ -295,6 +305,7 @@ jobs:
         with:
           shared-key: ci-checks
           save-if: false
+          sccache: true
 
       # mock-attestation is default-off so it never reaches a release binary; the workspace tests skip it.
       - name: Cargo test (mock-attestation)
@@ -352,6 +363,7 @@ jobs:
           targets: wasm32-wasip2
           shared-key: ci-checks
           save-if: false
+          sccache: true
 
       - name: Fetch the previous release's kv bundle
         env:
@@ -426,6 +438,7 @@ jobs:
           targets: wasm32-wasip2
           shared-key: release
           save-if: false
+          sccache: true
 
       # This tree's merod is built optimized without fat LTO (as compute-e2e's is):
       # the upgrade path tests what the node reads and writes, not how it links,

@@ -25,6 +25,16 @@ inputs:
     required: false
     default: "${{ github.ref == 'refs/heads/master' }}"
 
+  sccache:
+    description: >
+      Compile through sccache, backed by the Actions cache. rust-cache keeps the
+      dependencies but never the workspace's own crates, so without it every job
+      compiles every workspace crate again; with it, a crate whose inputs did not
+      change is a cache hit. Never in a job that publishes: its cache can be
+      written by a PR's run.
+    required: false
+    default: "false"
+
 outputs:
   channel:
     description: The pinned toolchain channel
@@ -112,3 +122,20 @@ runs:
         shared-key: ${{ inputs.shared-key }}-${{ steps.toolchain.outputs.channel }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
         save-if: ${{ inputs.save-if }}
+
+    # After the cache step, so neither variable enters rust-cache's environment
+    # hash (scripts/check-rust-cache-groups.py).
+    - name: Install sccache
+      if: inputs.sccache == 'true'
+      uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      with:
+        version: v0.10.0
+
+    - name: Compile through sccache
+      if: inputs.sccache == 'true'
+      shell: bash
+      run: |
+        {
+          echo "SCCACHE_GHA_ENABLED=true"
+          echo "RUSTC_WRAPPER=sccache"
+        } >> "$GITHUB_ENV"
