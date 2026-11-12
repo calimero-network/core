@@ -65,15 +65,15 @@ polished product. Grouped by theme; check items off as they land.
 - [x] 49. How-to: blobs (upload/announce/fetch).
 - [x] 50. Document access-controlled storage (Shared/User/Frozen) with examples.
 - [ ] 51. Generate an SDK API reference from rustdoc.
-- [ ] 52. How-to: ship v2 (migrations) with troubleshooting.
+- [x] 52. How-to: ship v2 (migrations) with troubleshooting. (`build/ship-v2`.)
 
 ## G · Operate track content
-- [ ] 53. Node API reference with full request/response schemas (OpenAPI); routes and credentials are listed (`operate/admin-api`).
+- [x] 53. Node API reference with full request/response schemas (OpenAPI); routes and credentials are listed (`operate/admin-api`).
 - [ ] 54. Generate the merod/meroctl CLI reference from `--help` (hand-written from the clap definitions).
 - [x] 55. Production deployment guide (TDX, mero-kms, forming the cluster, TLS front).
 - [x] 56. Networking guide (listener, peer URLs, CORS, app domains, egress); v1's NAT/relay/bootstrap guide retired.
 - [ ] 57. Metrics collection and dashboard guide for `/ops/metrics` (a sealing collector, Grafana examples).
-- [ ] 58. Restore runbook, once snapshot restore exists (backups are documented; restore is not implemented).
+- [x] 58. Restore runbook, once snapshot restore exists: `operate/runbooks` "Restore an app" (`POST /ops/apps/{app}/restore`).
 - [x] 59. Security guide (TDX vs --dev, quote policies, governance, ops token).
 - [ ] 60. Capacity & performance tuning guide.
 - [ ] 61. Multi-process cluster tutorial (separate `merod` processes; `merod local` covers one process).
@@ -111,7 +111,7 @@ polished product. Grouped by theme; check items off as they land.
 
 ## K · Automation & sustain
 - [ ] 87. Generate the config reference from the config structs.
-- [ ] 88. Generate the node API reference from OpenAPI.
+- [x] 88. Generate the node API reference from OpenAPI. (`docs/public/openapi.json`, from the registry in `crates/node/src/api/openapi.rs`.)
 - [ ] 89. Generate the CLI reference from clap `--help`.
 - [ ] 90. Generate the SDK reference from rustdoc JSON.
 - [ ] 91. CI accessibility/contrast check (axe/pa11y).
@@ -158,14 +158,14 @@ A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
 - [ ] R20. Peer/connection state-machine diagram.
 
 ## Operate depth
-- [ ] R21. Node API reference with request/response schemas (OpenAPI); requests must be sealed, so a collection needs a sealing client.
+- [x] R21. Node API reference with request/response schemas (OpenAPI); requests must be sealed, so a collection needs a sealing client.
 - [ ] R22. CLI reference generated from `--help` (merod/meroctl), always current.
 - [ ] R23. Sample Grafana dashboard JSON (the metrics catalog is in `operate/observability`).
 - [ ] R24. Kubernetes/Helm deployment guide + manifests.
-- [ ] R25. Tested backup/restore with RPO/RTO guidance.
+- [x] R25. Tested backup/restore with RPO/RTO guidance (`crates/node/tests/restore.rs`; `operate/runbooks` "Schedule, RPO and RTO").
 - [ ] R26. Capacity planning & sizing (disk per app, replicas per node, system group size).
 - [ ] R27. Cross-version upgrade runbook (node binary + app together).
-- [ ] R28. Disaster recovery (losing a system-group majority; restoring an app from its snapshot).
+- [x] R28. Disaster recovery (losing a system-group majority; restoring an app from its snapshot): `operate/runbooks` "Disaster recovery", "Found a cluster again from its backups", "Restore an app".
 - [ ] R29. ~~Bootstrap-node / relay-node operator guide~~ (dropped — a cluster has no p2p network).
 - [ ] R30. Log reference (what each warn/error means, what to do).
 
@@ -193,7 +193,7 @@ A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
 - [ ] R47. Example gallery with "what it teaches" tags.
 - [ ] R48. Collaborative text-editor tutorial (RGA, end to end).
 - [ ] R49. Access-controlled app tutorial (Shared / Owner).
-- [ ] R50. Migration tutorial: ship v2 with a schema change.
+- [x] R50. Migration tutorial: ship v2 with a schema change. (`build/ship-v2`, tested with `run_migration` against the shipped `.mpk`.)
 - [ ] R51. xcall worked example (secondary-index pattern).
 - [ ] R52. Blob upload/download worked example with a frontend.
 - [ ] R53. "Deploy to a 3-node cluster" tutorial.

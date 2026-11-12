@@ -71,6 +71,7 @@ pub async fn start(
             metrics_listen: None,
             replicas: usize::try_from(n.min(3))?,
             backup_dir: Some(dir.join("backups")),
+            restore_from: None,
             raft: calimero_log::Config::default(),
             read_wait: std::time::Duration::from_secs(2),
             refresh_rotate_after: crate::api::REFRESH_ROTATE_AFTER,

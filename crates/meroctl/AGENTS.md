@@ -19,6 +19,7 @@ sealed; the node's quote is judged before anything is sent).
 | `network status` | `/health` | |
 | (new) `login`, `logout [--all]`, `whoami`, `attest [--context]` | file passkeys on dev clusters; cluster verification | `/auth/*`, `/attestation` |
 | (new) `attest-release [--file F --nonce N]` | verify a `merod attest` release attestation (no session, no sealed channel) | `/attestation/release` |
+| (new) `proxy [--listen ADDR] [--allow-remote] [--openapi FILE]` | the API as plain HTTP on loopback, each request through the attested, sealed `Transport` (`proxy.rs`) | every route; `GET /openapi.json` |
 | (new) `ops ...` | the operator, `--ops-token`: status, metrics, placement, add-node, remove-node, move, backup, pools, quotas, release, outbound, packages/install/uninstall, upgrade, upgrade-namespace | `/ops/*` |
 
 Dropped, with no meaning here: `context sync`, `group sync` (Raft replicates),
@@ -33,6 +34,13 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   cluster (`Env::post_approved`, `delete_approved`); without it the request is
   sent as is and the node answers `412 CONFIRM_REQUIRED`: on a real cluster
   the owner approves in the console.
+- `proxy` (`proxy.rs`) holds the user's credential for every local caller, so
+  it binds to loopback (`--allow-remote` lifts that and the `Host` check, with
+  a warning), refuses a non-loopback `Host` (DNS rebinding) and any request a
+  browser sends for a page (`Origin`, `Sec-Fetch-Site`), attests the node
+  before serving, passes a request's own `Authorization` through unrefreshed,
+  and logs method, path and status only (never a header, query or body). Test:
+  `the_proxy_serves_the_api_as_plain_http` in `tests/cli.rs`.
 - Output is JSON; commands that stream (watch, presence stream, metrics,
   downloads) write their own and answer `null`, which is not printed.
 

@@ -16,7 +16,7 @@ reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
-sigstore = { version = "0.14.0", default-features = false, features = ["verify", "cosign", "sigstore-trust-root", "rustls-tls"] }
+sigstore = { version = "0.15.0", default-features = false, features = ["verify", "cosign", "sigstore-trust-root", "rustls-tls"] }
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 x509-cert = "0.3.0"

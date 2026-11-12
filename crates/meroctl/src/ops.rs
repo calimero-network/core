@@ -60,8 +60,23 @@ pub enum OpsCmd {
         #[arg(long, value_delimiter = ',')]
         replicas: Vec<u64>,
     },
-    /// Write encrypted snapshots of the contexts this node leads.
-    Backup,
+    /// Write encrypted snapshots of the contexts this node leads, and of the
+    /// system group when it leads it.
+    Backup {
+        /// Every group this node holds, leader or not: what a node of a
+        /// cluster that lost its majority still has (disaster recovery).
+        #[arg(long)]
+        all: bool,
+    },
+    /// Restore a context from a sealed backup in this node's `--backup-dir`
+    /// (`{backup-dir}/{context}/{name}`); this node seeds it and becomes its
+    /// first replica. Everything the context wrote after the backup is lost.
+    Restore {
+        context: String,
+        /// The backup's file name; the newest one when left out.
+        #[arg(long)]
+        backup: Option<String>,
+    },
     /// The compute pools and the runs each takes at once.
     Pools,
     /// Set the compute pools, JSON `{ name: { runsPerNode, maxMemoryMib } }`.
@@ -205,7 +220,27 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
                 Ok(v) => v,
             }
         }
-        OpsCmd::Backup => client.post("ops/backup", json!({})).await?,
+        OpsCmd::Backup { all } => {
+            let path = if all {
+                "ops/backup?all=true"
+            } else {
+                "ops/backup"
+            };
+            client.post(path, json!({})).await?
+        }
+        OpsCmd::Restore { context, backup } => {
+            let mut body = json!({});
+            if let Some(name) = backup {
+                body["backup"] = json!(name);
+            }
+            decide_at(
+                env,
+                client,
+                Some(body),
+                &format!("ops/apps/{context}/restore"),
+            )
+            .await?
+        }
         OpsCmd::Pools => client.get("ops/pools").await?,
         OpsCmd::SetPools { pools } => {
             let body = json!({ "pools": json_arg(&pools)? });

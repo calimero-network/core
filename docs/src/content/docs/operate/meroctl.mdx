@@ -34,7 +34,7 @@ watch`, `dev`) print their own lines.
 | --- | --- | --- | --- |
 | `--home PATH` | `CALIMERO_HOME` | `~/.calimero` | Directory for meroctl's saved nodes and sessions (`{home}/meroctl/`). |
 | `--api URL` | `CALIMERO_API` | none | The node's URL (any node of the cluster). |
-| `--node ALIAS` | | the default saved node | A node saved with `node add`. Conflicts with `--api`. |
+| `--node ALIAS` | | the default saved node | A node saved with `node add`, or a node's URL (`http://` or `https://`, as `--api`). Conflicts with `--api`. |
 | `--allow-mock` | | off | Trust mock quotes (development clusters such as `merod local`). A flag only, never read from the environment; `node add --allow-mock` remembers it for one saved node. |
 | `--allow-debug-profiles` | | off | Trust a release's debug profiles (the host can read a debug image's memory). |
 | `--tee-profiles NAME,...` | `CALIMERO_TEE_PROFILES` | none | Image profiles a real node's signed mero-tee release must list it under. Without any, every real quote is refused. |
@@ -332,6 +332,45 @@ node answers `403` for the others.
   `ops move` and `ops upgrade` pass `CONTEXT` to the node as given (an app id
   or a context id); they do not resolve aliases.
 </Aside>
+
+## proxy
+
+```bash
+meroctl [--node ALIAS|URL] proxy [--listen 127.0.0.1:2580] [--allow-remote] [--openapi FILE]
+```
+
+Serves the node's API as plain HTTP on this machine, for `curl`, scripts and
+clients generated from the node API's OpenAPI document ([node API](/operate/admin-api/)): every
+request is sent to the node through the same attested, sealed client every
+other command uses, so it attests the node with the same `--allow-mock`,
+`--tee-profiles` and `--min-release`, before it takes any request. Method, path,
+query, headers and body go to the node as they came; the node's status, headers
+and body come back as they come, and an event stream (`/apps/{app}/events`,
+`/apps/{app}/presence/stream`) stays a stream. A refusal is the node's own
+(`{ error, message, details }`), a `412 CONFIRM_REQUIRED` included: the caller
+signs the challenge and sends the request again with `confirm`. On start it
+prints one JSON line, `{ "listening": "http://127.0.0.1:2580", "node": URL }`,
+and one line per request on stderr (method, path, status).
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--listen ADDR` | `127.0.0.1:2580` | Where to serve (`:0` picks a free port). A non-loopback address is refused without `--allow-remote`. |
+| `--allow-remote` | off | Serve on a non-loopback address and take requests for any `Host`, with a warning: anyone who reaches the port acts as you. |
+| `--openapi FILE` | none | Serve this document at `GET /openapi.json`. Without it, the node's own if it serves one, else `404` with a note. Either way `servers` is set to the proxy. |
+
+Which credential a request carries: its own `Authorization`, passed through as
+given and never refreshed; else `--api-key`; else the session `login` saved for
+the node, refreshed on a `401` and saved again; else none.
+
+What it refuses, because it holds your credential:
+
+- a `Host` that is not `localhost` or a loopback address (DNS rebinding), unless `--allow-remote`: `403 HOST_REFUSED`;
+- a request a browser sent for a web page (it carries `Origin`, or `Sec-Fetch-Site` other than `none`), since any page you open could otherwise act as you: `403 BROWSER_REFUSED`. The proxy sends no CORS headers;
+- a body over 64 MiB, the sealed envelope's cap: `413 TOO_LARGE`;
+- a request when the node cannot be reached, attested or understood: `502 UPSTREAM`, and nothing is sent in the clear.
+
+It never logs a header, a query or a body. See
+[Use any HTTP tool](/operate/plain-http/).
 
 ## raw
 

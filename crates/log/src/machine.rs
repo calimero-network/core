@@ -104,10 +104,19 @@ pub(crate) struct LegacySnapshot {
     pub(crate) data: Bytes,
 }
 
-/// The state row an in-memory machine's checkpoint lives in.
-const CHECKPOINT_KEY: &[u8] = b"\0calimero.log.checkpoint";
+/// The state row an in-memory machine's checkpoint lives in (and so where a
+/// snapshot file holds that machine's whole state).
+pub const CHECKPOINT_KEY: &[u8] = b"\0calimero.log.checkpoint";
 
-const SNAPSHOT_MAGIC: &[u8] = b"CALIMERO-SNAPSHOT-1\n";
+/// The snapshot file format this release writes, and the newest it reads: the number in the
+/// file's first line, `CALIMERO-SNAPSHOT-<format>\n`. Format 1 is the only one so far (every
+/// release since the store, backups included). A change to the framing, or to the rows a
+/// snapshot carries (`format::STORE_FORMAT`), raises it.
+pub const SNAPSHOT_FORMAT: u32 = 1;
+/// The first line of a snapshot file, before its format number.
+const SNAPSHOT_MAGIC_PREFIX: &[u8] = b"CALIMERO-SNAPSHOT-";
+/// The longest format number a first line may carry (a `u32`).
+const MAX_FORMAT_DIGITS: usize = 10;
 /// Rows per frame stop growing past this many plaintext bytes.
 const FRAME_BYTES: usize = 1024 * 1024;
 /// A frame is refused past this size when read back.
@@ -196,6 +205,36 @@ impl FrameWriter<'_> {
     }
 }
 
+/// The first line of a snapshot file this release writes.
+fn first_line() -> Vec<u8> {
+    [
+        SNAPSHOT_MAGIC_PREFIX,
+        format!("{SNAPSHOT_FORMAT}\n").as_bytes(),
+    ]
+    .concat()
+}
+
+/// The first line of a snapshot file: its format number. Anything else is not a snapshot file.
+fn read_format(r: &mut impl Read) -> eyre::Result<u32> {
+    let not_a_snapshot = || eyre::eyre!("not a snapshot file");
+    let mut prefix = [0; SNAPSHOT_MAGIC_PREFIX.len()];
+    r.read_exact(&mut prefix).map_err(|_| not_a_snapshot())?;
+    if prefix != SNAPSHOT_MAGIC_PREFIX {
+        return Err(not_a_snapshot());
+    }
+    let mut digits = String::new();
+    loop {
+        let mut b = [0_u8; 1];
+        r.read_exact(&mut b).map_err(|_| not_a_snapshot())?;
+        match b[0] {
+            b'\n' if !digits.is_empty() => break,
+            d @ b'0'..=b'9' if digits.len() < MAX_FORMAT_DIGITS => digits.push(char::from(d)),
+            _ => return Err(not_a_snapshot()),
+        }
+    }
+    digits.parse().map_err(|_| not_a_snapshot())
+}
+
 /// Read a snapshot file back, frame by frame: `f(key, sealed row)`.
 fn read_frames(
     frames: &crate::store::Sealer,
@@ -205,10 +244,15 @@ fn read_frames(
     mut f: impl FnMut(&[u8], &[u8]) -> eyre::Result<()>,
 ) -> eyre::Result<()> {
     let mut r = BufReader::new(file);
-    let mut magic = vec![0; SNAPSHOT_MAGIC.len()];
-    r.read_exact(&mut magic)?;
-    if magic != SNAPSHOT_MAGIC {
-        eyre::bail!("not a snapshot file");
+    let format = read_format(&mut r)?;
+    if format > SNAPSHOT_FORMAT {
+        eyre::bail!(
+            "snapshot file format {format}, which a later release wrote; this release reads \
+             snapshot format {SNAPSHOT_FORMAT}"
+        );
+    }
+    if format != SNAPSHOT_FORMAT {
+        eyre::bail!("snapshot file format {format}, which no release wrote");
     }
     let mut n = 0_u64;
     loop {
@@ -387,7 +431,7 @@ impl<M: Machine> StateMachine<M> {
         let name = format!("g{}-{}.snap", self.group, meta.snapshot_id);
         let path = self.snapshot_path(&name);
         let mut out = BufWriter::new(std::fs::File::create(&path)?);
-        out.write_all(SNAPSHOT_MAGIC)?;
+        out.write_all(&first_line())?;
         let mut w = FrameWriter {
             db: &self.db,
             group: self.group,
@@ -658,6 +702,102 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
     }
 }
 
+/// Replace a disk machine's state with the rows of a snapshot file this
+/// cluster wrote for group `from` (a backup), keeping where the group stands
+/// in its log. Each row is opened and sealed again for the group, and a hidden
+/// key is hidden again under it, so a backup of one group seeds another. The
+/// rows go to the next generation, which the group switches to in one batch,
+/// as a snapshot install does; the snapshot the group served is dropped, as it
+/// holds the state before. Answers how many rows it wrote.
+///
+/// Only the group's sole voter may do this: every other replica would keep
+/// the state before (`calimero_log::Group::replace_state`).
+pub(crate) fn replace_state<M: Machine>(
+    state: &GroupState,
+    shared: &Shared<M>,
+    from: GroupId,
+    snapshot_id: &str,
+    path: &std::path::Path,
+) -> eyre::Result<u64> {
+    if M::IN_MEMORY {
+        eyre::bail!("an in-memory machine's state changes only through its log");
+    }
+    let db = &state.db;
+    let group = state.group;
+    let old = state.generation.load(Ordering::Acquire);
+    let next = old.wrapping_add(1);
+    db.drop_generation(group, next)?;
+    let mut batch = Transaction::default();
+    let mut pending = 0_usize;
+    let mut rows = 0_u64;
+    let read = read_frames(
+        &db.snapshot_sealer,
+        from,
+        snapshot_id,
+        std::fs::File::open(path)?,
+        |key, sealed| {
+            let plain = db.open_state(from, key, sealed)?;
+            let key = rehide(db, from, group, key, &plain);
+            db.stage_state(&mut batch, group, next, &key, Some(&plain))?;
+            pending += key.len() + plain.len();
+            rows += 1;
+            if pending >= INSTALL_BATCH_BYTES {
+                db.commit(&batch, false)?;
+                batch = Transaction::default();
+                pending = 0;
+            }
+            Ok(())
+        },
+    );
+    if let Err(e) = read.and_then(|()| db.commit(&batch, false)) {
+        let _ = db.drop_generation(group, next);
+        return Err(e);
+    }
+    {
+        let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
+        let mut switch = Transaction::default();
+        db.stage_meta(&mut switch, group, "generation", &next)?;
+        db.commit(&switch, true)?;
+        state.generation.store(next, Ordering::Release);
+        st.machine.restore(&[])?;
+    }
+    db.drop_generation(group, old)?;
+    if let Some(served) = db.get_meta::<SnapshotRecord>(group, "snapshot")? {
+        db.drop_meta(group, "snapshot")?;
+        let _removed = std::fs::remove_file(db.snapshot_dir.join(&served.file));
+    }
+    Ok(rows)
+}
+
+/// Replace an in-memory machine's whole state with `data` (what
+/// [`Machine::snapshot`] answers), keeping where the group stands in its log:
+/// the caller then builds a snapshot, which checkpoints it. Only the group's
+/// sole voter may do this (`calimero_log::Group::replace_machine_data`).
+pub(crate) fn replace_machine_data<M: Machine>(
+    shared: &Shared<M>,
+    data: &[u8],
+) -> eyre::Result<()> {
+    if !M::IN_MEMORY {
+        eyre::bail!("a disk machine's state is replaced from a snapshot file");
+    }
+    let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
+    st.machine.restore(data)
+}
+
+/// Where a row of group `from` lives in group `to`: a hidden key (its row is an
+/// HMAC over the group, the tag and the key, [`crate::store::hide`]) is hidden
+/// again under `to`; any other key stays as it is.
+fn rehide(db: &Db, from: GroupId, to: GroupId, key: &[u8], plain: &[u8]) -> Vec<u8> {
+    use crate::store::{hide, unwrap_hidden, HIDDEN_LEN};
+    let (Some(tag), Some((inner, _))) = (key.first(), unwrap_hidden(plain)) else {
+        return key.to_vec();
+    };
+    if from == to || key.len() != HIDDEN_LEN || hide(&db.hider, from, *tag, inner) != key {
+        return key.to_vec();
+    }
+    hide(&db.hider, to, *tag, inner)
+}
+
 /// The file of the snapshot a group serves, and the index it is at.
 pub(crate) fn current_snapshot_file(
     db: &Db,
@@ -696,4 +836,56 @@ pub fn read_snapshot_file(
             f(k, &plain)
         },
     )
+}
+
+#[cfg(test)]
+mod snapshot_format {
+    use super::*;
+
+    fn read_header(bytes: &[u8]) -> eyre::Result<u32> {
+        read_format(&mut &bytes[..])
+    }
+
+    /// Every snapshot and backup written so far begins `CALIMERO-SNAPSHOT-1\n`.
+    #[test]
+    fn the_first_line_written_so_far_reads_as_format_1() {
+        assert_eq!(read_header(b"CALIMERO-SNAPSHOT-1\n\x01").unwrap(), 1);
+        assert_eq!(
+            first_line(),
+            b"CALIMERO-SNAPSHOT-1\n",
+            "what this release writes, a node of the release before reads"
+        );
+    }
+
+    #[test]
+    fn anything_else_is_not_a_snapshot() {
+        for bad in [
+            &b""[..],
+            b"CALIMERO-SNAPSHOT-",
+            b"CALIMERO-SNAPSHOT-\n",
+            b"CALIMERO-SNAPSHOT-1",
+            b"CALIMERO-SNAPSHOT-x\n",
+            b"CALIMERO-SNAPSHOT-12345678901\n",
+            b"calimero-snapshot-1\n",
+        ] {
+            let e = read_header(bad).unwrap_err().to_string();
+            assert_eq!(e, "not a snapshot file", "{bad:?}");
+        }
+    }
+
+    /// A node on this release that is sent (or restores) a snapshot from a later one says so,
+    /// instead of failing on its frames as if the file were damaged.
+    #[test]
+    fn a_snapshot_from_a_later_release_is_refused_by_its_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g1-x.snap");
+        std::fs::write(&path, b"CALIMERO-SNAPSHOT-2\n\x01\x00\x00\x00\x00").unwrap();
+        let e = read_snapshot_file(&[0; 32], 1, "x", &path, |_, _| Ok(()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("format 2") && e.contains("snapshot format 1"),
+            "{e}"
+        );
+    }
 }

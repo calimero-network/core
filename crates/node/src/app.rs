@@ -176,6 +176,13 @@ struct Head {
     component: Option<crate::component::ComponentHead>,
 }
 
+/// The bundle and compute component a state's head (its [`rows::HEAD`] row)
+/// runs: what a backup of the state is restored onto (`crate::node::restore`).
+pub(crate) fn backup_code(head: &[u8]) -> eyre::Result<(Option<String>, Option<String>)> {
+    let head: Head = serde_json::from_slice(head)?;
+    Ok((head.bundle, head.component.and_then(|c| c.compute_bundle)))
+}
+
 #[derive(Clone, Default)]
 pub struct AppState {
     /// The app's group state, on disk.

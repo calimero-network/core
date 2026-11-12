@@ -1,0 +1,10 @@
+[package]
+name = "chain-no-wasm"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[workspace]

@@ -10,7 +10,10 @@ use std::ops::Bound;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::system::{compare_versions, Authority, PackageRef, SystemState, OPERATOR};
+use crate::runtime::NodeRuntime;
+use crate::system::{
+    compare_versions, Authority, PackageRef, PackageVersion, SystemState, OPERATOR,
+};
 use crate::types::{Access, AppRecord, OrgRole, UpgradeRecord};
 
 /// The most apps (or organizations) one page of a report answers.
@@ -140,23 +143,107 @@ pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Opt
         })
 }
 
-/// The releases of `current`'s package newer than it, shipping its service,
+/// Every release of `current`'s package newer than it, shipping its service,
 /// that `account` may see and so upgrade to (one with the same WASM too: its
-/// frontend may differ): the newest [`MAX_AVAILABLE_VERSIONS`], oldest first.
-fn newer_versions(s: &SystemState, current: &ReleaseName, account: &str) -> Vec<String> {
+/// frontend may differ), oldest first.
+fn newer_versions<'s>(
+    s: &'s SystemState,
+    current: &ReleaseName,
+    account: &'s str,
+) -> Vec<&'s PackageVersion> {
     let Some(p) = s.packages.get(&current.package) else {
         return Vec::new();
     };
     let service = current.service.clone().unwrap_or_default();
-    let mut newer: Vec<&str> = s
+    let mut newer: Vec<&PackageVersion> = s
         .visible_versions(p, account)
         .filter(|v| v.app_parts().contains_key(&service))
         .filter(|v| compare_versions(&v.version, &current.version).is_gt())
-        .map(|v| v.version.as_str())
         .collect();
-    newer.sort_by(|a, b| compare_versions(a, b));
+    newer.sort_by(|a, b| compare_versions(&a.version, &b.version));
+    newer
+}
+
+/// Why `app` cannot be upgraded to release `v` of its package (service
+/// `service`), as the upgrade would refuse it, or `None` when it can as far
+/// as the system state and `runtimes` (each node's, [`crate::runtime`]) tell:
+///
+/// - `authority`: `v` is upgraded by its publisher and the app by its owner
+///   (`SystemState::upgrade_keeps_authority`);
+/// - `runtime`: a replica's node runs a runtime older than `v`'s
+///   `minRuntimeVersion`, with each such node (`409 RUNTIME_TOO_OLD`).
+///
+/// Who may upgrade, and release deadlines, are the same for every release
+/// of the package, so they decide whether to upgrade, not which release to.
+fn blocked(
+    s: &SystemState,
+    app: &AppRecord,
+    package: &str,
+    v: &PackageVersion,
+    service: &str,
+    runtimes: &BTreeMap<u64, NodeRuntime>,
+) -> Option<Value> {
+    let bundle = v.services.get(service)?;
+    if s.governance().app_upgrades != Authority::Operator
+        && !s.upgrade_keeps_authority(&app.bundle, bundle)
+    {
+        return Some(json!({
+            "reason": "authority",
+            "message": "an app whose owner upgrades it is not moved to a release its publisher upgrades",
+        }));
+    }
+    let min = v
+        .min_runtime_version
+        .as_deref()
+        .and_then(crate::runtime::required)?;
+    let short = crate::runtime::short_of(&app.replicas, runtimes, &min);
+    if short.is_empty() {
+        return None;
+    }
+    let what = format!("{package}@{}", v.version);
+    let message = crate::runtime::refusal(&what, &min, short.clone()).message;
+    Some(json!({
+        "reason": "runtime",
+        "message": message,
+        "minRuntimeVersion": min.to_string(),
+        "nodes": short,
+    }))
+}
+
+/// Set the entry `v` of `app` (running `current`) up with the releases
+/// `account` may upgrade it to: `availableVersions`, the newest
+/// [`MAX_AVAILABLE_VERSIONS`] newer ones, oldest first; `latestReachable`, the
+/// newest of all of them the upgrade would take ([`blocked`]), or `null`; and,
+/// when the newest is not that one, `latestBlocked`: its version and why.
+fn upgrade_targets(
+    s: &SystemState,
+    app: &AppRecord,
+    current: Option<&ReleaseName>,
+    account: &str,
+    runtimes: &BTreeMap<u64, NodeRuntime>,
+    v: &mut Value,
+) {
+    let newer = current.map_or_else(Vec::new, |r| newer_versions(s, r, account));
     let skip = newer.len().saturating_sub(MAX_AVAILABLE_VERSIONS);
-    newer.into_iter().skip(skip).map(str::to_owned).collect()
+    v["availableVersions"] = json!(newer
+        .iter()
+        .skip(skip)
+        .map(|r| r.version.as_str())
+        .collect::<Vec<_>>());
+    let Some(current) = current else {
+        v["latestReachable"] = Value::Null;
+        return;
+    };
+    let service = current.service.clone().unwrap_or_default();
+    let why = |r: &PackageVersion| blocked(s, app, &current.package, r, &service, runtimes);
+    let reachable = newer.iter().rev().find(|r| why(r).is_none());
+    v["latestReachable"] = json!(reachable.map(|r| r.version.as_str()));
+    if let Some(latest) = newer.last() {
+        if let Some(mut b) = why(latest) {
+            b["version"] = json!(latest.version);
+            v["latestBlocked"] = b;
+        }
+    }
 }
 
 /// A bundle as a report names it: its digest, and its release if visible
@@ -251,12 +338,14 @@ fn releases_approved_by(s: &SystemState, bundle: &str) -> &'static str {
     }
 }
 
-/// One app's entry. `releases` is each node's attested release, as known.
+/// One app's entry. `releases` is each node's attested release, and
+/// `runtimes` each node's runtime, as known.
 #[must_use]
 pub fn app_json(
     s: &SystemState,
     app: &AppRecord,
     releases: &BTreeMap<u64, Option<String>>,
+    runtimes: &BTreeMap<u64, NodeRuntime>,
     reader: Reader<'_>,
 ) -> Value {
     let current = release_of_app(s, app, reader);
@@ -293,10 +382,7 @@ pub fn app_json(
         if let Some(r) = &current {
             v["package"]["service"] = json!(r.service);
         }
-        v["availableVersions"] = json!(current
-            .as_ref()
-            .map(|r| newer_versions(s, r, account))
-            .unwrap_or_default());
+        upgrade_targets(s, app, current.as_ref(), account, runtimes, &mut v);
     }
     v
 }
@@ -423,7 +509,7 @@ mod tests {
         assert!(serde_json::to_value(&old).unwrap().get("release").is_none());
         let r = release_of_app(&s, &old, reader).unwrap();
         assert_eq!(r.version, "1.0.0");
-        let v = app_json(&s, &old, &BTreeMap::new(), reader);
+        let v = app_json(&s, &old, &BTreeMap::new(), &BTreeMap::new(), reader);
         assert_eq!(v["package"]["version"], json!("1.0.0"), "{v}");
         assert_eq!(v["availableVersions"], json!(["1.1.0"]), "{v}");
 
@@ -437,11 +523,17 @@ mod tests {
         let back: AppRecord =
             serde_json::from_value(serde_json::to_value(&named).unwrap()).unwrap();
         assert_eq!(back.release, named.release);
-        let v = app_json(&s, &named, &BTreeMap::new(), reader);
+        let v = app_json(&s, &named, &BTreeMap::new(), &BTreeMap::new(), reader);
         assert_eq!(v["package"]["version"], json!("1.1.0"), "{v}");
         assert_eq!(v["availableVersions"], json!([]), "{v}");
         // A release the reader may not see is not named, nor guessed.
-        let v = app_json(&s, &named, &BTreeMap::new(), Reader::Operator);
+        let v = app_json(
+            &s,
+            &named,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            Reader::Operator,
+        );
         assert_eq!(v["package"], Value::Null, "{v}");
     }
 
@@ -473,6 +565,86 @@ mod tests {
         let v = last_upgrade_json(&s, &a, &named, reader);
         assert_eq!(v["from"]["version"], json!("1.0.0"), "{v}");
         assert_eq!(v["to"]["version"], json!("1.1.0"), "{v}");
+    }
+
+    /// The newest release an app can reach is reported whether or not it is
+    /// among the newest [`MAX_AVAILABLE_VERSIONS`], with why the latest is
+    /// not it; a release recorded without its requirement is judged as before.
+    #[test]
+    fn the_newest_reachable_release_is_reported_with_why_the_latest_is_not() {
+        let mut s = shared_wasm();
+        let release = |v: &str, min: Option<&str>| {
+            let mut r = json!({
+                "version": v, "mpk": v, "mpkSize": 1, "source": "upload",
+                "services": { "": "b" }, "installedBy": "alice", "installedAt": 0,
+            });
+            if let Some(min) = min {
+                r["minRuntimeVersion"] = json!(min);
+            }
+            serde_json::from_value::<PackageVersion>(r).unwrap()
+        };
+        let versions = &mut s.packages.get_mut("p").unwrap().versions;
+        versions.clear();
+        let _prev = versions.insert("1.0.0".into(), release("1.0.0", None));
+        let _prev = versions.insert("1.1.0".into(), release("1.1.0", Some("0.1.0")));
+        for minor in 2..=18 {
+            let v = format!("1.{minor}.0");
+            let _prev = versions.insert(v.clone(), release(&v, Some("9.0.0")));
+        }
+        let mut a = app("alice", None);
+        a.replicas = vec![1, 2];
+        let runtimes = BTreeMap::from([
+            (1, NodeRuntime::named("9.1.0")),
+            (2, NodeRuntime::named("1.0.0")),
+        ]);
+        let v = app_json(
+            &s,
+            &a,
+            &BTreeMap::new(),
+            &runtimes,
+            Reader::Account("alice"),
+        );
+        let listed = v["availableVersions"].as_array().unwrap();
+        assert_eq!(listed.len(), MAX_AVAILABLE_VERSIONS, "{v}");
+        assert_eq!(listed[0], json!("1.3.0"), "{v}");
+        assert_eq!(v["latestReachable"], json!("1.1.0"), "{v}");
+        let blocked = &v["latestBlocked"];
+        assert_eq!(blocked["version"], json!("1.18.0"), "{v}");
+        assert_eq!(blocked["reason"], json!("runtime"), "{v}");
+        assert_eq!(blocked["minRuntimeVersion"], json!("9.0.0"), "{v}");
+        assert_eq!(
+            blocked["nodes"],
+            json!([{ "node": 2, "runtime": "1.0.0" }]),
+            "{v}"
+        );
+
+        // The replica's node moves to a new enough runtime: the latest is reachable.
+        let caught_up = BTreeMap::from([
+            (1, NodeRuntime::named("9.1.0")),
+            (2, NodeRuntime::named("9.0.0")),
+        ]);
+        let v = app_json(
+            &s,
+            &a,
+            &BTreeMap::new(),
+            &caught_up,
+            Reader::Account("alice"),
+        );
+        assert_eq!(v["latestReachable"], json!("1.18.0"), "{v}");
+        assert!(v.get("latestBlocked").is_none(), "{v}");
+
+        // A release recorded without its requirement is not judged by it.
+        let versions = &mut s.packages.get_mut("p").unwrap().versions;
+        let _prev = versions.insert("1.19.0".into(), release("1.19.0", None));
+        let v = app_json(
+            &s,
+            &a,
+            &BTreeMap::new(),
+            &runtimes,
+            Reader::Account("alice"),
+        );
+        assert_eq!(v["latestReachable"], json!("1.19.0"), "{v}");
+        assert!(v.get("latestBlocked").is_none(), "{v}");
     }
 
     #[test]

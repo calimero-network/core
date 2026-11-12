@@ -58,7 +58,8 @@ changing these.
 | `crates/app-engine-wasmtime` | `calimero-app-engine-wasmtime` | The wasmtime engine for components: fuel, epochs, limits and a checked cache. |
 | `crates/sdk` (+ `sdk-macros`) | `calimero-sdk`, `calimero-sdk-macros` | The Rust app SDK for `calimero:app`: app attributes, encoding, tables, collections, env and the embedded ABI. |
 | `crates/app-sdk` | `calimero-app-sdk` | The SDK's old name: re-exports `calimero-sdk`, kept until no app depends on it. |
-| `crates/app-build` | `calimero-app-build` | Builds Rust guests into `calimero:app` components (`mero-app-build`). |
+| `crates/app-build` | `calimero-app-build` | Builds Rust guests into `calimero:app` components (`mero-app-build`); `codegen` and `abi-diff`. |
+| `crates/app-abi` | `calimero-app-abi` | An app's ABI for clients: the OpenAPI document the node serves, typed TS/Python clients, breaking-change checks. |
 
 ## Shared types
 

@@ -3,7 +3,7 @@
 Rust client for Calimero nodes: verifies the node's attestation
 (`attest.rs`, shared with the node), seals every request (`calimero-sealed`),
 signs in with a `Passkey` (feature `testing`: `SoftAuthenticator`) or an API key,
-and calls `/apps/{app}/{intents,views,events}`.
+and calls `/apps/{app}/{intents,views,events}` (and `methods/{method}`, `openapi.json`).
 
 The attestation check (`attest::verify`) is the one place clients and peers decide
 trust: quote genuine (or an allowed mock), report data =
@@ -13,6 +13,10 @@ refuses every real quote, `Pinned` checks fixed allowlists, `Release` fetches th
 Sigstore-verified `published-mrtds.json` of the release the node names and requires a
 matching allowed profile; then `policy_valid` (TCB status, debug TD, app-hash binding).
 mero-js `src/cloud-v2/attestation.ts` implements the same check; change both or neither.
+Node-only helpers beside it (no client or mero-js counterpart): `configured_min_release`
+refuses a node's `--peer-min-release` below `DEFAULT_MIN_RELEASE`, and `check_own_profile` /
+`verify_own_profile` check that a TD's own registers match its declared profile in its signed
+release (`calimero_node::attest::check_own_profile`, at start on TDX).
 The quote step itself (`verify_quote`, then `judge` for a real quote's registers) is
 shared by `verify`, `verify_receipt_key` and `attest::release::verify_release`.
 A document that carries `kms` (`KmsKeys`: what the node verified of the KMS its storage
@@ -34,6 +38,12 @@ absent from every other document) shares `verify_report`: report data =
 `nonce || SHA-256("calimero.tee-attest.job-key.v1" || x25519 transport key || ed25519 job key || release || cluster || node id)`
 (text length-prefixed), so swapping any of them breaks it. It answers `(transport_key, job_key)`; only nodes use it
 (the leader checking a job node), mero-js needs nothing.
+
+`verify_orchestrator` (`purpose=orchestrator`, any replica of a cluster; `AttestationDoc::cluster_identity`) shares `verify_report`: report data =
+`nonce || SHA-256("calimero.tee-attest.orchestrator.v1" || x25519 transport key || ed25519 cluster identity)`
+(`orchestrator_report_data`, one function for node and client), so a quote of another purpose never verifies as it.
+The caller passes the identity it expects (`GET /ops/cluster`) and gets the transport key back; a job node answers `404`.
+mero-js has no counterpart yet; the vector is `the_orchestrator_binding_matches_the_published_vector`.
 
 Release attestations (`attest/release.rs`, made by `merod attest`): a quote a node makes
 before it holds any key, report data
@@ -88,6 +98,20 @@ the connection.
 `receipt.rs` holds the signed pipeline run receipt (`PipelineReceipt`, `StepRunProof`) and the one message the node signs and `verify_pipeline_receipt` rebuilds: `"calimero.pipeline.receipt.v1\0" || JCS(receipt)`, checked over the JSON as sent. `Client::pipeline_receipt` fetches it and `Client::verify_receipt` checks it under the answering node's key from `verify_app_cluster`; `meroctl pipeline receipt --verify` also compares each downloaded output with the receipt. A job's own report signature is not verified here yet.
 
 `pipeline_events.rs` holds the typed, metadata-only events of `GET /apps/{app}/pipeline-runs/{run}/events` (`RunEvent`, `StepEvent`, `Snapshot`, `PipelineEvent`) and `RunProgress`, which reads the run view's JSON into only those fields and diffs two views; the node sends them and `Client::pipeline_run_events` (`meroctl pipeline watch`) reads them. A key set test pins each event's fields, so a new record field never reaches a stream.
+Runtime and routes (`transport.rs`): `Transport` is everything that is not a
+route: the attested, sealed channel (`SealedTransport::attested`), the
+credential and the `401` refresh above, error mapping (`answer`, `api_error`,
+`sealed_error`), the `412 CONFIRM_REQUIRED` step-up (`Transport::confirmed`) and
+SSE decoding (`Transport::events`). Its route-facing surface is
+`send(Request) -> reqwest::Response` (any status), `json(Request)`,
+`confirmed(Request, passkey)` and `events(Request)`, where `Request` is method,
+path, query, headers, `Body` (`Empty`, `Json`, `Bytes`) and `Credential`
+(`Held`, the transport's own and refreshed; `Authorization`, a caller's value
+passed as given; `Anonymous`). `Client`'s methods are the hand-written route
+layer over it (`Client::transport`); a generated route layer goes through the
+same calls. `meroctl proxy` forwards plain HTTP through `Transport::send`.
+mero-js (`src/runtime/`) and calimero-client-py (`calimero/transport.py`) have
+the same split.
 
 The command line over this client is `meroctl` (`crates/meroctl`).
 

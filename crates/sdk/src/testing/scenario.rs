@@ -12,8 +12,8 @@
 //! (`UNAUTHENTICATED` for an anonymous caller of the org app, `NOT_FOUND` for an account the app's org
 //! does not hold; Rulings 32, 35).
 //! A `tick` always runs as the system: `as` on a tick is refused.
-//! `op` is `call`, `view`, `tick` (`method` names the timer), `advance` (`args` is the ms)
-//! or `removeMember` (`args` is the account).
+//! `op` is `call`, `view`, `tick` (`method` names the timer), `advance` (`args` is the ms),
+//! `removeMember` (`args` is the account) or `upgrade` (a migration scenario only).
 //!
 //! Variables: `"save": "name"` on a call or view stores its ok result; later, any string
 //! that is exactly `"$"` plus a name (`[A-Za-z_][A-Za-z0-9_]*`) inside `args` or `expect` is replaced by the stored value
@@ -22,8 +22,14 @@
 //! Accounts: a string that is exactly `"@"` plus a name (same pattern) inside `args` or `expect` is that
 //! account as the app sees it: here its name (`"@bob"` is `"bob"`); on a cluster, its account id.
 //! A substituted value is not substituted again.
-//! `save` on `tick`, `advance` or `removeMember` is an error. After a step, `events` lists for each account
+//! `save` on `tick`, `advance`, `removeMember` or `upgrade` is an error. After a step, `events` lists for each account
 //! the names of all events it receives so far, in order.
+//!
+//! A migration scenario ([`run_migration`]) starts on an earlier release's component and holds one
+//! `{ "op": "upgrade" }` step, which switches the app to the build under test, code only, as a node's
+//! upgrade does; the steps before it write state with the old code, the steps after it read and
+//! write that state with the new code, and saved variables carry across. `upgrade` takes no
+//! `as`, `method` or `args`; [`run_scenario`] refuses it.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -31,7 +37,7 @@ use std::path::Path;
 use eyre::{bail, eyre, Result, WrapErr};
 use serde_json::Value;
 
-use super::{Failure, TestApp};
+use super::{Failure, Org, TestApp};
 
 /// Runs the scenario file against `t`.
 ///
@@ -39,12 +45,51 @@ use super::{Failure, TestApp};
 ///
 /// A malformed scenario, or the first step whose expectation does not hold.
 pub fn run_scenario(t: &mut TestApp, path: &Path) -> Result<()> {
+    run_file(t, path, &mut None)
+}
+
+/// Runs the migration scenario at `path`: the app starts on `from` (an earlier release's
+/// component, `init` run as the owner at `now_ms`) in `org`, and its one `upgrade` step
+/// switches it to `to` ([`TestApp::upgrade`]). Returns the app for further assertions.
+///
+/// # Errors
+///
+/// A malformed scenario, one without exactly one `upgrade` step, or the first step whose
+/// expectation does not hold.
+///
+/// # Panics
+///
+/// When `from` is not a usable component or its `init` fails, as [`TestApp::new`].
+pub fn run_migration(
+    from: &[u8],
+    to: &[u8],
+    org: Org,
+    now_ms: u64,
+    path: &Path,
+) -> Result<TestApp> {
+    let mut t = TestApp::new(from, org, now_ms);
+    let mut target = Some(to);
+    run_file(&mut t, path, &mut target)?;
+    if target.is_some() {
+        bail!(
+            "{}: a migration scenario has one {{\"op\": \"upgrade\"}} step; this one has none",
+            path.display()
+        );
+    }
+    Ok(t)
+}
+
+/// Runs the steps of `path`; `upgrade` is the build an `upgrade` step switches to, taken
+/// by the first one (`None`: no step may upgrade).
+fn run_file(t: &mut TestApp, path: &Path, upgrade: &mut Option<&[u8]>) -> Result<()> {
     let text =
         std::fs::read_to_string(path).wrap_err_with(|| format!("read {}", path.display()))?;
     let steps: Vec<Value> = serde_json::from_str(&text).wrap_err("scenario is not a JSON array")?;
     let mut vars = HashMap::new();
+    let mut upgraded = false;
     for (n, step) in steps.iter().enumerate() {
-        run_step(t, step, &mut vars).wrap_err_with(|| format!("step {n}: {step}"))?;
+        run_step(t, step, &mut vars, upgrade, &mut upgraded)
+            .wrap_err_with(|| format!("step {n}: {step}"))?;
     }
     Ok(())
 }
@@ -90,7 +135,13 @@ fn substitute(value: &Value, vars: &Vars) -> Result<Value> {
     })
 }
 
-fn run_step(t: &mut TestApp, step: &Value, vars: &mut Vars) -> Result<()> {
+fn run_step(
+    t: &mut TestApp,
+    step: &Value,
+    vars: &mut Vars,
+    upgrade: &mut Option<&[u8]>,
+    upgraded: &mut bool,
+) -> Result<()> {
     let op = str_of(step, "op")?;
     if step.get("save").is_some() && !matches!(op, "call" | "view") {
         bail!("`save` only applies to a call or view, not {op:?}");
@@ -133,6 +184,23 @@ fn run_step(t: &mut TestApp, step: &Value, vars: &mut Vars) -> Result<()> {
                     .ok_or_else(|| eyre!("removeMember needs an account"))?,
             );
             Ok(Value::Null)
+        }
+        "upgrade" => {
+            if let Some(key) = ["as", "method", "args"]
+                .iter()
+                .find(|k| step.get(**k).is_some())
+            {
+                bail!("`upgrade` takes no {key:?}: it switches to the build under test");
+            }
+            let Some(to) = upgrade.take() else {
+                bail!(if *upgraded {
+                    "a migration scenario upgrades once; this is a second `upgrade`"
+                } else {
+                    "`upgrade` runs only in a migration scenario (run_migration names the build)"
+                });
+            };
+            *upgraded = true;
+            t.upgrade(to).map(|()| Value::Null)
         }
         other => bail!("unknown op {other:?}"),
     };

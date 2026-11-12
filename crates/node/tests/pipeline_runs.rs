@@ -1483,6 +1483,7 @@ async fn a_step_runs_another_packages_module_under_the_callers_keys_and_payer() 
             "1.0.0",
             None,
             Some(&module),
+            "0.1.0",
             &key,
         ))
         .await

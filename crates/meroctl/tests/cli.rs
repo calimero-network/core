@@ -912,3 +912,239 @@ fn scenario(root: &Path, url: &str) {
         .contains("which node"));
     let _ = alice_id;
 }
+
+/// `meroctl proxy`: a node's API as plain HTTP on loopback, every request
+/// sent through the attested, sealed channel. Plain `reqwest` here, as curl or
+/// an OpenAPI client would call it: the saved session goes on a request that
+/// carries none, a request's own `Authorization` is passed through, a `412`
+/// step-up round-trips, an event stream stays a stream, and a web page's
+/// request is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_proxy_serves_the_api_as_plain_http() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut attempt = 0;
+    let cluster = loop {
+        attempt += 1;
+        let started = calimero_node::local::start(
+            1,
+            free_base_port(),
+            &dir.path().join(format!("cluster{attempt}")),
+            "ops-token",
+            vec!["http://localhost:3000".into()],
+            None,
+        )
+        .await;
+        match started {
+            Ok(c) => break c,
+            Err(e) if attempt < 5 && port_taken(&e) => continue,
+            Err(e) => panic!("the local cluster did not start: {e:?}"),
+        }
+    };
+    let url = cluster.urls[0].clone();
+    let root = dir.path().to_path_buf();
+    let alice = Meroctl {
+        home: root.join("alice"),
+    };
+    let pk = root.join("alice-passkey.json");
+    let mpk_path = root.join("kv.mpk");
+
+    // Sign up as a meroctl user would; the proxy uses the saved session.
+    let (account, mut proxy) = {
+        let (url, pk, mpk_path) = (url.clone(), pk.clone(), mpk_path.clone());
+        let kv = tokio::task::spawn_blocking(kv_wasm).await.unwrap();
+        let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        std::fs::write(&mpk_path, mpk("com.test.kv", "1.0.0", &kv, &publisher)).unwrap();
+        tokio::task::spawn_blocking(move || {
+            // A real node's quote is required by default: the proxy refuses this one.
+            let refused = alice
+                .cmd()
+                .args(["--node", &url, "proxy", "--listen", "127.0.0.1:0"])
+                .output()
+                .unwrap();
+            assert!(!refused.status.success());
+            assert!(
+                String::from_utf8_lossy(&refused.stderr).contains("mock quote refused"),
+                "{}",
+                String::from_utf8_lossy(&refused.stderr)
+            );
+            // Nor does it serve beyond loopback unless told to.
+            let remote = alice
+                .cmd()
+                .args([
+                    "--node",
+                    &url,
+                    "--allow-mock",
+                    "proxy",
+                    "--listen",
+                    "0.0.0.0:0",
+                ])
+                .output()
+                .unwrap();
+            assert!(String::from_utf8_lossy(&remote.stderr).contains("--allow-remote"));
+
+            let _ = alice.run(&["node", "add", "local", &url, "--allow-mock"]);
+            let me = alice.run(&["login", "--dev-passkey", path(&pk), "--name", "alice"]);
+            let child = alice
+                .cmd()
+                .args(["proxy", "--listen", "127.0.0.1:0"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            (s(&me["accountId"]), child)
+        })
+        .await
+        .unwrap()
+    };
+    let mut stdout = std::io::BufReader::new(proxy.stdout.take().unwrap());
+    let mut line = String::new();
+    let _n = std::io::BufRead::read_line(&mut stdout, &mut line).unwrap();
+    let started: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{line:?}: {e}"));
+    let base = s(&started["listening"]);
+    let http = reqwest::Client::new();
+    let at = |p: &str| format!("{base}{p}");
+
+    // Plain requests, with the saved session.
+    let health = http.get(at("/health")).send().await.unwrap();
+    assert_eq!(health.status(), 200);
+    let me: Value = http
+        .get(at("/auth/me"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(me["accountId"], account);
+
+    // A request's own credential is passed through as it is.
+    let theirs = http
+        .get(at("/auth/me"))
+        .bearer_auth("not-a-session")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(theirs.status(), 401);
+
+    // A web page's request is refused: the proxy holds the user's session.
+    let page = http
+        .get(at("/auth/me"))
+        .header("origin", "https://evil.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status(), 403);
+    let refused: Value = page.json().await.unwrap();
+    assert_eq!(refused["error"], "BROWSER_REFUSED");
+
+    // The 412 step-up round trip: the node's challenge comes back as it is,
+    // the caller signs it and sends the same request again with `confirm`.
+    let org: Value = http
+        .post(at("/orgs"))
+        .json(&json!({ "name": "acme" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let org = s(&org["orgId"]);
+    let asked = http
+        .delete(at(&format!("/orgs/{org}")))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(asked.status(), 412);
+    let asked: Value = asked.json().await.unwrap();
+    assert_eq!(asked["error"], "CONFIRM_REQUIRED");
+    let challenge =
+        calimero_identity::from_b64url(asked["details"]["challenge"].as_str().unwrap()).unwrap();
+    let mut passkey = calimero_identity::testing::SoftAuthenticator::from_json(
+        &std::fs::read_to_string(&pk).unwrap(),
+    )
+    .map_err(|e| e.to_string())
+    .unwrap();
+    let assertion = passkey.assert(&challenge);
+    let confirmed = http
+        .delete(at(&format!("/orgs/{org}")))
+        .json(&json!({
+            "confirm": { "challengeId": asked["details"]["challengeId"], "assertion": assertion }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(confirmed.status(), 200, "{:?}", confirmed.text().await);
+
+    // A raw body (a signed package), then an app instance and a call.
+    let installed = http
+        .post(at("/packages"))
+        .header("content-type", "application/octet-stream")
+        .body(std::fs::read(&mpk_path).unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(installed.status(), 200, "{:?}", installed.text().await);
+    let app: Value = http
+        .post(at("/apps"))
+        .json(&json!({ "name": "notes", "package": "com.test.kv", "version": "1.0.0" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let app = s(&app["appId"]);
+    let call = http
+        .post(at(&format!("/apps/{app}/intents")))
+        .json(&json!({ "method": "set", "args": { "key": "a", "value": "1" }, "idempotencyKey": "proxy-1" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(call.status(), 200, "{:?}", call.text().await);
+
+    // The event stream, passed through as a stream.
+    let events = http
+        .get(at(&format!("/apps/{app}/events")))
+        .query(&[("from", "0")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(events.status(), 200);
+    assert!(events.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/event-stream"));
+    let mut stream = events.bytes_stream();
+    let mut seen = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !seen.contains("\n\n") || !seen.contains("data:") {
+        let chunk = tokio::time::timeout_at(deadline, futures_util::StreamExt::next(&mut stream))
+            .await
+            .expect("an event within 30 s")
+            .expect("the stream stays open")
+            .unwrap();
+        seen.push_str(&String::from_utf8_lossy(&chunk));
+    }
+    assert!(seen.contains("event:"), "{seen}");
+    drop(stream);
+
+    // The API's document: the node's when it serves one, else a clear 404.
+    let spec = http.get(at("/openapi.json")).send().await.unwrap();
+    if spec.status() == 200 {
+        let spec: Value = spec.json().await.unwrap();
+        assert_eq!(spec["servers"][0]["url"], base);
+    } else {
+        assert_eq!(spec.status(), 404);
+        let note: Value = spec.json().await.unwrap();
+        assert!(s(&note["message"]).contains("--openapi"), "{note}");
+    }
+
+    let _ = proxy.kill();
+    let out = proxy.wait_with_output().unwrap();
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(log.contains("GET /auth/me -> 200"), "{log}");
+    // Never a credential in the log.
+    assert!(!log.contains("not-a-session"), "{log}");
+    cluster.stop().await;
+}

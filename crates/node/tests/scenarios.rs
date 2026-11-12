@@ -12,6 +12,7 @@
 //! `SCENARIO_SHARD=k/n` the k-th of n shards (1-based, every n-th path in sorted order),
 //! `--list` prints them. Scenarios listed in `tests/scenarios-skip.txt` (`<path> <reason>`)
 //! are reported ignored unless `--include-ignored` / `--ignored` (or `SCENARIO_INCLUDE_SKIPPED=1`).
+//! `SCENARIO_FILES=a.json,b.json` runs those cluster scenario files instead of the discovered ones.
 
 #[path = "harness/cluster.rs"]
 #[allow(dead_code)]
@@ -310,6 +311,29 @@ fn run_one(root: &Path, path: &str, kind: Kind) -> Result<(), String> {
     })
 }
 
+/// `SCENARIO_FILES=a.json,b.json`: cluster scenario files to run instead of the discovered ones,
+/// relative to the repository root. For files that need what only one CI job has (the previous
+/// release's bundle: `crates/node/tests/previous-release/`), so discovery never finds them.
+fn named_files(root: &Path) -> Result<Vec<(String, Kind)>, String> {
+    let Ok(list) = std::env::var("SCENARIO_FILES") else {
+        return Ok(Vec::new());
+    };
+    list.split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            if root.join(p).is_file() {
+                Ok((p.to_owned(), Kind::Cluster))
+            } else {
+                Err(format!(
+                    "SCENARIO_FILES: {p} is not a file under {}",
+                    root.display()
+                ))
+            }
+        })
+        .collect()
+}
+
 fn main() {
     scenario::self_check();
     let a = args();
@@ -324,6 +348,11 @@ fn main() {
         eprintln!("scenario discovery:\n{e}");
         std::process::exit(101);
     }
+    let named = named_files(&root).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(101);
+    });
+    let discovered = if named.is_empty() { discovered } else { named };
     let mut selected: Vec<(String, Kind)> = discovered
         .into_iter()
         .filter(|(p, _)| {

@@ -9,7 +9,7 @@ use eyre::WrapErr;
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
 
-use super::{answer, path_segment, retry_unavailable, Client, Error, Method, Payload, Result};
+use super::{answer, path_segment, retry_unavailable, Body, Client, Error, Method, Result};
 
 /// The largest file sent as one request, and the part size a session is asked for.
 pub const FILE_PART_BYTES: u64 = 16 * 1024 * 1024;
@@ -249,7 +249,7 @@ impl Client {
     }
 
     async fn put_part(&self, path: &str, body: bytes::Bytes) -> Result<Value> {
-        let payload = Payload::Bytes {
+        let payload = Body::Bytes {
             content_type: "application/octet-stream".into(),
             bytes: body,
         };
@@ -291,7 +291,7 @@ mod tests {
     use sha2::{Digest, Sha256};
     use tokio::io::{AsyncRead, AsyncSeek, ReadBuf};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::{Notify, RwLock};
+    use tokio::sync::Notify;
 
     use super::names_requested_file;
     use super::FILE_PART_BYTES;
@@ -537,13 +537,8 @@ mod tests {
             server.public_key(),
         ));
         let client = Client {
-            base,
-            http,
+            transport: crate::Transport::from_parts(base, http, sealed),
             policy: Policy::default(),
-            sealed,
-            auth: RwLock::new(None),
-            session: RwLock::new(None),
-            refreshing: tokio::sync::Mutex::new(()),
         };
         (client, mock)
     }
