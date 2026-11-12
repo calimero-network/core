@@ -142,7 +142,7 @@ impl Feature {
             | Self::TeamMembersBatch
             | Self::AppTeamChildTeams => "1.0.0-rc.16",
             Self::PriceTable | Self::ComputeOnly | Self::Pipelines | Self::NamedPool => {
-                "1.0.0-rc.17"
+                "1.0.0-rc.18"
             }
         }
     }
@@ -495,7 +495,7 @@ mod tests {
     const RC14: &str = "1.0.0-rc.14";
     const RC15: &str = "1.0.0-rc.15";
     const RC16: &str = "1.0.0-rc.16";
-    const RC17: &str = "1.0.0-rc.17";
+    const RC18: &str = "1.0.0-rc.18";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -811,11 +811,11 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        let (rc16, rc17): (Vec<_>, Vec<_>) = FEATURES.iter().partition(|f| f.since() != RC17);
-        for feature in rc16 {
+        let (older, engine): (Vec<_>, Vec<_>) = FEATURES.iter().partition(|f| f.since() != RC18);
+        for feature in older {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in &rc17 {
+        for &feature in &engine {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -826,14 +826,14 @@ mod tests {
         assert!(nodes[0].machine.state.org_quotas.contains_key("org"));
 
         for n in &mut nodes {
-            n.release = RC17;
+            n.release = RC18;
         }
         let raise = SystemCmd::SetClusterVersion {
-            version: RC17.into(),
-            nodes: (1..=3).map(|id| (id, RC17.to_owned())).collect(),
+            version: RC18.into(),
+            nodes: (1..=3).map(|id| (id, RC18.to_owned())).collect(),
         };
         propose(&mut nodes, &raise).unwrap();
-        for feature in rc17 {
+        for feature in engine {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));
@@ -1019,7 +1019,7 @@ mod tests {
             Feature::NamedPool,
         ] {
             assert_eq!(uses(f).features(), [f]);
-            assert_eq!(f.since(), RC17, "rc.16 was cut without the pipeline engine");
+            assert_eq!(f.since(), RC18, "rc.17 was cut without the pipeline engine");
         }
         let mut run = json!({
             "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1, "memory_mib": 1,

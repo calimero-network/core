@@ -33,7 +33,7 @@ def _summary(view):
 class Pipelines(DeepCase):
     name = "pipeline-runs"
     area = "Pipelines"
-    since = "1.0.0-rc.17"
+    since = "1.0.0-rc.18"
     seeds = ("a compute-only package registering a fan-out (batch 2) and collect pipeline, installed as an app; "
              "three sealed input files; a run to completion and a re-run of the same inputs")
     verifies = ("the finished run's state, step states, runs and outputs; its receipt verifies against its outputs; "
