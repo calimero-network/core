@@ -328,5 +328,79 @@
     },
     "version": 1
   },
+  "types": {
+    "Evidence": {
+      "fields": [
+        [
+          "hash",
+          "string"
+        ],
+        [
+          "kind",
+          "string"
+        ],
+        [
+          "body",
+          "string"
+        ]
+      ],
+      "kind": "record"
+    },
+    "Founding": {
+      "fields": [
+        [
+          "name",
+          "string"
+        ],
+        [
+          "motto",
+          "string"
+        ]
+      ],
+      "kind": "record"
+    },
+    "MessageView": {
+      "fields": [
+        [
+          "key",
+          "string"
+        ],
+        [
+          "author",
+          "string"
+        ],
+        [
+          "text",
+          "string"
+        ],
+        [
+          "sentAt",
+          "u64"
+        ]
+      ],
+      "kind": "record"
+    },
+    "PageView": {
+      "fields": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "author",
+          "string"
+        ],
+        [
+          "title",
+          "string"
+        ],
+        [
+          "revisions",
+          "list<tuple<string, string>>"
+        ]
+      ],
+      "kind": "record"
+    }
+  },
   "world": "calimero:app@0.5.1"
 }

@@ -1,6 +1,6 @@
 ---
 title: Typed clients for your app
-description: Generate your app's OpenAPI document and a typed TypeScript or Python client from its ABI with mero-app-build codegen, and check a new version for breaking changes before you publish it.
+description: Generate your app's OpenAPI document and a typed TypeScript, Python, Swift or Kotlin client from its ABI with mero-app-build codegen, and check a new version for breaking changes before you publish it.
 sidebar:
   order: 10
 ---
@@ -14,15 +14,30 @@ the clients already out there.
 Every app embeds its [ABI](/core/build/app-abi/): its methods, their parameters
 and results, its errors and events. `mero-app-build codegen` turns it into an
 OpenAPI 3.1 document and a thin typed client over the client you already use:
-mero-js's `CalimeroClient` or calimero-client-py's `Client`. They keep doing the
+mero-js's `CalimeroClient` (its `client.apps.call` and `client.apps.view`),
+calimero-client-py's `Client` (the same, answering JSON), or the `CalimeroClient`
+and `ContextContractCalling` of swift-sdk (MeroKit) and kotlin-sdk (mero-core). They keep doing the
 work (the attested, sealed channel, sessions, passkey step-ups, retries); the
 generated code only adds the method names and types.
 
 ## Generate a client
 
-Put `mero-app-build` on PATH once (`scripts/install-mero-app-build.sh`), build
-the app, then point `codegen` at the component, the `.mpk` bundle or an ABI JSON
-file (`meroctl context abi` saves an installed app's):
+Put `mero-app-build` on PATH once, build the app, then point `codegen` at the
+component, the `.mpk` bundle or an ABI JSON file (`meroctl context abi` saves an
+installed app's). Every release ships it prebuilt for Linux (x86_64, aarch64) and
+macOS (aarch64), named `mero-app-build_<target>.tar.gz` and listed in the
+release's `SHA256SUMS`, so CI that only runs `codegen` needs no Rust toolchain;
+from a core checkout, `scripts/install-mero-app-build.sh` builds it instead.
+`mero-app-build --version` names the release it came from.
+
+```bash
+V=<release> T=x86_64-unknown-linux-gnu   # the core release, and this machine's target
+curl -fsSLO "https://github.com/calimero-network/core/releases/download/$V/mero-app-build_$T.tar.gz"
+curl -fsSL "https://github.com/calimero-network/core/releases/download/$V/SHA256SUMS" \
+  | grep " mero-app-build_$T.tar.gz\$" | sha256sum -c
+tar -xzf "mero-app-build_$T.tar.gz" -C ~/.local/bin mero-app-build
+```
+
 
 ```bash
 mero-app-build apps/kv-store --out kv-store.wasm
@@ -34,17 +49,25 @@ wrote src/generated/openapi.json
 wrote src/generated/client.ts
 ```
 
-`--lang` is `ts`, `python` or `openapi` (the document alone). Every language
-writes `openapi.json` beside the client. The client class is named after
-`--name`, else the package of an `.mpk` or the file's name (`kv-store.wasm` gives
-`KvStoreClient`). A multi-service bundle writes one directory per service;
+`--lang` is `ts`, `python`, `swift`, `kotlin` or `openapi` (the document alone).
+Every language writes `openapi.json` beside the client (`client.ts`, `client.py`,
+`KvStoreClient.swift`, `KvStoreClient.kt`) unless `--no-openapi` says not to.
+The ABI carries no app name, so the client class is named after `--name`, else
+the package of an `.mpk`, else the file's name (`kv-store.wasm` gives
+`KvStoreClient`). A file named for what it holds (`abi.json`,
+`app.component.wasm`) names no app: the class is then named after the crate whose
+`Cargo.toml` is nearest above the file (`logic/res/abi.json` beside
+`logic/Cargo.toml`'s `name = "kv-store"`), and with no such crate `codegen` stops
+and asks for `--name`. A Kotlin client goes in `--package` (default
+`calimero.generated.<name>`, here `calimero.generated.kvstore`). A multi-service
+bundle writes one directory per service, each Kotlin client in `<package>.<service>`;
 `--service <name>` picks one.
 
 ## Use it from TypeScript
 
 ```ts
-import { CalimeroClient } from '@calimero-network/mero-js';
-import { KvStoreClient, type AppEvent } from './generated/client';
+import { CalimeroClient, passkeyConfirm } from '@calimero-network/mero-js';
+import { KvStoreClient } from './generated/client';
 
 const client = /* a signed-in CalimeroClient */;
 const kv = new KvStoreClient(client, appId);
@@ -58,9 +81,116 @@ for await (const event of kv.events()) {
 }
 ```
 
-A call takes `{ idempotencyKey }` as its last argument, a view
-`{ stale, minIndex }`. A `confirm` method takes the passkey that approves it:
-`await rooms.adminRelease({ id, reason }, passkey)`.
+A call takes `{ idempotencyKey, confirm, signal }` as its last argument, a view
+`{ consistency, minIndex, signal }` (`consistency: 'stale'` reads the replica that
+answers). A `confirm` method's `412 CONFIRM_REQUIRED` step-up is answered by the
+call's `confirm`, else by the `confirm` the `CalimeroClient` was built with
+(here `rooms` is `apps/rooms`' generated client):
+
+```ts
+await rooms.adminRelease({ id, reason }, { confirm: passkeyConfirm(passkey) });
+```
+
+An `option<..>` argument may be left out or be `null`: the SDK reads both as
+`None`. In an error's or an event's fields it is always there, `null` for none.
+
+### Read a call's log index and events
+
+Each method answers its result alone. The same methods under `raw` answer the
+whole answer: a call `{ result, index, events }` (`CallAnswer<T>`: the log index
+it committed at and the app's events it emitted, typed as `AppEvent`), a view
+`{ result, index }` (`ViewAnswer<T>`: the log index of the state it read). Use
+them to resume the event stream from what a call or view already reflects, or to
+read a later view at least as new as a call:
+
+```ts
+const { index, events } = await kv.raw.set({ key: 'greeting', value: 'hello' });
+const value = await kv.get({ key: 'greeting' }, { consistency: 'stale', minIndex: index });
+
+// Render the entries, then follow the events after the state they reflect.
+const { result: entries, index: seen } = await kv.raw.entries();
+for await (const event of kv.events(seen + 1)) { /* ... */ }
+```
+
+`raw` takes the same arguments and options, and runs `after` the same way. Its
+type is `<Name>RawApi` (`KvStoreRawApi`). If the app has a method named `raw`,
+the property is `rawAnswers`.
+
+### Create an instance with its `init` arguments
+
+When the app's `#[app::init]` takes arguments (here mero-chess's
+`init(title: Option<String>, now: Option<u64>)`), the client declares them as
+`InitArgs`, in the types of every other argument (a `u64` is a decimal string, an
+`option` may be left out). `client.apps.create` takes `initArgs` as any JSON, so
+check it with `satisfies`:
+
+```ts
+import type { InitArgs } from './generated/client';
+
+const { appId } = await client.apps.create({
+  package: 'com.calimero.mero-chess',
+  initArgs: { title: 'Friday blitz', now: String(Date.now()) } satisfies InitArgs,
+});
+```
+
+An `init` without arguments declares no `InitArgs`.
+
+### Keep a refreshed session
+
+mero-js refreshes an expired session on its own, and has no event that says it
+did. A page that stores the session passes `after`, which runs after every call
+and view, refused ones included:
+
+```ts
+const kv = new KvStoreClient(client, appId, {
+  after: () => saveSession(client.session),
+});
+```
+
+### Test without a node
+
+The class implements `KvStoreApi` (`<Name>Api`), an interface of the app's
+methods alone. Code that takes a `KvStoreApi`, or the `Pick` of it that it calls,
+is handed the class in the app and a double of those methods in a test; there
+is no need to `Pick` from the class itself (`Pick<KvStoreClient, 'len'>`).
+Code that reads `raw` takes `KvStoreRawApi` the same way (`kv.raw` in the app):
+
+```tsx
+import type { KvStoreApi, KvStoreRawApi } from './generated/client';
+
+function Counter({ kv }: { kv: Pick<KvStoreApi, 'len'> }) { /* ... */ }
+
+render(<Counter kv={{ len: async () => '3' }} />);
+
+async function save(kv: Pick<KvStoreRawApi, 'set'>): Promise<number> {
+  return (await kv.set({ key: 'a', value: 'b' })).index;
+}
+
+await save({ set: async () => ({ result: null, index: 7, events: [] }) });
+```
+
+To test the class itself, give it a double of the part of `CalimeroClient` it
+uses. A client that only calls and views takes an `AppCallTransport`
+(`apps.call` and `apps.view`; `Pick<CalimeroClient, 'apps'>` is one), and has no
+`events()`: calling it does not type-check. `events()` needs an `AppTransport`,
+which adds `events`:
+
+```ts
+const kv = new KvStoreClient(
+  {
+    apps: {
+      call: async () => ({ result: null }),
+      view: async ({ method }) => ({ result: method === 'len' ? '0' : null }),
+    },
+  },
+  'app-1',
+);
+```
+
+A double may answer `{ result }` alone; it answers `raw` with index `0` and no
+events unless it also gives `index` (and a call's `events`), as mero-js does.
+`KvStoreClient` written without a type argument is a client with events
+(`KvStoreClient<AppTransport>`), which is what one built on a `CalimeroClient` is.
 
 ## Use it from Python
 
@@ -71,21 +201,130 @@ from generated.client import KvStoreClient
 kv = KvStoreClient(client, app_id)  # a signed-in calimero Client
 kv.set("greeting", "hello")
 assert kv.get("greeting") == "hello"
+assert kv.len(consistency="stale") == "1"
+rooms.admin_release("b-1", "late", passkey=passkey)  # apps/rooms' confirm method
 ```
 
 Arguments are keyword arguments in snake_case (`room_id=`); errors and events
-are `TypedDict`s (`NotFoundError`, `InsertedEvent`).
+are `TypedDict`s (`NotFoundError`, `InsertedEvent`). A call also takes
+`idempotency_key=`, a `confirm` method `passkey=` (else the client's own), and a
+view `consistency=` and `min_index=`.
+
+## Use it from Swift
+
+The client is a `Sendable` struct over swift-sdk's MeroKit, 2.0 or later (`import MeroKit`):
+
+```swift
+import MeroKit
+
+// Every method: idempotency keys, stale views, `confirm` step-ups, events.
+let kv = KvStoreClient(client: calimeroClient, app: appId)
+// Or the contract an app already holds (MeroAppSession's backend, a test double):
+let kv = KvStoreClient(backend: session.backend!, app: appId)
+
+try await kv.set(key: "greeting", value: "hello")
+let value: String? = try await kv.get(key: "greeting")
+let count: UInt64 = try await kv.len()  // u64: a decimal string on the wire
+
+for try await frame in kv.events() {
+    if case .inserted(let key, let value) = frame.event { print(key, value) }
+}
+
+do {
+    try await kv.remove(key: "missing")
+} catch let error as AppError {
+    if case .notFound = KvStoreClient.Refusal(error) { /* ... */ }
+}
+```
+
+A call takes `idempotencyKey:` last, a view `stale:` and `minIndex:`, a `confirm`
+method `passkey:`. Over a `ContextContractCalling` (`init(contract:)`,
+`init(backend:app:)`) a view is `query` and a call `execute`; `confirm` methods,
+`events()` and an `idempotencyKey` need `init(client:app:)` and throw
+`MeroAppBackendUnsupported` otherwise. Decode `MeroAppBackend.events` with
+`KvStoreClient.Event(kind:data:)`. Put each client in a module of its own (one
+target per service).
+
+## Use it from Kotlin
+
+The client class is over kotlin-sdk's mero-core, 2.0 or later, with kotlinx.serialization
+and kotlinx.coroutines on the classpath (no serialization plugin needed):
+
+```kotlin
+val kv = KvStoreClient(calimeroClient, appId)        // every method
+val kv = KvStoreClient(backend, appId)               // MeroAppBackend's contract
+
+kv.set(key = "greeting", value = "hello")
+val value: String? = kv.get(key = "greeting")
+val count: ULong = kv.len()
+
+kv.events().collect { frame ->
+    when (val event = frame.event) {
+        is KvStoreClient.Event.Inserted -> println("${event.key} ${event.value}")
+        else -> {}
+    }
+}
+
+try {
+    kv.remove(key = "missing")
+} catch (e: AppError) {
+    if (KvStoreClient.Refusal.from(e) is KvStoreClient.Refusal.NotFound) { /* ... */ }
+}
+```
+
+The trailing parameters and the two ways to build it are Swift's:
+`(client, app)` runs every method; `(contract)` and `(backend, app)` run calls and
+views and throw `UnsupportedOperationException` for the rest. Decode
+`MeroAppBackend.events` with `KvStoreClient.Event.decode(kind, data)`.
 
 ## How the types come out
 
-`u64` and `i64` are decimal strings and `bytes` base64url strings, as on the
-wire; `option<T>` is `T | null` (`Optional[T]`) and an optional argument may be
-left out. The full table is in [App interface](/core/build/app-abi/#types).
+In TypeScript and Python `u64` and `i64` are decimal strings and `bytes` base64url
+strings, as on the wire; Swift and Kotlin take and give `UInt64`/`ULong`,
+`Int64`/`Long` and `Data`/`ByteArray` and write the wire forms themselves.
+`option<T>` is `T | null` (`Optional[T]`, `T?`) and an optional argument may be
+left out (Swift and Kotlin send it as `null`). Errors and events are typed:
+`NotFoundError` / `InsertedEvent` in TypeScript and Python, the cases of
+`Refusal` and `Event` in Swift and Kotlin. The full table is in
+[App interface](/core/build/app-abi/#types).
+
+Your own types come from the ABI's `types`: a record is an interface (a
+`TypedDict`), an enum a union of its variants as serde writes them (`'Open'`,
+`{ Closed: { at: string } }`, `{ type: 'published'; at: string }`), and a generic
+type stays generic in TypeScript (`Listing<Slot>`) and is instantiated in Python
+(`Listing_Slot`).
+
+In Swift and Kotlin they are types nested in the client (`KvStoreClient.Slot`),
+whose coding writes the same JSON:
+
+| ABI shape | Swift | Kotlin |
+| --- | --- | --- |
+| record | `struct` with a `var` per field, `Codable, Sendable, Equatable` | `data class`, its serializer `Slot.serializer()` |
+| newtype / `transparent` | `struct` with `value` | `data class` with `value` |
+| tuple struct / unit struct | `struct` with `v0`, `v1`, ... / with nothing (`null`) | `data class` with `v0`, `v1`, ... / `data object` |
+| enum | `enum`, a case per variant (`.closed(at:)`, `.moved(_:)`) | `sealed interface`, a `data class` or `data object` per variant |
+| generic (`Listing<T>`) | generic (`Listing<Slot>`) | generic (`Listing.serializer(Slot.serializer())`) |
+
+Each enum reads and writes the tagging serde gives it: externally tagged as
+`"Open"` or `{ "Closed": { .. } }` (`{ "Open": null }` is read too), internally
+tagged as the variant's fields beside its `tag` (a newtype variant's own object),
+adjacently tagged as `{ tag, content }` (a unit variant without `content`), and
+untagged as the data alone, trying the variants in order as serde does. Unknown
+variant names and arrays of the wrong length are refused. A type that holds itself
+works: a Swift enum that does is `indirect`, and a Swift field that holds its own
+type outside an array or a dictionary (`option<Tree>`) is stored boxed
+(`@Indirect`); Kotlin needs nothing. Fields the JSON may leave out are optional
+(`nil` / `null`) and left out when unset; any other `option` is written as `null`.
+Kotlin's serializers are written out in the client, so no serialization plugin is
+needed: pass them where kotlinx.serialization takes one.
 
 <Aside type="caution">
-  ABI version 1 names your own types (a record, a serde struct or enum) without
-  their fields, so the client types them `unknown` (`Any`): cast or validate the
-  value where you use it.
+  A type is described when it derives `Record` or `AbiType`
+  ([SDK macros](/core/build/sdk-macros/#deriveabitype)). Any other type, and every
+  type of an app built before the SDK wrote `types`, is `unknown` (`Any`): cast or
+  validate the value where you use it, or rebuild the app. The Swift and Kotlin
+  clients type it MeroKit's `JSONValue` / kotlinx's `JsonElement`: decode it where
+  you use it.
 </Aside>
 
 ## Use any OpenAPI tool

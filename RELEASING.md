@@ -32,8 +32,8 @@ section says whether it does), the type picks the version bump:
 | PR title | Release |
 | --- | --- |
 | `feat: ...` | minor |
-| `fix:`, `chore:`, `docs:`, `refactor:`, `perf:` | patch |
-| `test:`, `build:`, `ci:` | none |
+| `fix:`, `perf:` | patch |
+| `docs:`, `chore:`, `refactor:`, `style:`, `test:`, `build:`, `ci:`, `revert:` | none |
 | `<type>!: ...`, or a `BREAKING-CHANGE:` footer | major |
 
 - Only the hyphenated `BREAKING-CHANGE:` footer keyword makes a major (besides
@@ -45,8 +45,11 @@ section says whether it does), the type picks the version bump:
   `["BREAKING-CHANGE"]`, and prose that says "breaking change" does nothing.
 - Prefer `!` in the title over the footer: the title is visible in review,
   while the squash commit's body is whatever the merge dialog fills in.
-- `chore:` and `docs:` release a patch. A change that must not release
-  anything (CI, tests, build tooling) is `ci:`, `test:` or `build:`.
+- Only `feat:`, `fix:` and `perf:` release (plus a major from `!` or the
+  footer); every other type releases nothing. A change to what users read in
+  the package (a README shipped to npm, docstrings) that should reach them is
+  titled `fix(docs):` (a patch). To ship a change that touches no feature or
+  fix (e.g. a dependency bump consumers need), title it `fix(deps): ...`.
 - Choose the type for what the change does to whoever depends on the release,
   not for the size of the diff.
 
@@ -101,7 +104,8 @@ has each SDK re-vendor it on the machine-owned branch `chore/core-openapi` and
 open (or refresh) one pull request. Core's classifier titles that pull request
 from what changed in the generated surface: `feat(api)!:` when something a
 caller uses was removed or changed, `feat(api):` when something was only
-added, `chore(api):` otherwise.
+added, `chore(api):` otherwise (descriptions only), which releases nothing:
+that change reaches consumers with the SDK's next release.
 
 Don't retitle these down: `feat(api)!:` turned into `feat(api):` ships a
 breaking change as a minor to every consumer on a `^` range. Retitle up if the
@@ -121,8 +125,8 @@ major, and expect an accidental major to cut the whole fleet off silently.
 
 ### Pre-release lines
 
-Some repositories also publish pre-releases (core's `X.Y.Z-rc.N`, the `rc`
-channel of calimero-client-py). Which branch makes which kind of release, and
+Some repositories also publish pre-releases (core's `X.Y.Z-rc.N`).
+Which branch makes which kind of release, and
 how a pre-release line becomes a final, is in the repository section. Promoting
 a line is a human's decision.
 
@@ -149,7 +153,7 @@ check lints them) and to what counts as breaking.
 
 - **Version.** The one version of every public crate, `merod`, `meroctl` and
   `mero-sign` is `version` under `[workspace.metadata.workspaces]` in the root
-  `Cargo.toml` (`1.0.0-rc.15` at the time of writing). Nothing else holds it.
+  `Cargo.toml` (`1.0.0-rc.18` at the time of writing). Nothing else holds it.
 - **Release pull request.** `chore(release): cut X` sets that version to `X`
   and turns `CHANGELOG.md`'s `## [Unreleased]` into a dated `## [X] - YYYY-MM-DD`
   section with the changes since the last release. `CHANGELOG.md` is
@@ -175,12 +179,18 @@ All from `release.yml`, on master only:
 
 | What | Where |
 | --- | --- |
-| `merod`, `meroctl`, `mero-sign` (Linux x86_64 and aarch64), `meroctl` and `mero-sign` (macOS aarch64), `calimero-tee-verify` (Linux), `SHA256SUMS` with build provenance | the GitHub Release `X` |
+| `merod`, `meroctl`, `mero-sign` (Linux x86_64 and aarch64), `meroctl` and `mero-sign` (macOS aarch64), `mero-app-build` (Linux x86_64 and aarch64, macOS aarch64), `calimero-tee-verify` (Linux), `SHA256SUMS` with build provenance | the GitHub Release `X` |
 | `kv-store-test-fixture.mpk`, the kv app bundle the upgrade path and clients test with | the GitHub Release `X` |
 | the public crates (`cargo ws publish`) | crates.io |
 | the `merod` image, multi-arch: `X`, plus `latest` for a final or `prerelease` for a pre-release | `ghcr.io/calimero-network/merod` |
 | a `meroctl` formula bump | a pull request in `calimero-network/homebrew-tap` |
 | SDK pin bumps for consumers | pull requests opened by `fleet-bump.yml` (below) |
+
+Each binary is `<binary>_<target triple>.tar.gz`, e.g.
+`mero-app-build_x86_64-unknown-linux-gnu.tar.gz`. `mero-app-build` is a release
+binary only: `calimero-app-build` and the `calimero-app-abi` it builds on are
+`publish = false`, so it is not on crates.io, and an app's CI downloads the
+archive (checked against `SHA256SUMS`) rather than running `cargo install --git`.
 
 Every master push that builds also pushes `ghcr.io/calimero-network/merod:edge`
 and a short-sha tag; neither is a release.
@@ -223,6 +233,12 @@ on the branch `chore/core-X`, as the organization's GitHub App, with
 - `cargo` surface (apps, mero-ar, mero-tag, calimero-studio): pins
   `calimero-network/core` to the tag `X` (`chore(deps): pin the Calimero SDK to X`).
   A source-level break makes that pull request red until someone writes the code.
+  Where the repository pins the client generator in `scripts/install-mero-app-build.sh`
+  (`TAG="${MERO_APP_BUILD_TAG:-X}"`, the apps repository), the pin moves to `X` too,
+  unless it runs ahead, and every package's `codegen` reruns with `X`'s released
+  `mero-app-build` binary, so the committed clients arrive regenerated. When they
+  cannot be (no binary for `X`, a codegen failure), the pull request's list of pins
+  left unmoved names the command to run.
 - `tee` surface (mero-tee): sets `merodVersion` in `mero-tee/versions.json`,
   re-pins `mero-tee/build-inputs.lock.json` from the release's `SHA256SUMS`, and
   cuts a new image version (`chore(image): bundle merod X and cut a new image version`).

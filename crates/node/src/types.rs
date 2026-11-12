@@ -115,6 +115,24 @@ pub struct NodeRecord {
     pub pool: String,
 }
 
+/// Which components a release, and the app made from it, has.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Components {
+    /// An app component, with a compute component when the release ships one.
+    #[default]
+    App,
+    /// A compute component only: nothing to call, view, initialise or tick.
+    ComputeOnly,
+}
+
+impl Components {
+    #[must_use]
+    pub fn is_app(&self) -> bool {
+        *self == Self::App
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppRecord {
@@ -146,6 +164,10 @@ pub struct AppRecord {
     /// and upgrade; `None` when that release ships none (or `bundle` is a raw upload).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute_bundle: Option<String>,
+    /// The components it runs; `bundle` and `compute_bundle` both name the compute
+    /// component when it has no app component.
+    #[serde(default, skip_serializing_if = "Components::is_app")]
+    pub components: Components,
     /// The app instance's metadata: a title, an icon.
     /// Set by its owner or an admin of its organization.
     #[serde(default)]
@@ -211,6 +233,17 @@ impl PendingRestore {
     #[must_use]
     pub const fn awaits_backup(&self) -> bool {
         self.seed.is_none()
+    }
+}
+
+impl AppRecord {
+    /// `422 NO_APP_COMPONENT` unless the app has an app component to call, view, initialise or tick.
+    pub fn require_app_component(&self) -> Result<(), crate::error::ApiError> {
+        if self.components.is_app() {
+            Ok(())
+        } else {
+            Err(crate::error::ApiError::no_app_component())
+        }
     }
 }
 

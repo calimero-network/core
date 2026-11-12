@@ -9,13 +9,6 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
 #![allow(
     clippy::result_large_err,
     reason = "the helpers pass on calimero_client::Error as the client returns it"
@@ -24,7 +17,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use calimero_client::{Client, Consistency};
+use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::{Client, Request};
 use serde_json::{json, Value};
 
 #[path = "harness/cluster.rs"]
@@ -34,19 +28,34 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, signed_up, Cluster};
+use harness::{kv_wasm, signed_up, typed, wire, Cluster};
+use reqwest::Method;
 
 async fn deploy(cl: &Client, name: &str) -> String {
-    let bundle = cl.upload_bundle(kv_wasm()).await.unwrap();
-    let created = cl
-        .post("apps", json!({ "name": name, "bundle": bundle }))
+    let bundle = cl
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = cl
+        .apps()
+        .create(typed(json!({ "name": name, "bundle": bundle })))
+        .await
+        .map(wire)
         .unwrap();
     created["appId"].as_str().unwrap().to_owned()
 }
 
 async fn set(cl: &Client, app: &str, key: &str, value: &str) -> u64 {
-    cl.call(app, "set", json!({ "key": key, "value": value }), None)
+    cl.apps()
+        .call(
+            app,
+            "set",
+            Some(json!({ "key": key, "value": value })),
+            None,
+            None,
+        )
         .await
         .unwrap()
         .index
@@ -63,15 +72,17 @@ async fn on_replica(
 ) -> Value {
     let cl = c.client(i);
     cl.use_session(session.session().await.unwrap()).await;
-    cl.view(
-        app,
-        "get",
-        json!({ "key": key }),
-        Consistency::Stale { min_index },
-    )
-    .await
-    .unwrap()
-    .result
+    cl.apps()
+        .view(
+            app,
+            "get",
+            Some(json!({ "key": key })),
+            Some(ViewsRequestConsistency::Stale),
+            Some(min_index),
+        )
+        .await
+        .unwrap()
+        .result
 }
 
 /// A client of node `i` holding the operator's token.
@@ -128,10 +139,11 @@ async fn restore(
 ) -> Result<Value, calimero_client::Error> {
     ops_at(c, at)
         .await
-        .post_operator_signed(
-            &format!("ops/apps/{app}/restore"),
-            body,
-            &harness::operator_sign,
+        .transport()
+        .approved(
+            Request::new(Method::POST, format!("ops/apps/{app}/restore")).json(body),
+            None,
+            Some(&harness::operator_sign),
         )
         .await
 }
@@ -154,7 +166,8 @@ async fn an_app_is_restored_from_its_backup_on_every_replica_and_takes_writes() 
     // An operator decision: the ops token alone is not enough.
     let e = ops_at(&c, at)
         .await
-        .post(&format!("ops/apps/{kv}/restore"), json!({}))
+        .ops()
+        .restore(&kv, None, None, None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
@@ -228,7 +241,14 @@ async fn an_app_is_restored_from_its_backup_on_every_replica_and_takes_writes() 
         .unwrap();
     assert!(again["group"].as_u64().unwrap() > group, "{again}");
     let v = alice
-        .view(&kv, "get", json!({ "key": "a" }), Consistency::Strong)
+        .apps()
+        .view(
+            &kv,
+            "get",
+            Some(json!({ "key": "a" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap()
         .result;
@@ -330,7 +350,14 @@ async fn a_backup_is_restored_only_where_it_belongs() {
     assert!(node.sys(|s| s.apps[&kv].restore.is_none()));
     assert_eq!(
         alice
-            .view(&kv, "get", json!({ "key": "a" }), Consistency::Strong)
+            .apps()
+            .view(
+                &kv,
+                "get",
+                Some(json!({ "key": "a" })),
+                Some(ViewsRequestConsistency::Strong),
+                None
+            )
             .await
             .unwrap()
             .result,
@@ -345,7 +372,14 @@ async fn a_backup_is_restored_only_where_it_belongs() {
         .unwrap();
     assert_eq!(out["backup"]["format"], 0, "{out}");
     let v = alice
-        .view(&kv, "get", json!({ "key": "a" }), Consistency::Strong)
+        .apps()
+        .view(
+            &kv,
+            "get",
+            Some(json!({ "key": "a" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap()
         .result;
@@ -357,7 +391,14 @@ async fn a_backup_is_restored_only_where_it_belongs() {
     refused(e, "BAD_BACKUP");
     // The other app is untouched.
     let v = alice
-        .view(&other, "get", json!({ "key": "a" }), Consistency::Strong)
+        .apps()
+        .view(
+            &other,
+            "get",
+            Some(json!({ "key": "a" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap()
         .result;
@@ -404,9 +445,16 @@ async fn alice_and_her_app_come_back(
     let cl = new.client(0);
     cl.use_session(alice.session().await.unwrap()).await;
     let _fresh = cl.refresh().await.unwrap();
-    assert_eq!(cl.get("auth/me").await.unwrap()["name"], "alice");
+    assert_eq!(cl.auth().me().await.map(wire).unwrap()["name"], "alice");
     let e = cl
-        .view(kv, "get", json!({ "key": "a" }), Consistency::Strong)
+        .apps()
+        .view(
+            kv,
+            "get",
+            Some(json!({ "key": "a" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("APP_RESTORING"), "{e}");
@@ -425,7 +473,14 @@ async fn alice_and_her_app_come_back(
     );
     for (key, value) in expect {
         let v = cl
-            .view(kv, "get", json!({ "key": key }), Consistency::Strong)
+            .apps()
+            .view(
+                kv,
+                "get",
+                Some(json!({ "key": key })),
+                Some(ViewsRequestConsistency::Strong),
+                None,
+            )
             .await
             .unwrap()
             .result;
@@ -517,8 +572,10 @@ async fn a_cluster_that_lost_its_system_majority_is_founded_again_from_a_survivo
     // Without a majority, the survivor leads nothing; it still backs up all it holds.
     let out = ops_at(&old, 0)
         .await
-        .post("ops/backup?all=true", json!({}))
+        .ops()
+        .backup(Some(true))
         .await
+        .map(wire)
         .unwrap();
     assert!(out["written"].as_u64().unwrap() >= 2, "{out}");
     let store = tempfile::tempdir().unwrap();

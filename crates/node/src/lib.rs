@@ -267,6 +267,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
             }
             let Some(node) = weak.upgrade() else { return };
             node.drive_runs();
+            node.drive_pipelines();
         }
     }));
 

@@ -57,6 +57,12 @@ pub(super) fn authorize(
             proofs.states(&st, "cluster", "__set_pools", &|a| *a == args)?;
             Ok(Some(used))
         }
+        SystemCmd::SetPriceTable { table, proof } => {
+            let (st, used) = proofs.fresh(proofs.operator(proof)?)?;
+            let args = json!({ "table": table });
+            proofs.states(&st, "cluster", "__set_price_table", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         _ => Ok(None),
     }
 }
@@ -83,6 +89,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let _was = s.removed_nodes.remove(&node.id);
             let _prev = s.nodes.insert(node.id, node);
             s.grant_runs();
+            Ok(Value::Null)
+        }
+        SystemCmd::SetPriceTable { table, .. } => {
+            if table.validate().is_err() {
+                return Err(BAD_PRICES);
+            }
+            if table.version != s.price_table.map_or(0, |t| t.version) + 1 {
+                return Err(PRICE_VERSION);
+            }
+            s.price_table = Some(table);
             Ok(Value::Null)
         }
         SystemCmd::RemoveNode { id, .. } => {

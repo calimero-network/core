@@ -6,6 +6,13 @@
 )]
 use super::*;
 
+/// `GET /apps/{app}/attestation`'s query: only the nonce, since the app is the path's and
+/// the purpose is always `receipts`. Other parameters are ignored, as they always were.
+#[derive(Deserialize)]
+pub(super) struct AppAttestQuery {
+    nonce: String,
+}
+
 /// Every replica of an app attests its receipt key over `nonce`: what a user
 /// checks to know the whole group holding the app is genuine, and which keys
 /// sign its receipts.
@@ -13,7 +20,7 @@ async fn app_attestation(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-    Query(q): Query<AttestQuery>,
+    Query(q): Query<AppAttestQuery>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
@@ -49,6 +56,12 @@ async fn app_attestation(
     Ok(Json(json!({ "appId": app_id, "replicas": replicas })))
 }
 
+/// `422 INIT_FAILED`: app `app_id`'s `init` failed with the app log's `error`.
+pub(super) fn init_failed(app_id: &str, error: &Value) -> ApiError {
+    ApiError::new(422, "INIT_FAILED", "the app's init failed")
+        .with_details(json!({ "appId": app_id, "error": error }))
+}
+
 /// A release's service name to bundle hash map.
 type Services = BTreeMap<String, String>;
 
@@ -73,7 +86,7 @@ async fn offered_bundle(
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
                 .filter_map(|o| {
                     let r = s.offered_release(o)?;
-                    Some((o.version.clone(), r.services.clone(), r.compute.clone()))
+                    Some((o.version.clone(), r.app_parts().clone(), r.compute.clone()))
                 })
                 .collect();
             releases.sort_by(|a, b| a.0.cmp(&b.0));
@@ -266,6 +279,7 @@ async fn app_create(
     }
     let app_id = typed_id::<16>();
     let has_compute = compute_bundle.is_some();
+    let components = node.sys(|s| s.components_of(release.as_ref()));
     let access = body.access.unwrap_or(if body.org.is_some() {
         Access::Org
     } else {
@@ -290,19 +304,20 @@ async fn app_create(
                 last_upgrade: None,
                 deployment: body.deployment,
                 compute_bundle,
+                components,
                 release,
                 restore: None,
             }),
         })
         .await?;
-    // Wait for the app's first entry (init) to commit somewhere.
+    // Wait for the app's first entry (init) to commit somewhere; a compute-only app's is empty,
+    // but its group cannot take a pipeline start before it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         match app_ready(&node, &app_id).await {
             Some(Ok(())) => break,
             Some(Err(error)) => {
-                return Err(ApiError::new(422, "INIT_FAILED", "the app's init failed")
-                    .with_details(json!({ "appId": app_id, "error": error })));
+                return Err(init_failed(&app_id, &error));
             }
             None => {}
         }

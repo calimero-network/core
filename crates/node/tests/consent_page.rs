@@ -7,14 +7,6 @@
 //! Builds the component fixtures `apps/v2-fixtures/kv`, `notes-v1` and `notes-v2`
 //! from this checkout (see `harness/cluster.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::api::Pending;
 use serde_json::{json, Value};
@@ -26,7 +18,9 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{fixture, kv_wasm, signed_up, Cluster, ORIGIN};
+use calimero_client::Request;
+use harness::{fixture, kv_wasm, signed_up, typed, wire, Cluster, ORIGIN};
+use reqwest::Method;
 
 const PACKAGE: &str = "com.test.notes";
 
@@ -88,6 +82,7 @@ fn release(
             .publisher_upgrades
             .then_some(calimero_bundle::UpgradeAuthority::Publisher),
         services: None,
+        pipelines: Vec::new(),
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
@@ -247,14 +242,15 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             ..Declares::default()
         },
     );
-    let _ = alice.upload_package(v1).await.unwrap();
-    let _ = alice.upload_package(v2).await.unwrap();
+    let _ = alice.packages().upload(v1).await.unwrap();
+    let _ = alice.packages().upload(v2).await.unwrap();
     let app = alice
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0" }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
@@ -279,7 +275,11 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             json!({ "package": PACKAGE, "prefixes": ["https://metrics.example/"] }),
         ),
     ] {
-        let e = in_app.post(&path, body).await.unwrap_err();
+        let e = in_app
+            .transport()
+            .json(Request::new(Method::POST, &path).json(body))
+            .await
+            .unwrap_err();
         assert_eq!(status(&e), 403, "{path}: {e}");
     }
 
@@ -298,19 +298,25 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         format!("{app_origin}/back#frag"),
     ] {
         let e = in_app
-            .post("consent/requests", ask(&elsewhere))
+            .consent()
+            .page_create(typed(ask(&elsewhere)))
             .await
             .unwrap_err();
         assert_eq!(e.code(), Some("RETURN_TO_NOT_ALLOWED"), "{elsewhere}: {e}");
     }
     let mut unknown = ask(&format!("{app_origin}/back"));
     unknown["extra"] = json!(1);
-    let e = in_app.post("consent/requests", unknown).await.unwrap_err();
+    let e = in_app
+        .transport()
+        .json(Request::new(Method::POST, "consent/requests").json(unknown))
+        .await
+        .unwrap_err();
     assert_eq!(status(&e), 400, "unknown fields are refused: {e}");
     let made = in_app
-        .post(
-            "consent/requests",
-            ask(&format!("{app_origin}/1.0.0/?tab=2")),
+        .transport()
+        .json(
+            Request::new(Method::POST, "consent/requests")
+                .json(ask(&format!("{app_origin}/1.0.0/?tab=2"))),
         )
         .await
         .unwrap();
@@ -493,7 +499,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
             "{app_origin}/1.0.0/?tab=2&request_id={id}&result=approved"
         ))
     );
-    let rec = alice.get(&format!("apps/{app}")).await.unwrap();
+    let rec = alice.apps().get(&app).await.map(wire).unwrap();
     let v2_bundle = model["upgrade"]["to"]["bundle"].as_str().unwrap();
     assert_eq!(rec["bundle"], json!(v2_bundle), "{rec}");
 
@@ -505,19 +511,21 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
     );
     let (code, _) = page.post("decline", json!({})).await;
     assert_eq!(code, 409);
-    let result = in_app.get(&format!("consent/{id}/result")).await.unwrap();
+    let result = in_app.consent().page_result(&id).await.map(wire).unwrap();
     assert_eq!(result["status"], "approved");
     let on_other_node = c.client(0);
     on_other_node
         .use_session(in_app.session().await.unwrap())
         .await;
     let result = on_other_node
-        .get(&format!("consent/{id}/result"))
+        .consent()
+        .page_result(&id)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(result["status"], "approved", "asked through another node");
     let (bob, _) = signed_up(&c, 2, "bob").await;
-    let e = bob.get(&format!("consent/{id}/result")).await.unwrap_err();
+    let e = bob.consent().page_result(&id).await.unwrap_err();
     assert_eq!(status(&e), 404);
 }
 
@@ -542,28 +550,28 @@ async fn an_upgrades_page_names_what_the_components_abis_change() {
         &publisher,
         &d,
     );
-    let _ = alice.upload_package(v1).await.unwrap();
-    let _ = alice.upload_package(v2).await.unwrap();
+    let _ = alice.packages().upload(v1).await.unwrap();
+    let _ = alice.packages().upload(v2).await.unwrap();
     let app = alice
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0" }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
     let made = alice
-        .post(
-            "consent/requests",
-            json!({
-                "kind": "upgrade",
-                "subject": { "app": app, "toVersion": "2.0.0" },
-                "returnTo": format!("{ORIGIN}/done"),
-            }),
-        )
+        .consent()
+        .page_create(typed(json!({
+            "kind": "upgrade",
+            "subject": { "app": app, "toVersion": "2.0.0" },
+            "returnTo": format!("{ORIGIN}/done"),
+        })))
         .await
+        .map(wire)
         .unwrap();
     let model = Page::new(made["url"].as_str().unwrap()).model().await;
     let u = &model["upgrade"];
@@ -669,28 +677,28 @@ async fn a_bundle_swapped_under_the_same_version_is_refused() {
         },
     );
     assert_ne!(shown_hash, swapped_hash);
-    let _ = alice.upload_package(v1).await.unwrap();
-    let _ = alice.upload_package(shown).await.unwrap();
+    let _ = alice.packages().upload(v1).await.unwrap();
+    let _ = alice.packages().upload(shown).await.unwrap();
     let app = alice
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0" }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
     let made = alice
-        .post(
-            "consent/requests",
-            json!({
-                "kind": "upgrade",
-                "subject": { "app": app, "toVersion": "2.0.0" },
-                "returnTo": format!("{ORIGIN}/done"),
-            }),
-        )
+        .consent()
+        .page_create(typed(json!({
+            "kind": "upgrade",
+            "subject": { "app": app, "toVersion": "2.0.0" },
+            "returnTo": format!("{ORIGIN}/done"),
+        })))
         .await
+        .map(wire)
         .unwrap();
     let page = Page::new(made["url"].as_str().unwrap());
     assert_eq!(
@@ -700,10 +708,12 @@ async fn a_bundle_swapped_under_the_same_version_is_refused() {
 
     // The same WASM under the same version, another manifest.
     let _ = alice
-        .delete(&format!("packages/{PACKAGE}/2.0.0"))
+        .packages()
+        .version_uninstall(PACKAGE, "2.0.0")
         .await
+        .map(wire)
         .unwrap();
-    let _ = alice.upload_package(swapped).await.unwrap();
+    let _ = alice.packages().upload(swapped).await.unwrap();
 
     let (code, refused) = page.post("approve", json!({})).await;
     assert_eq!(
@@ -713,10 +723,8 @@ async fn a_bundle_swapped_under_the_same_version_is_refused() {
     );
     // The route binds whatever manifest the target has now: the swapped one.
     let e = alice
-        .post(
-            &format!("apps/{app}/upgrade"),
-            json!({ "version": "2.0.0" }),
-        )
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "2.0.0" })), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
@@ -724,11 +732,8 @@ async fn a_bundle_swapped_under_the_same_version_is_refused() {
     assert_eq!(challenge_args(&c, id)["manifest"], json!(swapped_hash));
     let mut key = SoftAuthenticator::with_key(&alice_key, "localhost", ORIGIN);
     let _ok = alice
-        .post_confirmed(
-            &format!("apps/{app}/upgrade"),
-            json!({ "version": "2.0.0" }),
-            &mut key,
-        )
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "2.0.0" })), Some(&mut key))
         .await
         .unwrap();
 }
@@ -749,21 +754,20 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
             ..Declares::default()
         },
     );
-    let _ = alice.upload_package(v1).await.unwrap();
+    let _ = alice.packages().upload(v1).await.unwrap();
     let back = format!("{ORIGIN}/settings");
 
     // A release: the model says what changes before and after.
     let made = alice
-        .post(
-            "consent/requests",
-            json!({
-                "kind": "release",
-                "scope": "account",
-                "subject": { "version": "2.0.0" },
-                "returnTo": back,
-            }),
-        )
+        .consent()
+        .page_create(typed(json!({
+            "kind": "release",
+            "scope": "account",
+            "subject": { "version": "2.0.0" },
+            "returnTo": back,
+        })))
         .await
+        .map(wire)
         .unwrap();
     let page = Page::new(made["url"].as_str().unwrap());
     let model = page.model().await;
@@ -799,7 +803,7 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
         args,
         json!({ "version": "2.0.0", "policyDigest": digest, "__method": "__approve_release" })
     );
-    let me = alice.me().await.unwrap();
+    let me = alice.auth().me().await.map(wire).unwrap();
     assert!(
         me["approvedReleases"]
             .as_array()
@@ -810,16 +814,15 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
 
     // Outbound: exactly the prefixes listed, never "whatever is declared".
     let made = alice
-        .post(
-            "consent/requests",
-            json!({
-                "kind": "outbound",
-                "scope": "account",
-                "subject": { "package": PACKAGE, "prefixes": ["https://api.example/"] },
-                "returnTo": back,
-            }),
-        )
+        .consent()
+        .page_create(typed(json!({
+            "kind": "outbound",
+            "scope": "account",
+            "subject": { "package": PACKAGE, "prefixes": ["https://api.example/"] },
+            "returnTo": back,
+        })))
         .await
+        .map(wire)
         .unwrap();
     let page = Page::new(made["url"].as_str().unwrap());
     let model = page.model().await;
@@ -831,31 +834,28 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
     assert_eq!(code, 200, "{done}");
     assert_eq!(args["prefixes"], json!(["https://api.example/"]));
     let e = alice
-        .post(
-            "consent/requests",
-            json!({
-                "kind": "outbound",
-                "scope": "account",
-                "subject": { "package": PACKAGE, "prefixes": ["https://undeclared.example/"] },
-                "returnTo": back,
-            }),
-        )
+        .consent()
+        .page_create(typed(json!({
+            "kind": "outbound",
+            "scope": "account",
+            "subject": { "package": PACKAGE, "prefixes": ["https://undeclared.example/"] },
+            "returnTo": back,
+        })))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NOT_DECLARED"), "{e}");
 
     // Declined: the app is sent back with the result, and nothing is approved.
     let made = alice
-        .post(
-            "consent/requests",
-            json!({
-                "kind": "release",
-                "scope": "account",
-                "subject": { "version": "3.0.0" },
-                "returnTo": back,
-            }),
-        )
+        .consent()
+        .page_create(typed(json!({
+            "kind": "release",
+            "scope": "account",
+            "subject": { "version": "3.0.0" },
+            "returnTo": back,
+        })))
         .await
+        .map(wire)
         .unwrap();
     let id = made["requestId"].as_str().unwrap();
     let page = Page::new(made["url"].as_str().unwrap());
@@ -865,7 +865,7 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
         declined["redirect"],
         json!(format!("{back}?request_id={id}&result=declined"))
     );
-    let result = alice.get(&format!("consent/{id}/result")).await.unwrap();
+    let result = alice.consent().page_result(id).await.map(wire).unwrap();
     assert_eq!(result["status"], "declined");
 
     // At most this many undecided requests per account.
@@ -876,9 +876,23 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
         "returnTo": back,
     });
     for _ in 0..calimero_node::consent_page::MAX_OPEN_REQUESTS_PER_ACCOUNT {
-        let _ = alice.post("consent/requests", ask.clone()).await.unwrap();
+        let _ = alice
+            .consent()
+            .page_create(typed(ask.clone()))
+            .await
+            .map(wire)
+            .unwrap();
     }
-    let e = alice.post("consent/requests", ask).await.unwrap_err();
+    let e = alice
+        .consent()
+        .page_create(typed(json!({
+            "kind": "release",
+            "scope": "account",
+            "subject": { "version": "4.0.0" },
+            "returnTo": back,
+        })))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("RATE_LIMITED"), "{e}");
 
     // An id this node never issued has no page.
@@ -909,7 +923,7 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
         })
     };
     let approved = || async {
-        alice.me().await.unwrap()["approvedReleases"]
+        alice.auth().me().await.map(wire).unwrap()["approvedReleases"]
             .as_array()
             .unwrap()
             .clone()
@@ -921,8 +935,10 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
 
     // A second release, approved on the page.
     let made = alice
-        .post("consent/requests", ask("2.0.0", false))
+        .consent()
+        .page_create(typed(ask("2.0.0", false)))
         .await
+        .map(wire)
         .unwrap();
     let page = Page::new(made["url"].as_str().unwrap());
     let ((code, done), _) = page.approve(&c, &mut page_key).await;
@@ -931,8 +947,10 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
 
     // Withdrawn on the page: no measurements, the version alone is bound.
     let made = alice
-        .post("consent/requests", ask("2.0.0", true))
+        .consent()
+        .page_create(typed(ask("2.0.0", true)))
         .await
+        .map(wire)
         .unwrap();
     let id = made["requestId"].as_str().unwrap().to_owned();
     let page = Page::new(made["url"].as_str().unwrap());
@@ -968,8 +986,10 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
 
     // A release that is not approved: the page says withdrawing changes nothing.
     let made = alice
-        .post("consent/requests", ask("5.0.0", true))
+        .consent()
+        .page_create(typed(ask("5.0.0", true)))
         .await
+        .map(wire)
         .unwrap();
     let model = Page::new(made["url"].as_str().unwrap()).model().await;
     assert_eq!(model["release"]["currentlyApproved"], false, "{model}");
@@ -983,8 +1003,10 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
 
     // The last approved release: the page warns, and the node refuses it.
     let made = alice
-        .post("consent/requests", ask(&first, true))
+        .consent()
+        .page_create(typed(ask(&first, true)))
         .await
+        .map(wire)
         .unwrap();
     let id = made["requestId"].as_str().unwrap().to_owned();
     let page = Page::new(made["url"].as_str().unwrap());
@@ -999,13 +1021,17 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
         "the last approved release cannot be withdrawn"
     );
     assert_eq!(approved().await, vec![json!(first)]);
-    let result = alice.get(&format!("consent/{id}/result")).await.unwrap();
+    let result = alice.consent().page_result(&id).await.map(wire).unwrap();
     assert_eq!(result["status"], "pending");
 
     // The subject is still closed.
     let mut unknown = ask("2.0.0", true);
     unknown["subject"]["approved"] = json!(false);
-    let e = alice.post("consent/requests", unknown).await.unwrap_err();
+    let e = alice
+        .transport()
+        .json(Request::new(Method::POST, "consent/requests").json(unknown))
+        .await
+        .unwrap_err();
     assert_eq!(status(&e), 400, "{e}");
 }
 
@@ -1020,26 +1046,25 @@ async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_re
     let c = Cluster::start(3).await;
     let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
     let (bob, _) = signed_up(&c, 0, "bob").await;
-    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let org = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let token = alice
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "member" }),
-            &mut alice_key,
+        .orgs()
+        .invite_create(
+            &org,
+            typed(json!({ "role": "member" })),
+            Some(&mut alice_key),
         )
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
         .to_owned();
-    let _joined = bob
-        .post(&format!("invites/{token}/redeem"), json!({}))
-        .await
-        .unwrap();
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let _joined = bob.orgs().invite_redeem(&token).await.unwrap();
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -1060,27 +1085,35 @@ async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_re
     });
 
     // A member without the capability: no page at all.
-    let e = bob.post("consent/requests", ask.clone()).await.unwrap_err();
+    let e = bob
+        .consent()
+        .page_create(typed(ask.clone()))
+        .await
+        .unwrap_err();
     assert_eq!(status(&e), 403, "{e}");
     assert!(e.to_string().contains("APPROVE_RELEASES"), "{e}");
 
     // Granted, then revoked while the page is open: refused before the passkey.
-    let caps = format!("orgs/{org}/capabilities");
     let _ok = alice
-        .post_confirmed(
-            &caps,
-            json!({ "account": bob_id, "capabilities": APPROVE_RELEASES }),
-            &mut alice_key,
+        .orgs()
+        .capabilities(
+            &org,
+            u64::from(APPROVE_RELEASES),
+            Some(&bob_id),
+            None,
+            Some(&mut alice_key),
         )
         .await
         .unwrap();
-    let made = bob.post("consent/requests", ask.clone()).await.unwrap();
+    let made = bob
+        .consent()
+        .page_create(typed(ask.clone()))
+        .await
+        .map(wire)
+        .unwrap();
     let _ok = alice
-        .post_confirmed(
-            &caps,
-            json!({ "account": bob_id, "capabilities": 0 }),
-            &mut alice_key,
-        )
+        .orgs()
+        .capabilities(&org, 0, Some(&bob_id), None, Some(&mut alice_key))
         .await
         .unwrap();
     let (code, refused) = Page::new(made["url"].as_str().unwrap())
@@ -1096,7 +1129,17 @@ async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_re
     );
 
     // The owner: the deadline in the model and in plain words; approved.
-    let made = alice.post("consent/requests", ask).await.unwrap();
+    let made = alice
+        .consent()
+        .page_create(typed(json!({
+            "kind": "release",
+            "scope": { "org": org },
+            "subject": { "version": "3.0.0" },
+            "returnTo": format!("{ORIGIN}/settings"),
+        })))
+        .await
+        .map(wire)
+        .unwrap();
     let page = Page::new(made["url"].as_str().unwrap());
     let model = page.model().await;
     assert_eq!(
@@ -1124,7 +1167,7 @@ async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_re
     let ((code, done), args) = page.approve(&c, &mut page_key).await;
     assert_eq!(code, 200, "{done}");
     assert_eq!(args["version"], "3.0.0");
-    let view = alice.get(&format!("orgs/{org}")).await.unwrap();
+    let view = alice.orgs().get(&org).await.map(wire).unwrap();
     assert!(
         view["approvedReleases"]
             .as_array()
@@ -1159,13 +1202,25 @@ async fn a_publisher_upgraded_package_is_not_upgraded_on_the_owners_page() {
         &publisher,
         &Declares::default(),
     );
-    let _ = alice.upload_package(v1).await.unwrap();
-    let _ = alice.upload_package(v2).await.unwrap();
+    let _ = alice.packages().upload(v1).await.unwrap();
+    let _ = alice.packages().upload(v2).await.unwrap();
     let create =
         |name: &str, version: &str| json!({ "name": name, "package": PACKAGE, "version": version });
     let app_of = |v: Value| v["appId"].as_str().unwrap().to_owned();
-    let held = app_of(alice.post("apps", create("held", "1.0.0")).await.unwrap());
-    let owned = app_of(alice.post("apps", create("owned", "2.0.0")).await.unwrap());
+    let held = app_of(
+        alice
+            .transport()
+            .json(Request::new(Method::POST, "apps").json(create("held", "1.0.0")))
+            .await
+            .unwrap(),
+    );
+    let owned = app_of(
+        alice
+            .transport()
+            .json(Request::new(Method::POST, "apps").json(create("owned", "2.0.0")))
+            .await
+            .unwrap(),
+    );
     let ask = |app: &str, to: &str| {
         json!({
             "kind": "upgrade",
@@ -1175,14 +1230,16 @@ async fn a_publisher_upgraded_package_is_not_upgraded_on_the_owners_page() {
     };
 
     let e = alice
-        .post("consent/requests", ask(&held, "2.0.0"))
+        .consent()
+        .page_create(typed(ask(&held, "2.0.0")))
         .await
         .unwrap_err();
     assert_eq!(status(&e), 409, "the key is bound to no organization: {e}");
     assert!(e.to_string().contains("upgraded by its publisher"), "{e}");
 
     let e = alice
-        .post("consent/requests", ask(&owned, "1.0.0"))
+        .consent()
+        .page_create(typed(ask(&owned, "1.0.0")))
         .await
         .unwrap_err();
     assert_eq!(status(&e), 403, "{e}");

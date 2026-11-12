@@ -7,7 +7,7 @@
 //! it. Each sends through [`Client::transport`] and answers the operation's
 //! typed success answer, a refusal as [`crate::Error`]. Event streams are
 //! not here: [`Client::events`] and [`Client::presence_stream`] read them.
-//! Left out: GET /apps/{app}/events, GET /apps/{app}/presence/stream.
+//! Left out: GET /apps/{app}/events, GET /apps/{app}/pipeline-runs/{run}/events, GET /apps/{app}/presence/stream.
 
 use std::collections::BTreeMap;
 
@@ -78,28 +78,12 @@ impl Apps<'_> {
     /// Every replica's receipt-key attestation.
     ///
     /// `GET /apps/{app}/attestation` (`app_attestation`). Who: whoever the app's access admits (a public app: anyone).
-    pub async fn attestation(
-        self,
-        app: &str,
-        nonce: &str,
-        app_query: Option<&str>,
-        app_hash: Option<&str>,
-        purpose: Option<AppAttestationPurpose>,
-    ) -> Result<AppAttestationResponse> {
+    pub async fn attestation(self, app: &str, nonce: &str) -> Result<AppAttestationResponse> {
         let mut req = Request::new(
             Method::GET,
             format!("apps/{}/attestation", route::segment(app)),
         );
         req = req.query("nonce", nonce);
-        if let Some(v) = app_query {
-            req = req.query("app", v);
-        }
-        if let Some(v) = app_hash {
-            req = req.query("appHash", v);
-        }
-        if let Some(v) = purpose {
-            req = req.query("purpose", v.as_str());
-        }
         route::json(self.client.transport(), req, None, None, false).await
     }
 
@@ -172,12 +156,11 @@ impl Apps<'_> {
     pub async fn blob_upload(
         self,
         app: &str,
-        content_type: &str,
         bytes: Vec<u8>,
         sealed: Option<bool>,
     ) -> Result<BlobUploadResponse> {
         let mut req = Request::new(Method::POST, format!("apps/{}/blobs", route::segment(app)))
-            .bytes(content_type.to_owned(), bytes);
+            .bytes("application/octet-stream", bytes);
         if let Some(v) = sealed {
             req = req.query("sealed", v.to_string());
         }
@@ -228,6 +211,46 @@ impl Apps<'_> {
     pub async fn delete(self, app: &str) -> Result<AppDeleteResponse> {
         let req = Request::new(Method::DELETE, format!("apps/{}", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Export a sealed file's key.
+    ///
+    /// `POST /apps/{app}/files/{id}/export` (`exports_export`). Who: signed in (a session or an API key).
+    pub async fn exports_export(
+        self,
+        app: &str,
+        id: &str,
+        recipient: &str,
+    ) -> Result<ExportsExportResponse> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "recipient", &recipient)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!(
+                "apps/{}/files/{}/export",
+                route::segment(app),
+                route::segment(id)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// One segment of a sealed file.
+    ///
+    /// `GET /apps/{app}/files/{id}/segments/{k}` (`exports_segment`). Who: signed in (a session or an API key).
+    pub async fn exports_segment(self, app: &str, id: &str, k: &str) -> Result<Vec<u8>> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "apps/{}/files/{}/segments/{}",
+                route::segment(app),
+                route::segment(id),
+                route::segment(k)
+            ),
+        );
+        route::bytes(self.client.transport(), req).await
     }
 
     /// One sealed file.
@@ -341,6 +364,173 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// A pipeline run's receipt.
+    ///
+    /// `GET /apps/{app}/pipeline-runs/{run}/receipt` (`pipeline_receipt_receipt`). Who: signed in (a session or an API key).
+    pub async fn pipeline_receipt_receipt(
+        self,
+        app: &str,
+        run: &str,
+    ) -> Result<PipelineReceiptReceiptResponse> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "apps/{}/pipeline-runs/{}/receipt",
+                route::segment(app),
+                route::segment(run)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Cancel a pipeline run.
+    ///
+    /// `POST /apps/{app}/pipeline-runs/{run}/cancel` (`pipelines_cancel`). Who: signed in (a session or an API key).
+    pub async fn pipelines_cancel(self, app: &str, run: &str) -> Result<PipelinesCancelResponse> {
+        let req = Request::new(
+            Method::POST,
+            format!(
+                "apps/{}/pipeline-runs/{}/cancel",
+                route::segment(app),
+                route::segment(run)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Estimate a pipeline run.
+    ///
+    /// `POST /apps/{app}/pipelines/{name}/estimate` (`pipelines_estimate_run`). Who: signed in (a session or an API key).
+    pub async fn pipelines_estimate_run(
+        self,
+        app: &str,
+        name: &str,
+        inputs: Option<BTreeMap<String, Vec<String>>>,
+        counts: Option<BTreeMap<String, u64>>,
+        params: Option<Map<String, Value>>,
+    ) -> Result<PipelinesEstimateRunResponse> {
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "inputs", inputs)?;
+        route::put_some(&mut fields, "counts", counts)?;
+        route::put_some(&mut fields, "params", params)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!(
+                "apps/{}/pipelines/{}/estimate",
+                route::segment(app),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// One pipeline run.
+    ///
+    /// `GET /apps/{app}/pipeline-runs/{run}` (`pipelines_get`). Who: whoever the app's access admits (a public app: anyone).
+    pub async fn pipelines_get(self, app: &str, run: &str) -> Result<Map<String, Value>> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "apps/{}/pipeline-runs/{}",
+                route::segment(app),
+                route::segment(run)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// An app's pipeline runs.
+    ///
+    /// `GET /apps/{app}/pipeline-runs` (`pipelines_list`). Who: whoever the app's access admits (a public app: anyone).
+    pub async fn pipelines_list(
+        self,
+        app: &str,
+        limit: Option<&str>,
+    ) -> Result<Map<String, Value>> {
+        let mut req = Request::new(
+            Method::GET,
+            format!("apps/{}/pipeline-runs", route::segment(app)),
+        );
+        if let Some(v) = limit {
+            req = req.query("limit", v);
+        }
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Retry a pipeline run.
+    ///
+    /// `POST /apps/{app}/pipeline-runs/{run}/retry` (`pipelines_retry`). Who: signed in (a session or an API key).
+    pub async fn pipelines_retry(
+        self,
+        app: &str,
+        run: &str,
+        limits: Option<BTreeMap<String, PipelinesRetryRequestLimitsValue>>,
+        max_cost: Option<&str>,
+    ) -> Result<PipelinesRetryResponse> {
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "limits", limits)?;
+        route::put_some(&mut fields, "maxCost", max_cost)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!(
+                "apps/{}/pipeline-runs/{}/retry",
+                route::segment(app),
+                route::segment(run)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Start a pipeline run.
+    ///
+    /// `POST /apps/{app}/pipelines/{name}/runs` (`pipelines_start`). Who: signed in (a session or an API key).
+    pub async fn pipelines_start(
+        self,
+        app: &str,
+        name: &str,
+        inputs: Option<BTreeMap<String, Vec<String>>>,
+        params: Option<Map<String, Value>>,
+        max_cost: Option<&str>,
+    ) -> Result<PipelinesStartResponse> {
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "inputs", inputs)?;
+        route::put_some(&mut fields, "params", params)?;
+        route::put_some(&mut fields, "maxCost", max_cost)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!(
+                "apps/{}/pipelines/{}/runs",
+                route::segment(app),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Validate a pipeline.
+    ///
+    /// `POST /pipelines/validate` (`pipelines_validate`). Who: signed in (a session or an API key).
+    pub async fn pipelines_validate(
+        self,
+        source: &str,
+        package: Option<&str>,
+        version: Option<&str>,
+    ) -> Result<PipelinesValidateResponse> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "source", &source)?;
+        route::put_some(&mut fields, "package", package)?;
+        route::put_some(&mut fields, "version", version)?;
+        let body = Value::Object(fields);
+        let req = Request::new(Method::POST, "pipelines/validate").json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// Who is present.
     ///
     /// `GET /apps/{app}/presence` (`presence_get`). Who: whoever the app's access admits (a public app: anyone).
@@ -376,7 +566,7 @@ impl Apps<'_> {
     /// One compute run.
     ///
     /// `GET /apps/{app}/runs/{run}` (`app_run`). Who: whoever the app's access admits (a public app: anyone).
-    pub async fn run(self, app: &str, run: &str) -> Result<Map<String, Value>> {
+    pub async fn run(self, app: &str, run: &str) -> Result<Run> {
         let req = Request::new(
             Method::GET,
             format!("apps/{}/runs/{}", route::segment(app), route::segment(run)),
@@ -392,7 +582,7 @@ impl Apps<'_> {
         app: &str,
         limit: Option<&str>,
         before: Option<&str>,
-    ) -> Result<Map<String, Value>> {
+    ) -> Result<AppRunsResponse> {
         let mut req = Request::new(Method::GET, format!("apps/{}/runs", route::segment(app)));
         if let Some(v) = limit {
             req = req.query("limit", v);
@@ -421,7 +611,7 @@ impl Apps<'_> {
         app: &str,
         to: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<Written> {
+    ) -> Result<()> {
         let mut fields = Map::new();
         route::put(&mut fields, "to", &to)?;
         let body = Value::Object(fields);
@@ -629,7 +819,7 @@ impl Auth<'_> {
         prefixes: Option<OutboundSelection>,
         replace: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<Written> {
+    ) -> Result<OutboundApproved> {
         let mut fields = Map::new();
         route::put(&mut fields, "package", &package)?;
         route::put_some(&mut fields, "prefixes", prefixes)?;
@@ -642,11 +832,7 @@ impl Auth<'_> {
     /// Prove the account to another party.
     ///
     /// `POST /auth/account-proof` (`account_proof_prove`). Who: a passkey session (an API key is refused).
-    pub async fn account_proof_prove(
-        self,
-        nonce: &str,
-        audience: &str,
-    ) -> Result<Map<String, Value>> {
+    pub async fn account_proof_prove(self, nonce: &str, audience: &str) -> Result<AccountProof> {
         let mut fields = Map::new();
         route::put(&mut fields, "nonce", &nonce)?;
         route::put(&mut fields, "audience", &audience)?;
@@ -725,7 +911,7 @@ impl Auth<'_> {
         version: &str,
         approved: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<Written> {
+    ) -> Result<ApprovedReleases> {
         let mut fields = Map::new();
         route::put(&mut fields, "version", &version)?;
         route::put_some(&mut fields, "approved", approved)?;
@@ -883,7 +1069,7 @@ impl Auth<'_> {
     /// End every session of the account.
     ///
     /// `POST /auth/logout-all` (`logout_all`). Who: an account holder (a passkey session not bound to an app's frontend).
-    pub async fn logout_all(self) -> Result<Written> {
+    pub async fn logout_all(self) -> Result<LogoutAllResponse> {
         let req = Request::new(Method::POST, "auth/logout-all");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1312,7 +1498,7 @@ impl Deployments<'_> {
         self,
         key: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<Written> {
+    ) -> Result<InviteKey> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::DELETE,
@@ -1340,7 +1526,7 @@ impl Deployments<'_> {
         policy: SignUp,
         operator_proof: Option<OperatorProof>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<Written> {
+    ) -> Result<SignUpSet> {
         let mut fields = Map::new();
         route::put(&mut fields, "policy", &policy)?;
         route::put_some(&mut fields, "operatorProof", operator_proof)?;
@@ -1359,7 +1545,7 @@ impl Deployments<'_> {
         id: &str,
         app: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<Written> {
+    ) -> Result<DeploymentWithdrawResponse> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::DELETE,
@@ -1573,7 +1759,7 @@ impl Ops<'_> {
         prefixes: Option<OutboundSelection>,
         replace: Option<bool>,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<Written> {
+    ) -> Result<OutboundApproved> {
         let mut fields = Map::new();
         route::put(&mut fields, "package", &package)?;
         route::put_some(&mut fields, "prefixes", prefixes)?;
@@ -1610,7 +1796,7 @@ impl Ops<'_> {
     /// Uninstall what the operator installed.
     ///
     /// `DELETE /ops/packages/{package}` (`ops_package_uninstall`). Who: the ops token.
-    pub async fn package_uninstall(self, package: &str) -> Result<Written> {
+    pub async fn package_uninstall(self, package: &str) -> Result<Uninstalled> {
         let req = Request::new(
             Method::DELETE,
             format!("ops/packages/{}", route::segment(package)),
@@ -1630,7 +1816,11 @@ impl Ops<'_> {
     /// Uninstall one operator-installed version.
     ///
     /// `DELETE /ops/packages/{package}/{version}` (`ops_package_version_uninstall`). Who: the ops token.
-    pub async fn package_version_uninstall(self, package: &str, version: &str) -> Result<Written> {
+    pub async fn package_version_uninstall(
+        self,
+        package: &str,
+        version: &str,
+    ) -> Result<Uninstalled> {
         let req = Request::new(
             Method::DELETE,
             format!(
@@ -1675,10 +1865,35 @@ impl Ops<'_> {
         route::json(self.client.transport(), req, None, operator, false).await
     }
 
+    /// The price table.
+    ///
+    /// `GET /ops/prices` (`ops_prices_get`). Who: the ops token.
+    pub async fn prices_get(self) -> Result<OpsPricesGetResponse> {
+        let req = Request::new(Method::GET, "ops/prices");
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Set the price table.
+    ///
+    /// `POST /ops/prices` (`ops_prices_set`). Who: the ops token.
+    ///
+    /// Operator: answers `428 OPERATOR_SIGNATURE_REQUIRED` first where governance gives the decision to the operator; `operator` signs the statement it names, without it the refusal is returned.
+    pub async fn prices_set(
+        self,
+        table: OpsPricesSetRequestTable,
+        operator: Option<&OperatorSigner<'_>>,
+    ) -> Result<Map<String, Value>> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "table", &table)?;
+        let body = Value::Object(fields);
+        let req = Request::new(Method::POST, "ops/prices").json(body);
+        route::json(self.client.transport(), req, None, operator, false).await
+    }
+
     /// The quotas.
     ///
     /// `GET /ops/quotas` (`ops_quotas_get`). Who: the ops token.
-    pub async fn quotas_get(self) -> Result<OpsQuotasGetResponse> {
+    pub async fn quotas_get(self) -> Result<QuotaSettings> {
         let req = Request::new(Method::GET, "ops/quotas");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1771,7 +1986,7 @@ impl Ops<'_> {
         version: &str,
         approved: Option<bool>,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<Written> {
+    ) -> Result<ApprovedReleases> {
         let mut fields = Map::new();
         route::put(&mut fields, "version", &version)?;
         route::put_some(&mut fields, "approved", approved)?;
@@ -1790,7 +2005,7 @@ impl Ops<'_> {
         version: &str,
         after: Option<&str>,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<Written> {
+    ) -> Result<Deadlines> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "after", after)?;
         let body = Value::Object(fields);
@@ -1811,7 +2026,7 @@ impl Ops<'_> {
         self,
         version: &str,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<Written> {
+    ) -> Result<Deadlines> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::DELETE,
@@ -1946,7 +2161,7 @@ impl Ops<'_> {
         self,
         key: &str,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<Written> {
+    ) -> Result<InviteKey> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::DELETE,
@@ -1965,7 +2180,7 @@ impl Ops<'_> {
         self,
         key: &str,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<Written> {
+    ) -> Result<InviteKey> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::POST,
@@ -1985,7 +2200,7 @@ impl Ops<'_> {
         policy: SignUp,
         confirm: Option<Confirm>,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<Written> {
+    ) -> Result<SignUpSet> {
         let mut fields = Map::new();
         route::put(&mut fields, "policy", &policy)?;
         route::put_some(&mut fields, "confirm", confirm)?;
@@ -2170,7 +2385,11 @@ impl Orgs<'_> {
     /// `DELETE /orgs/{org}` (`org_delete`). Who: an account holder (a passkey session not bound to an app's frontend).
     ///
     /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
-    pub async fn delete(self, org: &str, passkey: Option<&mut dyn Passkey>) -> Result<Written> {
+    pub async fn delete(
+        self,
+        org: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<OrgDeleteResponse> {
         let body = Value::Object(Map::new());
         let req = Request::new(Method::DELETE, format!("orgs/{}", route::segment(org))).json(body);
         route::json(self.client.transport(), req, passkey, None, false).await
@@ -2367,7 +2586,7 @@ impl Orgs<'_> {
         prefixes: Option<OutboundSelection>,
         replace: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<Written> {
+    ) -> Result<OutboundApproved> {
         let mut fields = Map::new();
         route::put(&mut fields, "package", &package)?;
         route::put_some(&mut fields, "prefixes", prefixes)?;
@@ -2528,7 +2747,7 @@ impl Orgs<'_> {
         version: &str,
         approved: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<Written> {
+    ) -> Result<ApprovedReleases> {
         let mut fields = Map::new();
         route::put(&mut fields, "version", &version)?;
         route::put_some(&mut fields, "approved", approved)?;
@@ -2904,7 +3123,7 @@ impl Packages<'_> {
         rp_id: Option<&str>,
         served: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<Written> {
+    ) -> Result<PackageOrigin> {
         let mut fields = Map::new();
         route::put(&mut fields, "origin", &origin)?;
         route::put_some(&mut fields, "rpId", rp_id)?;
@@ -2939,7 +3158,7 @@ impl Packages<'_> {
         package: &str,
         origin: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<Written> {
+    ) -> Result<OriginsRemoveResponse> {
         let mut fields = Map::new();
         route::put(&mut fields, "origin", &origin)?;
         let body = Value::Object(fields);
@@ -2951,10 +3170,29 @@ impl Packages<'_> {
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 
+    /// A release's pipelines.
+    ///
+    /// `GET /packages/{package}/{version}/pipelines` (`package_pipelines`). Who: signed in (a session or an API key).
+    pub async fn pipelines(
+        self,
+        package: &str,
+        version: &str,
+    ) -> Result<BTreeMap<String, PackagePipelinesResponseValue>> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "packages/{}/{}/pipelines",
+                route::segment(package),
+                route::segment(version)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// Uninstall a package.
     ///
     /// `DELETE /packages/{package}` (`package_uninstall`). Who: an account holder (a passkey session not bound to an app's frontend).
-    pub async fn uninstall(self, package: &str) -> Result<Written> {
+    pub async fn uninstall(self, package: &str) -> Result<Uninstalled> {
         let req = Request::new(
             Method::DELETE,
             format!("packages/{}", route::segment(package)),
@@ -2973,7 +3211,7 @@ impl Packages<'_> {
     /// Uninstall one version.
     ///
     /// `DELETE /packages/{package}/{version}` (`package_version_uninstall`). Who: an account holder (a passkey session not bound to an app's frontend).
-    pub async fn version_uninstall(self, package: &str, version: &str) -> Result<Written> {
+    pub async fn version_uninstall(self, package: &str, version: &str) -> Result<Uninstalled> {
         let req = Request::new(
             Method::DELETE,
             format!(

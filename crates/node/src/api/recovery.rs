@@ -103,7 +103,7 @@ fn no_account_recovery() -> ApiError {
     ApiError::not_found(crate::system::NO_ACCOUNT_RECOVERY_PENDING)
 }
 
-fn recovery_not_ready(ready_at: u64) -> ApiError {
+pub(super) fn recovery_not_ready(ready_at: u64) -> ApiError {
     ApiError::new(409, "RECOVERY_NOT_READY", crate::system::RECOVERY_NOT_READY)
         .with_details(json!({ "readyAt": ready_at }))
 }
@@ -327,17 +327,13 @@ async fn account_recovery_finish(
                 account: body.account_id,
             },
         )?;
-        return Err(ApiError::new(
-            412,
-            "CONFIRM_REQUIRED",
+        return Err(confirm_required(
             "sign in with the passkey the recovery adds",
-        )
-        .with_details(json!({
-            "challengeId": id,
-            "challenge": b64url(&challenge),
-            "rpId": node.config.rp_id,
-            "allowCredentials": allow,
-        })));
+            &id,
+            &challenge,
+            &node.config.rp_id,
+            &allow,
+        ));
     };
     let Pending::RecoverFinish {
         challenge,
@@ -561,10 +557,7 @@ async fn recovery_finish(
     };
     let at = recovery_now(&node);
     if at < pending.ready_at {
-        return Err(
-            ApiError::new(409, "RECOVERY_NOT_READY", crate::system::RECOVERY_NOT_READY)
-                .with_details(json!({ "readyAt": pending.ready_at })),
-        );
+        return Err(recovery_not_ready(pending.ready_at));
     }
     let confirm = body.and_then(|Json(b)| b.confirm);
     let args = json!({ "org": org });

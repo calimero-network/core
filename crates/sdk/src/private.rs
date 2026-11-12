@@ -213,7 +213,32 @@ pub mod abi_defaults {
     pub const __CALIMERO_ABI_ERRORS: &str = "{}";
     /// No declared events.
     pub const __CALIMERO_ABI_EVENTS: &str = "{}";
+    /// No types from declared errors.
+    pub const __CALIMERO_ABI_ERROR_TYPES: &[Option<&crate::abi::TypeDef>] = &[];
+    /// No types from declared events.
+    pub const __CALIMERO_ABI_EVENT_TYPES: &[Option<&crate::abi::TypeDef>] = &[];
 }
+
+/// A type's entry for the ABI's `types`: `Probe::<T>::DEF` is `Some` when `T` implements
+/// [`AbiType`](crate::abi::AbiType), else (with [`NoShape`] in scope) `None`. The inherent
+/// constant wins whenever its bound holds, so the generated code names any type, described
+/// or not, without a trait bound the app's own types might not meet.
+pub struct Probe<T: ?Sized>(core::marker::PhantomData<T>);
+
+impl<T: ?Sized + crate::abi::AbiType> Probe<T> {
+    /// The type's entry.
+    pub const DEF: Option<&'static crate::abi::TypeDef> = Some(T::DEF);
+}
+
+/// The fallback of [`Probe`]: a type without a shape.
+pub trait NoShape {
+    /// No entry.
+    const DEF: Option<&'static crate::abi::TypeDef> = None;
+}
+
+impl<T: ?Sized> NoShape for Probe<T> {}
+
+pub use crate::abi::{types_json, TypeDef, TypesJson};
 
 /// The total length of the ABI parts.
 pub const fn abi_len(parts: &[&str]) -> usize {

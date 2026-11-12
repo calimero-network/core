@@ -29,6 +29,22 @@ pub struct Blob {
     pub data: Vec<u8>,
 }
 
+/// A page of anything, as plain serde: generic, its shape from `AbiType`.
+#[derive(serde::Serialize, serde::Deserialize, AbiType)]
+#[serde(rename_all = "camelCase")]
+pub struct Listing<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+}
+
+/// An internally tagged serde enum holding a record.
+#[derive(serde::Serialize, serde::Deserialize, AbiType)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum Slot {
+    Free,
+    Held { booking: Booking },
+}
+
 #[app::state(version = 3)]
 pub struct Rooms {
     bookings: Table<Booking>,
@@ -116,6 +132,19 @@ impl Rooms {
         self.bookings
             .get(&id)?
             .ok_or_else(|| Error::NotFound.into())
+    }
+
+    /// The slot a booking id holds, as a one-item listing: shapes in the ABI's `types`.
+    #[app::view]
+    pub fn slot(&self, id: String) -> app::Result<Listing<Slot>> {
+        let slot = match self.bookings.get(&id)? {
+            Some(booking) => Slot::Held { booking },
+            None => Slot::Free,
+        };
+        Ok(Listing {
+            items: vec![slot],
+            next_cursor: None,
+        })
     }
 
     /// Bookings per room, from the maintained count.

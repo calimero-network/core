@@ -249,7 +249,9 @@ pub(super) async fn recover_holder(
         let backup = json!({
             "name": opened.path.file_name().map(|n| n.to_string_lossy().into_owned()),
             "index": opened.header.index,
-            "format": format!("recovery/{}", opened.header.format),
+            "format": opened.header.format,
+            "merod": opened.header.merod,
+            "release": opened.header.release,
         });
         let index = opened.header.index;
         let done = node
@@ -481,7 +483,7 @@ async fn ops_restore_recovery(
     let backup = json!({
         "name": r.file,
         "index": index,
-        "format": format!("recovery/{}", h.format),
+        "format": h.format,
         "merod": h.merod,
         "release": h.release,
     });

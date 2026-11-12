@@ -95,6 +95,12 @@ retried on `503` with backoff; any other refusal (`413`, `429`) aborts the sessi
 Tests: `files::tests`, against a mock node over the real sealed channel, with a proxy that cuts
 the connection.
 
+`Client::export_file(app, id)` (`files.rs`, `meroctl file download`, `meroctl pipeline download`) returns a sealed file's plaintext: it makes a fresh X25519 key pair, asks `POST .../files/{id}/export`, unwraps the data key with `calimero_sealed::wrap::unwrap_export`, fetches each segment from `GET .../segments/{k}`, and checks the segment list against the file id, each segment against its hash and the size and SHA-256 of the plaintext before returning any byte.
+
+`receipt.rs` holds the signed pipeline run receipt (`PipelineReceipt`, `StepRunProof`) and the one message the node signs and `verify_pipeline_receipt` rebuilds: `"calimero.pipeline.receipt.v1\0" || JCS(receipt)`, checked over the JSON as sent. `Client::pipeline_receipt` fetches it and `Client::verify_receipt` checks it under the answering node's key from `verify_app_cluster`; `meroctl pipeline receipt --verify` also compares each downloaded output with the receipt. A job's own report signature is not verified here yet.
+
+`pipeline_events.rs` holds the typed, metadata-only events of `GET /apps/{app}/pipeline-runs/{run}/events` (`RunEvent`, `StepEvent`, `Snapshot`, `PipelineEvent`) and `RunProgress`, which reads the run view's JSON into only those fields and diffs two views; the node sends them and `Client::pipeline_run_events` (`meroctl pipeline watch`) reads them. A key set test pins each event's fields, so a new record field never reaches a stream.
+
 Runtime and routes (`transport.rs`): `Transport` is everything that is not a
 route: the attested, sealed channel (`SealedTransport::attested`), the
 credential and the `401` refresh above, error mapping (`answer`, `api_error`,
@@ -140,8 +146,13 @@ generate theirs, and checked in under `src/generated/` (never edited by hand):
 - `types.rs`: components keep their names; inline schemas are named after where
   they are (`{Operation}Request`, `{Operation}Response`, then each property).
   Absent is `Option<T>`; absent or `null` is `Option<Option<T>>` (and an optional
-  `Value` keeps a sent `null`), both through `route::present`. A struct an answer
+  `Value` keeps a sent `null`), both through `route::present`; an answer that
+  is only `null` (`type: null`) is `()`. A struct an answer
   reaches keeps unnamed fields in `extra`, so re-serializing loses nothing; a
+  struct only requests carry whose schema is closed (`additionalProperties:
+  false`, and no answer or `x-calimero-error-details` reaches it) is
+  `#[serde(deny_unknown_fields)]`, so a body read from a caller's JSON
+  (`meroctl ops set-quotas`) refuses a misspelled key as the node would; a
   string enum keeps an unknown value in `Other(String)`. `Assertion`,
   `Registration`, `Session`, `AttestationDoc`, `Governance`, `Receipt` and
   `Release` are the client's own types (`pub use`), so what `attest` checks is

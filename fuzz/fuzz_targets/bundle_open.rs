@@ -69,8 +69,8 @@ fuzz_target!(|data: &[u8]| {
         }
     }
     if let Ok(contents) = bundle.contents() {
-        for artifact in contents.wasm {
-            assert_eq!(hex::encode(Sha256::digest(&artifact.bytes)), hash);
+        for bytes in contents.wasm.iter().filter_map(|a| a.bytes.as_ref()) {
+            assert_eq!(hex::encode(Sha256::digest(bytes)), hash);
         }
     }
 });

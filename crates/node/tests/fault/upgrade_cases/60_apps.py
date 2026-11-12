@@ -9,6 +9,17 @@ from upgrade_deep import (VOLATILE, DeepCase, Failed, anyone, check, decision, d
 from upgrade_path import case
 
 
+def settled_days(old, new):
+    """The rows of two `GET /apps/{app}/usage` answers that must agree: the dates both
+    `days` windows hold, without either answer's `today` (still counting). The window
+    is the last 30 days and rolls at midnight UTC, so a verify on a later day than the
+    populate sees its oldest row gone and the populate's `today` closed into `days`."""
+    skip = {old.get("today", {}).get("date"), new.get("today", {}).get("date")}
+    both = ({d.get("date") for d in old.get("days", [])} & {d.get("date") for d in new.get("days", [])}) - skip
+    pick = lambda a: [d for d in a.get("days", []) if d.get("date") in both]
+    return pick(new), pick(old)
+
+
 @case
 class History(DeepCase):
     name = "app-state-history"
@@ -313,8 +324,8 @@ class Usage(DeepCase):
         u = una.get(f"apps/{s['app']}/usage")
         old = s["usage"]
         today = old.get("today", {}).get("date")
-        eq([d for d in u.get("days", []) if d.get("date") != today],
-           [d for d in old.get("days", []) if d.get("date") != today], "the app's daily usage")
+        got, want = settled_days(old, u)
+        eq(got, want, "the app's daily usage")
         now = u.get("today", {})
         if now.get("date") == today:
             for f in ("runs", "writes", "bytesWritten"):

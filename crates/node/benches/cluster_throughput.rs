@@ -32,14 +32,6 @@
 //! Builds the kv component `apps/v2-fixtures/kv` (see `tests/harness/cluster.rs`).
 //! Not a criterion bench: one run is a few seconds of load per row, reported once.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -57,7 +49,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, signed_up, Cluster};
+use harness::{kv_wasm, signed_up, typed, Cluster};
 
 /// Calls each worker keeps in flight: one at a time, back to back.
 const WIDE: usize = 64;
@@ -149,7 +141,11 @@ async fn load(
                     n += 1;
                     let args = json!({ "key": format!("t{t}-w{w}-{n}"), "value": "x" });
                     let start = Instant::now();
-                    let ok = client.call(&app, "set", args, None).await.is_ok();
+                    let ok = client
+                        .apps()
+                        .call(&app, "set", Some(args), None, None)
+                        .await
+                        .is_ok();
                     let took = start.elapsed();
                     if !measuring.load(Ordering::Relaxed) || stop.load(Ordering::Relaxed) {
                         continue;
@@ -449,21 +445,44 @@ async fn main() {
     .await;
     println!("peer round trip: {} ms", peer_rtt.as_secs_f64() * 1e3);
     let (owner, mut pk) = signed_up(&c, 0, "bench").await;
-    let bundle = owner.upload_bundle(kv_wasm()).await.expect("uploads");
-    let a = owner
-        .create_app("a", &bundle, json!({}))
+    let bundle = owner
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .expect("uploads");
+    let a = owner
+        .apps()
+        .create(typed(json!({ "name": "a", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
         .expect("app a");
     let b = owner
-        .create_app("b", &bundle, json!({}))
+        .apps()
+        .create(typed(json!({ "name": "b", "bundle": &bundle })))
         .await
+        .map(|a| a.app_id)
         .expect("app b");
     let _ = owner
-        .call(&a, "set", json!({ "key": "warm", "value": "x" }), None)
+        .apps()
+        .call(
+            &a,
+            "set",
+            Some(json!({ "key": "warm", "value": "x" })),
+            None,
+            None,
+        )
         .await
         .expect("a answers");
     let _ = owner
-        .call(&b, "set", json!({ "key": "warm", "value": "x" }), None)
+        .apps()
+        .call(
+            &b,
+            "set",
+            Some(json!({ "key": "warm", "value": "x" })),
+            None,
+            None,
+        )
         .await
         .expect("b answers");
 

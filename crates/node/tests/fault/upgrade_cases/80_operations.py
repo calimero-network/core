@@ -109,7 +109,7 @@ def _answer(f):
 class BackupKeys(DeepCase):
     name = "backup-keys"
     area = "Ops"
-    since = "1.0.0-rc.16"
+    since = "1.0.0-rc.19"
     seeds = "an organization's and an account's backup key (what the recovery disk seals their apps' files to)"
     verifies = ("each key as its holder reads it, or the same refusal where governance gives app upgrades "
                 "to the operator; how many apps each covers")

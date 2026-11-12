@@ -46,7 +46,18 @@ clients read it to learn the methods, arguments and results.
     }
   },
   "errors": { "NotFound": {}, "Taken": { "start": "u64" }, "Invalid": { "0": "string" } },
-  "events": { "Booked": { "id": "string", "roomId": "string", "start": "u64" } }
+  "events": { "Booked": { "id": "string", "roomId": "string", "start": "u64" } },
+  "types": {
+    "Booking": {
+      "kind": "record",
+      "fields": [["id", "string"], ["roomId", "string"], ["start", "u64"], ["title", "string"]]
+    },
+    "Listing": { "kind": "record", "params": ["T"], "fields": [["items", "list<T>"], ["nextCursor", "option<string>"]] },
+    "Slot": {
+      "kind": "enum", "tag": "state",
+      "variants": [{ "name": "free" }, { "name": "held", "fields": [["booking", "Booking"]] }]
+    }
+  }
 }
 ```
 
@@ -58,6 +69,17 @@ clients read it to learn the methods, arguments and results.
 - **`state`**: each field's kind, the search fields of each table, and the
   `#[app::state(version = N)]`.
 - **`errors`** and **`events`**: each code or name with its fields.
+- **`types`**: the JSON shape of each app type the methods, errors and events
+  name, and of the types those name, by the Rust type's name: every
+  `#[derive(Record)]` and every `#[derive(AbiType)]` serde type
+  ([SDK macros](/core/build/sdk-macros/#deriveabitype)). `kind` is `record`
+  (`fields` as ordered `[name, type]`, with `{ "optional": true }` third when the
+  JSON may leave the field out), `newtype` (`type`), `tuple` (`items`), `unit`, or
+  `enum` (`variants`, each `{ name }`, `{ name, type }`, `{ name, items }` or
+  `{ name, fields }`, told apart as serde does: by the variant's name as the key,
+  by `tag`, by `tag` and `content`, or `untagged`). A generic type lists its
+  `params`, which its fields name (`Listing<Slot>` puts `Slot` for `T`). The key
+  is absent when no type has a shape, and a type it does not list is unknown.
 - **Types**: Rust integer, float and bool names, `string`, `bytes`,
   `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type's name.
   `u64`, `i64` and `bytes` are strings on the wire.
@@ -71,8 +93,9 @@ The host reads `abiVersion` (and refuses one it does not support), the method
 kinds, and the flags: a view never runs as a write, `confirm` needs a fresh
 passkey assertion, `public` admits callers who are not signed in, `allowSystem`,
 `allowApps` and `allowAction` admit the node, other apps and the app's own
-actions. Free-form keys (`params`, `returns`, `errors`, `events`) describe the
-app to clients; nodes ignore them. A field the host enforces is added only with
+actions. Free-form keys (`params`, `returns`, `errors`, `events`, `types`) describe the
+app to clients; nodes ignore them, so `types` came without an `abiVersion` bump: a
+node of an earlier release installs an app that carries it. A field the host enforces is added only with
 an `abiVersion` bump.
 
 ## Read it
@@ -82,7 +105,8 @@ an `abiVersion` bump.
 - `GET /apps/{app}/openapi.json` returns it as an OpenAPI 3.1 document (below),
   under the same access.
 - mero-js and calimero-client-py read it to build typed calls;
-  `mero-app-build codegen` writes a typed client for an app from it
+  `mero-app-build codegen` writes a typed client for an app from it in
+  TypeScript, Python, Swift or Kotlin
   ([Typed clients for your app](/core/build/guides/typed-clients/)).
 
 ## As OpenAPI
@@ -115,8 +139,9 @@ serves the one of the bundle an app runs at `GET /apps/{app}/openapi.json`
   `event` is an event's name and `data` its fields (`<Name>Event`). An app with
   actions also gets the node's `ActionFailed { actionId, method, reason }`.
 - **Transport**: every request travels inside the node's sealed channel, so a
-  client generated from the document needs mero-js or calimero-client-py
-  underneath (the clients `mero-app-build codegen` writes are built on them).
+  client generated from the document needs mero-js, calimero-client-py,
+  swift-sdk or kotlin-sdk underneath (the clients `mero-app-build codegen` writes
+  are built on them).
 
 ### Types
 
@@ -141,13 +166,26 @@ The JSON form of every ABI type, as the SDK's macros write and read it (D20):
 | `tuple<A, B>` | array `[a, b]` | `array` with `prefixItems` |
 | `BTreeMap<K, V>`, `HashMap<K, V>` | object, keys as strings | `object` with `additionalProperties: V` (integer keys get a `propertyNames` pattern) |
 | `Box<T>`, `Rc<T>`, `Arc<T>`, `&T` | as `T` | as `T` |
-| any other name (a record, a serde struct or enum, `Page<Item>`) | the type's serde form | a component named after it (`Page_Item`) that accepts any JSON |
+| any other name (a record, a serde struct or enum, `Page<Item>`) | the type's serde form | a component named after it (`Page_Item`): its shape from `types`, else any JSON |
 
 A `u64`, `i64` or `Vec<u8>` nested inside another type is a compile error
 (Ruling 27), so the string forms above hold wherever these types appear.
-ABI version 1 names an app's own types without describing their fields: they
-are open schemas (`x-calimero-abi-type` keeps the Rust name), and a typed client
-types them `unknown` / `Any`.
+An app type with a shape in `types` is a component with that shape: an object
+with its fields, a `oneOf` per enum, a generic type instantiated per use
+(`Listing_Slot`). One without (a type with neither derive, or any type in an ABI
+built before `types`) is an open schema (`x-calimero-abi-type` keeps the Rust
+name) and a typed client types it `unknown` / `Any` / `JSONValue` /
+`JsonElement`. The Swift and Kotlin clients make each described type a nested
+type: a record a `struct` / `data class`, an enum an `enum` / `sealed interface`
+coded in its serde tagging, generic where the Rust type is
+([Typed clients](/core/build/guides/typed-clients/#how-the-types-come-out)).
+
+The Swift and Kotlin clients take the Swift or Kotlin type and write its JSON form
+themselves: `u64` is `UInt64` / `ULong`, `i64` `Int64` / `Long`, `bytes` `Data` /
+`ByteArray`; the other integers keep their width (`u32` is `UInt32` / `UInt`,
+`usize` 32 bits, `u128`/`i128` 64 bits), `char` is a `String`, lists, sets and
+`[T; N]` are arrays / `List`, maps `[String: V]` / `Map<String, V>`, and
+`tuple<A, B>` a `Tuple2<A, B>` that is the JSON array `[a, b]`.
 
 ## Check a new version against the last
 
@@ -165,6 +203,37 @@ change; `--json` prints it as JSON. Parameters may widen and results narrow:
 | An error or event removed, or one of its fields removed or changed outside its old type | An error, event or field added |
 | `abiVersion` changed; `world` moved to another minor | `world` moved to another patch |
 | A state field removed or its collection kind changed; the state version going down or up by more than one | A state field added; the state version up by one (the upgrade runs its `#[app::migrate]` edge); search fields changed |
+| A type's shape in `types` changed in a way its callers notice (below) | A type gaining a shape (it was any JSON) |
+
+The app types the methods, errors and events name, and the types those name, are
+compared by name in `types`, in the direction they travel in the old ABI: a type
+inside a parameter of a method called from outside is **sent** (it may widen), one
+inside a result, error or event is **read** (it may narrow), and a type used both
+ways must hold both. Each change is reported as `type <Name>`:
+
+| Change | Sent | Read |
+| --- | --- | --- |
+| A field added | Breaking unless callers may leave it out (`option<..>` or `optional`) | Compatible |
+| A field removed | Breaking | Breaking, unless it was `optional` |
+| A field retyped, a variant's payload or a tuple item retyped | Compatible when it widens | Compatible when it narrows |
+| A field now `optional` (may be left out) | Compatible | Breaking |
+| A field no longer `optional` | Breaking, unless it is an `option<..>` | Compatible |
+| A variant added | Compatible | Breaking |
+| A variant removed | Breaking | Compatible |
+| Fields or variants reordered | Compatible (an `untagged` enum's variants: breaking, serde tries them in order) | Compatible |
+| The tagging style, the shape's kind (record, enum, ...), a variant's payload kind, a tuple's length or the number of generic parameters changed | Breaking | Breaking |
+| A generic parameter renamed | Compatible | Compatible |
+| The type lost its shape | Breaking | Breaking |
+
+Every generated client ignores a key it does not know, so a field added to what
+it reads is safe: TypeScript and Python read plain objects, Swift's `Decodable`
+skips keys its type does not name, and the Kotlin client decodes with
+`Json { ignoreUnknownKeys = true }`. A variant added to what a client reads is
+not: a client that decodes the enum exhaustively (a Swift or Kotlin enum, a
+`switch` over a TypeScript union) has no case for it. A type the old ABI's callers do not
+exchange (only an `allow(action)` method takes it, or nothing names it) is not
+compared. Recursive types (`Tree` holding `list<Tree>`) and generic ones
+(`Page<T>`, reached as `Page<Item>`) are compared once each.
 
 `mero-sign sign --previous <last release>` (and
 `scripts/pack-component.py --previous`) runs the same check before signing: it prints the changes, warns

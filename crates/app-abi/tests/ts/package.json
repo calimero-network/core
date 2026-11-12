@@ -1,0 +1,14 @@
+{
+  "name": "calimero-app-abi-ts-check",
+  "private": true,
+  "description": "Type-checks the generated TypeScript clients (tests/golden/*.ts) against the published mero-js",
+  "type": "module",
+  "scripts": {
+    "check": "tsc -p tsconfig.json && node clients.ts"
+  },
+  "devDependencies": {
+    "@calimero-network/mero-js": "^33.0.0",
+    "@types/node": "22.19.1",
+    "typescript": "5.9.3"
+  }
+}

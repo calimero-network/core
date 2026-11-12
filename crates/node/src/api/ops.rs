@@ -364,8 +364,7 @@ fn membership_err(e: &calimero_log::WriteError) -> ApiError {
     match e {
         calimero_log::WriteError::NotLeader {
             leader: Some((id, addr)),
-        } => ApiError::new(421, "NOT_LEADER", "send this to the app group's leader")
-            .with_details(json!({ "leader": id, "leaderUrl": addr })),
+        } => not_leader("send this to the app group's leader", Some(*id), addr),
         _ => ApiError::unavailable(&e.to_string()),
     }
 }
@@ -590,6 +589,46 @@ async fn ops_pools_set(
     Ok(Json(json!({})))
 }
 
+#[derive(Deserialize)]
+pub(super) struct PricesBody {
+    table: calimero_pipeline::PriceTable,
+    #[serde(default, rename = "operatorProof")]
+    operator_proof: Option<OperatorProofBody>,
+}
+
+/// Set the price table: the operator's decision, signed (`cluster / __set_price_table / { table }`).
+async fn ops_prices_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Json(b): Json<PricesBody>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    node.require_current_release("a price table").await?;
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__set_price_table",
+        &json!({ "table": b.table }),
+        b.operator_proof,
+    )?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetPriceTable {
+            table: b.table,
+            proof,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// The price table, or `{}` until one is set.
+async fn ops_prices_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+    operator(&node, &headers)?;
+    Ok(Json(
+        node.sys(|s| s.price_table)
+            .map_or_else(|| json!({}), |t| json!(t)),
+    ))
+}
+
 /// The pools and the runs each takes at once.
 async fn ops_pools_get(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
@@ -762,4 +801,5 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/ops/backup", post(ops_backup))
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))
         .route("/ops/pools", get(ops_pools_get).post(ops_pools_set))
+        .route("/ops/prices", get(ops_prices_get).post(ops_prices_set))
 }

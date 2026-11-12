@@ -1,12 +1,17 @@
 //! Typed clients for an app, from its ABI: a thin layer over the clients that already speak
-//! the sealed channel (mero-js's `CalimeroClient`, calimero-client-py's `Client`), one method
-//! per app method calling their `call` / `callConfirmed` / `view`. No new runtime: the types
-//! are the ABI's, mapped as [`crate::openapi`] maps them, and the transport is the client's.
+//! the sealed channel (mero-js's `CalimeroClient`, calimero-client-py's `Client`, swift-sdk's and
+//! kotlin-sdk's `CalimeroClient` or `ContextContractCalling`), one method per app method sending
+//! theirs (mero-js's and calimero-client-py's `client.apps.call`, through the app's log, or
+//! `client.apps.view`). No new runtime: the types are the ABI's, mapped as [`crate::openapi`]
+//! maps them, and the transport is the client's.
 
 use crate::abi::AppAbi;
 use crate::openapi::pascal;
 
+mod ident;
+mod kotlin;
 mod python;
+mod swift;
 mod typescript;
 
 /// What a client is generated for.
@@ -17,7 +22,9 @@ pub struct Target<'a> {
 }
 
 impl Target<'_> {
-    fn class(&self) -> String {
+    /// The client's type name: `kv-store` → `KvStoreClient`.
+    #[must_use]
+    pub fn class(&self) -> String {
         let base = pascal(self.name);
         if base.is_empty() {
             return "AppClient".to_owned();
@@ -36,6 +43,36 @@ pub fn typescript(abi: &AppAbi, target: &Target<'_>) -> String {
 #[must_use]
 pub fn python(abi: &AppAbi, target: &Target<'_>) -> String {
     python::module(abi, &target.class())
+}
+
+/// A Swift file over swift-sdk's MeroKit: the client struct, with the app's events, errors and
+/// types nested in it.
+#[must_use]
+pub fn swift(abi: &AppAbi, target: &Target<'_>) -> String {
+    swift::module(abi, &target.class())
+}
+
+/// A Kotlin file over kotlin-sdk's mero-core in `package` ([`kotlin_package`] of the name when
+/// `None`): the client class, with the app's events and errors nested in it.
+#[must_use]
+pub fn kotlin(abi: &AppAbi, target: &Target<'_>, package: Option<&str>) -> String {
+    let package = package.map_or_else(|| kotlin_package(target.name), str::to_owned);
+    kotlin::module(abi, &target.class(), &package)
+}
+
+/// The package a Kotlin client goes in by default: `kv-store` → `calimero.generated.kvstore`.
+#[must_use]
+pub fn kotlin_package(name: &str) -> String {
+    let segment: String = name
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    match segment.chars().next() {
+        None => "calimero.generated".to_owned(),
+        Some(c) if c.is_ascii_digit() => format!("calimero.generated.app{segment}"),
+        Some(_) => format!("calimero.generated.{segment}"),
+    }
 }
 
 /// The header line naming where a generated file came from.

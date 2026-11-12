@@ -3,14 +3,6 @@
 //! `minIndex` and hide titles), spec `docs/specs/app-runtime-v0.14.md` section 12.
 //! A4 (the fault test) runs against real processes: `tests/fault/rooms_fault.py`.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 mod common;
 
 use std::collections::{BTreeMap, HashMap};
@@ -18,11 +10,12 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use calimero_client::{Client, Consistency, Error as ClientError};
+use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::{Client, Error as ClientError};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::app::Status as AppStatus;
 use calimero_node::node::due_slot;
-use common::{Cluster, ORIGIN};
+use common::{typed, wire, Cluster, ORIGIN};
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 
@@ -62,8 +55,10 @@ impl Org {
         let mut owner = person(c, "owner").await;
         let org = str_of(
             &owner.on[0]
-                .post("orgs", json!({ "name": "Acme" }))
+                .orgs()
+                .create("Acme", None)
                 .await
+                .map(wire)
                 .unwrap(),
             "orgId",
         );
@@ -72,25 +67,29 @@ impl Org {
             let p = person(c, name).await;
             let token = str_of(
                 &owner.on[0]
-                    .post_confirmed(
-                        &format!("orgs/{org}/invites"),
-                        json!({ "role": role }),
-                        &mut owner.pk,
-                    )
+                    .orgs()
+                    .invite_create(&org, typed(json!({ "role": role })), Some(&mut owner.pk))
                     .await
+                    .map(wire)
                     .unwrap(),
                 "token",
             );
-            let _r = p.on[0]
-                .post(&format!("invites/{token}/redeem"), json!({}))
-                .await
-                .unwrap();
+            let _r = p.on[0].orgs().invite_redeem(&token).await.unwrap();
             let _prev = people.insert((*name).to_owned(), p);
         }
-        let bundle = owner.on[0].upload_bundle(common::rooms()).await.unwrap();
-        let app = owner.on[0]
-            .create_app("rooms", &bundle, json!({ "org": org }))
+        let bundle = owner.on[0]
+            .packages()
+            .bundle_put(common::rooms())
             .await
+            .map(|b| b.hash)
+            .unwrap();
+        let app = owner.on[0]
+            .apps()
+            .create(typed(
+                json!({ "name": "rooms", "bundle": &bundle, "org": org }),
+            ))
+            .await
+            .map(|a| a.app_id)
             .unwrap();
         let _prev = people.insert("owner".to_owned(), owner);
         Self {
@@ -109,7 +108,7 @@ impl Org {
 /// Signs `name` up on node 0 and in on the other two.
 async fn person(c: &Cluster, name: &str) -> Person {
     let (first, mut pk) = common::signed_up(c, 0, name).await;
-    let id = str_of(&first.me().await.unwrap(), "accountId");
+    let id = str_of(&first.auth().me().await.map(wire).unwrap(), "accountId");
     let mut on = vec![first];
     for i in 1..3 {
         let client = c.client(i);
@@ -312,9 +311,19 @@ impl<'a> Runner<'a> {
             "@anonymous" => {
                 let cl = &self.org.anonymous[node];
                 if op == "call" {
-                    cl.call(&app, method, args, None).await.map(|r| r.result)
+                    cl.apps()
+                        .call(&app, method, Some(args), None, None)
+                        .await
+                        .map(|r| r.result)
                 } else {
-                    cl.view(&app, method, args, Consistency::Strong)
+                    cl.apps()
+                        .view(
+                            &app,
+                            method,
+                            Some(args),
+                            Some(ViewsRequestConsistency::Strong),
+                            None,
+                        )
                         .await
                         .map(|r| r.result)
                 }
@@ -328,12 +337,24 @@ impl<'a> Runner<'a> {
                 let cl = &p.on[node];
                 match (op, confirmed) {
                     ("call", true) => cl
-                        .call_confirmed(&app, method, args, &mut p.pk)
+                        .apps()
+                        .call(&app, method, Some(args), None, Some(&mut p.pk))
                         .await
                         .map(|r| r.result),
-                    ("call", false) => cl.call(&app, method, args, None).await.map(|r| r.result),
+                    ("call", false) => cl
+                        .apps()
+                        .call(&app, method, Some(args), None, None)
+                        .await
+                        .map(|r| r.result),
                     _ => cl
-                        .view(&app, method, args, Consistency::Strong)
+                        .apps()
+                        .view(
+                            &app,
+                            method,
+                            Some(args),
+                            Some(ViewsRequestConsistency::Strong),
+                            None,
+                        )
                         .await
                         .map(|r| r.result),
                 }
@@ -401,15 +422,16 @@ impl<'a> Runner<'a> {
     async fn remove_member(&mut self, name: &str) -> Result<(), String> {
         self.flush_events().await?;
         let id = self.org.people[name].id.clone();
-        let path = format!("orgs/{}/members/{id}", self.org.id);
         let owner = self
             .org
             .people
             .get_mut("owner")
             .ok_or("the org has no owner")?;
         let _r = owner.on[0]
-            .delete_confirmed(&path, &mut owner.pk)
+            .orgs()
+            .remove_member(&self.org.id, &id, Some(&mut owner.pk))
             .await
+            .map(wire)
             .map_err(|e| e.to_string())?;
         for r in self.c.nodes.iter().flatten() {
             let applied = r.node.system.status().last_log.unwrap_or(0);
@@ -605,7 +627,14 @@ async fn rooms_scenario_on_the_cluster() {
     for (name, p) in &org.people {
         for (i, cl) in p.on.iter().enumerate() {
             match cl
-                .view(&org.app, "myBookings", json!({}), Consistency::Strong)
+                .apps()
+                .view(
+                    &org.app,
+                    "myBookings",
+                    Some(json!({})),
+                    Some(ViewsRequestConsistency::Strong),
+                    None,
+                )
                 .await
             {
                 Ok(_) => {}
@@ -618,8 +647,10 @@ async fn rooms_scenario_on_the_cluster() {
                 }
             }
             let me = cl
+                .auth()
                 .me()
                 .await
+                .map(wire)
                 .unwrap_or_else(|e| panic!("{name} on node {i}: {e}"));
             assert_eq!(str_of(&me, "accountId"), p.id);
         }
@@ -645,33 +676,48 @@ async fn no_double_booking_under_contention() {
     let mut owner = person(&c, "owner").await;
     let org = str_of(
         &owner.on[0]
-            .post("orgs", json!({ "name": "Acme" }))
+            .orgs()
+            .create("Acme", None)
             .await
+            .map(wire)
             .unwrap(),
         "orgId",
     );
-    let bundle = owner.on[0].upload_bundle(common::rooms()).await.unwrap();
-    let app = owner.on[0]
-        .create_app("rooms", &bundle, json!({ "org": org }))
+    let bundle = owner.on[0]
+        .packages()
+        .bundle_put(common::rooms())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = owner.on[0]
+        .apps()
+        .create(typed(
+            json!({ "name": "rooms", "bundle": &bundle, "org": org }),
+        ))
+        .await
+        .map(|a| a.app_id)
         .unwrap();
     let _r = owner.on[0]
+        .apps()
         .call(
             &app,
             "addRoom",
-            json!({ "id": "r1", "name": "Atlas", "capacity": 8 }),
+            Some(json!({ "id": "r1", "name": "Atlas", "capacity": 8 })),
+            None,
             None,
         )
         .await
         .unwrap();
     let token = str_of(
         &owner.on[0]
-            .post_confirmed(
-                &format!("orgs/{org}/invites"),
-                json!({ "role": "member", "uses": N }),
-                &mut owner.pk,
+            .orgs()
+            .invite_create(
+                &org,
+                typed(json!({ "role": "member", "uses": N })),
+                Some(&mut owner.pk),
             )
             .await
+            .map(wire)
             .unwrap(),
         "token",
     );
@@ -685,10 +731,7 @@ async fn no_double_booking_under_contention() {
                 let cl = c.client(k % 3);
                 let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
                 let _s = cl.sign_up(&mut pk, &format!("m{k}")).await.unwrap();
-                let _r = cl
-                    .post(&format!("invites/{token}/redeem"), json!({}))
-                    .await
-                    .unwrap();
+                let _r = cl.orgs().invite_redeem(token).await.unwrap();
                 cl
             }
         }))
@@ -706,7 +749,11 @@ async fn no_double_booking_under_contention() {
             let key = format!("a3-{k}");
             // An unknown outcome (a 503) is retried with the same key.
             for _ in 0..20 {
-                match cl.call(app, "book", args.clone(), Some(&key)).await {
+                match cl
+                    .apps()
+                    .call(app, "book", Some(args.clone()), Some(&key), None)
+                    .await
+                {
                     Err(e) if e.code() == Some("TIMEOUT") || e.code() == Some("UNAVAILABLE") => {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
@@ -739,13 +786,13 @@ async fn no_double_booking_under_contention() {
     let mut owner_on = owner.on;
     for (i, cl) in owner_on.iter_mut().enumerate() {
         let v = cl
+            .apps()
             .view(
                 &app,
                 "availability",
-                json!({ "roomId": "r1", "dayStart": start.to_string() }),
-                Consistency::Stale {
-                    min_index: won[0].index,
-                },
+                Some(json!({ "roomId": "r1", "dayStart": start.to_string() })),
+                Some(ViewsRequestConsistency::Stale),
+                Some(won[0].index),
             )
             .await
             .unwrap();
@@ -766,10 +813,12 @@ async fn followers_honour_min_index_and_hide_titles() {
     let app = &org.app;
     let _r = org
         .on("ada", 0)
+        .apps()
         .call(
             app,
             "addRoom",
-            json!({ "id": "r1", "name": "Atlas", "capacity": 8 }),
+            Some(json!({ "id": "r1", "name": "Atlas", "capacity": 8 })),
+            None,
             None,
         )
         .await
@@ -784,18 +833,18 @@ async fn followers_honour_min_index_and_hide_titles() {
     c.stop(lagging).await;
     let booked = org
         .on("bob", writer)
+        .apps()
         .call(
             app,
             "book",
-            json!({ "roomId": "r1", "start": start, "slotCount": 1, "title": "secret plan" }),
+            Some(json!({ "roomId": "r1", "start": start, "slotCount": 1, "title": "secret plan" })),
+            None,
             None,
         )
         .await
         .unwrap();
     let id = booking_id(&booked.result);
-    let at = Consistency::Stale {
-        min_index: booked.index,
-    };
+    let at = Some(booked.index);
     let day = json!({ "roomId": "r1", "dayStart": start });
     c.restart(lagging, |_| {}).await;
     // The precondition: the restarted follower has not applied the booking yet, so the reads
@@ -823,7 +872,14 @@ async fn followers_honour_min_index_and_hide_titles() {
     for node in order {
         let cy = org
             .on("cy", node)
-            .view(app, "availability", day.clone(), at)
+            .apps()
+            .view(
+                app,
+                "availability",
+                Some(day.clone()),
+                Some(ViewsRequestConsistency::Stale),
+                at,
+            )
             .await
             .unwrap();
         assert!(
@@ -840,7 +896,14 @@ async fn followers_honour_min_index_and_hide_titles() {
 
         let ada = org
             .on("ada", node)
-            .view(app, "availability", day.clone(), at)
+            .apps()
+            .view(
+                app,
+                "availability",
+                Some(day.clone()),
+                Some(ViewsRequestConsistency::Stale),
+                at,
+            )
             .await
             .unwrap();
         let slots = ada.result.as_array().unwrap();
@@ -851,7 +914,14 @@ async fn followers_honour_min_index_and_hide_titles() {
 
         let mine = org
             .on("bob", node)
-            .view(app, "myBookings", json!({}), at)
+            .apps()
+            .view(
+                app,
+                "myBookings",
+                Some(json!({})),
+                Some(ViewsRequestConsistency::Stale),
+                at,
+            )
             .await
             .unwrap();
         let ids: Vec<&Value> = mine

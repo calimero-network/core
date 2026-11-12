@@ -250,6 +250,13 @@ struct Target {
 /// Run an upgrade on the app's group and, once it succeeded, record the new
 /// bundle and release in the directory (where `UpgradeApp` judges who may). A
 /// failure is recorded too: the app's last upgrade says why.
+/// `422 UPGRADE_FAILED`: the app log's `__upgrade` entry at `index` ended `status`, with the
+/// app log's `error`.
+pub(super) fn upgrade_failed(why: &str, index: u64, status: &Status, error: &Value) -> ApiError {
+    ApiError::new(422, "UPGRADE_FAILED", why)
+        .with_details(json!({ "index": index, "status": status, "error": error }))
+}
+
 async fn run_upgrade(
     node: &Node,
     app_id: String,
@@ -282,6 +289,13 @@ async fn run_upgrade(
                 "an app whose owner upgrades it is not moved to a release its publisher upgrades",
             ));
         }
+        if s.components_of(release.as_ref()) != a.components {
+            return Some(ApiError::new(
+                409,
+                "COMPONENTS_CHANGED",
+                "an app keeps the components it was made with: its package cannot gain or lose its app component in an upgrade",
+            ));
+        }
         s.stalled_for_bundle(&bundle, a.org.as_deref(), &a.owner, begun)
             .map(|stall| crate::node::stalled(&stall))
     });
@@ -307,15 +321,30 @@ async fn run_upgrade(
         note_failed_upgrade(node, &app_id, &bundle, release.as_ref(), &who, error).await;
         return Err(e);
     }
-    let applied = match node
-        .call(&CallRequest::host(
+    // A compute-only app has no group state to switch: the directory record is all there is.
+    let compute_only = node.sys(|s| !s.components_of(release.as_ref()).is_app());
+    if compute_only && migrate.is_some() {
+        return Err(ApiError::no_app_component());
+    }
+    let ran = if compute_only {
+        Ok(crate::app::Applied {
+            index: 0,
+            status: Status::Ok,
+            result: Value::Null,
+            error: Value::Null,
+            events: Vec::new(),
+            conflict: false,
+        })
+    } else {
+        node.call(&CallRequest::host(
             app_id.clone(),
             "__upgrade",
             json!({ "bundle": bundle, "computeBundle": compute_bundle, "migrate": migrate }),
             who.caller.clone(),
         ))
         .await
-    {
+    };
+    let applied = match ran {
         Ok(a) => a,
         Err(e) => {
             let error = json!({ "code": e.code, "message": e.message });
@@ -339,8 +368,11 @@ async fn run_upgrade(
             || "the upgrade did not run".to_owned(),
             |e| format!("the upgrade did not run: {e}"),
         );
-        return Err(ApiError::new(422, "UPGRADE_FAILED", &why).with_details(
-            json!({ "index": applied.index, "status": applied.status, "error": applied.error }),
+        return Err(upgrade_failed(
+            &why,
+            applied.index,
+            &applied.status,
+            &applied.error,
         ));
     }
     // The app now runs the new bundle: the directory says so too.
@@ -475,7 +507,7 @@ fn target_bundle(
         if !upgrade_sees(s, v, app, &who.actor, who.by_operator) {
             return None;
         }
-        let bundle = v.services.get(&service).cloned()?;
+        let bundle = v.app_parts().get(&service).cloned()?;
         Some(Target {
             bundle,
             compute_bundle: v.compute.get(&service).cloned(),
@@ -941,7 +973,7 @@ async fn ops_upgrade(
                     .and_then(|p| p.versions.get(&version))
                     .filter(|v| upgrade_sees(s, v, &app, crate::system::OPERATOR, true))
                     .and_then(|v| {
-                        let bundle = v.services.get(&service).cloned()?;
+                        let bundle = v.app_parts().get(&service).cloned()?;
                         Some(Target {
                             bundle,
                             compute_bundle: v.compute.get(&service).cloned(),

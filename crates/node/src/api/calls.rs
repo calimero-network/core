@@ -19,7 +19,7 @@ pub(super) struct IntentBody {
 }
 
 /// The 422/503 of a component's run that did not end `Ok` (spec section 5, D23, D36).
-fn component_failure(
+pub(super) fn component_failure(
     index: u64,
     status: &Status,
     error: &Value,
@@ -94,6 +94,7 @@ async fn component_intents(
     p: Principal,
     body: IntentBody,
 ) -> Result<Response, ApiError> {
+    app.require_app_component()?;
     let app_id = app.app_id.clone();
     let method = node
         .prepared_for(&node.running_bundle(app))
@@ -549,6 +550,30 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/methods/{method}", post(app_method))
         .route("/apps/{app}/runs", get(app_runs))
         .route("/apps/{app}/runs/{run}", get(app_run))
+        .route("/pipelines/validate", post(pipelines::validate))
+        .route("/apps/{app}/pipelines/{name}/runs", post(pipelines::start))
+        .route(
+            "/apps/{app}/pipelines/{name}/estimate",
+            post(pipelines::estimate_run),
+        )
+        .route("/apps/{app}/pipeline-runs", get(pipelines::list))
+        .route("/apps/{app}/pipeline-runs/{run}", get(pipelines::get))
+        .route(
+            "/apps/{app}/pipeline-runs/{run}/cancel",
+            post(pipelines::cancel),
+        )
+        .route(
+            "/apps/{app}/pipeline-runs/{run}/receipt",
+            get(pipeline_receipt::receipt),
+        )
+        .route(
+            "/apps/{app}/pipeline-runs/{run}/events",
+            get(pipeline_events::events),
+        )
+        .route(
+            "/apps/{app}/pipeline-runs/{run}/retry",
+            post(pipelines::retry),
+        )
         .route(
             "/apps/{app}/presence",
             get(presence_get).post(presence_publish),
