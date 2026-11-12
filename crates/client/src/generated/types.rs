@@ -3438,6 +3438,171 @@ pub struct ConsentPageCreateRequestAcceptInviteSubject {
     pub token: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestLeaveOrgSubject {
+    pub org: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestRemoveMemberSubject {
+    pub org: String,
+    pub account: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ConsentPageCreateRequestSetMemberRoleSubjectRole {
+    /// `guest`.
+    Guest,
+    /// `member`.
+    Member,
+    /// `admin`.
+    Admin,
+    /// `owner`.
+    Owner,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl ConsentPageCreateRequestSetMemberRoleSubjectRole {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Guest => "guest",
+            Self::Member => "member",
+            Self::Admin => "admin",
+            Self::Owner => "owner",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for ConsentPageCreateRequestSetMemberRoleSubjectRole {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ConsentPageCreateRequestSetMemberRoleSubjectRole {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "guest" => Self::Guest,
+            "member" => Self::Member,
+            "admin" => Self::Admin,
+            "owner" => Self::Owner,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestSetMemberRoleSubject {
+    pub org: String,
+    pub account: String,
+    pub role: ConsentPageCreateRequestSetMemberRoleSubjectRole,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ConsentPageCreateRequestSetMemberTeamsSubjectTeamsItemRole {
+    /// `lead`.
+    Lead,
+    /// `member`.
+    Member,
+    /// `readOnly`.
+    ReadOnly,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl ConsentPageCreateRequestSetMemberTeamsSubjectTeamsItemRole {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Lead => "lead",
+            Self::Member => "member",
+            Self::ReadOnly => "readOnly",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for ConsentPageCreateRequestSetMemberTeamsSubjectTeamsItemRole {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ConsentPageCreateRequestSetMemberTeamsSubjectTeamsItemRole {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "lead" => Self::Lead,
+            "member" => Self::Member,
+            "readOnly" => Self::ReadOnly,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestSetMemberTeamsSubjectTeamsItem {
+    pub team: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<ConsentPageCreateRequestSetMemberTeamsSubjectTeamsItemRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestSetMemberTeamsSubject {
+    pub org: String,
+    pub account: String,
+    pub teams: Vec<ConsentPageCreateRequestSetMemberTeamsSubjectTeamsItem>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestRemoveMemberTeamsSubject {
+    pub org: String,
+    pub account: String,
+    pub teams: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestRevokeInviteSubject {
+    pub org: String,
+    #[serde(rename = "inviteKey")]
+    pub invite_key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestRenameOrgSubject {
+    pub org: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestDeleteOrgSubject {
+    pub org: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestSetCapabilitiesSubject {
+    pub org: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    pub capabilities: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestSetAllAppsSubject {
+    pub org: String,
+    pub account: String,
+    #[serde(rename = "allApps")]
+    pub all_apps: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum ConsentPageCreateRequest {
@@ -3479,6 +3644,66 @@ pub enum ConsentPageCreateRequest {
         return_to: String,
         subject: ConsentPageCreateRequestAcceptInviteSubject,
     },
+    #[serde(rename = "leaveOrg")]
+    LeaveOrg {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestLeaveOrgSubject,
+    },
+    #[serde(rename = "removeMember")]
+    RemoveMember {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestRemoveMemberSubject,
+    },
+    #[serde(rename = "setMemberRole")]
+    SetMemberRole {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestSetMemberRoleSubject,
+    },
+    #[serde(rename = "setMemberTeams")]
+    SetMemberTeams {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestSetMemberTeamsSubject,
+    },
+    #[serde(rename = "removeMemberTeams")]
+    RemoveMemberTeams {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestRemoveMemberTeamsSubject,
+    },
+    #[serde(rename = "revokeInvite")]
+    RevokeInvite {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestRevokeInviteSubject,
+    },
+    #[serde(rename = "renameOrg")]
+    RenameOrg {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestRenameOrgSubject,
+    },
+    #[serde(rename = "deleteOrg")]
+    DeleteOrg {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestDeleteOrgSubject,
+    },
+    #[serde(rename = "setCapabilities")]
+    SetCapabilities {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestSetCapabilitiesSubject,
+    },
+    #[serde(rename = "setAllApps")]
+    SetAllApps {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestSetAllAppsSubject,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -3508,6 +3733,26 @@ pub enum ConsentPageResultResponseKind {
     CreateInvite,
     /// `acceptInvite`.
     AcceptInvite,
+    /// `leaveOrg`.
+    LeaveOrg,
+    /// `removeMember`.
+    RemoveMember,
+    /// `setMemberRole`.
+    SetMemberRole,
+    /// `setMemberTeams`.
+    SetMemberTeams,
+    /// `removeMemberTeams`.
+    RemoveMemberTeams,
+    /// `revokeInvite`.
+    RevokeInvite,
+    /// `renameOrg`.
+    RenameOrg,
+    /// `deleteOrg`.
+    DeleteOrg,
+    /// `setCapabilities`.
+    SetCapabilities,
+    /// `setAllApps`.
+    SetAllApps,
     /// A value this client does not know yet.
     Other(String),
 }
@@ -3523,6 +3768,16 @@ impl ConsentPageResultResponseKind {
             Self::CreateOrg => "createOrg",
             Self::CreateInvite => "createInvite",
             Self::AcceptInvite => "acceptInvite",
+            Self::LeaveOrg => "leaveOrg",
+            Self::RemoveMember => "removeMember",
+            Self::SetMemberRole => "setMemberRole",
+            Self::SetMemberTeams => "setMemberTeams",
+            Self::RemoveMemberTeams => "removeMemberTeams",
+            Self::RevokeInvite => "revokeInvite",
+            Self::RenameOrg => "renameOrg",
+            Self::DeleteOrg => "deleteOrg",
+            Self::SetCapabilities => "setCapabilities",
+            Self::SetAllApps => "setAllApps",
             Self::Other(s) => s,
         }
     }
@@ -3543,6 +3798,16 @@ impl<'de> Deserialize<'de> for ConsentPageResultResponseKind {
             "createOrg" => Self::CreateOrg,
             "createInvite" => Self::CreateInvite,
             "acceptInvite" => Self::AcceptInvite,
+            "leaveOrg" => Self::LeaveOrg,
+            "removeMember" => Self::RemoveMember,
+            "setMemberRole" => Self::SetMemberRole,
+            "setMemberTeams" => Self::SetMemberTeams,
+            "removeMemberTeams" => Self::RemoveMemberTeams,
+            "revokeInvite" => Self::RevokeInvite,
+            "renameOrg" => Self::RenameOrg,
+            "deleteOrg" => Self::DeleteOrg,
+            "setCapabilities" => Self::SetCapabilities,
+            "setAllApps" => Self::SetAllApps,
             other => Self::Other(other.to_owned()),
         })
     }
@@ -3599,6 +3864,10 @@ pub struct ConsentPageResultResponseOutcome {
     pub token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apps: Option<Vec<String>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
