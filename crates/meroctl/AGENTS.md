@@ -25,7 +25,7 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | (new) `login`, `logout [--all]`, `whoami`, `attest [--context]` | file passkeys on dev clusters; cluster verification | `/auth/*`, `/attestation` |
 | (new) `attest-release [--file F --nonce N]` | verify a `merod attest` release attestation (no session, no sealed channel) | `/attestation/release` |
 | (new) `proxy [--listen ADDR] [--allow-remote] [--openapi FILE]` | the API as plain HTTP on loopback, each request through the attested, sealed `Transport` (`proxy.rs`) | every route; `GET /openapi.json` |
-| (new) `ops ...` | the operator, `--ops-token`: status, metrics, placement, add-node, remove-node, move, backup, pools, quotas, release, outbound, packages/install/uninstall, upgrade, upgrade-namespace | `/ops/*` |
+| (new) `ops ...` | the operator, `--ops-token`: status, cluster, metrics, placement, add-node, remove-node, move, backup, restore, backup-key, recovery-keygen, recover, pools/set-pools, prices/set-prices, quotas/set-quotas, release, outbound, packages/install/uninstall, upgrade, upgrade-namespace | `/ops/*` |
 
 Dropped, with no meaning here: `context sync`, `group sync` (Raft replicates),
 `context identity`, `account pair-*`/`seal-to`/`device-init` (a passkey is the
