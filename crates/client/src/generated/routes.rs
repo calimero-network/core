@@ -1253,6 +1253,29 @@ impl Deployments<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Bring an organization's or account's apps back from its recovery files.
+    ///
+    /// `POST /recover/holder` (`restore_recover_holder`). Who: anyone.
+    ///
+    /// Operator: answers `428 OPERATOR_SIGNATURE_REQUIRED` first where governance gives the decision to the operator; `operator` signs the statement it names, without it the refusal is returned.
+    pub async fn restore_recover_holder(
+        self,
+        holder: &str,
+        slice: RestoreRecoverHolderRequestSlice,
+        apps: Option<Vec<RestoreRecoverHolderRequestAppsItem>>,
+        code: Option<Vec<RestoreRecoverHolderRequestCodeItem>>,
+        operator: Option<&OperatorSigner<'_>>,
+    ) -> Result<RestoreRecoverHolderResponse> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "holder", &holder)?;
+        route::put(&mut fields, "slice", &slice)?;
+        route::put_some(&mut fields, "apps", apps)?;
+        route::put_some(&mut fields, "code", code)?;
+        let body = Value::Object(fields);
+        let req = Request::new(Method::POST, "recover/holder").json(body);
+        route::json(self.client.transport(), req, None, operator, false).await
+    }
+
     /// Issue a cluster sign-up invite.
     ///
     /// `POST /sign-up/invites` (`sign_up_invite_create`). Who: an account holder (a passkey session not bound to an app's frontend).

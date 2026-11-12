@@ -67,8 +67,8 @@ pub enum Feature {
     /// `ScopeApps` naming one app team's `childTeams` (#4917): an earlier
     /// `ScopeApp` refuses unknown fields.
     AppTeamChildTeams,
-    /// `SetBackupKey`: an earlier release cannot read it, so its replicas
-    /// keep no key and their recovery disks stay empty.
+    /// `SetBackupKey` and `ImportHolder`: an earlier release cannot read
+    /// them, so its replicas keep no key and import nothing.
     BackupKeys,
 }
 
@@ -342,7 +342,7 @@ impl SystemCmd {
             Self::SetAllApps { .. } => vec![Feature::AllApps],
             Self::RestoreApp { .. } | Self::FinishRestore { .. } => vec![Feature::RestoreApp],
             Self::RenameOrg { .. } => vec![Feature::RenameOrg],
-            Self::SetBackupKey { .. } => vec![Feature::BackupKeys],
+            Self::SetBackupKey { .. } | Self::ImportHolder { .. } => vec![Feature::BackupKeys],
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
             }

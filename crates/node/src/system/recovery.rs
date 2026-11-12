@@ -187,6 +187,20 @@ pub(super) fn authorize(
             proofs.states(&st, &holder.key(), "__set_backup_key", &|a| *a == args)?;
             Ok(Some(used))
         }
+        // The cluster admits an import with the operator's signature over
+        // exactly its files.
+        SystemCmd::ImportHolder {
+            holder,
+            slice_sha256,
+            apps,
+            proof,
+            ..
+        } => {
+            let (st, used) = proofs.fresh(proofs.operator(proof)?)?;
+            let args = import_holder_args(holder, slice_sha256, apps);
+            proofs.states(&st, "cluster", "__recover_holder", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         _ => Ok(None),
     }
 }
@@ -197,6 +211,15 @@ pub(super) fn authorize(
 pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
     let s = &mut m.state;
     match cmd {
+        SystemCmd::ImportHolder {
+            holder,
+            slice,
+            public_key,
+            seed,
+            apps,
+            at,
+            ..
+        } => import_holder(s, holder, *slice, public_key, seed, apps, at),
         SystemCmd::SetBackupKey {
             holder,
             public_key,
@@ -459,4 +482,119 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached recovery::apply"),
     }
+}
+
+/// Apply `ImportHolder` (see it): all of it or nothing.
+fn import_holder(
+    s: &mut SystemState,
+    holder: BackupHolder,
+    slice: HolderSlice,
+    public_key: String,
+    seed: u64,
+    apps: Vec<ImportedApp>,
+    at: u64,
+) -> Result<Value, &'static str> {
+    if holder == BackupHolder::Operator || s.governance().app_upgrades == Authority::Operator {
+        return Err(NOT_IMPORTABLE);
+    }
+    if slice.holder != holder || !backup_key_fits(&public_key) {
+        return Err("the slice is not that holder's, or its key is malformed");
+    }
+    match &holder {
+        BackupHolder::Org(org) => {
+            if s.orgs.contains_key(org) || slice.org.as_ref().map(|o| &o.org_id) != Some(org) {
+                return Err(ALREADY_HERE);
+            }
+        }
+        BackupHolder::Account(account) => {
+            if s.accounts.contains_key(account) {
+                return Err(ALREADY_HERE);
+            }
+        }
+        BackupHolder::Operator => return Err(NOT_IMPORTABLE),
+    }
+    let mut seen = BTreeSet::new();
+    for a in &apps {
+        let fits = slice.apps.contains_key(&a.app_id)
+            && !s.apps.contains_key(&a.app_id)
+            && seen.insert(a.app_id.clone())
+            && a.replicas.first() == Some(&seed)
+            && a.replicas.iter().collect::<BTreeSet<_>>().len() == a.replicas.len()
+            && a.replicas.iter().all(|id| s.replica_node(id).is_some());
+        if !fits {
+            return Err(
+                "an imported app is not the slice's, is here already, or names unknown replicas",
+            );
+        }
+    }
+    // A passkey another account here holds would sign in as either.
+    let incoming: Vec<&SliceAccount> = slice
+        .accounts
+        .iter()
+        .filter(|a| !s.accounts.contains_key(&a.account_id))
+        .collect();
+    if incoming
+        .iter()
+        .flat_map(|a| a.passkeys.iter())
+        .any(|c| s.credentials.contains_key(&c.id))
+    {
+        return Err(ALREADY_HERE);
+    }
+    for (hash, bundle) in &slice.bundles {
+        if !s.bundles.contains_key(hash) {
+            let _prev = s.bundles.insert(hash.clone(), bundle.clone());
+        }
+    }
+    for a in &apps {
+        let record = &slice.apps[&a.app_id];
+        if !s.bundles.contains_key(&record.bundle) {
+            return Err(RESTORE_BUNDLE_GONE);
+        }
+    }
+    // Checked: from here nothing is refused.
+    for a in incoming {
+        let account = Account {
+            account_id: a.account_id.clone(),
+            name: a.name.clone(),
+            created_at: a.created_at,
+            passkeys: a.passkeys.clone(),
+            approved_releases: BTreeSet::new(),
+            outbound_approvals: BTreeMap::new(),
+            passkey_labels: BTreeMap::new(),
+            aliases: BTreeMap::new(),
+            passkey_times: BTreeMap::new(),
+        };
+        for c in &a.passkeys {
+            let _prev = s.credentials.insert(c.id.clone(), a.account_id.clone());
+        }
+        let _prev = s.accounts.insert(a.account_id.clone(), account);
+    }
+    for (name, package) in slice.packages {
+        let _kept = s.packages.entry(name).or_insert(package);
+    }
+    if let Some(org) = slice.org {
+        let _prev = s.orgs.insert(org.org_id.clone(), org);
+    }
+    let mut groups = Vec::new();
+    for a in apps {
+        let mut record = slice.apps[&a.app_id].clone();
+        let group = s.next_group.max(1) + 1;
+        s.next_group = group;
+        record.group = group;
+        record.replicas = a.replicas;
+        record.restore = Some(crate::types::PendingRestore {
+            seed: Some(seed),
+            source: Some(a.source),
+        });
+        groups.push(json!({ "app": a.app_id, "group": group }));
+        let _prev = s.apps.insert(a.app_id, record);
+    }
+    let key = BackupKey {
+        holder: holder.clone(),
+        public_key,
+        set_at: at,
+        set_by: OPERATOR.to_owned(),
+    };
+    let _prev = s.backup_keys.insert(holder.key(), key);
+    Ok(json!({ "apps": groups }))
 }

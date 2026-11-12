@@ -22,9 +22,14 @@
   (the `system` and `code` files, opened on the operator's machine), then
   `POST /ops/apps/{app}/restore { recovery: { file, key } }`; `GET /ops/recovery-files`
   lists the headers to check first. meroctl: `ops recovery-keygen`, `ops backup-key`,
-  `ops recover`, `ops restore --recovery-key-file`. Not yet: restoring an
-  organization or account holder's files (they are written already), and sealed files
-  (uploads) on the disk. `calimero-log` gains `read_snapshot_rows` and
+  `ops recover`, `ops restore --recovery-key-file`. An organization's or account's
+  apps come back on a cluster that does not hold them with `POST /recover/holder`
+  (`SystemCmd::ImportHolder`): its own device sends the data keys of its `holder`
+  file, its apps' files and their code over the sealed channel, and the operator
+  admits it with a signature over `cluster / __recover_holder / { holder, slice,
+  apps }`; the org, its people (who sign in with the passkeys they had), its apps
+  and its backup key are added, refused where any of them is here already. Not
+  yet: sealed files (uploads) on the disk. `calimero-log` gains `read_snapshot_rows` and
   `Group::replace_state_rows` (state rows that move between cluster keys).
 - **Every app has an OpenAPI document, typed clients and a breaking-change check**
   (`calimero-app-abi`). `GET /apps/{app}/openapi.json` (the access of

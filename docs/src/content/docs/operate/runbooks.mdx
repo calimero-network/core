@@ -324,9 +324,18 @@ that key's private half.
    --recovery-key-file operator-backup.key`. It answers `409 APP_RESTORING`
    until then.
 
-Not yet: restoring the files of an organization or account holder (they are
-written already, under `org-<id>/` and `account-<id>/`), and sealed files
-(uploads), which are not on the disk.
+An organization's or account's apps (where owners upgrade apps) come back on
+a cluster that does not hold them, from the files under `org-<id>/` or
+`account-<id>/`: attach the disk to a node of that cluster as its
+`--recovery-dir`, hand the holder the headers `GET /ops/recovery-files?holder=`
+lists (they hold no secret), and the holder's own device checks them, opens
+the data keys with its backup key and sends them in `POST /recover/holder`
+straight to that node; the `428` it answers first names the statement the
+operator signs to admit it. The organization, its people and their passkeys,
+its apps and its backup key come back; the people sign in with the passkeys
+they had. It is refused when the cluster holds any of them already.
+
+Not yet: sealed files (uploads), which are not on the disk.
 
 ## Disaster recovery: the system group lost its majority
 

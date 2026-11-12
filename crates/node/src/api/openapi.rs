@@ -1462,6 +1462,12 @@ fn operations() -> Vec<Op> {
             .ok("{ app: string, group: uint, rows: uint, backup: any, status: string }")
             .operator()
             .errors(&[(400, "BAD_BACKUP"), (400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "BAD_REQUEST"), (400, "NOT_A_REPLICA_NODE"), (403, "FORBIDDEN"), (404, "BACKUP_NOT_FOUND"), (409, "BACKUP_FROM_NEWER_RELEASE"), (409, "BUNDLE_GONE"), (409, "MOVE_IN_PROGRESS"), (409, "NO_BACKUP_DIR"), (409, "UNKNOWN_BACKUP_FORMAT"), (409, "UPGRADE_PENDING")]),
+        post("/recover/holder", "restore::recover_holder", Anyone, "Bring an organization's or account's apps back from its recovery files")
+            .about("Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.")
+            .json::<super::restore::RecoverHolderBody>("{ holder: string, slice: { file: string, key: string }, apps?: { file: string, key: string }[], code?: { file: string, key: string }[], operatorProof?: #OperatorProof }")
+            .ok("{ apps: any }")
+            .operator()
+            .errors(&[(400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "BAD_REQUEST"), (400, "NOT_A_REPLICA_NODE"), (400, "TOO_MANY_FILES"), (409, "FEATURE_NOT_ACTIVE"), (409, "NO_BACKUP_DIR")]),
         get("/ops/recovery-files", "restore::ops_recovery_files", Ops, "The recovery files a node reads")
             .about("In `--recover-from`, else `--recovery-dir`, of `holder` (`operator`, the default; `org:<id>`; `account:<id>`): each file's name, its header as signed (JSON text) and the node's Ed25519 signature over `calimero.recovery-backup.v1\\0` and those bytes (hex), for the holder's device to check before it opens a key with its own.")
             .query::<super::restore::RecoveryFilesQuery>("{ holder?: string }")

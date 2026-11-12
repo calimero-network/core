@@ -7770,3 +7770,97 @@ fn where_the_operator_upgrades_apps_it_holds_the_backup_key() {
         NOT_BACKUP_HOLDER
     );
 }
+
+/// An organization's slice comes in whole, admitted by the operator's
+/// signature over exactly its files, and only where nothing of it is here:
+/// its org, people (with their passkeys, which sign in as them) and apps, each
+/// app waiting in a new group for its file on the seed; its backup key is the
+/// one its files were sealed to.
+#[test]
+fn an_organizations_slice_is_imported_once_with_the_operators_signature() {
+    use super::{import_holder_args, ImportedApp, ALREADY_HERE};
+    use crate::types::RestoreSource;
+    let (mut old, _alice, _bob, _carol) = proven_cluster();
+    let mut org_app = old.state.apps["app"].clone();
+    org_app.app_id = "oa".into();
+    org_app.org = Some("org".into());
+    let _prev = old.state.apps.insert("oa".into(), org_app);
+    let _prev = old.state.bundles.insert(
+        "b1".into(),
+        super::BundleRecord {
+            hash: "b1".into(),
+            size: 1,
+            uploaded_by: "alice".into(),
+            package: None,
+        },
+    );
+    let holder = BackupHolder::Org("org".into());
+    let slice = old.state.holder_slice(&holder);
+    assert_eq!(slice.apps.keys().collect::<Vec<_>>(), ["oa"]);
+    assert_eq!(slice.accounts.len(), 2, "the org's members: alice and bob");
+
+    // A cluster that never held them.
+    let mut m = SystemMachine::default();
+    let _ok = m
+        .run(SystemCmd::Genesis {
+            session_proofs: true,
+            governance: all(Authority::Owner),
+            release: Some("2.0.0".into()),
+            operator_key: Some(operator_signer().1),
+            nodes: [1, 2, 3]
+                .map(|id| crate::types::NodeRecord {
+                    id,
+                    addr: format!("http://n{id}/"),
+                    zone: String::new(),
+                    role: crate::types::NodeRole::Replica,
+                    pool: String::new(),
+                })
+                .to_vec(),
+        })
+        .unwrap();
+    let apps = vec![ImportedApp {
+        app_id: "oa".into(),
+        replicas: vec![2, 1, 3],
+        source: RestoreSource {
+            name: "app-oa.rbak".into(),
+            sha256: "ab".repeat(32),
+            index: 9,
+        },
+    }];
+    let import = |proof: Value| SystemCmd::ImportHolder {
+        holder: holder.clone(),
+        slice: Box::new(slice.clone()),
+        slice_sha256: "cd".repeat(32),
+        public_key: "ef".repeat(32),
+        seed: 2,
+        apps: apps.clone(),
+        at: 7,
+        proof,
+    };
+    let args = import_holder_args(&holder, &"cd".repeat(32), &apps);
+    needs_signature(
+        &mut m,
+        ("cluster", "__recover_holder"),
+        &args,
+        &json!({ "holder": "org:other" }),
+        import,
+    );
+    let app = &m.state.apps["oa"];
+    assert_eq!(app.replicas, [2, 1, 3]);
+    let restore = app.restore.as_ref().unwrap();
+    assert_eq!(restore.seed, Some(2));
+    assert_eq!(restore.source.as_ref().unwrap().index, 9);
+    assert!(m.state.orgs.contains_key("org"));
+    let alice_key = &old.state.accounts["alice"].passkeys[0].id;
+    assert_eq!(
+        m.state
+            .account_of_credential(alice_key)
+            .map(|(a, _)| a.account_id.as_str()),
+        Some("alice"),
+        "she signs in with the passkey she had"
+    );
+    assert_eq!(m.state.backup_keys["org:org"].public_key, "ef".repeat(32));
+    // Once: the organization is here now.
+    let proof = signed("cluster", "__recover_holder", &args);
+    assert_eq!(refused(&mut m, import(proof)), ALREADY_HERE);
+}

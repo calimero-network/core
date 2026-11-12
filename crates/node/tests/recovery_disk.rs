@@ -275,3 +275,137 @@ fn copy_dir(from: &Path, to: &Path) {
         }
     }
 }
+
+/// Where owners upgrade apps, an account's personal apps open with the
+/// account's own key: the operator holds none. On a new cluster, the
+/// account's device opens its files and sends their keys; the operator
+/// admits the import with its signature; the account, its passkey and its
+/// app come back, and it signs in with the passkey it had.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
+    let mut old = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&old, 0, "alice").await;
+    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let kv = alice
+        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+        .await
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _i = alice
+        .call(&kv, "set", json!({ "key": "a", "value": "1" }), None)
+        .await
+        .unwrap();
+    let account = alice.get("auth/me").await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let holder = BackupHolder::Account(account.clone());
+
+    let (secret, public) = disk::new_keypair();
+    let set = alice
+        .post_confirmed(
+            "auth/backup-key",
+            json!({ "publicKey": hex::encode(public) }),
+            &mut pk,
+        )
+        .await
+        .unwrap();
+    assert_eq!(set["holder"], json!({ "kind": "account", "id": account }));
+    assert_eq!(set["apps"], 1);
+    // Here the owner upgrades apps: the operator holds no key.
+    let e = ops(&old.urls[0])
+        .await
+        .post_operator_signed(
+            "ops/backup-key",
+            json!({ "publicKey": hex::encode(public) }),
+            &operator_sign,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+
+    let survivor = old.nodes[2].as_ref().unwrap().node.clone();
+    let mut written = 0;
+    for _ in 0..100 {
+        written += survivor.write_recovery().await.unwrap().written;
+        if written >= 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        written >= 3,
+        "the account's slice, its app and code: {written}"
+    );
+    let disk_copy = tempfile::tempdir().unwrap();
+    copy_dir(
+        &survivor.config.recovery_dir.clone().unwrap(),
+        disk_copy.path(),
+    );
+    for i in 0..3 {
+        old.stop(i).await;
+    }
+
+    // Another cluster, which never held the account; the disk is attached to
+    // its first node.
+    let copy = disk_copy.path().to_owned();
+    let new = Cluster::start_with(3, move |c| {
+        if c.node_id == 1 {
+            c.recovery_dir = Some(copy.clone());
+        }
+    })
+    .await;
+    let at = disk::holder_dir(disk_copy.path(), &holder);
+    let code: Vec<Value> = disk::files_of(&at, "code-")
+        .unwrap()
+        .iter()
+        .map(|p| opened(&at, &p.file_name().unwrap().to_string_lossy(), &secret))
+        .collect();
+    let body = json!({
+        "holder": holder.key(),
+        "slice": opened(&at, &newest(&at, "holder."), &secret),
+        "apps": [opened(&at, &newest(&at, &format!("app-{kv}.")), &secret)],
+        "code": code,
+    });
+    let device = new.client(0);
+    // The cluster has not admitted it yet.
+    let e = device
+        .post("recover/holder", body.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
+    let out = device
+        .post_operator_signed("recover/holder", body.clone(), &operator_sign)
+        .await
+        .unwrap();
+    assert_eq!(
+        out["apps"][0]["status"]["voters"].as_array().unwrap().len(),
+        3,
+        "{out}"
+    );
+    // Once: the account is here now.
+    let e = device
+        .post_operator_signed("recover/holder", body, &operator_sign)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("holds that"), "{e}");
+
+    let cl = new.client(1);
+    let _session = cl.sign_in(&mut pk).await.unwrap();
+    assert_eq!(cl.get("auth/me").await.unwrap()["accountId"], account);
+    let got = cl
+        .view(&kv, "get", json!({ "key": "a" }), Consistency::Strong)
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(got, json!("1"));
+    let _i = cl
+        .call(&kv, "set", json!({ "key": "after", "value": "1" }), None)
+        .await
+        .unwrap();
+    // The account's files keep going to the key they were sealed to.
+    let key = cl.get("auth/backup-key").await.unwrap();
+    assert_eq!(key["key"]["publicKey"], hex::encode(public));
+}

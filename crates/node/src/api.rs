@@ -1991,6 +1991,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/nodes/{id}/receipt-key", get(account_proof::ops_receipt_key))
         .route("/ops/apps/{app}/restore", post(restore::ops_restore))
         .route("/ops/recover", post(restore::ops_recover))
+        .route("/recover/holder", post(restore::recover_holder))
         .route("/ops/recovery-files", get(restore::ops_recovery_files))
         .merge(auth::routes())
         .merge(recovery::routes())

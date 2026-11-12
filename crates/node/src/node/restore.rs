@@ -303,6 +303,14 @@ impl Node {
         Ok(json!({ "apps": apps, "accounts": accounts, "index": index }))
     }
 
+    /// Keep code a recovery file holds in this node's store, its hash checked
+    /// by the caller; the restore hands it to the other replicas.
+    pub(crate) fn put_code(&self, hash: &str, bytes: &[u8]) -> Result<(), ApiError> {
+        self.engine
+            .put_blob(hash, bytes)
+            .map_err(|e| ApiError::internal(&e.to_string()))
+    }
+
     /// Refuse while a replica node of the cluster backed up, at an address the
     /// new fleet does not reuse, answers as a node of this cluster.
     async fn refuse_while_old_nodes_answer(&self, state: &SystemState) -> eyre::Result<()> {

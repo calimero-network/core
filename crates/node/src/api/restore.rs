@@ -67,6 +67,192 @@ pub(super) struct RecoverBody {
     code: Vec<RecoveryFileBody>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct RecoverHolderBody {
+    /// `org:<id>` or `account:<id>`.
+    holder: String,
+    /// The holder's newest `holder` file and its key.
+    slice: RecoveryFileBody,
+    /// Each app's `app` file to bring back, and its key.
+    #[serde(default)]
+    apps: Vec<RecoveryFileBody>,
+    /// The `code` files of those apps' bundles, each with its key.
+    #[serde(default)]
+    code: Vec<RecoveryFileBody>,
+    #[serde(default)]
+    operator_proof: Option<OperatorProofBody>,
+}
+
+/// Bring an organization's or account's apps back from its recovery files
+/// in this node's `--recovery-dir` (or `--recover-from`), on a cluster that
+/// does not hold them: the holder's own device sends the data key of each
+/// file, opened there with its backup key, over the sealed channel, so no
+/// key passes the operator; the operator admits the import by signing
+/// `cluster / __recover_holder / { holder, slice, apps }` (`428` names it
+/// first). This node becomes each app's seed. Answers each app's restore.
+pub(super) async fn recover_holder(
+    State(node): State<Arc<Node>>,
+    Json(b): Json<RecoverHolderBody>,
+) -> ApiResult {
+    use crate::recovery_disk::{self as disk, Kind};
+    use crate::system::{import_holder_args, BackupHolder, HolderSlice, ImportedApp};
+    let bad = |e: eyre::Report| ApiError::bad_request("BAD_RECOVERY_FILE", &format!("{e:#}"));
+    if b.apps.len() + b.code.len() > MAX_RECOVERY_CODE_FILES {
+        return Err(ApiError::bad_request(
+            "TOO_MANY_FILES",
+            &format!("at most {MAX_RECOVERY_CODE_FILES} files"),
+        ));
+    }
+    let holder = match b.holder.split_once(':') {
+        Some(("org", id)) if !id.is_empty() => BackupHolder::Org(id.to_owned()),
+        Some(("account", id)) if !id.is_empty() => BackupHolder::Account(id.to_owned()),
+        _ => {
+            return Err(ApiError::bad_request(
+                "BAD_REQUEST",
+                "holder is org:<id> or account:<id>",
+            ))
+        }
+    };
+    let Some(dir) = node
+        .config
+        .recovery_dir
+        .clone()
+        .or_else(|| node.config.recover_from.clone())
+    else {
+        return Err(ApiError::new(
+            409,
+            "NO_BACKUP_DIR",
+            "this node has no --recovery-dir or --recover-from to import from",
+        ));
+    };
+    let me = node.config.node_id;
+    if node.sys(|s| s.replica_node(&me).is_none()) {
+        return Err(ApiError::bad_request(
+            "NOT_A_REPLICA_NODE",
+            "send the import to a registered node that holds app replicas",
+        ));
+    }
+    let at = disk::holder_dir(&dir, &holder);
+    let open = |f: &RecoveryFileBody, kind: Kind| -> Result<_, ApiError> {
+        let opened = off_workers(|| disk::read(&disk::path_in(&at, &f.file)?)).map_err(bad)?;
+        if opened.header.kind != kind || opened.header.holder != holder {
+            return Err(bad(eyre::eyre!(
+                "{} is not a {} file of {}",
+                f.file,
+                kind.name(),
+                holder.key()
+            )));
+        }
+        Ok((opened, f.key()?))
+    };
+
+    let (slice_file, slice_key) = open(&b.slice, Kind::Holder)?;
+    let body = off_workers(|| slice_file.whole(&slice_key)).map_err(bad)?;
+    let slice: HolderSlice = serde_json::from_slice(&body)
+        .map_err(|e| bad(eyre::eyre!("{} holds no slice: {e}", b.slice.file)))?;
+    let public_key = slice_file.header.recipient.clone();
+
+    let mut files = Vec::new();
+    for f in &b.apps {
+        let (opened, key) = open(f, Kind::App)?;
+        let app_id = opened.header.app.clone().unwrap_or_default();
+        if !slice.apps.contains_key(&app_id)
+            || files.iter().any(|(id, ..): &(String, _, _)| *id == app_id)
+        {
+            return Err(bad(eyre::eyre!(
+                "{} is not one more app of the slice",
+                f.file
+            )));
+        }
+        // The key must open it before the operator is asked to sign.
+        let _meta = off_workers(|| opened.app(&key, |_| Ok(()))).map_err(bad)?;
+        files.push((app_id, opened, key));
+    }
+    let mut code = Vec::new();
+    for f in &b.code {
+        let (opened, key) = open(f, Kind::Code)?;
+        let hash = opened.header.hash.clone().unwrap_or_default();
+        let bytes = off_workers(|| opened.whole(&key)).map_err(bad)?;
+        if hex::encode(ring::digest::digest(&ring::digest::SHA256, &bytes)) != hash {
+            return Err(bad(eyre::eyre!(
+                "{} does not hold the code it names",
+                f.file
+            )));
+        }
+        code.push((hash, bytes));
+    }
+
+    // This node first, then the other replica nodes, as many as the cluster
+    // gives an app.
+    let replicas: Vec<u64> = node.sys(|s| {
+        let mut ids = vec![me];
+        ids.extend(s.replica_nodes().map(|n| n.id).filter(|id| *id != me));
+        ids.truncate(node.config.replicas.max(1));
+        ids
+    });
+    let imported: Vec<ImportedApp> = files
+        .iter()
+        .map(|(app_id, opened, _)| ImportedApp {
+            app_id: app_id.clone(),
+            replicas: replicas.clone(),
+            source: RestoreSource {
+                name: opened
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                sha256: opened.header.body_sha256.clone(),
+                index: opened.header.index,
+            },
+        })
+        .collect();
+    let slice_sha256 = slice_file.header.body_sha256.clone();
+    let proof = operator_proof(
+        &node,
+        "cluster",
+        "__recover_holder",
+        &import_holder_args(&holder, &slice_sha256, &imported),
+        b.operator_proof,
+    )?;
+    for (hash, bytes) in &code {
+        node.put_code(hash, bytes)?;
+    }
+    let out = node
+        .sys_write(&SystemCmd::ImportHolder {
+            holder,
+            slice: Box::new(slice),
+            slice_sha256,
+            public_key,
+            seed: me,
+            apps: imported,
+            at: crate::types::now_secs(),
+            proof,
+        })
+        .await?;
+    let mut restored = Vec::new();
+    for (app_id, opened, key) in files {
+        let group = out["apps"]
+            .as_array()
+            .and_then(|a| a.iter().find(|x| x["app"] == app_id.as_str()))
+            .and_then(|x| x["group"].as_u64())
+            .ok_or_else(|| ApiError::internal("the import recorded no group"))?;
+        let backup = json!({
+            "name": opened.path.file_name().map(|n| n.to_string_lossy().into_owned()),
+            "index": opened.header.index,
+            "format": format!("recovery/{}", opened.header.format),
+        });
+        let index = opened.header.index;
+        let done = node
+            .seed_with(&app_id, group, index, backup, |g| {
+                g.replace_state_rows(|stage| opened.app(&key, stage).map(|_meta| ()))
+            })
+            .await?;
+        restored.push(done);
+    }
+    Ok(Json(json!({ "apps": restored })))
+}
+
 /// The most recovery files one listing answers.
 pub const MAX_LISTED_RECOVERY_FILES: usize = 4096;
 

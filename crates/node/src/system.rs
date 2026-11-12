@@ -672,6 +672,42 @@ pub struct SliceAccount {
     pub passkeys: Vec<Credential>,
 }
 
+/// One app an `ImportHolder` brings back: the replicas its new group gets
+/// (the seed first) and the recovery file it is restored from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedApp {
+    pub app_id: AppId,
+    pub replicas: Vec<u64>,
+    pub source: crate::types::RestoreSource,
+}
+
+/// What the operator's signature on an `ImportHolder` states: the holder,
+/// the slice file's hash and each app's file and hash.
+#[must_use]
+pub fn import_holder_args(
+    holder: &BackupHolder,
+    slice_sha256: &str,
+    apps: &[ImportedApp],
+) -> Value {
+    json!({
+        "holder": holder.key(),
+        "slice": slice_sha256,
+        "apps": apps
+            .iter()
+            .map(|a| json!({ "app": a.app_id, "file": a.source.name, "sha256": a.source.sha256 }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// `ImportHolder` where the operator upgrades apps, or for the operator.
+pub const NOT_IMPORTABLE: &str =
+    "only an organization's or account's files are imported, where owners upgrade apps";
+
+/// `ImportHolder` of something this cluster holds already.
+pub const ALREADY_HERE: &str =
+    "this cluster holds that organization, account, app or passkey already";
+
 /// The largest a backup key's hex is: 32 bytes.
 pub const BACKUP_KEY_HEX_LEN: usize = 64;
 
@@ -3573,6 +3609,7 @@ impl SystemCmd {
             Self::CancelAccountRecovery { .. } => Area::Recovery,
             Self::FinishAccountRecovery { .. } => Area::Recovery,
             Self::SetBackupKey { .. } => Area::Recovery,
+            Self::ImportHolder { .. } => Area::Recovery,
             Self::CreateRefresh { .. } => Area::Accounts,
             Self::UseRefresh { .. } => Area::Accounts,
             Self::RevokeSession { .. } => Area::Accounts,
@@ -4250,6 +4287,29 @@ pub enum SystemCmd {
         /// that release did, so every replica reaches the same state.
         #[serde(default)]
         revoke_api_keys: bool,
+    },
+    /// Bring an organization's or account's apps back from its recovery files
+    /// (`POST /recover/holder`) on a cluster that does not hold them: the
+    /// holder's slice (`slice`, its org or account, the accounts of its
+    /// people with their passkeys, its apps' records, bundles and releases)
+    /// is added, each app in `apps` gets a new group with `seed` (the node
+    /// that holds its file) as its first replica and waits there for it
+    /// (`PendingRestore`, as `RestoreApp`), and the holder's backup key is the
+    /// one its files were sealed to. Refused where the operator upgrades apps,
+    /// or where the org, account, an app or a passkey is here already. `proof`
+    /// is the operator's signature over `cluster / __recover_holder /`
+    /// [`import_holder_args`]: the cluster admits it; the keys that opened
+    /// the files came from the holder.
+    ImportHolder {
+        holder: BackupHolder,
+        slice: Box<HolderSlice>,
+        /// The SHA-256 of the slice file's body, as the proof names it.
+        slice_sha256: String,
+        public_key: String,
+        seed: u64,
+        apps: Vec<ImportedApp>,
+        at: u64,
+        proof: Value,
     },
     /// Set (or replace) the public key the recovery disk encrypts `holder`'s
     /// backups to ([`SystemState::backup_keys`]). `proof` is the operator's
