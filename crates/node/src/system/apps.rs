@@ -79,7 +79,7 @@ pub(super) fn authorize(
             if r.by != by
                 || r.finished
                 || !r.apps.contains(app_id)
-                || !release.is_some_and(|v| v.services.values().any(|h| h == bundle))
+                || !release.is_some_and(|v| v.app_parts().values().any(|h| h == bundle))
                 || target
                     .as_ref()
                     .is_some_and(|t| t.package != r.package || t.version != r.version)
@@ -207,7 +207,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !s.bundles.contains_key(&app.bundle) {
                 return Err("unknown bundle");
             }
-            if s.is_compute_bundle(&app.bundle) {
+            if app.components.is_app() && s.is_compute_bundle(&app.bundle) {
                 return Err(COMPUTE_NOT_AN_APP);
             }
             if !s.ships_compute(&app.bundle, app.compute_bundle.as_deref()) {
@@ -219,6 +219,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .is_some_and(|r| !s.release_ships(r, &app.bundle))
             {
                 return Err(RELEASE_NOT_SHIPPED);
+            }
+            if s.components_of(app.release.as_ref()) != app.components {
+                return Err(COMPONENTS_NOT_RELEASES);
             }
             let owned = s.apps.values().filter(|a| a.owner == app.owner).count();
             if owned >= s.quotas.max_apps_per_account as usize {
@@ -294,7 +297,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !s.bundles.contains_key(&bundle) {
                 return Err("unknown bundle");
             }
-            if s.is_compute_bundle(&bundle) {
+            let components = s.components_of(release.as_ref());
+            if components.is_app() && s.is_compute_bundle(&bundle) {
                 return Err(COMPUTE_NOT_AN_APP);
             }
             if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
@@ -305,6 +309,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .is_some_and(|r| !s.release_ships(r, &bundle))
             {
                 return Err(RELEASE_NOT_SHIPPED);
+            }
+            if s.apps
+                .get(&app_id)
+                .is_some_and(|a| a.components != components)
+            {
+                return Err(COMPONENTS_CHANGED);
             }
             let operator = s.governance().app_upgrades == Authority::Operator;
             let to = s.governing(release.as_ref(), &bundle, at);

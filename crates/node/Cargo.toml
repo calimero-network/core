@@ -19,6 +19,7 @@ ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
 hex.workspace = true
+serde_json_canonicalizer.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
 ring.workspace = true
 semver.workspace = true
@@ -48,6 +49,7 @@ calimero-identity.workspace = true
 calimero-kms-client.workspace = true
 calimero-log.workspace = true
 calimero-outbound.workspace = true
+calimero-pipeline.workspace = true
 calimero-primitives.workspace = true
 calimero-search.workspace = true
 calimero-sealed.workspace = true

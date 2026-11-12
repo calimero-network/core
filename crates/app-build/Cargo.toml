@@ -17,7 +17,11 @@ calimero-app-abi.workspace = true
 eyre.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+toml.workspace = true
 wasmparser.workspace = true
+
+[build-dependencies]
+calimero-build-utils.workspace = true
 
 [dev-dependencies]
 calimero-app-wit.workspace = true

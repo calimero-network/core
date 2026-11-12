@@ -1,0 +1,8 @@
+apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: fanout
+inputs:
+  docs: { kind: files }
+steps:
+  each: { method: check, forEach: inputs.docs, maxItems: 8, batch: 2 }
+  all: { method: digest, collect: each.outputs }

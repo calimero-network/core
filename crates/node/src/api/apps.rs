@@ -86,7 +86,7 @@ async fn offered_bundle(
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
                 .filter_map(|o| {
                     let r = s.offered_release(o)?;
-                    Some((o.version.clone(), r.services.clone(), r.compute.clone()))
+                    Some((o.version.clone(), r.app_parts().clone(), r.compute.clone()))
                 })
                 .collect();
             releases.sort_by(|a, b| a.0.cmp(&b.0));
@@ -281,6 +281,7 @@ async fn app_create(
     }
     let app_id = typed_id::<16>();
     let has_compute = compute_bundle.is_some();
+    let components = node.sys(|s| s.components_of(release.as_ref()));
     let access = body.access.unwrap_or(if body.org.is_some() {
         Access::Org
     } else {
@@ -305,12 +306,14 @@ async fn app_create(
                 last_upgrade: None,
                 deployment: body.deployment,
                 compute_bundle,
+                components,
                 release,
                 restore: None,
             }),
         })
         .await?;
-    // Wait for the app's first entry (init) to commit somewhere.
+    // Wait for the app's first entry (init) to commit somewhere; a compute-only app's is empty,
+    // but its group cannot take a pipeline start before it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         match app_ready(&node, &app_id).await {

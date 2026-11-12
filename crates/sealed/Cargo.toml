@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 axum.workspace = true
 bytes.workspace = true
+calimero-identity.workspace = true
 curve25519-dalek.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
@@ -31,6 +32,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "net"] }
 tower.workspace = true
 

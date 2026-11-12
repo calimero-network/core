@@ -154,15 +154,19 @@ fn manifest_abis(
     manifest: &BundleManifest,
     read: impl Fn(&str) -> EyreResult<Vec<u8>>,
 ) -> EyreResult<Vec<Loaded>> {
-    let artifacts = manifest.wasm_artifacts();
+    let artifacts: Vec<_> = manifest
+        .wasm_artifacts()
+        .into_iter()
+        .filter_map(|a| Some((a.name, a.wasm?)))
+        .collect();
     if artifacts.is_empty() {
         bail!("the manifest names no wasm");
     }
     artifacts
         .iter()
-        .map(|a| {
-            let wasm = read(&a.wasm.path)?;
-            let mut l = loaded(a.name.map(str::to_owned), wasm_abi(&wasm)?)?;
+        .map(|(name, artifact)| {
+            let wasm = read(&artifact.path)?;
+            let mut l = loaded(name.map(str::to_owned), wasm_abi(&wasm)?)?;
             l.package = Some(manifest.package.clone());
             l.app_version = Some(manifest.app_version.clone());
             Ok(l)
