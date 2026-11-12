@@ -20,11 +20,14 @@ Page_Item = Any
 ForbiddenError = TypedDict("ForbiddenError", {})
 InvalidError = TypedDict("InvalidError", {"detail": Optional[str], "field": str})
 NotFoundError = TypedDict("NotFoundError", {"id": str})
-AppErrorCode = Literal["Forbidden", "Invalid", "NotFound"]
+RejectedError = TypedDict("RejectedError", {"0": str})
+UnknownError = TypedDict("UnknownError", {})
+AppErrorCode = Literal["Forbidden", "Invalid", "NotFound", "Rejected", "Unknown"]
 """The app's error codes: `details["code"]` of a 422 APP_ERROR."""
 
 ActionFailedEvent = TypedDict("ActionFailedEvent", {"actionId": str, "method": str, "reason": str})
 CreatedEvent = TypedDict("CreatedEvent", {"id": str, "item": Item})
+DefaultEvent = TypedDict("DefaultEvent", {"at": Optional[str], "blob": str, "delta": str, "pair": List[Any]})
 WipedEvent = TypedDict("WipedEvent", {})
 
 
@@ -34,6 +37,21 @@ class KitchenSinkClient:
     def __init__(self, client: Client, app: str) -> None:
         self._client = client
         self._app = app
+
+    def blob_of(self, key: str, *, stale: bool = False, min_index: int = 0) -> Optional[str]:
+        """view `blobOf`."""
+        args: Dict[str, Any] = {"key": key}
+        return self._client.view(self._app, "blobOf", args, stale, min_index)["result"]
+
+    def count(self, stale_: bool, *, stale: bool = False, min_index: int = 0) -> str:
+        """view `count`."""
+        args: Dict[str, Any] = {"stale": stale_}
+        return self._client.view(self._app, "count", args, stale, min_index)["result"]
+
+    def events(self, in_: str, default: Optional[str] = None, when: Optional[str] = None, *, idempotency_key: Optional[str] = None) -> List[Any]:
+        """call `events`."""
+        args: Dict[str, Any] = {"in": in_, "default": default, "when": when}
+        return self._client.call(self._app, "events", args, idempotency_key)["result"]
 
     def everything(self, flag: bool, small: int, medium: int, count: int, big: str, huge: int, size: int, delta: int, offset: int, balance: str, ratio: float, precise: float, letter: str, title: str, blob: str, names: List[str], pair: List[Any], digest: List[int], scores: Dict[str, int], by_id: Dict[str, str], unique: List[str], item: Item, page: Page_Item, maybe: Optional[str] = None, nested: Optional[List[Optional[Item]]] = None, *, idempotency_key: Optional[str] = None) -> List[Item]:
         """call `everything`."""
@@ -60,6 +78,6 @@ class KitchenSinkClient:
         args: Dict[str, Any] = {"reason": reason}
         return self._client.call_confirmed(self._app, "wipe", args, passkey)["result"]
 
-    def events(self, start: int = 0, limit: int = 100, timeout: float = 5.0) -> List[Dict[str, Any]]:
+    def app_events(self, start: int = 0, limit: int = 100, timeout: float = 5.0) -> List[Dict[str, Any]]:
         """The app's events from log index `start`: each `{"id", "kind", "data"}`."""
         return self._client.events(self._app, start, limit, timeout)

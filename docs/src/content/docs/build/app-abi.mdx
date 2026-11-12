@@ -82,7 +82,8 @@ an `abiVersion` bump.
 - `GET /apps/{app}/openapi.json` returns it as an OpenAPI 3.1 document (below),
   under the same access.
 - mero-js and calimero-client-py read it to build typed calls;
-  `mero-app-build codegen` writes a typed client for an app from it
+  `mero-app-build codegen` writes a typed client for an app from it in
+  TypeScript, Python, Swift or Kotlin
   ([Typed clients for your app](/core/build/guides/typed-clients/)).
 
 ## As OpenAPI
@@ -115,8 +116,9 @@ serves the one of the bundle an app runs at `GET /apps/{app}/openapi.json`
   `event` is an event's name and `data` its fields (`<Name>Event`). An app with
   actions also gets the node's `ActionFailed { actionId, method, reason }`.
 - **Transport**: every request travels inside the node's sealed channel, so a
-  client generated from the document needs mero-js or calimero-client-py
-  underneath (the clients `mero-app-build codegen` writes are built on them).
+  client generated from the document needs mero-js, calimero-client-py,
+  swift-sdk or kotlin-sdk underneath (the clients `mero-app-build codegen` writes
+  are built on them).
 
 ### Types
 
@@ -147,7 +149,14 @@ A `u64`, `i64` or `Vec<u8>` nested inside another type is a compile error
 (Ruling 27), so the string forms above hold wherever these types appear.
 ABI version 1 names an app's own types without describing their fields: they
 are open schemas (`x-calimero-abi-type` keeps the Rust name), and a typed client
-types them `unknown` / `Any`.
+types them `unknown` / `Any` / `JSONValue` / `JsonElement`.
+
+The Swift and Kotlin clients take the Swift or Kotlin type and write its JSON form
+themselves: `u64` is `UInt64` / `ULong`, `i64` `Int64` / `Long`, `bytes` `Data` /
+`ByteArray`; the other integers keep their width (`u32` is `UInt32` / `UInt`,
+`usize` 32 bits, `u128`/`i128` 64 bits), `char` is a `String`, lists, sets and
+`[T; N]` are arrays / `List`, maps `[String: V]` / `Map<String, V>`, and
+`tuple<A, B>` a `Tuple2<A, B>` that is the JSON array `[a, b]`.
 
 ## Check a new version against the last
 

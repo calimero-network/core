@@ -20,6 +20,8 @@ fn codegen_writes_the_document_and_a_client() {
     for (lang, client) in [
         ("ts", Some("client.ts")),
         ("python", Some("client.py")),
+        ("swift", Some("KvStoreClient.swift")),
+        ("kotlin", Some("KvStoreClient.kt")),
         ("openapi", None),
     ] {
         let out = dir.path().join(lang);
@@ -47,6 +49,62 @@ fn codegen_writes_the_document_and_a_client() {
             None => assert_eq!(fs::read_dir(&out).unwrap().count(), 1),
         }
     }
+}
+
+/// A wasm module holding only the ABI custom section.
+fn wasm_with_abi(abi: &Value) -> Vec<u8> {
+    let name = b"calimero:abi";
+    let mut section = vec![u8::try_from(name.len()).unwrap()];
+    section.extend_from_slice(name);
+    section.extend_from_slice(&serde_json::to_vec(abi).unwrap());
+    let mut out = b"\0asm\x01\0\0\0".to_vec();
+    out.push(0);
+    let mut len = section.len();
+    loop {
+        let byte = u8::try_from(len & 0x7f).unwrap();
+        len >>= 7;
+        if len == 0 {
+            out.push(byte);
+            break;
+        }
+        out.push(byte | 0x80);
+    }
+    out.extend_from_slice(&section);
+    out
+}
+
+#[test]
+fn a_multi_service_bundle_gets_a_directory_and_a_kotlin_package_per_service() {
+    let dir = tempfile::tempdir().unwrap();
+    let abi = json!({ "abiVersion": 1, "methods": { "len": { "kind": "view", "params": [], "returns": "u64" } } });
+    let wasm = wasm_with_abi(&abi);
+    let mut services = Vec::new();
+    for name in ["room-directory", "room"] {
+        fs::write(dir.path().join(format!("{name}.wasm")), &wasm).unwrap();
+        services.push(json!({
+            "name": name,
+            "wasm": { "path": format!("{name}.wasm"), "hash": "00", "size": wasm.len() },
+        }));
+    }
+    let manifest = json!({
+        "version": "1.0", "package": "com.example.rooms", "appVersion": "1.0.0",
+        "minRuntimeVersion": "0.0.1", "services": services,
+    });
+    let manifest_path = dir.path().join("manifest.json");
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let out = dir.path().join("out");
+    let status = bin()
+        .args(["codegen", "--abi"])
+        .arg(&manifest_path)
+        .args(["--lang", "kotlin", "--package", "com.example.rooms", "-o"])
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let directory = fs::read_to_string(out.join("room-directory/RoomDirectoryClient.kt")).unwrap();
+    assert!(directory.contains("\npackage com.example.rooms.roomdirectory\n"));
+    let room = fs::read_to_string(out.join("room/RoomClient.kt")).unwrap();
+    assert!(room.contains("\npackage com.example.rooms.room\n"));
 }
 
 #[test]

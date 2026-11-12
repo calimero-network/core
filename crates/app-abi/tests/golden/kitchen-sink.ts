@@ -10,6 +10,23 @@ export type Item = unknown;
 /** The app type `Page<Item>`: ABI version 1 names it without its shape. */
 export type Page_Item = unknown;
 
+/** The arguments of `blobOf`. */
+export interface BlobOfArgs {
+  key: string;
+}
+
+/** The arguments of `count`. */
+export interface CountArgs {
+  stale: boolean;
+}
+
+/** The arguments of `events`. */
+export interface EventsArgs {
+  in: string;
+  default?: string | null;
+  when?: string | null;
+}
+
 /** The arguments of `everything`. */
 export interface EverythingArgs {
   flag: boolean;
@@ -68,8 +85,16 @@ export interface NotFoundError {
   id: string;
 }
 
+/** The fields of the app error `Rejected`. */
+export interface RejectedError {
+  "0": string;
+}
+
+/** The fields of the app error `Unknown`. */
+export type UnknownError = Record<string, never>;
+
 /** The app's error codes: `details.code` of a `422 APP_ERROR`. */
-export type AppErrorCode = 'Forbidden' | 'Invalid' | 'NotFound';
+export type AppErrorCode = 'Forbidden' | 'Invalid' | 'NotFound' | 'Rejected' | 'Unknown';
 
 /** The fields of the event `ActionFailed`. */
 export interface ActionFailedEvent {
@@ -84,6 +109,14 @@ export interface CreatedEvent {
   item: Item;
 }
 
+/** The fields of the event `Default`. */
+export interface DefaultEvent {
+  at?: string | null;
+  blob: string;
+  delta: string;
+  pair: [number, string];
+}
+
 /** The fields of the event `Wiped`. */
 export type WipedEvent = Record<string, never>;
 
@@ -91,6 +124,7 @@ export type WipedEvent = Record<string, never>;
 export type AppEvent =
   | { kind: 'ActionFailed'; data: ActionFailedEvent }
   | { kind: 'Created'; data: CreatedEvent }
+  | { kind: 'Default'; data: DefaultEvent }
   | { kind: 'Wiped'; data: WipedEvent };
 
 /** Options of a call: a retry with the same key runs once. */
@@ -112,6 +146,24 @@ export class KitchenSinkClient {
   constructor(client: CalimeroClient, app: string) {
     this.#client = client;
     this.#app = app;
+  }
+
+  /** view `blobOf`. */
+  async blobOf(args: BlobOfArgs, options: ViewOptions = {}): Promise<string | null> {
+    const { result } = await this.#client.view(this.#app, 'blobOf', args, options);
+    return result as string | null;
+  }
+
+  /** view `count`. */
+  async count(args: CountArgs, options: ViewOptions = {}): Promise<string> {
+    const { result } = await this.#client.view(this.#app, 'count', args, options);
+    return result as string;
+  }
+
+  /** call `events`. */
+  async events(args: EventsArgs, options: CallOptions = {}): Promise<[number, string]> {
+    const { result } = await this.#client.call(this.#app, 'events', args, options.idempotencyKey);
+    return result as [number, string];
   }
 
   /** call `everything`. */
@@ -157,7 +209,7 @@ export class KitchenSinkClient {
   }
 
   /** The app's events from log index `from`, then live, until `signal` aborts. */
-  async *events(from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & { id: string }> {
+  async *appEvents(from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & { id: string }> {
     for await (const event of this.#client.events(this.#app, from, signal)) {
       yield event as AppEvent & { id: string };
     }

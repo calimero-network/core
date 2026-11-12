@@ -237,6 +237,11 @@ impl Names {
         }
     }
 
+    /// Keeps `names` from app types too: the names a generated client declares or imports.
+    pub(crate) fn reserve<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) {
+        self.taken.extend(names.into_iter().map(str::to_owned));
+    }
+
     /// The component name of app type `abi_text`, the same on every call.
     pub(crate) fn named(&mut self, abi_text: &str) -> (String, bool) {
         if let Some(name) = self.named.get(abi_text) {

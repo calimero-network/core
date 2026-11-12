@@ -22,6 +22,20 @@
   same before signing and refuses a state field removed or changed in kind
   without a state version bump. The type mapping: [App interface](docs/src/content/docs/build/app-abi.mdx#types).
 
+- **Swift and Kotlin typed clients from an app's ABI** (`calimero-app-abi`).
+  `mero-app-build codegen --lang swift|kotlin` writes `<Name>Client.swift` over
+  swift-sdk 2.0's MeroKit and `<Name>Client.kt` over kotlin-sdk 2.0's mero-core
+  (`--package`, default `calimero.generated.<name>`; a multi-service bundle gets
+  a directory and a package per service). Each is built on the SDK's
+  `CalimeroClient` and the app's id (every method: idempotency keys, stale views,
+  `confirm` step-ups, the event stream) or on its `ContextContractCalling`
+  (`MeroAppBackend.contract.bound(app)`, or a test double: calls and views), with
+  the ABI's JSON forms (u64/i64 as decimal strings, bytes base64url) behind
+  `UInt64`/`ULong`, `Int64`/`Long` and `Data`/`ByteArray`, and the app's events
+  and errors as typed enums and sealed interfaces (`Event`, `Refusal`). The
+  `App ABI clients` workflow compiles the golden clients against both SDKs with
+  warnings as errors.
+
 - **A release's runtime requirement holds across the cluster** (#4919). A
   release's `minRuntimeVersion` was checked only on the node that installed it,
   so in a cluster moving to a new release an app could be placed on, moved to,
