@@ -2,6 +2,14 @@
 //! sealed channels, with the real v2 fixture components (`apps/v2-fixtures/*`,
 //! built on first use by `common::component`).
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 mod common;
 
 use std::sync::Arc;

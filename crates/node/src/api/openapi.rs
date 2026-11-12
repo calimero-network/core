@@ -1420,7 +1420,7 @@ fn operations() -> Vec<Op> {
         delete("/ops/nodes/{id}", "ops_remove_node", Ops, "Remove a node")
             .about("One no app keeps a replica on; the system leader (elsewhere `421 NOT_LEADER`); signed over `__remove_node / { id }`.")
             .proof_body()
-            .ok("{ status: string }")
+            .ok("{ status: { group: uint, leader: uint | null, is_leader: bool, term: uint, last_log: uint | null, applied: uint, voters: uint[], learners: uint[] } }")
             .operator()
             .errors(&[(400, "LAST_NODE"), (421, "NOT_LEADER")]),
         get("/ops/nodes/{id}/receipt-key", "account_proof::ops_receipt_key", Ops, "A node's receipt key")
