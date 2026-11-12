@@ -32,10 +32,10 @@ async fn an_operator_route_is_signed_with_the_operator_key() {
     let c = Cluster::start(1).await;
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
-    let mut quotas = OpsQuotasSetRequest::default();
-    let _prev = quotas
-        .extra
-        .insert("maxConcurrentRunsPerOrg".into(), json!(3));
+    let quotas = OpsQuotasSetRequest {
+        max_concurrent_runs_per_org: Some(3),
+        ..OpsQuotasSetRequest::default()
+    };
 
     let refused = ops
         .ops()
@@ -107,7 +107,7 @@ async fn raw_bodies_go_up_and_come_back_as_bytes() {
 
     let blob = alice
         .apps()
-        .blob_upload(&app, "text/plain", b"hello".to_vec(), None)
+        .blob_upload(&app, b"hello".to_vec(), None)
         .await
         .unwrap();
     assert_eq!(blob.size, 5);

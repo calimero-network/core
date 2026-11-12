@@ -43,15 +43,28 @@ to the code on every CI run:
   optional in the document exactly when `T` accepts the body without it;
 - `additionalProperties: false` marks a body whose type refuses unknown fields;
 - every error code a handler raises with a literal code is listed for it;
+- each error code that carries `details` names that value's schema, on every
+  error response that lists the code (`x-calimero-details`) and at the
+  document's root (`x-calimero-error-details`), and the schema is held to the
+  constructor that builds the error: each value it builds is one of the schema,
+  and each property is built, always when it is required and not always when it
+  is optional;
 - a response schema the node answers by serializing a Rust type (an app record,
   an API key, a package release reference, an organization and its teams, an
-  upgrade, `Access`, `Deployer`) names that type, and is held to it the same
-  way: the same field names, a sample read into the type writes back as a value
-  of the schema, and a field is optional exactly when the type may leave it out;
+  upgrade, `Access`, `Deployer`, an attestation and its KMS evidence, an
+  account proof, a registered node, the quotas) names that type, and is held
+  to it the same way: the same field names, a sample read into the type writes
+  back as a value of the schema, and a field is optional exactly when the type
+  may leave it out; one the type only serializes (a Raft group's status, the
+  rollback counter) is held to real values of the type;
 - the committed `openapi.json` is what the registry builds now.
 
 The other response schemas, those a handler builds with `json!`, are written in
-the registry from the handlers' answers and are not checked against them. To
+the registry from the handlers' answers and are not checked against them. A
+value left free-form (`{}` in the schema) is one whose shape is not the API's:
+an app's metadata, `initArgs`, a method's result, an event's data, an app's
+error value, the WebAuthn options a ceremony hands to the browser, an app's ABI
+and its own OpenAPI document. Each says so in its description. To
 change the API, change the handler and its entry, then regenerate:
 
 ```bash
@@ -65,6 +78,12 @@ operation on its `x-calimero-group`'s accessor (`client.orgs().invite_create(..)
 `client.apps().call(..)`), named as the other SDKs name it. Its test fails while
 the checked-in code differs from what the document generates, so a route change
 regenerates both in the same pull request.
+
+Every error answers the one `Error` schema, so a client decodes any error,
+including a code a route does not list, the same way; it reads `details` by the
+`error` code with the schema the code names. The sealed channel's own refusal
+(`busy`, outside the envelope) is not an `Error`: its schema is the one
+`x-calimero-sealed-refusal` names at the root.
 
 The SDKs (mero-js, calimero-client-py, swift-sdk and kotlin-sdk, the `openapi`
 repositories in `.github/fleet.json`) each vendor this document and generate

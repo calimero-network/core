@@ -6,6 +6,13 @@
 )]
 use super::*;
 
+/// `GET /apps/{app}/attestation`'s query: only the nonce, since the app is the path's and
+/// the purpose is always `receipts`. Other parameters are ignored, as they always were.
+#[derive(Deserialize)]
+pub(super) struct AppAttestQuery {
+    nonce: String,
+}
+
 /// Every replica of an app attests its receipt key over `nonce`: what a user
 /// checks to know the whole group holding the app is genuine, and which keys
 /// sign its receipts.
@@ -13,7 +20,7 @@ async fn app_attestation(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-    Query(q): Query<AttestQuery>,
+    Query(q): Query<AppAttestQuery>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
@@ -47,6 +54,12 @@ async fn app_attestation(
         });
     }
     Ok(Json(json!({ "appId": app_id, "replicas": replicas })))
+}
+
+/// `422 INIT_FAILED`: app `app_id`'s `init` failed with the app log's `error`.
+pub(super) fn init_failed(app_id: &str, error: &Value) -> ApiError {
+    ApiError::new(422, "INIT_FAILED", "the app's init failed")
+        .with_details(json!({ "appId": app_id, "error": error }))
 }
 
 /// A release's service name to bundle hash map.
@@ -301,8 +314,7 @@ async fn app_create(
         match app_ready(&node, &app_id).await {
             Some(Ok(())) => break,
             Some(Err(error)) => {
-                return Err(ApiError::new(422, "INIT_FAILED", "the app's init failed")
-                    .with_details(json!({ "appId": app_id, "error": error })));
+                return Err(init_failed(&app_id, &error));
             }
             None => {}
         }

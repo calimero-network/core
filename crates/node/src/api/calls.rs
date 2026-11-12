@@ -19,7 +19,7 @@ pub(super) struct IntentBody {
 }
 
 /// The 422/503 of a component's run that did not end `Ok` (spec section 5, D23, D36).
-fn component_failure(
+pub(super) fn component_failure(
     index: u64,
     status: &Status,
     error: &Value,

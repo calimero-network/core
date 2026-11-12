@@ -268,6 +268,7 @@ mod tests {
         faults: Vec<Fault>,
         session: Option<String>,
         begun: u32,
+        size: u64,
         parts: u64,
         next: u64,
         hashes: Vec<Option<[u8; 32]>>,
@@ -327,6 +328,7 @@ mod tests {
                         .unwrap();
                     self.begun += 1;
                     self.session = Some(format!("u{}", self.begun));
+                    self.size = size;
                     self.parts = size.div_ceil(FILE_PART_BYTES);
                     self.next = self.begin_next;
                     self.hashes = vec![None; self.parts as usize];
@@ -351,6 +353,7 @@ mod tests {
                         "partBytes": FILE_PART_BYTES,
                         "parts": self.parts,
                         "expiresAt": 0,
+                        "size": self.size,
                         "next": self.next,
                     }),
                 ),

@@ -92,7 +92,7 @@ pub(crate) use upgrades::{refuse_stalled, upgrade_app, UpgradeBody};
 #[cfg(test)]
 use {
     approvals::{OpsDeadlineBody, OpsOutboundBody, OpsReleaseBody},
-    apps::{AccessBody, AppListQuery, CreateAppBody, MoveBody, TransferBody},
+    apps::{AccessBody, AppAttestQuery, AppListQuery, CreateAppBody, MoveBody, TransferBody},
     auth::{
         ActivityQuery, AddPasskeyFinish, AliasBody, ApiKeyBody, AssertionBody, LoginBegin,
         PasskeyLabelBody, RefreshBody, RegisterBegin, RegisterFinish,
@@ -1281,17 +1281,13 @@ async fn step_up(
             .and_then(|o| app_origin(node, o))
             .and_then(|a| a.rp_id)
             .unwrap_or_else(|| node.config.rp_id.clone());
-        return Err(ApiError::new(
-            412,
-            "CONFIRM_REQUIRED",
+        return Err(confirm_required(
             "approve this call with your passkey",
-        )
-        .with_details(json!({
-            "challengeId": id,
-            "challenge": b64url(&challenge),
-            "rpId": rp_id,
-            "allowCredentials": creds,
-        })));
+            &id,
+            &challenge,
+            &rp_id,
+            &creds,
+        ));
     };
     let Pending::Confirm {
         challenge,
@@ -1877,6 +1873,55 @@ struct OperatorProofBody {
     signature: String,
 }
 
+/// `421 NOT_LEADER`: send it to the group's leader at `leader_url`, node `leader` where it
+/// is known (absent from `details` otherwise).
+pub(crate) fn not_leader(message: &str, leader: Option<u64>, leader_url: &str) -> ApiError {
+    let mut details = json!({ "leader": leader, "leaderUrl": leader_url });
+    if leader.is_none() {
+        let _gone = details.as_object_mut().and_then(|d| d.remove("leader"));
+    }
+    ApiError::new(421, "NOT_LEADER", message).with_details(details)
+}
+
+/// `412 CONFIRM_REQUIRED`: a passkey of `allow` signs `challenge` under the relying party
+/// `rp_id`, and the same request sent again with that assertion names `id`.
+pub(super) fn confirm_required(
+    message: &str,
+    id: &str,
+    challenge: &[u8],
+    rp_id: &str,
+    allow: &[String],
+) -> ApiError {
+    ApiError::new(412, "CONFIRM_REQUIRED", message).with_details(json!({
+        "challengeId": id,
+        "challenge": b64url(challenge),
+        "rpId": rp_id,
+        "allowCredentials": allow,
+    }))
+}
+
+/// `428 OPERATOR_SIGNATURE_REQUIRED`: the operator key of `cluster` signs `statement`; the
+/// exact bytes to sign go in `message` (base64).
+pub(super) fn operator_signature_required(
+    statement: &crate::proof::Statement,
+    cluster: &str,
+) -> ApiError {
+    let message = statement.operator_message(cluster);
+    ApiError::new(
+        428,
+        "OPERATOR_SIGNATURE_REQUIRED",
+        "sign this decision with the operator key and send it again with operatorProof",
+    )
+    .with_details(json!({
+        "subject": statement.subject,
+        "method": statement.method,
+        "args": statement.args,
+        "nonce": statement.nonce,
+        "cluster": cluster,
+        "message": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, message),
+    }))
+}
+
 /// The operator's proof for `method` on `subject` with `args`, to log with
 /// the decision ([`crate::proof::OperatorProof`]). Without one: `428
 /// OPERATOR_SIGNATURE_REQUIRED`, naming the statement and the exact bytes to
@@ -1897,20 +1942,7 @@ fn operator_proof(
                 "no operator key is registered: start the nodes with --operator-key",
             ));
         };
-        let message = statement.operator_message(&key.cluster);
-        return Err(ApiError::new(
-            428,
-            "OPERATOR_SIGNATURE_REQUIRED",
-            "sign this decision with the operator key and send it again with operatorProof",
-        )
-        .with_details(json!({
-            "subject": statement.subject,
-            "method": statement.method,
-            "args": statement.args,
-            "nonce": statement.nonce,
-            "cluster": key.cluster,
-            "message": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, message),
-        })));
+        return Err(operator_signature_required(&statement, &key.cluster));
     };
     statement.nonce = given.nonce;
     let proof = serde_json::to_value(crate::proof::OperatorProof {
