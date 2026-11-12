@@ -2,9 +2,11 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.18] - 2026-11-12
+
 ### Added
 
-- **Swift and Kotlin typed clients from an app's ABI** (`calimero-app-abi`).
+- **Swift and Kotlin typed clients from an app's ABI** (#4993, `calimero-app-abi`).
   `mero-app-build codegen --lang swift|kotlin` writes `<Name>Client.swift` over
   swift-sdk 2.0's MeroKit and `<Name>Client.kt` over kotlin-sdk 2.0's mero-core
   (`--package`, default `calimero.generated.<name>`; a multi-service bundle gets
@@ -16,7 +18,37 @@
   `UInt64`/`ULong`, `Int64`/`Long` and `Data`/`ByteArray`, and the app's events
   and errors as typed enums and sealed interfaces (`Event`, `Refusal`). The
   `App ABI native clients` workflow compiles the golden clients against both SDKs with
-  warnings as errors.
+  warnings as errors. These two clients do not read the ABI's `types` yet: an
+  app's records and enums are `JSONValue` / `JsonElement`.
+- **The ABI carries an app's record and enum shapes** (#4997). `#[derive(Record)]`
+  types and a new `#[derive(AbiType)]` for serde structs and enums (following
+  their renames, the four enum tagging styles, `transparent` and skips) are
+  written to a sorted `types` key in the app's ABI. A shape the macro cannot
+  describe (`flatten`, `into`/`from`, a u64/i64/bytes field without its helper)
+  is a compile error. `abiVersion` stays 1: nodes ignore the new key, and an app
+  with no described types builds a byte-identical ABI. `mero-app-build codegen`
+  uses the shapes for OpenAPI components, TypeScript interfaces and unions, and
+  Python `TypedDict`s (generic types keep their parameters); an ABI without
+  `types` still reads, with those types as `unknown`. `abi-diff` does not yet
+  compare shapes.
+
+### Fixed
+
+- **Generated TypeScript and Python clients call the current SDK API** (#4992).
+  `mero-app-build codegen --lang ts|python` wrote clients over mero-js's and
+  calimero-client-py's removed wrappers (`client.call`, `client.view`), which no
+  longer compiled. They now call `client.apps.call` / `client.apps.view`
+  (mero-js 32 and later, `confirm` step-ups through `options.confirm`) and
+  `client.json.apps.call` / `view` (calimero-client-py 1.0). The TypeScript class
+  takes a narrow `AppTransport` and an `after` hook that runs after every request.
+  The `App ABI clients` workflow type-checks the generated clients and runs them
+  against both published SDKs.
+- **meroctl refuses an unknown field in a closed request body** (#4995).
+  `meroctl ops set-quotas '{"maxAppsPerAcount": 5}'` dropped the misspelled key
+  and sent an empty change. The generated Rust client now refuses unknown fields
+  in request bodies the document closes (`additionalProperties: false`), so the
+  command fails naming the key before anything is sent. Answers and refusal
+  details still accept fields a newer node adds.
 
 ## [1.0.0-rc.17] - 2026-11-12
 
