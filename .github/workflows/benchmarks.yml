@@ -4,20 +4,24 @@ permissions:
   contents: read
 
 on:
-  # master and the release branch (release-v2-parity) each keep a
-  # baseline per commit; a PR compares against its own base branch's.
+  # master keeps a nightly baseline; the release branch (release-v2-parity),
+  # which has no nightly, one per push. A PR compares against its base commit's
+  # baseline, or else the base branch's newest one. A baseline per master push
+  # cost about 27 minutes of 8-core runner each, for benches nothing gates on.
   push:
     branches:
-      - master
       - release-v2-parity
+  schedule:
+    - cron: "41 4 * * *" # nightly, off the hour
+  workflow_dispatch:
   # `pull_request`, never `pull_request_target`: a fork's run gets a read-only
   # token and no secrets, and no job here runs PR code with more than that.
   pull_request:
     types: [labeled, opened, synchronize, reopened]
 
 jobs:
-  # Which crates to bench. A push to master or the release branch benches
-  # every crate, keeping a baseline per commit; a PR benches only while it
+  # Which crates to bench. A nightly (or dispatched) run and a push to the
+  # release branch bench every crate, keeping a baseline for that commit; a PR benches only while it
   # carries the `run-benchmarks` label, then every crate too. Wall-clock benches on shared
   # runners are too noisy to gate on, so a PR opts in rather than paying for
   # them on every change. It checks out nothing.
@@ -39,7 +43,7 @@ jobs:
         run: |
           # A crate's first `[[bench]]` goes here, or it gets no baseline on a push.
           all='["calimero-log","calimero-sealed"]'
-          if [ "$EVENT" = push ]; then
+          if [ "$EVENT" != pull_request ]; then
             crates="$all"
           elif [ "$ACTION" = labeled ]; then
             # Adding the label benches; adding any other label changes nothing.
@@ -170,7 +174,7 @@ jobs:
           retention-days: 30
 
   # Reads only artifacts: this run's (data the PR's benches wrote, parsed by
-  # critcmp, never executed) and the base commit's from a push run of the PR's
+  # critcmp, never executed) and the baseline's from a nightly or push run of the PR's
   # base branch (master, or the release branch, release-v2-parity). On a
   # fork PR the token is read-only whatever this asks for, so the comment step
   # fails and the table stays in the job log; continue-on-error keeps that from
@@ -180,7 +184,9 @@ jobs:
     needs: [criterion, cluster]
     if: github.event_name == 'pull_request'
     continue-on-error: true
-    runs-on: ubuntu-24.04-8cpu
+    # Downloads and diffs reports; it benches nothing, so a standard runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     # actions: read is needed to download another run's artifacts
     permissions:
       contents: read
@@ -194,8 +200,10 @@ jobs:
           path: target/criterion
           merge-multiple: true
 
-      # The push run of the base branch at the base commit. A base commit with
-      # no run, or with expired artifacts, must not fail.
+      # The baseline to compare with: the base branch's run at the PR's base
+      # commit if there is one (the release branch benches every push), or else
+      # the base branch's newest successful nightly or push run (master benches
+      # nightly). Finding none, or expired artifacts, must not fail.
       - name: Find the base branch's benchmark run
         id: base-run
         env:
@@ -204,20 +212,22 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          run_id=$(gh run list \
-            --repo "$REPO" \
-            --workflow benchmarks.yml \
-            --event push \
-            --branch "$BASE_REF" \
-            --commit "$BASE_SHA" \
-            --status success \
-            --json databaseId \
-            --jq '.[0].databaseId // empty')
-          if [ -n "$run_id" ]; then
+          set -uo pipefail
+          runs() {
+            gh run list --repo "$REPO" --workflow benchmarks.yml --branch "$BASE_REF" \
+              --status success --limit 50 --json databaseId,headSha,event "$@" \
+              --jq '[.[] | select(.event != "pull_request")]'
+          }
+          found=$(runs --commit "$BASE_SHA" | jq -c '.[0] // empty')
+          [ -n "$found" ] || found=$(runs | jq -c '.[0] // empty')
+          if [ -n "$found" ]; then
+            run_id=$(jq -r .databaseId <<<"$found")
+            sha=$(jq -r .headSha <<<"$found")
             echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-            echo "found benchmarks.yml run $run_id for $BASE_REF at base commit $BASE_SHA"
+            echo "sha=$sha" >> "$GITHUB_OUTPUT"
+            echo "comparing with benchmarks.yml run $run_id ($BASE_REF at $sha; the PR's base is $BASE_SHA)"
           else
-            echo "no successful benchmarks.yml push run found for $BASE_REF at base commit $BASE_SHA -- it predates this workflow or the branch's push trigger, or its run failed, or (past 30 days) its artifacts have expired"
+            echo "no successful benchmarks.yml run found on $BASE_REF -- the nightly has not run since its artifacts expired (30 days), or it failed"
           fi
 
       # run-id plus github-token reach into a different workflow run
@@ -225,7 +235,7 @@ jobs:
         if: steps.base-run.outputs.run_id != ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: criterion-*-${{ github.event.pull_request.base.sha }}
+          pattern: criterion-*-${{ steps.base-run.outputs.sha }}
           path: target/criterion
           merge-multiple: true
           run-id: ${{ steps.base-run.outputs.run_id }}
@@ -245,7 +255,7 @@ jobs:
         if: steps.base-run.outputs.run_id != ''
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: cluster-throughput-${{ github.event.pull_request.base.sha }}
+          name: cluster-throughput-${{ steps.base-run.outputs.sha }}
           path: cluster/base
           run-id: ${{ steps.base-run.outputs.run_id }}
           github-token: ${{ github.token }}
@@ -257,7 +267,7 @@ jobs:
       - name: Compare
         run: |
           if [ -z "${BASE_RUN_ID}" ]; then
-            echo "no comparison: no benchmarks.yml run found for $BASE_REF at base commit $BASE_SHA (see the 'Find the base branch's benchmark run' step log)" > /tmp/critcmp.txt
+            echo "no comparison: no benchmarks.yml run found on $BASE_REF (see the 'Find the base branch's benchmark run' step log)" > /tmp/critcmp.txt
           elif ! find target/criterion -type d -name "$BASE_SHA" -print -quit | grep -q .; then
             echo "no comparison: found benchmarks.yml run ${BASE_RUN_ID} for the base commit, but its baseline artifacts did not download (expired past 30-day retention, or the download step failed -- see its log)" > /tmp/critcmp.txt
           elif critcmp "$BASE_SHA" "$HEAD_SHA" > /tmp/critcmp.txt 2>&1; then
@@ -269,7 +279,7 @@ jobs:
         env:
           BASE_RUN_ID: ${{ steps.base-run.outputs.run_id }}
           BASE_REF: ${{ github.base_ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.base-run.outputs.sha }}
           HEAD_SHA: ${{ github.sha }}
 
       - name: Compare the cluster bench

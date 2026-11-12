@@ -31,7 +31,11 @@ permissions:
 jobs:
   analyze:
     name: Analyze (CodeQL)
-    runs-on: big-machine
+    # A standard runner, free on a public repository: CodeQL's Rust extraction
+    # builds nothing (build-mode none), and nothing waits on this job, so the
+    # slower runner costs only time. On big-machine it was a tenth of the bill.
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -56,8 +56,11 @@ on:
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
+  # Not master: every PR into it ran this already, and the nightly (schedule)
+  # runs all of it again on master, with the long soak. The release branch has
+  # no nightly, so its merges still run here.
   push:
-    branches: ["master", "release-v2-parity"]
+    branches: ["release-v2-parity"]
   merge_group:
   schedule:
     - cron: "23 3 * * *" # nightly soak, off the hour
@@ -100,18 +103,19 @@ env:
   INFERNO_VERSION: 0.12.8
 
 jobs:
-  # Every scenario, app-level and cluster, split into four shards by
-  # SCENARIO_SHARD. Each runs on an in-process 3-node cluster
+  # Every scenario, app-level and cluster, split into two shards by
+  # SCENARIO_SHARD (each shard builds the runner first, so more shards pay that
+  # build again for about two minutes of scenarios each). Each runs on an in-process 3-node cluster
   # (crates/node/tests/harness/scenario.rs); no merod process. The runner builds
   # each app component it installs, in its own crate.
   scenarios:
-    name: scenarios (${{ matrix.shard }}/4)
+    name: scenarios (${{ matrix.shard }}/2)
     runs-on: big-machine
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -130,6 +134,7 @@ jobs:
       # ci-checks' required `scope` job checks discovery with a script; it must see what
       # the runner sees.
       - name: The discovery check lists what the runner discovers
+        if: matrix.shard == 1
         run: |
           set -euo pipefail
           diff <(python3 scripts/check-scenario-discovery.py --list) \
@@ -137,7 +142,7 @@ jobs:
 
       - name: Scenarios of shard ${{ matrix.shard }}
         env:
-          SCENARIO_SHARD: ${{ matrix.shard }}/4
+          SCENARIO_SHARD: ${{ matrix.shard }}/2
           SCENARIO_FUZZY_SECONDS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '900' || inputs.soak_seconds || '10' }}
         run: cargo test -p calimero-node --test scenarios -- --test-threads 2
 
@@ -174,9 +179,16 @@ jobs:
       - name: Install mero-app-build
         run: scripts/install-mero-app-build.sh
 
+      # A nightly builds as the product ships (fat LTO, one codegen unit), so its
+      # soak numbers are the release's; any other run builds optimized without fat
+      # LTO, as compute-e2e does, which links in a fraction of the time. Set on
+      # this step only, so the cache step above hashes what the release group's
+      # other jobs do.
       - name: Build merod, meroctl and the fixtures
         env:
           NIGHTLY: ${{ (github.event_name == 'schedule' || inputs.nightly) && 'true' || 'false' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ (github.event_name == 'schedule' || inputs.nightly) && 'fat' || 'false' }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '1' || '16' }}
         run: |
           set -euo pipefail
           cargo build --release -p merod -p meroctl
@@ -203,7 +215,9 @@ jobs:
 
       - name: Soak latency and throughput
         if: ${{ !cancelled() }}
-        run: bash scripts/soak-summary.sh target/process-suite/soak.json "Soak, kv-store (this tree's merod, release build)"
+        run: bash scripts/soak-summary.sh target/process-suite/soak.json "Soak, kv-store (this tree's merod, ${BUILD})"
+        env:
+          BUILD: ${{ (github.event_name == 'schedule' || inputs.nightly) && 'release build' || 'release build without fat LTO' }}
 
       - name: Upload the results
         if: ${{ !cancelled() }}

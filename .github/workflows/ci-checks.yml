@@ -274,11 +274,14 @@ jobs:
             cargo build --manifest-path "$manifest" --release --target wasm32-wasip2
           done
 
+  # A standard runner: one crate's tests, about ten seconds once built; on
+  # big-machine the job was mostly setup, billed by the minute.
   rust-features:
     name: Rust feature-gated tests
     needs: scope
     if: needs.scope.outputs.rust == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -422,7 +425,14 @@ jobs:
           shared-key: release
           save-if: false
 
+      # This tree's merod is built optimized without fat LTO (as compute-e2e's is):
+      # the upgrade path tests what the node reads and writes, not how it links,
+      # and fat LTO's single-threaded link was most of this job. Set on this step
+      # only, so the cache step above hashes what the release group's other jobs do.
       - name: Upgrade path
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: scripts/upgrade-path.sh
 
       - name: Upload the results

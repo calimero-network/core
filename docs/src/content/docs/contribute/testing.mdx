@@ -646,14 +646,17 @@ cargo test -p calimero-node --test upgrade_replay
 
 ## In CI
 
-`.github/workflows/e2e.yml` runs on every PR that touches code:
+`.github/workflows/e2e.yml` runs on every PR that touches code, and nightly on
+master (a merge into master does not run it again: its PR did, and the nightly
+runs all of it with the long soak; a merge into the release branch does):
 
-- job `scenarios (K/4)` (`scenarios`): `cargo test -p calimero-node --test
-  scenarios` with `SCENARIO_SHARD=K/4`, every app-level and cluster scenario,
+- job `scenarios (K/2)` (`scenarios`): `cargo test -p calimero-node --test
+  scenarios` with `SCENARIO_SHARD=K/2`, every app-level and cluster scenario,
   each on its own in-process cluster; the runner builds each app's component
   itself. A `fuzzy_test` runs 10 s, nightly 900 s;
 - job `process suite (merod processes)` (`process-suite`): a release build of
-  `merod` and `meroctl`, the kv component and two signed releases of it, then
+  `merod` and `meroctl` (on a PR without fat LTO, which only the nightly's soak
+  numbers need), the kv component and two signed releases of it, then
   `suite.py` (nightly `--nightly`, which also builds the Rooms component). The
   soak's latency and throughput ([below](#soak-latency-and-throughput)) go in
   the job summary; the artifact `process-suite` holds the results, the soak
@@ -838,11 +841,11 @@ node leaves and the leader raises the cluster version.
 
 Storage cost gates, scaling guards and criterion benches are described in
 [`docs/benchmarking.md`](https://github.com/calimero-network/core/blob/master/docs/benchmarking.md).
-`.github/workflows/benchmarks.yml` runs them on every push to master or the
-release branch and on a PR labelled `run-benchmarks`: the criterion benches per
+`.github/workflows/benchmarks.yml` runs them nightly on master, on every push to
+the release branch and on a PR labelled `run-benchmarks`: the criterion benches per
 crate (`calimero-log`'s append and commit, `calimero-sealed`'s request round
 trip, the storage and runtime benches), compared with `critcmp` against the
-base commit's push run on the PR's base branch, plus two
+base commit's run on the PR's base branch, or else that branch's newest one, plus two
 reports that are not criterion: `tools/search-bench` (the search engine) and
 the cluster throughput bench, whose JSON the comparison also diffs.
 
