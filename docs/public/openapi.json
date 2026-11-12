@@ -792,7 +792,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Every replica's receipt-key attestation",
-        "description": "Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`). Any other query parameter is ignored.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`), and `cluster`, the cluster id each quote binds (with the replica's `node`): the documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any other query parameter is ignored.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
         "security": [
           {
             "session": []
@@ -831,6 +831,9 @@
                   "type": "object",
                   "properties": {
                     "appId": {
+                      "type": "string"
+                    },
+                    "cluster": {
                       "type": "string"
                     },
                     "replicas": {
@@ -877,6 +880,7 @@
                   },
                   "required": [
                     "appId",
+                    "cluster",
                     "replicas"
                   ]
                 }
