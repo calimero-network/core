@@ -4,6 +4,37 @@
 
 ### Added
 
+- **An app's frontend creates organizations, invites people and lets them join
+  through the node's consent page** (#5014). Since #4934 a session opened on an
+  app's frontend is refused `POST /orgs`, invites and redemption, so an app like
+  chat could not create a workspace. `POST /consent/requests` now takes
+  `createOrg { name }`, `createInvite { org, role, teams?, ttlSecs?, uses?,
+  allApps? }` and `acceptInvite { token }`: the person approves each with their
+  passkey on the node's own page, and `GET /consent/{id}/result` answers what was
+  made as `outcome` (`orgId`, the invite's `token`, the `org` joined), to the
+  asking account and app only. The log entries are the routes' own, so no
+  feature gate.
+- **Moderation and server settings on the consent page** (#5018): `leaveOrg`,
+  `removeMember`, `setMemberRole`, `setMemberTeams`, `removeMemberTeams`,
+  `revokeInvite`, `renameOrg`, `deleteOrg`, `setCapabilities` and `setAllApps`,
+  each judged at request time by the rules the log applies, approved with the
+  person's passkey on the node's page and written as the API writes it. A page
+  whose facts changed before approval answers `409 CONSENT_STALE`.
+- **An app's frontend manages its own package's channels** (#5017). A session
+  opened on a package's frontend may create, rename, move and delete teams below
+  the organization's app team for its package, change their members, and move its
+  package's apps between them (`POST /apps/{app}/access`), with the person's own
+  authority there and no consent page. Its step-ups over those teams
+  (`__set_team_member`, `__remove_team_member`, `__delete_team`) come from its own
+  origin. Everything else in the organization stays refused to it.
+- **The consent page links to an independent attestation verifier** (#5020).
+  `merod --attestation-verifier-url URL` (`MEROD_ATTESTATION_VERIFIER_URL`, config
+  `attestation-verifier-url`; unset by default) adds `verifier` to every consent
+  page's model, and the page links to
+  `{URL}/mero-tee?node_url=…&release_tag=mero-tee-v…`, so the person can check
+  the node's attestation on a site the node does not control. `https` only (`http`
+  for localhost), 512 bytes at most; a job node refuses it.
+
 - **The recovery disk: backups that outlive every mero-kms, opened with the key of
   whoever upgrades the app.** `merod --recovery-dir DIR` writes, every 5 minutes, on
   every node that holds an app (leader or not), the app's state, the code it runs and
@@ -35,6 +66,20 @@
   recovery uses must carry an attestation the node accepts under its peer
   policy (`400 UNATTESTED_RECOVERY_FILE`). `calimero-log` gains `read_snapshot_rows` and
   `Group::replace_state_rows` (state rows that move between cluster keys).
+
+### Changed
+
+- **One undecided consent request per account per node** (#5014). A new
+  `POST /consent/requests` replaces the account's older undecided one, whose page
+  and `/result` then answer `404`; `429` after 8 undecided requests
+  (`MAX_OPEN_REQUESTS_PER_ACCOUNT`) is gone. A client that kept two pages open at
+  once now finds the first gone; the SDKs report it as `CONSENT_REPLACED`.
+
+### Security
+
+- **A page forged on a node's host has no request to swap in** (#5014). The
+  one-request rule above means a forged page cannot show one app's request and
+  approve another's, and consent page answers carry `Strict-Transport-Security`.
 
 ## [1.0.0-rc.19] - 2026-11-12
 
