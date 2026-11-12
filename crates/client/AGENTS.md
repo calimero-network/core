@@ -146,7 +146,8 @@ generate theirs, and checked in under `src/generated/` (never edited by hand):
 - `types.rs`: components keep their names; inline schemas are named after where
   they are (`{Operation}Request`, `{Operation}Response`, then each property).
   Absent is `Option<T>`; absent or `null` is `Option<Option<T>>` (and an optional
-  `Value` keeps a sent `null`), both through `route::present`. A struct an answer
+  `Value` keeps a sent `null`), both through `route::present`; an answer that
+  is only `null` (`type: null`) is `()`. A struct an answer
   reaches keeps unnamed fields in `extra`, so re-serializing loses nothing; a
   string enum keeps an unknown value in `Other(String)`. `Assertion`,
   `Registration`, `Session`, `AttestationDoc`, `Governance`, `Receipt` and

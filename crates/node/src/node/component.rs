@@ -31,6 +31,8 @@ pub(super) use self::files::Probes;
 pub(crate) use self::files::{valid_uploader, Uploaded};
 pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PENDING_FILE_BYTES, MAX_PUSH_BYTES};
 pub(crate) use self::uploads::{UploadOp, Uploads};
+#[cfg(test)]
+pub(crate) use self::{files::files_unavailable, uploads::refusal as upload_refusal};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};

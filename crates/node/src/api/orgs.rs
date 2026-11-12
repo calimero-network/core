@@ -737,7 +737,7 @@ async fn team_delete(
 }
 
 /// `e` with `key` added to its details (an object, or made one).
-fn with_detail(mut e: ApiError, key: &str, value: Value) -> ApiError {
+pub(super) fn with_detail(mut e: ApiError, key: &str, value: Value) -> ApiError {
     if !e.details.is_object() {
         *e.details = json!({});
     }

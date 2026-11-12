@@ -364,8 +364,7 @@ fn membership_err(e: &calimero_log::WriteError) -> ApiError {
     match e {
         calimero_log::WriteError::NotLeader {
             leader: Some((id, addr)),
-        } => ApiError::new(421, "NOT_LEADER", "send this to the app group's leader")
-            .with_details(json!({ "leader": id, "leaderUrl": addr })),
+        } => not_leader("send this to the app group's leader", Some(*id), addr),
         _ => ApiError::unavailable(&e.to_string()),
     }
 }

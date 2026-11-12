@@ -21,7 +21,7 @@ pub struct Confirm {
     pub assertion: Assertion,
 }
 
-/// `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign with a passkey of the account.
+/// `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConfirmRequired {
     #[serde(rename = "challengeId")]
@@ -32,6 +32,8 @@ pub struct ConfirmRequired {
     pub rp_id: String,
     #[serde(rename = "allowCredentials")]
     pub allow_credentials: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apps: Option<Vec<String>>,
 }
 
 /// The operator key's Ed25519 signature (hex) over the statement a `428 OPERATOR_SIGNATURE_REQUIRED` named, with that statement's nonce.
@@ -41,12 +43,12 @@ pub struct OperatorProof {
     pub signature: String,
 }
 
-/// `details` of a `428 OPERATOR_SIGNATURE_REQUIRED`: the statement to sign and the exact bytes (`message`, base64).
+/// `details` of a `428 OPERATOR_SIGNATURE_REQUIRED`: the statement to sign (`args` is the JSON text of its arguments, as signed) and the exact bytes to sign (`message`, standard base64).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OperatorSignatureRequired {
     pub subject: String,
     pub method: String,
-    pub args: Value,
+    pub args: String,
     pub nonce: String,
     pub cluster: String,
     pub message: String,
@@ -58,15 +60,245 @@ pub use calimero_identity::Registration;
 
 pub use crate::Session;
 
-/// What the system log answered for the command this request wrote (for example the id it made).
-pub type Written = Map<String, Value>;
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppliedStatus {
+    /// `ok`.
+    Ok,
+    /// `appError`.
+    AppError,
+    /// `trap`.
+    Trap,
+    /// A value this client does not know yet.
+    Other(String),
+}
 
-/// An entry an app's log applied: its index, how it ended and the app's error, if any.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+impl AppliedStatus {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Ok => "ok",
+            Self::AppError => "appError",
+            Self::Trap => "trap",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppliedStatus {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppliedStatus {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "ok" => Self::Ok,
+            "appError" => Self::AppError,
+            "trap" => Self::Trap,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// An entry an app's log applied: its index, how it ended and the app's error (`null` when it ended `ok`; the app's own error value otherwise, free-form). `details` of a `422 UPGRADE_FAILED`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Applied {
     pub index: u64,
-    pub status: String,
+    pub status: AppliedStatus,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub error: Value,
+}
+
+/// `details` of a `421 NOT_LEADER`: the leader's URL to send the same request to, and its node id where known.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NotLeader {
+    #[serde(rename = "leaderUrl")]
+    pub leader_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader: Option<u64>,
+}
+
+/// `details` of a `409 FEATURE_NOT_ACTIVE`: the feature the request needs, the cluster version it ships in (`needs`) and the version active now (`null`: none logged, and the nodes could not say).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FeatureNotActive {
+    pub feature: String,
+    pub needs: String,
+    pub active: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[allow(clippy::large_enum_variant, reason = "an answer, read once")]
+pub enum RuntimeTooOldNodesItemRuntime {
+    Text(String),
+    Before { before: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeTooOldNodesItem {
+    pub node: u64,
+    pub runtime: RuntimeTooOldNodesItemRuntime,
+}
+
+/// `details` of a `409 RUNTIME_TOO_OLD`: the runtime the release needs and the replicas known to fall short of it, each with what it runs (a version, or `{ before }`: a release older than that one).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeTooOld {
+    #[serde(rename = "minRuntimeVersion")]
+    pub min_runtime_version: String,
+    pub nodes: Vec<RuntimeTooOldNodesItem>,
+}
+
+/// `details` of a `409 RELEASE_DEADLINE`: the mero-tee release whose deadline passed, and the deadline (`after` RFC 3339, `afterSecs` Unix seconds). Approving that release (or a newer one) lifts it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseDeadline {
+    pub release: String,
+    pub after: String,
+    #[serde(rename = "afterSecs")]
+    pub after_secs: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpgradePendingNodesItem {
+    pub node: u64,
+    pub release: Option<String>,
+}
+
+/// `details` of a `409 UPGRADE_PENDING`: the release every node must run first, and the nodes that run an older one (`release` `null`: one this node could not attest).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpgradePending {
+    pub release: String,
+    pub nodes: Vec<UpgradePendingNodesItem>,
+}
+
+/// `details` of a `422 APP_ERROR`: the app's error code, its fields (the app's own value, free-form: the object its ABI declares for the error, or the app's message as a string when that is not JSON), and the log index of the call (absent when the node refused it before it ran: `UnknownMethod`, `WrongKind`, `Forbidden`, `ConfirmNotAView`, `NotAView`, `ConfirmRequired`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppError {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u64>,
+    pub code: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub fields: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TrapKind {
+    /// `OutOfFuel`.
+    OutOfFuel,
+    /// `Timeout`.
+    Timeout,
+    /// `Cancelled`.
+    Cancelled,
+    /// `Unavailable`.
+    Unavailable,
+    /// `OutOfMemory`.
+    OutOfMemory,
+    /// `StackOverflow`.
+    StackOverflow,
+    /// `Fault`.
+    Fault,
+    /// `HostDenied`.
+    HostDenied,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl TrapKind {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::OutOfFuel => "OutOfFuel",
+            Self::Timeout => "Timeout",
+            Self::Cancelled => "Cancelled",
+            Self::Unavailable => "Unavailable",
+            Self::OutOfMemory => "OutOfMemory",
+            Self::StackOverflow => "StackOverflow",
+            Self::Fault => "Fault",
+            Self::HostDenied => "HostDenied",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for TrapKind {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for TrapKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "OutOfFuel" => Self::OutOfFuel,
+            "Timeout" => Self::Timeout,
+            "Cancelled" => Self::Cancelled,
+            "Unavailable" => Self::Unavailable,
+            "OutOfMemory" => Self::OutOfMemory,
+            "StackOverflow" => Self::StackOverflow,
+            "Fault" => Self::Fault,
+            "HostDenied" => Self::HostDenied,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// `details` of a `422 TRAP`: the log index of the run, how it trapped, and the engine's account of it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Trap {
+    pub index: u64,
+    pub kind: TrapKind,
+    pub detail: String,
+}
+
+/// `details` of a `422 INIT_FAILED`: the app made, and the error its `init` ended with (the app log's, free-form).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct InitFailed {
+    #[serde(rename = "appId")]
+    pub app_id: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub error: Value,
+}
+
+/// `details` of a `409 RECOVERY_NOT_READY`: when the recovery may finish (Unix seconds).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RecoveryNotReady {
+    #[serde(rename = "readyAt")]
+    pub ready_at: u64,
+}
+
+/// `details` of a `409 PART_CONFLICT`, `409 PART_OUT_OF_ORDER` or `409 UPLOAD_INCOMPLETE`: the part the upload expects next.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UploadPosition {
+    pub next: u64,
+}
+
+/// `details` of a `503 TIMEOUT` or `503 FILES_UNAVAILABLE`: the seconds to wait before sending the same request (with the same idempotency key) again.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RetryAfter {
+    #[serde(rename = "retryAfter")]
+    pub retry_after: u64,
+}
+
+/// `details` of a `400 UNSUPPORTED_BUNDLE`, `400 BAD_BUNDLE` or `400 COMPUTE_ABI_MISMATCH` refusing one service of a release: the service, and `compute: true` when it was that service's compute component. Absent when the refusal is of a raw bundle.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ServiceRefused {
+    pub service: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SealedRefusalError {
+    pub code: String,
+    pub message: String,
+}
+
+/// The sealed channel's own refusal, outside the envelope and in the clear: not an `Error`. `busy` (`503`, with `Retry-After: 1`): too many sealed requests or sessions at once, send it again; the other codes (`400`, `malformed` and the like) say the envelope could not be opened.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SealedRefusal {
+    pub error: SealedRefusalError,
 }
 
 pub use crate::attest::Receipt;
@@ -293,6 +525,680 @@ pub use crate::attest::Release;
 
 pub use crate::attest::AttestationDoc;
 
+/// What a node verified of the mero-kms replicas it took its keys from: the storage key `merod` fetched, and the data disk's key the boot script fetched; each absent without a record.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct KmsKeys {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<KmsEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk: Option<KmsEvidence>,
+}
+
+/// The KMS quote a node accepted a key under: the KMS host, the mero-kms release (and image profile) whose signed policy it matched, the quote's registers (hex), its TCB status, SHA-256 and when it was verified (Unix seconds); `mock` (absent: false) in development builds only.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct KmsEvidence {
+    #[serde(rename = "kmsHost")]
+    pub kms_host: String,
+    pub release: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    pub mrtd: String,
+    pub rtmr0: String,
+    pub rtmr1: String,
+    pub rtmr2: String,
+    pub rtmr3: String,
+    #[serde(rename = "tcbStatus")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcb_status: Option<String>,
+    #[serde(rename = "quoteSha256")]
+    pub quote_sha256: String,
+    #[serde(rename = "verifiedAt")]
+    pub verified_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mock: Option<bool>,
+}
+
+/// A Raft group's status as one node sees it: the leader (`null`: none known), whether this node is it, the term, the last log index (`null`: an empty log), the applied index, and the voters and learners.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GroupStatus {
+    pub group: u64,
+    pub leader: Option<u64>,
+    pub is_leader: bool,
+    pub term: u64,
+    pub last_log: Option<u64>,
+    pub applied: u64,
+    pub voters: Vec<u64>,
+    pub learners: Vec<u64>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A node's rollback counter: the cluster's epoch (rollbacks forced so far), its generation and mark, whether this start was forced (`--accept-rollback`), and the seconds since mero-kms last acknowledged a checkpoint.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RollbackStatus {
+    pub epoch: u64,
+    pub generation: u64,
+    pub mark: u64,
+    pub forced: bool,
+    #[serde(rename = "sinceCheckpointSecs")]
+    pub since_checkpoint_secs: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What a node does: hold app replicas, or run compute jobs.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum NodeRole {
+    /// `replica`.
+    Replica,
+    /// `job`.
+    Job,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl NodeRole {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Replica => "replica",
+            Self::Job => "job",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for NodeRole {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for NodeRole {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "replica" => Self::Replica,
+            "job" => Self::Job,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// A registered node: its id, address, zone, role and (a job node's) compute pool, absent for none.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NodeRecord {
+    pub id: u64,
+    pub addr: String,
+    pub zone: String,
+    pub role: NodeRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Quotas {
+    #[serde(rename = "maxAppsPerAccount")]
+    pub max_apps_per_account: u64,
+    #[serde(rename = "maxBundleBytesPerAccount")]
+    pub max_bundle_bytes_per_account: u64,
+    #[serde(rename = "maxApiKeysPerAccount")]
+    pub max_api_keys_per_account: u64,
+    #[serde(rename = "maxOrgsPerAccount")]
+    pub max_orgs_per_account: u64,
+    #[serde(rename = "maxAccounts")]
+    pub max_accounts: u64,
+    #[serde(rename = "maxFileBytesPerOrg")]
+    pub max_file_bytes_per_org: u64,
+    #[serde(rename = "maxConcurrentRunsPerOrg")]
+    pub max_concurrent_runs_per_org: u64,
+    #[serde(rename = "computeFuelPerOrg")]
+    pub compute_fuel_per_org: u64,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "maxFuelPerDeveloperPerDay")]
+    pub max_fuel_per_developer_per_day: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// One payer's limits in place of the cluster's; a limit left out is the cluster's.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgQuotas {
+    #[serde(rename = "maxConcurrentRuns")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_runs: Option<u64>,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "computeFuel")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_fuel: Option<String>,
+    #[serde(rename = "maxFileBytes")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_bytes: Option<u64>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// `GET /ops/quotas`: the cluster's limits and, under `orgs`, each payer's overrides by payer id.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct QuotaSettings {
+    #[serde(rename = "maxAppsPerAccount")]
+    pub max_apps_per_account: u64,
+    #[serde(rename = "maxBundleBytesPerAccount")]
+    pub max_bundle_bytes_per_account: u64,
+    #[serde(rename = "maxApiKeysPerAccount")]
+    pub max_api_keys_per_account: u64,
+    #[serde(rename = "maxOrgsPerAccount")]
+    pub max_orgs_per_account: u64,
+    #[serde(rename = "maxAccounts")]
+    pub max_accounts: u64,
+    #[serde(rename = "maxFileBytesPerOrg")]
+    pub max_file_bytes_per_org: u64,
+    #[serde(rename = "maxConcurrentRunsPerOrg")]
+    pub max_concurrent_runs_per_org: u64,
+    #[serde(rename = "computeFuelPerOrg")]
+    pub compute_fuel_per_org: u64,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "maxFuelPerDeveloperPerDay")]
+    pub max_fuel_per_developer_per_day: String,
+    pub orgs: BTreeMap<String, OrgQuotas>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UsageDay {
+    pub date: String,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    pub runs: String,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    pub fuel: String,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "wallMs")]
+    pub wall_ms: String,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    pub writes: String,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "bytesWritten")]
+    pub bytes_written: String,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    pub events: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A file a run reads or wrote: its id, and its plaintext size and SHA-256 (hex) only for a caller who may list the app's files.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunFile {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RunState {
+    /// `queued`.
+    Queued,
+    /// `running`.
+    Running,
+    /// `done`.
+    Done,
+    /// `failed`.
+    Failed,
+    /// `cancelled`.
+    Cancelled,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl RunState {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for RunState {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RunState {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "queued" => Self::Queued,
+            "running" => Self::Running,
+            "done" => Self::Done,
+            "failed" => Self::Failed,
+            "cancelled" => Self::Cancelled,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunCaps {
+    pub fuel: u64,
+    #[serde(rename = "memoryMib")]
+    pub memory_mib: u64,
+    #[serde(rename = "wallSecs")]
+    pub wall_secs: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunAttemptsItem {
+    pub attempt: u64,
+    pub node: u64,
+    #[serde(rename = "tsMs")]
+    pub ts_ms: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RunFinalOutcomeFailedReason {
+    /// `fuel`.
+    Fuel,
+    /// `memory`.
+    Memory,
+    /// `trap`.
+    Trap,
+    /// `app-error`.
+    AppError,
+    /// `integrity`.
+    Integrity,
+    /// `cancelled`.
+    Cancelled,
+    /// `lost`.
+    Lost,
+    /// `refused`.
+    Refused,
+    /// `timeout`.
+    Timeout,
+    /// `quota`.
+    Quota,
+    /// `not-granted`.
+    NotGranted,
+    /// `too-large`.
+    TooLarge,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl RunFinalOutcomeFailedReason {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Fuel => "fuel",
+            Self::Memory => "memory",
+            Self::Trap => "trap",
+            Self::AppError => "app-error",
+            Self::Integrity => "integrity",
+            Self::Cancelled => "cancelled",
+            Self::Lost => "lost",
+            Self::Refused => "refused",
+            Self::Timeout => "timeout",
+            Self::Quota => "quota",
+            Self::NotGranted => "not-granted",
+            Self::TooLarge => "too-large",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for RunFinalOutcomeFailedReason {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RunFinalOutcomeFailedReason {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "fuel" => Self::Fuel,
+            "memory" => Self::Memory,
+            "trap" => Self::Trap,
+            "app-error" => Self::AppError,
+            "integrity" => Self::Integrity,
+            "cancelled" => Self::Cancelled,
+            "lost" => Self::Lost,
+            "refused" => Self::Refused,
+            "timeout" => Self::Timeout,
+            "quota" => Self::Quota,
+            "not-granted" => Self::NotGranted,
+            "too-large" => Self::TooLarge,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum RunFinalOutcome {
+    #[serde(rename = "done")]
+    Done,
+    #[serde(rename = "failed")]
+    Failed { reason: RunFinalOutcomeFailedReason },
+    #[serde(rename = "cancelled")]
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunFinalUsage {
+    #[serde(rename = "cpuMicros")]
+    pub cpu_micros: u64,
+    #[serde(rename = "gibMicros")]
+    pub gib_micros: u64,
+    pub fuel: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunFinal {
+    pub attempt: u64,
+    pub outcome: RunFinalOutcome,
+    pub outputs: Vec<RunFile>,
+    pub usage: RunFinalUsage,
+    #[serde(rename = "tsMs")]
+    pub ts_ms: u64,
+    pub message: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunProgress {
+    pub percent: u64,
+    pub step: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RunQueueState {
+    /// `unplaced`.
+    Unplaced,
+    /// `waiting`.
+    Waiting,
+    /// `granted`.
+    Granted,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl RunQueueState {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Unplaced => "unplaced",
+            Self::Waiting => "waiting",
+            Self::Granted => "granted",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for RunQueueState {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RunQueueState {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "unplaced" => Self::Unplaced,
+            "waiting" => Self::Waiting,
+            "granted" => Self::Granted,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RunQueueReason {
+    /// `NO_CAPACITY`.
+    NoCapacity,
+    /// `POOL_FULL`.
+    PoolFull,
+    /// `PAYER_AT_RUN_QUOTA`.
+    PayerAtRunQuota,
+    /// `PAYER_AT_FUEL_QUOTA`.
+    PayerAtFuelQuota,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl RunQueueReason {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::NoCapacity => "NO_CAPACITY",
+            Self::PoolFull => "POOL_FULL",
+            Self::PayerAtRunQuota => "PAYER_AT_RUN_QUOTA",
+            Self::PayerAtFuelQuota => "PAYER_AT_FUEL_QUOTA",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for RunQueueReason {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RunQueueReason {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "NO_CAPACITY" => Self::NoCapacity,
+            "POOL_FULL" => Self::PoolFull,
+            "PAYER_AT_RUN_QUOTA" => Self::PayerAtRunQuota,
+            "PAYER_AT_FUEL_QUOTA" => Self::PayerAtFuelQuota,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunQueue {
+    pub state: RunQueueState,
+    pub capacity: u64,
+    pub pool: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<RunQueueReason>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Run {
+    pub run: String,
+    pub method: String,
+    pub state: RunState,
+    #[serde(rename = "cancelRequested")]
+    pub cancel_requested: bool,
+    #[serde(rename = "startTsMs")]
+    pub start_ts_ms: u64,
+    pub caps: RunCaps,
+    pub inputs: Vec<RunFile>,
+    pub attempts: Vec<RunAttemptsItem>,
+    pub r#final: Option<RunFinal>,
+    pub progress: Option<RunProgress>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<RunQueue>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A statement, signed with the answering node's receipt key (hex, Ed25519 over the statement's canonical JSON after its domain), that the account asked to bind `nonce` for `audience`, valid from `issuedAt` to `expiresAt` (Unix seconds).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AccountProof {
+    pub statement: AccountStatement,
+    pub key: String,
+    pub signature: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// What an account proof states: the cluster and node, the account, the nonce and audience it binds, and when it was issued and expires (Unix seconds).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AccountStatement {
+    pub cluster: String,
+    pub node: u64,
+    pub account: String,
+    pub nonce: String,
+    pub audience: String,
+    #[serde(rename = "issuedAt")]
+    pub issued_at: u64,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), and whether the cluster serves the package's frontend there.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PackageOrigin {
+    pub package: String,
+    pub origin: String,
+    #[serde(rename = "rpId")]
+    pub rp_id: String,
+    #[serde(rename = "addedBy")]
+    pub added_by: String,
+    #[serde(rename = "addedAt")]
+    pub added_at: String,
+    pub served: bool,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The sign-up policy and what it implies: whether organization invites and cluster sign-up invites admit a new account, and whether one is required.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SignUpState {
+    pub policy: SignUp,
+    #[serde(rename = "orgInvites")]
+    pub org_invites: bool,
+    #[serde(rename = "signUpInvites")]
+    pub sign_up_invites: bool,
+    #[serde(rename = "inviteRequired")]
+    pub invite_required: bool,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The mero-tee releases the scope approves now, after the change.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ApprovedReleases {
+    #[serde(rename = "approvedReleases")]
+    pub approved_releases: Vec<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The outbound approval the scope holds now for the package's publisher (`signer`), after the change.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OutboundApproved {
+    pub signer: String,
+    pub approval: OutboundApproval,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The versions an uninstall removed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Uninstalled {
+    pub removed: Vec<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeadlinesDeadlinesItem {
+    pub version: String,
+    pub after: String,
+    #[serde(rename = "afterSecs")]
+    pub after_secs: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Every release deadline after the change, oldest release first (`after` RFC 3339, `afterSecs` Unix seconds).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Deadlines {
+    pub deadlines: Vec<DeadlinesDeadlinesItem>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The cluster's governance and sign-up policy after the change.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SignUpSet {
+    pub governance: Governance,
+    #[serde(rename = "signUp")]
+    pub sign_up: SignUpState,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// The key of the cluster sign-up invite withdrawn.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct InviteKey {
+    #[serde(rename = "inviteKey")]
+    pub invite_key: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// An organization-wide upgrade run: the apps it targets, those done, and why each failed one failed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UpgradeRun {
@@ -426,6 +1332,7 @@ pub struct App {
     pub replicas: Vec<u64>,
     #[serde(rename = "createdAt")]
     pub created_at: u64,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     #[serde(rename = "initArgs")]
     pub init_args: Value,
     #[serde(rename = "computeBundle")]
@@ -433,6 +1340,7 @@ pub struct App {
     pub compute_bundle: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub components: Option<AppComponents>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub metadata: Value,
     #[serde(rename = "lastUpgrade")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -492,6 +1400,7 @@ pub struct Upgrade {
     pub at: u64,
     pub by: String,
     pub ok: bool,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -559,6 +1468,7 @@ pub struct PackageVersionsItem {
     pub size: u64,
     pub source: PackageVersionsItemSource,
     pub services: BTreeMap<String, String>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub metadata: Value,
     pub outbound: Vec<String>,
     #[serde(rename = "installedBy")]
@@ -708,6 +1618,7 @@ pub struct Org {
     pub approved_releases: Vec<String>,
     #[serde(rename = "outboundApprovals")]
     pub outbound_approvals: BTreeMap<String, OutboundApproval>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub metadata: Value,
     #[serde(rename = "memberMetadata")]
     pub member_metadata: Map<String, Value>,
@@ -749,6 +1660,7 @@ pub struct Team {
     #[serde(rename = "readOnly")]
     pub read_only: Vec<String>,
     pub capabilities: BTreeMap<String, u64>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub metadata: Value,
     pub removed: Vec<String>,
     #[serde(rename = "defaultCapabilities")]
@@ -789,6 +1701,7 @@ pub struct TeamView {
     pub name: String,
     pub parent: Option<String>,
     pub join: TeamJoin,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub metadata: Value,
     #[serde(
         default,
@@ -958,6 +1871,7 @@ pub struct ReportUpgrade {
     pub actor_kind: ReportUpgradeActorKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1281,6 +2195,73 @@ pub struct ConfirmOnly {
     pub confirm: Option<Confirm>,
 }
 
+/// The limits `POST /ops/quotas` changes, each optional: without `org`, the cluster's (those `GET /ops/quotas` answers, `maxFuelPerDeveloperPerDay` a decimal string); with `org`, one payer's (`maxConcurrentRuns`, `computeFuel` a decimal string, `maxFileBytes`; `null` clears one). `orgs` is ignored. Any other property is refused `400 UNKNOWN_QUOTA`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct QuotaChanges {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    #[serde(rename = "operatorProof")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_proof: Option<OperatorProof>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub orgs: Option<Value>,
+    #[serde(rename = "maxAppsPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_apps_per_account: Option<u64>,
+    #[serde(rename = "maxBundleBytesPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bundle_bytes_per_account: Option<u64>,
+    #[serde(rename = "maxApiKeysPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_api_keys_per_account: Option<u64>,
+    #[serde(rename = "maxOrgsPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_orgs_per_account: Option<u64>,
+    #[serde(rename = "maxAccounts")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_accounts: Option<u64>,
+    #[serde(rename = "maxFileBytesPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_bytes_per_org: Option<u64>,
+    #[serde(rename = "maxConcurrentRunsPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_runs_per_org: Option<u64>,
+    #[serde(rename = "computeFuelPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_fuel_per_org: Option<u64>,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "maxFuelPerDeveloperPerDay")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_fuel_per_developer_per_day: Option<String>,
+    #[serde(rename = "maxConcurrentRuns")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub max_concurrent_runs: Option<Option<u64>>,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "computeFuel")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub compute_fuel: Option<Option<String>>,
+    #[serde(rename = "maxFileBytes")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub max_file_bytes: Option<Option<u64>>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppCreateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1297,6 +2278,7 @@ pub struct AppCreateRequest {
     pub org: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<Access>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     #[serde(rename = "initArgs")]
     #[serde(
         default,
@@ -1304,6 +2286,7 @@ pub struct AppCreateRequest {
         with = "crate::route::present"
     )]
     pub init_args: Option<Value>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1322,12 +2305,7 @@ pub struct AppCreateResponse {
     pub context_id: String,
     pub group: u64,
     pub replicas: Vec<u64>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "crate::route::present"
-    )]
-    pub compute: Option<Value>,
+    pub compute: bool,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -1354,48 +2332,11 @@ pub struct AppDeleteResponse {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppAbiResponse {
     pub bundle: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub abi: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AppAttestationPurpose {
-    /// `receipts`.
-    Receipts,
-    /// `kms`.
-    Kms,
-    /// A value this client does not know yet.
-    Other(String),
-}
-
-impl AppAttestationPurpose {
-    /// The value on the wire.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Receipts => "receipts",
-            Self::Kms => "kms",
-            Self::Other(s) => s,
-        }
-    }
-}
-
-impl Serialize for AppAttestationPurpose {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for AppAttestationPurpose {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(match String::deserialize(d)?.as_str() {
-            "receipts" => Self::Receipts,
-            "kms" => Self::Kms,
-            other => Self::Other(other.to_owned()),
-        })
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1536,6 +2477,7 @@ pub struct UploadStatusResponse {
     pub parts: u64,
     #[serde(rename = "expiresAt")]
     pub expires_at: u64,
+    pub size: u64,
     pub next: u64,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
@@ -1592,6 +2534,7 @@ pub struct ExportsExportResponse {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct IntentsResponseEventsItem {
     pub kind: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub data: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
@@ -1601,6 +2544,7 @@ pub struct IntentsResponseEventsItem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct IntentsResponse {
     pub index: u64,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub result: Value,
     pub events: Vec<IntentsResponseEventsItem>,
     pub receipt: Receipt,
@@ -1649,6 +2593,7 @@ impl<'de> Deserialize<'de> for AppMethodRequestConsistency {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppMethodRequest {
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1668,6 +2613,7 @@ pub struct AppMethodRequest {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppMethodResponseEventsItem {
     pub kind: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub data: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
@@ -1677,6 +2623,7 @@ pub struct AppMethodResponseEventsItem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AppMethodResponse {
     pub index: u64,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub result: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events: Option<Vec<AppMethodResponseEventsItem>>,
@@ -1712,6 +2659,7 @@ pub struct PipelinesCancelResponse {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PipelineReceiptReceiptResponse {
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub receipt: Value,
     pub node: String,
     pub signature: String,
@@ -1800,6 +2748,15 @@ pub struct PresenceGetResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppRunsResponse {
+    pub runs: Vec<Run>,
+    pub next: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppStorageResponse {
     pub keys: u64,
     pub bytes: u64,
@@ -1836,6 +2793,7 @@ pub struct AppUpgradeRequest {
 pub struct AppUpgradeResponse {
     pub index: u64,
     pub status: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub error: Value,
     pub compute: bool,
     /// The fields this client does not name, as the node sent them.
@@ -1844,31 +2802,9 @@ pub struct AppUpgradeResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct AppUsageResponseDaysItem {
-    pub date: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
-    pub runs: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
-    pub fuel: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
-    #[serde(rename = "wallMs")]
-    pub wall_ms: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
-    pub writes: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
-    #[serde(rename = "bytesWritten")]
-    pub bytes_written: String,
-    /// an unsigned 64-bit integer as a decimal string (D20)
-    pub events: String,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppUsageResponse {
-    pub today: Value,
-    pub days: Vec<AppUsageResponseDaysItem>,
+    pub today: UsageDay,
+    pub days: Vec<UsageDay>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -1915,6 +2851,7 @@ impl<'de> Deserialize<'de> for ViewsRequestConsistency {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ViewsResponse {
     pub index: u64,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub result: Value,
     pub receipt: Receipt,
     /// The fields this client does not name, as the node sent them.
@@ -1946,6 +2883,7 @@ pub struct PipelinesValidateResponseErrorsItem {
 pub struct PipelinesValidateResponse {
     pub ok: bool,
     pub errors: Vec<PipelinesValidateResponseErrorsItem>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -2115,6 +3053,14 @@ pub struct AccountAppsResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LogoutAllResponse {
+    pub revoked: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MeResponsePasskeysItem {
     pub id: String,
     #[serde(rename = "signCount")]
@@ -2248,6 +3194,7 @@ pub struct MeResponse {
 pub struct LoginBeginResponse {
     #[serde(rename = "challengeId")]
     pub challenge_id: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub options: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
@@ -2258,6 +3205,7 @@ pub struct LoginBeginResponse {
 pub struct RegisterBeginResponse {
     #[serde(rename = "challengeId")]
     pub challenge_id: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub options: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
@@ -2268,6 +3216,7 @@ pub struct RegisterBeginResponse {
 pub struct PasskeyAddBeginResponse {
     #[serde(rename = "challengeId")]
     pub challenge_id: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub options: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
@@ -2295,6 +3244,7 @@ pub struct RecoveryCreateResponse {
 pub struct AccountRecoveryBeginResponse {
     #[serde(rename = "challengeId")]
     pub challenge_id: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub options: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
@@ -2340,20 +3290,25 @@ pub struct SessionsListResponse {
     pub extra: Map<String, Value>,
 }
 
-/// Other properties than those listed may be present: the ones listed are those clients rely on.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageResponse {
+    pub apps: u64,
     /// an unsigned 64-bit integer as a decimal string (D20)
     #[serde(rename = "bundleBytes")]
     pub bundle_bytes: String,
+    #[serde(rename = "apiKeys")]
+    pub api_keys: u64,
+    #[serde(rename = "orgsOwned")]
+    pub orgs_owned: u64,
+    #[serde(rename = "fileBytes")]
+    pub file_bytes: BTreeMap<String, u64>,
+    pub quotas: Quotas,
     /// an unsigned 64-bit integer as a decimal string (D20)
     #[serde(rename = "developerFuelToday")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub developer_fuel_today: Option<String>,
+    pub developer_fuel_today: String,
     /// an unsigned 64-bit integer as a decimal string (D20)
     #[serde(rename = "developerWritesToday")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub developer_writes_today: Option<String>,
+    pub developer_writes_today: String,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -2770,6 +3725,15 @@ pub struct DeploymentOfferResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeploymentWithdrawResponse {
+    pub deployment: String,
+    pub app: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentOrgsResponseOrgsItemAppsItem {
     pub app: String,
     pub version: String,
@@ -2943,12 +3907,24 @@ pub struct OpsSetReplicasResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpsRestoreResponseBackup {
+    pub name: String,
+    pub index: u64,
+    pub format: u64,
+    pub merod: Option<String>,
+    pub release: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpsRestoreResponse {
     pub app: String,
     pub group: u64,
     pub rows: u64,
-    pub backup: Value,
-    pub status: String,
+    pub backup: OpsRestoreResponseBackup,
+    pub status: GroupStatus,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -2972,6 +3948,7 @@ pub struct OpsUpgradeRequest {
 pub struct OpsUpgradeResponse {
     pub index: u64,
     pub status: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub error: Value,
     pub compute: bool,
     /// The fields this client does not name, as the node sent them.
@@ -2981,7 +3958,7 @@ pub struct OpsUpgradeResponse {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpsBackupResponse {
-    pub written: Value,
+    pub written: u64,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -2989,8 +3966,8 @@ pub struct OpsBackupResponse {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpsClusterResponse {
-    pub cluster: Value,
-    pub identity: Value,
+    pub cluster: String,
+    pub identity: String,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3030,9 +4007,9 @@ pub struct OpsDeployerRevokePostResponse {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OpsDeploymentsGrantedResponse {
-    pub governance: Value,
+    pub governance: Governance,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3188,11 +4165,11 @@ pub struct OpsPlacementResponseAppsItem {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OpsPlacementResponseNodesItem {
     pub id: u64,
     pub zone: String,
-    pub role: Value,
+    pub role: NodeRole,
     pub release: Option<String>,
     pub apps: u64,
     /// The fields this client does not name, as the node sent them.
@@ -3284,42 +4261,68 @@ pub struct OpsPricesSetRequestTable {
     pub egress_gib: u64,
 }
 
-/// Other properties than those listed may be present: the ones listed are those clients rely on.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OpsQuotasGetResponse {
-    #[serde(rename = "maxAppsPerAccount")]
-    pub max_apps_per_account: u64,
-    #[serde(rename = "maxBundleBytesPerAccount")]
-    pub max_bundle_bytes_per_account: u64,
-    #[serde(rename = "maxApiKeysPerAccount")]
-    pub max_api_keys_per_account: u64,
-    #[serde(rename = "maxOrgsPerAccount")]
-    pub max_orgs_per_account: u64,
-    #[serde(rename = "maxAccounts")]
-    pub max_accounts: u64,
-    #[serde(rename = "maxFileBytesPerOrg")]
-    pub max_file_bytes_per_org: u64,
-    #[serde(rename = "maxConcurrentRunsPerOrg")]
-    pub max_concurrent_runs_per_org: u64,
-    #[serde(rename = "computeFuelPerOrg")]
-    pub compute_fuel_per_org: u64,
-    /// an unsigned 64-bit integer as a decimal string (D20)
-    #[serde(rename = "maxFuelPerDeveloperPerDay")]
-    pub max_fuel_per_developer_per_day: String,
-    pub orgs: Value,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
-/// Other properties than those listed may be present: the ones listed are those clients rely on.
+/// The limits `POST /ops/quotas` changes, each optional: without `org`, the cluster's (those `GET /ops/quotas` answers, `maxFuelPerDeveloperPerDay` a decimal string); with `org`, one payer's (`maxConcurrentRuns`, `computeFuel` a decimal string, `maxFileBytes`; `null` clears one). `orgs` is ignored. Any other property is refused `400 UNKNOWN_QUOTA`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpsQuotasSetRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org: Option<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
+    #[serde(rename = "maxFileBytes")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub max_file_bytes: Option<Option<u64>>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub orgs: Option<Value>,
+    #[serde(rename = "maxAppsPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_apps_per_account: Option<u64>,
+    #[serde(rename = "maxBundleBytesPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bundle_bytes_per_account: Option<u64>,
+    #[serde(rename = "maxApiKeysPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_api_keys_per_account: Option<u64>,
+    #[serde(rename = "maxOrgsPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_orgs_per_account: Option<u64>,
+    #[serde(rename = "maxAccounts")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_accounts: Option<u64>,
+    #[serde(rename = "maxFileBytesPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_bytes_per_org: Option<u64>,
+    #[serde(rename = "maxConcurrentRunsPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_runs_per_org: Option<u64>,
+    #[serde(rename = "computeFuelPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_fuel_per_org: Option<u64>,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "maxFuelPerDeveloperPerDay")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_fuel_per_developer_per_day: Option<String>,
+    #[serde(rename = "maxConcurrentRuns")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub max_concurrent_runs: Option<Option<u64>>,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "computeFuel")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub compute_fuel: Option<Option<String>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -3407,27 +4410,30 @@ pub struct OpsSignUpInviteListResponse {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct OpsStatusResponse {
-    pub node: Value,
-    pub system: Value,
-    pub governance: Governance,
-    pub groups: Value,
-    pub nodes: Value,
-    pub apps: Value,
-    pub accounts: Value,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "crate::route::present"
-    )]
-    pub rollback: Option<Value>,
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpsStatusResponseGroupsItem {
+    pub app: String,
+    pub status: GroupStatus,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
-/// Other properties than those listed may be present: the ones listed are those clients rely on.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OpsStatusResponse {
+    pub node: u64,
+    pub system: GroupStatus,
+    pub governance: Governance,
+    pub groups: Vec<OpsStatusResponseGroupsItem>,
+    pub nodes: Vec<NodeRecord>,
+    pub apps: u64,
+    pub accounts: u64,
+    pub rollback: Option<RollbackStatus>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct InviteRedeemResponse {
     pub org: String,
@@ -3440,6 +4446,14 @@ pub struct InviteRedeemResponse {
 pub struct OrgCreateResponse {
     #[serde(rename = "orgId")]
     pub org_id: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrgDeleteResponse {
+    pub apps: Vec<String>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3761,8 +4775,7 @@ pub struct OrgRenameResponse {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OrgPublisherResponse {
-    pub signer: String,
-    pub approval: Value,
+    pub generation: u64,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3772,7 +4785,7 @@ pub struct OrgPublisherResponse {
 pub struct RecoveryFinishResponse {
     pub org: String,
     #[serde(rename = "previousOwners")]
-    pub previous_owners: Value,
+    pub previous_owners: Vec<String>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3835,14 +4848,14 @@ pub struct OrgUpgradeRequest {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OrgUsageResponse {
-    pub apps: Value,
+    pub apps: u64,
     /// an unsigned 64-bit integer as a decimal string (D20)
     #[serde(rename = "developerFuelToday")]
     pub developer_fuel_today: String,
     /// an unsigned 64-bit integer as a decimal string (D20)
     #[serde(rename = "developerWritesToday")]
     pub developer_writes_today: String,
-    pub quotas: Value,
+    pub quotas: Quotas,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3857,25 +4870,19 @@ pub struct BundlePutResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OriginsListResponseOriginsItem {
+pub struct OriginsListResponse {
     pub package: String,
-    pub origin: String,
-    #[serde(rename = "rpId")]
-    pub rp_id: String,
-    #[serde(rename = "addedBy")]
-    pub added_by: String,
-    #[serde(rename = "addedAt")]
-    pub added_at: String,
-    pub served: bool,
+    pub origins: Vec<PackageOrigin>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct OriginsListResponse {
+pub struct OriginsRemoveResponse {
     pub package: String,
-    pub origins: Vec<OriginsListResponseOriginsItem>,
+    pub origin: String,
+    pub removed: bool,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3916,9 +4923,12 @@ pub struct PackageInstallResponse {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PackagePipelinesResponseValue {
     pub hash: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     #[serde(rename = "worstCaseFuel")]
     pub worst_case_fuel: Value,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub modules: Value,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub pipeline: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
@@ -3973,16 +4983,11 @@ pub struct HealthResponse {
     pub node: u64,
     #[serde(rename = "systemLeader")]
     pub system_leader: Option<u64>,
-    pub release: Value,
+    pub release: String,
     #[serde(rename = "clusterVersion")]
     pub cluster_version: String,
     #[serde(rename = "rollbackEpoch")]
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        with = "crate::route::present"
-    )]
-    pub rollback_epoch: Option<Option<u64>>,
+    pub rollback_epoch: Option<u64>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
