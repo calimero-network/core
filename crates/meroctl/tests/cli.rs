@@ -1148,3 +1148,30 @@ async fn the_proxy_serves_the_api_as_plain_http() {
     assert!(!log.contains("not-a-session"), "{log}");
     cluster.stop().await;
 }
+
+/// `ops set-quotas` reads its JSON into the node's closed quota body: a key the
+/// body does not list (a typo) is refused here, naming it, before anything is
+/// sent, rather than dropped and the rest applied. No node listens at the URL,
+/// so reaching it would answer a connection error instead.
+#[test]
+fn a_misspelled_quota_is_refused_before_it_is_sent() {
+    let home = tempfile::tempdir().unwrap();
+    let meroctl = Meroctl {
+        home: home.path().to_owned(),
+    };
+    let refused = meroctl
+        .try_run(&[
+            "--api",
+            "http://127.0.0.1:1/",
+            "--ops-token",
+            "ops-token",
+            "ops",
+            "set-quotas",
+            r#"{"maxAppsPerAcount": 5}"#,
+        ])
+        .unwrap_err();
+    assert!(
+        refused.contains("unknown field `maxAppsPerAcount`"),
+        "{refused}"
+    );
+}

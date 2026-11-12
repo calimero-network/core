@@ -237,6 +237,12 @@ impl Names {
         }
     }
 
+    /// Keeps `name` from an app type: a client generator's own names (`CallOptions`, its
+    /// class), which an app type that shares one must not replace.
+    pub(crate) fn reserve(&mut self, name: &str) {
+        let _ = self.taken.insert(name.to_owned());
+    }
+
     /// The component name of app type `abi_text`, the same on every call.
     pub(crate) fn named(&mut self, abi_text: &str) -> (String, bool) {
         if let Some(name) = self.named.get(abi_text) {

@@ -52,7 +52,9 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   `the_proxy_serves_the_api_as_plain_http` in `tests/cli.rs`.
 - Output is JSON: the generated method's typed answer serialized back
   (`env::to_json`); a field the client's types do not name is kept (`extra`),
-  so nothing the node sent is dropped. Commands that stream (watch, presence
+  so nothing the node sent is dropped. JSON a command takes for a closed body
+  (`ops set-quotas`) is refused on a key the body does not name, before it is
+  sent. Test: `a_misspelled_quota_is_refused_before_it_is_sent`. Commands that stream (watch, presence
   stream, metrics, downloads) write their own and answer `null`, which is not
   printed.
 

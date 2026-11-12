@@ -14,6 +14,7 @@ use calimero_client::types::{
 use calimero_client::OperatorSigner;
 use clap::{Subcommand, ValueEnum};
 use ed25519_dalek::{Signer, SigningKey};
+use eyre::WrapErr;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -257,7 +258,10 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
         }
         OpsCmd::Quotas => to_json(&ops.quotas_get().await?)?,
         OpsCmd::SetQuotas { quotas } => {
-            let quotas: OpsQuotasSetRequest = serde_json::from_value(json_arg(&quotas)?)?;
+            // The body is closed: a key it does not list is refused here,
+            // named, rather than dropped and the rest sent.
+            let quotas: OpsQuotasSetRequest =
+                serde_json::from_value(json_arg(&quotas)?).wrap_err("not a quota change")?;
             decided(ops.quotas_set(quotas, operator).await)?
         }
         OpsCmd::Release { version, withdraw } => {

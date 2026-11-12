@@ -1,5 +1,6 @@
-//! The Python client: `TypedDict`s for errors and events, and a class whose methods call
-//! calimero-client-py's `Client` with keyword arguments in snake_case.
+//! The Python client: `TypedDict`s for errors and events, and a class whose methods send
+//! calimero-client-py's `client.apps.call` and `client.apps.view` (answering JSON:
+//! `client.json`), with keyword arguments in snake_case.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -14,6 +15,45 @@ const KEYWORDS: &[&str] = &[
     "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
     "with", "yield", "self",
 ];
+
+/// The class's own attributes, kept from the app's method names.
+const OWN_ATTRS: &[&str] = &["_app", "_call", "_client", "_view"];
+
+/// The constructor and the two senders every method goes through: the facade's methods
+/// answering JSON (`client.json.apps`), an option not given left out rather than sent as
+/// `null`.
+const CLASS_HEAD: &str = r#"    def __init__(self, client: Client, app: str) -> None:
+        self._client = client
+        self._app = app
+
+    def _call(
+        self,
+        method: str,
+        args: Dict[str, Any],
+        idempotency_key: Optional[str],
+        passkey: Optional[SoftPasskey] = None,
+    ) -> Any:
+        fields: Dict[str, Any] = {}
+        if idempotency_key is not None:
+            fields["idempotency_key"] = idempotency_key
+        answer = self._client.json.apps.call(app=self._app, method=method, args=args, confirm=passkey, **fields)
+        return answer["result"]
+
+    def _view(
+        self,
+        method: str,
+        args: Dict[str, Any],
+        consistency: Optional[str],
+        min_index: Optional[int],
+    ) -> Any:
+        fields: Dict[str, Any] = {}
+        if consistency is not None:
+            fields["consistency"] = consistency
+        if min_index is not None:
+            fields["min_index"] = min_index
+        answer = self._client.json.apps.view(app=self._app, method=method, args=args, **fields)
+        return answer["result"]
+"#;
 
 struct Py {
     names: Names,
@@ -118,20 +158,19 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
         body,
         "    \"\"\"The app's methods, over a signed-in `calimero.Client`.\"\"\"\n"
     );
-    let _ = writeln!(
-        body,
-        "    def __init__(self, client: Client, app: str) -> None:\n        self._client = client\n        self._app = app"
-    );
-    let mut used: BTreeSet<String> = BTreeSet::new();
+    body.push_str(CLASS_HEAD);
+    let mut used: BTreeSet<String> = OWN_ATTRS.iter().map(|a| (*a).to_owned()).collect();
     for (name, m) in abi.client_methods() {
-        let method = snake(name);
-        let _ = used.insert(method.clone());
+        let mut method = snake(name);
+        while !used.insert(method.clone()) {
+            method.push('_');
+        }
         let ret = py.ty(&m.returns);
         let view = m.runs_as_view();
         let reserved: &[&str] = if view {
-            &["stale", "min_index"]
+            &["consistency", "min_index"]
         } else if m.confirm {
-            &["passkey"]
+            &["passkey", "idempotency_key"]
         } else {
             &["idempotency_key"]
         };
@@ -154,37 +193,37 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
             }
             dict.push(format!("{}: {arg}", literal(p)));
         }
+        sig.push("*".into());
         if view {
-            sig.push("*".into());
-            sig.push("stale: bool = False".into());
-            sig.push("min_index: int = 0".into());
-        } else if m.confirm {
-            sig.push("*".into());
-            sig.push("passkey: SoftPasskey".into());
+            sig.push("consistency: Optional[Literal[\"strong\", \"stale\"]] = None".into());
+            sig.push("min_index: Optional[int] = None".into());
         } else {
-            sig.push("*".into());
+            if m.confirm {
+                sig.push("passkey: Optional[SoftPasskey] = None".into());
+            }
             sig.push("idempotency_key: Optional[str] = None".into());
         }
         let lit = literal(name);
         let mut doc = format!("{} `{name}`", m.kind.name());
         if m.confirm {
-            doc.push_str("; `passkey` approves it (confirm)");
+            doc.push_str("; `passkey` approves it (confirm), else the client's own");
         }
         if m.public {
             doc.push_str("; public");
         }
-        let call = if view {
-            format!("self._client.view(self._app, {lit}, args, stale, min_index)")
+        let send = if view {
+            format!("self._view({lit}, args, consistency, min_index)")
         } else if m.confirm {
-            format!("self._client.call_confirmed(self._app, {lit}, args, passkey)")
+            format!("self._call({lit}, args, idempotency_key, passkey)")
         } else {
-            format!("self._client.call(self._app, {lit}, args, idempotency_key)")
+            format!("self._call({lit}, args, idempotency_key)")
         };
         let _ = writeln!(
             body,
-            "\n    def {method}({}) -> {ret}:\n        \"\"\"{doc}.\"\"\"\n        args: Dict[str, Any] = {{{}}}\n        return {call}[\"result\"]",
+            "\n    def {method}({}) -> {ret}:\n        \"\"\"{doc}.\"\"\"\n        args: Dict[str, Any] = {{{}}}\n        return cast({}, {send})",
             sig.join(", "),
-            dict.join(", ")
+            dict.join(", "),
+            ret,
         );
     }
     let stream = if used.contains("events") {
@@ -194,19 +233,19 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     };
     let _ = writeln!(
         body,
-        "\n    def {stream}(self, start: int = 0, limit: int = 100, timeout: float = 5.0) -> List[Dict[str, Any]]:\n        \"\"\"The app's events from log index `start`: each `{{\"id\", \"kind\", \"data\"}}`.\"\"\"\n        return self._client.events(self._app, start, limit, timeout)"
+        "\n    def {stream}(self, start: int = 0, limit: int = 100, timeout: float = 5.0) -> List[Dict[str, Any]]:\n        \"\"\"The app's events from log index `start`: each `{{\"id\", \"kind\", \"data\"}}`.\"\"\"\n        return cast(List[Dict[str, Any]], self._client.events(self._app, start, limit, timeout))"
     );
 
     let mut out = String::new();
     let _ = writeln!(out, "\"\"\"{}", super::provenance(abi));
     let _ = writeln!(
         out,
-        "\nA thin typed layer over calimero-client-py: each method calls `Client.call`,\n`Client.call_confirmed` or `Client.view`, so it travels the sealed channel with the\nclient's retries. u64 and i64 are decimal strings and bytes base64url, as on the wire.\n\"\"\"\n"
+        "\nA thin typed layer over calimero-client-py: each method sends `client.apps.call`\n(through the app's log) or `client.apps.view`, so it travels the sealed channel with the\nclient's retries. u64 and i64 are decimal strings and bytes base64url, as on the wire.\n\"\"\"\n"
     );
     let _ = writeln!(out, "from __future__ import annotations\n");
     let _ = writeln!(
         out,
-        "from typing import Any, Dict, List, Literal, Optional, TypedDict\n"
+        "from typing import Any, Dict, List, Literal, Optional, TypedDict, cast\n"
     );
     let _ = writeln!(out, "from calimero import Client, SoftPasskey\n");
     for (name, text) in &py.named {
@@ -229,5 +268,25 @@ mod tests {
         assert_eq!(snake("getOrInsert"), "get_or_insert");
         assert_eq!(snake("from"), "from_");
         assert_eq!(snake("len"), "len");
+    }
+
+    #[test]
+    fn app_methods_keep_clear_of_the_class_s_own_names() {
+        let abi = AppAbi::from_json(&serde_json::json!({
+            "abiVersion": 1,
+            "methods": {
+                "_call": { "kind": "call", "params": [] },
+                "getX": { "kind": "view", "params": [] },
+                "get_x": { "kind": "view", "params": [] },
+            },
+        }))
+        .unwrap();
+        let py = module(&abi, "AppClient");
+        assert!(
+            py.contains("    def _call_(self, *, idempotency_key"),
+            "{py}"
+        );
+        assert!(py.contains("    def get_x(self, *,"), "{py}");
+        assert!(py.contains("    def get_x_(self, *,"), "{py}");
     }
 }
