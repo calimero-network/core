@@ -128,7 +128,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Create an app instance",
-        "description": "From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`) or the caller's own. `initArgs` go to the app's `init`.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
+        "description": "From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`) or the caller's own. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
         "security": [
           {
             "session": []
@@ -167,8 +167,12 @@
                   "access": {
                     "$ref": "#/components/schemas/Access"
                   },
-                  "initArgs": {},
-                  "metadata": {},
+                  "initArgs": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                  },
+                  "metadata": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                  },
                   "deployment": {
                     "type": "string"
                   }
@@ -204,13 +208,16 @@
                         "minimum": 0
                       }
                     },
-                    "compute": {}
+                    "compute": {
+                      "type": "boolean"
+                    }
                   },
                   "required": [
                     "appId",
                     "contextId",
                     "group",
-                    "replicas"
+                    "replicas",
+                    "compute"
                   ]
                 }
               }
@@ -606,7 +613,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "An app's ABI",
-        "description": "The ABI its bundle embeds: methods, events, errors and state.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "The ABI its bundle embeds: methods, events, errors and state. `abi` is the bundle's own document, free-form here: its format is the ABI's, not this API's.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
         "security": [
           {
             "session": []
@@ -639,7 +646,9 @@
                     "bundle": {
                       "type": "string"
                     },
-                    "abi": {}
+                    "abi": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    }
                   },
                   "required": [
                     "bundle",
@@ -911,7 +920,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Upload a blob",
-        "description": "A plain blob, stored with the request's `Content-Type` (default `application/octet-stream`), which a component app's download answers with. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "A plain blob, stored with the request's `Content-Type`, which a component app's download answers with: any media type (printable ASCII, 127 bytes at most; another is `400 BAD_REQUEST`), `application/octet-stream` when the request names none. Send the blob's own type, not `*/*`, which would be stored as its type. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
         "security": [
           {
             "session": []
@@ -944,6 +953,12 @@
         "requestBody": {
           "required": true,
           "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
             "*/*": {
               "schema": {
                 "type": "string",
@@ -951,7 +966,7 @@
               }
             }
           },
-          "description": "the blob, of any media type"
+          "description": "the blob; its `Content-Type` is the type it is stored and served with"
         },
         "responses": {
           "200": {
@@ -2174,6 +2189,11 @@
                       "format": "int64",
                       "minimum": 0
                     },
+                    "size": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
                     "next": {
                       "type": "integer",
                       "format": "int64",
@@ -2185,6 +2205,7 @@
                     "partBytes",
                     "parts",
                     "expiresAt",
+                    "size",
                     "next"
                   ]
                 }
@@ -2261,8 +2282,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": true
+                  "type": "object"
                 }
               }
             }
@@ -2701,7 +2721,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Call a method",
-        "description": "A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`.\n\n**Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "A logged call: the result, the events of the call the caller receives, and the answering node's receipt. A `confirm` method answers `412` first. An app error is `422 APP_ERROR` with `details { index, code, fields }`; a trap `422 TRAP`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.\n\n**Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -2738,7 +2758,9 @@
                   "method": {
                     "type": "string"
                   },
-                  "args": {},
+                  "args": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                  },
                   "idempotencyKey": {
                     "type": "string"
                   },
@@ -2766,7 +2788,9 @@
                       "format": "int64",
                       "minimum": 0
                     },
-                    "result": {},
+                    "result": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    },
                     "events": {
                       "type": "array",
                       "items": {
@@ -2775,7 +2799,9 @@
                           "kind": {
                             "type": "string"
                           },
-                          "data": {}
+                          "data": {
+                            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                          }
                         },
                         "required": [
                           "kind",
@@ -2977,7 +3003,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Set an app's metadata",
-        "description": "The owner or an organization admin; 16 KiB at most.\n\n**Who:** signed in (a session or an API key).",
+        "description": "The owner or an organization admin; 16 KiB at most. `metadata` is the caller's own JSON, free-form, kept as given.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -3005,7 +3031,9 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "metadata": {}
+                  "metadata": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                  }
                 },
                 "required": [
                   "metadata"
@@ -3075,7 +3103,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Call a method by its path",
-        "description": "The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`.\n\n**Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "The body of `/intents` or `/views` without `method`, which the path names, as the app's OpenAPI document lists it: a view the running bundle's ABI declares (without `confirm`) is answered as `/views`, anything else as `/intents`, with that route's gate, step-up and limits. Retry-safe as a view always, as a call with `idempotencyKey`. `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.\n\n**Who:** whoever the app's access admits (a public app: anyone). **Step-up:** when the method is a `confirm` method of the app's ABI, answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -3117,7 +3145,9 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "args": {},
+                  "args": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                  },
                   "idempotencyKey": {
                     "type": "string"
                   },
@@ -3155,7 +3185,9 @@
                       "format": "int64",
                       "minimum": 0
                     },
-                    "result": {},
+                    "result": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    },
                     "events": {
                       "type": "array",
                       "items": {
@@ -3164,7 +3196,9 @@
                           "kind": {
                             "type": "string"
                           },
-                          "data": {}
+                          "data": {
+                            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                          }
                         },
                         "required": [
                           "kind",
@@ -3563,7 +3597,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "An app's OpenAPI document",
-        "description": "Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST /apps/{app}/methods/{method}` per method, with its arguments, result and errors.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Generated from the ABI of the bundle the app runs, under the access `/abi` has: one `POST /apps/{app}/methods/{method}` per method, with its arguments, result and errors. Free-form here: it is a document of its own, which a client reads as OpenAPI.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
         "security": [
           {
             "session": []
@@ -3963,7 +3997,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "An app's compute runs",
-        "description": "**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
         "security": [
           {
             "session": []
@@ -4008,13 +4042,30 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "properties": {
+                    "runs": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Run"
+                      }
+                    },
+                    "next": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "runs",
+                    "next"
+                  ]
                 }
               }
             }
           },
           "400": {
-            "description": "`BAD_LIMIT`",
+            "description": "`BAD_CURSOR`; `BAD_LIMIT`",
             "content": {
               "application/json": {
                 "schema": {
@@ -4023,6 +4074,7 @@
               }
             },
             "x-calimero-codes": [
+              "BAD_CURSOR",
               "BAD_LIMIT"
             ]
           },
@@ -4112,8 +4164,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": true
+                  "$ref": "#/components/schemas/Run"
                 }
               }
             }
@@ -4274,7 +4325,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Hand an app to another account",
-        "description": "The owner (for an organization's app, while a member and in the app's team), or an organization admin; an organization's app only to a member.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "The owner (for an organization's app, while a member and in the app's team), or an organization admin; an organization's app only to a member. Answers `null`.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -4321,7 +4372,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "type": "null"
                 }
               }
             }
@@ -4408,7 +4459,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Upgrade an app instance",
-        "description": "To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. Whoever the package's manifest names (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version).\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. Whoever the package's manifest names (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -4474,7 +4525,9 @@
                     "status": {
                       "type": "string"
                     },
-                    "error": {},
+                    "error": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    },
                     "compute": {
                       "type": "boolean"
                     }
@@ -4649,55 +4702,13 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "today": {},
+                    "today": {
+                      "$ref": "#/components/schemas/UsageDay"
+                    },
                     "days": {
                       "type": "array",
                       "items": {
-                        "type": "object",
-                        "properties": {
-                          "date": {
-                            "type": "string"
-                          },
-                          "runs": {
-                            "type": "string",
-                            "pattern": "^(0|[1-9][0-9]*)$",
-                            "description": "an unsigned 64-bit integer as a decimal string (D20)"
-                          },
-                          "fuel": {
-                            "type": "string",
-                            "pattern": "^(0|[1-9][0-9]*)$",
-                            "description": "an unsigned 64-bit integer as a decimal string (D20)"
-                          },
-                          "wallMs": {
-                            "type": "string",
-                            "pattern": "^(0|[1-9][0-9]*)$",
-                            "description": "an unsigned 64-bit integer as a decimal string (D20)"
-                          },
-                          "writes": {
-                            "type": "string",
-                            "pattern": "^(0|[1-9][0-9]*)$",
-                            "description": "an unsigned 64-bit integer as a decimal string (D20)"
-                          },
-                          "bytesWritten": {
-                            "type": "string",
-                            "pattern": "^(0|[1-9][0-9]*)$",
-                            "description": "an unsigned 64-bit integer as a decimal string (D20)"
-                          },
-                          "events": {
-                            "type": "string",
-                            "pattern": "^(0|[1-9][0-9]*)$",
-                            "description": "an unsigned 64-bit integer as a decimal string (D20)"
-                          }
-                        },
-                        "required": [
-                          "date",
-                          "runs",
-                          "fuel",
-                          "wallMs",
-                          "writes",
-                          "bytesWritten",
-                          "events"
-                        ]
+                        "$ref": "#/components/schemas/UsageDay"
                       }
                     }
                   },
@@ -4759,7 +4770,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Read with a view method",
-        "description": "Read on a caught-up replica (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it), or (`\"stale\"`) on the one answering; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`).\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Read on a caught-up replica (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it), or (`\"stale\"`) on the one answering; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
         "security": [
           {
             "session": []
@@ -4792,7 +4803,9 @@
                   "method": {
                     "type": "string"
                   },
-                  "args": {},
+                  "args": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                  },
                   "consistency": {
                     "type": "string",
                     "enum": [
@@ -4826,7 +4839,9 @@
                       "format": "int64",
                       "minimum": 0
                     },
-                    "result": {},
+                    "result": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    },
                     "receipt": {
                       "$ref": "#/components/schemas/Receipt"
                     }
@@ -5159,8 +5174,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "additionalProperties": true
+                  "$ref": "#/components/schemas/AccountProof"
                 }
               }
             }
@@ -6281,7 +6295,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "End every session of the account",
-        "description": "**Who:** an account holder (a passkey session not bound to an app's frontend).",
+        "description": "`revoked`: how many sessions ended.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend).",
         "security": [
           {
             "session": []
@@ -6295,7 +6309,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "type": "object",
+                  "properties": {
+                    "revoked": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "revoked"
+                  ]
                 }
               }
             }
@@ -6618,7 +6642,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/OutboundApproved"
                 }
               }
             }
@@ -6705,7 +6729,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "Start a sign-in",
-        "description": "A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses.\n\n**Who:** anyone.",
+        "description": "A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.\n\n**Who:** anyone.",
         "security": [],
         "x-calimero-who": "anyone",
         "x-calimero-sealed": true,
@@ -6736,7 +6760,9 @@
                     "challengeId": {
                       "type": "string"
                     },
-                    "options": {}
+                    "options": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    }
                   },
                   "required": [
                     "challengeId",
@@ -6859,7 +6885,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "Start a sign-up",
-        "description": "Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up.\n\n**Who:** anyone.",
+        "description": "Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.\n\n**Who:** anyone.",
         "security": [],
         "x-calimero-who": "anyone",
         "x-calimero-sealed": true,
@@ -6895,7 +6921,9 @@
                     "challengeId": {
                       "type": "string"
                     },
-                    "options": {}
+                    "options": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    }
                   },
                   "required": [
                     "challengeId",
@@ -7071,7 +7099,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "Start adding a passkey",
-        "description": "Creation options for another passkey (a device) on the caller's account.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend).",
+        "description": "Creation options for another passkey (a device) on the caller's account. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend).",
         "security": [
           {
             "session": []
@@ -7090,7 +7118,9 @@
                     "challengeId": {
                       "type": "string"
                     },
-                    "options": {}
+                    "options": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    }
                   },
                   "required": [
                     "challengeId",
@@ -7742,7 +7772,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "Start an account recovery",
-        "description": "Signed out, with the recovery code: creation options for the passkey that will replace the lost ones.\n\n**Who:** anyone.",
+        "description": "Signed out, with the recovery code: creation options for the passkey that will replace the lost ones. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.\n\n**Who:** anyone.",
         "security": [],
         "x-calimero-who": "anyone",
         "x-calimero-sealed": true,
@@ -7776,7 +7806,9 @@
                     "challengeId": {
                       "type": "string"
                     },
-                    "options": {}
+                    "options": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    }
                   },
                   "required": [
                     "challengeId",
@@ -8301,7 +8333,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/ApprovedReleases"
                 }
               }
             }
@@ -8608,7 +8640,7 @@
         ],
         "x-calimero-group": "auth",
         "summary": "The account's usage against its quotas",
-        "description": "Apps, bundle bytes, API keys and owned organizations; what today's runs of the apps the account develops used (decimal strings).\n\n**Who:** signed in (a session or an API key).",
+        "description": "The apps the account owns, its bundle bytes (a decimal string), API keys and owned organizations; the file bytes held by each payer it belongs to (each organization it is in, and `account:<id>` for its own apps); the cluster's quotas; and what today's runs of the apps the account develops used (decimal strings).\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -8627,10 +8659,36 @@
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "apps": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
                     "bundleBytes": {
                       "type": "string",
                       "pattern": "^(0|[1-9][0-9]*)$",
                       "description": "an unsigned 64-bit integer as a decimal string (D20)"
+                    },
+                    "apiKeys": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "orgsOwned": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "fileBytes": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      }
+                    },
+                    "quotas": {
+                      "$ref": "#/components/schemas/Quotas"
                     },
                     "developerFuelToday": {
                       "type": "string",
@@ -8644,9 +8702,15 @@
                     }
                   },
                   "required": [
-                    "bundleBytes"
-                  ],
-                  "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
+                    "apps",
+                    "bundleBytes",
+                    "apiKeys",
+                    "orgsOwned",
+                    "fileBytes",
+                    "quotas",
+                    "developerFuelToday",
+                    "developerWritesToday"
+                  ]
                 }
               }
             }
@@ -10380,7 +10444,19 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "type": "object",
+                  "properties": {
+                    "deployment": {
+                      "type": "string"
+                    },
+                    "app": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "deployment",
+                    "app"
+                  ]
                 }
               }
             }
@@ -10626,7 +10702,7 @@
         ],
         "x-calimero-group": "public",
         "summary": "Node health",
-        "description": "In the clear. The node's id, the system group's leader, its release, the newest cluster version it supports (`clusterVersion`) and the cluster's rollback epoch.\n\n**Who:** anyone.",
+        "description": "In the clear. The node's id, the system group's leader (`null`: none known), its `merod` release, the newest cluster version it supports (`clusterVersion`) and the cluster's rollback epoch (`null` on a node without a rollback counter).\n\n**Who:** anyone.",
         "security": [],
         "x-calimero-who": "anyone",
         "x-calimero-sealed": false,
@@ -10654,7 +10730,9 @@
                       "format": "int64",
                       "minimum": 0
                     },
-                    "release": {},
+                    "release": {
+                      "type": "string"
+                    },
                     "clusterVersion": {
                       "type": "string"
                     },
@@ -10672,7 +10750,8 @@
                     "node",
                     "systemLeader",
                     "release",
-                    "clusterVersion"
+                    "clusterVersion",
+                    "rollbackEpoch"
                   ]
                 }
               }
@@ -10689,7 +10768,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Join with an invite",
-        "description": "No passkey prompt: the node signs the redemption with the token's key.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "No passkey prompt: the node signs the redemption with the token's key. Answers the organization joined.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -10721,8 +10800,7 @@
                   },
                   "required": [
                     "org"
-                  ],
-                  "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
+                  ]
                 }
               }
             }
@@ -11118,7 +11196,7 @@
         ],
         "x-calimero-group": "ops",
         "summary": "Restore an app from its sealed backup",
-        "description": "Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state.\n\n**Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
+        "description": "Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status.\n\n**Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
         "security": [
           {
             "opsToken": []
@@ -11177,9 +11255,45 @@
                       "format": "int64",
                       "minimum": 0
                     },
-                    "backup": {},
+                    "backup": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "index": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "format": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "merod": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "release": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "index",
+                        "format",
+                        "merod",
+                        "release"
+                      ]
+                    },
                     "status": {
-                      "type": "string"
+                      "$ref": "#/components/schemas/GroupStatus"
                     }
                   },
                   "required": [
@@ -11299,7 +11413,7 @@
         ],
         "x-calimero-group": "ops",
         "summary": "Upgrade an app as the operator",
-        "description": "To a release the operator installed, where the operator holds app upgrades.\n\n**Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
+        "description": "To a release the operator installed, where the operator holds app upgrades. `error` is the app log's error value (`null` when it ran), free-form: the app's own.\n\n**Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
         "security": [
           {
             "opsToken": []
@@ -11364,7 +11478,9 @@
                     "status": {
                       "type": "string"
                     },
-                    "error": {},
+                    "error": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    },
                     "compute": {
                       "type": "boolean"
                     }
@@ -11490,7 +11606,7 @@
         ],
         "x-calimero-group": "ops",
         "summary": "Snapshot the apps this node leads",
-        "description": "Into `--backup-dir`. With `all=true`, every group this node holds, leader or not: what a node of a cluster that lost a majority still has, to found the cluster again from (`merod --bootstrap --restore-from`).\n\n**Who:** the ops token.",
+        "description": "Into `--backup-dir`. With `all=true`, every group this node holds, leader or not: what a node of a cluster that lost a majority still has, to found the cluster again from (`merod --bootstrap --restore-from`). `written`: how many snapshots it wrote.\n\n**Who:** the ops token.",
         "security": [
           {
             "opsToken": []
@@ -11516,7 +11632,11 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "written": {}
+                    "written": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    }
                   },
                   "required": [
                     "written"
@@ -11562,7 +11682,7 @@
         ],
         "x-calimero-group": "ops",
         "summary": "The cluster's identity",
-        "description": "**Who:** the ops token.",
+        "description": "The cluster's name and the identity this replica holds (hex).\n\n**Who:** the ops token.",
         "security": [
           {
             "opsToken": []
@@ -11578,8 +11698,12 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "cluster": {},
-                    "identity": {}
+                    "cluster": {
+                      "type": "string"
+                    },
+                    "identity": {
+                      "type": "string"
+                    }
                   },
                   "required": [
                     "cluster",
@@ -12103,7 +12227,9 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "governance": {}
+                    "governance": {
+                      "$ref": "#/components/schemas/Governance"
+                    }
                   },
                   "required": [
                     "governance"
@@ -12981,7 +13107,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/OutboundApproved"
                 }
               }
             }
@@ -13377,7 +13503,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/Uninstalled"
                 }
               }
             }
@@ -13451,7 +13577,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/Uninstalled"
                 }
               }
             }
@@ -13554,7 +13680,9 @@
                           "zone": {
                             "type": "string"
                           },
-                          "role": {},
+                          "role": {
+                            "$ref": "#/components/schemas/NodeRole"
+                          },
                           "release": {
                             "type": [
                               "string",
@@ -13869,68 +13997,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "maxAppsPerAccount": {
-                      "type": "integer",
-                      "format": "int64",
-                      "minimum": 0
-                    },
-                    "maxBundleBytesPerAccount": {
-                      "type": "integer",
-                      "format": "int64",
-                      "minimum": 0
-                    },
-                    "maxApiKeysPerAccount": {
-                      "type": "integer",
-                      "format": "int64",
-                      "minimum": 0
-                    },
-                    "maxOrgsPerAccount": {
-                      "type": "integer",
-                      "format": "int64",
-                      "minimum": 0
-                    },
-                    "maxAccounts": {
-                      "type": "integer",
-                      "format": "int64",
-                      "minimum": 0
-                    },
-                    "maxFileBytesPerOrg": {
-                      "type": "integer",
-                      "format": "int64",
-                      "minimum": 0
-                    },
-                    "maxConcurrentRunsPerOrg": {
-                      "type": "integer",
-                      "format": "int64",
-                      "minimum": 0
-                    },
-                    "computeFuelPerOrg": {
-                      "type": "integer",
-                      "format": "int64",
-                      "minimum": 0
-                    },
-                    "maxFuelPerDeveloperPerDay": {
-                      "type": "string",
-                      "pattern": "^(0|[1-9][0-9]*)$",
-                      "description": "an unsigned 64-bit integer as a decimal string (D20)"
-                    },
-                    "orgs": {}
-                  },
-                  "required": [
-                    "maxAppsPerAccount",
-                    "maxBundleBytesPerAccount",
-                    "maxApiKeysPerAccount",
-                    "maxOrgsPerAccount",
-                    "maxAccounts",
-                    "maxFileBytesPerOrg",
-                    "maxConcurrentRunsPerOrg",
-                    "computeFuelPerOrg",
-                    "maxFuelPerDeveloperPerDay",
-                    "orgs"
-                  ],
-                  "description": "Other properties than those listed may be present: the ones listed are those clients rely on."
+                  "$ref": "#/components/schemas/QuotaSettings"
                 }
               }
             }
@@ -14127,7 +14194,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/ApprovedReleases"
                 }
               }
             }
@@ -14232,7 +14299,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/Deadlines"
                 }
               }
             }
@@ -14327,7 +14394,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/Deadlines"
                 }
               }
             }
@@ -14519,7 +14586,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/SignUpSet"
                 }
               }
             }
@@ -14833,7 +14900,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/InviteKey"
                 }
               }
             }
@@ -14930,7 +14997,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/InviteKey"
                 }
               }
             }
@@ -14991,7 +15058,7 @@
         ],
         "x-calimero-group": "ops",
         "summary": "The node and the cluster",
-        "description": "Counts, Raft status and governance; never app state, names or credentials.\n\n**Who:** the ops token.",
+        "description": "Counts, Raft status and governance; never app state, names or credentials. `groups`: the app groups this node hosts; `apps` and `accounts` are counts; `rollback` is this node's rollback counter, `null` on a node without one.\n\n**Who:** the ops token.",
         "security": [
           {
             "opsToken": []
@@ -15007,16 +15074,61 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "node": {},
-                    "system": {},
+                    "node": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "system": {
+                      "$ref": "#/components/schemas/GroupStatus"
+                    },
                     "governance": {
                       "$ref": "#/components/schemas/Governance"
                     },
-                    "groups": {},
-                    "nodes": {},
-                    "apps": {},
-                    "accounts": {},
-                    "rollback": {}
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "app": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "$ref": "#/components/schemas/GroupStatus"
+                          }
+                        },
+                        "required": [
+                          "app",
+                          "status"
+                        ]
+                      }
+                    },
+                    "nodes": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/NodeRecord"
+                      }
+                    },
+                    "apps": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "accounts": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "rollback": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/components/schemas/RollbackStatus"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
                   },
                   "required": [
                     "node",
@@ -15025,7 +15137,8 @@
                     "groups",
                     "nodes",
                     "apps",
-                    "accounts"
+                    "accounts",
+                    "rollback"
                   ]
                 }
               }
@@ -15260,7 +15373,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Delete an organization",
-        "description": "With its teams, invites and apps; the owner.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "With its teams, invites and apps; the owner. `apps`: the apps deleted with it.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -15297,7 +15410,18 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "type": "object",
+                  "properties": {
+                    "apps": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "apps"
+                  ]
                 }
               }
             }
@@ -17173,7 +17297,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Set a member's metadata",
-        "description": "**Who:** signed in (a session or an API key).",
+        "description": "`metadata` is the caller's own JSON, free-form, kept as given.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -17209,7 +17333,9 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "metadata": {}
+                  "metadata": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                  }
                 },
                 "required": [
                   "metadata"
@@ -17610,7 +17736,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Set an organization's metadata",
-        "description": "**Who:** signed in (a session or an API key).",
+        "description": "`metadata` is the caller's own JSON, free-form, kept as given.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -17638,7 +17764,9 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "metadata": {}
+                  "metadata": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                  }
                 },
                 "required": [
                   "metadata"
@@ -17926,7 +18054,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/OutboundApproved"
                 }
               }
             }
@@ -18171,7 +18299,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Bind a package signing key",
-        "description": "The key's signature over the binding proves the organization holds it; then its `MANAGE_APPLICATION` holders upgrade the apps of packages that name `publisher`.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "The key's signature over the binding proves the organization holds it; then its `MANAGE_APPLICATION` holders upgrade the apps of packages that name `publisher`. Answers the key's binding generation now.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -18229,14 +18357,14 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "signer": {
-                      "type": "string"
-                    },
-                    "approval": {}
+                    "generation": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    }
                   },
                   "required": [
-                    "signer",
-                    "approval"
+                    "generation"
                   ]
                 }
               }
@@ -18652,7 +18780,12 @@
                     "org": {
                       "type": "string"
                     },
-                    "previousOwners": {}
+                    "previousOwners": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
                   },
                   "required": [
                     "org",
@@ -18957,7 +19090,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/ApprovedReleases"
                 }
               }
             }
@@ -19244,7 +19377,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Update a team",
-        "description": "Rename, open or restrict, move under another parent, or set its metadata. `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -19289,7 +19422,9 @@
                       "null"
                     ]
                   },
-                  "metadata": {}
+                  "metadata": {
+                    "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                  }
                 }
               }
             }
@@ -20223,7 +20358,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "An organization's usage",
-        "description": "An admin: what today's runs of the apps the organization develops used (decimal strings) and its quotas; a member gets `403`.\n\n**Who:** signed in (a session or an API key).",
+        "description": "An admin: how many apps the organization develops, what their runs used today (decimal strings) and the cluster's quotas; a member gets `403`.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -20252,7 +20387,11 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "apps": {},
+                    "apps": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
                     "developerFuelToday": {
                       "type": "string",
                       "pattern": "^(0|[1-9][0-9]*)$",
@@ -20263,7 +20402,9 @@
                       "pattern": "^(0|[1-9][0-9]*)$",
                       "description": "an unsigned 64-bit integer as a decimal string (D20)"
                     },
-                    "quotas": {}
+                    "quotas": {
+                      "$ref": "#/components/schemas/Quotas"
+                    }
                   },
                   "required": [
                     "apps",
@@ -20373,35 +20514,7 @@
                     "origins": {
                       "type": "array",
                       "items": {
-                        "type": "object",
-                        "properties": {
-                          "package": {
-                            "type": "string"
-                          },
-                          "origin": {
-                            "type": "string"
-                          },
-                          "rpId": {
-                            "type": "string"
-                          },
-                          "addedBy": {
-                            "type": "string"
-                          },
-                          "addedAt": {
-                            "type": "string"
-                          },
-                          "served": {
-                            "type": "boolean"
-                          }
-                        },
-                        "required": [
-                          "package",
-                          "origin",
-                          "rpId",
-                          "addedBy",
-                          "addedAt",
-                          "served"
-                        ]
+                        "$ref": "#/components/schemas/PackageOrigin"
                       }
                     }
                   },
@@ -20448,7 +20561,7 @@
         ],
         "x-calimero-group": "packages",
         "summary": "Register a frontend origin",
-        "description": "By whoever manages the package, with a passkey step-up over the change.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "By whoever manages the package, with a passkey step-up over the change. Answers the origin as registered (the one already there, when the same origin is registered again).\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -20502,7 +20615,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/PackageOrigin"
                 }
               }
             }
@@ -20649,7 +20762,23 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "type": "object",
+                  "properties": {
+                    "package": {
+                      "type": "string"
+                    },
+                    "origin": {
+                      "type": "string"
+                    },
+                    "removed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "package",
+                    "origin",
+                    "removed"
+                  ]
                 }
               }
             }
@@ -21217,7 +21346,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/Uninstalled"
                 }
               }
             }
@@ -21304,7 +21433,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/Uninstalled"
                 }
               }
             }
@@ -21602,7 +21731,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/SignUpSet"
                 }
               }
             }
@@ -22003,7 +22132,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Written"
+                  "$ref": "#/components/schemas/InviteKey"
                 }
               }
             }
@@ -22099,7 +22228,9 @@
           "message": {
             "type": "string"
           },
-          "details": {}
+          "details": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          }
         },
         "required": [
           "status",
@@ -22273,11 +22404,6 @@
         ],
         "description": "A session: its token (15 minutes, by the issuing node) and the refresh token for `/auth/refresh`."
       },
-      "Written": {
-        "type": "object",
-        "additionalProperties": true,
-        "description": "What the system log answered for the command this request wrote (for example the id it made)."
-      },
       "Applied": {
         "type": "object",
         "properties": {
@@ -22294,7 +22420,9 @@
               "trap"
             ]
           },
-          "error": {}
+          "error": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          }
         },
         "required": [
           "index",
@@ -22460,7 +22588,9 @@
           "code": {
             "type": "string"
           },
-          "fields": {}
+          "fields": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          }
         },
         "required": [
           "code",
@@ -22506,7 +22636,9 @@
           "appId": {
             "type": "string"
           },
-          "error": {}
+          "error": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          }
         },
         "required": [
           "appId",
@@ -22863,8 +22995,15 @@
           "receiptKey": {
             "type": "string"
           },
-          "governance": {},
-          "kms": {},
+          "governance": {
+            "$ref": "#/components/schemas/Governance"
+          },
+          "kms": {
+            "$ref": "#/components/schemas/KmsKeys"
+          },
+          "jobKey": {
+            "type": "string"
+          },
           "clusterIdentity": {
             "type": "string"
           }
@@ -22879,7 +23018,944 @@
           "node",
           "mock"
         ],
-        "description": "A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for."
+        "description": "A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`; `jobKey` only from a job node, never from this API."
+      },
+      "KmsKeys": {
+        "type": "object",
+        "properties": {
+          "storage": {
+            "$ref": "#/components/schemas/KmsEvidence"
+          },
+          "disk": {
+            "$ref": "#/components/schemas/KmsEvidence"
+          }
+        },
+        "description": "What a node verified of the mero-kms replicas it took its keys from: the storage key `merod` fetched, and the data disk's key the boot script fetched; each absent without a record."
+      },
+      "KmsEvidence": {
+        "type": "object",
+        "properties": {
+          "kmsHost": {
+            "type": "string"
+          },
+          "release": {
+            "type": "string"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "mrtd": {
+            "type": "string"
+          },
+          "rtmr0": {
+            "type": "string"
+          },
+          "rtmr1": {
+            "type": "string"
+          },
+          "rtmr2": {
+            "type": "string"
+          },
+          "rtmr3": {
+            "type": "string"
+          },
+          "tcbStatus": {
+            "type": "string"
+          },
+          "quoteSha256": {
+            "type": "string"
+          },
+          "verifiedAt": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "mock": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "kmsHost",
+          "release",
+          "mrtd",
+          "rtmr0",
+          "rtmr1",
+          "rtmr2",
+          "rtmr3",
+          "quoteSha256",
+          "verifiedAt"
+        ],
+        "description": "The KMS quote a node accepted a key under: the KMS host, the mero-kms release (and image profile) whose signed policy it matched, the quote's registers (hex), its TCB status, SHA-256 and when it was verified (Unix seconds); `mock` (absent: false) in development builds only."
+      },
+      "GroupStatus": {
+        "type": "object",
+        "properties": {
+          "group": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "leader": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "is_leader": {
+            "type": "boolean"
+          },
+          "term": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "last_log": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "applied": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "voters": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          "learners": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        },
+        "required": [
+          "group",
+          "leader",
+          "is_leader",
+          "term",
+          "last_log",
+          "applied",
+          "voters",
+          "learners"
+        ],
+        "description": "A Raft group's status as one node sees it: the leader (`null`: none known), whether this node is it, the term, the last log index (`null`: an empty log), the applied index, and the voters and learners."
+      },
+      "RollbackStatus": {
+        "type": "object",
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "mark": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "forced": {
+            "type": "boolean"
+          },
+          "sinceCheckpointSecs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "epoch",
+          "generation",
+          "mark",
+          "forced",
+          "sinceCheckpointSecs"
+        ],
+        "description": "A node's rollback counter: the cluster's epoch (rollbacks forced so far), its generation and mark, whether this start was forced (`--accept-rollback`), and the seconds since mero-kms last acknowledged a checkpoint."
+      },
+      "NodeRole": {
+        "type": "string",
+        "enum": [
+          "replica",
+          "job"
+        ],
+        "description": "What a node does: hold app replicas, or run compute jobs."
+      },
+      "NodeRecord": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "addr": {
+            "type": "string"
+          },
+          "zone": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/NodeRole"
+          },
+          "pool": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "addr",
+          "zone",
+          "role"
+        ],
+        "description": "A registered node: its id, address, zone, role and (a job node's) compute pool, absent for none."
+      },
+      "Quotas": {
+        "type": "object",
+        "properties": {
+          "maxAppsPerAccount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxBundleBytesPerAccount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxApiKeysPerAccount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxOrgsPerAccount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxAccounts": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxFileBytesPerOrg": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxConcurrentRunsPerOrg": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "computeFuelPerOrg": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxFuelPerDeveloperPerDay": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          }
+        },
+        "required": [
+          "maxAppsPerAccount",
+          "maxBundleBytesPerAccount",
+          "maxApiKeysPerAccount",
+          "maxOrgsPerAccount",
+          "maxAccounts",
+          "maxFileBytesPerOrg",
+          "maxConcurrentRunsPerOrg",
+          "computeFuelPerOrg",
+          "maxFuelPerDeveloperPerDay"
+        ],
+        "description": "The per-account limits, and the compute and file limits of each organization (or personal account) that has no override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers."
+      },
+      "OrgQuotas": {
+        "type": "object",
+        "properties": {
+          "maxConcurrentRuns": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "computeFuel": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          },
+          "maxFileBytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "description": "One payer's limits in place of the cluster's; a limit left out is the cluster's."
+      },
+      "QuotaSettings": {
+        "type": "object",
+        "properties": {
+          "maxAppsPerAccount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxBundleBytesPerAccount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxApiKeysPerAccount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxOrgsPerAccount": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxAccounts": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxFileBytesPerOrg": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxConcurrentRunsPerOrg": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "computeFuelPerOrg": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "maxFuelPerDeveloperPerDay": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          },
+          "orgs": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OrgQuotas"
+            }
+          }
+        },
+        "required": [
+          "maxAppsPerAccount",
+          "maxBundleBytesPerAccount",
+          "maxApiKeysPerAccount",
+          "maxOrgsPerAccount",
+          "maxAccounts",
+          "maxFileBytesPerOrg",
+          "maxConcurrentRunsPerOrg",
+          "computeFuelPerOrg",
+          "maxFuelPerDeveloperPerDay",
+          "orgs"
+        ],
+        "description": "`GET /ops/quotas`: the cluster's limits and, under `orgs`, each payer's overrides by payer id."
+      },
+      "UsageDay": {
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "runs": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          },
+          "fuel": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          },
+          "wallMs": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          },
+          "writes": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          },
+          "bytesWritten": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          },
+          "events": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "an unsigned 64-bit integer as a decimal string (D20)"
+          }
+        },
+        "required": [
+          "date",
+          "runs",
+          "fuel",
+          "wallMs",
+          "writes",
+          "bytesWritten",
+          "events"
+        ],
+        "description": "What an app's runs used on one UTC day (`date`, `YYYY-MM-DD`), each figure a decimal string; `wallMs` is information only."
+      },
+      "RunFile": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": "A file a run reads or wrote: its id, and its plaintext size and SHA-256 (hex) only for a caller who may list the app's files."
+      },
+      "Run": {
+        "type": "object",
+        "properties": {
+          "run": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "done",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "cancelRequested": {
+            "type": "boolean"
+          },
+          "startTsMs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "caps": {
+            "type": "object",
+            "properties": {
+              "fuel": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "memoryMib": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "wallSecs": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "fuel",
+              "memoryMib",
+              "wallSecs"
+            ]
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunFile"
+            }
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "attempt": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "node": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "tsMs": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "attempt",
+                "node",
+                "tsMs"
+              ]
+            }
+          },
+          "final": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "attempt": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "outcome": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "done"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "failed"
+                        ]
+                      },
+                      "reason": {
+                        "type": "string",
+                        "enum": [
+                          "fuel",
+                          "memory",
+                          "trap",
+                          "app-error",
+                          "integrity",
+                          "cancelled",
+                          "lost",
+                          "refused",
+                          "timeout",
+                          "quota",
+                          "not-granted",
+                          "too-large"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "reason"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "cancelled"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ]
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "kind"
+                }
+              },
+              "outputs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RunFile"
+                }
+              },
+              "usage": {
+                "type": "object",
+                "properties": {
+                  "cpuMicros": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "gibMicros": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
+                  "fuel": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "cpuMicros",
+                  "gibMicros",
+                  "fuel"
+                ]
+              },
+              "tsMs": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "message": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "attempt",
+              "outcome",
+              "outputs",
+              "usage",
+              "tsMs",
+              "message"
+            ]
+          },
+          "progress": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "percent": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "step": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "percent",
+              "step"
+            ]
+          },
+          "queue": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unplaced",
+                  "waiting",
+                  "granted"
+                ]
+              },
+              "capacity": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "pool": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "NO_CAPACITY",
+                  "POOL_FULL",
+                  "PAYER_AT_RUN_QUOTA",
+                  "PAYER_AT_FUEL_QUOTA"
+                ]
+              }
+            },
+            "required": [
+              "state",
+              "capacity",
+              "pool"
+            ]
+          }
+        },
+        "required": [
+          "run",
+          "method",
+          "state",
+          "cancelRequested",
+          "startTsMs",
+          "caps",
+          "inputs",
+          "attempts",
+          "final",
+          "progress"
+        ],
+        "description": "A compute run's record, without its arguments or keys: its method, state, caps (`fuel` a JSON number here), inputs, attempts (`tsMs` Unix milliseconds) and final outcome (`null` while it runs; `message` the failure text, `null` unless the caller may list the app's files). `progress` is the leader's last poll (`null` elsewhere, when it is not active, or to a caller who may not list files); `queue` where the run waits for a job node, to a caller who may list files only."
+      },
+      "AccountProof": {
+        "type": "object",
+        "properties": {
+          "statement": {
+            "$ref": "#/components/schemas/AccountStatement"
+          },
+          "key": {
+            "type": "string"
+          },
+          "signature": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "statement",
+          "key",
+          "signature"
+        ],
+        "description": "A statement, signed with the answering node's receipt key (hex, Ed25519 over the statement's canonical JSON after its domain), that the account asked to bind `nonce` for `audience`, valid from `issuedAt` to `expiresAt` (Unix seconds)."
+      },
+      "AccountStatement": {
+        "type": "object",
+        "properties": {
+          "cluster": {
+            "type": "string"
+          },
+          "node": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "account": {
+            "type": "string"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string"
+          },
+          "issuedAt": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "expiresAt": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "cluster",
+          "node",
+          "account",
+          "nonce",
+          "audience",
+          "issuedAt",
+          "expiresAt"
+        ],
+        "description": "What an account proof states: the cluster and node, the account, the nonce and audience it binds, and when it was issued and expires (Unix seconds)."
+      },
+      "PackageOrigin": {
+        "type": "object",
+        "properties": {
+          "package": {
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "rpId": {
+            "type": "string"
+          },
+          "addedBy": {
+            "type": "string"
+          },
+          "addedAt": {
+            "type": "string"
+          },
+          "served": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "package",
+          "origin",
+          "rpId",
+          "addedBy",
+          "addedAt",
+          "served"
+        ],
+        "description": "A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), and whether the cluster serves the package's frontend there."
+      },
+      "SignUpState": {
+        "type": "object",
+        "properties": {
+          "policy": {
+            "$ref": "#/components/schemas/SignUp"
+          },
+          "orgInvites": {
+            "type": "boolean"
+          },
+          "signUpInvites": {
+            "type": "boolean"
+          },
+          "inviteRequired": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "policy",
+          "orgInvites",
+          "signUpInvites",
+          "inviteRequired"
+        ],
+        "description": "The sign-up policy and what it implies: whether organization invites and cluster sign-up invites admit a new account, and whether one is required."
+      },
+      "ApprovedReleases": {
+        "type": "object",
+        "properties": {
+          "approvedReleases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "approvedReleases"
+        ],
+        "description": "The mero-tee releases the scope approves now, after the change."
+      },
+      "OutboundApproved": {
+        "type": "object",
+        "properties": {
+          "signer": {
+            "type": "string"
+          },
+          "approval": {
+            "$ref": "#/components/schemas/OutboundApproval"
+          }
+        },
+        "required": [
+          "signer",
+          "approval"
+        ],
+        "description": "The outbound approval the scope holds now for the package's publisher (`signer`), after the change."
+      },
+      "Uninstalled": {
+        "type": "object",
+        "properties": {
+          "removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "removed"
+        ],
+        "description": "The versions an uninstall removed."
+      },
+      "Deadlines": {
+        "type": "object",
+        "properties": {
+          "deadlines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string"
+                },
+                "after": {
+                  "type": "string"
+                },
+                "afterSecs": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "version",
+                "after",
+                "afterSecs"
+              ]
+            }
+          }
+        },
+        "required": [
+          "deadlines"
+        ],
+        "description": "Every release deadline after the change, oldest release first (`after` RFC 3339, `afterSecs` Unix seconds)."
+      },
+      "SignUpSet": {
+        "type": "object",
+        "properties": {
+          "governance": {
+            "$ref": "#/components/schemas/Governance"
+          },
+          "signUp": {
+            "$ref": "#/components/schemas/SignUpState"
+          }
+        },
+        "required": [
+          "governance",
+          "signUp"
+        ],
+        "description": "The cluster's governance and sign-up policy after the change."
+      },
+      "InviteKey": {
+        "type": "object",
+        "properties": {
+          "inviteKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "inviteKey"
+        ],
+        "description": "The key of the cluster sign-up invite withdrawn."
       },
       "UpgradeRun": {
         "type": "object",
@@ -22996,11 +24072,15 @@
             "format": "int64",
             "minimum": 0
           },
-          "initArgs": {},
+          "initArgs": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          },
           "computeBundle": {
             "type": "string"
           },
-          "metadata": {},
+          "metadata": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          },
           "lastUpgrade": {
             "$ref": "#/components/schemas/Upgrade"
           },
@@ -23151,7 +24231,9 @@
           "ok": {
             "type": "boolean"
           },
-          "error": {},
+          "error": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          },
           "run": {
             "type": "string"
           },
@@ -23218,7 +24300,9 @@
                     "type": "string"
                   }
                 },
-                "metadata": {},
+                "metadata": {
+                  "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                },
                 "outbound": {
                   "type": "array",
                   "items": {
@@ -23380,7 +24464,9 @@
               "$ref": "#/components/schemas/OutboundApproval"
             }
           },
-          "metadata": {},
+          "metadata": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          },
           "memberMetadata": {
             "type": "object",
             "additionalProperties": true
@@ -23533,7 +24619,9 @@
               "minimum": 0
             }
           },
-          "metadata": {},
+          "metadata": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          },
           "removed": {
             "type": "array",
             "items": {
@@ -23577,7 +24665,9 @@
           "join": {
             "$ref": "#/components/schemas/TeamJoin"
           },
-          "metadata": {},
+          "metadata": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          },
           "package": {
             "type": [
               "string",
@@ -23954,7 +25044,9 @@
           "actor": {
             "type": "string"
           },
-          "error": {},
+          "error": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          },
           "run": {
             "type": "string"
           },
@@ -24348,7 +25440,9 @@
           "operatorProof": {
             "$ref": "#/components/schemas/OperatorProof"
           },
-          "orgs": {},
+          "orgs": {
+            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+          },
           "maxAppsPerAccount": {
             "type": "integer",
             "format": "int64",
