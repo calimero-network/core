@@ -3668,20 +3668,23 @@ async fn the_cluster_version_rises_to_what_every_node_supports() {
     }
 
     // At it, the leader writes the release-attribution mark
-    // (`attributeByRelease`) once the cluster holds anything, and every
-    // replica applies it.
+    // (`attributeByRelease`) and the current-rules mark (`currentRules`) once
+    // the cluster holds anything, and every replica applies both.
     let _alice = signed_up(&c, 0, "alice").await;
     let marked = |c: &Cluster| {
-        c.nodes
-            .iter()
-            .flatten()
-            .all(|n| n.node.sys(|s| s.attributes_by_release))
+        c.nodes.iter().flatten().all(|n| {
+            n.node
+                .sys(|s| s.attributes_by_release && s.current_rules_from.is_some())
+        })
     };
     let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
     while tokio::time::Instant::now() < deadline && !marked(&c) {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert!(marked(&c), "the release-attribution mark was not written");
+    assert!(
+        marked(&c),
+        "the release-attribution and current-rules marks were not written"
+    );
 
     // A node on this build supports it, so it joins and learns it.
     let new = c.join().await;
