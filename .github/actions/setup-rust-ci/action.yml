@@ -25,6 +25,13 @@ inputs:
     required: false
     default: "${{ github.ref == 'refs/heads/master' }}"
 
+  rust-cache:
+    description: >
+      Restore (and maybe save) the rust-cache group. A job that only runs what
+      another job compiled (a nextest archive) skips the restore, which unpacks
+      gigabytes, and leans on sccache for what it still compiles.
+    required: false
+    default: "true"
   sccache:
     description: >
       Compile through sccache, backed by the Actions cache. rust-cache keeps the
@@ -105,6 +112,7 @@ runs:
     # blanked (rust-cache skips an empty one) for this step alone:
     # scripts/check-rust-cache-groups.py fails on any other difference.
     - name: Setup Rust cache
+      if: inputs.rust-cache == 'true'
       uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       env:
         # The directory rust-cache saves, whether or not a job spells it out.

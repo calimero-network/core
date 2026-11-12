@@ -690,11 +690,16 @@ required `Rust` check waits on it. The job summary has the rollout's steps and
 each case's result; the artifact `upgrade-path` holds the results and, for a
 failed run, every node's log and data.
 
-`ci-checks.yml`'s `Rust tests` job runs each component app's own `cargo test`
-(its `tests/harness.rs` and its app-level scenarios on `TestApp`), then clippy
-with `-D warnings` on the host and on `wasm32-wasip2` and the app's release
-`wasm32-wasip2` build. The apps are found by their `calimero-sdk`
-dependency.
+`ci-checks.yml` runs its Rust checks as parallel jobs, every one behind
+`Rust quick checks` (format, naming, the scripts' tests; no build), so a
+formatting error fails a PR in about a minute. `Rust tests (build)` compiles
+the workspace's tests once into a nextest archive and `Rust tests (K/3)` run a
+third of it each; `Rust doctests`, `mero-compute end to end` and
+`Rust feature-gated tests` run beside them. `Rust standalone apps (K/3)` runs
+each component app's own `cargo test` (its `tests/harness.rs` and its app-level
+scenarios on `TestApp`), then clippy with `-D warnings` on the host and on
+`wasm32-wasip2` and the app's release `wasm32-wasip2` build, every third app
+each. The apps are found by their `calimero-sdk` dependency.
 
 Nothing has to list a scenario for it to run: the runner discovers every file
 on disk, and one it must not run yet is listed, with its reason, in
