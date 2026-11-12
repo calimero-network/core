@@ -254,6 +254,7 @@ The sizes and hashes follow the same rule as the single run.
 ## Pipeline runs
 
 A release that registers pipelines (`pipelines` in its manifest, checked at install) can run them in the group of any app made from it, compute-only apps included.
+A pipeline that names `sources`, `sinks`, `publish`, `notify` or an input's `accept`, `maxFileSize`, `format` or `schema` is refused with `NOT_IN_V1`, as are `when`, `runIf`, `uses`, `loops` and `variables`: the engine runs none of them.
 `POST /apps/{app}/pipelines/{name}/runs { inputs, params }` starts one and answers `202 { run }`.
 The node judges the request against the pinned pipeline before logging anything: `NO_SUCH_PIPELINE`, `BAD_INPUTS` (an input unbound, past its `maxItems`, or a file the app does not hold), `BAD_PARAMS` (typed, within `min`, `max` and `enum`, defaults filled), `TOO_MANY_PIPELINE_RUNS` (8 running per app, `429`), `PIPELINES_NEED_ONE_SERVICE` and `409 CLUSTER_NOT_UPGRADED` until every node runs this release.
 The run pins the release's pipeline by hash and its compute component, so an upgrade of the app changes neither a run that started before it.

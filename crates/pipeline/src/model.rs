@@ -76,15 +76,7 @@ pub struct Pipeline {
     pub params: BTreeMap<String, Param>,
     #[serde(default)]
     pub inputs: BTreeMap<String, Input>,
-    #[serde(default)]
-    pub sources: BTreeMap<String, Connector>,
-    #[serde(default)]
-    pub sinks: BTreeMap<String, Connector>,
     pub steps: BTreeMap<String, Step>,
-    #[serde(default)]
-    pub publish: Vec<Publish>,
-    #[serde(default)]
-    pub notify: Vec<Notify>,
     #[serde(default)]
     pub outputs: Vec<String>,
     #[serde(default)]
@@ -127,40 +119,9 @@ pub enum InputKind {
 pub struct Input {
     pub kind: InputKind,
     #[serde(default)]
-    pub accept: Vec<String>,
-    #[serde(default)]
     pub max_items: Option<u32>,
     #[serde(default)]
-    pub max_file_size: Option<String>,
-    #[serde(default)]
-    pub format: Option<String>,
-    #[serde(default)]
-    pub schema: BTreeMap<String, String>,
-    #[serde(default)]
     pub default: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Connector {
-    pub connector: String,
-    pub uri: String,
-    #[serde(default)]
-    pub connection: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Publish {
-    pub from: String,
-    pub to: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Notify {
-    pub on: Vec<String>,
-    pub to: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

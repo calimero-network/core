@@ -5,13 +5,9 @@ module: sha256:7a9c…41d2          # default module; "self" inside an app
 params:
   threshold: { type: number, default: 0.8, min: 0, max: 1 }
 inputs:
-  invoices: { kind: files, accept: [application/pdf], maxItems: 1000, maxFileSize: 50MiB }
-  model:    { kind: artifact, accept: [application/onnx], default: fraud-model@4 }
-  vendors:  { kind: table, format: csv, schema: { vendor_id: string, iban_hash: string } }
-sources:
-  invoices: { connector: s3, uri: s3://acme-invoices/2026/11/*.pdf, connection: s3-acme }
-sinks:
-  results:  { connector: s3, uri: s3://acme-results/risk/, connection: s3-acme-rw }
+  invoices: { kind: files, maxItems: 1000 }
+  model:    { kind: artifact, default: fraud-model@4 }
+  vendors:  { kind: table }
 failFast: false
 steps:
   extract:  { module: calimero/pdf-extract@1, method: extract,
@@ -22,8 +18,4 @@ steps:
   escalate: { method: escalate, when: "score.results.exists(r, r.flagged)" }
   report:   { method: report, collect: score.outputs }
   incident: { method: incident_summary, needs: [score, report], runIf: failure }
-publish:
-  - { from: report.outputs, to: sinks.results }
-notify:
-  - { on: [failed, succeeded_with_failures], to: "slack:#risk-alerts" }
 outputs: [report.outputs, escalate.outputs]

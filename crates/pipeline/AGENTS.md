@@ -31,7 +31,7 @@ cargo test -p calimero-pipeline
 
 ## Rules
 
-- `when`, `runIf`, `uses` and loop or variable fields are refused with `NOT_IN_V1`; they are never ignored.
+- `when`, `runIf`, `uses`, `loops`, `variables`, `sources`, `sinks`, `publish`, `notify` and an input's `accept`, `maxFileSize`, `format` and `schema` are refused with `NOT_IN_V1` at their path; they are never ignored, because no engine code runs them.
 - A step with no module and no pipeline module runs in `Env::default_module`; with none either, `check` answers `MISSING_MODULE`.
 - A module name is matched as written (`com.acme.pdf@0.1.0` and `com.acme.pdf` are two entries of `Env::modules`); the node resolves each reference and fills `Env::modules` with the releases it pins, so `check` needs no version logic.
 - A reference to a step adds it to `needs` in the compiled pipeline, so the canonical form always lists every arrow.

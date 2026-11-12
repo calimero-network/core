@@ -14,35 +14,36 @@ pub const MAX_STEP_INPUTS: usize = 64; // files bound to one step, the engine's 
 pub const MAX_ITEMS: u32 = 10_000; // upper bound for any maxItems
 pub const MAX_NAME_BYTES: usize = 64; // pipeline, step, input and param names
 pub const MAX_ARGS_BYTES: usize = 64 * 1024; // one step's args as JSON
-const NOT_IN_V1_FIELDS: [&str; 5] = ["when", "runIf", "uses", "loops", "variables"]; // refused, not ignored
-const RESERVED_NAMES: [&str; 4] = ["inputs", "params", "sinks", "item"]; // would make references ambiguous
+const NOT_IN_V1_FIELDS: [&str; 13] = [
+    "when",
+    "runIf",
+    "uses",
+    "loops",
+    "variables",
+    "sources",
+    "sinks",
+    "publish",
+    "notify",
+    "accept",
+    "maxFileSize",
+    "format",
+    "schema",
+]; // refused, not ignored
+const RESERVED_NAMES: [&str; 3] = ["inputs", "params", "item"]; // would make references ambiguous
 
-const TOP_FIELDS: [&str; 13] = [
+const TOP_FIELDS: [&str; 9] = [
     "apiVersion",
     "kind",
     "name",
     "module",
     "params",
     "inputs",
-    "sources",
-    "sinks",
     "steps",
-    "publish",
-    "notify",
     "outputs",
     "failFast",
 ];
 const PARAM_FIELDS: [&str; 5] = ["type", "default", "min", "max", "enum"];
-const INPUT_FIELDS: [&str; 7] = [
-    "kind",
-    "accept",
-    "maxItems",
-    "maxFileSize",
-    "format",
-    "schema",
-    "default",
-];
-const CONNECTOR_FIELDS: [&str; 3] = ["connector", "uri", "connection"];
+const INPUT_FIELDS: [&str; 3] = ["kind", "maxItems", "default"];
 const STEP_FIELDS: [&str; 14] = [
     "module",
     "method",
@@ -125,11 +126,9 @@ fn lint_shape(root: &Value, errs: &mut Vec<SpecError>) {
     ) else {
         return;
     };
-    let sections: [(&str, &[&str], &[&str]); 5] = [
+    let sections: [(&str, &[&str], &[&str]); 3] = [
         ("params", &PARAM_FIELDS, &["type"]),
         ("inputs", &INPUT_FIELDS, &["kind"]),
-        ("sources", &CONNECTOR_FIELDS, &["connector", "uri"]),
-        ("sinks", &CONNECTOR_FIELDS, &["connector", "uri"]),
         ("steps", &STEP_FIELDS, &["method"]),
     ];
     for (key, allowed, required) in sections {
@@ -143,14 +142,6 @@ fn lint_shape(root: &Value, errs: &mut Vec<SpecError>) {
             if let Some(limits) = m.and_then(|m| m.get("limits")) {
                 strict(limits, &join(&path, "limits"), &LIMIT_FIELDS, &[], errs);
             }
-        }
-    }
-    for (key, fields) in [("publish", ["from", "to"]), ("notify", ["on", "to"])] {
-        let Some(Value::Array(items)) = top.get(key) else {
-            continue;
-        };
-        for (i, item) in items.iter().enumerate() {
-            strict(item, &format!("{key}[{i}]"), &fields, &fields, errs);
         }
     }
 }
@@ -251,13 +242,6 @@ fn validate(p: &mut Pipeline, errs: &mut Vec<SpecError>) {
     for (n, param) in &p.params {
         check_name(n, &join("params", n), errs);
         validate_param(n, param, errs);
-    }
-    for n in p.sources.keys().filter(|n| !p.inputs.contains_key(*n)) {
-        errs.push(err(
-            join("sources", n),
-            "UNRESOLVED_REF",
-            "source names no declared input",
-        ));
     }
 
     let mut deps = BTreeMap::new();
@@ -558,26 +542,6 @@ fn validate_step(
 fn validate_outputs(p: &Pipeline, errs: &mut Vec<SpecError>) {
     for (i, r) in p.outputs.iter().enumerate() {
         resolve(p, Site::Outputs, false, r, &format!("outputs[{i}]"), errs);
-    }
-    for (i, publish) in p.publish.iter().enumerate() {
-        resolve(
-            p,
-            Site::Outputs,
-            false,
-            &publish.from,
-            &format!("publish[{i}].from"),
-            errs,
-        );
-        let path = format!("publish[{i}].to");
-        match publish.to.strip_prefix("sinks.") {
-            Some(sink) if p.sinks.contains_key(sink) => {}
-            Some(_) => errs.push(err(
-                path,
-                "UNRESOLVED_REF",
-                format!("`{}` names no declared sink", publish.to),
-            )),
-            None => errs.push(err(path, "BAD_REF", "expected `sinks.<name>`")),
-        }
     }
 }
 
