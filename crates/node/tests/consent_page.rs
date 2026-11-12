@@ -1383,18 +1383,20 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     assert_eq!(o["members"][&bob_id], "member", "{o}");
 }
 
-/// A consent request of `kind` over `subject` from `app`, returning to `back`.
+/// A consent request of `kind` over `subject` from `app`, returning to
+/// `back`: its answer, or the refusal's status.
 async fn ask(
     app: &calimero_client::Client,
     back: &str,
     kind: &str,
     subject: Value,
-) -> Result<Value, calimero_client::Error> {
+) -> Result<Value, u16> {
     app.post(
         "consent/requests",
         json!({ "kind": kind, "subject": subject, "returnTo": back }),
     )
     .await
+    .map_err(|e| status(&e))
 }
 
 /// Ask `kind` from `app` and approve it on the node's page with `key` (the
@@ -1423,8 +1425,7 @@ async fn approved(
 
 /// A refused request's status.
 async fn refused(app: &calimero_client::Client, back: &str, kind: &str, subject: Value) -> u16 {
-    let e = ask(app, back, kind, subject).await.unwrap_err();
-    status(&e)
+    ask(app, back, kind, subject).await.unwrap_err()
 }
 
 /// The account id `c` is signed in as.
