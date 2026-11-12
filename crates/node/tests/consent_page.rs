@@ -1632,7 +1632,11 @@ struct Server {
 
 impl Server {
     async fn start() -> Self {
-        let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+        let c = Cluster::start_with(3, |cfg| {
+            cfg.apps_domain = Some("localhost".into());
+            cfg.attestation_verifier_url = Some("https://verify.calimero.network".into());
+        })
+        .await;
         let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
         let (bob, bob_key) = signed_up(&c, 2, "bob").await;
         let (carol, carol_key) = signed_up(&c, 2, "carol").await;
@@ -1773,6 +1777,12 @@ async fn an_apps_frontend_moderates_its_server_on_the_page() {
     )
     .await;
     assert_eq!(model["title"], "Make Bobby an admin of guild", "{model}");
+    // The organization kinds carry the verifier link like every kind.
+    assert_eq!(
+        model["verifier"]["host"], "verify.calimero.network",
+        "{model}"
+    );
+    assert_eq!(model["verifier"]["mock"], true, "{model}");
     assert_eq!(
         args,
         json!({ "account": bob, "role": "admin", "__method": "__set_org_role" })
