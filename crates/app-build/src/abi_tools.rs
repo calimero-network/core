@@ -4,13 +4,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use calimero_app_abi::codegen::{python, typescript, Target};
+use calimero_app_abi::codegen::{kotlin, kotlin_package, python, swift, typescript, Target};
 use calimero_app_abi::diff::diff;
 use calimero_app_abi::load::{load_one, load_path, Loaded};
 use calimero_app_abi::openapi::{document, Info};
 use eyre::{bail, eyre, Result as EyreResult};
 
-pub const CODEGEN_USAGE: &str = "usage: mero-app-build codegen --abi <abi.json|app.wasm|app.mpk|manifest.json> --lang <ts|python|openapi> [-o <dir>] [--name <name>] [--service <name>]";
+pub const CODEGEN_USAGE: &str = "usage: mero-app-build codegen --abi <abi.json|app.wasm|app.mpk|manifest.json> --lang <ts|python|swift|kotlin|openapi> [-o <dir>] [--name <name>] [--package <kotlin package>] [--service <name>]";
 pub const DIFF_USAGE: &str =
     "usage: mero-app-build abi-diff <old> <new> [--service <name>] [--json]";
 
@@ -24,6 +24,8 @@ pub enum DiffOutcome {
 enum Lang {
     TypeScript,
     Python,
+    Swift,
+    Kotlin,
     OpenApi,
 }
 
@@ -33,6 +35,7 @@ pub fn codegen(args: impl Iterator<Item = String>) -> EyreResult<()> {
     let mut out = PathBuf::from(".");
     let mut name = None;
     let mut service = None;
+    let mut package = None;
     let mut args = args;
     while let Some(flag) = args.next() {
         let value = args.next().ok_or_else(|| eyre!(CODEGEN_USAGE))?;
@@ -42,6 +45,8 @@ pub fn codegen(args: impl Iterator<Item = String>) -> EyreResult<()> {
                 lang = Some(match value.as_str() {
                     "ts" | "typescript" => Lang::TypeScript,
                     "python" | "py" => Lang::Python,
+                    "swift" => Lang::Swift,
+                    "kotlin" | "kt" => Lang::Kotlin,
                     "openapi" => Lang::OpenApi,
                     other => bail!("unknown --lang {other:?}; {CODEGEN_USAGE}"),
                 });
@@ -49,6 +54,7 @@ pub fn codegen(args: impl Iterator<Item = String>) -> EyreResult<()> {
             "-o" | "--out" => out = PathBuf::from(value),
             "--name" => name = Some(value),
             "--service" => service = Some(value),
+            "--package" => package = Some(value),
             _ => bail!(CODEGEN_USAGE),
         }
     }
@@ -70,12 +76,24 @@ pub fn codegen(args: impl Iterator<Item = String>) -> EyreResult<()> {
             .or_else(|| loaded.service.clone())
             .or_else(|| loaded.package.as_deref().map(last_segment))
             .unwrap_or_else(|| stem(&abi));
-        write_outputs(loaded, lang, &dir, &name)?;
+        // Each service's Kotlin client gets a package of its own, as each gets a directory.
+        let package = match (&package, &loaded.service, several) {
+            (Some(p), Some(s), true) => Some(format!("{p}.{}", kotlin_package_segment(s))),
+            (Some(p), _, _) => Some(p.clone()),
+            (None, _, _) => None,
+        };
+        write_outputs(loaded, lang, &dir, &name, package.as_deref())?;
     }
     Ok(())
 }
 
-fn write_outputs(loaded: &Loaded, lang: Lang, dir: &Path, name: &str) -> EyreResult<()> {
+fn write_outputs(
+    loaded: &Loaded,
+    lang: Lang,
+    dir: &Path,
+    name: &str,
+    package: Option<&str>,
+) -> EyreResult<()> {
     fs::create_dir_all(dir)?;
     let info = Info {
         title: loaded.package.clone().unwrap_or_else(|| name.to_owned()),
@@ -95,6 +113,14 @@ fn write_outputs(loaded: &Loaded, lang: Lang, dir: &Path, name: &str) -> EyreRes
         Lang::OpenApi => {}
         Lang::TypeScript => write(&dir.join("client.ts"), &typescript(&loaded.abi, &target))?,
         Lang::Python => write(&dir.join("client.py"), &python(&loaded.abi, &target))?,
+        Lang::Swift => write(
+            &dir.join(format!("{}.swift", target.class())),
+            &swift(&loaded.abi, &target),
+        )?,
+        Lang::Kotlin => write(
+            &dir.join(format!("{}.kt", target.class())),
+            &kotlin(&loaded.abi, &target, package),
+        )?,
     }
     Ok(())
 }
@@ -103,6 +129,15 @@ fn write(path: &Path, text: &str) -> EyreResult<()> {
     fs::write(path, text)?;
     println!("wrote {}", path.display());
     Ok(())
+}
+
+/// `room-directory` → `roomdirectory`: the last segment of a service's Kotlin package.
+fn kotlin_package_segment(service: &str) -> String {
+    kotlin_package(service)
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// `com.example.kv-store` → `kv-store`.

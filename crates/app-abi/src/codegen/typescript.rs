@@ -326,9 +326,7 @@ const CLASS_HEAD: &str = r"  readonly #client: AppTransport;
 
 pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     let mut names = Names::new(abi);
-    for name in OWN_NAMES.iter().copied().chain([class]) {
-        names.reserve(name);
-    }
+    names.reserve(OWN_NAMES.iter().copied().chain([class]));
     let mut ts = Ts {
         abi,
         names,

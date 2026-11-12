@@ -94,11 +94,14 @@ class Tree(TypedDict):
 ForbiddenError = TypedDict("ForbiddenError", {})
 InvalidError = TypedDict("InvalidError", {"detail": Optional[str], "field": str})
 NotFoundError = TypedDict("NotFoundError", {"id": str})
-AppErrorCode = Literal["Forbidden", "Invalid", "NotFound"]
+RejectedError = TypedDict("RejectedError", {"0": str})
+UnknownError = TypedDict("UnknownError", {})
+AppErrorCode = Literal["Forbidden", "Invalid", "NotFound", "Rejected", "Unknown"]
 """The app's error codes: `details["code"]` of a 422 APP_ERROR."""
 
 ActionFailedEvent = TypedDict("ActionFailedEvent", {"actionId": str, "method": str, "reason": str})
 CreatedEvent = TypedDict("CreatedEvent", {"id": str, "item": Item})
+DefaultEvent = TypedDict("DefaultEvent", {"at": Optional[str], "blob": str, "delta": str, "pair": List[Any]})
 WipedEvent = TypedDict("WipedEvent", {})
 
 
@@ -137,6 +140,21 @@ class KitchenSinkClient:
         answer = self._client.json.apps.view(app=self._app, method=method, args=args, **fields)
         return answer["result"]
 
+    def blob_of(self, key: str, *, consistency: Optional[Literal["strong", "stale"]] = None, min_index: Optional[int] = None) -> Optional[str]:
+        """view `blobOf`."""
+        args: Dict[str, Any] = {"key": key}
+        return cast(Optional[str], self._view("blobOf", args, consistency, min_index))
+
+    def count(self, stale: bool, *, consistency: Optional[Literal["strong", "stale"]] = None, min_index: Optional[int] = None) -> str:
+        """view `count`."""
+        args: Dict[str, Any] = {"stale": stale}
+        return cast(str, self._view("count", args, consistency, min_index))
+
+    def events(self, in_: str, default: Optional[str] = None, when: Optional[str] = None, *, idempotency_key: Optional[str] = None) -> List[Any]:
+        """call `events`."""
+        args: Dict[str, Any] = {"in": in_, "default": default, "when": when}
+        return cast(List[Any], self._call("events", args, idempotency_key))
+
     def everything(self, flag: bool, small: int, medium: int, count: int, big: str, huge: int, size: int, delta: int, offset: int, balance: str, ratio: float, precise: float, letter: str, title: str, blob: str, names: List[str], pair: List[Any], digest: List[int], scores: Dict[str, int], by_id: Dict[str, str], unique: List[str], item: Item, page: Page_Item, maybe: Optional[str] = None, nested: Optional[List[Optional[Item]]] = None, *, idempotency_key: Optional[str] = None) -> List[Item]:
         """call `everything`."""
         args: Dict[str, Any] = {"flag": flag, "small": small, "medium": medium, "count": count, "big": big, "huge": huge, "size": size, "delta": delta, "offset": offset, "balance": balance, "ratio": ratio, "precise": precise, "letter": letter, "title": title, "blob": blob, "names": names, "pair": pair, "digest": digest, "scores": scores, "byId": by_id, "unique": unique, "item": item, "page": page, "maybe": maybe, "nested": nested}
@@ -167,6 +185,6 @@ class KitchenSinkClient:
         args: Dict[str, Any] = {"reason": reason}
         return cast(None, self._call("wipe", args, idempotency_key, passkey))
 
-    def events(self, start: int = 0, limit: int = 100, timeout: float = 5.0) -> List[Dict[str, Any]]:
+    def app_events(self, start: int = 0, limit: int = 100, timeout: float = 5.0) -> List[Dict[str, Any]]:
         """The app's events from log index `start`: each `{"id", "kind", "data"}`."""
         return cast(List[Dict[str, Any]], self._client.events(self._app, start, limit, timeout))

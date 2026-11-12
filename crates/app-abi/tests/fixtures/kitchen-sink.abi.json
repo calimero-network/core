@@ -26,6 +26,9 @@
     "wipe": { "kind": "call", "params": [["reason", "option<string>"]], "returns": null, "confirm": true, "public": false, "allowSystem": false },
     "secret": { "kind": "view", "params": [], "returns": "string", "confirm": true, "public": false, "allowSystem": false },
     "lookup": { "kind": "view", "params": [["id", "u64"]], "returns": "option<Item>", "confirm": false, "public": true, "rate": "10/s", "allowSystem": false },
+    "events": { "kind": "call", "params": [["in", "string"], ["default", "option<bytes>"], ["when", "option<i64>"]], "returns": "tuple<u32, string>", "confirm": false, "public": false, "allowSystem": false },
+    "count": { "kind": "view", "params": [["stale", "bool"]], "returns": "u64", "confirm": false, "public": false, "allowSystem": false },
+    "blobOf": { "kind": "view", "params": [["key", "string"]], "returns": "option<bytes>", "confirm": false, "public": false, "allowSystem": false },
     "fromPeer": { "kind": "call", "params": [["note", "string"]], "returns": null, "confirm": false, "public": false, "allowSystem": true, "allowApps": ["*"] },
     "tick": { "kind": "timer", "params": [], "returns": null, "every": "1m", "confirm": false, "public": false, "allowSystem": true },
     "fetchPrice": { "kind": "action", "params": [["symbol", "string"]], "returns": null, "confirm": false, "public": false, "allowSystem": false },
@@ -42,8 +45,8 @@
       "confirm": false, "public": false, "allowSystem": false
     }
   },
-  "errors": { "NotFound": { "id": "u64" }, "Forbidden": {}, "Invalid": { "field": "string", "detail": "option<string>" } },
-  "events": { "Created": { "id": "u64", "item": "Item" }, "Wiped": {} },
+  "errors": { "NotFound": { "id": "u64" }, "Forbidden": {}, "Invalid": { "field": "string", "detail": "option<string>" }, "Rejected": { "0": "string" }, "Unknown": {} },
+  "events": { "Created": { "id": "u64", "item": "Item" }, "Wiped": {}, "Default": { "blob": "bytes", "at": "option<u64>", "pair": "tuple<u32, string>", "delta": "i64" } },
   "types": {
     "Adjacent": { "kind": "enum", "tag": "t", "content": "c", "variants": [{ "name": "Text", "type": "string" }, { "name": "Empty" }] },
     "Either": { "kind": "enum", "untagged": true, "variants": [{ "name": "Num", "type": "u32" }, { "name": "Named", "fields": [["name", "string"]] }] },

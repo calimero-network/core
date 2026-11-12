@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Swift and Kotlin typed clients from an app's ABI** (`calimero-app-abi`).
+  `mero-app-build codegen --lang swift|kotlin` writes `<Name>Client.swift` over
+  swift-sdk 2.0's MeroKit and `<Name>Client.kt` over kotlin-sdk 2.0's mero-core
+  (`--package`, default `calimero.generated.<name>`; a multi-service bundle gets
+  a directory and a package per service). Each is built on the SDK's
+  `CalimeroClient` and the app's id (every method: idempotency keys, stale views,
+  `confirm` step-ups, the event stream) or on its `ContextContractCalling`
+  (`MeroAppBackend.contract.bound(app)`, or a test double: calls and views), with
+  the ABI's JSON forms (u64/i64 as decimal strings, bytes base64url) behind
+  `UInt64`/`ULong`, `Int64`/`Long` and `Data`/`ByteArray`, and the app's events
+  and errors as typed enums and sealed interfaces (`Event`, `Refusal`). The
+  `App ABI native clients` workflow compiles the golden clients against both SDKs with
+  warnings as errors.
+
 ## [1.0.0-rc.17] - 2026-11-12
 
 1.0.0-rc.16 was tagged but never published: its build failed on meroctl
@@ -9,6 +25,8 @@
 changes plus that fix. Its GitHub Release holds only `kv-store-test-fixture.mpk`;
 no binaries, crates, `merod` image or fleet bump exist for it, so nothing can
 run or upgrade from it, and the upgrade path stays pinned to 1.0.0-rc.15.
+
+## [1.0.0-rc.16] - 2026-11-12
 
 ### Added
 

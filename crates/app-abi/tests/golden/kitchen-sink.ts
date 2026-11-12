@@ -56,6 +56,23 @@ export interface Tree {
   children: Tree[];
 }
 
+/** The arguments of `blobOf`. */
+export interface BlobOfArgs {
+  key: string;
+}
+
+/** The arguments of `count`. */
+export interface CountArgs {
+  stale: boolean;
+}
+
+/** The arguments of `events`. */
+export interface EventsArgs {
+  in: string;
+  default?: string | null;
+  when?: string | null;
+}
+
 /** The arguments of `everything`. */
 export interface EverythingArgs {
   flag: boolean;
@@ -126,8 +143,16 @@ export interface NotFoundError {
   id: string;
 }
 
+/** The fields of the app error `Rejected`. */
+export interface RejectedError {
+  "0": string;
+}
+
+/** The fields of the app error `Unknown`. */
+export type UnknownError = Record<string, never>;
+
 /** The app's error codes: `details.code` of a `422 APP_ERROR`. */
-export type AppErrorCode = 'Forbidden' | 'Invalid' | 'NotFound';
+export type AppErrorCode = 'Forbidden' | 'Invalid' | 'NotFound' | 'Rejected' | 'Unknown';
 
 /** The fields of the event `ActionFailed`. */
 export interface ActionFailedEvent {
@@ -142,6 +167,14 @@ export interface CreatedEvent {
   item: Item;
 }
 
+/** The fields of the event `Default`. */
+export interface DefaultEvent {
+  at: string | null;
+  blob: string;
+  delta: string;
+  pair: [number, string];
+}
+
 /** The fields of the event `Wiped`. */
 export type WipedEvent = Record<string, never>;
 
@@ -149,6 +182,7 @@ export type WipedEvent = Record<string, never>;
 export type AppEvent =
   | { kind: 'ActionFailed'; data: ActionFailedEvent }
   | { kind: 'Created'; data: CreatedEvent }
+  | { kind: 'Default'; data: DefaultEvent }
   | { kind: 'Wiped'; data: WipedEvent };
 
 /** Options of a call. */
@@ -235,6 +269,21 @@ export class KitchenSinkClient {
     }
   }
 
+  /** view `blobOf`. */
+  async blobOf(args: BlobOfArgs, options: ViewOptions = {}): Promise<string | null> {
+    return (await this.#view('blobOf', args, options)) as string | null;
+  }
+
+  /** view `count`. */
+  async count(args: CountArgs, options: ViewOptions = {}): Promise<string> {
+    return (await this.#view('count', args, options)) as string;
+  }
+
+  /** call `events`. */
+  async events(args: EventsArgs, options: CallOptions = {}): Promise<[number, string]> {
+    return (await this.#call('events', args, options)) as [number, string];
+  }
+
   /** call `everything`. */
   async everything(args: EverythingArgs, options: CallOptions = {}): Promise<Item[]> {
     return (await this.#call('everything', args, options)) as Item[];
@@ -266,7 +315,7 @@ export class KitchenSinkClient {
   }
 
   /** The app's events from log index `from`, then live, until `signal` aborts. */
-  async *events(from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & { id: string }> {
+  async *appEvents(from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & { id: string }> {
     for await (const event of this.#client.events(this.#app, from, signal)) {
       yield event as AppEvent & { id: string };
     }
