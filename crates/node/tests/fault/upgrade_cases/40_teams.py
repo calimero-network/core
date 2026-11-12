@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from upgrade_deep import (DeepCase, check, decision, install, join, kv_wasm, new_org, people, person,
-                          same_decisions, same_read, snap, team_id, until)
+from upgrade_deep import (Bound, DeepCase, check, decision, eq, install, join, kv_wasm, new_org, people,
+                          person, refused, same_decisions, same_read, snap, team_id, until)
 from upgrade_path import case
 
 
@@ -128,3 +128,83 @@ class AppTeams(DeepCase):
         until("lux reaches the app team opened on the new release", lambda: lux.view(s["apps"]["a"], "get", {"key": "k"}))
         s["decisions"]["lux reads a"] = "ok"
         s["list"] = snap(ada, f"orgs/{s['org']}/app-teams")
+
+
+@case
+class AppChannels(DeepCase):
+    name = "app-channels"
+    area = "Teams"
+    since = "1.0.0-rc.20"
+    seeds = ("two packages' app teams in an organization; a channel an unbound session made under one; a "
+             "session bound to that package's frontend makes a channel under its app team, renames it, adds a "
+             "member, and makes and deletes another")
+    verifies = ("the channels and their members as before; the bound session is still bound to its package and "
+                "still refused (403) a channel under the other package's app team, an org-wide team, the app "
+                "team's mark and deleting it, and an organization role; on the new release it makes, renames, "
+                "fills and deletes a channel again")
+
+    def populate(self, w):
+        bea, dov = people(w, "bea", "dov")
+        org = new_org(bea, "Bea Channels")
+        join(bea, org, dov)
+        pb, vb = install(bea, w, "kv-b-1.0.0.mpk")
+        pc, vc = install(bea, w, "kv-c-1.0.0.mpk")
+        for p, v in ((pb, vb), (pc, vc)):
+            bea.raw("post", "apps", {"name": p, "package": p, "version": v, "org": org})
+        scoped = bea.raw("post", f"orgs/{org}/app-teams", {"apps": [{"package": pb, "name": "B"},
+                                                                     {"package": pc, "name": "C"}]})
+        teams = {t["package"]: t["teamId"] for t in scoped["teams"]}
+        s = {"org": org, "package": pb, "app_team": teams[pb], "other_team": teams[pc], "channels": {}}
+        # Made by the person's unbound session on the cluster's own origin.
+        s["channels"]["unbound"] = team_id(bea.raw("post", f"orgs/{org}/teams",
+                                                   {"name": "from-home", "join": "invite", "parent": teams[pb]}))
+        s["channels"]["bound"] = self._round(w, s, "general", "random")
+        s["reads"] = {k: snap(bea, f"orgs/{org}/teams/{t}") for k, t in s["channels"].items()}
+        return s
+
+    def _round(self, w, s, name, renamed):
+        """The bound session makes a channel under its app team, renames it and adds a member, then makes
+        another and deletes it; answers the kept channel's id."""
+        bea, dov = people(w, "bea", "dov")
+        site = Bound(bea, s["package"])
+        org = s["org"]
+        kept = team_id(site.raw("post", f"orgs/{org}/teams",
+                                {"name": name, "join": "invite", "parent": s["app_team"]}))
+        site.raw("post", f"orgs/{org}/teams/{kept}", {"name": renamed})
+        site.raw("post", f"orgs/{org}/teams/{kept}/members", {"account": dov.id})
+        gone = team_id(site.raw("post", f"orgs/{org}/teams",
+                                {"name": f"{name}-tmp", "join": "invite", "parent": s["app_team"]}))
+        site.raw("delete", f"orgs/{org}/teams/{gone}")
+        t = bea.get(f"orgs/{org}/teams/{kept}")
+        eq(t["name"], renamed, "the bound session's rename")
+        check(any(m["account"] == dov.id for m in t["members"]), f"dov is in the bound session's channel: {t}")
+        refused(("NOT_FOUND", "404"), lambda: bea.get(f"orgs/{org}/teams/{gone}"), "the deleted channel")
+        s.setdefault("gone", []).append(gone)
+        return kept
+
+    def check(self, w, s):
+        bea = person(w, "bea")
+        site = Bound(bea, s["package"])
+        org = s["org"]
+        for k, t in s["channels"].items():
+            same_read(bea, f"orgs/{org}/teams/{t}", s["reads"][k], f"channel {k}")
+        for gone in s.get("gone", []):
+            refused(("NOT_FOUND", "404"), lambda gone=gone: bea.get(f"orgs/{org}/teams/{gone}"),
+                    "a deleted channel")
+        eq(site.raw("get", "auth/me").get("app"), s["package"], "the frontend session's package")
+        for what, f in {
+            "a channel under the other package's app team": lambda: site.raw(
+                "post", f"orgs/{org}/teams", {"name": "x", "join": "invite", "parent": s["other_team"]}),
+            "an org-wide team": lambda: site.raw("post", f"orgs/{org}/teams", {"name": "x", "join": "invite"}),
+            "the app team's mark": lambda: site.raw(
+                "post", f"orgs/{org}/teams/{s['app_team']}", {"metadata": {"app": {"package": "x"}}}),
+            "deleting the app team": lambda: site.raw("delete", f"orgs/{org}/teams/{s['app_team']}"),
+            "an organization role": lambda: site.raw(
+                "post", f"orgs/{org}/members", {"account": person(w, "dov").id, "role": "admin"}),
+        }.items():
+            refused(("FORBIDDEN", "403"), f, f"the frontend session: {what}")
+
+    def exercise(self, w, s):
+        bea = person(w, "bea")
+        s["channels"]["exercised"] = self._round(w, s, "news", "updates")
+        s["reads"]["exercised"] = snap(bea, f"orgs/{s['org']}/teams/{s['channels']['exercised']}")

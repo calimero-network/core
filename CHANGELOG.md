@@ -2,10 +2,12 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.20] - 2026-11-12
+
 ### Added
 
 - **Every app is in an organization, and every account has a personal one from
-  sign-up** (`calimero-node`). **Hard cutover**: apps outside any organization are
+  sign-up** (#5015, `calimero-node`). **Hard cutover**: apps outside any organization are
   gone; a data directory or log holding one is not read, so clusters are recreated
   (mdma refuses to roll across it), and nothing of before is replayed.
   A sign-up makes the account's personal organization in the same entry
@@ -58,7 +60,7 @@
   the node's attestation on a site the node does not control. `https` only (`http`
   for localhost), 512 bytes at most; a job node refuses it.
 
-- **The recovery disk: backups that outlive every mero-kms, opened with the key of
+- **The recovery disk (#5013): backups that outlive every mero-kms, opened with the key of
   whoever upgrades the app.** `merod --recovery-dir DIR` writes, every 5 minutes, on
   every node that holds an app (leader or not), the app's state, the code it runs and
   its holder's slice of the system state (an organization or account's apps, people
@@ -111,13 +113,20 @@
 
 ### Changed
 
-- **Generated clients leave an unset optional argument out** (`calimero-app-abi`):
-  the Python, Swift and Kotlin methods no longer send `null` for a `None` / `nil` /
-  `null` optional argument (TypeScript already sent `args` as given). The SDK reads a
-  missing argument and `null` alike as `None`, so apps see no difference.
-- **Kotlin clients type an app type the ABI names without a shape as `JsonElement`**
-  (`calimero-app-abi`), not a top-level `typealias <Name> = JsonElement` that clashed with
-  an app type of that name in the package; code that named the alias names `JsonElement`.
+- **A pipeline step's runs live in rows of their own** (#4996). A step's per-run
+  outputs, results and cache keys are hidden rows (`rows::CITEM`), written once
+  when a run ends, so a step's completion rewrites a record that no longer grows
+  with its fan-out. The leader keeps each fan-out's runs in memory and reads no
+  row twice; a step whose rows cannot all be read fails `ITEMS_UNREADABLE` rather
+  than build from part of them. A record 1.0.0-rc.19 wrote, with the per-run data
+  inline, is still read (#5026).
+- **A sealed file's export streams to disk** (#4998, `calimero-client`,
+  `meroctl`). `Client::export_file_to(app, id, out)` fetches and opens one
+  segment at a time, so memory stays at one segment, and checks the segment list,
+  each segment and the plaintext's size and SHA-256 before it returns `Ok`;
+  `meroctl file download` and `pipeline download` write `<target>.part` and move
+  it into place only then. `Client::export_file` is the same call into memory.
+
 - **One undecided consent request per account per node** (#5014). A new
   `POST /consent/requests` replaces the account's older undecided one, whose page
   and `/result` then answer `404`; `429` after 8 undecided requests

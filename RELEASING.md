@@ -153,7 +153,7 @@ check lints them) and to what counts as breaking.
 
 - **Version.** The one version of every public crate, `merod`, `meroctl` and
   `mero-sign` is `version` under `[workspace.metadata.workspaces]` in the root
-  `Cargo.toml` (`1.0.0-rc.19` at the time of writing). Nothing else holds it.
+  `Cargo.toml` (`1.0.0-rc.20` at the time of writing). Nothing else holds it.
 - **Release pull request.** `chore(release): cut X` sets that version to `X`
   and turns `CHANGELOG.md`'s `## [Unreleased]` into a dated `## [X] - YYYY-MM-DD`
   section with the changes since the last release. `CHANGELOG.md` is
