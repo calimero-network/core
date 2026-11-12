@@ -4,6 +4,28 @@
 
 ### Added
 
+- **Generated TypeScript clients answer a call's log index and events, run over a
+  call-only transport, and type `init`'s arguments** (`calimero-app-abi`).
+  `kv.raw.set(args)` is `kv.set(args)` answering `{ result, index, events }`
+  (`CallAnswer<T>`, the events typed as `AppEvent`), and a view's `raw` answers
+  `{ result, index }` (`ViewAnswer<T>`), so an app resumes its event stream after what
+  a call or view reflects without wrapping the transport; `KvStoreRawApi` types `raw`
+  for test doubles. The class takes an `AppCallTransport` (`apps.call` and `apps.view`:
+  `Pick<CalimeroClient, 'apps'>` or a two-method double); `AppTransport` adds `events`,
+  and `events()` type-checks only on a client built over one. An app whose `init` takes
+  parameters gets `InitArgs`, for `client.apps.create({ initArgs })`. The TypeScript
+  check runs against mero-js 33.
+- **`abi-diff` compares record and enum shapes** (`calimero-app-abi`).
+  `mero-app-build abi-diff` (and `mero-sign sign --previous`) now compares the
+  ABI's `types` for every app type a method, error or event names, through the
+  types those name, and reports each change as `type <Name>`: fields added,
+  removed, retyped or made optional, variants added or removed, variant payloads,
+  the tagging style, generic parameters, and a type gaining or losing its shape.
+  A type is classified by the direction it travels in the old ABI: one callers
+  send may widen (a required field added or a variant removed breaks), one they
+  read may narrow (a field removed or a variant added breaks; a field added does
+  not, since every generated client ignores unknown keys). A breaking change
+  inside a record no longer passes as compatible.
 - **`mero-app-build` ships with each release, and is easier to run from an app's CI**
   (`calimero-app-build`). The release attaches `mero-app-build_<target>.tar.gz` for
   Linux x86_64 and aarch64 and macOS aarch64, in `SHA256SUMS` with build provenance,
@@ -23,6 +45,24 @@
 
 ### Changed
 
+- **Generated TypeScript client classes are generic in their transport**
+  (`calimero-app-abi`). `KvStoreClient<T extends AppCallTransport = AppTransport>`:
+  existing callers compile unchanged (`new KvStoreClient(client, app)`, a field typed
+  `KvStoreClient`, a double that answers `{ result }` alone), but an app type the ABI
+  names `CallAnswer`, `ViewAnswer`, `AppCallTransport`, `<Name>RawApi` or, with an
+  `init` that takes parameters, `InitArgs` is now declared with a `Type` suffix.
+
+- **Swift and Kotlin clients use the ABI's record and enum shapes** (`calimero-app-abi`).
+  `mero-app-build codegen --lang swift|kotlin` now makes each type the ABI's `types`
+  describes a nested type instead of `JSONValue` / `JsonElement`: a record a
+  `Codable, Sendable, Equatable` struct / a `data class`, an enum an `enum` / a
+  `sealed interface` coded exactly as serde tags it (external, internal, adjacent,
+  untagged), a generic type a generic one, with the D20 forms kept (u64/i64 decimal
+  strings, bytes base64url, an unset option sent as `null`). A type that holds itself
+  works (Swift `indirect` / `@Indirect`). Kotlin's serializers are written out
+  (`Item.serializer()`), so still no serialization plugin. A type without a shape stays
+  `JSONValue` / `JsonElement`. The `App ABI native clients` workflow now builds against
+  swift-sdk 4.1.0 and kotlin-sdk 4.0.0 and runs round-trip tests of every shape.
 - **`codegen` names a client given a bare `abi.json` after its crate.** The ABI
   carries no app name, and `--abi logic/res/abi.json` named the class after the file
   (`AbiClient`). A file stem that names no app (`abi`, `app`, `component`, `compute`,

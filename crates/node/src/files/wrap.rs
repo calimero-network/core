@@ -4,11 +4,12 @@
 use calimero_sealed::{derive_shared, SealedTransport};
 use curve25519_dalek::montgomery::MontgomeryPoint;
 use eyre::{bail, eyre, Result as EyreResult};
-use ring::aead::{Aad, LessSafeKey, Nonce, AES_256_GCM, NONCE_LEN};
+use ring::aead::{LessSafeKey, NONCE_LEN};
 use zeroize::Zeroizing;
 
-use super::seal::cipher;
 use crate::backup::tag;
+use calimero_sealed::file::cipher;
+use calimero_sealed::wrap::{open, push_prefixed, seal};
 
 const FILE_WRAP_LABEL: &str = "calimero.file-wrap.v1"; // HMAC label of a wrap subkey
 const JOB_WRAP_SALT: &[u8] = b"calimero.job-wrap.v1"; // HKDF salt of a job wrap
@@ -45,48 +46,6 @@ impl JobWrap<'_> {
         info.extend_from_slice(&self.index.to_be_bytes());
         Ok(info)
     }
-}
-
-fn push_prefixed(info: &mut Vec<u8>, field: &str) -> EyreResult<()> {
-    let len = u32::try_from(field.len()).map_err(|_| eyre!("an id is too long"))?;
-    info.extend_from_slice(&len.to_be_bytes());
-    info.extend_from_slice(field.as_bytes());
-    Ok(())
-}
-
-/// `nonce || AES-256-GCM(key, secret)`.
-fn seal(
-    key: &LessSafeKey,
-    nonce: [u8; NONCE_LEN],
-    aad: &[u8],
-    secret: &[u8; 32],
-) -> EyreResult<Vec<u8>> {
-    let mut sealed = Zeroizing::new(Vec::with_capacity(secret.len() + AES_256_GCM.tag_len()));
-    sealed.extend_from_slice(secret);
-    key.seal_in_place_append_tag(
-        Nonce::assume_unique_for_key(nonce),
-        Aad::from(aad),
-        &mut *sealed,
-    )
-    .map_err(|_| eyre!("cannot wrap the key"))?;
-    Ok([nonce.as_slice(), &sealed].concat())
-}
-
-/// Open what [`seal`] wrote.
-fn open(key: &LessSafeKey, aad: &[u8], bytes: &[u8]) -> EyreResult<Zeroizing<[u8; 32]>> {
-    if bytes.len() < NONCE_LEN {
-        bail!("the wrapped key is truncated");
-    }
-    let (nonce, sealed) = bytes.split_at(NONCE_LEN);
-    let nonce = Nonce::try_assume_unique_for_key(nonce).map_err(|_| eyre!("bad nonce"))?;
-    let mut sealed = Zeroizing::new(sealed.to_vec());
-    let plain = key
-        .open_in_place(nonce, Aad::from(aad), &mut sealed)
-        .map_err(|_| eyre!("the wrapped key does not open"))?;
-    let key: [u8; 32] = (&*plain)
-        .try_into()
-        .map_err(|_| eyre!("the wrapped key has the wrong length"))?;
-    Ok(Zeroizing::new(key))
 }
 
 /// A fresh subkey per wrap, so the random nonce has no per-key bound.

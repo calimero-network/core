@@ -15,17 +15,148 @@ import MeroKit
 /// its own idempotency key, so `confirm` methods, `events` and an `idempotencyKey` throw
 /// `MeroAppBackendUnsupported`. A refusal throws `AppError`; `Refusal(_:)` types it.
 public struct PermissionsShowcaseClient: Sendable {
-    /// The app type `Evidence`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Evidence = JSONValue
 
-    /// The app type `Founding`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Founding = JSONValue
+    /// The app type `Evidence`.
+    public struct Evidence: Codable, Sendable, Equatable {
+        public var hash: String
+        public var kind: String
+        public var body: String
 
-    /// The app type `MessageView`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias MessageView = JSONValue
+        public init(
+            hash: String,
+            kind: String,
+            body: String
+        ) {
+            self.hash = hash
+            self.kind = kind
+            self.body = body
+        }
 
-    /// The app type `PageView`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias PageView = JSONValue
+        public init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: Key.self)
+            let v0 = try fields.decode(String.self, forKey: Key("hash"))
+            let v1 = try fields.decode(String.self, forKey: Key("kind"))
+            let v2 = try fields.decode(String.self, forKey: Key("body"))
+            self.hash = v0
+            self.kind = v1
+            self.body = v2
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var fields = encoder.container(keyedBy: Key.self)
+            try fields.encode(self.hash, forKey: Key("hash"))
+            try fields.encode(self.kind, forKey: Key("kind"))
+            try fields.encode(self.body, forKey: Key("body"))
+        }
+    }
+
+    /// The app type `Founding`.
+    public struct Founding: Codable, Sendable, Equatable {
+        public var name: String
+        public var motto: String
+
+        public init(
+            name: String,
+            motto: String
+        ) {
+            self.name = name
+            self.motto = motto
+        }
+
+        public init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: Key.self)
+            let v0 = try fields.decode(String.self, forKey: Key("name"))
+            let v1 = try fields.decode(String.self, forKey: Key("motto"))
+            self.name = v0
+            self.motto = v1
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var fields = encoder.container(keyedBy: Key.self)
+            try fields.encode(self.name, forKey: Key("name"))
+            try fields.encode(self.motto, forKey: Key("motto"))
+        }
+    }
+
+    /// The app type `MessageView`.
+    public struct MessageView: Codable, Sendable, Equatable {
+        public var key: String
+        public var author: String
+        public var text: String
+        public var sentAt: UInt64
+
+        public init(
+            key: String,
+            author: String,
+            text: String,
+            sentAt: UInt64
+        ) {
+            self.key = key
+            self.author = author
+            self.text = text
+            self.sentAt = sentAt
+        }
+
+        public init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: Key.self)
+            let v0 = try fields.decode(String.self, forKey: Key("key"))
+            let v1 = try fields.decode(String.self, forKey: Key("author"))
+            let v2 = try fields.decode(String.self, forKey: Key("text"))
+            let v3 = try fields.decode(DecimalString<UInt64>.self, forKey: Key("sentAt")).value
+            self.key = v0
+            self.author = v1
+            self.text = v2
+            self.sentAt = v3
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var fields = encoder.container(keyedBy: Key.self)
+            try fields.encode(self.key, forKey: Key("key"))
+            try fields.encode(self.author, forKey: Key("author"))
+            try fields.encode(self.text, forKey: Key("text"))
+            try fields.encode(DecimalString(self.sentAt), forKey: Key("sentAt"))
+        }
+    }
+
+    /// The app type `PageView`.
+    public struct PageView: Codable, Sendable, Equatable {
+        public var id: String
+        public var author: String
+        public var title: String
+        public var revisions: [Tuple2<String, String>]
+
+        public init(
+            id: String,
+            author: String,
+            title: String,
+            revisions: [Tuple2<String, String>]
+        ) {
+            self.id = id
+            self.author = author
+            self.title = title
+            self.revisions = revisions
+        }
+
+        public init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: Key.self)
+            let v0 = try fields.decode(String.self, forKey: Key("id"))
+            let v1 = try fields.decode(String.self, forKey: Key("author"))
+            let v2 = try fields.decode(String.self, forKey: Key("title"))
+            let v3 = try fields.decode([Tuple2<String, String>].self, forKey: Key("revisions"))
+            self.id = v0
+            self.author = v1
+            self.title = v2
+            self.revisions = v3
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var fields = encoder.container(keyedBy: Key.self)
+            try fields.encode(self.id, forKey: Key("id"))
+            try fields.encode(self.author, forKey: Key("author"))
+            try fields.encode(self.title, forKey: Key("title"))
+            try fields.encode(self.revisions, forKey: Key("revisions"))
+        }
+    }
 
     private enum Transport: Sendable {
         case client(CalimeroClient, String)
@@ -538,5 +669,28 @@ public struct PermissionsShowcaseClient: Sendable {
 
     private static func result<Wire: Decodable>(_ type: Wire.Type, of answer: Data) throws -> Wire {
         try JSONDecoder().decode(Answer<Wire>.self, from: answer).result
+    }
+
+    /// `tuple<..>` of 2: a JSON array `[v0, ..]`.
+    public struct Tuple2<T0: Codable & Sendable & Equatable, T1: Codable & Sendable & Equatable>: Codable, Sendable, Equatable {
+        public var v0: T0
+        public var v1: T1
+
+        public init(_ v0: T0, _ v1: T1) {
+            self.v0 = v0
+            self.v1 = v1
+        }
+
+        public init(from decoder: Decoder) throws {
+            var container = try decoder.unkeyedContainer()
+            v0 = try container.decode(T0.self)
+            v1 = try container.decode(T1.self)
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.unkeyedContainer()
+            try container.encode(v0)
+            try container.encode(v1)
+        }
     }
 }

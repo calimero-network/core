@@ -3911,6 +3911,7 @@ fn mpk_declaring(
         upgrades: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         services: None,
+        pipelines: Vec::new(),
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
@@ -5665,4 +5666,64 @@ async fn pools_wait_until_every_node_runs_this_release() {
     let shown = ops.get("ops/pools").await.unwrap();
     assert_eq!(shown["pools"], pools["pools"]);
     assert_eq!(shown["capacity"], json!({ "standard": 0 }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn prices_wait_until_every_node_runs_this_release() {
+    let mut c = Cluster::start_with(3, |cfg| {
+        cfg.release = if cfg.node_id == 3 { "0.9.0" } else { "1.0.0" }.into();
+    })
+    .await;
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    assert_eq!(ops.get("ops/prices").await.unwrap(), json!({}));
+    let table = |version: u64, rate: u64| {
+        json!({ "table": {
+            "version": version, "fuelPerVcpuSecond": rate, "vcpuSecond": 100, "gibSecond": 10,
+            "connectorGib": 1, "storageGibMonth": 2, "egressGib": 3,
+        } })
+    };
+    let err = ops
+        .post("ops/prices", table(1, 1_000_000_000))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("UPGRADE_PENDING"), "{err}");
+    assert!(
+        matches!(err, calimero_client::Error::Api { status: 409, .. }),
+        "{err}"
+    );
+    c.restart(2, |cfg| cfg.release = "1.0.0".into()).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match ops
+            .post_operator_signed(
+                "ops/prices",
+                table(1, 1_000_000_000),
+                &common::operator_sign,
+            )
+            .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                assert!(std::time::Instant::now() < deadline, "still refused: {e}");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+    assert_eq!(
+        ops.get("ops/prices").await.unwrap(),
+        table(1, 1_000_000_000)["table"]
+    );
+    // A version that does not follow the stored one, and a zero rate, are refused after signing.
+    for (bad, code) in [
+        (table(1, 1_000_000_000), "REJECTED"),
+        (table(2, 0), "REJECTED"),
+    ] {
+        let err = ops
+            .post_operator_signed("ops/prices", bad, &common::operator_sign)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), Some(code), "{err}");
+    }
+    assert_eq!(ops.get("ops/prices").await.unwrap()["version"], 1);
 }

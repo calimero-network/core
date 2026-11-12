@@ -5,6 +5,9 @@
 //! must stay within the old one (it may narrow). The state section is checked as an upgrade
 //! reads it: a removed field or a field whose collection kind changed leaves data the new code
 //! cannot read, which only a state version bump (and its migration) may do.
+//!
+//! The app types those name are compared by their shapes in `types`, with the same rule in
+//! the direction each one travels ([`shapes`]).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -13,6 +16,8 @@ use serde_json::{json, Value};
 
 use crate::abi::{AppAbi, Fields, Method};
 use crate::ty::{Int, Type};
+
+mod shapes;
 
 /// Whether a change breaks existing callers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -25,7 +30,8 @@ pub enum Severity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
     pub severity: Severity,
-    /// What changed: `method book`, `error NotFound`, `event Booked`, `state`, `abi`.
+    /// What changed: `method book`, `error NotFound`, `event Booked`, `type Booking`, `state`,
+    /// `abi`.
     pub subject: String,
     pub message: String,
 }
@@ -126,6 +132,7 @@ pub fn diff(old: &AppAbi, new: &AppAbi) -> Report {
     r.methods(old, new);
     r.payloads("error", &old.errors, &new.errors);
     r.payloads("event", &old.events, &new.events);
+    r.types(old, new);
     r.state(old, new);
     Report {
         changes: r.changes,

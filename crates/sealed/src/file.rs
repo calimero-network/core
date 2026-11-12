@@ -22,9 +22,9 @@ pub const SEGMENT_CHUNKS: usize = 256;
 pub const PART_BYTES: usize = SEGMENT_CHUNKS * CHUNK_BYTES;
 /// Stored bytes of every segment but the last (16,781,312).
 pub const SEGMENT_BYTES: usize = SEGMENT_CHUNKS * SEALED_CHUNK_BYTES;
-const _: () = assert!(SEGMENT_BYTES <= calimero_sealed::server::MAX_SEALED_BYTES); // a segment fits one sealed request
+const _: () = assert!(SEGMENT_BYTES <= crate::server::MAX_SEALED_BYTES); // a segment fits one sealed request
 
-pub(super) fn cipher(key: &[u8; 32]) -> LessSafeKey {
+pub fn cipher(key: &[u8; 32]) -> LessSafeKey {
     // SAFETY: a 32-byte key is an AES-256 key.
     LessSafeKey::new(UnboundKey::new(&AES_256_GCM, key).expect("a 32-byte key"))
 }

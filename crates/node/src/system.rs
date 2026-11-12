@@ -9,14 +9,15 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use calimero_bundle::UpgradeAuthority;
 use calimero_identity::Credential;
 use calimero_log::Machine;
+use calimero_pipeline::PriceTable;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::error;
 
 use crate::job_node::RUNS_PER_JOB_NODE;
 use crate::types::{
-    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Invite, NodeRecord,
-    NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
+    Access, Account, AccountId, ApiKeyRecord, AppId, AppRecord, Audience, Components, Invite,
+    NodeRecord, NodeRole, Org, OrgId, OrgRole, RefreshRecord, Team, TeamId, TeamJoin, TeamRole,
 };
 
 mod accounts;
@@ -166,6 +167,10 @@ pub const MAX_POOLS: usize = 32; // pools one cluster defines
 pub const MAX_POOL_NAME_BYTES: usize = 64; // a pool's name, also on a job node's record
 /// The apply error for a pool set past `MAX_POOLS` or with an empty or too long name.
 pub const BAD_POOLS: &str = "BAD_POOLS: at most 32 pools, each named with 1 to 64 bytes";
+/// The apply error for a price table whose version is not the current one plus one.
+pub const PRICE_VERSION: &str = "PRICE_VERSION: the version must be the current one plus one";
+/// The apply error for a price table with a zero fuel rate.
+pub const BAD_PRICES: &str = "BAD_PRICES: the fuel rate per vCPU-second must be above zero";
 /// Released run ids kept per app, so a late `AcquireRun` for one is refused.
 pub const RELEASED_RUNS_KEPT: usize = 256;
 
@@ -205,10 +210,19 @@ pub const QUOTA_PREFIX: &str = "quota exceeded";
 const COMPUTE_NOT_AN_APP: &str = "a compute component is run by job nodes, never as an app";
 
 /// The refusal when an app names a compute component its bundle's release does not ship.
+/// The refusal of an uninstall of a release another release's pipelines pin as a module.
+pub const MODULE_IN_USE: &str =
+    "an installed release's pipelines use that release as a module; uninstall them first";
 const COMPUTE_NOT_SHIPPED: &str = "that compute component is not shipped with the app's bundle";
 
 /// The refusal when an app names a release that does not ship its bundle.
 const RELEASE_NOT_SHIPPED: &str = "that release does not ship the app's bundle";
+
+/// The refusal when an upgrade would add or drop an app's app component.
+const COMPONENTS_CHANGED: &str = "an app keeps the components it was made with";
+
+/// The refusal when an app's components differ from its release's.
+const COMPONENTS_NOT_RELEASES: &str = "the app's components are not its release's";
 
 /// The actor the log records for what the operator does with its ops token
 /// (installs, upgrades): never an account id, so it names no account.
@@ -263,6 +277,30 @@ pub struct PackageRecord {
     pub versions: BTreeMap<String, PackageVersion>,
 }
 
+/// A pipeline a release registers: the SHA-256 of its canonical JSON, a content-addressed
+/// part of the release, and the most fuel one run of it can burn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineRef {
+    pub hash: String,
+    /// Decimal `u128`: JSON numbers do not hold one.
+    pub worst_case_fuel: String,
+    /// The other packages' modules the pipeline names, by the reference as written (`self`
+    /// excluded), each pinned to the release it was installed against.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub modules: BTreeMap<String, ModulePin>,
+}
+
+/// The release of another package a pipeline's module reference resolved to at install.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModulePin {
+    pub package: String,
+    pub version: String,
+    /// The release's compute component, as a bundle hash.
+    pub compute: String,
+}
+
 /// One release of a package, as its signed manifest describes it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -274,6 +312,10 @@ pub struct PackageVersion {
     pub source: BundleSource,
     /// Service name (`""` for a single-service bundle) -> the WASM's bundle hash.
     pub services: BTreeMap<String, String>,
+    /// Which components the release has. `ComputeOnly`: `services` is empty and `compute`
+    /// holds the single-service bundle's component under `""`.
+    #[serde(default, skip_serializing_if = "Components::is_app")]
+    pub components: Components,
     /// Service name -> its compute component's bundle hash, for the services that ship one.
     /// Never a service: no app runs it, and only job nodes do.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -282,6 +324,10 @@ pub struct PackageVersion {
     /// Absent in releases from before: every part then counts the whole `.mpk`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub part_sizes: BTreeMap<String, u64>,
+    /// Pipeline name -> its registered form. Left out when empty, so a record of a release
+    /// without pipelines reads and writes as it did; an older node ignores the field.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pipelines: BTreeMap<String, PipelineRef>,
     /// The manifest's display metadata (name, description, icon, ...).
     #[serde(default)]
     pub metadata: Value,
@@ -310,6 +356,16 @@ pub struct PackageVersion {
 }
 
 impl PackageVersion {
+    /// Service name -> the bundle an app of this release runs: the app component, or the
+    /// compute component when that is all the release has.
+    #[must_use]
+    pub fn app_parts(&self) -> &BTreeMap<String, String> {
+        match self.components {
+            Components::App => &self.services,
+            Components::ComputeOnly => &self.compute,
+        }
+    }
+
     /// Every WASM the release records under `package`, with the part of the release it is:
     /// each service, then each service's compute component.
     fn parts<'a>(&'a self, package: &'a str) -> impl Iterator<Item = (&'a str, PackageRef)> {
@@ -447,6 +503,9 @@ pub struct SystemState {
     /// Job node pools by name; left out when empty (one legacy pool).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pools: BTreeMap<String, PoolConfig>,
+    /// The operator's prices; left out until set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_table: Option<PriceTable>,
     pub nodes: BTreeMap<u64, NodeRecord>,
     /// Nodes the operator removed (`RemoveNode`): registered again only by
     /// the operator (`/ops/nodes`).
@@ -1082,6 +1141,12 @@ impl SystemState {
             .map(|(name, _)| name.clone())
     }
 
+    /// `name` when the cluster defines that pool and a run of `memory_mib` fits it.
+    fn named_pool_for(&self, name: String, memory_mib: u32) -> Option<String> {
+        let fits = self.pools.get(&name)?.max_memory_mib >= memory_mib;
+        fits.then_some(name)
+    }
+
     /// The pool `slot` counts against (a slot from before pools belongs to the default one).
     fn slot_pool<'a>(&self, slot: &'a RunSlot) -> &'a str {
         match (self.pools.is_empty(), slot.pool.as_str()) {
@@ -1376,7 +1441,7 @@ impl SystemState {
         });
         shares_org
             || self.apps.values().any(|a| {
-                v.services.values().any(|h| *h == a.bundle) && self.may_reach(a, Some(who))
+                v.app_parts().values().any(|h| *h == a.bundle) && self.may_reach(a, Some(who))
             })
     }
 
@@ -1391,6 +1456,33 @@ impl SystemState {
             .filter(move |v| self.sees_release(v, who))
     }
 
+    /// Whether a release other than `package`'s own pins `package@version` as a pipeline module.
+    #[must_use]
+    pub fn module_pinned(&self, package: &str, version: &str) -> bool {
+        self.packages
+            .iter()
+            .filter(|(name, _)| name.as_str() != package)
+            .flat_map(|(_, p)| p.versions.values())
+            .flat_map(|v| v.pipelines.values())
+            .flat_map(|r| r.modules.values())
+            .any(|m| m.package == package && m.version == version)
+    }
+
+    /// Whether every module `release` pins is an installed release with that compute component.
+    #[must_use]
+    pub fn modules_installed(&self, release: &PackageVersion) -> bool {
+        release
+            .pipelines
+            .values()
+            .flat_map(|r| r.modules.values())
+            .all(|m| {
+                self.packages
+                    .get(&m.package)
+                    .and_then(|p| p.versions.get(&m.version))
+                    .is_some_and(|v| v.compute.get("") == Some(&m.compute))
+            })
+    }
+
     /// Whether `hash` is a release's compute component, which no app runs.
     #[must_use]
     pub fn is_compute_bundle(&self, hash: &str) -> bool {
@@ -1398,6 +1490,13 @@ impl SystemState {
             .get(hash)
             .and_then(|b| b.package.as_ref())
             .is_some_and(|at| at.compute)
+    }
+
+    /// The components of the release `r` names; an app from a raw upload has an app component.
+    #[must_use]
+    pub fn components_of(&self, r: Option<&PackageRef>) -> Components {
+        r.and_then(|r| self.packages.get(&r.package)?.versions.get(&r.version))
+            .map_or(Components::App, |v| v.components)
     }
 
     /// Whether `r` names an installed release whose service `r.service` is
@@ -1410,7 +1509,7 @@ impl SystemState {
                 .packages
                 .get(&r.package)
                 .and_then(|p| p.versions.get(&r.version))
-                .and_then(|v| v.services.get(service))
+                .and_then(|v| v.app_parts().get(service))
                 .is_some_and(|h| h == bundle)
     }
 
@@ -1426,7 +1525,7 @@ impl SystemState {
             .values()
             .flat_map(|p| p.versions.values())
             .any(|v| {
-                v.services.iter().any(|(service, main)| {
+                v.app_parts().iter().any(|(service, main)| {
                     main == bundle && v.compute.get(service).is_some_and(|c| c == compute)
                 })
             })
@@ -1441,7 +1540,7 @@ impl SystemState {
             .flat_map(|p| p.versions.values())
             .filter(|v| self.sees_release(v, who))
             .flat_map(|v| {
-                v.services
+                v.app_parts()
                     .iter()
                     .filter(|(_, main)| *main == bundle)
                     .map(|(service, _)| v.compute.get(service))
@@ -1468,7 +1567,7 @@ impl SystemState {
             .packages
             .values()
             .flat_map(|p| p.versions.values())
-            .filter(|v| v.services.values().any(|h| h == hash))
+            .filter(|v| v.app_parts().values().any(|h| h == hash))
             .peekable();
         shipped.peek().is_none()
             || b.uploaded_by == who
@@ -1860,7 +1959,7 @@ impl SystemState {
         self.packages.get(package).is_some_and(|p| {
             p.versions
                 .values()
-                .any(|v| v.services.values().any(|h| h == bundle))
+                .any(|v| v.app_parts().values().any(|h| h == bundle))
         })
     }
 
@@ -1879,7 +1978,7 @@ impl SystemState {
     pub fn offers_bundle(&self, d: &Deployment, bundle: &str) -> bool {
         d.apps.values().any(|o| {
             self.offered_release(o)
-                .is_some_and(|v| v.services.values().any(|h| h == bundle))
+                .is_some_and(|v| v.app_parts().values().any(|h| h == bundle))
         })
     }
 
@@ -1969,7 +2068,7 @@ impl SystemState {
         if !package
             .versions
             .values()
-            .any(|v| v.services.values().any(|h| h == bundle))
+            .any(|v| v.app_parts().values().any(|h| h == bundle))
         {
             return Err("this API key upgrades only to signed releases of its package");
         }
@@ -2017,7 +2116,7 @@ impl SystemState {
         let runs = package
             .versions
             .values()
-            .any(|v| v.services.values().any(|h| *h == app.bundle));
+            .any(|v| v.app_parts().values().any(|h| *h == app.bundle));
         if !runs {
             return Err("the app does not run a release of that package");
         }
@@ -3535,6 +3634,7 @@ impl SystemCmd {
             Self::SetQuotas { .. } => Area::Fleet,
             Self::SetOrgQuotas { .. } => Area::Fleet,
             Self::SetPools { .. } => Area::Fleet,
+            Self::SetPriceTable { .. } => Area::Fleet,
             Self::CreateOrg { .. } => Area::Orgs,
             Self::RenameOrg { .. } => Area::Orgs,
             Self::Genesis { .. } => Area::Fleet,
@@ -4106,6 +4206,10 @@ pub enum SystemCmd {
         /// The run's memory cap, which picks its pool; absent (0) from a leader that sends none.
         #[serde(default)]
         memory_mib: u32,
+        /// A pipeline step's named pool: the run goes there (it must fit `memory_mib`) instead
+        /// of by memory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pool: Option<String>,
     },
     /// Frees a run's place (finished, or never to run) and grants the next waiting runs.
     ReleaseRun {
@@ -4349,6 +4453,13 @@ pub enum SystemCmd {
     /// The operator sets the compute pools (`cluster / __set_pools / { pools }`).
     SetPools {
         pools: BTreeMap<String, PoolConfig>,
+        /// The operator's signature over it ([`crate::proof`]).
+        #[serde(default)]
+        proof: Value,
+    },
+    /// The operator sets the price table (`cluster / __set_price_table / { table }`).
+    SetPriceTable {
+        table: PriceTable,
         /// The operator's signature over it ([`crate::proof`]).
         #[serde(default)]
         proof: Value,

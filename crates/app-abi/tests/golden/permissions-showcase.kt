@@ -33,24 +33,13 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.serializer
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
-
-/** The app type `Evidence`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Evidence = JsonElement
-
-/** The app type `Founding`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Founding = JsonElement
-
-/** The app type `MessageView`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias MessageView = JsonElement
-
-/** The app type `PageView`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias PageView = JsonElement
 
 /**
  * The app's methods.
@@ -138,7 +127,7 @@ class PermissionsShowcaseClient private constructor(
             JsonObject(emptyMap()),
             stale,
             minIndex,
-            ListSerializer(serializer<MessageView>()),
+            ListSerializer(MessageView.serializer()),
         )
 
     /** view `channel`. */
@@ -154,7 +143,7 @@ class PermissionsShowcaseClient private constructor(
             },
             stale,
             minIndex,
-            ListSerializer(serializer<MessageView>()),
+            ListSerializer(MessageView.serializer()),
         )
 
     /** call `createPage`. */
@@ -203,7 +192,7 @@ class PermissionsShowcaseClient private constructor(
             },
             stale,
             minIndex,
-            serializer<Evidence>().nullable,
+            Evidence.serializer().nullable,
         )
 
     /** view `evidenceOfKind`. */
@@ -219,7 +208,7 @@ class PermissionsShowcaseClient private constructor(
             },
             stale,
             minIndex,
-            ListSerializer(serializer<Evidence>()),
+            ListSerializer(Evidence.serializer()),
         )
 
     /** call `fileEvidence`. */
@@ -261,7 +250,7 @@ class PermissionsShowcaseClient private constructor(
             JsonObject(emptyMap()),
             stale,
             minIndex,
-            serializer<Founding>(),
+            Founding.serializer(),
         )
 
     /** view `me`. */
@@ -305,7 +294,7 @@ class PermissionsShowcaseClient private constructor(
             },
             stale,
             minIndex,
-            serializer<PageView>().nullable,
+            PageView.serializer().nullable,
         )
 
     /** call `postMessage`. */
@@ -528,6 +517,165 @@ class PermissionsShowcaseClient private constructor(
         }
     }
 
+    /** The app type `Evidence`. */
+    data class Evidence(
+        val hash: String,
+        val kind: String,
+        val body: String,
+    ) {
+        companion object {
+            /** `Evidence`'s JSON form. */
+            fun serializer(): KSerializer<Evidence> = Wire
+
+            private object Wire : KSerializer<Evidence> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Evidence,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        buildJsonObject {
+                            put("hash", encode(String.serializer(), value.hash))
+                            put("kind", encode(String.serializer(), value.kind))
+                            put("body", encode(String.serializer(), value.body))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Evidence {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val fields = obj(data, "Evidence")
+                    return Evidence(
+                        hash = field(fields, "hash", String.serializer()),
+                        kind = field(fields, "kind", String.serializer()),
+                        body = field(fields, "body", String.serializer()),
+                    )
+                }
+            }
+        }
+    }
+
+    /** The app type `Founding`. */
+    data class Founding(
+        val name: String,
+        val motto: String,
+    ) {
+        companion object {
+            /** `Founding`'s JSON form. */
+            fun serializer(): KSerializer<Founding> = Wire
+
+            private object Wire : KSerializer<Founding> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Founding,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        buildJsonObject {
+                            put("name", encode(String.serializer(), value.name))
+                            put("motto", encode(String.serializer(), value.motto))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Founding {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val fields = obj(data, "Founding")
+                    return Founding(
+                        name = field(fields, "name", String.serializer()),
+                        motto = field(fields, "motto", String.serializer()),
+                    )
+                }
+            }
+        }
+    }
+
+    /** The app type `MessageView`. */
+    data class MessageView(
+        val key: String,
+        val author: String,
+        val text: String,
+        val sentAt: ULong,
+    ) {
+        companion object {
+            /** `MessageView`'s JSON form. */
+            fun serializer(): KSerializer<MessageView> = Wire
+
+            private object Wire : KSerializer<MessageView> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: MessageView,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        buildJsonObject {
+                            put("key", encode(String.serializer(), value.key))
+                            put("author", encode(String.serializer(), value.author))
+                            put("text", encode(String.serializer(), value.text))
+                            put("sentAt", encode(U64AsString, value.sentAt))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): MessageView {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val fields = obj(data, "MessageView")
+                    return MessageView(
+                        key = field(fields, "key", String.serializer()),
+                        author = field(fields, "author", String.serializer()),
+                        text = field(fields, "text", String.serializer()),
+                        sentAt = field(fields, "sentAt", U64AsString),
+                    )
+                }
+            }
+        }
+    }
+
+    /** The app type `PageView`. */
+    data class PageView(
+        val id: String,
+        val author: String,
+        val title: String,
+        val revisions: List<Tuple2<String, String>>,
+    ) {
+        companion object {
+            /** `PageView`'s JSON form. */
+            fun serializer(): KSerializer<PageView> = Wire
+
+            private object Wire : KSerializer<PageView> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: PageView,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        buildJsonObject {
+                            put("id", encode(String.serializer(), value.id))
+                            put("author", encode(String.serializer(), value.author))
+                            put("title", encode(String.serializer(), value.title))
+                            put("revisions", encode(ListSerializer(Tuple2Serializer(String.serializer(), String.serializer())), value.revisions))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): PageView {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val fields = obj(data, "PageView")
+                    return PageView(
+                        id = field(fields, "id", String.serializer()),
+                        author = field(fields, "author", String.serializer()),
+                        title = field(fields, "title", String.serializer()),
+                        revisions = field(fields, "revisions", ListSerializer(Tuple2Serializer(String.serializer(), String.serializer()))),
+                    )
+                }
+            }
+        }
+    }
+
     /** A `u64` as the wire carries it: a decimal string (a number is read too). */
     object U64AsString : KSerializer<ULong> {
         override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("calimero.u64", PrimitiveKind.STRING)
@@ -578,6 +726,30 @@ class PermissionsShowcaseClient private constructor(
         }
     }
 
+    /** `tuple<..>` of 2: a JSON array `[v0, ..]`. */
+    data class Tuple2<T0, T1>(
+        val v0: T0,
+        val v1: T1,
+    )
+
+    private class Tuple2Serializer<T0, T1>(
+        private val s0: KSerializer<T0>,
+        private val s1: KSerializer<T1>,
+    ) : KSerializer<Tuple2<T0, T1>> {
+        override val descriptor: SerialDescriptor = JsonArray.serializer().descriptor
+
+        override fun serialize(
+            encoder: Encoder,
+            value: Tuple2<T0, T1>,
+        ) = (encoder as JsonEncoder).encodeJsonElement(JsonArray(listOf(json.encodeToJsonElement(s0, value.v0), json.encodeToJsonElement(s1, value.v1))))
+
+        override fun deserialize(decoder: Decoder): Tuple2<T0, T1> {
+            val items = (decoder as JsonDecoder).decodeJsonElement().jsonArray
+            if (items.size != 2) throw SerializationException("expected 2 items, got ${items.size}")
+            return Tuple2(json.decodeFromJsonElement(s0, items[0]), json.decodeFromJsonElement(s1, items[1]))
+        }
+    }
+
     companion object {
         private val json = Json { ignoreUnknownKeys = true }
 
@@ -594,5 +766,11 @@ class PermissionsShowcaseClient private constructor(
             name: String,
             serializer: KSerializer<T>,
         ): T = json.decodeFromJsonElement(serializer, (data as? JsonObject)?.get(name) ?: JsonNull)
+
+        /** [data] as an object. */
+        private fun obj(
+            data: JsonElement,
+            what: String,
+        ): JsonObject = data as? JsonObject ?: throw SerializationException("$what: expected an object")
     }
 }

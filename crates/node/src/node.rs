@@ -38,12 +38,12 @@ pub use segments::{SegmentPin, SEGMENT_GRACE, SWEEP_EVERY};
 pub use component::ComputeLimits;
 pub use job::{JobPeer, JOB_CONTROL_TIMEOUT, MAX_INFLIGHT_JOB_OPS};
 
-pub(crate) use component::RUN_VIEW;
 pub use component::{
     app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE, JOB_POLL,
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
+pub(crate) use component::{PIPELINE_VIEW, RUN_VIEW};
 // The refusals the OpenAPI registry's tests build, to hold `details` to its schema.
 #[cfg(test)]
 pub(crate) use component::{files_unavailable, upload_refusal};
@@ -295,7 +295,14 @@ pub struct CallRequest {
 /// request: they change what the app is (its bundle, its blob marks), so
 /// authority over them is the API's (`run_upgrade`, the blob routes), never
 /// the app's or a caller's.
-pub const HOST_METHODS: [&str; 4] = ["__upgrade", "__blob", "__blob_forget", "__blob_revoke"];
+pub const HOST_METHODS: [&str; 6] = [
+    "__upgrade",
+    "__blob",
+    "__blob_forget",
+    "__blob_revoke",
+    "__pipeline_start",
+    "__pipeline_cancel",
+];
 
 /// Whether a method name is reserved: the node's commands and the runtime's
 /// own exports (`__calimero_*`) are not methods a client, an xcall or a
@@ -454,6 +461,8 @@ pub struct Node {
     uploads: component::Uploads,
     /// Pins on blobs an entry stored but did not commit, and deletions in flight.
     pub(crate) blob_guards: Arc<blob_guards::BlobGuards>,
+    /// How many exports each account has asked of this node lately.
+    pub(crate) export_limits: crate::api::ExportLimits,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -526,6 +535,8 @@ pub struct Node {
     pub runs_kick: Arc<tokio::sync::Notify>,
     /// Event streams this node is serving (`/apps/{app}/events`).
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Pipeline run event streams open on this node, by app.
+    pub pipeline_subscribers: Mutex<HashMap<String, usize>>,
     /// Every app's ephemeral presence, in memory only.
     pub presence: crate::presence::Presence,
     /// Release frontends opened for `app_host`.
@@ -786,6 +797,8 @@ pub fn rejected(reason: &str) -> ApiError {
         ApiError::new(403, "SIGN_UP_REFUSED", reason)
     } else if reason == crate::system::NOT_A_DEPLOYER {
         not_a_deployer()
+    } else if reason == crate::system::MODULE_IN_USE {
+        ApiError::new(409, "MODULE_IN_USE", reason)
     } else if let Some(code) = recovery_code(reason) {
         ApiError::new(409, code, reason)
     } else {
@@ -891,6 +904,7 @@ impl Node {
             segment_sweep: Mutex::default(),
             uploads: component::Uploads::default(),
             blob_guards: Arc::default(),
+            export_limits: crate::api::ExportLimits::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,
@@ -911,6 +925,7 @@ impl Node {
                 .build()?,
             challenges: Mutex::new(HashMap::new()),
             event_streams: std::sync::Arc::default(),
+            pipeline_subscribers: Mutex::new(HashMap::new()),
             presence: crate::presence::Presence::default(),
             frontends: crate::app_host::FrontendCache::default(),
             consent: crate::consent_page::ConsentRequests::default(),
@@ -1786,6 +1801,19 @@ impl Node {
         }
     }
 
+    /// A pipeline run's receipt with this node's receipt key's signature over it
+    /// (`calimero_client::receipt::receipt_message`), as the receipt route answers it.
+    #[must_use]
+    pub fn sign_pipeline_receipt(&self, receipt: serde_json::Value) -> serde_json::Value {
+        use ed25519_dalek::Signer;
+        let message = calimero_client::receipt::receipt_message(&receipt);
+        serde_json::json!({
+            "receipt": receipt,
+            "node": self.config.node_id,
+            "signature": hex::encode(self.receipt_key.sign(&message).to_bytes()),
+        })
+    }
+
     /// The mero-tee release this node runs, as its attestation names it.
     #[must_use]
     pub fn own_release(&self) -> String {
@@ -2229,7 +2257,7 @@ impl Node {
     }
 
     /// A bundle's WASM: from this node's blob store, else from a peer.
-    pub(crate) async fn bundle_wasm(&self, hash: &str) -> Result<Vec<u8>, ApiError> {
+    pub async fn bundle_wasm(&self, hash: &str) -> Result<Vec<u8>, ApiError> {
         if let Some(w) = self
             .engine
             .get_blob(hash)
@@ -2770,6 +2798,32 @@ impl Node {
         self.blob_asked_strong(app, id, true, false).await
     }
 
+    /// `id`'s size and seal if it is one of `app`'s sealed files, as its leader answers it;
+    /// `None` if no replica answered as leader.
+    pub async fn file_record_strong(
+        &self,
+        app: &AppRecord,
+        id: &[u8; 32],
+    ) -> Option<Option<(u64, crate::component::blobs::FileSeal)>> {
+        let body = json!({
+            "app": app.app_id, "id": hex::encode(id), "strong": true, "file": true, "record": true
+        });
+        self.ask_leader(
+            app,
+            body,
+            |m| m.file_record(id),
+            |v| {
+                let Some(record) = v.get("record") else {
+                    return Some(None);
+                };
+                let size = record["size"].as_u64()?;
+                let seal = serde_json::from_value(record["seal"].clone()).ok()?;
+                Some(Some((size, seal)))
+            },
+        )
+        .await
+    }
+
     /// `id` as `app`'s leader holds it: `None` if no replica answered as leader, `Some(None)` if
     /// not held, else whether it is published and its revocation count.
     pub async fn blob_standing_strong(
@@ -2990,6 +3044,15 @@ impl Node {
         {
             return self.component_blob_cmd(g, req).await;
         }
+        if executor == Some(Kind::Component)
+            && req.host
+            && matches!(
+                req.method.as_str(),
+                "__pipeline_start" | "__pipeline_cancel"
+            )
+        {
+            return self.component_pipeline_cmd(g, req).await;
+        }
         let why = match executor {
             Some(Kind::Component) => COMPONENT_REFUSES,
             _ => crate::app::WASMER_GONE,
@@ -3143,6 +3206,7 @@ impl Node {
             return Err(ApiError::unsupported_engine());
         }
         if !req.host {
+            app.require_app_component()?;
             let a = self.call_here_component(&app, req).await?;
             return serde_json::to_value(a).map_err(|e| ApiError::internal(&e.to_string()));
         }
@@ -3191,7 +3255,13 @@ impl Node {
         if app.executor == Kind::Wasmer {
             return Err(ApiError::unsupported_engine());
         }
-        if req.method != component::RUN_VIEW {
+        if !matches!(
+            req.method.as_str(),
+            component::RUN_VIEW | component::PIPELINE_VIEW
+        ) {
+            app.require_app_component()?;
+        }
+        if req.method != component::RUN_VIEW && req.method != component::PIPELINE_VIEW {
             self.abi_gate(&app, &req.method, &req.caller, true, false)
                 .await?;
         }
