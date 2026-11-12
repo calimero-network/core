@@ -80,10 +80,13 @@ pub enum Feature {
     /// its replicas would keep judging apps by the release each bundle was
     /// first recorded from.
     AttributeByRelease,
+    /// `RequireCurrentRules` (#4940): an earlier release cannot read it, so
+    /// its replicas would keep applying later entries' flags as logged.
+    CurrentRules,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 18] = [
+pub const FEATURES: [Feature; 19] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -102,6 +105,7 @@ pub const FEATURES: [Feature; 18] = [
     Feature::Pipelines,
     Feature::NamedPool,
     Feature::AttributeByRelease,
+    Feature::CurrentRules,
 ];
 
 impl Feature {
@@ -127,6 +131,7 @@ impl Feature {
             Self::Pipelines => "pipelines",
             Self::NamedPool => "namedPool",
             Self::AttributeByRelease => "attributeByRelease",
+            Self::CurrentRules => "currentRules",
         }
     }
 
@@ -151,7 +156,8 @@ impl Feature {
             | Self::ComputeOnly
             | Self::Pipelines
             | Self::NamedPool
-            | Self::AttributeByRelease => "1.0.0-rc.19",
+            | Self::AttributeByRelease
+            | Self::CurrentRules => "1.0.0-rc.19",
         }
     }
 }
@@ -365,6 +371,7 @@ impl SystemCmd {
             Self::RestoreApp { .. } | Self::FinishRestore { .. } => vec![Feature::RestoreApp],
             Self::RenameOrg { .. } => vec![Feature::RenameOrg],
             Self::AttributeByRelease => vec![Feature::AttributeByRelease],
+            Self::RequireCurrentRules => vec![Feature::CurrentRules],
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
             }
@@ -600,6 +607,7 @@ mod tests {
                 consent: Value::Null,
             },
             Feature::AttributeByRelease => SystemCmd::AttributeByRelease,
+            Feature::CurrentRules => SystemCmd::RequireCurrentRules,
             Feature::RestoreApp => SystemCmd::FinishRestore {
                 app_id: "app".into(),
                 group: 2,

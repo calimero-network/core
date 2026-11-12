@@ -32,7 +32,17 @@ declaration order; `deployments` and `deployers` are written only when not the
 defaults (`open`, `operator`), so a default cluster binds the bytes it did before
 (`the_default_governance_binds_the_bytes_it_did_before_deployers`). A client that
 recomputes it must keep them when the attested object has them; mero-js does
-not compute this binding yet.
+not compute this binding yet. The binding (`receipt-key.v3`) also takes the
+cluster name (u32-BE length-prefixed) and the node id (u64 BE), and
+`verify_receipt_key` checks them against the cluster and node the caller
+expects, not the document's own fields: `verify_app_cluster` takes the cluster
+from the entry node's sealed answer (`GET /apps/{app}/attestation` names it)
+and each replica's id from the same answer
+(`a_receipt_key_quote_is_bound_to_its_node_and_cluster`). Nodes before
+`RECEIPT_KEY_BOUND_SINCE` (1.0.0-rc.19) quote the unbound `receipt-key.v2`
+form; `verify_unbound_receipt_key` checks it for `calimero-node` alone, while
+its cluster still runs such a node, and a client never takes it
+(`an_unbound_receipt_key_quote_is_not_a_bound_one`).
 
 `verify_job_key` (`purpose=jobs`, a job node's attestation, `AttestationDoc::job_key`,
 absent from every other document) shares `verify_report`: report data =

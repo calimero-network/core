@@ -2361,6 +2361,7 @@ pub enum AppAttestationResponseReplicasItem {
 pub struct AppAttestationResponse {
     #[serde(rename = "appId")]
     pub app_id: String,
+    pub cluster: String,
     pub replicas: Vec<AppAttestationResponseReplicasItem>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]

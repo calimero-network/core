@@ -902,6 +902,8 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         r[32..].copy_from_slice(&calimero_client::attest::receipt_key_binding(
             &node.receipt_public(),
             &governance,
+            &node.config.cluster,
+            node.config.node_id,
         ));
         r
     } else if let Some(kms) = &kms {

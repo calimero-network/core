@@ -11,4 +11,4 @@
 # cutover: replace the version line with `hard-cutover: <PR> <why>` in that PR, mark
 # it in CHANGELOG.md, and add it to mdma's release_compat CUTOVERS. The job then
 # reports the cutover instead of running, until the next release puts a version back.
-1.0.0-rc.18
+1.0.0-rc.19
