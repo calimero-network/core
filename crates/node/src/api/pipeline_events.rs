@@ -100,9 +100,11 @@ impl Watch {
                 tokio::time::sleep(PIPELINE_EVENTS_POLL).await;
             }
             self.first = false;
-            // A view the leader could not answer this time (an election) is tried again.
-            let Ok(answer) = self.node.view(&self.req).await else {
-                continue;
+            let answer = match self.node.view(&self.req).await {
+                Ok(answer) => answer,
+                // An election or a leader out of reach is temporary; anything else ends the stream.
+                Err(e) if e.status == 503 => continue,
+                Err(_) => return None,
             };
             let now = RunProgress::from_view(&answer.result)?;
             match &self.prev {

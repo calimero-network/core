@@ -1960,6 +1960,32 @@ async fn subscribers_are_bounded() {
     let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_stream_ends_and_frees_its_slot_when_its_app_is_deleted() {
+    use futures_util::StreamExt as _;
+    let rig = Rig::start(&[JOB_A]).await;
+    let run = rig.start_run("slow", json!({}), json!({})).await;
+    let mut events = Box::pin(rig.alice.pipeline_run_events(&rig.app, &run).await.unwrap());
+    assert!(matches!(
+        events.next().await,
+        Some(PipelineEvent::Snapshot(_))
+    ));
+    let node = &rig.c.nodes[0].as_ref().unwrap().node;
+    assert_eq!(node.pipeline_subscribers.lock().unwrap().len(), 1);
+    let _gone = rig
+        .alice
+        .delete(&format!("apps/{}", rig.app))
+        .await
+        .unwrap();
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        while events.next().await.is_some() {}
+    })
+    .await;
+    assert!(ended.is_ok(), "the stream ends");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(node.pipeline_subscribers.lock().unwrap().is_empty());
+}
+
 const GHOSTLY: &str = "apiVersion: compute.calimero.network/v1
 kind: Pipeline
 name: ghostly
