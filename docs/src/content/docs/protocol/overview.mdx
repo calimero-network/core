@@ -7,6 +7,7 @@ sidebar:
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import ProtoNodeLayers from '../../../components/diagrams/ProtoNodeLayers.astro';
 
 This reference explains how a Calimero cluster works and why it is built that
 way. It follows one **call** from the client that makes it to the log entry
@@ -15,7 +16,9 @@ that records it, rather than touring the crates. The crates are
 the node does), `calimero-log` (the replicated log), `calimero-sealed` (the
 encrypted transport), `calimero-identity` (passkeys, sessions, API keys) and
 `calimero-client` (the Rust client, whose attestation check every client
-and peer shares).
+and peer shares). Apps run on `calimero-app-host` over
+`calimero-app-engine-wasmtime`; the node fetches its storage key with
+`calimero-kms-client` and makes its quotes with `calimero-tee-attestation`.
 
 :::tip[New here? Read these first, in order]
 [Concepts](/protocol/concepts/) → [The system group](/protocol/system-group/) →
@@ -25,8 +28,8 @@ Everything else builds on those four.
 
 ## The one idea everything hangs on
 
-A Calimero app is a WASM module whose state lives on a **cluster** of attested
-Intel TDX nodes. Each app instance has **its own Raft log**, replicated on several
+A Calimero app is a `calimero:app` WASM component whose state lives on a
+**cluster** of attested Intel TDX nodes. Each app instance has **its own Raft log**, replicated on several
 nodes (three by default). The log's **leader** runs every call against the app's current
 state and appends the call together with what it produced: the result, the
 exact storage writes (the **diff**) and the events. Every replica applies the
@@ -43,7 +46,9 @@ Nothing a node holds leaves it in the clear. Clients and peers verify a node's
 TDX quote before they send it anything, then speak to it only through a
 **sealed channel** bound to the key that quote attests. Everything a node
 writes to disk is sealed under the cluster's key, which it keeps wrapped under
-a storage key it receives from mero-kms only after proving its own image.
+a storage key it receives from mero-kms only after proving its own image; the
+same key release carries a counter that refuses a disk restored from an older
+copy.
 
 > Hold onto that: _one log per app, one log for the cluster, the leader runs
 > and everyone applies, and nothing crosses a trust boundary unsealed_. Every
@@ -64,6 +69,22 @@ and a log every replica applies in the same order:
 - **Confidentiality comes from the hardware and the channel,** not from a key
   per scope delivered to each member. A member's client never holds app state;
   it reads through the node.
+
+## One node, layer by layer
+
+Every request, a client's or a peer's, enters through the same listener and
+crosses the same layers. Only the outer layers answer in the clear; everything
+below the sealed envelope sees the inner request, as if it had come directly.
+
+<ProtoNodeLayers />
+
+The layers map to the chapters: the outer layers and the envelope are
+[Networking & sealed channels](/protocol/networking/); the router's judgement
+is [The write path](/protocol/write-path/) and [Reads](/protocol/reads/); the
+groups are [The system group](/protocol/system-group/) and
+[Replication](/protocol/replication/); the engine is [Application
+execution](/protocol/execution/); the store is [Storage schema](/protocol/storage/)
+and [Encryption](/protocol/encryption/).
 
 ## The life of a call
 
@@ -126,12 +147,12 @@ and [Replication](/protocol/replication/).
 ## Status
 
 :::caution[Release candidate]
-This describes the system as the code stands. It is not a frozen wire
-specification: request and entry formats are JSON and may change before they
-are versioned. Some parts are not done yet and are named where they matter: a
-rollback counter for restored nodes, keys per app from mero-kms, placement
-across zones, restoring a snapshot into a running cluster, event audiences,
-and search indexes that survive a restart.
+This describes the system as the code stands (1.0.0-rc.20). It is not a
+frozen wire specification: requests and entries are JSON, though what a node
+keeps already names its format ([Format versions](/protocol/storage/#format-versions)).
+Some parts are not done yet and are named where they matter: keys per app from
+mero-kms, the rollback epoch in the attested KMS evidence (a node reports it in
+`/health` today), and search indexes that survive a restart.
 :::
 
 Apps are built with `calimero-sdk` into `calimero:app` components, which run on

@@ -19,8 +19,15 @@ process that made them. This page lists them all, shortest-lived first.
 | Operator key (Ed25519) | The operator (mdma); only the public half is in the system state | The cluster's lifetime | Not rotated yet |
 | API key (`cal_…`) | Generated for an account; only its hash is stored | Up to 1 year (`ttlSecs`) | Revoked by the account, or expires |
 | Passkey | The person's authenticator | Until removed from the account | Added and removed by the account (at least one stays) |
-| Storage key K_r | HKDF of the KMS key and the cluster name | One mero-tee release (each has its own mero-kms) | Replaced with the release; it only wraps K_c |
-| Cluster key K_c | The founding node's K_r; handed to new nodes by attestation | The cluster's lifetime | Not rotated |
+| Account recovery code | Made for an account (`POST /auth/recovery`); the log keeps only its Ed25519 public key | Until used or removed | Set again; a start spends it |
+| Organization recovery key (Ed25519) | The organization's owner; only the public half is logged | Until replaced | `SetRecoveryKey` (a new key or `null` ends a recovery under way) |
+| Job key (Ed25519) | A job node, in memory, at start; attested with its transport key | Until the process stops | On restart; the leader attests the job node again |
+| A sealed file's data key | Random per file; kept wrapped under the app's file key | As long as the file | Never; an export re-wraps it to the requester's key |
+| Storage key K_r | HKDF of the KMS key and the cluster name | One mero-tee release (each has its own mero-kms) | Replaced with the release; it only wraps K_c and the receipt key |
+| Rollback session key | mero-kms, per key release; only in the TD's memory | Until the process stops | At the next start |
+| Cluster key K_c | The founding node's K_r; handed to new nodes by attestation | The cluster's lifetime | Not rotated; a cluster recovered from its recovery disk gets a new one |
+| Cluster identity (Ed25519) | Derived from K_c | As K_c | With K_c |
+| Backup key (X25519) | The holder (operator, organization or account) on its own machine; only the public half is logged | Until the holder sets another | `SetBackupKey`; files already written stay sealed to the old key |
 
 ## Sessions are signed by the node that issued them
 
@@ -64,7 +71,16 @@ the authenticator never reached.
 - **K_c** is fixed for the cluster. K_r changes with every release, but it
   only wraps K_c ([The cluster key](/protocol/encryption/#the-cluster-key-k_c)).
   Rotating K_c would mean re-sealing every value and snapshot; nothing does
-  that today. Keys per app are not done.
-- **A rollback counter** — something that would let a node notice it was
-  restarted on an older copy of its disk — is not done.
+  that in place. The one way to a new K_c is a cluster brought back from its
+  [recovery disk](/protocol/encryption/#the-recovery-disk), which seals every
+  row again under the new cluster's key. Keys per app are not done.
+- **The operator key** is recorded at genesis and not rotated.
+
+## The rollback counter
+
+Not a key, but it lives with them: mero-kms and the node's store each keep the
+node's `(generation, mark)`, raised every second, and a store behind mero-kms
+does not start. `merod run --accept-rollback` forces such a start and raises
+the cluster's epoch, which every node reports
+([Rollback protection](/protocol/encryption/#rollback-protection)).
 

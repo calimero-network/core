@@ -12,7 +12,10 @@ Everything a node persists is in its data directory (`--data-dir`, by default
 <data-dir>/
 ├── store/          one RocksDB database for every group on this node
 ├── snapshots/      sealed snapshot files, one current per group
-└── log.redb.migrated   (only if the node was upgraded from the previous format)
+├── components/     compiled components, each with a MAC under a key from K_c
+├── cluster-key     K_c, AES-256-GCM under HMAC-SHA256(K_r, "calimero.cluster-key.wrap.v1")
+├── signing-key     the receipt key, under HMAC-SHA256(K_r, "calimero.signing-key.wrap.v1")
+└── log.redb.migrated   (only if the node was upgraded from the redb store)
 ```
 
 The database is opened with tuned column and table options
@@ -26,20 +29,21 @@ one another.
 | Column | Key | Value |
 | --- | --- | --- |
 | `log` | `group (u64 BE) ‖ index (u64 BE)` | A Raft entry |
-| `meta` | `group ‖ name` | `vote`, `committed`, `purged`, `applied` (last applied log id and membership), `generation`, `snapshot` (the current snapshot's metadata and file) |
+| `meta` | `group ‖ name` | `vote`, `committed`, `purged`, `applied` (last applied log id and membership), `generation`, `snapshot` (the current snapshot's metadata and file); and, under the node's own group (`u64::MAX`, `NODE_ROWS`), `format` (the [store format](#format-versions)) and `rollback` (`{ node, entry: { generation, mark }, epoch }`, [the rollback counter](/protocol/encryption/#rollback-protection)) |
 | `state` | `group ‖ generation (u32 BE) ‖ machine key` | The state machine's rows |
 | `blobs` | `name` | Bundles, uploaded releases and app blobs, by `hex(SHA-256)` |
 
 ## Sealing
 
-Every value is sealed with AES-256-GCM under the storage key K_r, with a random
-96-bit nonce stored in front, and bound as associated data to its column tag,
+Every value is sealed with AES-256-GCM under the cluster key K_c
+([Encryption](/protocol/encryption/)), with a random 96-bit nonce stored in
+front, and bound as associated data to its column tag,
 its group and its key: `"cl" ‖ tag ‖ group ‖ key`. A state row's associated
 data names its machine key but not its generation, so installing a snapshot can
 move sealed rows to the next generation without opening them. A value copied
 to another row, group or column fails to open.
 
-Two further keys are derived from K_r (`HMAC-SHA256(K_r, label)`):
+Two further keys are derived from K_c (`HMAC-SHA256(K_c, label)`):
 
 - `calimero.log.hidden-keys.v1` keys the HMAC that hides row keys;
 - `calimero.log.snapshot.v1` seals snapshot frames.
@@ -49,19 +53,29 @@ Two further keys are derived from K_r (`HMAC-SHA256(K_r, label)`):
 A machine can hide a key (`StateTx::put_hidden`). The row is then stored at
 `tag ‖ HMAC(group ‖ tag ‖ key)` (33 bytes), and the value, before sealing, is
 `u32 BE key length ‖ key ‖ value`. The disk then shows neither which keys an app
-uses nor how they sort; reading a hidden key needs K_r.
+uses nor how they sort; reading a hidden key needs K_c.
 
 ## An app group's rows
 
-An app group's machine key space (`crates/node/src/app.rs`, `rows`):
+An app group's machine key space (`crates/node/src/app.rs`, `rows`). Hidden
+rows (the key on disk is an HMAC) are those whose names or ids would say
+something about the app:
 
 | Row | Hidden | Holds |
 | --- | --- | --- |
-| `k` + the app's key | yes | The app's storage: what its runs write, private spaces, writer sets and blob marks (the host's `\0calimero.*` keys) |
-| `i` + `caller\|key` | yes | Idempotency records: the answer replayed for a repeated key, and its expiry |
-| `h` | no | The `Head`: bundle, initialized and init error, last applied index, pending follow-ups, timer ticks, event-ring and expiry-ring bounds, and a component's host records (among them `lastWriteMs`, the timestamp of its last write, left out until the first) |
-| `e ‖ n (u64 BE)` | no | Event `n` of the event ring (the last 10 000) |
-| `r ‖ class ‖ n` | no | The idempotency keys in the order they expire, per TTL class (client keys, node keys) |
+| `c` + the app's key | yes | The component's storage: what its runs write (`storage.put`, `add`, `delete`) |
+| `j` + `caller\|key` | yes | Idempotency records: the answer replayed for a repeated key, and its expiry |
+| `q ‖ class ‖ n` | no | The idempotency keys in the order they were recorded, per class (client keys, node keys) |
+| `h` | no | The `Head`: bundle, executor, initialized and init error, last applied index, event-ring bounds, and the component's host records (timers, id terms, compute component, active and finished runs and pipeline runs, the step cache's keys, `lastWriteMs`, the time of its last write, left out until the first) |
+| `e ‖ n (u64 BE)` | no | Event `n` of the event ring (the last 10 000), with its audience |
+| `b` + blob id | yes | The app's record of each blob and sealed file (size, mime, idle time, a file's seal and wrapped key) |
+| `o ‖ seq`, `d ‖ n` | yes | The xcall outbox and its dead letters |
+| `a` + action id | yes | Pending actions |
+| `u` + run id | yes | Compute run records |
+| `p`, `y`, `v`, `x` | yes | Pipeline runs, their step items, step-run proofs, and the step cache |
+
+An SDK 0.12 app's rows (`k`, `i`, `r`) are kept as they were and read by no
+run: that runtime is gone.
 
 Only the `Head` is kept in memory; runs read the app's keys through the group's
 state (`KvView`), so an app's state is never loaded whole.
@@ -183,6 +197,10 @@ when the engine opens it: entries, votes, commit and purge marks, blobs, and
 each machine's old whole-state snapshot, which the app machine imports into its
 rows (the app's keys, events, idempotency records with their expiry ring). The old
 file is kept, renamed `log.redb.migrated`.
+
+1.0.0-rc.20 is a hard cutover on top of this: a data directory or log that
+holds an app outside an organization is not read, so clusters are recreated
+on that release and nothing written before it is replayed (`CHANGELOG.md`).
 
 ## Inspecting a stopped node
 

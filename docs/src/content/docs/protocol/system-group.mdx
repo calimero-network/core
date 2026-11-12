@@ -12,21 +12,26 @@ not one app's own data:
 
 | Field of `SystemState` | What it is |
 | --- | --- |
-| `nodes` | Every registered node: id, base URL, zone, role (`replica`, or `job` for a node that only runs compute) |
-| `apps` | The app directory: each instance's bundle, owner, organization, access rule, confirm methods, replicas, group, metadata, last upgrade |
-| `next_group` | The next app group number |
+| `nodes`, `removed_nodes`, `node_epoch` | Every registered node (id, base URL, zone, role: `replica`, or `job` for a node that only runs compute, and a job node's pool); the ids removed for good; a counter per id that moves with each registration or removal |
+| `apps`, `next_group` | The app directory (each instance's bundle and release, owner, organization, access rule, confirm methods, replicas, group, metadata, last upgrade) and the next app group number |
 | `bundles` | Bundle hash → size, uploader, and the release it ships in (the WASM itself is in the blob store) |
-| `packages` | Installed packages: pinned signer, owner, and every release (`.mpk` hash and size, source, services, metadata, declared outbound prefixes) |
-| `accounts`, `credentials` | Accounts with their passkeys, labels, aliases and approvals; credential id → account |
+| `packages`, `package_origins` | Installed packages (pinned signer, installers, and every release: `.mpk` hash and size, source, services, compute components, pipelines, declared outbound prefixes); the web origins each package registered |
+| `accounts`, `credentials`, `activity` | Accounts with their passkeys, labels, aliases and passkey times; credential id → account; each account's recent sign-ins and step-ups |
 | `api_keys`, `refresh`, `rotated_refresh` | API-key hashes, live refresh tokens, and refresh tokens already exchanged |
 | `revoked_sessions`, `revoked_at` | Sessions that no longer verify, and when they were revoked |
-| `used_proofs`, `operator_key` | The consents and operator signatures already used; the operator's verify key and the cluster its signatures name |
-| `orgs`, `invites` | Organizations (members, roles, capabilities, teams, approvals, metadata, upgrade runs) and invite-token hashes |
-| `quotas` | Per-account limits and the account cap |
+| `recovery_keys`, `account_recoveries` | Account recovery codes' public keys, and recoveries under way |
+| `used_proofs`, `operator_key` | The consents and operator signatures already used; the operator's verify key |
+| `orgs`, `invites`, `sign_up_invites` | Organizations (members, roles, capabilities, teams, approvals, recovery key, metadata, upgrade runs; `personal` marks an account's own), org invites by token key, cluster sign-up invites |
+| `quotas`, `org_quotas` | The cluster's limits and per-payer overrides |
+| `pools`, `price_table`, `compute`, `released_runs`, `run_served`, … | The compute queue: pools of job nodes, prices, each app's run slots, and the fairness counters ([Compute actions](/protocol/compute-actions/)) |
+| `app_file_bytes`, `payer_file_bytes` | Sealed-file bytes charged per app and per payer |
 | `governance` | Who holds which decision, fixed at genesis ([Deployment governance](/protocol/governance/)) |
 | `operator_releases`, `operator_outbound` | The operator's approvals, where governance gives it those decisions |
 | `release_deadlines` | The operator's end-of-new-work deadline per mero-tee release ([Release deadlines](/protocol/governance/#release-deadlines)) |
-| `publishers` | Package signing key → the organization it is bound to, and its binding generation ([Publishers](/protocol/governance/#publishers)) |
+| `publishers`, `unbound_publishers` | Package signing key → the organization it is bound to, and its binding generation, kept when the organization goes ([Publishers](/protocol/governance/#publishers)) |
+| `deployers`, `cluster_owner`, `deployments` | Deployer grants, the cluster's owner once named, and owners' lists of offered apps ([Deployers](/protocol/governance/#deployers)) |
+| `backup_keys` | Each backup holder's X25519 public key for the recovery disk: the operator's, an organization's or an account's ([Encryption](/protocol/encryption/#the-recovery-disk)) |
+| `cluster_version`, `session_proofs_from`, `current_rules_from`, `attributes_by_release` | The logged [cluster version](/protocol/upgrades/#the-cluster-version), and the marks from which later rules hold (below) |
 
 ## Commands carry their actor
 
@@ -71,7 +76,7 @@ So `apply` first runs `system::authorize`:
 | Command | Must carry |
 | --- | --- |
 | `SetReleaseApproval`, `TransferApp`, `DeleteOrg`, `UpgradeApp` (an owner's), `SetOutboundApproval` (an org's or account's), `StartUpgradeRun` (an account's), `BindPublisher`, `AddPasskey`, `RemovePasskey`, `CreateApiKey`, `SetOrgRole`, `RemoveOrgMember`, `SetTeamMember`, `RemoveTeamMember`, `SetTeamMembers`, `RemoveTeamMembers`, `SetCapabilities`, `SetDefaultCapabilities`, `CreateInvite` | The actor's passkey **consent**: `{ subject, method, args, nonce, assertion }`, where the assertion signs `confirm_challenge(subject, method, args, nonce)` with user verification, under a passkey the actor's account holds in the state |
-| `SetOperatorRelease`, `UpgradeApp { by_operator }`, `SetOutboundApproval` (cluster scope), `StartUpgradeRun` (the operator's), `SetReleaseDeadline`, `RegisterNode`, `RemoveNode`, `SetQuotas`, `SetReplicas` | The **operator's signature** (Ed25519, under `operator_key`) over `"calimero.operator.v1\0" ‖ cluster ‖ 0 ‖ subject ‖ 0 ‖ method ‖ 0 ‖ args ‖ 0 ‖ nonce ‖ 0` ([Operator](/protocol/operator/)) |
+| `SetOperatorRelease`, `UpgradeApp { by_operator }`, `SetOutboundApproval` (cluster scope), `StartUpgradeRun` (the operator's), `SetReleaseDeadline`, `RegisterNode`, `RemoveNode`, `SetQuotas`, `SetOrgQuotas`, `SetPools`, `SetPriceTable`, `SetReplicas`, `RestoreApp`, `SetDeploymentsGranted`, `SetClusterOwner`, deployer grants and the sign-up policy (until the cluster's owner is named), `SetBackupKey` (the operator's own key), `ImportHolder` | The **operator's signature** (Ed25519, under `operator_key`) over `"calimero.operator.v1\0" ‖ cluster ‖ 0 ‖ subject ‖ 0 ‖ method ‖ 0 ‖ args ‖ 0 ‖ nonce ‖ 0` ([Operator](/protocol/operator/)) |
 | `RedeemInvite` | A signature by the invite's own key, derived from the token (`seed = SHA-256("calimero.invite.v1\0" ‖ token)`), over `"calimero.invite-redeem.v1\0" ‖ invite key (hex) ‖ 0 ‖ account ‖ 0 ‖ now`: the log keeps only the public key, so only a node the redeemer gave the token to can redeem it |
 | `Genesis` | Nothing: the first leader writes it once, before any account, with the configured peers (`nodes`); every later node is registered by the operator |
 | `UpgradeApp { run }` | Nothing of its own: the run it names must exist in the app's organization, be started by the same party, not be finished, name the app, and the bundle must be a service of the run's release |
@@ -164,8 +169,13 @@ refused once it has, or once any account exists. A node restarted with other
 therefore changes nothing: the state already holds the answer, and it is the
 state every receipt key attests.
 
-The same leader registers the configured `--peers` as nodes. Genesis also
-records the operator's verify key (`--operator-key`) when one is configured.
+Genesis also carries the configured `--peers` as the first nodes, and records
+the operator's verify key (`--operator-key`) when one is configured; every
+later node is registered by the operator's signed `POST /ops/nodes`.
+
+A sign-up (`CreateAccount`) makes the account's personal organization in the
+same entry (`personal_org`, named `Personal`, approving the release of the node
+it signed up through), so no account is ever without one.
 
 A cluster founded again from its backups (`--restore-from`) writes no
 genesis: its founder forms the system group alone and seeds it with the
@@ -173,6 +183,17 @@ newest system backup, refused unless the governance and operator key it is
 configured with are the backup's; the state then names `--peers` as the
 fleet and every app waits for its own restore
 ([Found a cluster again](/operate/runbooks/#found-a-cluster-again-from-its-backups)).
+
+A cluster brought back from a [recovery disk](/protocol/encryption/#the-recovery-disk)
+(`merod run --bootstrap --recover-from DIR`) writes none either: its founder
+forms the system group alone and waits for the operator's
+`POST /ops/recover`, which seeds it from the `system` file the operator opened
+on its own machine, under the same checks
+([Recover after every key service is gone](/operate/runbooks/#recover-after-every-key-service-is-gone)).
+An organization's or account's slice comes onto another cluster through
+`POST /recover/holder` (`ImportHolder`, admitted by that cluster's operator's
+signature), refused where any of its organization, accounts or apps is there
+already.
 
 ## Job nodes in the directory
 
@@ -189,8 +210,11 @@ Registering a job node is refused (`409 CLUSTER_NOT_UPGRADED`) until every repli
 Every node runs a reconcile loop (on each applied system entry, on a follow-up
 kick, and every 500 ms). On the system leader it also:
 
-- writes `Genesis` if nothing has;
-- registers configured peers that are not yet in `nodes`;
+- writes `Genesis` if nothing has (the configured `--peers` come with it, as
+  `Genesis { nodes }`; reconcile registers nobody after that);
+- writes the marks a newer release brings, once each (`RequireSessionProofs`,
+  `AttributeByRelease`, `RequireCurrentRules`, the last two only once the
+  cluster version has the feature);
 - adds every registered replica node that is not in the system group as a **learner**
   ([Replication](/protocol/replication/#joining-nodes)), once it attests its transport key as a cluster node (a job node registered as a replica never does, so it is never admitted) and supports the logged cluster version;
 - raises the [cluster version](/protocol/upgrades/#the-cluster-version) once every registered node supports a newer one (`SetClusterVersion`);
@@ -271,7 +295,8 @@ the long HTTP timeout instead of the short bounded forward app calls use.
 ## Quotas
 
 `Quotas` live in the system state and are set by the operator
-(`POST /ops/quotas`). They are checked inside `apply`, so every node refuses the
+(`POST /ops/quotas`, operator-signed); `POST /ops/quotas` with `org` sets one
+payer's compute and file overrides (`SetOrgQuotas`, `org_quotas`). They are checked inside `apply`, so every node refuses the
 same command for the same reason:
 
 | Quota | Default | Checked by |
@@ -279,10 +304,10 @@ same command for the same reason:
 | `maxAppsPerAccount` | 100 | `CreateApp` |
 | `maxBundleBytesPerAccount` | 1 GiB | `PutBundle`, `InstallPackage` (operator installs count against no account) |
 | `maxApiKeysPerAccount` | 50 | `CreateApiKey` |
-| `maxOrgsPerAccount` | 20 (organizations owned) | `CreateOrg` |
+| `maxOrgsPerAccount` | 20 (organizations owned; the personal one does not count) | `CreateOrg` |
 | `maxAccounts` | 100 000 | `CreateAccount` (where sign-up is `open`, this bounds the cluster) |
-| `maxFileBytesPerOrg` | 50 000 000 000 | `ChargeFileBytes` (plaintext bytes of the files of an organization's apps, or of a personal account's) |
-| `maxConcurrentRunsPerOrg` | 4 | `AcquireRun`, `ReleaseRun` (compute runs of an organization's apps, or of a personal account's, granted to job nodes at once; the rest wait, the longest-waiting organization first) |
+| `maxFileBytesPerOrg` | 50 000 000 000 | `ChargeFileBytes` (plaintext bytes of the files of an organization's apps; a personal organization is one like any other) |
+| `maxConcurrentRunsPerOrg` | 4 | `AcquireRun`, `ReleaseRun` (compute runs of an organization's apps granted to job nodes at once; the rest wait, the payer served longest ago first) |
 | `computeFuelPerOrg` | 10 000 000 000 000 | `AcquireRun`, `ReleaseRun` (the declared fuel of an organization's granted runs, summed) |
 | `maxFuelPerDeveloperPerDay` | `"0"` (a decimal string; no limit) | not at apply: a client's call or an xcall delivery to any app of the developer, where it runs, against the developer's fuel today in its apps' usage books, refreshed from the peers every 5 s (Q20, D76). The developer is `usage::developer`'s, the identity usage is billed to: a deployment's owner for its instances, else the app's organization or owner (D78); `init`, timer ticks and event handlers still run, and count. Written only once every node runs a release that knows it (`409 UPGRADE_PENDING`) |
 

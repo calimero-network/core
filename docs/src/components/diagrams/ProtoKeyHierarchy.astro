@@ -1,0 +1,108 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-proto-key-hierarchy">
+<svg viewBox="0 0 760 500" role="img" aria-label="Key hierarchy: a booting TD proves its image to mero-kms, which releases a key sealed to the TD with the node's rollback counter; K_r is derived from it with HKDF and the cluster name and changes with every release; K_r only wraps two files, the cluster key K_c and the node's receipt key; every key that seals or authenticates the cluster's data is derived from K_c; the transport key, a job node's key, the holders' backup keys and passkeys come from neither." xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="pkh-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="500" rx="10" fill="#0f0f16"/>
+
+  <g class="seq-step" style="--step-i:0">
+    <rect x="16" y="20" width="200" height="66" rx="8" fill="#10210f" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="116" y="40" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">booting TD (merod)</text>
+    <text x="116" y="57" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">TDX quote over the KMS's</text>
+    <text x="116" y="70" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">challenge and its node id</text>
+    <line x1="216" y1="53" x2="272" y2="53" stroke="#8b949e" stroke-width="1.3" marker-end="url(#pkh-arrow)"/>
+    <text x="244" y="45" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8">attest</text>
+  </g>
+  <g class="seq-step" style="--step-i:1">
+    <rect x="274" y="20" width="200" height="66" rx="8" fill="#13160f" stroke="#a5ff11" stroke-width="1.4"/>
+    <text x="374" y="40" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">mero-kms (per release)</text>
+    <text x="374" y="57" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">release policy; root and</text>
+    <text x="374" y="70" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">counters in its memory</text>
+    <line x1="474" y1="53" x2="530" y2="53" stroke="#8b949e" stroke-width="1.3" marker-end="url(#pkh-arrow)"/>
+    <text x="502" y="45" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8">release</text>
+    <rect x="532" y="20" width="212" height="66" rx="8" fill="#161b22" stroke="#a5ff11" stroke-width="1.2"/>
+    <text x="638" y="40" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">KMS key + counter</text>
+    <text x="638" y="57" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">sealed to the TD; with the</text>
+    <text x="638" y="70" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">node's entry and the epoch</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:2">
+    <line x1="638" y1="86" x2="638" y2="104" stroke="#8b949e" stroke-width="1.3"/>
+    <line x1="638" y1="104" x2="380" y2="104" stroke="#8b949e" stroke-width="1.3"/>
+    <line x1="380" y1="104" x2="380" y2="116" stroke="#8b949e" stroke-width="1.3" marker-end="url(#pkh-arrow)"/>
+    <rect x="170" y="118" width="420" height="52" rx="8" fill="#231708" stroke="#f0883e" stroke-width="1.6"/>
+    <text x="380" y="138" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">storage key K_r (one per cluster and release)</text>
+    <text x="380" y="157" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">HKDF-SHA256(KMS key, salt "calimero.cloud.storage.v1", info = cluster)</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:3">
+    <line x1="270" y1="170" x2="270" y2="190" stroke="#8b949e" stroke-width="1.3" marker-end="url(#pkh-arrow)"/>
+    <line x1="560" y1="170" x2="560" y2="190" stroke="#8b949e" stroke-width="1.3" marker-end="url(#pkh-arrow)"/>
+    <text x="300" y="184" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">wraps</text>
+    <text x="590" y="184" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">wraps</text>
+    <rect x="70" y="192" width="400" height="58" rx="8" fill="#13160f" stroke="#a5ff11" stroke-width="1.8"/>
+    <text x="270" y="212" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">cluster key K_c (&lt;data-dir&gt;/cluster-key)</text>
+    <text x="270" y="229" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">minted once by the founder (its K_r); handed to</text>
+    <text x="270" y="242" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">new nodes by attestation; outlives releases</text>
+    <rect x="486" y="192" width="258" height="58" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="615" y="212" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">receipt key (Ed25519)</text>
+    <text x="615" y="229" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">&lt;data-dir&gt;/signing-key; signs receipts,</text>
+    <text x="615" y="242" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">sessions, .rbak files; attested</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:4">
+    <line x1="270" y1="250" x2="270" y2="266" stroke="#8b949e" stroke-width="1.3"/>
+    <line x1="74" y1="266" x2="686" y2="266" stroke="#8b949e" stroke-width="1.3"/>
+    <line x1="74" y1="266" x2="74" y2="278" stroke="#8b949e" stroke-width="1.3" marker-end="url(#pkh-arrow)"/>
+    <line x1="226" y1="266" x2="226" y2="278" stroke="#8b949e" stroke-width="1.3" marker-end="url(#pkh-arrow)"/>
+    <line x1="378" y1="266" x2="378" y2="278" stroke="#8b949e" stroke-width="1.3" marker-end="url(#pkh-arrow)"/>
+    <line x1="530" y1="266" x2="530" y2="278" stroke="#8b949e" stroke-width="1.3" marker-end="url(#pkh-arrow)"/>
+    <line x1="686" y1="266" x2="686" y2="278" stroke="#8b949e" stroke-width="1.3" marker-end="url(#pkh-arrow)"/>
+
+    <rect x="12" y="280" width="124" height="86" rx="8" fill="#16222e" stroke="#39d0d8"/>
+    <text x="74" y="298" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">the store</text>
+    <text x="74" y="315" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">entries, votes,</text>
+    <text x="74" y="327" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">state rows, blobs;</text>
+    <text x="74" y="339" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">hidden-key HMAC;</text>
+    <text x="74" y="351" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">snapshot frames</text>
+
+    <rect x="164" y="280" width="124" height="86" rx="8" fill="#16222e" stroke="#39d0d8"/>
+    <text x="226" y="298" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">backups</text>
+    <text x="226" y="315" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">manifest key,</text>
+    <text x="226" y="327" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">code key; K_c kept</text>
+    <text x="226" y="339" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">under each release's</text>
+    <text x="226" y="351" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">K_r</text>
+
+    <rect x="316" y="280" width="124" height="86" rx="8" fill="#16222e" stroke="#39d0d8"/>
+    <text x="378" y="298" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">cluster secret</text>
+    <text x="378" y="315" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">x-cluster-auth on</text>
+    <text x="378" y="327" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">/internal/*; cluster</text>
+    <text x="378" y="339" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">identity (Ed25519)</text>
+    <text x="378" y="351" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">for job nodes</text>
+
+    <rect x="468" y="280" width="124" height="86" rx="8" fill="#16222e" stroke="#39d0d8"/>
+    <text x="530" y="298" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">per app</text>
+    <text x="530" y="315" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">TEE key; member key</text>
+    <text x="530" y="327" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">per account; file</text>
+    <text x="530" y="339" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">key (wraps each</text>
+    <text x="530" y="351" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">file's data key)</text>
+
+    <rect x="620" y="280" width="128" height="86" rx="8" fill="#16222e" stroke="#39d0d8"/>
+    <text x="684" y="298" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">components</text>
+    <text x="684" y="315" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">MAC on compiled</text>
+    <text x="684" y="327" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">components in</text>
+    <text x="684" y="339" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">&lt;data-dir&gt;/</text>
+    <text x="684" y="351" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">components</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:5">
+    <rect x="12" y="384" width="736" height="100" rx="8" fill="#161b22" stroke="#444c56" stroke-dasharray="5 4"/>
+    <text x="380" y="404" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">derived from neither K_r nor K_c</text>
+    <text x="380" y="424" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">transport key (X25519): each node, in memory, attested · job key (Ed25519): a job node, in memory</text>
+    <text x="380" y="441" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">backup keys (X25519): the operator's, an org's or an account's; nodes hold only the public half</text>
+    <text x="380" y="458" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">passkeys: the person's authenticator · operator key (Ed25519): the operator, public half logged</text>
+    <text x="380" y="475" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">a sealed file's data key: random per file · session keys: Noise ephemerals, per session</text>
+  </g>
+</svg>
+</Figure>

@@ -10,34 +10,41 @@ import RaftGroups from '../../../components/diagrams/RaftGroups.astro';
 ## The nouns
 
 - **Cluster** — A set of `merod` nodes that share one system group and one
-  storage key. It has a name (`--cluster`), which is bound into the storage key
-  and into the secret peers present to each other.
+  cluster key, K_c. It has a name (`--cluster`), which is bound into each
+  release's storage key K_r (which wraps K_c) and into the secret peers present
+  to each other ([Encryption](/protocol/encryption/)).
 - **Node** — One `merod` process inside a TDX VM, with a numeric id
   (`--node-id`) and a public URL. It hosts the system group and the app groups
   placed on it, and serves the [API](/protocol/networking/) only through the
-  sealed channel.
+  sealed channel. A **job node** (`merod run --job-node`) is a node of another
+  kind: it runs compute for the cluster's apps, holds no replica and no
+  cluster key, and is never a Raft member
+  ([Compute actions](/protocol/compute-actions/#the-job-node)).
 - **Group** — One Raft log with its state machine (`calimero-log`). Group `1` is
   the **system group**; every app instance gets a group of its own, numbered by
   the system group when the instance is created.
 - **App instance** (an *app*, and what `meroctl` still calls a *context*) — One
-  running copy of an application: a bundle, an owner, an access rule and its
-  own replicated state. Its id is 16 random bytes in base64url; its **context
+  running copy of an application: a bundle, an owner, the organization it is
+  in, an access rule and its own replicated state. Its id is 16 random bytes in base64url; its **context
   id**, what the app reads as `env::context_id()`, is `SHA-256(app_id)` in hex.
   The API takes either.
-- **Bundle** — One WASM module, named by `hex(SHA-256(wasm))`. Bundles live in
+- **Bundle** — One WASM component (`calimero:app`), named by `hex(SHA-256(wasm))`. Bundles live in
   each node's sealed blob store; the system log records only their hash and
   size.
 - **Package** and **release** — A signed `.mpk` from a publisher: a package
-  name, a version, one or more services (each a bundle), a frontend, and the
-  outbound URL prefixes it declares. A package's publisher key is pinned by its
+  name, a version, one or more services (each a bundle, optionally with a
+  compute component), a frontend, pipelines, and the outbound URL prefixes it
+  declares. A package's publisher key is pinned by its
   first release. See [Packages & frontends](/protocol/applications/).
 - **Account** — A person (32 random bytes, base64url). Its **passkeys** are its
   devices; it signs in with one and gets a short session token. Machines act
   for an account with an **API key**. See [Accounts, passkeys &
   sessions](/protocol/identities/).
 - **Organization** and **team** — An organization has members with a role
-  (`guest`, `member`, `admin`, `owner`) and nested teams. An app may belong to
-  an organization and be reachable by all its members, or by one team's. See
+  (`guest`, `member`, `admin`, `owner`) and nested teams. Every app is in an
+  organization, reachable by all its members, by one team's, or by listed
+  accounts. Every account has a **personal organization** from sign-up, where
+  an app created without naming one goes. See
   [Organizations, teams & access](/protocol/organizations/).
 - **Operator** — Whoever runs the machines. It holds the ops token, reaches the
   [Ops API](/protocol/operator/), and sees counts and Raft status, never app
@@ -51,9 +58,9 @@ cluster "eu1"
 │   ├── nodes            1 → https://n1…, 2 → https://n2…, …
 │   ├── packages         chat 1.2.0 { signer did:key:z…, services, .mpk hash }
 │   ├── bundles          hash → { size, uploaded by, release }
-│   ├── accounts         ada { passkeys, approvals, aliases }
+│   ├── accounts         ada { passkeys, labels, aliases }
 │   ├── credentials      API-key hashes, refresh tokens, used decision proofs
-│   ├── organizations    acme { members, teams, approvals, upgrade runs }
+│   ├── organizations    acme { members, teams, approvals, upgrade runs }, ada's personal one
 │   └── apps (directory) app-7f… { bundle, owner, org, access, replicas [1,2,3], group 12 }
 └── app groups
     ├── group 12 on nodes 1,2,3  ← app-7f…'s log and state

@@ -5,12 +5,13 @@ sidebar:
   order: 10
 ---
 
-import KeyHierarchy from '../../../components/diagrams/KeyHierarchy.astro';
+import ProtoKeyHierarchy from '../../../components/diagrams/ProtoKeyHierarchy.astro';
 
 There are two encryption boundaries, and between them nothing is in the clear:
 **in transit**, every request and response travels in a sealed session bound
 to an attested key; **at rest**, every value a node writes is sealed under the
-cluster's storage key. In between, data exists in plaintext only inside the
+cluster key K_c, which the node keeps wrapped under its release's storage key
+K_r. In between, data exists in plaintext only inside the
 TD's memory.
 
 ## In transit
@@ -18,8 +19,8 @@ TD's memory.
 | Hop | Protection |
 | --- | --- |
 | Client → node | Sealed session (Noise NK to the attested transport key, AES-256-GCM per request and per response frame) |
-| Node → node | The same sealed session, to the peer's attested transport key, plus the cluster secret on every internal route |
-| Anything unsealed | Only `/attestation` and `/health` |
+| Node → node | The same sealed session, identified (Noise IK: the caller proves its own attested transport key), plus the cluster secret on every internal route |
+| Anything unsealed | Only `/attestation`, `/health`, the consent page, app frontends' static files, and a refused oversized envelope's `413` |
 
 The session keys come from ephemeral keys on both sides, so a session that has
 ended (after an hour at most) cannot be opened later, not even with the node's
@@ -27,13 +28,14 @@ transport key. See [Networking & sealed channels](/protocol/networking/).
 
 ## At rest: the storage key K_r and the cluster key K_c
 
-<KeyHierarchy />
+<ProtoKeyHierarchy />
 
 Attestation comes before any key: a node gets nothing from mero-kms until its
 quote matches a release the KMS's policy accepts, and everything it writes is
-sealed under keys derived from what it got. Every node of a cluster derives the
-same K_r, so a follower opens a leader's snapshot as it is; a different cluster
-name gives a different K_r from the same KMS key. The keys that identify a node
+sealed under keys that the key it got unwraps. Every node of a cluster holds
+the same K_c, whatever release it runs, so a follower opens a leader's
+snapshot as it is; a different cluster name gives a different K_r from the
+same KMS key. The keys that identify a node
 to clients — its transport and receipt keys — are attested on their own, never
 derived from K_r. The transport key is made in memory at start; the receipt
 key, which also signs sessions, is made on the node's first start and kept in
@@ -148,7 +150,10 @@ is: on the cluster that wrote it, whatever release its nodes run.
 | Hidden-key HMAC key | `HMAC-SHA256(K_c, "calimero.log.hidden-keys.v1")` | Hiding row keys in the store |
 | Snapshot key | `HMAC-SHA256(K_c, "calimero.log.snapshot.v1")` | Sealing snapshot frames (streamed to followers as they are) |
 | Backup manifest key | `HMAC-SHA256(K_c, "calimero.backup.manifest.v1")` | Sealing a backup's manifest, bound to its app and file name |
-| Component cache key | from K_c (`component_cache_key`) | The MAC on compiled components in `<data-dir>/components` |
+| App file key | `HMAC-SHA256(K_c, "calimero.files.v1\|" ‖ app)` | Wrapping each sealed file's random data key; a compute run's seed and token |
+| Cluster identity | Ed25519 seed `HMAC-SHA256(K_c, "calimero.cluster-identity.v1")` | Signing job nodes' assignments and bundles; named in `purpose=orchestrator` quotes |
+| Backup code key | `HMAC-SHA256(K_c, "calimero.backup.code.v1")` | Sealing the code a system backup names |
+| Component cache key | `HMAC-SHA256(K_c, "calimero.components.v1")` (`component_cache_key`) | The MAC on compiled components in `<data-dir>/components` |
 
 Every node, of every release, derives the same keys, and nothing outside the
 cluster can. These derivations are the ones K_r fed before K_c existed, so a
@@ -156,7 +161,8 @@ cluster founded earlier keeps every value, and a next-release node opens them
 (regression: `nodes_on_the_next_release_keep_the_data_of_the_ones_before`).
 Keys per app from mero-kms, which would let an app's data be opened only where
 that app is placed, are not done yet: today one K_c covers every app on the
-cluster.
+cluster (`docs/specs/rollback-protection.md`, "Keys per app, phase 1", is the
+design).
 
 ## What an observer can still see
 
@@ -168,7 +174,91 @@ cluster.
 
 The host also controls availability: it can stop, freeze or restart a node, or
 withhold the network. Raft keeps an app available while a majority of its
-replicas run. A restored older copy of a node's disk is not detected yet: the
-proposed rollback counter (a mero-kms epoch, with restored nodes rejoining as
-learners) is not done.
+replicas run. Sealing hides what a copy of a disk holds but not its age, so a
+restored older copy is caught another way: mero-kms keeps, per node, a counter
+the node also keeps in its sealed store and raises about once a second, and a
+node whose store is behind it does not start (below).
 
+## Rollback protection
+
+A host can stop a TD, copy its encrypted disk, and start it later on that copy.
+K_r and K_c open an old copy as well as a new one, so the node would forget the
+votes it cast and serve stale state, and a host that restarts every node on
+copies of one moment would erase everything committed since without any
+replica noticing. The rollback counter (`crates/node/src/rollback.rs`;
+design `docs/specs/rollback-protection.md`) refuses such a start.
+
+- **Two copies of one counter.** mero-kms keeps, per node id of the cluster's
+  key path, an entry `(generation, mark)`, and a cluster **epoch**: the number
+  of rollbacks an operator has forced. The node keeps the same entry in its
+  sealed store, in the node row `rollback` (`{ node, entry, epoch }`, bound to
+  its node id). Both travel sealed in the key release (`/get-key` names the
+  node id; the answer carries the entry, the epoch and a session key that only
+  the TD holds).
+- **Raised every second, store first.** A running node writes `mark + 1` to its
+  store (synced), then to mero-kms (`POST /rollback/raise`, HMAC'd under the
+  session key, acknowledged by a majority of mero-kms replicas), every
+  `CHECKPOINT_EVERY` (1 s). A crash between the two leaves the store ahead,
+  which starts. A mero-kms that does not answer is retried; the node keeps
+  serving and reports the age of its last acknowledgement.
+- **Judged before any group starts** (`rollback::judge`, in `Node::start`):
+
+  | mero-kms's entry | The store's | Outcome |
+  | --- | --- | --- |
+  | none (a KMS without counters) | none | Starts **unprotected** (an older mero-kms) |
+  | none (a KMS without counters) | some | Refused: this store was protected |
+  | any | another node id | Refused: a store does not move to another id |
+  | none | none | First start: starts, at the epoch |
+  | some | none | Refused: an empty or older store under a used id |
+  | none | some | Refused: mero-kms lost its counters |
+  | `(g, m)` | below `(g, m)` | Refused: rolled back |
+  | `(g, m)` | at or above `(g, m)` | Starts |
+
+- **Recovery is explicit.** One node rolled back: wipe it, remove it, and
+  register it again under a new node id; it joins as a learner and catches up.
+  Every node rolled back, or the newest disks lost: the operator starts each
+  node with `merod run --accept-rollback`, mero-kms sets that node's entry to
+  its store's and raises the cluster epoch, and every node reports the epoch
+  (`rollbackEpoch` in `/health`, `rollback` in `/ops/status`). A forced
+  rollback is visible, not impossible; the attested KMS evidence does not
+  carry the epoch yet.
+
+`--dev` nodes and nodes given `--storage-key*` take no counters. A rollback
+shorter than one checkpoint looks like a crash, and Raft still holds those
+writes on the other replicas. Rows are sealed one by one, so a store spliced
+from rows of different ages is not caught by the counter; on a TDX node the
+store sits on a disk encrypted with the KMS disk key, so splicing means
+swapping encrypted blocks blind.
+
+## The recovery disk
+
+K_c dies with the last mero-kms that can unwrap it. The **recovery disk**
+(`merod --recovery-dir DIR`) keeps a second set of backups that does not
+depend on any mero-kms: every 5 minutes each node writes, for every app it
+holds, the app's state, the code it runs and its holder's slice of the system
+state, each sealed to the **backup key** of whoever upgrades the app
+(`SystemState::backup_holder`: the operator where it holds app upgrades, else
+the app's organization or owner account).
+
+- A backup key is an X25519 key pair made on the holder's own machine
+  (`meroctl ops recovery-keygen` for the operator; mero-js's and
+  calimero-client-py's `recovery` modules for an organization or account).
+  Only the public half reaches the cluster, logged by `SetBackupKey`
+  (`POST /ops/backup-key`, operator-signed; `POST /orgs/{org}/backup-key` and
+  `POST /auth/backup-key`, passkey; the `backupKeys` feature, 1.0.0-rc.20).
+- Each file's body is sealed under a fresh data key, as a sealed file is
+  (64 KiB AES-256-GCM chunks), and the data key is sealed to the holder's key
+  with HPKE (RFC 9180, base mode, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256,
+  AES-256-GCM). The node's receipt key signs the header, which carries its
+  attestation ([Attestation](/protocol/tee-attestation/#recovery-files-carry-an-attestation)).
+- To recover, the holder opens the data keys on its own device and sends only
+  those over the sealed channel (`POST /ops/recover` and
+  `POST /ops/apps/{app}/restore { recovery }` for the operator,
+  `POST /recover/holder` for an organization or account). The state comes
+  back under the new cluster's K_c: rows are sealed again, hidden keys hidden
+  again, and each sealed file's data key is wrapped again under the new
+  cluster's file key. No node ever holds a holder's private key.
+
+The file format is in [Storage schema](/protocol/storage/#recovery-files);
+the procedure in [Recover after every key service is
+gone](/operate/runbooks/#recover-after-every-key-service-is-gone).

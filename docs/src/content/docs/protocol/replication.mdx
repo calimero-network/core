@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import ProtoEntryLife from '../../../components/diagrams/ProtoEntryLife.astro';
 
 Every group — the system group and each app instance's group — is a Raft log
 on [openraft](https://docs.rs/openraft) 0.9, run by `calimero-log`. One
@@ -17,29 +18,52 @@ a `Group<M>` is one log with its state machine `M`.
 The engine orders opaque command bytes. The node gives them meaning:
 
 - A **system** entry is one `SystemCmd` ([The system group](/protocol/system-group/)).
-- An **app** entry is one `AppCmd` (`crates/node/src/app.rs`):
+- An **app** entry is one `ComponentCmd` (`crates/node/src/component.rs`),
+  JSON tagged by `op`:
 
-| `AppCmd` | Written when | What applying it does |
+| `op` | Written when | What applying it does |
 | --- | --- | --- |
-| `Init { bundle, base_index, outcome }` | The instance's first leader runs `init` | Applies the outcome; records the bundle; marks the app initialized or records why `init` failed |
-| `Call(CallEntry)` | A call, a follow-up or a timer ran | Applies the outcome; consumes the follow-up or records the timer tick; remembers the idempotency key |
-| `Upgrade { bundle, base_index, outcome }` | An upgrade ran its migration | Applies the outcome and, if it succeeded, switches the bundle |
-| `Blob { id, size }` | A blob was uploaded for the app | Marks the blob as the app's |
-| `BlobForget { id }` | The app's owner deleted a blob | Removes the mark |
-| `Done { seqs }` | The leader delivered an xcall | Drops those follow-ups |
+| `componentInit` | The instance's first leader runs `init` | Applies the outcome; records the bundle, its compute component and the executor; marks the app initialized or records why `init` failed |
+| `componentCall` | A client's call, an xcall delivery, or an action's `ctx.call` ran | Applies the outcome; remembers the idempotency answer |
+| `componentTick` | A timer fired | Applies the outcome if the slot is later than the timer's last applied one |
+| `componentUpgrade` | An upgrade (code only) | Switches the bundle and its compute component |
+| `componentBlob`, `componentFile` | A blob or a sealed file was uploaded for the app (its bytes are in the blob store already) | The app holds it, idle until a value refers to it |
+| `componentBlobForget`, `componentBlobRevoke`, `componentBlobsCollected` | The owner deleted a blob or revoked its grants; the leader collected forgotten bytes | Drops the hold, the grants, or the queue entry |
+| `componentActionEnd`, `componentXcallDone` | An action ended or timed out; the leader delivered or dead-lettered the outbox's head | Records it; a failed action runs `onActionFailed` |
+| `componentBarrier` | The leader settles which earlier entries stand | Nothing |
+| `componentRestored` | A restored group's first entry after the backup's rows | Ids continue past every term the backup carries |
+| `computeAttempt`, `computeFinal` | The leader assigned a compute run to a job node; the run ended | Records the attempt; registers the outputs and applies the result method's outcome ([Compute actions](/protocol/compute-actions/)) |
+| `pipelineStart`, `pipelineStep`, `pipelineCancel` | A pipeline run starts, a step is decided, a run is cancelled | Moves the pipeline run's record |
 
-A `CallEntry` records the method, arguments, caller, idempotency key, the
-passkey consent for a confirm method, the leader's timestamp, the trigger (for
-a follow-up or timer), the **base index** it ran against, and the **outcome**:
-status, result or error, the storage **diff** (each write as `key → value` or a
-delete, in the order they last happened), the events, the follow-ups it asked
-for, and the storage entities it touched.
+A `componentCall` entry records the method, arguments, caller, idempotency key,
+the passkey consent for a confirm method, the leader's timestamp, the xcall it
+delivers if any, the ids the run drew (`idTerm`, `idSeq`), the **base index**
+it ran against, and the **outcome**: status, result or error, the storage
+**diff** (each write as `key → value` or a delete, in the order they last
+happened), the events with their audiences, the xcalls and actions it started,
+the outbound HTTP exchange it recorded, the files it wrote and the compute runs
+it started or cancelled.
+
+An entry is format 1 (`component::ENTRY_FORMAT`): it carries no marker. A
+release that changes what an entry means writes `{"v":N,` first, and only once
+every replica of the group reads format `N`; a replica that finds a newer
+format applies the entry as a no-op that names it, so it never applies part of
+one ([Format versions](/protocol/storage/#format-versions)). An SDK 0.12 app's
+entries (`AppCmd`, wasmer) apply as no-ops: that runtime is gone.
 
 Entries are capped at `MAX_ENTRY_BYTES`, 1 MiB. openraft gives each append RPC
 one heartbeat interval, so a much larger entry would never reach a follower and
 would stall everything behind it. Large content goes to the
 [blob store](/protocol/blobs/) and the entry carries its hash. `Group::write`
 refuses a larger command (`WriteError::TooLarge`) before anything is appended.
+
+## A log entry's life
+
+<ProtoEntryLife />
+
+Steps 1 and 2 are [The write path](/protocol/write-path/), step 3 [Application
+execution](/protocol/execution/), step 8's rows the [storage
+schema](/protocol/storage/#an-app-groups-rows). The rest is below.
 
 ## Proposing: the leader runs, everyone applies
 
@@ -91,19 +115,16 @@ build did not see was applied ahead of it, it applies as the no-op above.
 Regression:
 `a_stale_build_by_a_deposed_leader_never_applies` in `crates/log/tests/cluster.rs`.
 
-The base check covers the state, not the code. A call's module (and its ABI
-facts and outbound client) is compiled from the bundle the leader reads before
-it takes the propose lock, so an `Upgrade` that applies in between would let
-the old code run against the upgraded state on a base that matches. The build
-therefore checks that the state still names the bundle its module came from
-(`AppMachine::stale_module`); if not, it answers a conflict without appending,
-and `Node::call` runs the call again with the new module. An upgrade checks the
-bundle it planned its migration from the same way. Regression:
-`a_call_built_with_a_module_an_upgrade_replaced_never_commits` in
-`crates/node/src/app.rs`.
+The base check covers the state, not the code. A call's component is prepared
+from the bundle the leader reads before it takes the propose lock, so an
+upgrade that applies in between would let the old code run against the
+upgraded state on a base that matches. The build therefore checks that the
+state still names the bundle it prepared (`AppState::bundle`); if not, it
+answers a conflict without appending, and `Node::call` runs the call again on
+the new bundle.
 
 A proposal that answers without appending (`Proposal::Reply`: an idempotent
-replay, a follow-up already run, a read-only member's refused write) is a read,
+replay, an xcall already delivered, a read-only member's refused write) is a read,
 so it is confirmed: the leader runs a read-index round (openraft's
 `ensure_linearizable`) before answering, and builds again on the confirmed
 state if entries committed in between. Only a machine that checks the base
@@ -111,8 +132,8 @@ it was built on may use `propose`; the system group's commands are built on no
 state (`Group::write`) and `apply` judges them.
 
 Followers never run WASM for an entry. They write the diff's keys into the
-app's state, append the events to the app's event ring, queue the follow-ups,
-and record the idempotency answer, all in one RocksDB batch together with the
+app's state, append the events to the app's event ring, queue the xcalls and
+actions in the outbox, and record the idempotency answer, all in one RocksDB batch together with the
 new applied index. The leader's run is the only run.
 
 :::note[Why not re-execute?]
@@ -165,7 +186,8 @@ test.
 
 An app group's state lives on disk, in its group's rows of the `state` column
 ([Storage schema](/protocol/storage/)); the machine keeps only a small `Head`
-in memory (bundle, pending follow-ups, timer ticks, ring bounds). Each applied
+in memory (bundle, executor, the component's host records: timers, ring
+bounds, active runs, the last write's time). Each applied
 batch commits its writes and the applied index together, so a restarted node
 resumes from where it stopped instead of replaying the log.
 
@@ -197,8 +219,8 @@ rest, deleting their data from that node.
 
 - **Creation.** `CreateApp` assigns the next group number. The first replica in
   the instance's replica list initializes the group with all replicas as
-  voters; whichever replica becomes leader runs `init` and appends the `Init`
-  entry.
+  voters; whichever replica becomes leader runs `init` and appends the
+  `componentInit` entry.
 - **Late start.** A Raft RPC for a group a node does not run yet goes through
   the engine's group factory: the node starts it if the directory lists it as a
   replica, and answers "not hosted here" otherwise.
@@ -268,9 +290,19 @@ sequence.
 
 ## Upgrading the on-disk format
 
-A data directory that still holds the previous single-file store (`log.redb`)
-is migrated when the engine opens it: entries, vote, commit and purge marks,
-blobs, and each machine's old whole-state snapshot (imported through
-`Machine::import`). The old file is kept beside, renamed `log.redb.migrated`.
-Scenarios and the process suite run one build on fresh state, so this path has its own tests
+The store names its format (`calimero_log::STORE_FORMAT`, 1) in a sealed node
+row, settled when the engine opens it: a store a later release wrote is
+refused, an older one is brought forward one registered step at a time
+([Format versions](/protocol/storage/#format-versions)). A data directory that
+still holds the single-file store of before (`log.redb`) is migrated by
+`calimero-log` when it opens: entries, vote, commit and purge marks, blobs, and
+each machine's old whole-state snapshot (imported through `Machine::import`);
+the old file is kept beside, renamed `log.redb.migrated`
 (`crates/log/src/migration_tests.rs`).
+
+:::caution[1.0.0-rc.20 is a hard cutover]
+Every app is in an organization from 1.0.0-rc.20 on, and a data directory or
+log that holds an app outside one is not read: clusters are recreated on this
+release, and nothing written before it is replayed (`CHANGELOG.md`). The
+migrations above matter only within that line.
+:::
