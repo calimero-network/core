@@ -218,7 +218,11 @@ fn redact(mut v: Value, paths: &[&str]) -> Value {
 /// The app's package-bound session still cannot approve directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
-    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.apps_domain = Some("localhost".into());
+        cfg.attestation_verifier_url = Some("https://verify.calimero.network".into());
+    })
+    .await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
     let (v1, v1_hash) = release(
@@ -401,6 +405,19 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         "expiresAt": "<redacted>",
         "approver": { "account": "<redacted>" },
         "code": "<redacted>",
+        // The independent verifier, for this node and its release (mdma's
+        // link); a test cluster's mock attestation has nothing to verify,
+        // which the page says instead of linking.
+        "verifier": {
+            "url": format!(
+                "https://verify.calimero.network/mero-tee?node_url={}&release_tag=mero-tee-vtest",
+                url::form_urlencoded::byte_serialize(c.urls[1].trim_end_matches('/').as_bytes())
+                    .collect::<String>()
+            ),
+            "host": "verify.calimero.network",
+            "release": "test",
+            "mock": true,
+        },
         "requestedBy": {
             "package": PACKAGE, "name": "Notes", "publisher": "Example", "returnOrigin": app_origin,
         },
@@ -772,6 +789,11 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
     let page = Page::new(made["url"].as_str().unwrap());
     let model = page.model().await;
     assert_eq!(model["kind"], "release");
+    assert_eq!(
+        model["verifier"],
+        Value::Null,
+        "no verifier configured, no link"
+    );
     assert!(
         model["before"].as_str().unwrap().starts_with(
             "Until you approve, nodes running mero-tee 2.0.0 receive none of the data"
@@ -1467,4 +1489,705 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     assert_eq!(result["outcome"]["org"], json!(org), "{result}");
     let o = get(&alice, &format!("orgs/{org}")).await.unwrap();
     assert_eq!(o["members"][&bob_id], "member", "{o}");
+}
+
+/// The organization routes these tests call, over the client's sealed
+/// transport (the hand-written methods are gone, #5012).
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error, passed through for the test to read its status"
+)]
+trait Routes {
+    async fn post(&self, path: &str, body: Value) -> Result<Value, calimero_client::Error>;
+    async fn get(&self, path: &str) -> Result<Value, calimero_client::Error>;
+    async fn delete(&self, path: &str) -> Result<Value, calimero_client::Error>;
+    async fn delete_with_body(
+        &self,
+        path: &str,
+        body: Value,
+    ) -> Result<Value, calimero_client::Error>;
+    async fn post_confirmed(
+        &self,
+        path: &str,
+        body: Value,
+        passkey: &mut SoftAuthenticator,
+    ) -> Result<Value, calimero_client::Error>;
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error, passed through for the test to read its status"
+)]
+impl Routes for calimero_client::Client {
+    async fn post(&self, path: &str, body: Value) -> Result<Value, calimero_client::Error> {
+        post(self, path, body).await
+    }
+
+    async fn get(&self, path: &str) -> Result<Value, calimero_client::Error> {
+        get(self, path).await
+    }
+
+    async fn delete(&self, path: &str) -> Result<Value, calimero_client::Error> {
+        self.transport()
+            .json(Request::new(Method::DELETE, path))
+            .await
+    }
+
+    async fn delete_with_body(
+        &self,
+        path: &str,
+        body: Value,
+    ) -> Result<Value, calimero_client::Error> {
+        self.transport()
+            .json(Request::new(Method::DELETE, path).json(body))
+            .await
+    }
+
+    async fn post_confirmed(
+        &self,
+        path: &str,
+        body: Value,
+        passkey: &mut SoftAuthenticator,
+    ) -> Result<Value, calimero_client::Error> {
+        self.transport()
+            .confirmed(Request::new(Method::POST, path).json(body), passkey)
+            .await
+    }
+}
+
+/// A consent request of `kind` over `subject` from `app`, returning to
+/// `back`: its answer, or the refusal's status.
+async fn ask(
+    app: &calimero_client::Client,
+    back: &str,
+    kind: &str,
+    subject: Value,
+) -> Result<Value, u16> {
+    app.post(
+        "consent/requests",
+        json!({ "kind": kind, "subject": subject, "returnTo": back }),
+    )
+    .await
+    .map_err(|e| status(&e))
+}
+
+/// Ask `kind` from `app` and approve it on the node's page with `key` (the
+/// person's passkey there): the page's model, the arguments its challenge
+/// committed to, and what `/result` answers the app.
+async fn approved(
+    c: &Cluster,
+    app: &calimero_client::Client,
+    back: &str,
+    kind: &str,
+    subject: Value,
+    key: &mut SoftAuthenticator,
+) -> (Value, Value, Value) {
+    let made = ask(app, back, kind, subject).await.unwrap();
+    let id = made["requestId"].as_str().unwrap().to_owned();
+    let page = Page::new(made["url"].as_str().unwrap());
+    let model = page.model().await;
+    assert_eq!(model["kind"], kind, "{model}");
+    let ((code, done), args) = page.approve(c, key).await;
+    assert_eq!(code, 200, "{kind}: {done}");
+    let result = app.get(&format!("consent/{id}/result")).await.unwrap();
+    assert_eq!(result["status"], "approved", "{result}");
+    assert_eq!(result["kind"], kind, "{result}");
+    (model, args, result)
+}
+
+/// A refused request's status.
+async fn refused(app: &calimero_client::Client, back: &str, kind: &str, subject: Value) -> u16 {
+    ask(app, back, kind, subject).await.unwrap_err()
+}
+
+/// The account id `c` is signed in as.
+async fn account_of(c: &calimero_client::Client) -> String {
+    c.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// A chat app (its frontend: package-bound sessions) and its "server" (an
+/// organization) that Alice owns, with Bob and Carol as members and a team.
+/// The setup goes through Alice's own client, before the app's sessions copy
+/// the passkeys.
+struct Server {
+    c: Cluster,
+    org: String,
+    team: String,
+    alice: calimero_client::Client,
+    alice_id: String,
+    bob_id: String,
+    carol_id: String,
+    /// The app's sessions.
+    alice_app: calimero_client::Client,
+    bob_app: calimero_client::Client,
+    carol_app: calimero_client::Client,
+    /// Each person's passkey on the node's consent page.
+    alice_page: SoftAuthenticator,
+    bob_page: SoftAuthenticator,
+    back: String,
+}
+
+impl Server {
+    async fn start() -> Self {
+        let c = Cluster::start_with(3, |cfg| {
+            cfg.apps_domain = Some("localhost".into());
+            cfg.attestation_verifier_url = Some("https://verify.calimero.network".into());
+        })
+        .await;
+        let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
+        let (bob, bob_key) = signed_up(&c, 2, "bob").await;
+        let (carol, carol_key) = signed_up(&c, 2, "carol").await;
+        let (alice_id, bob_id, carol_id) = (
+            account_of(&alice).await,
+            account_of(&bob).await,
+            account_of(&carol).await,
+        );
+        let publisher = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
+        let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+        let _ = alice.packages().upload(v1).await.unwrap();
+
+        let org = alice
+            .post("orgs", json!({ "name": "guild" }))
+            .await
+            .unwrap()["orgId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let team = alice
+            .post(
+                &format!("orgs/{org}/teams"),
+                json!({ "name": "general", "join": "invite" }),
+            )
+            .await
+            .unwrap()["teamId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        for who in [&bob, &carol] {
+            let inv = alice
+                .post_confirmed(
+                    &format!("orgs/{org}/invites"),
+                    json!({ "role": "member" }),
+                    &mut alice_key,
+                )
+                .await
+                .unwrap();
+            let token = inv["token"].as_str().unwrap();
+            let _r = who
+                .post(&format!("invites/{token}/redeem"), json!({}))
+                .await
+                .unwrap();
+        }
+        // Bob's name in the server, as its admins see him.
+        let _r = bob
+            .post(
+                &format!("orgs/{org}/members/{bob_id}/metadata"),
+                json!({ "metadata": { "name": "Bobby" } }),
+            )
+            .await
+            .unwrap();
+
+        let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+        let app_origin = format!(
+            "http://{}.localhost:{port}",
+            calimero_node::app_host::label(PACKAGE)
+        );
+        let back = format!("{app_origin}/1.0.0/");
+        let page_origin = origin(&c.urls[1]);
+        let signed_in_app = |key: &SoftAuthenticator| {
+            let client = c.client(1);
+            let in_app = SoftAuthenticator::with_key(key, "localhost", &app_origin);
+            (client, in_app)
+        };
+        let (alice_app, mut a) = signed_in_app(&alice_key);
+        let _s = alice_app.sign_in(&mut a).await.unwrap();
+        let (bob_app, mut b) = signed_in_app(&bob_key);
+        let _s = bob_app.sign_in(&mut b).await.unwrap();
+        let (carol_app, mut k) = signed_in_app(&carol_key);
+        let _s = carol_app.sign_in(&mut k).await.unwrap();
+        Self {
+            alice_page: SoftAuthenticator::with_key(&a, "localhost", &page_origin),
+            bob_page: SoftAuthenticator::with_key(&b, "localhost", &page_origin),
+            c,
+            org,
+            team,
+            alice,
+            alice_id,
+            bob_id,
+            carol_id,
+            alice_app,
+            bob_app,
+            carol_app,
+            back,
+        }
+    }
+
+    /// What `/orgs/{org}` answers Alice now.
+    async fn org(&self) -> Value {
+        self.alice.get(&format!("orgs/{}", self.org)).await.unwrap()
+    }
+}
+
+/// A chat app's moderation, from its own frontend (package-bound sessions,
+/// refused every organization route): roles, teams, invites, removing a
+/// member and leaving, each asked of the node and approved on its page with
+/// the person's passkey, after the same checks the log applies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_apps_frontend_moderates_its_server_on_the_page() {
+    let mut s = Server::start().await;
+    let (org, team, back) = (s.org.clone(), s.team.clone(), s.back.clone());
+    let (bob, carol) = (s.bob_id.clone(), s.carol_id.clone());
+    let alice_app = &s.alice_app;
+
+    // setMemberRole: Bob becomes an admin.
+    let e = alice_app
+        .post(
+            &format!("orgs/{org}/members"),
+            json!({ "account": bob, "role": "admin" }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    let role = |role: &str| json!({ "org": org, "account": bob, "role": role });
+    assert_eq!(
+        refused(&s.carol_app, &back, "setMemberRole", role("admin")).await,
+        403,
+        "a member manages nobody"
+    );
+    assert_eq!(
+        refused(&s.bob_app, &back, "setMemberRole", role("owner")).await,
+        403,
+        "only the owner hands ownership over"
+    );
+    assert_eq!(
+        refused(alice_app, &back, "setMemberRole", role("member")).await,
+        409,
+        "nothing would change"
+    );
+    let (model, args, result) = approved(
+        &s.c,
+        alice_app,
+        &back,
+        "setMemberRole",
+        role("admin"),
+        &mut s.alice_page,
+    )
+    .await;
+    assert_eq!(model["title"], "Make Bobby an admin of guild", "{model}");
+    // The organization kinds carry the verifier link like every kind.
+    assert_eq!(
+        model["verifier"]["host"], "verify.calimero.network",
+        "{model}"
+    );
+    assert_eq!(model["verifier"]["mock"], true, "{model}");
+    assert_eq!(
+        args,
+        json!({ "account": bob, "role": "admin", "__method": "__set_org_role" })
+    );
+    assert!(result.get("outcome").is_none(), "{result}");
+    assert_eq!(s.org().await["members"][&bob], "admin");
+
+    // setMemberTeams: Carol in #general.
+    let teams = json!({ "org": org, "account": carol, "teams": [{ "team": team }] });
+    let e = alice_app
+        .post(
+            &format!("orgs/{org}/members/{carol}/teams"),
+            json!({ "teams": [{ "team": team }] }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    assert_eq!(
+        refused(&s.carol_app, &back, "setMemberTeams", teams.clone()).await,
+        403,
+        "a member manages no team"
+    );
+    assert_eq!(
+        refused(
+            alice_app,
+            &back,
+            "setMemberTeams",
+            json!({ "org": org, "account": carol, "teams": [] })
+        )
+        .await,
+        400
+    );
+    let (model, args, _) = approved(
+        &s.c,
+        alice_app,
+        &back,
+        "setMemberTeams",
+        teams,
+        &mut s.alice_page,
+    )
+    .await;
+    assert_eq!(model["title"], "Put carol in general", "{model}");
+    assert_eq!(args["__method"], "__set_team_members", "{args}");
+    assert_eq!(args["teams"], json!([{ "team": team }]));
+    assert_eq!(
+        s.org().await["teams"][&team]["members"][&carol],
+        false,
+        "a row, not a lead"
+    );
+
+    // removeMemberTeams: Carol out of #general again.
+    let out = json!({ "org": org, "account": carol, "teams": [team] });
+    let e = alice_app
+        .delete_with_body(
+            &format!("orgs/{org}/members/{carol}/teams"),
+            json!({ "teams": [team] }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    assert_eq!(
+        refused(
+            &s.carol_app,
+            &back,
+            "removeMemberTeams",
+            json!({ "org": org, "account": bob, "teams": [team] })
+        )
+        .await,
+        403,
+        "a member takes nobody else out of a team"
+    );
+    let (model, args, _) = approved(
+        &s.c,
+        alice_app,
+        &back,
+        "removeMemberTeams",
+        out,
+        &mut s.alice_page,
+    )
+    .await;
+    assert_eq!(model["title"], "Take carol out of general", "{model}");
+    assert_eq!(args["__method"], "__remove_team_members", "{args}");
+    assert!(
+        s.org().await["teams"][&team]["members"]
+            .get(&carol)
+            .is_none(),
+        "out of the team"
+    );
+
+    // revokeInvite: an invite made earlier stops working.
+    let invites = s.alice.get(&format!("orgs/{org}/invites")).await.unwrap();
+    assert_eq!(invites["invites"], json!([]), "both were used: {invites}");
+    let made = ask(
+        alice_app,
+        &back,
+        "createInvite",
+        json!({ "org": org, "role": "guest" }),
+    )
+    .await
+    .unwrap();
+    let page = Page::new(made["url"].as_str().unwrap());
+    let ((code, done), _) = page.approve(&s.c, &mut s.alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    let invites = s.alice.get(&format!("orgs/{org}/invites")).await.unwrap();
+    let key = invites["invites"][0]["inviteKey"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let e = alice_app
+        .delete(&format!("orgs/{org}/invites/{key}"))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    assert_eq!(
+        refused(
+            alice_app,
+            &back,
+            "revokeInvite",
+            json!({ "org": org, "inviteKey": "0".repeat(64) })
+        )
+        .await,
+        404
+    );
+    assert_eq!(
+        refused(
+            &s.carol_app,
+            &back,
+            "revokeInvite",
+            json!({ "org": org, "inviteKey": key })
+        )
+        .await,
+        404,
+        "a member does not see an admin's invite"
+    );
+    let (model, args, _) = approved(
+        &s.c,
+        alice_app,
+        &back,
+        "revokeInvite",
+        json!({ "org": org, "inviteKey": key }),
+        &mut s.alice_page,
+    )
+    .await;
+    assert_eq!(model["title"], "Revoke an invite to guild", "{model}");
+    assert_eq!(model["invite"]["createdBy"], "you", "{model}");
+    assert_eq!(
+        args,
+        json!({ "inviteKey": key, "__method": "__revoke_invite" })
+    );
+    let invites = s.alice.get(&format!("orgs/{org}/invites")).await.unwrap();
+    assert_eq!(invites["invites"], json!([]), "{invites}");
+
+    // removeMember: Carol is kicked.
+    let e = alice_app
+        .delete(&format!("orgs/{org}/members/{carol}"))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    let kick = |who: &str| json!({ "org": org, "account": who });
+    assert_eq!(
+        refused(&s.carol_app, &back, "removeMember", kick(&bob)).await,
+        403,
+        "a member removes nobody"
+    );
+    assert_eq!(
+        refused(&s.bob_app, &back, "removeMember", kick(&s.alice_id)).await,
+        403,
+        "never the owner"
+    );
+    assert_eq!(
+        refused(alice_app, &back, "removeMember", kick("nobody")).await,
+        404
+    );
+    let (model, args, _) = approved(
+        &s.c,
+        alice_app,
+        &back,
+        "removeMember",
+        kick(&carol),
+        &mut s.alice_page,
+    )
+    .await;
+    assert_eq!(model["title"], "Remove carol from guild", "{model}");
+    assert_eq!(
+        args,
+        json!({ "account": carol, "__method": "__remove_member" })
+    );
+    assert!(s.org().await["members"].get(&carol).is_none());
+
+    // leaveOrg: Bob leaves; the owner cannot.
+    let e = s
+        .bob_app
+        .delete(&format!("orgs/{org}/members/{bob}"))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    assert_eq!(
+        refused(alice_app, &back, "leaveOrg", json!({ "org": org })).await,
+        409,
+        "the owner hands ownership over first"
+    );
+    assert_eq!(
+        refused(&s.carol_app, &back, "leaveOrg", json!({ "org": org })).await,
+        404,
+        "not in it any more"
+    );
+    let bob_app = &s.bob_app;
+    let (model, args, _) = approved(
+        &s.c,
+        bob_app,
+        &back,
+        "leaveOrg",
+        json!({ "org": org }),
+        &mut s.bob_page,
+    )
+    .await;
+    assert_eq!(model["title"], "Leave guild", "{model}");
+    assert_eq!(model["member"]["role"], "admin", "{model}");
+    assert_eq!(
+        args,
+        json!({ "account": bob, "__method": "__remove_member" })
+    );
+    assert!(s.org().await["members"].get(&bob).is_none());
+}
+
+/// A chat app's server settings, from its own frontend: rename, what members
+/// and teams may do, every app added later, and deleting it (the page counts
+/// what goes with it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_apps_frontend_changes_and_deletes_its_server_on_the_page() {
+    let mut s = Server::start().await;
+    let (org, team, back) = (s.org.clone(), s.team.clone(), s.back.clone());
+    let bob = s.bob_id.clone();
+    let alice_app = &s.alice_app;
+
+    // renameOrg.
+    let e = alice_app
+        .post(&format!("orgs/{org}/name"), json!({ "name": "hall" }))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    let name = |n: &str| json!({ "org": org, "name": n });
+    assert_eq!(
+        refused(&s.bob_app, &back, "renameOrg", name("hall")).await,
+        403,
+        "a member renames nothing"
+    );
+    assert_eq!(refused(alice_app, &back, "renameOrg", name(" ")).await, 400);
+    let (model, args, result) = approved(
+        &s.c,
+        alice_app,
+        &back,
+        "renameOrg",
+        name("hall"),
+        &mut s.alice_page,
+    )
+    .await;
+    assert_eq!(model["title"], "Rename guild to hall", "{model}");
+    assert_eq!(args, json!({ "name": "hall", "__method": "__rename_org" }));
+    assert_eq!(
+        result["outcome"],
+        json!({ "orgId": org, "name": "hall" }),
+        "{result}"
+    );
+    assert_eq!(s.org().await["name"], "hall");
+
+    // setCapabilities, a member's: Bob may create apps and invite people.
+    let e = alice_app
+        .post(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": bob, "capabilities": 3 }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    let caps = json!({ "org": org, "account": bob, "capabilities": 3 });
+    assert_eq!(
+        refused(&s.bob_app, &back, "setCapabilities", caps.clone()).await,
+        403
+    );
+    let (model, args, _) = approved(
+        &s.c,
+        alice_app,
+        &back,
+        "setCapabilities",
+        caps,
+        &mut s.alice_page,
+    )
+    .await;
+    assert_eq!(
+        model["title"], "Change what Bobby across hall can do",
+        "{model}"
+    );
+    assert_eq!(
+        args,
+        json!({ "team": null, "account": bob, "capabilities": 3, "__method": "__set_capabilities" })
+    );
+    assert_eq!(s.org().await["capabilities"][&bob], 3);
+    // ... and a team's default.
+    let default = json!({ "org": org, "team": team, "capabilities": 1 });
+    assert_eq!(
+        refused(&s.carol_app, &back, "setCapabilities", default.clone()).await,
+        404,
+        "a team she does not see"
+    );
+    let (model, args, _) = approved(
+        &s.c,
+        alice_app,
+        &back,
+        "setCapabilities",
+        default,
+        &mut s.alice_page,
+    )
+    .await;
+    assert_eq!(
+        model["title"], "Change what everyone in general can do by default",
+        "{model}"
+    );
+    assert_eq!(args["__method"], "__set_default_capabilities", "{args}");
+    assert_eq!(s.org().await["teams"][&team]["defaultCapabilities"], 1);
+
+    // setAllApps.
+    let e = alice_app
+        .post(
+            &format!("orgs/{org}/all-apps"),
+            json!({ "account": bob, "allApps": true }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    let all = |on: bool| json!({ "org": org, "account": bob, "allApps": on });
+    assert_eq!(
+        refused(&s.bob_app, &back, "setAllApps", all(true)).await,
+        403
+    );
+    assert_eq!(
+        refused(alice_app, &back, "setAllApps", all(false)).await,
+        409,
+        "nothing would change"
+    );
+    let (model, args, _) = approved(
+        &s.c,
+        alice_app,
+        &back,
+        "setAllApps",
+        all(true),
+        &mut s.alice_page,
+    )
+    .await;
+    assert_eq!(
+        model["title"], "Give Bobby every app added to hall",
+        "{model}"
+    );
+    assert_eq!(args["__method"], "__set_all_apps", "{args}");
+    assert_eq!(s.org().await["allApps"], json!([bob]));
+
+    // deleteOrg: a stale page is refused, then the page counts what goes.
+    let e = alice_app.delete(&format!("orgs/{org}")).await.unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    let gone = json!({ "org": org });
+    assert_eq!(
+        refused(&s.bob_app, &back, "deleteOrg", gone.clone()).await,
+        403,
+        "only the owner deletes it"
+    );
+    let made = ask(alice_app, &back, "deleteOrg", gone.clone())
+        .await
+        .unwrap();
+    let stale = Page::new(made["url"].as_str().unwrap());
+    // An invite made after the page counted them, by Bob (who may invite
+    // now): a request of Alice's own would replace hers, as one account
+    // holds one undecided request per node.
+    let made = ask(
+        &s.bob_app,
+        &back,
+        "createInvite",
+        json!({ "org": org, "role": "member" }),
+    )
+    .await
+    .unwrap();
+    let page = Page::new(made["url"].as_str().unwrap());
+    let ((code, done), _) = page.approve(&s.c, &mut s.bob_page).await;
+    assert_eq!(code, 200, "{done}");
+    let (code, answer) = stale.post("approve", json!({})).await;
+    assert_eq!(code, 409, "{answer}");
+    assert_eq!(answer["error"], "CONSENT_STALE", "{answer}");
+    let (model, args, result) =
+        approved(&s.c, alice_app, &back, "deleteOrg", gone, &mut s.alice_page).await;
+    assert_eq!(
+        model["title"], "Delete hall and everything in it",
+        "{model}"
+    );
+    assert_eq!(
+        model["delete"],
+        json!({
+            "org": org, "members": 3, "teams": 1, "invites": 1, "apps": 0, "appNames": [],
+        })
+    );
+    assert_eq!(model["attention"][0]["flag"], "deletes", "{model}");
+    assert_eq!(
+        model["attention"][0]["text"],
+        "Deleting hall deletes its 1 team, 1 invite and 0 apps, for good."
+    );
+    assert_eq!(args, json!({ "org": org, "__method": "__delete_org" }));
+    assert_eq!(result["outcome"], json!({ "apps": [] }), "{result}");
+    let e = s.alice.get(&format!("orgs/{org}")).await.unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
 }

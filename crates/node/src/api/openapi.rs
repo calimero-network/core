@@ -1376,6 +1376,7 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
         post("/apps/{app}/access", "app_access", Session, "Set who may reach an app")
+            .about("A package-bound session: only its own package's app, from one of its package's teams to another.")
             .json::<super::AccessBody>("{ access: #Access }")
             .ok("{}"),
         post("/apps/{app}/transfer", "app_transfer", AccountHolder, "Hand an app to another account")
@@ -1573,18 +1574,18 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "BAD_TEAMS"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/teams", "team_create", Session, "Create a team")
-            .about("An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only).")
+            .about("An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only). A package-bound session: only its own package's teams (its app team and the teams below it): `parent` one of them.")
             .json::<super::TeamBody>("{ name: string, parent?: string, join: #TeamJoin }")
             .ok("{ teamId: string }"),
         get("/orgs/{org}/teams/{team}", "team_get", SignedIn, "One team")
             .ok("#TeamView")
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/teams/{team}", "team_update", Session, "Update a team")
-            .about("Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team.")
+            .about("Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team, moved only within.")
             .json::<super::TeamUpdateBody>("{ name?: string, join?: #TeamJoin, parent?: string | null, metadata?: any }")
             .ok("{}"),
         delete("/orgs/{org}/teams/{team}", "team_delete", Session, "Delete a team")
-            .about("With the teams and apps below it.")
+            .about("With the teams and apps below it. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{ teams: string[], apps: string[] }")
             .step_up()
@@ -1622,10 +1623,12 @@ fn operations() -> Vec<Op> {
             .ok("#OutboundApproved")
             .step_up(),
         post("/orgs/{org}/teams/{team}/members", "team_set_member", Session, "Add or change a team member")
+            .about("A package-bound session: only its own package's teams (its app team and the teams below it).")
             .json::<super::TeamMemberBody>("{ account: string, lead?: bool, role?: #TeamRole, capabilities?: uint, confirm?: #Confirm }")
             .ok("{}")
             .step_up(),
         delete("/orgs/{org}/teams/{team}/members/{account}", "team_remove_member", Session, "Remove a team member, or leave")
+            .about("A package-bound session: only its own package's teams (its app team and the teams below it).")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up(),
@@ -1704,13 +1707,13 @@ fn operations() -> Vec<Op> {
             .ok("{ org: string }"),
         // ---------------------------------------------------------------- consent
         post("/consent/requests", "crate::consent_page::create", Session, "Ask the account's owner to approve")
-            .about("From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.")
-            .bytes_json::<crate::consent_page::CreateBody>(r#"{ kind: "release", scope: "account" | { org: string }, subject: { version: string, withdraw?: bool }, returnTo: string } | { kind: "upgrade", subject: { app: string, toVersion: string }, returnTo: string } | { kind: "outbound", scope: "account" | { org: string }, subject: { package?: string, prefixes?: string[] }, returnTo: string } | { kind: "createOrg", subject: { name: string }, returnTo: string } | { kind: "createInvite", subject: { org: string, role: "guest" | "member" | "admin", teams?: string[], ttlSecs?: uint, uses?: uint, allApps?: bool }, returnTo: string } | { kind: "acceptInvite", subject: { token: string }, returnTo: string }"#)
+            .about("From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.")
+            .bytes_json::<crate::consent_page::CreateBody>(r#"{ kind: "release", scope: "account" | { org: string }, subject: { version: string, withdraw?: bool }, returnTo: string } | { kind: "upgrade", subject: { app: string, toVersion: string }, returnTo: string } | { kind: "outbound", scope: "account" | { org: string }, subject: { package?: string, prefixes?: string[] }, returnTo: string } | { kind: "createOrg", subject: { name: string }, returnTo: string } | { kind: "createInvite", subject: { org: string, role: "guest" | "member" | "admin", teams?: string[], ttlSecs?: uint, uses?: uint, allApps?: bool }, returnTo: string } | { kind: "acceptInvite", subject: { token: string }, returnTo: string } | { kind: "leaveOrg", subject: { org: string }, returnTo: string } | { kind: "removeMember", subject: { org: string, account: string }, returnTo: string } | { kind: "setMemberRole", subject: { org: string, account: string, role: "guest" | "member" | "admin" | "owner" }, returnTo: string } | { kind: "setMemberTeams", subject: { org: string, account: string, teams: { team: string, role?: "lead" | "member" | "readOnly", capabilities?: uint }[] }, returnTo: string } | { kind: "removeMemberTeams", subject: { org: string, account: string, teams: string[] }, returnTo: string } | { kind: "revokeInvite", subject: { org: string, inviteKey: string }, returnTo: string } | { kind: "renameOrg", subject: { org: string, name: string }, returnTo: string } | { kind: "deleteOrg", subject: { org: string }, returnTo: string } | { kind: "setCapabilities", subject: { org: string, account?: string, team?: string, capabilities: uint }, returnTo: string } | { kind: "setAllApps", subject: { org: string, account: string, allApps: bool }, returnTo: string }"#)
             .ok("{ requestId: string, url: string, code: string, expiresAt: uint }")
             .errors(&[(400, "BAD_REQUEST"), (413, "TOO_LARGE")]),
         get("/consent/{request}/result", "crate::consent_page::result", Session, "What became of a consent request")
-            .about("`decidedAt` (Unix seconds) is `null` while it is pending. `outcome`, once approved, is what the approval made: `{ orgId }` for `createOrg`, `{ token }` for `createInvite`, `{ org }` for `acceptInvite`; absent for the other kinds.")
-            .ok(r#"{ requestId: string, kind: "release" | "upgrade" | "outbound" | "createOrg" | "createInvite" | "acceptInvite", status: "pending" | "approved" | "declined", decidedAt: uint | null, outcome?: { orgId?: string, token?: string, org?: string } }"#)
+            .about("`decidedAt` (Unix seconds) is `null` while it is pending. `outcome`, once approved, is what the approval made: `{ orgId }` for `createOrg`, `{ token }` for `createInvite`, `{ org }` for `acceptInvite`, `{ orgId, name }` for `renameOrg`, `{ apps }` (the apps deleted) for `deleteOrg`; absent for the other kinds.")
+            .ok(r#"{ requestId: string, kind: "release" | "upgrade" | "outbound" | "createOrg" | "createInvite" | "acceptInvite" | "leaveOrg" | "removeMember" | "setMemberRole" | "setMemberTeams" | "removeMemberTeams" | "revokeInvite" | "renameOrg" | "deleteOrg" | "setCapabilities" | "setAllApps", status: "pending" | "approved" | "declined", decidedAt: uint | null, outcome?: { orgId?: string, token?: string, org?: string, name?: string, apps?: string[] } }"#)
             .errors(&[(404, "NOT_FOUND"), (503, "UNAVAILABLE")]),
         // ---------------------------------------------------------------- ops
         get("/ops/status", "ops_status", Ops, "The node and the cluster")

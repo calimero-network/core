@@ -57,9 +57,10 @@ NOT_COVERED = [
     ("Accounts", "Sign-up through a cluster sign-up invite, and issuing one",
      "meroctl's login takes no invite and has no command to issue one (an operator-signed request); "
      "the policy and the invite list are read back (`ops-state`)"),
-    ("Accounts", "Consent-page approvals (`/consent/requests`)",
+    ("Accounts", "Consent-page approvals (`/consent/requests`) and the page's verifier link",
      "a consent request is approved in a browser on the node's consent page; the cluster test "
-     "`consent_page.rs` covers it on one build"),
+     "`consent_page.rs` covers it on one build. The verifier link is a startup setting "
+     "(`--attestation-verifier-url`) that stores nothing"),
     ("Apps", "Timers (`#[app::every]`) firing across the roll",
      "the fixture's timer is hourly on the nodes' real clock, which a process cluster cannot move; "
      "the cluster tests move the app clock"),

@@ -109,6 +109,13 @@ use crate::system::{PackageRef, PackageVersion, ReleaseScope};
 use crate::types::{now_secs, Caller, OrgRole};
 
 mod diff;
+mod orgs;
+
+pub use orgs::{
+    MemberSubject, OrgSubject, RemoveMemberTeamsSubject, RenameOrgSubject, RevokeInviteSubject,
+    SetAllAppsSubject, SetCapabilitiesSubject, SetMemberRoleSubject, SetMemberTeamsSubject,
+    MAX_SUBJECT_ID_BYTES,
+};
 
 pub use diff::{capability_sheet, Side};
 
@@ -209,6 +216,81 @@ pub enum CreateBody {
         subject: AcceptInviteSubject,
         return_to: String,
     },
+    /// Leave an organization.
+    LeaveOrg {
+        subject: OrgSubject,
+        return_to: String,
+    },
+    /// Remove a member from an organization.
+    RemoveMember {
+        subject: MemberSubject,
+        return_to: String,
+    },
+    /// Change a member's role.
+    SetMemberRole {
+        subject: SetMemberRoleSubject,
+        return_to: String,
+    },
+    /// Set a member's rows in several teams.
+    SetMemberTeams {
+        subject: SetMemberTeamsSubject,
+        return_to: String,
+    },
+    /// Take a member out of several teams.
+    RemoveMemberTeams {
+        subject: RemoveMemberTeamsSubject,
+        return_to: String,
+    },
+    /// Withdraw an organization invite.
+    RevokeInvite {
+        subject: RevokeInviteSubject,
+        return_to: String,
+    },
+    /// Rename an organization.
+    RenameOrg {
+        subject: RenameOrgSubject,
+        return_to: String,
+    },
+    /// Delete an organization, with its teams, invites and apps.
+    DeleteOrg {
+        subject: OrgSubject,
+        return_to: String,
+    },
+    /// A member's capabilities, or a default.
+    SetCapabilities {
+        subject: SetCapabilitiesSubject,
+        return_to: String,
+    },
+    /// Give a member every app added later, or stop it.
+    SetAllApps {
+        subject: SetAllAppsSubject,
+        return_to: String,
+    },
+}
+
+impl CreateBody {
+    /// The organization request this is, with its `returnTo`; the body itself
+    /// for every other kind.
+    fn into_org_ask(self) -> Result<(orgs::OrgAsk, String), Self> {
+        use orgs::OrgAsk as A;
+        Ok(match self {
+            Self::LeaveOrg { subject, return_to } => (A::Leave(subject), return_to),
+            Self::RemoveMember { subject, return_to } => (A::RemoveMember(subject), return_to),
+            Self::SetMemberRole { subject, return_to } => (A::SetMemberRole(subject), return_to),
+            Self::SetMemberTeams { subject, return_to } => (A::SetMemberTeams(subject), return_to),
+            Self::RemoveMemberTeams { subject, return_to } => {
+                (A::RemoveMemberTeams(subject), return_to)
+            }
+            Self::RevokeInvite { subject, return_to } => (A::RevokeInvite(subject), return_to),
+            Self::RenameOrg { subject, return_to } => (A::Rename(subject), return_to),
+            Self::DeleteOrg { subject, return_to } => (A::Delete(subject), return_to),
+            Self::SetCapabilities { subject, return_to } => {
+                (A::SetCapabilities(subject), return_to)
+            }
+            Self::SetAllApps { subject, return_to } => (A::SetAllApps(subject), return_to),
+            other => return Err(other),
+        })
+    }
 }
 
 /// Whose approval: the account's own apps, or an organization's.
@@ -333,6 +415,8 @@ enum Action {
     AcceptInvite {
         token: InviteToken,
     },
+    /// A membership change or a setting of an organization (`orgs`).
+    Org(orgs::OrgAction),
 }
 
 /// What a release request changes.
@@ -784,6 +868,14 @@ pub async fn create(
     let package = p.bound_app().map(str::to_owned);
     // `person` made this request's round (`Node::sys_fresh_from`).
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
+    let body = match body.into_org_ask() {
+        Ok((ask, return_to)) => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = orgs::request(&node, &account, ask).await?;
+            return hold(&node, account, package, Action::Org(action), model, to).await;
+        }
+        Err(body) => body,
+    };
     let (action, model, return_to) = match body {
         CreateBody::Release {
             scope,
@@ -824,11 +916,36 @@ pub async fn create(
             let (action, model) = accept_invite_request(&node, &account, subject)?;
             (action, model, to)
         }
+        // `into_org_ask` took these.
+        CreateBody::LeaveOrg { .. }
+        | CreateBody::RemoveMember { .. }
+        | CreateBody::SetMemberRole { .. }
+        | CreateBody::SetMemberTeams { .. }
+        | CreateBody::RemoveMemberTeams { .. }
+        | CreateBody::RevokeInvite { .. }
+        | CreateBody::RenameOrg { .. }
+        | CreateBody::DeleteOrg { .. }
+        | CreateBody::SetCapabilities { .. }
+        | CreateBody::SetAllApps { .. } => {
+            return Err(ApiError::internal("an organization request went astray"));
+        }
     };
+    hold(&node, account, package, action, model, return_to).await
+}
+
+/// Hold a request whose model is frozen, and answer where its page is.
+async fn hold(
+    node: &Node,
+    account: String,
+    package: Option<String>,
+    action: Action,
+    model: Value,
+    return_to: Url,
+) -> Result<Json<Value>, ApiError> {
     let now = now_secs();
     let expires_at = now + CONSENT_REQUEST_TTL;
     let (asker_name, asker_publisher) = match package.as_deref() {
-        Some(p) => package_names(&node, p).await,
+        Some(p) => package_names(node, p).await,
         None => (None, None),
     };
     let mut model = model;
@@ -2112,8 +2229,69 @@ fn model(node: &Node, id: &str) -> Result<Value, ApiError> {
         let _prev = o.insert("decidedAt".into(), json!(r.decision.at()));
         let _prev = o.insert("rpId".into(), json!(node.config.rp_id));
         let _prev = o.insert("code".into(), json!(confirmation_code(id)));
+        let verifier = node.config.attestation_verifier_url.as_deref().map(|base| {
+            verifier_link(
+                base,
+                &node.config.public_url,
+                &node.own_release(),
+                node.config.attestation == crate::attest::Mode::Mock,
+            )
+        });
+        let _prev = o.insert("verifier".into(), verifier.unwrap_or(Value::Null));
     }
     Ok(m)
+}
+
+// ---------------------------------------------------------------- verifier
+
+/// The longest `--attestation-verifier-url` taken.
+pub const MAX_VERIFIER_URL_BYTES: usize = 512;
+
+/// The verifier's base URL as the node keeps it (`--attestation-verifier-url`):
+/// `https` (`http` only for localhost), a host, no credentials, query or
+/// fragment, at most [`MAX_VERIFIER_URL_BYTES`]; answered without a trailing
+/// slash. `merod` refuses to start on anything else.
+pub fn verifier_base(raw: &str) -> Result<String, String> {
+    if raw.len() > MAX_VERIFIER_URL_BYTES {
+        return Err(format!("is longer than {MAX_VERIFIER_URL_BYTES} bytes"));
+    }
+    let u = Url::parse(raw).map_err(|e| format!("is not an absolute URL: {e}"))?;
+    let secure = u.scheme() == "https" || (u.scheme() == "http" && local_host(&u));
+    if !secure {
+        return Err("must be https (http only for localhost)".to_owned());
+    }
+    if u.host_str().is_none_or(str::is_empty) {
+        return Err("has no host".to_owned());
+    }
+    if !u.username().is_empty() || u.password().is_some() {
+        return Err("must not carry credentials".to_owned());
+    }
+    if u.query().is_some() || u.fragment().is_some() {
+        return Err("must not have a query or a fragment".to_owned());
+    }
+    Ok(u.as_str().trim_end_matches('/').to_owned())
+}
+
+/// The page's link to the independent verifier for this node: mdma's shape,
+/// `{base}/mero-tee?node_url=<public URL without trailing slash>&release_tag=mero-tee-v<release>`,
+/// with the verifier's host to show beside it. `mock`: there is nothing to
+/// verify, and the page says so instead of linking.
+fn verifier_link(base: &str, public_url: &str, release: &str, mock: bool) -> Value {
+    let mut url = match Url::parse(&format!("{base}/mero-tee")) {
+        Ok(u) => u,
+        // `base` passed `verifier_base`, so appending a path segment parses.
+        Err(_) => return Value::Null,
+    };
+    let _pairs = url
+        .query_pairs_mut()
+        .append_pair("node_url", public_url.trim_end_matches('/'))
+        .append_pair("release_tag", &format!("mero-tee-v{release}"));
+    let host = match (url.host_str(), url.port()) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        (Some(h), None) => h.to_owned(),
+        (None, _) => String::new(),
+    };
+    json!({ "url": url.as_str(), "host": host, "release": release, "mock": mock })
 }
 
 /// Where the page sends the person back: `returnTo` with the request and
@@ -2143,6 +2321,7 @@ fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
         | Action::CreateOrg { .. }
         | Action::CreateInvite { .. }
         | Action::AcceptInvite { .. } => Ok(()),
+        Action::Org(a) => orgs::still_current(node, a),
         Action::Upgrade {
             app,
             from_bundle,
@@ -2276,6 +2455,7 @@ async fn act(
     };
     let account_subject = format!("account:{}", req.account);
     let Json(v) = match &req.action {
+        Action::Org(a) => return orgs::act(node, &p, a, confirm).await,
         Action::CreateOrg { name } => {
             // `POST /orgs` takes no passkey; the page does, so the person
             // (not the app that sent them) creates it. Nothing is logged
@@ -2490,6 +2670,47 @@ mod tests {
         }
         let e = store.insert(1, request("late", 100), 0).unwrap_err();
         assert_eq!(e.status, 429);
+    }
+
+    #[test]
+    fn the_verifier_link_is_mdmas_shape_on_a_checked_base() {
+        let base = verifier_base("https://verify.calimero.network/").unwrap();
+        assert_eq!(base, "https://verify.calimero.network");
+        assert_eq!(
+            verifier_link(&base, "https://node-1.example:2528/", "2.3.131", false),
+            json!({
+                "url": "https://verify.calimero.network/mero-tee?node_url=https%3A%2F%2Fnode-1.example%3A2528&release_tag=mero-tee-v2.3.131",
+                "host": "verify.calimero.network",
+                "release": "2.3.131",
+                "mock": false,
+            })
+        );
+        // A base with a path keeps it; a local verifier names its port.
+        let local = verifier_base("http://localhost:8080/v/").unwrap();
+        assert_eq!(local, "http://localhost:8080/v");
+        let link = verifier_link(&local, "http://127.0.0.1:2501", "1.0.0", true);
+        assert_eq!(
+            link["url"],
+            "http://localhost:8080/v/mero-tee?node_url=http%3A%2F%2F127.0.0.1%3A2501&release_tag=mero-tee-v1.0.0"
+        );
+        assert_eq!(link["host"], "localhost:8080");
+        assert_eq!(link["mock"], true);
+        for bad in [
+            "",
+            "verify.calimero.network",
+            "http://verify.calimero.network",
+            "ftp://verify.calimero.network",
+            "https://verify.calimero.network/?x=1",
+            "https://verify.calimero.network/?",
+            "https://verify.calimero.network/#top",
+            "https://user:pw@verify.calimero.network",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+        ] {
+            assert!(verifier_base(bad).is_err(), "{bad:?}");
+        }
+        let long = format!("https://v.example/{}", "a".repeat(MAX_VERIFIER_URL_BYTES));
+        assert!(verifier_base(&long).is_err());
     }
 
     #[test]

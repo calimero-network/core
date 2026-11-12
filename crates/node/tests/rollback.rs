@@ -70,6 +70,7 @@ fn config(dir: &Path, node_id: u64, counter: Option<Arc<MemoryCounter>>) -> Conf
         outbound: None,
         governance: Default::default(),
         apps_domain: None,
+        attestation_verifier_url: None,
         operator_key: None,
     }
 }

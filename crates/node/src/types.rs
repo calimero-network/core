@@ -919,6 +919,25 @@ impl Org {
             .find(|t| t.app_package() == Some(package))
     }
 
+    /// The package whose app team `team` is or sits below (the
+    /// [`Team::app_package`] of its top-level ancestor), and whether `team`
+    /// is that app team itself; `None` for an unknown team or one under a
+    /// top-level team that is no app team.
+    #[must_use]
+    pub fn package_of_team<'a>(&'a self, team: &'a str) -> Option<(&'a str, bool)> {
+        let mut id = team;
+        // Parents never form a cycle; the bound only keeps a broken state
+        // from looping.
+        for _ in 0..=self.teams.len() {
+            let t = self.teams.get(id)?;
+            match t.parent.as_deref() {
+                Some(parent) => id = parent,
+                None => return t.app_package().map(|p| (p, id == team)),
+            }
+        }
+        None
+    }
+
     /// The organization's mode, from its app teams.
     #[must_use]
     pub fn mode(&self) -> OrgMode {

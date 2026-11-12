@@ -91,6 +91,7 @@ pub async fn start(
             outbound: None,
             governance: Default::default(),
             apps_domain: Some("localhost".into()),
+            attestation_verifier_url: None,
             operator_key: None,
         };
         nodes.push(run(config).await?);

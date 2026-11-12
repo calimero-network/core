@@ -128,7 +128,7 @@ pub(super) async fn events(
     let req = ViewRequest {
         app_id,
         method: PIPELINE_VIEW.to_owned(),
-        args: json!({ "run": run, "files": false }),
+        args: json!({ "run": run, "files": false, "items": false }),
         caller: p.caller,
         strong: true,
         min_index: 0,

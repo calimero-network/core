@@ -697,9 +697,18 @@ is its command line.
   `GET /apps/{app}/runs/{run}` and `GET /apps/{app}/runs?limit=&before=` (`AppMachine::runs_page`, newest `startTsMs` first, ties by run id descending, `limit` 1 to 100, a `before` cursor of `startTsMs:run` bounded by `MAX_RUNS_CURSOR_BYTES`, at most `MAX_ACTIVE_RUNS` + `FINISHED_RUNS_KEPT` records read per page) are the reserved view `__run` answered by the leader (`Node::run_view`), one shared `run_json` for both; they show plaintext sizes and hashes of files only to those who may list the files.
 - **Pipeline runs** (`component/pipelines.rs` apply, `node/component/compute/pipelines.rs` leader loop, `api/pipelines.rs` routes; tests `component/tests/pipelines.rs`, `pipeline_runs.rs`):
   A pipeline run lives in the app group of an app made from a release that registered the pipeline, compute-only apps included (their group gets an `init` entry with no outcome, `init_compute_only`, so it has the component executor that holds files).
-  `PipelineRun` is a hidden row (`rows::CPIPE`, by run id) with the release's `version`, the pipeline's `hash` and the compute component, all fixed at start, with `modules` (reference to the module release's compute hash, copied from the release's pins), the bound `inputs` and `params`, the `caller`, `payer`, and per step a `StepState { status, runs, outputs, result, reason }`; the head keeps `active_pipelines` (at most `MAX_ACTIVE_PIPELINE_RUNS`, 8) and the last `FINISHED_PIPELINE_RUNS_KEPT` (64) finished ids.
+  `PipelineRun` is a hidden row (`rows::CPIPE`, by run id) with the release's `version`, the pipeline's `hash` and the compute component, all fixed at start, with `modules` (reference to the module release's compute hash, copied from the release's pins), the bound `inputs` and `params`, the `caller`, `payer`, and per step a `StepState` of counters and flags only (`status`, `started`, `fan`, `finished`, `failed_items`, `cost`, `run_cost`, `capped`, `results_bytes`, `results_too_large`, `reason`), so a step completion rewrites a record whose size does not grow with the fan-out; the head keeps `active_pipelines` (at most `MAX_ACTIVE_PIPELINE_RUNS`, 8) and the last `FINISHED_PIPELINE_RUNS_KEPT` (64) finished ids.
   Three entries move it, all judged on the record and the entry alone: `pipelineStart` (pins every input, +1 hold; refused for a known id, a full app or an input that is not a held file), `pipelineStep { run, step, decision }` (a pending step takes its first decision only; `Start { runs, fan }` writes one `RunRecord` per run, id `<run>.<step>.<index>`, no result method, `RunRecord::pipeline` linking it with its `index`, and records `fan: { total, items, batch, allowed }`; `More { runs }` is accepted only while the step runs, only for the next indices below `total` and until failures pass `allowed`; a start the app's `MAX_ACTIVE_RUNS` cannot hold or after a cancel or a failFast stop changes nothing, one that can never work fails the step; `Failed` is also accepted for a running fan-out with runs left to create) and `pipelineCancel` (flags the run and its active step runs).
-  `apply_compute_final` settles the step of a linked run in the same apply: outputs pinned (+1 each, released when the record is dropped), outputs and results kept per run index (`run_outputs`, `run_results`, so `<step>.outputs` is in item order), a result up to `MAX_STEP_RESULT_BYTES` and a step's together up to `MAX_STEP_RESULTS_BYTES` (past it none are kept and `results_too_large` is set), failed items counted from the runs that failed or were cancelled; the step is `succeeded` once every run it will have is final and `failed_items` is at most `fan.allowed` (zero while the run is cancelled or stopping), else `failed` (one item over cancels its active runs and no more are created), and the run ended once every step is settled (inputs released; `succeededWithFailures` when a step tolerated failed items). `PipelineRun::fail_fast` (the pipeline's `failFast`) makes the first failed step set `stopping`, end the pending steps `cancelled` and flag the running steps' runs.
+  A step's per-run data lives in hidden rows of their own (`rows::CITEM`, key `<pipeline run>/<step>/<index as 8 digits>`, `ItemRow { cached_key, outputs, result }`), written once when the run ends or is answered from the cache; a run that made nothing has none.
+  The run's compute id is `run_id(pipeline, step, index)` and its link (`RunRecord::pipeline`) carries the index, so a run's end finds its row without a search.
+  Every run that finished has a row, an empty one for a run that failed, so a step's rows number its `finished`; `StepState::cached_count` and `cached_items` are counters.
+  `AppMachine::pipeline_run` reads the record and fills each step's `runs`, `run_outputs`, `run_results` and `cached_keys` from the rows, stopping once it has found `finished` of them; apply reads the record alone and never stores those fields.
+  `pipeline_head` is the record without them: the leader's loop, the list view, the events view (`items: false`) and a retry read it, and the loop fills only the steps that pending steps and running fan-outs name (`fill_steps`).
+  The leader keeps the runs of each fan-out it started in memory by (group, pipeline run, step), so a wave is cut from them and no item row is read again; entries go when the step has no run left to start or the node stops leading, and a rebuild that fails (rows unreadable) gets `Failed` for the step.
+  A step with fewer readable rows than `finished` is flagged `items_unreadable`, which warns on read, and `plan` fails a step built from it with `ITEMS_UNREADABLE` rather than build from partial data; apply never reads rows except to drop them, so replicas stay in agreement.
+  Dropping an ended run's record deletes its item rows and releases the pins on their outputs in the same apply.
+  The stack is unreleased, so there is no migration of records written with the per-run data inline.
+  `apply_compute_final` settles the step of a linked run in the same apply: outputs pinned (+1 each, released when the record is dropped), outputs and results kept per run index (item rows, so `<step>.outputs` is in item order), a result up to `MAX_STEP_RESULT_BYTES` and a step's together up to `MAX_STEP_RESULTS_BYTES` (past it none are kept and `results_too_large` is set), failed items counted from the runs that failed or were cancelled; the step is `succeeded` once every run it will have is final and `failed_items` is at most `fan.allowed` (zero while the run is cancelled or stopping), else `failed` (one item over cancels its active runs and no more are created), and the run ended once every step is settled (inputs released; `succeededWithFailures` when a step tolerated failed items). `PipelineRun::fail_fast` (the pipeline's `failFast`) makes the first failed step set `stopping`, end the pending steps `cancelled` and flag the running steps' runs.
   The leader's loop (`Node::drive_pipelines`, beside `drive_runs`) is stateless: `plan` decides every pending step from the records (start when its needs succeeded, `skipped` for no items, `upstreamFailed` when one failed, `cancelled` for a cancelled or stopping run) and the next `More` wave of each running fan-out (`maxParallel` less its active runs, the app's room, `MAX_STEP_RUNS`), and each wave is also cut so its encoded runs stay within `MAX_DECISION_RUNS_BYTES` (a run that cannot fit one decision alone fails the step with `RUN_TOO_LARGE`), and each decision is proposed only while it still applies (the step pending, or the fan-out's next index unchanged). A pipeline whose definition is gone (`pipeline_by_hash` answers 404) gets `Failed{PIPELINE_UNAVAILABLE}` for its steps that have not started or have runs left to create.
   A step in another package's module (`bundle_of`) is built with that module's caps (`caps_of_component` per bundle) and `StepRun::compute_bundle` (none for `self`); apply accepts only a bundle the run pinned (`UNKNOWN_MODULE` fails the step), writes it as the `RunRecord`'s `compute_bundle`, and the cache key uses it. Owner, payer, `bundle` (usage) and file keys stay the app's; the job node is pushed the module's component like any compute component. Regression: `a_step_runs_another_packages_module_under_the_callers_keys_and_payer`.
   It keeps only caches of immutable data, a pipeline by hash (`Node::pipeline_by_hash`) and a compute component's caps (`caps_of_component`).
@@ -708,8 +717,8 @@ is its command line.
   Only those who may handle the app's files (`api::may_handle_files`: its owner, its organization's members) start, cancel or retry a run, even on a public app (`403 FORBIDDEN`); anyone who reaches the app reads it without results or file hashes. Regression: `only_those_who_handle_the_apps_files_start_cancel_or_retry_a_pipeline`.
   The routes judge the request against the pinned pipeline first (`NO_SUCH_PIPELINE`, `BAD_INPUTS`, `BAD_PARAMS`, `TOO_MANY_PIPELINE_RUNS`, `PIPELINES_NEED_ONE_SERVICE`, `CLUSTER_NOT_UPGRADED`); start and cancel travel as the host commands `__pipeline_start` and `__pipeline_cancel` to the leader, reads as the reserved view `__pipeline_run` (`PIPELINE_VIEW`).
   A run with no result method ends with an empty result outcome and prepares nothing on the replica engine.
-  **Receipts**: a linked run's final writes a `StepRunProof` (`component/proofs.rs`, hidden row `rows::CPROOF` by step run id: attempt, node, job key, assignment digest, SHA-256 of the signed report message, the job's signature, outputs, usage; no report fields for a leader-ended run) and the proofs go with the pipeline run's record when it is dropped (`drop_step_proofs`), so they outlive the `RunRecord`s (`FINISHED_RUNS_KEPT`). A cached run has no proof: `StepState::cached_keys` keeps its cache key. `PipelineRun::input_files` records each input's size and hash at start. `GET /apps/{app}/pipeline-runs/{run}/receipt` (`api/pipeline_receipt.rs`; `may_handle_files`, else `403`; `409 RUN_NOT_ENDED`) reads both through `__pipeline_run` with `receipt: true` and answers `{ receipt, node, signature }`: `calimero_client::receipt::PipelineReceipt` (`modules` is the module name to compute hash with `self` for the package's own, `pipelineHash` maps steps to modules), signed by `Node::sign_pipeline_receipt` over `receipt_message` (`"calimero.pipeline.receipt.v1\0" || JCS(receipt)`). Not yet: the client does not verify each job's report signature, and module logs are not in it. Tests: `component/tests/pipelines.rs`, `pipeline_runs.rs` (`a_finished_run_has_a_receipt_signed_by_an_attested_node`, `a_running_run_has_no_receipt_yet`, `a_fan_out_with_cached_items_marks_them_cached_in_its_receipt`, `a_stranger_cannot_read_a_receipt`).
-  **Cost cap** (`PipelineRun::cost: CostCap { maxCost, priceVersion, table, worstCase }`, set by the start route from `sys_fresh`'s price table, `NO_PRICE_TABLE` without one; the table is copied so apply reads no system state): `PipelineRun::committed_cost` is the sum over steps of `StepState::cost` (priced usage of finished runs, `priced_cost`, added in `settle_step_run` even after the step ended) and, for a running step, its active runs (`runs - finished`) times `StepState::run_cost` (the worst case of one run, set when a wave starts).
+  **Receipts**: a linked run's final writes a `StepRunProof` (`component/proofs.rs`, hidden row `rows::CPROOF` by step run id: attempt, node, job key, assignment digest, SHA-256 of the signed report message, the job's signature, outputs, usage; no report fields for a leader-ended run) and the proofs go with the pipeline run's record when it is dropped (`drop_step_proofs`), so they outlive the `RunRecord`s (`FINISHED_RUNS_KEPT`). A cached run has no proof: its item row keeps its cache key (`StepState::cached_keys` once read). `PipelineRun::input_files` records each input's size and hash at start. `GET /apps/{app}/pipeline-runs/{run}/receipt` (`api/pipeline_receipt.rs`; `may_handle_files`, else `403`; `409 RUN_NOT_ENDED`) reads both through `__pipeline_run` with `receipt: true` and answers `{ receipt, node, signature }`: `calimero_client::receipt::PipelineReceipt` (`modules` is the module name to compute hash with `self` for the package's own, `pipelineHash` maps steps to modules), signed by `Node::sign_pipeline_receipt` over `receipt_message` (`"calimero.pipeline.receipt.v1\0" || JCS(receipt)`). Not yet: the client does not verify each job's report signature, and module logs are not in it. Tests: `component/tests/pipelines.rs`, `pipeline_runs.rs` (`a_finished_run_has_a_receipt_signed_by_an_attested_node`, `a_running_run_has_no_receipt_yet`, `a_fan_out_with_cached_items_marks_them_cached_in_its_receipt`, `a_stranger_cannot_read_a_receipt`).
+  **Cost cap** (`PipelineRun::cost: CostCap { maxCost, priceVersion, table, worstCase }`, set by the start route from `sys_fresh`'s price table, `NO_PRICE_TABLE` without one; the table is copied so apply reads no system state): `PipelineRun::committed_cost` is the sum over steps of `StepState::cost` (priced usage of finished runs, `priced_cost`, added in `settle_step_run` even after the step ended) and, for a running step, its active runs (`started - finished`) times `StepState::run_cost` (the worst case of one run, set when a wave starts).
   `plan` cuts each wave to what `Budget::afford` allows and, when the cap kept runs out that the wave would otherwise carry, adds `Failed{COST_CAP}` for the step in the same round; apply refuses a `Start`/`More` whose new runs' worst case would pass the cap (`COST_CAP`, nothing changes) and takes `Failed{COST_CAP}` on a running step as `StepState::capped`: no more runs, the active ones finish and are paid for, then the step fails with that reason.
   Cached runs cost zero; the view shows `cost`, `costSoFar` and each step's `cost` as decimal strings.
   **Retries**: `POST /apps/{app}/pipeline-runs/{run}/retry { limits?, maxCost? }` (`api/pipelines.rs::retry`) reads the ended run through the reserved view, refuses a running one (`STILL_RUNNING`), checks `limits` against the method's caps (`check_limits`: `BAD_LIMITS`, `LIMIT_EXCEEDS_CAP`) and starts a new run through the same `start_launch` as a start, with the original's `version`, `hash`, `computeBundle`, `inputs` and `params`.
@@ -727,7 +736,7 @@ is its command line.
   **Step cache** (`component/step_cache.rs`): a hidden row family `rows::CCACHE` keyed by cache key holds `CacheEntry { outputs, result, ts_ms, source_run }`, the head keeps the keys oldest first (`step_cache`).
   The leader makes the key (`cache_key`: SHA-256 of the JCS of compute bundle, method, args hash, each input's plaintext SHA-256 in order; not caps, so a retry with raised limits still hits) in `build_step`, puts it in `StepRun::cache_key` (none for `cache: false` or an input of unknown content), and apply never recomputes it; `RunRecord::cache_key` carries it, and a linked run that ends done writes or refreshes its entry (a result past `MAX_STEP_RESULT_BYTES` is not cached) and pins its outputs for the entry's life.
   `plan` puts each run the cache answers (`CacheView::hit`: an entry whose outputs are all held) in `Start`/`More` `cached: [{ index, key }]` instead of `runs`; hits cost no room, and a wave ends at the first miss past its size.
-  Apply takes the hits as finished runs in index order (`StepState::cached_runs`, outputs and results by index, `finished` counted, no `RunRecord`), settling the step at once when no run is left; a hit whose entry or outputs are gone ends the wave there (`CACHE_GONE` if it is the first), so the leader decides that index again.
+  Apply takes the hits as finished runs in index order (an item row each with `cached_key`, `finished` counted, no `RunRecord`), settling the step at once when no run is left; a hit whose entry or outputs are gone ends the wave there (`CACHE_GONE` if it is the first), so the leader decides that index again.
   Entries leave past `MAX_CACHE_ENTRIES` (oldest first) and after `CACHE_TTL_MS` by the applied entry's timestamp (`expire_step_cache`, at most `CACHE_EXPIRY_STEP` per entry), releasing their holds; a hit refreshes the entry and moves it last.
   `StepState::is_cached` and `cached_items` feed `cached` and `cachedItems` in the run view; a start naming a file id the app does not hold answers `410 OUTPUT_EXPIRED`.
   Tests: `component/tests/pipelines.rs` (apply), `compute/pipelines.rs` (`plan` keys and hits), `pipeline_runs.rs` (`rerunning_with_one_changed_param_runs_only_the_steps_it_reaches`, `a_step_with_cache_false_always_runs`, `a_fan_out_reuses_its_cached_items`, `starting_with_an_expired_output_answers_output_expired`).
@@ -1083,9 +1092,22 @@ is its command line.
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
   keys, approvals, upgrades, uninstalls and uploads, organization, team, member
   and invite changes (redeeming included), and an app's delete and access, and
-  it creates instances of its own package only. Its step-ups come from its own
-  origin only, over one of its package's apps only (`step_up` refuses any other
-  subject). Regression: `a_frontend_session_manages_no_organization_and_no_app`.
+  it creates instances of its own package only. The exception is its own
+  package's teams (`Principal::within_team`, `OwnTeam`; `Org::package_of_team`:
+  the org's app team for the package or a team below it), so a chat app runs
+  its channels: `team_create` under one, `team_update` of a team below the app
+  team (never the app team: name, mark, openness; a move only within),
+  `team_set_member`/`team_remove_member` on any of them, `team_delete` below the
+  app team when every app in its subtree is the package's, and `app_access` of
+  its package's app from one such team to another. Authority is the person's,
+  judged at apply as for any session. Its step-ups come from its own origin
+  only, over one of its package's apps, or `org:{org}` for
+  `BOUND_TEAM_STEP_UPS` (`__set_team_member`, `__remove_team_member`,
+  `__delete_team`) over its own package's team (`step_up` judges
+  `within_team` again and refuses any other subject). Regressions:
+  `a_frontend_session_manages_no_organization_and_no_app`,
+  `a_frontend_session_manages_its_own_packages_channels`
+  (`tests/org_app_teams.rs`).
 - **Registered origins** (`origins.rs`, `api/origins.rs`; docs: protocol
   identities "Registered origins"): a package's manager
   (`SystemState::manages_package`: the bound publisher's org-wide
@@ -1137,7 +1159,7 @@ is its command line.
   `a_custom_domains_host_names_one_origin`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
-  `POST /consent/requests { kind: release|upgrade|outbound|createOrg|createInvite|acceptInvite,
+  `POST /consent/requests { kind: release|upgrade|outbound|createOrg|createInvite|acceptInvite|leaveOrg|removeMember|setMemberRole|setMemberTeams|removeMemberTeams|revokeInvite|renameOrg|deleteOrg|setCapabilities|setAllApps,
   scope?, subject, returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
   `withdraw: true` withdrawing its approval) and gets `{ requestId, url,
   expiresAt, code }` (`consent_page::confirmation_code`, shown on the page
@@ -1183,6 +1205,36 @@ is its command line.
   `InviteToken` is) and answered as `/result`'s `outcome`, never in the
   page's clear answer. Regression:
   `an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page`.
+  Moderation and settings (`consent_page/orgs.rs`): `leaveOrg { org }`,
+  `removeMember { org, account }`, `setMemberRole { org, account, role }`,
+  `setMemberTeams { org, account, teams: [TeamRow] }`, `removeMemberTeams
+  { org, account, teams }`, `revokeInvite { org, inviteKey }`, `renameOrg
+  { org, name }`, `deleteOrg { org }`, `setCapabilities { org, account?,
+  team?, capabilities }` (both shapes) and `setAllApps { org, account,
+  allApps }`. Each is judged at request time with the log's predicates
+  (role, a team's lead or `MANAGE_MEMBERS`, `sees_invite`;
+  `system::judge_team_rows` and `judge_remove_team_rows` run the batch
+  rules on a copy of the org) and the routes' feature gates, and `act`
+  runs the route's `pub(crate)` function (`api::remove_member`,
+  `set_member_role`, `set_member_teams`, `remove_member_teams`,
+  `revoke_invite`, `rename_org`, `delete_org`, `set_capabilities`,
+  `set_all_apps`), so consent and log entry are the API's. `still_current`
+  refuses a page whose role, name, deletion counts, capabilities or
+  all-apps grant changed (`409 CONSENT_STALE`). People are named as the
+  approver sees them (`Org::member_metadata` name, else the account's).
+  The route's non-empty answer is the `outcome` (`renameOrg`, `deleteOrg`).
+  Regressions: `an_apps_frontend_moderates_its_server_on_the_page`,
+  `an_apps_frontend_changes_and_deletes_its_server_on_the_page`.
+  With `Config::attestation_verifier_url` (`merod --attestation-verifier-url`,
+  checked by `consent_page::verifier_base`) `model()` adds `verifier { url,
+  host, release, mock }` for every kind (`null` without it): mdma's link
+  `{base}/mero-tee?node_url=<public_url>&release_tag=mero-tee-v<own_release>`
+  (`verifier_link`). The page links to it (new tab, host shown as text, "check
+  it opens there") and runs no check itself: a tampered node could fake any
+  in-page verdict, so the check runs on the verifier's own origin. On mock
+  attestation it says there is nothing to verify. Regressions:
+  `the_verifier_link_is_mdmas_shape_on_a_checked_base`,
+  `an_app_asks_and_the_person_approves_on_the_nodes_page`.
   Regressions: `tests/consent_page.rs`.
 - **Presence** (`presence.rs`, the ephemeral awareness channel): in memory on
   every node, never in a log. `POST /apps/{app}/presence { seq, state }` (anyone

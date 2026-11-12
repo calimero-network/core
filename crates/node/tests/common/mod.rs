@@ -207,6 +207,7 @@ impl Cluster {
                     outbound: None,
                     governance: Default::default(),
                     apps_domain: None,
+                    attestation_verifier_url: None,
                     operator_key: Some(operator_public()),
                 };
                 configure(&mut config);
