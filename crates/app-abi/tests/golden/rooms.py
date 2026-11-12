@@ -11,11 +11,25 @@ from typing import Any, Dict, List, Literal, Optional, TypedDict, Union, cast
 
 from calimero import Client, SoftPasskey
 
-Booking = Any
-"""The app type `Booking`: the ABI names it without its shape."""
+class Booking(TypedDict):
+    """The app type `Booking`."""
 
-SlotView = Any
-"""The app type `SlotView`: the ABI names it without its shape."""
+    id: str
+    roomId: str
+    holder: str
+    start: str
+    end: str
+    title: str
+    checkedIn: bool
+
+class SlotView(TypedDict):
+    """The app type `SlotView`."""
+
+    start: str
+    end: str
+    bookingId: str
+    title: Optional[str]
+    mine: bool
 
 DuplicateError = TypedDict("DuplicateError", {"index": str})
 ForbiddenError = TypedDict("ForbiddenError", {})

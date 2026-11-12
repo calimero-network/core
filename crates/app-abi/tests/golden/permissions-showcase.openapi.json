@@ -1023,7 +1023,23 @@
         ]
       },
       "Evidence": {
-        "description": "The app type `Evidence`. The ABI names it without describing its shape, so any JSON value is accepted here.",
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "hash": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hash",
+          "kind",
+          "body"
+        ],
+        "type": "object",
         "x-calimero-abi-type": "Evidence"
       },
       "EvidenceArgs": {
@@ -1281,7 +1297,19 @@
         "type": "object"
       },
       "Founding": {
-        "description": "The app type `Founding`. The ABI names it without describing its shape, so any JSON value is accepted here.",
+        "properties": {
+          "motto": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "motto"
+        ],
+        "type": "object",
         "x-calimero-abi-type": "Founding"
       },
       "FoundingArgs": {
@@ -1407,7 +1435,30 @@
         "type": "object"
       },
       "MessageView": {
-        "description": "The app type `MessageView`. The ABI names it without describing its shape, so any JSON value is accepted here.",
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "sentAt": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "author",
+          "text",
+          "sentAt"
+        ],
+        "type": "object",
         "x-calimero-abi-type": "MessageView"
       },
       "ModeratorsArgs": {
@@ -1560,7 +1611,41 @@
         "type": "object"
       },
       "PageView": {
-        "description": "The app type `PageView`. The ABI names it without describing its shape, so any JSON value is accepted here.",
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "revisions": {
+            "items": {
+              "items": false,
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "author",
+          "title",
+          "revisions"
+        ],
+        "type": "object",
         "x-calimero-abi-type": "PageView"
       },
       "PostMessageArgs": {

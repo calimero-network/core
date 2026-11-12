@@ -11,17 +11,34 @@ from typing import Any, Dict, List, Literal, Optional, TypedDict, Union, cast
 
 from calimero import Client, SoftPasskey
 
-Evidence = Any
-"""The app type `Evidence`: the ABI names it without its shape."""
+class Evidence(TypedDict):
+    """The app type `Evidence`."""
 
-Founding = Any
-"""The app type `Founding`: the ABI names it without its shape."""
+    hash: str
+    kind: str
+    body: str
 
-MessageView = Any
-"""The app type `MessageView`: the ABI names it without its shape."""
+class Founding(TypedDict):
+    """The app type `Founding`."""
 
-PageView = Any
-"""The app type `PageView`: the ABI names it without its shape."""
+    name: str
+    motto: str
+
+class MessageView(TypedDict):
+    """The app type `MessageView`."""
+
+    key: str
+    author: str
+    text: str
+    sentAt: str
+
+class PageView(TypedDict):
+    """The app type `PageView`."""
+
+    id: str
+    author: str
+    title: str
+    revisions: List[List[Any]]
 
 AlreadyWrittenError = TypedDict("AlreadyWrittenError", {"key": str})
 BadHashError = TypedDict("BadHashError", {"hash": str})

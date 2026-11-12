@@ -188,5 +188,65 @@
     },
     "version": 1
   },
+  "types": {
+    "Booking": {
+      "fields": [
+        [
+          "id",
+          "string"
+        ],
+        [
+          "roomId",
+          "string"
+        ],
+        [
+          "holder",
+          "string"
+        ],
+        [
+          "start",
+          "u64"
+        ],
+        [
+          "end",
+          "u64"
+        ],
+        [
+          "title",
+          "string"
+        ],
+        [
+          "checkedIn",
+          "bool"
+        ]
+      ],
+      "kind": "record"
+    },
+    "SlotView": {
+      "fields": [
+        [
+          "start",
+          "u64"
+        ],
+        [
+          "end",
+          "u64"
+        ],
+        [
+          "bookingId",
+          "string"
+        ],
+        [
+          "title",
+          "option<string>"
+        ],
+        [
+          "mine",
+          "bool"
+        ]
+      ],
+      "kind": "record"
+    }
+  },
   "world": "calimero:app@0.5.1"
 }

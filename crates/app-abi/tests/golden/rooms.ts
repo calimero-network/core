@@ -4,11 +4,25 @@
 
 import type { ConfirmCallback, NodeEvent } from '@calimero-network/mero-js';
 
-/** The app type `Booking`: the ABI names it without its shape. */
-export type Booking = unknown;
+/** The app type `Booking`. */
+export interface Booking {
+  id: string;
+  roomId: string;
+  holder: string;
+  start: string;
+  end: string;
+  title: string;
+  checkedIn: boolean;
+}
 
-/** The app type `SlotView`: the ABI names it without its shape. */
-export type SlotView = unknown;
+/** The app type `SlotView`. */
+export interface SlotView {
+  start: string;
+  end: string;
+  bookingId: string;
+  title: string | null;
+  mine: boolean;
+}
 
 /** The arguments of `addRoom`. */
 export interface AddRoomArgs {

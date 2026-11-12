@@ -617,7 +617,45 @@
         "type": "object"
       },
       "Booking": {
-        "description": "The app type `Booking`. The ABI names it without describing its shape, so any JSON value is accepted here.",
+        "properties": {
+          "checkedIn": {
+            "type": "boolean"
+          },
+          "end": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          },
+          "holder": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "roomId": {
+            "type": "string"
+          },
+          "start": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "roomId",
+          "holder",
+          "start",
+          "end",
+          "title",
+          "checkedIn"
+        ],
+        "type": "object",
         "x-calimero-abi-type": "Booking"
       },
       "BookingArgs": {
@@ -1122,7 +1160,44 @@
         "type": "object"
       },
       "SlotView": {
-        "description": "The app type `SlotView`. The ABI names it without describing its shape, so any JSON value is accepted here.",
+        "properties": {
+          "bookingId": {
+            "type": "string"
+          },
+          "end": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          },
+          "mine": {
+            "type": "boolean"
+          },
+          "start": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "bookingId",
+          "title",
+          "mine"
+        ],
+        "type": "object",
         "x-calimero-abi-type": "SlotView"
       },
       "SlotsTakenEvent": {
