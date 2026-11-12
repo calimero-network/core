@@ -283,6 +283,19 @@ jobs:
             tar -czf artifacts/"$binary"_${MATRIX_TARGET}.tar.gz -C target/${MATRIX_TARGET}/release "$binary"
           done
 
+      # A bin of calimero-app-build, so it cannot join $BINARIES (`-p` names packages), and
+      # built on its own so its dependencies' features never unify into merod's. Every target:
+      # app developers and their CI run its `codegen` without compiling it.
+      - name: Build mero-app-build
+        if: needs.prepare.outputs.build == 'true'
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
+        run: |
+          cargo build -p calimero-app-build --bin mero-app-build --release --target "$MATRIX_TARGET"
+
+          tar -czf "artifacts/mero-app-build_${MATRIX_TARGET}.tar.gz" \
+            -C "target/${MATRIX_TARGET}/release" mero-app-build
+
       # A bin target of calimero-tee-attestation behind the `cli` feature, so it cannot join $BINARIES (`-p`).
       # Ships because mdma's manager shells out to it to verify TDX quotes; linux/amd64 image only.
       - name: Build calimero-tee-verify (Linux only)
