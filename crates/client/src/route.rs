@@ -2,6 +2,7 @@
 //! through the [`Transport`] and reading its answer as the type the document
 //! gives it. Hand-written, so the generator only names routes.
 
+use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -109,13 +110,33 @@ pub(crate) async fn clear<T: DeserializeOwned>(t: &Transport, req: Request) -> R
 
 /// Send a route that answers raw bytes (a blob).
 pub(crate) async fn bytes(t: &Transport, req: Request) -> Result<Vec<u8>> {
+    bytes_up_to(t, req, usize::MAX).await
+}
+
+/// [`bytes`], refusing an answer longer than `max` before it is buffered: by its `Content-Length`,
+/// and by a running count while reading, so a missing or false length cannot exceed it.
+pub(crate) async fn bytes_up_to(t: &Transport, req: Request, max: usize) -> Result<Vec<u8>> {
+    let what = what(&req);
     let resp = t.send(req).await?;
     let status = resp.status().as_u16();
     if status >= 400 {
         let v: Value = resp.json().await.unwrap_or(Value::Null);
         return Err(api_error(status, &v));
     }
-    Ok(resp.bytes().await.map_err(eyre::Report::from)?.to_vec())
+    let too_long = || eyre::eyre!("{what}: the answer is longer than the {max} bytes allowed");
+    if resp.content_length().is_some_and(|n| n > max as u64) {
+        return Err(too_long().into());
+    }
+    let mut body = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(eyre::Report::from)?;
+        if chunk.len() > max - body.len() {
+            return Err(too_long().into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Send a route that answers text (`/ops/metrics`); a refusal is read as

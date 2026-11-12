@@ -8265,3 +8265,290 @@ mod sign_up {
         assert!(restored.accounts.contains_key("a"));
     }
 }
+
+// ---------------------------------------------------- backup keys
+
+use super::{BackupHolder, BAD_BACKUP_KEY, NOT_BACKUP_HOLDER};
+
+fn refused(m: &mut SystemMachine, cmd: SystemCmd) -> String {
+    m.run(cmd).unwrap_err()
+}
+
+fn set_backup_key(holder: BackupHolder, public_key: &str, actor: &str, proof: Value) -> SystemCmd {
+    SystemCmd::SetBackupKey {
+        holder,
+        public_key: public_key.into(),
+        actor: actor.into(),
+        at: 5,
+        proof,
+    }
+}
+
+/// Where owners upgrade apps, each app's backups open with its owner's key:
+/// an organization's, set by those who upgrade all its apps, or a personal
+/// app's owner's, set by that account; each with their own passkey over the
+/// key, once. The operator sets none.
+#[test]
+fn backup_keys_are_set_by_whoever_upgrades_the_apps() {
+    let (mut m, mut alice, mut bob, _carol) = proven_cluster();
+    let mut org_app = m.state.apps["app"].clone();
+    org_app.app_id = "oa".into();
+    org_app.org = "org".into();
+    let _prev = m.state.apps.insert("oa".into(), org_app);
+    // Alice's app made without an organization is in her personal one.
+    assert_eq!(
+        m.state.backup_holder(&m.state.apps["app"]),
+        BackupHolder::Org(p("alice"))
+    );
+    assert_eq!(
+        m.state.backup_holder(&m.state.apps["oa"]),
+        BackupHolder::Org("org".into())
+    );
+    let key = "ab".repeat(32);
+    let args = json!({ "publicKey": key });
+    needs_consent(
+        &mut m,
+        &mut alice,
+        ("account:alice", "__set_backup_key"),
+        &args,
+        &json!({ "publicKey": "cd".repeat(32) }),
+        |c| set_backup_key(BackupHolder::Account("alice".into()), &key, "alice", c),
+    );
+    assert_eq!(m.state.backup_keys["account:alice"].public_key, key);
+    assert_eq!(m.state.backup_keys["account:alice"].set_at, 5);
+    // Bob's passkey sets neither alice's key nor the organization's, where
+    // he is a member without MANAGE_APPLICATION.
+    let c = consent(&mut bob, "account:alice", "__set_backup_key", &args);
+    assert_eq!(
+        refused(
+            &mut m,
+            set_backup_key(BackupHolder::Account("alice".into()), &key, "bob", c)
+        ),
+        NOT_BACKUP_HOLDER
+    );
+    let c = consent(&mut bob, "org:org", "__set_backup_key", &args);
+    assert_eq!(
+        refused(
+            &mut m,
+            set_backup_key(BackupHolder::Org("org".into()), &key, "bob", c)
+        ),
+        NOT_BACKUP_HOLDER
+    );
+    // The organization's owner upgrades its apps, so sets its key.
+    let c = consent(&mut alice, "org:org", "__set_backup_key", &args);
+    let _ok = m
+        .run(set_backup_key(
+            BackupHolder::Org("org".into()),
+            &key,
+            "alice",
+            c,
+        ))
+        .unwrap();
+    assert_eq!(m.state.backup_keys["org:org"].set_by, "alice");
+    // A key that is not 32 bytes of lowercase hex, or all zeros, is refused.
+    for bad in ["ab".repeat(31), "AB".repeat(32), "0".repeat(64)] {
+        let c = consent(
+            &mut alice,
+            "account:alice",
+            "__set_backup_key",
+            &json!({ "publicKey": bad }),
+        );
+        assert_eq!(
+            refused(
+                &mut m,
+                set_backup_key(BackupHolder::Account("alice".into()), &bad, "alice", c)
+            ),
+            BAD_BACKUP_KEY
+        );
+    }
+    // The operator does not upgrade apps here, so holds no backup key.
+    let proof = signed("operator", "__set_backup_key", &args);
+    assert_eq!(
+        refused(
+            &mut m,
+            set_backup_key(BackupHolder::Operator, &key, OPERATOR, proof)
+        ),
+        NOT_BACKUP_HOLDER
+    );
+}
+
+/// Where the operator upgrades apps, every app's backups open with the
+/// operator's key, set with its signature over the key, once; no owner
+/// sets one.
+#[test]
+fn where_the_operator_upgrades_apps_it_holds_the_backup_key() {
+    let mut m = SystemMachine::default();
+    let _ok = m
+        .run(SystemCmd::Genesis {
+            session_proofs: true,
+            governance: all(Authority::Operator),
+            release: Some("2.0.0".into()),
+            operator_key: Some(operator_signer().1),
+            nodes: vec![],
+        })
+        .unwrap();
+    let mut alice = Soft::new("localhost", "http://localhost:3000");
+    let _ok = m.run(account_with("alice", &mut alice)).unwrap();
+    let app: crate::types::AppRecord = serde_json::from_value(json!({
+        "appId": "app", "name": "app", "group": 2, "bundle": "b1",
+        "owner": "alice", "org": p("alice"), "replicas": [1], "createdAt": 0
+    }))
+    .unwrap();
+    assert_eq!(m.state.backup_holder(&app), BackupHolder::Operator);
+    let key = "ab".repeat(32);
+    needs_signature(
+        &mut m,
+        ("operator", "__set_backup_key"),
+        &json!({ "publicKey": key }),
+        &json!({ "publicKey": "cd".repeat(32) }),
+        |p| set_backup_key(BackupHolder::Operator, &key, OPERATOR, p),
+    );
+    assert_eq!(m.state.backup_keys["operator"].public_key, key);
+    let c = consent(
+        &mut alice,
+        "account:alice",
+        "__set_backup_key",
+        &json!({ "publicKey": key }),
+    );
+    assert_eq!(
+        refused(
+            &mut m,
+            set_backup_key(BackupHolder::Account("alice".into()), &key, "alice", c)
+        ),
+        NOT_BACKUP_HOLDER
+    );
+}
+
+/// An organization's slice comes in whole, admitted by the operator's
+/// signature over exactly its files, and only where nothing of it is here:
+/// its org, people (with their passkeys, which sign in as them) and apps, each
+/// app waiting in a new group for its file on the seed; its backup key is the
+/// one its files were sealed to.
+#[test]
+fn an_organizations_slice_is_imported_once_with_the_operators_signature() {
+    use super::{import_holder_args, ImportedApp, ALREADY_HERE};
+    use crate::types::RestoreSource;
+    let (mut old, _alice, _bob, _carol) = proven_cluster();
+    let mut org_app = old.state.apps["app"].clone();
+    org_app.app_id = "oa".into();
+    org_app.org = "org".into();
+    let _prev = old.state.apps.insert("oa".into(), org_app);
+    let _prev = old.state.bundles.insert(
+        "b1".into(),
+        super::BundleRecord {
+            hash: "b1".into(),
+            size: 1,
+            uploaded_by: "alice".into(),
+            package: None,
+        },
+    );
+    let holder = BackupHolder::Org("org".into());
+    let slice = old.state.holder_slice(&holder);
+    assert_eq!(slice.apps.keys().collect::<Vec<_>>(), ["oa"]);
+    assert_eq!(slice.accounts.len(), 2, "the org's members: alice and bob");
+
+    // A cluster that never held them.
+    let mut m = SystemMachine::default();
+    let _ok = m
+        .run(SystemCmd::Genesis {
+            session_proofs: true,
+            governance: all(Authority::Owner),
+            release: Some("2.0.0".into()),
+            operator_key: Some(operator_signer().1),
+            nodes: [1, 2, 3]
+                .map(|id| crate::types::NodeRecord {
+                    id,
+                    addr: format!("http://n{id}/"),
+                    zone: String::new(),
+                    role: crate::types::NodeRole::Replica,
+                    pool: String::new(),
+                })
+                .to_vec(),
+        })
+        .unwrap();
+    let apps = vec![ImportedApp {
+        app_id: "oa".into(),
+        replicas: vec![2, 1, 3],
+        source: RestoreSource {
+            name: "app-oa.rbak".into(),
+            sha256: "ab".repeat(32),
+            index: 9,
+        },
+    }];
+    let import = |proof: Value| SystemCmd::ImportHolder {
+        holder: holder.clone(),
+        slice: Box::new(slice.clone()),
+        slice_sha256: "cd".repeat(32),
+        public_key: "ef".repeat(32),
+        seed: 2,
+        apps: apps.clone(),
+        at: 7,
+        proof,
+    };
+    let args = import_holder_args(&holder, &"cd".repeat(32), &apps);
+    needs_signature(
+        &mut m,
+        ("cluster", "__recover_holder"),
+        &args,
+        &json!({ "holder": "org:other" }),
+        import,
+    );
+    let app = &m.state.apps["oa"];
+    assert_eq!(app.replicas, [2, 1, 3]);
+    let restore = app.restore.as_ref().unwrap();
+    assert_eq!(restore.seed, Some(2));
+    assert_eq!(restore.source.as_ref().unwrap().index, 9);
+    assert!(m.state.orgs.contains_key("org"));
+    let alice_key = &old.state.accounts["alice"].passkeys[0].id;
+    assert_eq!(
+        m.state
+            .account_of_credential(alice_key)
+            .map(|(a, _)| a.account_id.as_str()),
+        Some("alice"),
+        "she signs in with the passkey she had"
+    );
+    assert_eq!(m.state.backup_keys["org:org"].public_key, "ef".repeat(32));
+    // Once: the organization is here now.
+    let proof = signed("cluster", "__recover_holder", &args);
+    assert_eq!(refused(&mut m, import(proof)), ALREADY_HERE);
+}
+
+/// Setting an organization's backup key is judged on the state when it
+/// applies: a member granted MANAGE_APPLICATION org-wide may, and once
+/// removed from the organization may not, whatever they held before.
+#[test]
+fn a_removed_member_no_longer_sets_the_organizations_backup_key() {
+    let (mut m, _alice, mut bob, _carol) = proven_cluster();
+    let _prev = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .capabilities
+        .insert("bob".into(), crate::types::caps::MANAGE_APPLICATION);
+    let holder = BackupHolder::Org("org".into());
+    let key = "ab".repeat(32);
+    let c = consent(
+        &mut bob,
+        "org:org",
+        "__set_backup_key",
+        &json!({ "publicKey": key }),
+    );
+    let _ok = m
+        .run(set_backup_key(holder.clone(), &key, "bob", c))
+        .unwrap();
+    assert_eq!(m.state.backup_keys["org:org"].set_by, "bob");
+    let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
+    let other = "cd".repeat(32);
+    let c = consent(
+        &mut bob,
+        "org:org",
+        "__set_backup_key",
+        &json!({ "publicKey": other }),
+    );
+    assert_eq!(
+        refused(&mut m, set_backup_key(holder, &other, "bob", c)),
+        NOT_BACKUP_HOLDER
+    );
+    assert_eq!(m.state.backup_keys["org:org"].public_key, key);
+}

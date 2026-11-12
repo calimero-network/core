@@ -74,6 +74,8 @@ eyre = "0.6.12"
 flate2 = "1.0"
 futures-util = "0.3.30"
 hex = "0.4.3"
+# RFC 9180, for the recovery disk: X25519, HKDF-SHA256, AES-256-GCM only.
+hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
 html5ever = "0.40"
 http = "1"
 indexmap = "2.6.0"

@@ -7,8 +7,8 @@ use std::time::Duration;
 use calimero_log::store::Db;
 use calimero_log::types::LogId;
 use calimero_log::{
-    BoxFuture, Config, Engine, Group, GroupId, GroupState, Machine, NodeId, Proposal, RpcRequest,
-    RpcResponse, StateTx, Transport, WriteError,
+    BoxFuture, Config, Engine, Group, GroupId, GroupState, Machine, NodeId, PortableRow, Proposal,
+    RpcRequest, RpcResponse, StateTx, Transport, WriteError,
 };
 
 /// A key-value machine: command `key=value` sets, output is the previous value.
@@ -967,6 +967,84 @@ async fn a_big_state_streams_to_a_new_node() {
 /// voter. Once a snapshot covers the entry after it and the log is purged
 /// through that entry, replicas added afterwards can only catch up from the
 /// snapshot, so they hold the backup's state, and writes go on.
+/// A snapshot read as portable rows (hidden rows by the key they hide)
+/// seeds a group on a node of another cluster, under another key: every
+/// hidden row is hidden again there and reads back as it was written.
+#[tokio::test(flavor = "multi_thread")]
+async fn portable_rows_seed_a_group_under_another_clusters_key() {
+    let c = DiskCluster::new(3).await;
+    let mut last = 0;
+    for i in 0..30 {
+        last = c.put(&format!("k{i}"), &i.to_string()).await;
+    }
+    let lid = c.leader().await;
+    assert!(
+        c.groups[&lid]
+            .wait_applied(last, Duration::from_secs(5))
+            .await
+    );
+    c.groups[&lid]
+        .snapshot_through(last, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let engine = Arc::clone(&c.net.engines.read().unwrap()[&lid]);
+    let (_index, snapshot_id, file) = engine.snapshot_file(1).unwrap().unwrap();
+    let mut rows = Vec::new();
+    calimero_log::read_snapshot_rows(&KEY, 1, &snapshot_id, &file, |row| {
+        rows.push(row);
+        Ok(())
+    })
+    .unwrap();
+    assert!(rows.iter().any(|r| matches!(
+        r,
+        PortableRow::Hidden { tag: b'k', key, value } if key == b"k7" && value == b"7"
+    )));
+    // A key the old cluster never had: no row of it opens there.
+    let other = Engine::open(
+        9,
+        tempfile::tempdir().unwrap().keep().as_path(),
+        &[8; 32],
+        Arc::new(Wire(Arc::new(Net::default()), 9)),
+        config(),
+    )
+    .unwrap();
+    let seed = other
+        .start_group(
+            4,
+            DiskKv {
+                state: None,
+                applies: Arc::default(),
+            },
+        )
+        .await
+        .unwrap();
+    seed.initialize([(9, "node-9".to_owned())].into_iter().collect())
+        .await
+        .unwrap();
+    wait_for("the seed to lead", || seed.status().is_leader).await;
+    let written = seed
+        .replace_state_rows(|stage| rows.into_iter().try_for_each(stage))
+        .unwrap();
+    assert!(written >= 30, "{written} rows");
+    for i in [0, 7, 29] {
+        assert_eq!(
+            seed.read_local(|m, _| m.get(&format!("k{i}"))),
+            Some(i.to_string())
+        );
+    }
+    // It writes on from there.
+    let index = seed
+        .propose(|_m, _applied| Proposal::Append(b"k7=after".to_vec()))
+        .await
+        .unwrap()
+        .index;
+    assert!(seed.wait_applied(index, Duration::from_secs(5)).await);
+    assert_eq!(
+        seed.read_local(|m, _| m.get("k7")).as_deref(),
+        Some("after")
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backup_seeds_another_group_that_replicas_then_join() {
     let c = DiskCluster::new(3).await;

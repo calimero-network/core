@@ -63,6 +63,82 @@ pub use calimero_identity::Registration;
 pub use crate::Session;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BackupKeyAnswerHolderKind {
+    /// `operator`.
+    Operator,
+    /// `org`.
+    Org,
+    /// `account`.
+    Account,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl BackupKeyAnswerHolderKind {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Operator => "operator",
+            Self::Org => "org",
+            Self::Account => "account",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for BackupKeyAnswerHolderKind {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for BackupKeyAnswerHolderKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "operator" => Self::Operator,
+            "org" => Self::Org,
+            "account" => Self::Account,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BackupKeyAnswerHolder {
+    pub kind: BackupKeyAnswerHolderKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct BackupKeyAnswerKey {
+    #[serde(rename = "publicKey")]
+    pub public_key: String,
+    #[serde(rename = "setAt")]
+    pub set_at: u64,
+    #[serde(rename = "setBy")]
+    pub set_by: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// A holder's backup key: who holds it (`{ kind: "operator" }`, `{ kind: "org", id }` or `{ kind: "account", id }`), the X25519 public key the recovery disk seals their apps' backups to (`null` while none is set), and how many apps that covers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BackupKeyAnswer {
+    pub holder: BackupKeyAnswerHolder,
+    pub key: Option<BackupKeyAnswerKey>,
+    pub apps: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AppliedStatus {
     /// `ok`.
     Ok,
@@ -4300,6 +4376,12 @@ pub struct OpsSetReplicasResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpsRestoreRequestRecovery {
+    pub file: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpsRestoreResponseBackup {
     pub name: String,
     pub index: u64,
@@ -4717,6 +4799,48 @@ pub struct OpsQuotasSetRequest {
         with = "crate::route::present"
     )]
     pub compute_fuel: Option<Option<String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpsRecoverRequestSystem {
+    pub file: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpsRecoverRequestCodeItem {
+    pub file: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpsRecoverResponse {
+    pub apps: u64,
+    pub accounts: u64,
+    pub index: u64,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpsRecoveryFilesResponseFilesItem {
+    pub name: String,
+    pub header: String,
+    pub signature: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OpsRecoveryFilesResponse {
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub holder: Value,
+    pub files: Vec<OpsRecoveryFilesResponseFilesItem>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -5394,6 +5518,33 @@ pub struct PublisherBindingResponse {
     pub cluster: String,
     pub generation: u64,
     pub bound: bool,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestoreRecoverHolderRequestSlice {
+    pub file: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestoreRecoverHolderRequestAppsItem {
+    pub file: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestoreRecoverHolderRequestCodeItem {
+    pub file: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestoreRecoverHolderResponse {
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub apps: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

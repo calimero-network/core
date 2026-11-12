@@ -1,6 +1,6 @@
 ---
 title: Storage schema
-description: What a node writes to disk — one sealed RocksDB with four columns, key layouts, hidden rows, an app group's rows, snapshot files and backups.
+description: What a node writes to disk — one sealed RocksDB with four columns, key layouts, hidden rows, an app group's rows, snapshot files, backups and the recovery disk's files.
 sidebar:
   order: 23
 ---
@@ -91,6 +91,59 @@ returns its index and rows. A restore writes a backup's rows into a new group
 (`Group::replace_state`): each row is opened and sealed again for that group,
 and a hidden key is hidden again under it.
 
+## Recovery files
+
+The recovery disk (`--recovery-dir`, [merod](/operate/merod/#node-flags)) holds
+a second set of backups, sealed to the public key of whoever upgrades each app
+rather than to K_c, so they open after every mero-kms is gone
+([Recover after every key service is gone](/operate/runbooks/#recover-after-every-key-service-is-gone)).
+Each holder has a directory, named for its key with `:` made `-`: `operator/`,
+`org-<id>/` or `account-<id>/` (`recovery_disk::holder_dir`). In it, every
+`RECOVERY_EVERY` (5 minutes), each node writes:
+
+| File | Holds |
+| --- | --- |
+| `app-<app>.<index>.<writtenAt>.rbak` | one app's state at that log index: its directory record and file key, then its rows as `calimero_log::PortableRow`s (a hidden row by the key it hides, so a group under another K_c hides it again) |
+| `holder.<index>.<writtenAt>.rbak` | an organization's or account's slice of the system state (`system::HolderSlice`: the org, its people's accounts and passkeys, its apps, the bundles and releases they run) |
+| `system.<index>.<writtenAt>.rbak` | the operator's: the whole system state |
+| `code-<hash>.rbak` | one bundle or release `.mpk` an app runs, written once |
+| `seg-<hash>` | one segment of a sealed file an app lists, copied as stored (already ciphertext under the file's own key); deleted `SEGMENT_KEEP` (7 days) after no held app lists it |
+
+Index and time are zero-padded to 20 digits, so names sort oldest first; the
+newest `KEEP` (3) per subject stay, and a subject unchanged since its last file
+is not written again.
+
+An `.rbak` file (`calimero_client::recovery`, format 1) is:
+
+1. `calimero.recovery-backup.v1\n` (`MAGIC`);
+2. the header's length (u32, big-endian), then the header, JSON (camelCase,
+   unknown fields refused, at most `MAX_HEADER_BYTES`, 1 MiB): `format`,
+   `kind` (`app`, `holder`, `system`, `code`), `holder`, `cluster`, `app`,
+   `org`, `hash`, `group`, `index`, `writtenAt`, the `merod` and mero-tee
+   `release` that wrote it, `node`, `recipient` (the holder's X25519 public
+   key), `enc` and `wrappedKey` (the body's data key, sealed with HPKE,
+   RFC 9180, base mode: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-256-GCM;
+   info `calimero.recovery-backup.v1`, associated data
+   `calimero.recovery-backup.key.v1`), `size` and `sha256` of the plaintext,
+   `bodyBytes` and `bodySha256` of the ciphertext, `signingKey` (the node's
+   receipt key) and `attestation`;
+3. 64 bytes: the receipt key's Ed25519 signature over
+   `calimero.recovery-backup.v1\0` followed by the header bytes;
+4. the body: the plaintext sealed under that data key as a sealed file is
+   (64 KiB AES-256-GCM STREAM chunks, [Sealing](#sealing)).
+
+The `attestation` is the writing node's `purpose=receipts` quote over the nonce
+`SHA-256("calimero.recovery-backup.attest.v1\0" || u32 length || cluster ||
+u64 node)` and the receipt-key binding (`receipt-key.v3`: the key, the
+governance, the cluster and the node id). A reader checks the signature, that
+the attestation names the header's cluster and node and binds the signing
+key, and the quote under its own policy, before it opens a key; a node takes
+no recovery file whose attestation its peer policy refuses
+(`400 UNATTESTED_RECOVERY_FILE`). The holder opens the data key on its own
+device (`meroctl ops recovery-keygen` and `ops recover` for the operator,
+mero-js's and calimero-client-py's `recovery` modules for an organization or
+account) and sends only that key; no node holds a holder's private key.
+
 ## Format versions
 
 Each container of what a node keeps names the format it was written in, so a
@@ -103,6 +156,7 @@ refuses what a later release wrote instead of misreading it:
 | Snapshot and backup files | the first line, `CALIMERO-SNAPSHOT-<n>` (`calimero_log::SNAPSHOT_FORMAT`) | 1 | none: every file so far says 1 |
 | A component app's log entries (with the outcomes and file marks they carry) | `{"v":<n>,` as the start of the entry (`component::ENTRY_FORMAT`) | 1 | format 1: no entry so far carries a marker |
 | Sealed files and their segments | the domain strings the chunk AAD and the file id are bound to (`calimero.file.v1`, `calimero.file.segments.v1`) | v1 | none |
+| Recovery files (`.rbak`) | the first line, `calimero.recovery-backup.v1`, and the header's `format` (`calimero_client::recovery::FORMAT`) | 1 | none |
 
 The store's format is settled when the engine opens it, before any group
 starts: a store marked newer than this release reads is refused (`the store is

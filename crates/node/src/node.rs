@@ -28,6 +28,7 @@ pub(crate) mod blob_guards;
 mod cluster_version;
 mod component;
 mod job;
+pub(crate) mod recovery_disk;
 pub(crate) mod restore;
 mod runtime;
 mod segments;
@@ -125,11 +126,22 @@ pub struct Config {
     pub replicas: usize,
     /// Where encrypted snapshots go (object storage stand-in), if anywhere.
     pub backup_dir: Option<PathBuf>,
+    /// The recovery disk (`--recovery-dir`), if any: backups sealed to the
+    /// key of whoever upgrades each app, which outlive every mero-kms
+    /// ([`crate::recovery_disk`]).
+    pub recovery_dir: Option<PathBuf>,
     /// Found the cluster again from the backups in this directory
     /// (`--restore-from`, with `--bootstrap` on an empty data directory): K_c
     /// from its kept copies, the system state from its newest system backup
     /// (`node::restore`).
     pub restore_from: Option<PathBuf>,
+    /// Found a cluster again from a recovery disk (`--recover-from`, with
+    /// `--bootstrap`): the founder forms the system group alone and waits,
+    /// writing no genesis, until the operator sends the key of the newest
+    /// `system` recovery file (`POST /ops/recover`); each app then comes back
+    /// with `POST /ops/apps/{app}/restore { recovery }`. For a cluster whose
+    /// operator upgrades apps, after every mero-kms it used is gone.
+    pub recover_from: Option<PathBuf>,
     pub raft: calimero_log::Config,
     /// How long a lookup of a system object (`Node::sys_until`) waits for a
     /// write committed elsewhere to reach this replica before answering.
@@ -513,6 +525,10 @@ pub struct Node {
     /// wrapped under K_r (`signing_key`), so a restart keeps it; its public
     /// half is attested (`purpose=receipts`).
     receipt_key: ed25519_dalek::SigningKey,
+    /// The recovery disk's state: the receipt key's attestation its files
+    /// carry, made once, and what was last written of each subject
+    /// (`node::recovery_disk`).
+    pub(crate) recovery: recovery_disk::RecoveryWriter,
     peers: Mutex<HashMap<String, Arc<calimero_sealed::client::SealedTransport>>>,
     pub(crate) http: reqwest::Client,
     cluster_secret: String,
@@ -945,6 +961,7 @@ impl Node {
             )),
             transport: sealed,
             receipt_key,
+            recovery: recovery_disk::RecoveryWriter::default(),
             peers: Mutex::new(HashMap::new()),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -1000,15 +1017,17 @@ impl Node {
             // Founding the cluster again from its backups, the founder forms
             // the system group alone and seeds it (`restore::refound`); the
             // other nodes join as registered learners, as added nodes do.
-            let voters = match node.config.restore_from {
-                Some(_) => node
+            let refounding =
+                node.config.restore_from.is_some() || node.config.recover_from.is_some();
+            let voters = match refounding {
+                true => node
                     .config
                     .peers
                     .iter()
                     .filter(|(id, _)| **id == node.config.node_id)
                     .map(|(id, addr)| (*id, addr.clone()))
                     .collect(),
-                None => node.config.peers.clone(),
+                false => node.config.peers.clone(),
             };
             node.system.initialize(voters).await?;
         }
@@ -2142,6 +2161,8 @@ impl Node {
                 if let Err(e) = self.refound().await {
                     warn!(error = %format!("{e:#}"), "the cluster was not founded again from its backups");
                 }
+            } else if empty && self.config.recover_from.is_some() {
+                // Waiting for the operator's `POST /ops/recover`.
             } else if empty {
                 let nodes: Vec<NodeRecord> = self
                     .config
@@ -3476,15 +3497,13 @@ impl Node {
         Ok(written)
     }
 
-    /// Back up group `g` of `subject` (an app id, or `backup::SYSTEM`) into
-    /// `dir`, first bringing its snapshot up to what this node has applied.
-    /// Answers whether it wrote one (`false`: that snapshot is there already).
-    async fn back_up_group<M: calimero_log::Machine>(
+    /// Group `g`'s snapshot file, first brought up to what this node has
+    /// applied (waiting up to 5 s for it): `(index, snapshot id, path)`, or
+    /// `None` while it has none.
+    pub(crate) async fn fresh_snapshot<M: calimero_log::Machine>(
         &self,
-        dir: &std::path::Path,
-        subject: &str,
         g: &Group<M>,
-    ) -> eyre::Result<bool> {
+    ) -> eyre::Result<Option<(u64, String, PathBuf)>> {
         let applied = g.applied();
         let fresh = |s: &Option<(u64, String, PathBuf)>| s.as_ref().is_some_and(|s| s.0 >= applied);
         let mut snap = self.engine.snapshot_file(g.id())?;
@@ -3498,7 +3517,19 @@ impl Node {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
-        let Some((index, snapshot_id, file)) = snap else {
+        Ok(snap)
+    }
+
+    /// Back up group `g` of `subject` (an app id, or `backup::SYSTEM`) into
+    /// `dir`, first bringing its snapshot up to what this node has applied.
+    /// Answers whether it wrote one (`false`: that snapshot is there already).
+    async fn back_up_group<M: calimero_log::Machine>(
+        &self,
+        dir: &std::path::Path,
+        subject: &str,
+        g: &Group<M>,
+    ) -> eyre::Result<bool> {
+        let Some((index, snapshot_id, file)) = self.fresh_snapshot(g).await? else {
             return Ok(false);
         };
         let manifest = crate::backup::Manifest {

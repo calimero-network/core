@@ -233,6 +233,13 @@ const COMPONENTS_NOT_RELEASES: &str = "the app's components are not its release'
 /// (installs, upgrades): never an account id, so it names no account.
 pub const OPERATOR: &str = "operator";
 
+/// `SetBackupKey` naming a key that is not 32 bytes of lowercase hex.
+pub const BAD_BACKUP_KEY: &str = "a backup key is 64 lowercase hex characters, not all zeros";
+
+/// `SetBackupKey` by someone who does not upgrade the holder's apps.
+pub const NOT_BACKUP_HOLDER: &str =
+    "only whoever upgrades these apps sets the key their backups open with";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BundleRecord {
@@ -693,6 +700,108 @@ pub struct SystemState {
     /// The last run ids released per app, oldest first.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub released_runs: BTreeMap<AppId, VecDeque<String>>,
+    /// The public keys the recovery disk encrypts backups to, by
+    /// [`BackupHolder::key`] (`SetBackupKey`): whoever upgrades an app holds
+    /// the key that opens its backups ([`SystemState::backup_holder`]). Left
+    /// out when empty, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub backup_keys: BTreeMap<String, BackupKey>,
+}
+
+/// Who holds the key that opens an app's recovery-disk backups: the party
+/// that upgrades it ([`SystemState::backup_holder`]); shared with clients,
+/// which read the files.
+pub use calimero_client::recovery::BackupHolder;
+
+/// A holder's backup key: the X25519 public key (hex) the recovery disk
+/// encrypts its backups to. The private half never reaches a node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupKey {
+    pub holder: BackupHolder,
+    pub public_key: String,
+    /// Unix seconds: the command's own time.
+    pub set_at: u64,
+    /// The account that set it, or [`OPERATOR`].
+    pub set_by: AccountId,
+}
+
+/// What a holder's recovery files carry of the system state beside its
+/// apps' own: enough to bring them back on a cluster founded from nothing
+/// ([`SystemState::holder_slice`]). Never another holder's apps, and of the
+/// accounts only what signing in takes.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HolderSlice {
+    pub holder: BackupHolder,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<Org>,
+    pub accounts: Vec<SliceAccount>,
+    pub apps: BTreeMap<AppId, AppRecord>,
+    /// The bundles those apps run, and the releases that ship them.
+    pub bundles: BTreeMap<String, BundleRecord>,
+    pub packages: BTreeMap<String, PackageRecord>,
+}
+
+/// An account as a [`HolderSlice`] carries it: who it is and the passkeys it
+/// signs in with, nothing it holds elsewhere.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SliceAccount {
+    pub account_id: AccountId,
+    pub name: String,
+    pub created_at: u64,
+    pub passkeys: Vec<Credential>,
+}
+
+/// One app an `ImportHolder` brings back: the replicas its new group gets
+/// (the seed first) and the recovery file it is restored from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedApp {
+    pub app_id: AppId,
+    pub replicas: Vec<u64>,
+    pub source: crate::types::RestoreSource,
+}
+
+/// What the operator's signature on an `ImportHolder` states: the holder,
+/// the slice file's hash and each app's file and hash.
+#[must_use]
+pub fn import_holder_args(
+    holder: &BackupHolder,
+    slice_sha256: &str,
+    apps: &[ImportedApp],
+) -> Value {
+    json!({
+        "holder": holder.key(),
+        "slice": slice_sha256,
+        "apps": apps
+            .iter()
+            .map(|a| json!({ "app": a.app_id, "file": a.source.name, "sha256": a.source.sha256 }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// `ImportHolder` where the operator upgrades apps, or for the operator.
+pub const NOT_IMPORTABLE: &str =
+    "only an organization's or account's files are imported, where owners upgrade apps";
+
+/// `ImportHolder` of something this cluster holds already.
+pub const ALREADY_HERE: &str =
+    "this cluster holds that organization, account, app or passkey already";
+
+/// The largest a backup key's hex is: 32 bytes.
+pub const BACKUP_KEY_HEX_LEN: usize = 64;
+
+/// A backup key as the log takes it: 64 lowercase hex, not all zeros (an
+/// X25519 key that agrees on nothing).
+#[must_use]
+pub fn backup_key_fits(public_key: &str) -> bool {
+    public_key.len() == BACKUP_KEY_HEX_LEN
+        && public_key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && public_key.bytes().any(|b| b != b'0')
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -2094,6 +2203,110 @@ impl SystemState {
             return Err("only the deployment's owner, or MANAGE_APPLICATION in its organization, may manage it");
         }
         Ok(())
+    }
+
+    /// Who holds the key that opens `app`'s recovery-disk backups: whoever
+    /// upgrades it. The operator where governance gives it app upgrades;
+    /// else the app's owner: its organization (every app has one, its owner's
+    /// personal organization at the least). A package that declares `upgrades: publisher` still
+    /// gives the key to the owner: a publisher ships code into attested
+    /// nodes and never sees an instance's data, which the key would open.
+    #[must_use]
+    pub fn backup_holder(&self, app: &AppRecord) -> BackupHolder {
+        if self.governance().app_upgrades == Authority::Operator {
+            return BackupHolder::Operator;
+        }
+        BackupHolder::Org(app.org.clone())
+    }
+
+    /// The apps whose backups open with `holder`'s key.
+    pub fn apps_of_holder<'a>(
+        &'a self,
+        holder: &'a BackupHolder,
+    ) -> impl Iterator<Item = &'a AppRecord> + 'a {
+        self.apps
+            .values()
+            .filter(move |app| self.backup_holder(app) == *holder)
+    }
+
+    /// `holder`'s [`HolderSlice`]: an organization with its apps and the
+    /// accounts of its members and its apps' owners, or an account with its
+    /// personal apps; the bundles and package releases they run. The
+    /// operator's is the whole state (a `system` recovery file), not a slice.
+    #[must_use]
+    pub fn holder_slice(&self, holder: &BackupHolder) -> HolderSlice {
+        let apps: BTreeMap<AppId, AppRecord> = self
+            .apps_of_holder(holder)
+            .map(|a| (a.app_id.clone(), a.clone()))
+            .collect();
+        let org = match holder {
+            BackupHolder::Org(org) => self.orgs.get(org).cloned(),
+            _ => None,
+        };
+        let mut people: BTreeSet<&str> = apps.values().map(|a| a.owner.as_str()).collect();
+        match holder {
+            BackupHolder::Account(account) => {
+                let _new = people.insert(account);
+            }
+            BackupHolder::Org(_) => {
+                if let Some(o) = &org {
+                    people.extend(o.members.keys().map(String::as_str));
+                }
+            }
+            BackupHolder::Operator => {}
+        }
+        let accounts = people
+            .into_iter()
+            .filter_map(|id| self.accounts.get(id))
+            .map(|a| SliceAccount {
+                account_id: a.account_id.clone(),
+                name: a.name.clone(),
+                created_at: a.created_at,
+                passkeys: a.passkeys.clone(),
+            })
+            .collect();
+        let hashes: BTreeSet<&String> = apps
+            .values()
+            .flat_map(|a| std::iter::once(&a.bundle).chain(a.compute_bundle.as_ref()))
+            .collect();
+        let bundles: BTreeMap<String, BundleRecord> = hashes
+            .into_iter()
+            .filter_map(|h| self.bundles.get(h).map(|b| (h.clone(), b.clone())))
+            .collect();
+        let packages = bundles
+            .values()
+            .filter_map(|b| b.package.as_ref())
+            .map(|p| p.package.as_str())
+            .chain(
+                apps.values()
+                    .filter_map(|a| a.release.as_ref().map(|r| r.package.as_str())),
+            )
+            .filter_map(|p| self.packages.get(p).map(|r| (p.to_owned(), r.clone())))
+            .collect();
+        HolderSlice {
+            holder: holder.clone(),
+            org,
+            accounts,
+            apps,
+            bundles,
+            packages,
+        }
+    }
+
+    /// Whether `actor` may set `holder`'s backup key: the operator its own
+    /// where it upgrades apps; where owners do, an organization's org-wide
+    /// `MANAGE_APPLICATION` holders (those who upgrade all its apps), and an
+    /// account its own.
+    #[must_use]
+    pub fn may_set_backup_key(&self, holder: &BackupHolder, actor: &str) -> bool {
+        let by_operator = self.governance().app_upgrades == Authority::Operator;
+        match holder {
+            BackupHolder::Operator => by_operator && actor == OPERATOR,
+            BackupHolder::Org(org) => !by_operator && self.manages_apps(org, actor, None),
+            BackupHolder::Account(account) => {
+                !by_operator && actor == account && self.accounts.contains_key(account)
+            }
+        }
     }
 
     /// Who upgrades an app governed by `release`
@@ -3760,6 +3973,8 @@ impl SystemCmd {
             Self::StartAccountRecovery { .. } => Area::Recovery,
             Self::CancelAccountRecovery { .. } => Area::Recovery,
             Self::FinishAccountRecovery { .. } => Area::Recovery,
+            Self::SetBackupKey { .. } => Area::Recovery,
+            Self::ImportHolder { .. } => Area::Recovery,
             Self::CreateRefresh { .. } => Area::Accounts,
             Self::UseRefresh { .. } => Area::Accounts,
             Self::RevokeSession { .. } => Area::Accounts,
@@ -4549,6 +4764,41 @@ pub enum SystemCmd {
         /// that release did, so every replica reaches the same state.
         #[serde(default)]
         revoke_api_keys: bool,
+    },
+    /// Bring an organization's or account's apps back from its recovery files
+    /// (`POST /recover/holder`) on a cluster that does not hold them: the
+    /// holder's slice (`slice`, its org or account, the accounts of its
+    /// people with their passkeys, its apps' records, bundles and releases)
+    /// is added, each app in `apps` gets a new group with `seed` (the node
+    /// that holds its file) as its first replica and waits there for it
+    /// (`PendingRestore`, as `RestoreApp`), and the holder's backup key is the
+    /// one its files were sealed to. Refused where the operator upgrades apps,
+    /// or where the org, account, an app or a passkey is here already. `proof`
+    /// is the operator's signature over `cluster / __recover_holder /`
+    /// [`import_holder_args`]: the cluster admits it; the keys that opened
+    /// the files came from the holder.
+    ImportHolder {
+        holder: BackupHolder,
+        slice: Box<HolderSlice>,
+        /// The SHA-256 of the slice file's body, as the proof names it.
+        slice_sha256: String,
+        public_key: String,
+        seed: u64,
+        apps: Vec<ImportedApp>,
+        at: u64,
+        proof: Value,
+    },
+    /// Set (or replace) the public key the recovery disk encrypts `holder`'s
+    /// backups to ([`SystemState::backup_keys`]). `proof` is the operator's
+    /// signature for [`BackupHolder::Operator`], else `actor`'s passkey
+    /// consent; either over `<holder key> / __set_backup_key / { publicKey }`.
+    /// Judged at apply by [`SystemState::may_set_backup_key`].
+    SetBackupKey {
+        holder: BackupHolder,
+        public_key: String,
+        actor: AccountId,
+        at: u64,
+        proof: Value,
     },
     /// A sign-in's refresh token: carries the sign-in's assertion, whose
     /// challenge states [`sign_in_args`] (`session / __sign_in`).

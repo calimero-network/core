@@ -66,6 +66,7 @@ mod account_proof;
 mod approvals;
 mod apps;
 mod auth;
+mod backup_keys;
 mod calls;
 mod deployments;
 mod deprecation;
@@ -108,6 +109,7 @@ use {
         ActivityQuery, AddPasskeyFinish, AliasBody, ApiKeyBody, AssertionBody, LoginBegin,
         PasskeyLabelBody, RefreshBody, RegisterBegin, RegisterFinish,
     },
+    backup_keys::{BackupKeyBody, OpsBackupKeyBody},
     calls::{EventsQuery, IntentBody, MethodBody, PresenceBody, RunsQuery, ViewBody},
     deployments::{ClusterOwnerBody, DeployerBody, DeploymentBody, OfferBody},
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
@@ -128,6 +130,7 @@ use {
 #[cfg(test)]
 pub(crate) const AREA_SOURCES: &[(&str, &str)] = &[
     ("approvals", include_str!("api/approvals.rs")),
+    ("backup_keys", include_str!("api/backup_keys.rs")),
     ("apps", include_str!("api/apps.rs")),
     ("auth", include_str!("api/auth.rs")),
     ("calls", include_str!("api/calls.rs")),
@@ -2126,8 +2129,12 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/ops/served-origins", get(origins::ops_served))
         .route("/ops/nodes/{id}/receipt-key", get(account_proof::ops_receipt_key))
         .route("/ops/apps/{app}/restore", post(restore::ops_restore))
+        .route("/ops/recover", post(restore::ops_recover))
+        .route("/recover/holder", post(restore::recover_holder))
+        .route("/ops/recovery-files", get(restore::ops_recovery_files))
         .merge(auth::routes())
         .merge(recovery::routes())
+        .merge(backup_keys::routes())
         .merge(packages::routes())
         .merge(apps::routes())
         .merge(calls::routes())

@@ -83,10 +83,13 @@ pub enum Feature {
     /// `RequireCurrentRules` (#4940): an earlier release cannot read it, so
     /// its replicas would keep applying later entries' flags as logged.
     CurrentRules,
+    /// `SetBackupKey` and `ImportHolder`: an earlier release cannot read
+    /// them, so its replicas keep no key and import nothing.
+    BackupKeys,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 19] = [
+pub const FEATURES: [Feature; 20] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -106,6 +109,7 @@ pub const FEATURES: [Feature; 19] = [
     Feature::NamedPool,
     Feature::AttributeByRelease,
     Feature::CurrentRules,
+    Feature::BackupKeys,
 ];
 
 impl Feature {
@@ -132,6 +136,7 @@ impl Feature {
             Self::NamedPool => "namedPool",
             Self::AttributeByRelease => "attributeByRelease",
             Self::CurrentRules => "currentRules",
+            Self::BackupKeys => "backupKeys",
         }
     }
 
@@ -158,6 +163,7 @@ impl Feature {
             | Self::NamedPool
             | Self::AttributeByRelease
             | Self::CurrentRules => "1.0.0-rc.19",
+            Self::BackupKeys => "1.0.0-rc.20",
         }
     }
 }
@@ -372,6 +378,7 @@ impl SystemCmd {
             Self::RenameOrg { .. } => vec![Feature::RenameOrg],
             Self::AttributeByRelease => vec![Feature::AttributeByRelease],
             Self::RequireCurrentRules => vec![Feature::CurrentRules],
+            Self::SetBackupKey { .. } | Self::ImportHolder { .. } => vec![Feature::BackupKeys],
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
             }
@@ -512,10 +519,18 @@ mod tests {
     const RC15: &str = "1.0.0-rc.15";
     const RC16: &str = "1.0.0-rc.16";
     const RC19: &str = "1.0.0-rc.19";
+    const RC20: &str = "1.0.0-rc.20";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
         match feature {
+            Feature::BackupKeys => SystemCmd::SetBackupKey {
+                holder: crate::system::BackupHolder::Operator,
+                public_key: "ab".repeat(32),
+                actor: "operator".into(),
+                at: 0,
+                proof: Value::Null,
+            },
             Feature::ClusterVersion => SystemCmd::SetClusterVersion {
                 version: RC16.into(),
                 nodes: (1..=3).map(|id| (id, RC16.to_owned())).collect(),
@@ -829,11 +844,15 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        let (older, engine): (Vec<_>, Vec<_>) = FEATURES.iter().partition(|f| f.since() != RC19);
+        let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
+            .iter()
+            .partition(|f| ![RC19, RC20].contains(&f.since()));
+        let (engine, after): (Vec<Feature>, Vec<Feature>) =
+            newer.into_iter().partition(|f| f.since() == RC19);
         for feature in older {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in &engine {
+        for &feature in engine.iter().chain(&after) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -851,7 +870,26 @@ mod tests {
             nodes: (1..=3).map(|id| (id, RC19.to_owned())).collect(),
         };
         propose(&mut nodes, &raise).unwrap();
-        for feature in engine {
+        for &feature in &engine {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.20's wait for every node on rc.20.
+        for &feature in &after {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC19))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC20;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC20.into(),
+            nodes: (1..=3).map(|id| (id, RC20.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &after {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

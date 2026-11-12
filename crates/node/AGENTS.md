@@ -512,7 +512,7 @@ is its command line.
   `noise_seed` and `run_token` derive a run's seed and capability from the file key.
   **Exporting a file** (`api/exports.rs`; tests `component_files.rs`, `pipeline_runs.rs`): `POST /apps/{app}/files/{id}/export { recipient }` (64 hex, an X25519 public key) and `GET /apps/{app}/files/{id}/segments/{k}` take the `/files` gate (`files_gate`: `api::may_handle_files`, fresh system read, even on a public app) and judge the file on the app's leader (`Node::file_record_strong`: `internal/blob/held` with `record`, which answers the size and `FileSeal`), else `404`; a segment past the last is `404 NO_SUCH_SEGMENT`, and one is read from this node's store or a replica (`segment_from`).
   The export answer is `{ app, id, size, sha256, segments, ephemeral, wrapped }`; `wrapped` is `nonce || AES-256-GCM` of the data key (unwrapped from the `FileSeal` with the app file key, then zeroized) under `HKDF(X25519(ephemeral secret, recipient))`, salt `calimero.export-wrap.v1`, info `ephemeral public || recipient public || u32 length-prefixed app id || u32 length-prefixed hex file id` (`calimero_sealed::wrap::wrap_export`, over `derive_shared`, which refuses a low-order key: `400 BAD_RECIPIENT`, as does a recipient that is not 64 hex).
-  The construction lives in `calimero-sealed` (`wrap.rs`, with the AES-GCM helpers `wrap_for_job` shares, and `file.rs`, the file STREAM format that used to be `files/seal.rs`) so `calimero_client::Client::export_file` opens it with `unwrap_export`, checks the segment list against the file id, each segment against its hash, and the size and plaintext SHA-256 with `finish_expecting`, and returns bytes only when all match.
+  The construction lives in `calimero-sealed` (`wrap.rs`, with the AES-GCM helpers `wrap_for_job` shares, and `file.rs`, the file STREAM format that used to be `files/seal.rs`) so `calimero_client::Client::export_file_to` opens it with `unwrap_export`, checks the segment list against the file id, each segment against its hash, and the size and plaintext SHA-256 with `finish_expecting`, and succeeds only when all match.
   An account may export `MAX_EXPORTS_PER_MINUTE` (30) times a minute per node (`ExportLimits`, an in-memory token bucket over at most `MAX_TRACKED_ACCOUNTS` accounts): `429 TOO_MANY_EXPORTS`.
 - **Receipts**: every `/intents` and `/views` answer carries a `Receipt` signed by the
   answering node's receipt key (Ed25519, made on the node's first start and kept
@@ -1360,6 +1360,40 @@ is its command line.
   registered learners. Tests: `a_cluster_is_founded_again_from_its_backups`,
   `a_cluster_that_lost_its_system_majority_is_founded_again_from_a_survivor`,
   `a_cluster_founded_again_keeps_its_people_and_waits_for_its_apps`.
+- **Recovery disk** (`recovery_disk.rs`, `node/recovery_disk.rs`, `api/backup_keys.rs`;
+  holder side `calimero_client::recovery`): with `--recovery-dir`, every
+  `node::recovery_disk::RECOVERY_EVERY` (5 min) each node writes, for every app it holds
+  (leader or not; `Node::write_recovery`), the app's snapshot as portable rows
+  (`calimero_log::read_snapshot_rows`: hidden rows by the key they hide), the code it runs,
+  and per holder its `system::HolderSlice` (the operator's: the whole `SystemState`), each a
+  `.rbak` file sealed to the holder's X25519 key (HPKE; a fresh data key per file, chunked as
+  files are) and signed by the receipt key, its `purpose=receipts` attestation in the header
+  (`recovery_disk::attestation_nonce`). The holder is whoever upgrades the app
+  (`SystemState::backup_holder`: the operator, else the app's org or owner account; a
+  publisher-upgraded package's too). `SetBackupKey` (`Feature::BackupKeys`;
+  `SystemState::may_set_backup_key`, `backup_keys`): `/ops/backup-key` (operator-signed
+  `operator / __set_backup_key / { publicKey }`), `/orgs/{org}/backup-key` and
+  `/auth/backup-key` (passkey, `org:<org>` / `account:<a>`). A subject unchanged since its
+  last file is not written again; `KEEP` (3) per subject. Operator recovery: `merod
+  --bootstrap --recover-from DIR` forms the system group alone and writes no genesis;
+  `POST /ops/recover` (`Node::recover_system`: the `system` and `code` files' keys, the same
+  checks as `refound`) seeds it; `POST /ops/apps/{app}/restore { recovery }` restores each app
+  (`Group::replace_state_rows` in `Node::seed_with`). An org or account: `POST
+  /recover/holder` from the holder's device (its keys), admitted by the operator's
+  signature over `cluster / __recover_holder / system::import_holder_args`;
+  `SystemCmd::ImportHolder` adds the org, accounts (and `credentials`), apps (each in a new
+  group seeded by the receiving node), bundles, releases and the key, refused where any is
+  here. `GET /ops/recovery-files` lists headers and signatures, never keys. Tests:
+  `tests/recovery_disk.rs`, `recovery_disk::tests`, `backup_keys_are_set_by_whoever_upgrades_the_apps`,
+  `an_organizations_slice_is_imported_once_with_the_operators_signature`,
+  `portable_rows_seed_a_group_under_another_clusters_key` (calimero-log). Sealed files: each
+  segment an app's files list is copied beside its files as stored (`seg-<hash>`,
+  `write_recovery_segment`; unlisted ones go after `SEGMENT_KEEP`), loaded back and checked
+  by hash before a restore (`Node::load_recovery_segments`, `409 RECOVERY_SEGMENTS_MISSING`),
+  and each file's data key is wrapped again under the new cluster's file key
+  (`node::recovery_disk::rewrap_row`, from `AppMeta::file_key`). Every recovery file used
+  is attested under the peer policy (`Node::check_recovery_attestation`,
+  `400 UNATTESTED_RECOVERY_FILE`).
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.

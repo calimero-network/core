@@ -9,14 +9,15 @@ use std::path::PathBuf;
 
 use calimero_client::types::{
     OpsOrgUpgradeRequest, OpsPoolsSetRequestPoolsValue, OpsPricesSetRequestTable,
-    OpsQuotasSetRequest, OpsRegisterNodeRequestRole, OpsUpgradeRequest,
+    OpsQuotasSetRequest, OpsRecoverRequestCodeItem, OpsRecoverRequestSystem,
+    OpsRegisterNodeRequestRole, OpsRestoreRequestRecovery, OpsUpgradeRequest,
 };
-use calimero_client::OperatorSigner;
+use calimero_client::{Client, OperatorSigner};
 use clap::{Subcommand, ValueEnum};
 use ed25519_dalek::{Signer, SigningKey};
 use eyre::WrapErr;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::env::{json_arg, read_file, to_json, Env};
 
@@ -89,8 +90,40 @@ pub enum OpsCmd {
     Restore {
         context: String,
         /// The backup's file name; the newest one when left out.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "recovery_key_file")]
         backup: Option<String>,
+        /// Restore from the node's recovery disk instead (`--recover-from`,
+        /// else `--recovery-dir`), with the operator's backup key: the file's
+        /// signature and attestation are checked here, and its data key is
+        /// opened here; the key never leaves this machine but for that file's.
+        #[arg(long)]
+        recovery_key_file: Option<PathBuf>,
+        /// The recovery file's name; the context's newest when left out.
+        #[arg(long, requires = "recovery_key_file")]
+        recovery_file: Option<String>,
+    },
+    /// The operator's backup key, or set it (`--public-key`, 64 hex): the
+    /// X25519 key every context's recovery-disk backups are sealed to where
+    /// the operator upgrades apps.
+    BackupKey {
+        #[arg(long)]
+        public_key: Option<String>,
+    },
+    /// Make a backup key pair: the private half (hex) into `--out` (mode
+    /// 0600, keep it off every node), the public half printed for
+    /// `ops backup-key --public-key`.
+    RecoveryKeygen {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Found the cluster again from its recovery disk, on a founder started
+    /// with `merod run --bootstrap --recover-from DIR`: the newest `system`
+    /// file and every code file, each checked and opened here with the
+    /// operator's backup key. Then restore each context with
+    /// `ops restore CONTEXT --recovery-key-file`.
+    Recover {
+        #[arg(long)]
+        key_file: PathBuf,
     },
     /// The compute pools and the runs each takes at once.
     Pools,
@@ -242,8 +275,71 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             }
         }
         OpsCmd::Backup { all } => to_json(&ops.backup(all.then_some(true)).await?)?,
-        OpsCmd::Restore { context, backup } => {
-            decided(ops.restore(&context, backup.as_deref(), operator).await)?
+        OpsCmd::Restore {
+            context,
+            recovery_key_file: Some(key_file),
+            recovery_file,
+            ..
+        } => {
+            let secret = read_secret(&key_file)?;
+            let files = recovery_files(env, client).await?;
+            let prefix = format!("app-{context}.");
+            let (name, header) = files
+                .into_iter()
+                .rfind(|(n, _)| match &recovery_file {
+                    Some(want) => n == want,
+                    None => n.starts_with(&prefix),
+                })
+                .ok_or_else(|| eyre::eyre!("no recovery file of {context} on that node"))?;
+            let key = calimero_client::recovery::open_key(&header, &secret)?;
+            let recovery = OpsRestoreRequestRecovery {
+                file: name,
+                key: hex::encode(*key),
+            };
+            decided(ops.restore(&context, None, Some(recovery), operator).await)?
+        }
+        OpsCmd::Restore {
+            context, backup, ..
+        } => decided(
+            ops.restore(&context, backup.as_deref(), None, operator)
+                .await,
+        )?,
+        OpsCmd::BackupKey { public_key: None } => to_json(&ops.backup_key().await?)?,
+        OpsCmd::BackupKey {
+            public_key: Some(key),
+        } => decided(
+            ops.set_backup_key(&key.to_ascii_lowercase(), operator)
+                .await,
+        )?,
+        OpsCmd::RecoveryKeygen { out } => {
+            let (secret, public) = calimero_client::recovery::new_keypair();
+            write_secret(&out, &hex::encode(*secret))?;
+            json!({ "publicKey": hex::encode(public), "secretKeyFile": out })
+        }
+        OpsCmd::Recover { key_file } => {
+            use calimero_client::recovery::Kind;
+            let secret = read_secret(&key_file)?;
+            let files = recovery_files(env, client).await?;
+            let open = |name: &str,
+                        header: &calimero_client::recovery::Header|
+             -> eyre::Result<(String, String)> {
+                let key = calimero_client::recovery::open_key(header, &secret)?;
+                Ok((name.to_owned(), hex::encode(*key)))
+            };
+            let (name, header) = files
+                .iter()
+                .rfind(|(_, h)| h.kind == Kind::System)
+                .ok_or_else(|| eyre::eyre!("no system file on that node's recovery disk"))?;
+            let (file, key) = open(name, header)?;
+            let code = files
+                .iter()
+                .filter(|(_, h)| h.kind == Kind::Code)
+                .map(|(n, h)| open(n, h).map(|(file, key)| OpsRecoverRequestCodeItem { file, key }))
+                .collect::<eyre::Result<Vec<_>>>()?;
+            to_json(
+                &ops.recover(OpsRecoverRequestSystem { file, key }, Some(code))
+                    .await?,
+            )?
         }
         OpsCmd::Pools => to_json(&ops.pools_get().await?)?,
         OpsCmd::SetPools { pools } => {
@@ -333,6 +429,59 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             decided(ops.org_upgrade(&namespace, body, operator).await)?
         }
     })
+}
+
+/// The operator's recovery files on that node, oldest first, each checked
+/// here: the node's signature over its header and the attestation of the key
+/// that made it, under this client's trust policy.
+async fn recovery_files(
+    env: &Env,
+    client: &Client,
+) -> eyre::Result<Vec<(String, calimero_client::recovery::Header)>> {
+    let listed = client.ops().recovery_files(Some("operator")).await?;
+    let mut out = Vec::new();
+    for f in listed.files {
+        let name = f.name;
+        let signature: [u8; 64] = hex::decode(&f.signature)?
+            .try_into()
+            .map_err(|_| eyre::eyre!("{name}: the signature is not 64 bytes"))?;
+        let header = calimero_client::recovery::verify_header(f.header.as_bytes(), &signature)
+            .map_err(|e| eyre::eyre!("{name}: {e}"))?;
+        calimero_client::recovery::verify_attestation(&header, &env.trust.policy())
+            .await
+            .map_err(|e| eyre::eyre!("{name}: not written by an attested node: {e}"))?;
+        out.push((name, header));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+/// A backup key's private half, from the file `ops recovery-keygen` wrote.
+fn read_secret(file: &std::path::Path) -> eyre::Result<zeroize::Zeroizing<[u8; 32]>> {
+    let text = zeroize::Zeroizing::new(std::fs::read_to_string(file)?);
+    let bytes = zeroize::Zeroizing::new(hex::decode(text.trim())?);
+    let key: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| eyre::eyre!("{}: not a 32-byte hex key", file.display()))?;
+    Ok(zeroize::Zeroizing::new(key))
+}
+
+/// Write a secret to a file of its own, readable by its owner alone.
+fn write_secret(file: &std::path::Path, text: &str) -> eyre::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    let _o = options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _o = options.mode(0o600);
+    }
+    let mut f = options
+        .open(file)
+        .map_err(|e| eyre::eyre!("{}: {e} (it is never overwritten)", file.display()))?;
+    f.write_all(text.as_bytes())?;
+    Ok(())
 }
 
 /// The operator's key, from `--operator-key-file` (32-byte seed, hex): it

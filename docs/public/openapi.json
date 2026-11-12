@@ -7693,6 +7693,217 @@
         }
       }
     },
+    "/auth/backup-key": {
+      "get": {
+        "operationId": "account_backup_key",
+        "tags": [
+          "Accounts"
+        ],
+        "x-calimero-group": "auth",
+        "summary": "The account's backup key",
+        "description": "The X25519 public key the recovery-disk backups of the account's personal apps are sealed to (`key`, `null` while none is set).\n\n**Who:** an account holder (a passkey session not bound to an app's frontend).",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupKeyAnswer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      },
+      "post": {
+        "operationId": "account_set_backup_key",
+        "tags": [
+          "Accounts"
+        ],
+        "x-calimero-group": "auth",
+        "summary": "Set the account's backup key",
+        "description": "`publicKey`: 64 lowercase hex, an X25519 public key whose private half the account holder keeps (never a node), for its personal apps, where owners upgrade apps. `412` first.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "publicKey": {
+                    "type": "string"
+                  },
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "required": [
+                  "publicKey"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupKeyAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_BACKUP_KEY`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_BACKUP_KEY",
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
     "/auth/logout": {
       "post": {
         "operationId": "logout",
@@ -12959,7 +13170,7 @@
         ],
         "x-calimero-group": "ops",
         "summary": "Restore an app from its sealed backup",
-        "description": "Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status.\n\n**Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
+        "description": "Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's.\n\n**Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
         "security": [
           {
             "opsToken": []
@@ -12987,6 +13198,21 @@
                 "properties": {
                   "backup": {
                     "type": "string"
+                  },
+                  "recovery": {
+                    "type": "object",
+                    "properties": {
+                      "file": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "file",
+                      "key"
+                    ]
                   },
                   "operatorProof": {
                     "$ref": "#/components/schemas/OperatorProof"
@@ -13071,7 +13297,7 @@
             }
           },
           "400": {
-            "description": "`BAD_BACKUP`; `NOT_A_REPLICA_NODE`",
+            "description": "`BAD_BACKUP`; `BAD_RECOVERY_FILE`; `BAD_RECOVERY_KEY`; `BAD_REQUEST`: the request is malformed; `NOT_A_REPLICA_NODE`; `UNATTESTED_RECOVERY_FILE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -13081,7 +13307,11 @@
             },
             "x-calimero-codes": [
               "BAD_BACKUP",
-              "NOT_A_REPLICA_NODE"
+              "BAD_RECOVERY_FILE",
+              "BAD_RECOVERY_KEY",
+              "BAD_REQUEST",
+              "NOT_A_REPLICA_NODE",
+              "UNATTESTED_RECOVERY_FILE"
             ]
           },
           "401": {
@@ -13125,7 +13355,7 @@
             ]
           },
           "409": {
-            "description": "`BACKUP_FROM_NEWER_RELEASE`; `BUNDLE_GONE`; `MOVE_IN_PROGRESS`; `NO_BACKUP_DIR`; `UNKNOWN_BACKUP_FORMAT`; `UPGRADE_PENDING`. `details` of `UPGRADE_PENDING`: a `UpgradePending`.",
+            "description": "`BACKUP_FROM_NEWER_RELEASE`; `BUNDLE_GONE`; `MOVE_IN_PROGRESS`; `NO_BACKUP_DIR`; `RECOVERY_SEGMENTS_MISSING`; `UNKNOWN_BACKUP_FORMAT`; `UPGRADE_PENDING`. `details` of `UPGRADE_PENDING`: a `UpgradePending`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -13138,6 +13368,7 @@
               "BUNDLE_GONE",
               "MOVE_IN_PROGRESS",
               "NO_BACKUP_DIR",
+              "RECOVERY_SEGMENTS_MISSING",
               "UNKNOWN_BACKUP_FORMAT",
               "UPGRADE_PENDING"
             ],
@@ -13433,6 +13664,189 @@
             "x-calimero-codes": [
               "FORBIDDEN"
             ]
+          }
+        }
+      }
+    },
+    "/ops/backup-key": {
+      "get": {
+        "operationId": "ops_backup_key",
+        "tags": [
+          "Ops"
+        ],
+        "x-calimero-group": "ops",
+        "summary": "The operator's backup key",
+        "description": "The X25519 public key every app's recovery-disk backups are sealed to where the operator upgrades apps (`key`, `null` while none is set).\n\n**Who:** the ops token.",
+        "security": [
+          {
+            "opsToken": []
+          }
+        ],
+        "x-calimero-who": "the ops token",
+        "x-calimero-sealed": true,
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupKeyAnswer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          }
+        }
+      },
+      "post": {
+        "operationId": "ops_set_backup_key",
+        "tags": [
+          "Ops"
+        ],
+        "x-calimero-group": "ops",
+        "summary": "Set the operator's backup key",
+        "description": "Signed over `operator / __set_backup_key / { publicKey }`, where the operator upgrades apps (else `403`). `publicKey`: 64 lowercase hex, an X25519 public key whose private half the operator keeps (never a node).\n\n**Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
+        "security": [
+          {
+            "opsToken": []
+          }
+        ],
+        "x-calimero-who": "the ops token",
+        "x-calimero-sealed": true,
+        "x-calimero-operator": true,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "publicKey": {
+                    "type": "string"
+                  },
+                  "operatorProof": {
+                    "$ref": "#/components/schemas/OperatorProof"
+                  }
+                },
+                "required": [
+                  "publicKey"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupKeyAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_BACKUP_KEY`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_BACKUP_KEY"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_OPERATOR_SIGNATURE",
+              "FORBIDDEN"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "428": {
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement. `details` of `OPERATOR_SIGNATURE_REQUIRED`: a `OperatorSignatureRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "OPERATOR_SIGNATURE_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "OPERATOR_SIGNATURE_REQUIRED": {
+                "$ref": "#/components/schemas/OperatorSignatureRequired"
+              }
+            }
           }
         }
       }
@@ -16176,6 +16590,287 @@
         }
       }
     },
+    "/ops/recover": {
+      "post": {
+        "operationId": "ops_recover",
+        "tags": [
+          "Ops"
+        ],
+        "x-calimero-group": "ops",
+        "summary": "Found the cluster again from its recovery disk",
+        "description": "On the founder started with `--bootstrap --recover-from DIR`, its system state empty: the newest `system` file in `DIR/operator/` and the apps' `code` files, each with the data key the operator opened from it (hex). Checked as founding from backups is (governance, operator key, no node of the old cluster answering), then the system group is seeded; each app waits for `POST /ops/apps/{app}/restore { recovery }`.\n\n**Who:** the ops token.",
+        "security": [
+          {
+            "opsToken": []
+          }
+        ],
+        "x-calimero-who": "the ops token",
+        "x-calimero-sealed": true,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "system": {
+                    "type": "object",
+                    "properties": {
+                      "file": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "file",
+                      "key"
+                    ]
+                  },
+                  "code": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "file": {
+                          "type": "string"
+                        },
+                        "key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "file",
+                        "key"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "system"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "apps": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "accounts": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "index": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "apps",
+                    "accounts",
+                    "index"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_RECOVERY_FILE`; `BAD_RECOVERY_KEY`; `TOO_MANY_FILES`; `UNATTESTED_RECOVERY_FILE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_RECOVERY_FILE",
+              "BAD_RECOVERY_KEY",
+              "TOO_MANY_FILES",
+              "UNATTESTED_RECOVERY_FILE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "409": {
+            "description": "`NOT_RECOVERING`; `OLD_CLUSTER_ANSWERS`; `OTHER_DEPLOYMENT`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_RECOVERING",
+              "OLD_CLUSTER_ANSWERS",
+              "OTHER_DEPLOYMENT"
+            ]
+          }
+        }
+      }
+    },
+    "/ops/recovery-files": {
+      "get": {
+        "operationId": "ops_recovery_files",
+        "tags": [
+          "Ops"
+        ],
+        "x-calimero-group": "ops",
+        "summary": "The recovery files a node reads",
+        "description": "In `--recover-from`, else `--recovery-dir`, of `holder` (`operator`, the default; `org:<id>`; `account:<id>`): each file's name, its header as signed (JSON text) and the node's Ed25519 signature over `calimero.recovery-backup.v1\\0` and those bytes (hex), for the holder's device to check before it opens a key with its own.\n\n**Who:** the ops token.",
+        "security": [
+          {
+            "opsToken": []
+          }
+        ],
+        "x-calimero-who": "the ops token",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "holder",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "holder": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    },
+                    "files": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "header": {
+                            "type": "string"
+                          },
+                          "signature": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "header",
+                          "signature"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "holder",
+                    "files"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_REQUEST`: the request is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_REQUEST"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "409": {
+            "description": "`NO_BACKUP_DIR`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NO_BACKUP_DIR"
+            ]
+          }
+        }
+      }
+    },
     "/ops/releases": {
       "post": {
         "operationId": "ops_release",
@@ -18233,6 +18928,250 @@
             "x-calimero-codes": [
               "NOT_FOUND"
             ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/orgs/{org}/backup-key": {
+      "get": {
+        "operationId": "org_backup_key",
+        "tags": [
+          "Organizations"
+        ],
+        "x-calimero-group": "orgs",
+        "summary": "The organization's backup key",
+        "description": "The X25519 public key its apps' recovery-disk backups are sealed to (`key`, `null` while none is set), and how many apps that covers. Any member; `404` outside the organization.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend).",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupKeyAnswer"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      },
+      "post": {
+        "operationId": "org_set_backup_key",
+        "tags": [
+          "Organizations"
+        ],
+        "x-calimero-group": "orgs",
+        "summary": "Set the organization's backup key",
+        "description": "`publicKey`: 64 lowercase hex, an X25519 public key whose private half its holder keeps (never a node). Those who upgrade all the organization's apps (org-wide `MANAGE_APPLICATION`), where owners upgrade apps; replaces the key before. `412` first.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "org",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "publicKey": {
+                    "type": "string"
+                  },
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "required": [
+                  "publicKey"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupKeyAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_BACKUP_KEY`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_BACKUP_KEY",
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
           },
           "421": {
             "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
@@ -23876,6 +24815,184 @@
         }
       }
     },
+    "/recover/holder": {
+      "post": {
+        "operationId": "restore_recover_holder",
+        "tags": [
+          "Public"
+        ],
+        "x-calimero-group": "public",
+        "summary": "Bring an organization's or account's apps back from its recovery files",
+        "description": "Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.\n\n**Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
+        "security": [],
+        "x-calimero-who": "anyone",
+        "x-calimero-sealed": true,
+        "x-calimero-operator": true,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "holder": {
+                    "type": "string"
+                  },
+                  "slice": {
+                    "type": "object",
+                    "properties": {
+                      "file": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "file",
+                      "key"
+                    ]
+                  },
+                  "apps": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "file": {
+                          "type": "string"
+                        },
+                        "key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "file",
+                        "key"
+                      ]
+                    }
+                  },
+                  "code": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "file": {
+                          "type": "string"
+                        },
+                        "key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "file",
+                        "key"
+                      ]
+                    }
+                  },
+                  "operatorProof": {
+                    "$ref": "#/components/schemas/OperatorProof"
+                  }
+                },
+                "required": [
+                  "holder",
+                  "slice"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "apps": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    }
+                  },
+                  "required": [
+                    "apps"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_RECOVERY_FILE`; `BAD_RECOVERY_KEY`; `BAD_REQUEST`: the request is malformed; `NOT_A_REPLICA_NODE`; `TOO_MANY_FILES`; `UNATTESTED_RECOVERY_FILE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_RECOVERY_FILE",
+              "BAD_RECOVERY_KEY",
+              "BAD_REQUEST",
+              "NOT_A_REPLICA_NODE",
+              "TOO_MANY_FILES",
+              "UNATTESTED_RECOVERY_FILE"
+            ]
+          },
+          "403": {
+            "description": "`BAD_OPERATOR_SIGNATURE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_OPERATOR_SIGNATURE"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`; `NO_BACKUP_DIR`; `RECOVERY_SEGMENTS_MISSING`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE",
+              "NO_BACKUP_DIR",
+              "RECOVERY_SEGMENTS_MISSING"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "428": {
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement. `details` of `OPERATOR_SIGNATURE_REQUIRED`: a `OperatorSignatureRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "OPERATOR_SIGNATURE_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "OPERATOR_SIGNATURE_REQUIRED": {
+                "$ref": "#/components/schemas/OperatorSignatureRequired"
+              }
+            }
+          }
+        }
+      }
+    },
     "/releases": {
       "get": {
         "operationId": "releases_public",
@@ -24708,6 +25825,65 @@
           "refreshToken"
         ],
         "description": "A session: its token (15 minutes, by the issuing node) and the refresh token for `/auth/refresh`."
+      },
+      "BackupKeyAnswer": {
+        "type": "object",
+        "properties": {
+          "holder": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "operator",
+                  "org",
+                  "account"
+                ]
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "key": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "publicKey": {
+                "type": "string"
+              },
+              "setAt": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "setBy": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "publicKey",
+              "setAt",
+              "setBy"
+            ]
+          },
+          "apps": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "holder",
+          "key",
+          "apps"
+        ],
+        "description": "A holder's backup key: who holds it (`{ kind: \"operator\" }`, `{ kind: \"org\", id }` or `{ kind: \"account\", id }`), the X25519 public key the recovery disk seals their apps' backups to (`null` while none is set), and how many apps that covers."
       },
       "Applied": {
         "type": "object",

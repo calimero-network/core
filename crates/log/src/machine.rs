@@ -838,6 +838,117 @@ pub fn read_snapshot_file(
     )
 }
 
+/// A state row as any cluster can take it: a hidden row ([`crate::store::hide`])
+/// by the key it hides, so another cluster's key can hide it again; any other
+/// row by its machine key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PortableRow {
+    Plain {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    Hidden {
+        tag: u8,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+}
+
+/// [`read_snapshot_file`], each row as a [`PortableRow`]: what a backup that
+/// does not depend on this cluster's key holds.
+pub fn read_snapshot_rows(
+    storage_key: &[u8; 32],
+    group: GroupId,
+    snapshot_id: &str,
+    path: &std::path::Path,
+    mut f: impl FnMut(PortableRow) -> eyre::Result<()>,
+) -> eyre::Result<()> {
+    let hider = ring::hmac::Key::new(
+        ring::hmac::HMAC_SHA256,
+        &crate::store::derive(storage_key, HIDDEN_KEYS_LABEL),
+    );
+    read_snapshot_file(storage_key, group, snapshot_id, path, |k, plain| {
+        f(portable_row(&hider, group, k, plain))
+    })
+}
+
+/// The label the hider key is derived under (`Db::open`).
+pub(crate) const HIDDEN_KEYS_LABEL: &str = "calimero.log.hidden-keys.v1";
+
+fn portable_row(hider: &ring::hmac::Key, group: GroupId, key: &[u8], plain: &[u8]) -> PortableRow {
+    use crate::store::{hide, unwrap_hidden, HIDDEN_LEN};
+    if let (Some(tag), Some((inner, value))) = (key.first(), unwrap_hidden(plain)) {
+        if key.len() == HIDDEN_LEN && hide(hider, group, *tag, inner) == key {
+            return PortableRow::Hidden {
+                tag: *tag,
+                key: inner.to_vec(),
+                value: value.to_vec(),
+            };
+        }
+    }
+    PortableRow::Plain {
+        key: key.to_vec(),
+        value: plain.to_vec(),
+    }
+}
+
+/// [`replace_state`] from portable rows (a recovery backup's): each hidden
+/// row hidden again under this node's key, for this group.
+pub(crate) fn replace_state_rows<M: Machine>(
+    state: &GroupState,
+    shared: &Shared<M>,
+    rows: impl FnOnce(&mut dyn FnMut(PortableRow) -> eyre::Result<()>) -> eyre::Result<()>,
+) -> eyre::Result<u64> {
+    use crate::store::{hide, wrap_hidden};
+    if M::IN_MEMORY {
+        eyre::bail!("an in-memory machine's state changes only through its log");
+    }
+    let db = &state.db;
+    let group = state.group;
+    let old = state.generation.load(Ordering::Acquire);
+    let next = old.wrapping_add(1);
+    db.drop_generation(group, next)?;
+    let mut batch = Transaction::default();
+    let mut pending = 0_usize;
+    let mut count = 0_u64;
+    let mut stage = |row: PortableRow| -> eyre::Result<()> {
+        let (key, value) = match row {
+            PortableRow::Plain { key, value } => (key, value),
+            PortableRow::Hidden { tag, key, value } => {
+                (hide(&db.hider, group, tag, &key), wrap_hidden(&key, &value))
+            }
+        };
+        db.stage_state(&mut batch, group, next, &key, Some(&value))?;
+        pending += key.len() + value.len();
+        count += 1;
+        if pending >= INSTALL_BATCH_BYTES {
+            db.commit(&batch, false)?;
+            batch = Transaction::default();
+            pending = 0;
+        }
+        Ok(())
+    };
+    let staged = rows(&mut stage).and_then(|()| db.commit(&batch, false));
+    if let Err(e) = staged {
+        let _ = db.drop_generation(group, next);
+        return Err(e);
+    }
+    {
+        let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
+        let mut switch = Transaction::default();
+        db.stage_meta(&mut switch, group, "generation", &next)?;
+        db.commit(&switch, true)?;
+        state.generation.store(next, Ordering::Release);
+        st.machine.restore(&[])?;
+    }
+    db.drop_generation(group, old)?;
+    if let Some(served) = db.get_meta::<SnapshotRecord>(group, "snapshot")? {
+        db.drop_meta(group, "snapshot")?;
+        let _removed = std::fs::remove_file(db.snapshot_dir.join(&served.file));
+    }
+    Ok(count)
+}
+
 #[cfg(test)]
 mod snapshot_format {
     use super::*;
