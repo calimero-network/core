@@ -41,6 +41,10 @@ is its command line.
 - **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
   passkeys, API keys, refresh tokens, organizations, teams, invites, used proofs.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
+  Each command belongs to one `system::Area` (`SystemCmd::area`, exhaustive): its
+  proof is judged in `system/<area>.rs`'s `authorize` and it applies in that
+  module's `apply`; `system.rs` keeps the state, the shared rules and the two
+  dispatchers. A new command names its area there and gets an arm in both.
 - **Routing** (`node.rs`): system writes go to the system leader, calls and strong
   views to the app's leader, over **peer sealed channels** (`internal/*`) whose key
   is attested like any client's, plus the cluster secret (HMAC of K_c).
@@ -191,7 +195,7 @@ is its command line.
   (`a_feature_is_never_proposed_while_an_older_node_holds_the_log`,
   `an_entry_an_older_node_cannot_decode_splits_the_state`),
   `the_cluster_version_rises_to_what_every_node_supports`.
-- **API** (`api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
+- **API** (`api.rs`, handlers by area in `api/<area>.rs`, each with its `routes()` that `router` merges; helpers more than one area uses stay in `api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).
 - **Reserved methods** (`node::reserved_method`, `__*`): the node's own commands

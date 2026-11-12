@@ -15,7 +15,8 @@ use calimero_sealed::wrap::{wrap_export, ExportWrap};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{files_gate, parse_blob_id, ApiResult};
+use super::files::files_gate;
+use super::{parse_blob_id, ApiResult};
 use crate::error::ApiError;
 use crate::files::unwrap_key;
 use crate::node::Node;

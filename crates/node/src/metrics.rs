@@ -850,13 +850,17 @@ pub fn render_process(out: &mut String) {
 mod tests {
     use super::*;
 
-    /// The router's route templates, read from its source.
+    /// The router's route templates, read from its source and the sources of
+    /// the area routers it merges.
     fn router_templates() -> Vec<&'static str> {
         let source = include_str!("api.rs");
         let router = &source[source.find("pub fn router(").unwrap()..];
-        router
-            .split(".route(")
-            .skip(1)
+        let areas = crate::api::AREA_SOURCES
+            .iter()
+            .map(|(_, src)| &src[src.find("fn routes()").unwrap()..]);
+        std::iter::once(router)
+            .chain(areas)
+            .flat_map(|r| r.split(".route(").skip(1))
             .filter_map(|r| r.trim_start().strip_prefix('"')?.split('"').next())
             .collect()
     }
