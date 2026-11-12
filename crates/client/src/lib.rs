@@ -189,14 +189,18 @@ impl Client {
     }
 
     /// Verify every replica of `app`: each one's quote over a fresh nonce,
-    /// held to this client's policy, binding its receipt key and the
-    /// cluster's governance. Answers the attested receipt key per node (a
-    /// receipt from any other key, or from a node not in this map, is not one
-    /// to trust) and the governance every replica attests: who may move the
-    /// app to new code.
+    /// held to this client's policy, binding its receipt key, the cluster's
+    /// governance, and the cluster and node id the entry node names over the
+    /// attested channel (it fetches the replicas' documents in the clear, so
+    /// their own `cluster` and `node` fields count for nothing). Answers the
+    /// attested receipt key per node (a receipt from any other key, or from a
+    /// node not in this map, is not one to trust) and the governance every
+    /// replica attests: who may move the app to new code.
     pub async fn verify_app_cluster(&self, app: &str) -> Result<AttestedCluster> {
         let nonce: [u8; 32] = calimero_identity::random::<32>();
         let answer = self.apps().attestation(app, &hex::encode(nonce)).await?;
+        // Named over the attested channel: what each replica's quote must bind.
+        let cluster = answer.cluster.as_str();
         let mut keys = std::collections::BTreeMap::new();
         let mut governance: Option<attest::Governance> = None;
         for r in answer.replicas {
@@ -211,9 +215,10 @@ impl Client {
             if doc.node != node {
                 return Err(eyre::eyre!("replica {node} answered as node {}", doc.node).into());
             }
-            let (key, rules) = attest::verify_receipt_key(&doc, &nonce, &self.policy)
-                .await
-                .map_err(|e| eyre::eyre!("replica {node}: {e:#}"))?;
+            let (key, rules) =
+                attest::verify_receipt_key(&doc, &nonce, cluster, node, &self.policy)
+                    .await
+                    .map_err(|e| eyre::eyre!("replica {node}: {e:#}"))?;
             // One cluster, one set of rules: replicas that disagree are not it.
             if governance.as_ref().is_some_and(|g| *g != rules) {
                 return Err(eyre::eyre!("replica {node} attests other governance").into());

@@ -1013,6 +1013,146 @@ fn an_upgrade_names_its_consent_or_its_run() {
     let _ = &mut m;
 }
 
+/// `proven_cluster` plus package `p` with releases 1.0.0, 2.0.0 and
+/// 3.0.0 (WASM `b-<version>`), and three apps of `org`: `p1` on 1.0.0,
+/// `p3` on 3.0.0 and `q` on a raw bundle.
+fn org_with_package_apps() -> (SystemMachine, Soft) {
+    let (mut m, alice, _bob, _carol) = proven_cluster();
+    let versions: serde_json::Map<String, serde_json::Value> = ["1.0.0", "2.0.0", "3.0.0"]
+        .iter()
+        .map(|v| {
+            let release = json!({
+                "version": v, "mpk": v, "mpkSize": 1, "source": "upload",
+                "services": { "": format!("b-{v}") }, "installedBy": "alice", "installedAt": 0
+            });
+            ((*v).to_owned(), release)
+        })
+        .collect();
+    let _prev = m.state.packages.insert(
+        "p".into(),
+        serde_json::from_value(json!({
+            "name": "p", "signerId": "did:key:z", "owner": "alice", "versions": versions
+        }))
+        .unwrap(),
+    );
+    for v in ["1.0.0", "2.0.0", "3.0.0"] {
+        let hash = format!("b-{v}");
+        let _prev = m.state.bundles.insert(
+            hash.clone(),
+            serde_json::from_value(json!({
+                "hash": hash, "size": 1, "uploadedBy": "alice",
+                "package": { "package": "p", "version": v }
+            }))
+            .unwrap(),
+        );
+    }
+    for (id, bundle, release) in [
+        ("p1", "b-1.0.0", Some("1.0.0")),
+        ("p3", "b-3.0.0", Some("3.0.0")),
+        ("q", "b1", None),
+    ] {
+        let _prev = m.state.apps.insert(
+            id.into(),
+            serde_json::from_value(json!({
+                "appId": id, "name": id, "group": 7, "bundle": bundle, "owner": "alice",
+                "org": "org", "access": { "kind": "org" }, "replicas": [1, 2, 3],
+                "createdAt": 0,
+                "release": release.map(|v| json!({ "package": "p", "version": v })),
+            }))
+            .unwrap(),
+        );
+    }
+    (m, alice)
+}
+
+/// From the `RequireCurrentRules` mark on, an organization's upgrade run
+/// covers what the state says its consent covers, whatever apps or
+/// progress the entry lists, and moves each app once, along its package
+/// and never to an older release. Before the mark a run applies as it
+/// was logged.
+#[test]
+fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
+    use super::{NOT_IN_RUN, RUN_MOVED_APP, RUN_OLDER_RELEASE};
+    let (mut m, mut alice) = org_with_package_apps();
+    let start = |alice: &mut Soft, run_id: &str| {
+        let c = consent(
+            alice,
+            "org:org",
+            "__upgrade_org",
+            &json!({
+                "package": "p", "version": "2.0.0", "team": null,
+                "cascade": false, "migrate": null,
+            }),
+        );
+        let run: crate::types::UpgradeRun = serde_json::from_value(json!({
+            "runId": run_id, "package": "p", "version": "2.0.0", "by": "alice",
+            "startedAt": 0, "apps": ["p1", "p3", "q", "app"], "done": ["p1"],
+            "failed": { "p3": "made up" }, "finished": true,
+        }))
+        .unwrap();
+        SystemCmd::StartUpgradeRun {
+            org: "org".into(),
+            run: Box::new(run),
+            consent: c,
+        }
+    };
+    let upgrade = |app: &str, bundle: &str, version: &str| SystemCmd::UpgradeApp {
+        compute_bundle: None,
+        app_id: app.into(),
+        bundle: bundle.into(),
+        by_operator: false,
+        actor: "alice".into(),
+        at: 0,
+        run: Some("r1".into()),
+        consent: serde_json::Value::Null,
+        release: Some(super::PackageRef {
+            package: "p".into(),
+            version: version.into(),
+            service: None,
+            compute: false,
+        }),
+        owner_in_org: true,
+        owner_in_team: true,
+    };
+
+    // Logged before the mark: kept as the entry says, as it was.
+    m.index = 5;
+    let _ok = m.run(start(&mut alice, "r0")).unwrap();
+    assert_eq!(m.state.orgs["org"].upgrade_runs["r0"].apps.len(), 4);
+
+    m.index = 10;
+    let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+    m.index = 11;
+    let _ok = m.run(start(&mut alice, "r1")).unwrap();
+    let r = &m.state.orgs["org"].upgrade_runs["r1"];
+    assert_eq!(
+        r.apps,
+        ["p1", "p3"],
+        "the org's apps of `p`, from the state"
+    );
+    assert!(r.done.is_empty() && r.failed.is_empty() && !r.finished);
+
+    assert_eq!(
+        m.run(upgrade("q", "b-2.0.0", "2.0.0")).unwrap_err(),
+        NOT_IN_RUN
+    );
+    assert_eq!(
+        m.run(upgrade("p3", "b-2.0.0", "2.0.0")).unwrap_err(),
+        RUN_OLDER_RELEASE
+    );
+    let _ok = m.run(upgrade("p1", "b-2.0.0", "2.0.0")).unwrap();
+    assert_eq!(m.state.apps["p1"].bundle, "b-2.0.0");
+    assert_eq!(
+        m.run(upgrade("p1", "b-2.0.0", "2.0.0")).unwrap_err(),
+        RUN_MOVED_APP
+    );
+    // A run id is one run in the cluster.
+    assert_eq!(
+        m.run(start(&mut alice, "r1")).unwrap_err(),
+        "that run exists"
+    );
+}
+
 type Soft = calimero_identity::testing::SoftAuthenticator;
 
 /// The operator's signing key in these tests, and what genesis records.
@@ -1982,6 +2122,28 @@ fn a_create_org_entry_from_before_takes_any_name() {
     assert_eq!(m.state.orgs["o2"].name, "Fits");
 }
 
+/// From the current-rules mark on, a `CreateOrg` without `name_fits` is
+/// judged as the API logs it now: a name that does not fit is refused.
+/// Before the mark it replays taking any name.
+#[test]
+fn a_create_org_after_the_current_rules_mark_needs_a_name_that_fits() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let old = |id: &str| -> SystemCmd {
+        serde_json::from_value(json!({
+            "op": "createOrg", "org_id": id, "name": " padded ", "actor": "alice"
+        }))
+        .unwrap()
+    };
+    m.index = 10;
+    let _ok = m.run(old("before")).unwrap();
+    assert_eq!(m.state.orgs["before"].name, " padded ");
+    m.index = 11;
+    let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+    m.index = 12;
+    assert!(m.run(old("after")).is_err());
+    assert!(!m.state.orgs.contains_key("after"));
+}
+
 /// Membership changes apply only with the actor's passkey consent over
 /// exactly that change, once; a member leaving consents too.
 #[test]
@@ -2459,6 +2621,87 @@ fn team_commands_logged_before_these_rules_replay_as_they_did() {
         apps_need_consent: true,
     });
     assert_eq!(deletion["apps_need_consent"], json!(true), "{deletion}");
+}
+
+/// From the `RequireCurrentRules` mark on, team commands apply under this
+/// release's rules whatever flags the entry carries: a removal takes the
+/// rows below, an invite names only teams its inviter sees, a deletion
+/// that takes apps needs the passkey, and a redemption that changes
+/// nothing spends no use.
+#[test]
+fn team_commands_after_the_current_rules_mark_apply_under_them() {
+    let (mut m, mut alice, mut bob) = nested_teams();
+    m.index = 10;
+    let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+    m.index = 11;
+    let c = consent(
+        &mut alice,
+        "org:org",
+        "__remove_team_member",
+        &json!({ "team": "t", "account": "bob" }),
+    );
+    let old: SystemCmd = serde_json::from_value(json!({
+        "op": "removeTeamMember", "org": "org", "team": "t", "account": "bob",
+        "actor": "alice", "consent": c,
+    }))
+    .unwrap();
+    let _ok = m.run(old).unwrap();
+    assert!(
+        !m.state.orgs["org"].in_team("bob", "c"),
+        "the row below goes too"
+    );
+
+    let o = m.state.orgs.get_mut("org").unwrap();
+    let _prev = o.teams.insert(
+        "x".into(),
+        serde_json::from_value(json!({
+            "teamId": "x", "name": "X", "join": "invite", "members": {}
+        }))
+        .unwrap(),
+    );
+    let _prev = o
+        .capabilities
+        .insert("bob".into(), crate::types::caps::INVITE_MEMBERS);
+    let key = crate::proof::invite_key("inv_old");
+    let invite: crate::types::Invite = serde_json::from_value(json!({
+        "org": "org", "role": "member", "teams": ["x"], "expiresAt": 100, "usesLeft": 1,
+    }))
+    .unwrap();
+    let c = consent(
+        &mut bob,
+        "org:org",
+        "__create_invite",
+        &super::invite_args(&key, &invite),
+    );
+    let old: SystemCmd = serde_json::from_value(json!({
+        "op": "createInvite", "invite_key": key, "invite": invite, "actor": "bob",
+        "consent": c,
+    }))
+    .unwrap();
+    assert_eq!(
+        m.run(old).unwrap_err(),
+        "an invite names only teams the inviter sees"
+    );
+
+    let old: SystemCmd = serde_json::from_value(json!({
+        "op": "deleteTeam", "org": "org", "team": "t", "actor": "alice",
+    }))
+    .unwrap();
+    assert_eq!(m.run(old).unwrap_err(), DELETE_TEAM_NEEDS_CONSENT);
+    assert!(m.state.apps.contains_key("inapp"));
+
+    keep_invite(&mut m, "inv_link", "member", &[], 1);
+    let key = crate::proof::invite_key("inv_link");
+    let old: SystemCmd = serde_json::from_value(json!({
+        "op": "redeemInvite",
+        "invite_key": &key,
+        "account": "alice",
+        "now": 10,
+        "signature": crate::proof::sign_invite_redeem("inv_link", "alice", 10),
+    }))
+    .unwrap();
+    let _ok = m.run(old).unwrap();
+    assert_eq!(m.state.invites[&key].uses_left, 1, "left for the invitee");
 }
 
 /// An account an organization's app names (its owner, an `Accounts`
@@ -4211,6 +4454,44 @@ fn app_commands_logged_before_the_membership_rule_replay_as_they_did() {
     let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("carol");
     let _ok = m.run(old(delete_app("oa", "carol"))).unwrap();
     assert!(!m.state.apps.contains_key("oa"));
+}
+
+/// From the `RequireCurrentRules` mark on, an entry's flags naming an
+/// earlier rule are read as set, whoever proposed it: an owner who left
+/// the organization does not change, transfer or delete its app by
+/// leaving `owner_in_org` out. An entry before the mark, replayed after a
+/// restart, still applies as it did.
+#[test]
+fn app_commands_after_the_current_rules_mark_apply_under_them() {
+    let (mut m, _alice, mut bob) = org_app_of_bob();
+    let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
+    let old = |cmd: SystemCmd| {
+        let mut v = serde_json::to_value(cmd).unwrap();
+        let _flag = v.as_object_mut().unwrap().remove("owner_in_org");
+        let _flag = v.as_object_mut().unwrap().remove("owner_in_team");
+        serde_json::from_value::<SystemCmd>(v).unwrap()
+    };
+    m.index = 10;
+    let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+    assert_eq!(m.state.current_rules_from, Some(10));
+    assert!(m.run(SystemCmd::RequireCurrentRules).is_err(), "once");
+    m.index = 11;
+    assert!(m.run(old(set_app_metadata("oa", "bob"))).is_err());
+    assert!(m.run(old(set_access("oa", "bob"))).is_err());
+    assert!(m
+        .run(old(transfer_app(&mut bob, "oa", "bob", "carol")))
+        .is_err());
+    assert!(m.run(old(delete_app("oa", "bob"))).is_err());
+    assert_eq!(m.state.apps["oa"].owner, "bob");
+    assert_eq!(m.state.apps["oa"].access, Access::Owner);
+
+    // A restart from a snapshot before the mark replays what came before it.
+    m.index = 4;
+    let _ok = m.run(old(set_access("oa", "bob"))).unwrap();
+    assert_eq!(m.state.apps["oa"].access, Access::Public);
+    // State from before reads without the mark and writes as it did.
+    let before = serde_json::to_value(SystemState::default()).unwrap();
+    assert!(before.get("currentRulesFrom").is_none());
 }
 
 // ---------------------------------------------------- account recovery

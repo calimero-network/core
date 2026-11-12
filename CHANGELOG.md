@@ -14,7 +14,7 @@
   holder is whoever upgrades the app (`SystemState::backup_holder`): the operator
   where it holds app upgrades, else the app's organization or owner account, also for
   packages that declare `upgrades: publisher`. `SystemCmd::SetBackupKey`
-  (`Feature::BackupKeys`, rc.19): `POST /ops/backup-key` (operator-signed),
+  (`Feature::BackupKeys`, rc.20): `POST /ops/backup-key` (operator-signed),
   `POST /orgs/{org}/backup-key` (org-wide `MANAGE_APPLICATION`, passkey) and
   `POST /auth/backup-key` (passkey), each with a `GET`. No node holds a private key.
   A cluster whose operator upgrades apps comes back from one recovery disk under a
@@ -35,6 +35,25 @@
   recovery uses must carry an attestation the node accepts under its peer
   policy (`400 UNATTESTED_RECOVERY_FILE`). `calimero-log` gains `read_snapshot_rows` and
   `Group::replace_state_rows` (state rows that move between cluster keys).
+
+## [1.0.0-rc.19] - 2026-11-12
+
+### Added
+
+- **Pipelines on job nodes** (#4900). A package can ship only a compute
+  component and declare pipelines (`pipelines/*.yaml`, a
+  DAG of compute steps over sealed files), compiled and checked at install. Runs
+  start with `POST /apps/{app}/pipelines/{name}/runs` (owner or org members, an
+  optional `maxCost`) and are planned by the app's group: fan-out (`batch`,
+  `collect`, `allowFailures`, `failFast`), a step cache, other packages' modules
+  and named pools. Read runs with `GET .../pipeline-runs`, `/events` (SSE,
+  metadata only) and a signed `/receipt`; retry with `POST .../retry`; export an
+  output with `POST /apps/{app}/files/{id}/export` (its data key re-wrapped to the
+  requester's key); plan with `POST /pipelines/validate` and `.../estimate`. The
+  operator sets prices with `GET`/`POST /ops/prices`. New log entries are gated by
+  the cluster version (since 1.0.0-rc.19); entries and snapshots written before read unchanged.
+  meroctl gains `ops prices`, `ops set-prices` and `app pipelines`.
+
 - **Generated TypeScript clients answer a call's log index and events, run over a
   call-only transport, and type `init`'s arguments** (`calimero-app-abi`).
   `kv.raw.set(args)` is `kv.set(args)` answering `{ result, index, events }`
@@ -132,6 +151,78 @@
   sent. The client's flows (`sign_up*`, `sign_in*`, `add_passkey`,
   `start_recovery`, `verify_app_cluster`, `upload_file`, `events`,
   `presence_stream`) are unchanged.
+### Security
+
+- **An app is judged by the release it runs** (#4935). Upgrade authority,
+  publisher and release approvals were read from the bundle record, which keeps
+  the first release recorded as shipping a WASM hash, so an app whose WASM another
+  release also shipped could be judged by that release. They now follow the
+  app's own release (`SystemState::governing_release`). A release whose service
+  or compute WASM already ships in another package signed by a different key is
+  refused (`409 SHIPS_IN_OTHER_PACKAGE`); one signer may reuse its WASM across its
+  own packages. The rule holds from an `AttributeByRelease` entry the first system
+  leader writes (the `attributeByRelease` feature, since 1.0.0-rc.19); earlier
+  entries replay as logged.
+- **Hardening** (#4942). A package signed with the development signer is refused
+  outside `--dev` (`403 DEV_SIGNED_PACKAGE`). A read-only caller's synchronous
+  cross-app call is refused (a view is still allowed). An empty operator token
+  never authenticates, and merod refuses an empty `--ops-token` or an
+  `--ops-token-sha256` of the empty string. meroctl's and merod's secret files are
+  rewritten owner-only. `verify_evidence` refuses debug TDs, as
+  `verify_attestation` does. `/internal/usage` answers identified peers only.
+
+- **Receipt-key quotes bind the cluster and node.** A `purpose=receipts`
+  quote's report data is now `nonce || SHA-256("calimero.tee-attest.receipt-key.v3"
+  || receipt_key || SHA-256(governance JSON) || u32-BE len || cluster || u64-BE
+  node)`. `verify_receipt_key` takes the cluster and node the caller expects
+  and checks them against the quote, not the document's unsigned fields;
+  `verify_app_cluster` reads the cluster from the entry node's sealed answer
+  (`GET /apps/{app}/attestation` now names `cluster`), and a node attesting a
+  peer's session-issuing key checks its own cluster and that peer's id. A v2
+  verifier refuses a new node's receipt-key quote and the other way round,
+  except that a node takes an earlier peer's v2 quote while its cluster still
+  runs that release (below cluster version 1.0.0-rc.19).
+
+  **Hard cutover** (receipt-key quotes, v3 only): Rust clients
+  (`calimero-client`), `meroctl` and calimero-client-py released before this
+  refuse this release's receipt-key quotes (`verify_app_cluster`,
+  `meroctl attest <context>`), and this release's clients refuse an earlier
+  node's. Upgrade the Rust client, `meroctl` and calimero-client-py to the
+  matching release together with the nodes. In a cluster rolling onto this
+  release, a node of this release still attests a peer of the earlier one as
+  a session issuer, from its unbound quote, only while the logged cluster
+  version is below 1.0.0-rc.19; once every node runs this release, the system
+  leader raises it and only bound quotes count. A node of the earlier release
+  cannot attest one of this release, so a session this release's node issued
+  is refreshed on an earlier node until the rollout ends. Stored data and log
+  entries are unchanged.
+
+### Fixed
+
+- **Entries apply under this release's rules from a mark on.** Commands carry
+  flags an earlier release left `false` to name its older rule
+  (`owner_in_org`, `owner_in_team`, `apps_need_consent`, `teams_seen`,
+  `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
+  `member_child_teams`, `revoke_api_keys`, `by_release`,
+  `close_drops_below`, `all_apps_rows`, `name_fits`), so a log it wrote replays as it
+  did, and a new entry was judged by whichever rule it named. The first system
+  leader on this release now writes `RequireCurrentRules`
+  (`SystemState::current_rules_from`; the `currentRules` feature, written once
+  the logged cluster version brings it, so every node applies it), and from that entry on every such flag
+  is read as set (`SystemCmd::hold_to_current_rules`). Entries before it apply
+  as they did. The API sets every flag as before, so a node on rc.15 applies
+  the entries this release proposes as this release does.
+- **An organization's upgrade run is derived where it applies.** From the same
+  mark, `StartUpgradeRun` takes its apps from the system state and the method
+  its consent names (the organization's apps of the package in its scope, a
+  publisher's instances its starter may upgrade, or the failed apps of the run
+  a retry repeats; `SystemState::upgrade_run_apps`), starts with nothing done,
+  failed or finished, and its id is unique in the cluster. `UpgradeApp { run }`
+  moves each app the run names once, only while it runs the run's package,
+  and never to an older release (`SystemState::run_may_move`); the API judges
+  the same before anything runs on the app's group and notes a refusal as
+  failed (`NOT_IN_RUN`). **Behaviour change**: a run no longer moves an app
+  from a newer release of the package back to the run's version.
 
 ## [1.0.0-rc.18] - 2026-11-12
 

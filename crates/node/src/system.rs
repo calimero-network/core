@@ -634,6 +634,16 @@ pub struct SystemState {
     /// from, as the releases that logged them did. Left out when `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub attributes_by_release: bool,
+    /// The log index from which every entry applies under this release's
+    /// rules ([`SystemCmd::hold_to_current_rules`]): the
+    /// [`SystemCmd::RequireCurrentRules`] the first system leader on a release
+    /// that makes it wrote. Entries before it, logged by releases whose
+    /// commands named an older rule with a flag left `false`, apply as they
+    /// did when a restart replays them. `None` (state from before): none
+    /// required yet. Left out when `None`, so state from before reads and
+    /// writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_rules_from: Option<u64>,
     /// The active cluster version ([`cluster_version`]): the newest core
     /// release every node supports, logged by the system leader
     /// (`SetClusterVersion`), only ever raised. `None` until the first.
@@ -1789,6 +1799,126 @@ impl SystemState {
                 .outbound_approvals
                 .get(signer),
         }
+    }
+
+    /// The release `app` runs, if installed: the one it records
+    /// (`AppRecord::release`), else the one its bundle came out of (as
+    /// `Node::release_of_app`).
+    fn app_release<'a>(&'a self, app: &'a AppRecord) -> Option<&'a PackageRef> {
+        let at = match &app.release {
+            Some(at) => at,
+            None => self.bundles.get(&app.bundle)?.package.as_ref()?,
+        };
+        let _installed = self.packages.get(&at.package)?.versions.get(&at.version)?;
+        Some(at)
+    }
+
+    /// The apps an organization's upgrade run of `package` covers: its apps
+    /// (with `team`, that team's, and with `cascade` the teams below it too)
+    /// that run a release of `package`.
+    #[must_use]
+    pub fn org_run_apps(
+        &self,
+        org: &str,
+        package: &str,
+        team: Option<&str>,
+        cascade: bool,
+    ) -> Vec<AppId> {
+        let Some(o) = self.orgs.get(org) else {
+            return Vec::new();
+        };
+        let teams: Option<Vec<String>> = team.map(|t| {
+            if cascade {
+                o.subtree(t)
+            } else {
+                vec![t.to_owned()]
+            }
+        });
+        self.apps
+            .values()
+            .filter(|a| a.org.as_deref() == Some(org))
+            .filter(|a| match (&teams, &a.access) {
+                (None, _) => true,
+                (Some(ts), Access::Team { team }) => ts.contains(team),
+                (Some(_), _) => false,
+            })
+            .filter(|a| self.app_release(a).is_some_and(|r| r.package == package))
+            .map(|a| a.app_id.clone())
+            .collect()
+    }
+
+    /// The instances a publisher's run of `package` covers: every one whose
+    /// bundle came out of `package` that `account` may upgrade.
+    #[must_use]
+    pub fn published_run_apps(&self, package: &str, account: &str) -> Vec<AppId> {
+        self.apps
+            .values()
+            .filter(|a| {
+                self.bundles
+                    .get(&a.bundle)
+                    .and_then(|b| b.package.as_ref())
+                    .is_some_and(|at| at.package == package)
+                    && self.may_upgrade(a, account)
+            })
+            .map(|a| a.app_id.clone())
+            .collect()
+    }
+
+    /// The apps a new run of `org` covers, from the state and the method its
+    /// consent names: a publisher's run every instance of its package the
+    /// starter may upgrade, a retry the apps the run it repeats failed on,
+    /// any other the organization's apps in its scope ([`Self::org_run_apps`]).
+    fn upgrade_run_apps(
+        &self,
+        org: &str,
+        run: &crate::types::UpgradeRun,
+        consent: &Value,
+    ) -> Vec<AppId> {
+        let st = serde_json::from_value::<crate::proof::Statement>(consent.clone()).ok();
+        match st.as_ref().map(|st| st.method.as_str()) {
+            Some("__upgrade_published") => self.published_run_apps(&run.package, &run.by),
+            Some("__upgrade_org_retry") => st
+                .and_then(|st| {
+                    let prev = st.args()["run"].as_str().map(str::to_owned)?;
+                    let prev = self.orgs.get(org)?.upgrade_runs.get(&prev)?;
+                    Some(
+                        prev.failed
+                            .keys()
+                            .filter(|a| self.apps.contains_key(*a))
+                            .cloned()
+                            .collect(),
+                    )
+                })
+                .unwrap_or_default(),
+            _ => self.org_run_apps(org, &run.package, run.team.as_deref(), run.cascade),
+        }
+    }
+
+    /// Whether run `r` may move `app` now: an app it names and has not
+    /// upgraded or failed yet, still on a release of the run's package, to
+    /// the run's version or a newer one.
+    ///
+    /// # Errors
+    /// Why it may not: [`NOT_IN_RUN`], [`RUN_MOVED_APP`],
+    /// [`RUN_OTHER_PACKAGE`] or [`RUN_OLDER_RELEASE`].
+    pub fn run_may_move(
+        &self,
+        r: &crate::types::UpgradeRun,
+        app: &AppRecord,
+    ) -> Result<(), &'static str> {
+        if !r.apps.contains(&app.app_id) {
+            return Err(NOT_IN_RUN);
+        }
+        if r.done.contains(&app.app_id) || r.failed.contains_key(&app.app_id) {
+            return Err(RUN_MOVED_APP);
+        }
+        let Some(at) = self.app_release(app).filter(|at| at.package == r.package) else {
+            return Err(RUN_OTHER_PACKAGE);
+        };
+        if compare_versions(&r.version, &at.version) == std::cmp::Ordering::Less {
+            return Err(RUN_OLDER_RELEASE);
+        }
+        Ok(())
     }
 
     /// Note an app's upgrade on the organization-wide run it belongs to.
@@ -3405,6 +3535,13 @@ impl SystemState {
         self.session_proofs_from.is_some_and(|from| index >= from)
     }
 
+    /// Whether an entry at `index` applies under this release's rules,
+    /// whatever its flags name ([`Self::current_rules_from`]).
+    #[must_use]
+    pub fn holds_current_rules(&self, index: u64) -> bool {
+        self.current_rules_from.is_some_and(|from| index >= from)
+    }
+
     /// Whether a refresh token was ever issued under `hash` and is still
     /// remembered (live or exchanged).
     fn refresh_known(&self, hash: &str) -> bool {
@@ -3818,6 +3955,7 @@ impl SystemCmd {
             Self::Genesis { .. } => Area::Fleet,
             Self::RequireSessionProofs { .. } => Area::Fleet,
             Self::AttributeByRelease => Area::Fleet,
+            Self::RequireCurrentRules => Area::Fleet,
             Self::SetClusterVersion { .. } => Area::Fleet,
             Self::SetOperatorRelease { .. } => Area::Approvals,
             Self::SetReleaseApproval { .. } => Area::Approvals,
@@ -3906,6 +4044,96 @@ impl SystemCmd {
                 | Self::SetSignCount { .. }
                 | Self::RevokeApiKey { .. }
         )
+    }
+
+    /// Read every flag that names an earlier release's rule as this release
+    /// sets it (`true`): what an entry from [`SystemState::current_rules_from`]
+    /// on applies under. Those flags default to `false` so entries an earlier
+    /// release logged replay as it judged them; a later entry with one left
+    /// `false` comes from no node of this release, which always sets them.
+    pub fn hold_to_current_rules(&mut self) {
+        match self {
+            Self::UpgradeApp {
+                owner_in_org,
+                owner_in_team,
+                ..
+            }
+            | Self::TransferApp {
+                owner_in_org,
+                owner_in_team,
+                ..
+            }
+            | Self::DeleteApp {
+                owner_in_org,
+                owner_in_team,
+                ..
+            }
+            | Self::SetAccess {
+                owner_in_org,
+                owner_in_team,
+                ..
+            }
+            | Self::CreateApiKey {
+                owner_in_org,
+                owner_in_team,
+                ..
+            }
+            | Self::SetAppMetadata {
+                owner_in_org,
+                owner_in_team,
+                ..
+            } => {
+                *owner_in_org = true;
+                *owner_in_team = true;
+            }
+            Self::ScopeApps {
+                owner_in_team,
+                accounts_in_app_team,
+                member_child_teams,
+                by_release,
+                all_apps_rows,
+                ..
+            } => {
+                *owner_in_team = true;
+                *accounts_in_app_team = true;
+                *member_child_teams = true;
+                *by_release = true;
+                *all_apps_rows = true;
+            }
+            Self::UpdateTeam {
+                close_drops_below,
+                all_apps_rows,
+                ..
+            } => {
+                *close_drops_below = true;
+                *all_apps_rows = true;
+            }
+            Self::MoveApp {
+                accounts_in_app_team,
+                all_apps_rows,
+                ..
+            } => {
+                *accounts_in_app_team = true;
+                *all_apps_rows = true;
+            }
+            Self::CreateOrg { name_fits, .. } => *name_fits = true,
+            Self::CreateTeam {
+                member_child_teams, ..
+            } => *member_child_teams = true,
+            Self::DeleteTeam {
+                apps_need_consent, ..
+            } => *apps_need_consent = true,
+            Self::RemoveTeamMember { subtree, .. } => *subtree = true,
+            Self::CreateInvite { teams_seen, .. } => *teams_seen = true,
+            Self::RedeemInvite {
+                free_when_unchanged,
+                ..
+            } => *free_when_unchanged = true,
+            Self::FinishAccountRecovery {
+                revoke_api_keys, ..
+            } => *revoke_api_keys = true,
+            _ => {}
+        }
     }
 }
 
@@ -4015,6 +4243,15 @@ pub const MAX_SCOPE_INSTANCES: usize = 1024;
 pub const MAX_SCOPE_KEEP: usize = 1024;
 /// The longest app team name, in characters.
 pub const MAX_APP_TEAM_NAME_CHARS: usize = 64;
+
+/// An `UpgradeApp { run }` the run does not name.
+pub const NOT_IN_RUN: &str = "the upgrade is not one its run names";
+/// An `UpgradeApp { run }` for an app the run already moved or failed.
+pub const RUN_MOVED_APP: &str = "the run has upgraded this app already";
+/// An `UpgradeApp { run }` for an app that no longer runs the run's package.
+pub const RUN_OTHER_PACKAGE: &str = "the app no longer runs the run's package";
+/// An `UpgradeApp { run }` that would move an app to an older release.
+pub const RUN_OLDER_RELEASE: &str = "an upgrade run does not move an app to an older release";
 
 /// How a logged command judges an app's owner ([`SystemState::owner_acts`]),
 /// by the flags the release that logged it set.
@@ -4644,6 +4881,15 @@ pub enum SystemCmd {
     /// system leader on a release that judges so; entries before it replay
     /// as they applied.
     AttributeByRelease,
+    /// From this entry on, every command applies under this release's rules
+    /// ([`SystemState::current_rules_from`]): the flags an earlier release
+    /// left `false` to name its older rule (`owner_in_org`, `owner_in_team`,
+    /// `apps_need_consent`, `teams_seen`, ...) are read as set, and an
+    /// organization's upgrade run is derived from the system state
+    /// (`StartUpgradeRun`). Written once by the first system leader on a
+    /// release that makes it. It only ever tightens: a node that logs it
+    /// early takes nothing from anyone.
+    RequireCurrentRules,
     /// The system leader raises the active cluster version
     /// ([`SystemState::cluster_version`]) to `version`, once every registered
     /// node advertises it or newer (`nodes`: each one's, by id). Only forward;
@@ -5376,7 +5622,12 @@ impl SystemMachine {
     /// Apply `cmd`, only once its proof holds ([`authorize`]): refused if it
     /// is new work its scope has lost ([`Self::new_work_refusal`]), else by its
     /// own rules. The proof is spent only when the command applies.
-    fn run(&mut self, cmd: SystemCmd) -> Result<Value, String> {
+    fn run(&mut self, mut cmd: SystemCmd) -> Result<Value, String> {
+        // From the mark on, a flag naming an older rule is no choice of the
+        // proposer's: this release's nodes always set it.
+        if self.state.holds_current_rules(self.index) {
+            cmd.hold_to_current_rules();
+        }
         // An entry logged before the cluster required session proofs applies
         // as it did then: a restart replays it, and every replica must reach
         // the answer the release that logged it reached.

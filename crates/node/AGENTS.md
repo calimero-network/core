@@ -177,7 +177,23 @@ is its command line.
   writes (`reconcile`). An entry before it (what an earlier release logged,
   replayed on restart) applies as it did, so replicas never diverge on it
   (`session_commands_logged_before_their_proofs_apply_as_they_did`,
-  `old_datadir.rs`).
+  `old_datadir.rs`). The flags that name an earlier release's rule
+  (`owner_in_org`, `owner_in_team`, `apps_need_consent`, `teams_seen`,
+  `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
+  `member_child_teams`, `revoke_api_keys`, `by_release`, `close_drops_below`,
+  `all_apps_rows`, `name_fits`) work the same way: from
+  `SystemState::current_rules_from` on (the `RequireCurrentRules` the first
+  system leader on this release writes from `reconcile` once the logged
+  cluster version brings `Feature::CurrentRules`), `SystemMachine::run`
+  reads them as set whatever the entry says (`SystemCmd::hold_to_current_rules`),
+  and an organization's upgrade run is derived at apply (Upgrade runs below);
+  before it, an entry applies as it was logged. The API keeps setting every
+  flag, so a replica on the release before applies this release's entries
+  alike. Regressions: `app_commands_after_the_current_rules_mark_apply_under_them`,
+  `team_commands_after_the_current_rules_mark_apply_under_them`.
+  It is independent of `AttributeByRelease` (release attribution, below):
+  `reconcile` writes each mark once, and each gates only its own rule from
+  where it sits in the log.
 - **Cluster version** (`system/cluster_version.rs`, `node/cluster_version.rs`):
   a new command or field ships with a feature gate. Each log entry shape an
   older release cannot apply alike is a `Feature` (`FEATURES`, `Feature::since`,
@@ -300,8 +316,13 @@ is its command line.
   `--app-upgrades`, `--outbound-approvals`. The first leader writes
   `SystemCmd::Genesis` before any account exists (`CreateAccount` waits for it);
   a second genesis is refused, so a restart with other flags changes nothing.
-  Every receipt-key quote binds it (`receipt_key_binding(key, governance)`,
-  `AttestationDoc::governance`), so `verify_app_cluster` proves it. Operator
+  Every receipt-key quote binds it (`receipt_key_binding(key, governance, cluster, node)`,
+  `AttestationDoc::governance`), so `verify_app_cluster` proves it. A node
+  attesting a peer as a session issuer (`Node::attest_issuer`) requires that
+  bound form, and takes a peer's unbound `receipt-key.v2` quote (a release
+  before `RECEIPT_KEY_BOUND_SINCE`) only while the logged cluster version is
+  below that release (`takes_unbound_receipt_key`), so an earlier node's
+  sessions keep working while a cluster rolls onto it. Operator
   side: `POST /ops/releases` (`operator_releases`, which `approved_releases`
   then answers), `POST /ops/apps/{app}/upgrade` (an installed release;
   `UpgradeApp { by_operator }`), `POST /ops/outbound` (`operator_outbound`,
@@ -860,6 +881,14 @@ is its command line.
   the run and on `AppRecord::last_upgrade`. `GET /orgs/{org}/upgrades/{run}`
   follows it; `.../retry` runs the failed apps again as a new run. A release
   missing from the cluster is installed from the registry first (owner runs).
+  From `SystemState::current_rules_from` on, `apply` derives the run's apps
+  from the state and its consent's method (`SystemState::upgrade_run_apps`:
+  `org_run_apps`, `published_run_apps`, or a retry's failed apps), clears its
+  progress and refuses a run id any organization holds; `UpgradeApp { run }`
+  moves an app once, only while it runs the run's package and never to an
+  older release (`SystemState::run_may_move`, which `api::start_run` asks
+  first and notes as failed, `NOT_IN_RUN`). Regression:
+  `an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once`.
 - **Aliases**: `Account::aliases`, `PUT/GET/DELETE /auth/aliases/{alias}`
   and `GET /auth/aliases`; an alias names only an app its account reaches.
 - **Metadata and org lifecycle** (org/member/app metadata, device

@@ -286,7 +286,9 @@ pub async fn verify_attestation(
         eyre::bail!("the attestation is another node's");
     }
     let nonce = attestation_nonce(&header.cluster, header.node);
-    let (key, governance) = crate::attest::verify_receipt_key(&doc, &nonce, policy).await?;
+    let (key, governance) =
+        crate::attest::verify_receipt_key(&doc, &nonce, &header.cluster, header.node, policy)
+            .await?;
     if hex::encode(key) != header.signing_key {
         eyre::bail!("the attested key is not the one that signed the file");
     }

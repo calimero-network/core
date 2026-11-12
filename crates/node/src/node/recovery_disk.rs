@@ -123,6 +123,8 @@ impl Node {
         report[32..].copy_from_slice(&calimero_client::attest::receipt_key_binding(
             &self.receipt_public(),
             &governance,
+            &self.config.cluster,
+            self.config.node_id,
         ));
         let quote = crate::attest::quote(self.config.attestation, report)?;
         let doc = crate::attest::AttestationDoc {
