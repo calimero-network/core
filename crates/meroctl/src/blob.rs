@@ -56,7 +56,6 @@ pub async fn run(cmd: BlobCmd, env: &Env) -> eyre::Result<Value> {
             &apps
                 .blob_upload(
                     &env.app(&context).await?,
-                    "application/octet-stream",
                     read_file(&file)?,
                     None,
                 )
