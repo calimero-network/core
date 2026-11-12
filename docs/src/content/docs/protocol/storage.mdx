@@ -111,14 +111,16 @@ The recovery disk (`--recovery-dir`, [merod](/operate/merod/#node-flags)) holds
 a second set of backups, sealed to the public key of whoever upgrades each app
 rather than to K_c, so they open after every mero-kms is gone
 ([Recover after every key service is gone](/operate/runbooks/#recover-after-every-key-service-is-gone)).
-Each holder has a directory, named for its key with `:` made `-`: `operator/`,
-`org-<id>/` or `account-<id>/` (`recovery_disk::holder_dir`). In it, every
+Each holder has a directory, named for its key with `:` made `-`: `operator/`
+when the operator holds app upgrades, else `org-<id>/` for the app's organization
+(`recovery_disk::holder_dir`, `SystemState::backup_holder`; since 1.0.0-rc.20 every
+app is in an organization, so no account holds backups). In it, every
 `RECOVERY_EVERY` (5 minutes), each node writes:
 
 | File | Holds |
 | --- | --- |
 | `app-<app>.<index>.<writtenAt>.rbak` | one app's state at that log index: its directory record and file key, then its rows as `calimero_log::PortableRow`s (a hidden row by the key it hides, so a group under another K_c hides it again) |
-| `holder.<index>.<writtenAt>.rbak` | an organization's or account's slice of the system state (`system::HolderSlice`: the org, its people's accounts and passkeys, its apps, the bundles and releases they run) |
+| `holder.<index>.<writtenAt>.rbak` | an organization's slice of the system state (`system::HolderSlice`: the org, its people's accounts and passkeys, its apps, the bundles and releases they run) |
 | `system.<index>.<writtenAt>.rbak` | the operator's: the whole system state |
 | `code-<hash>.rbak` | one bundle or release `.mpk` an app runs, written once |
 | `seg-<hash>` | one segment of a sealed file an app lists, copied as stored (already ciphertext under the file's own key); deleted `SEGMENT_KEEP` (7 days) after no held app lists it |
