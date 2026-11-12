@@ -3,7 +3,8 @@
 Rust client for Calimero nodes: verifies the node's attestation
 (`attest.rs`, shared with the node), seals every request (`calimero-sealed`),
 signs in with a `Passkey` (feature `testing`: `SoftAuthenticator`) or an API key,
-and calls `/apps/{app}/{intents,views,events}` (and `methods/{method}`, `openapi.json`).
+and calls every route of the node through a route layer generated from its OpenAPI
+document (`client.orgs().get(..)`, `client.apps().call(..)`; below).
 
 The attestation check (`attest::verify`) is the one place clients and peers decide
 trust: quote genuine (or an allowed mock), report data =
@@ -74,13 +75,14 @@ restart keeps its key, and a stopped node's sessions verify on the others
 (node `AGENTS.md`, "Sessions are node-signed"). Test:
 `a_removed_nodes_sessions_are_refused` (node `tests/cluster.rs`).
 
-Calls are retried with the same key (D70): `Client::call` always sends an
-idempotency key (the caller's, else a new `node:c-…` key, which the node keeps
-in its short-lived class, 10 minutes) and sends the call again with that key
-while the node answers `503` or cannot be reached (`Error::is_unavailable`;
-200 ms doubling to 2 s, 6 retries). A call that did commit is answered from its
-record. Confirm calls (`call_confirmed`) are not retried: their challenge is
-single-use. Tests: `retry_tests`, and `calls_without_a_key_each_run_once` in
+Calls are retried with the same key (D70): `client.apps().call` (and
+`apps().method`, the routes the document marks `x-calimero-retry-requires:
+idempotencyKey`) always sends an idempotency key (the caller's, else a new
+`node:c-…` key, which the node keeps in its short-lived class, 10 minutes) and
+sends the call again with that key while the node answers `503` or cannot be
+reached (`Error::is_unavailable`; 200 ms doubling to 2 s, 6 retries); `apps().view`
+is retried too. A call that did commit is answered from its record. A call sent
+with a passkey (a `confirm` method) is not retried: its challenge is single-use. Tests: `retry_tests`, and `calls_without_a_key_each_run_once` in
 `crates/node/tests/cluster.rs`.
 
 Files are uploaded by `Client::upload_file(app, reader, size)` (`files.rs`, `meroctl file upload`):
@@ -96,20 +98,79 @@ the connection.
 Runtime and routes (`transport.rs`): `Transport` is everything that is not a
 route: the attested, sealed channel (`SealedTransport::attested`), the
 credential and the `401` refresh above, error mapping (`answer`, `api_error`,
-`sealed_error`), the `412 CONFIRM_REQUIRED` step-up (`Transport::confirmed`) and
-SSE decoding (`Transport::events`). Its route-facing surface is
-`send(Request) -> reqwest::Response` (any status), `json(Request)`,
-`confirmed(Request, passkey)` and `events(Request)`, where `Request` is method,
-path, query, headers, `Body` (`Empty`, `Json`, `Bytes`) and `Credential`
-(`Held`, the transport's own and refreshed; `Authorization`, a caller's value
-passed as given; `Anonymous`). `Client`'s methods are the hand-written route
-layer over it (`Client::transport`); a generated route layer goes through the
-same calls. `meroctl proxy` forwards plain HTTP through `Transport::send`.
-mero-js (`src/runtime/`) and calimero-client-py (`calimero/transport.py`) have
-the same split.
+`sealed_error`), the two-round approvals (`Transport::approved`: a `412
+CONFIRM_REQUIRED` answered with a passkey's assertion, `confirm`; a `428
+OPERATOR_SIGNATURE_REQUIRED` with the operator's signature, `operatorProof`;
+`confirmed` is the passkey-only form) and SSE decoding (`Transport::events`). Its
+route-facing surface is `send(Request) -> reqwest::Response` (any status),
+`json(Request)`, `approved(Request, passkey, operator)` and `events(Request)`,
+where `Request` is method, path, query, headers, `Body` (`Empty`, `Json`, `Bytes`)
+and `Credential` (`Held`, the transport's own and refreshed; `Authorization`, a
+caller's value passed as given; `Anonymous`). `meroctl proxy` forwards plain HTTP
+through `Transport::send`. mero-js (`src/runtime/`) and calimero-client-py
+(`calimero/transport.py`) have the same split.
+
+The route layer is generated from the node's OpenAPI document
+(`docs/public/openapi.json`) by `calimero-client-gen` (`tools/client-gen`), as
+mero-js (`scripts/gen-methods.mjs`), calimero-client-py
+(`scripts/generate_openapi_client.py`) and the Kotlin SDK (`codegen/facade.py`)
+generate theirs, and checked in under `src/generated/` (never edited by hand):
+
+- `routes.rs`: one async method per operation on its `x-calimero-group`'s
+  accessor, `client.public()`, `auth()`, `orgs()`, `apps()`, `packages()`,
+  `consent()`, `deployments()`, `ops()`. Names are the other SDKs': the
+  operationId in snake case without a first word that repeats the group
+  (`org_get` is `orgs().get`), unless the rest is a keyword (`app_move`) or
+  another method's name; `intents` is `apps().call`, `views` is `apps().view`.
+  Arguments are the path parameters, then the JSON body's fields and the query
+  (required first), flat; a body that would make more than six arguments, is not
+  one plain object, is open, or shares a parameter's name is taken whole as its
+  type (`apps().create(AppCreateRequest { .. })`). A raw body is `bytes` (and
+  `content_type` for `*/*`), a binary answer `Vec<u8>`, a `text/plain` one a
+  `String`. The answer is the route's type; a refusal is `Error`.
+- From the extensions: `x-calimero-step-up` adds `passkey: Option<&mut dyn
+  Passkey>` (`None` sends as is and returns the `412`; `confirm` is never an
+  argument), `x-calimero-operator` adds `operator: Option<&OperatorSigner>`
+  (`operatorProof` likewise), `x-calimero-retry-safe` resends while
+  `Error::is_unavailable` (`retry_unavailable`, D70) unless approving, with the
+  `x-calimero-retry-requires` key made when none is given (`new_call_key`), and
+  `x-calimero-sealed: false` (`/health`, `/attestation`) goes in the clear
+  (`route::clear`). Event streams are not methods: `Client::events`,
+  `Client::presence_stream`.
+- `types.rs`: components keep their names; inline schemas are named after where
+  they are (`{Operation}Request`, `{Operation}Response`, then each property).
+  Absent is `Option<T>`; absent or `null` is `Option<Option<T>>` (and an optional
+  `Value` keeps a sent `null`), both through `route::present`. A struct an answer
+  reaches keeps unnamed fields in `extra`, so re-serializing loses nothing; a
+  string enum keeps an unknown value in `Other(String)`. `Assertion`,
+  `Registration`, `Session`, `AttestationDoc`, `Governance`, `Receipt` and
+  `Release` are the client's own types (`pub use`), so what `attest` checks is
+  what the routes answer. `Error` is not generated: every refusal is `Error`.
+
+The hand-written flows are built on the generated methods: `sign_up*`,
+`sign_in*`, `add_passkey`, `start_recovery` (passkey and recovery ceremonies),
+`verify_app_cluster` (attestation), `upload_file` (`files.rs`), and the event
+streams. The route methods written by hand before (`Client::get`, `post`,
+`call`, `create_app`, ...) are `#[deprecated]`, each naming its replacement, and
+go once `crates/node/tests` and `crates/merod/tests` stop calling them.
+
+A route change regenerates the document and then this layer, in the same change:
+
+```bash
+UPDATE_OPENAPI=1 cargo test -p calimero-node --lib openapi
+cargo run -p calimero-client-gen
+```
+
+`the_checked_in_client_is_what_the_document_generates` (in `tools/client-gen`,
+run by CI's workspace tests) regenerates into a temporary directory and fails
+while the checked-in code differs. Tests of the generated layer against a node:
+`crates/node/tests/generated_routes.rs` (a step-up route, an operator route, raw
+bodies, an explicit `null`).
 
 The command line over this client is `meroctl` (`crates/meroctl`).
 
 ```bash
 cargo test -p calimero-client
+cargo test -p calimero-client-gen      # the generated layer is current
+cargo test -p calimero-node --test generated_routes
 ```

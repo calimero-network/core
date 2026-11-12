@@ -816,6 +816,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "calimero-client-gen"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "calimero-git-hooks"
 version = "0.0.0"
 

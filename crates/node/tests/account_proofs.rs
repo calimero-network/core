@@ -5,6 +5,14 @@
 //! proof itself. Only a passkey session gets one: no API key, no anonymous
 //! caller; and only the operator reads the keys.
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 use calimero_client::attest::AccountProof;
 use calimero_client::{Client, Error};
 use serde_json::{json, Value};

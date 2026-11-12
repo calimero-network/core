@@ -4,6 +4,14 @@
 //! method and subject, newest first. A refresh is no sign-in. Nobody else
 //! sees it: another account reads only its own, and an API key is refused.
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 use std::time::Duration;
 
 use calimero_identity::testing::SoftAuthenticator;
