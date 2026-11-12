@@ -524,7 +524,7 @@ pub struct SystemState {
     /// organization it is bound to, and how many bindings it has had. Where
     /// owners hold release approvals, that organization's approved releases govern every instance
     /// of every package the key signs, whoever owns the instance
-    /// ([`SystemState::approved_for_bundle`]); where a package declares
+    /// ([`SystemState::approved_for_release`]); where a package declares
     /// `upgrades: publisher`, its `MANAGE_APPLICATION` holders upgrade them
     /// ([`SystemState::may_upgrade`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
