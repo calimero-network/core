@@ -166,3 +166,47 @@ fn abi_diff_exits_non_zero_on_a_breaking_change() {
     assert_eq!(report["breaking"], true);
     assert_eq!(report["changes"][0]["message"], "kind call -> view");
 }
+
+#[test]
+fn abi_diff_compares_record_and_enum_shapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../app-abi/tests/fixtures/kitchen-sink.abi.json");
+    let old: Value = serde_json::from_slice(&fs::read(fixture).unwrap()).unwrap();
+    let write = |name: &str, v: &Value| {
+        let p = dir.path().join(name);
+        fs::write(&p, serde_json::to_vec(v).unwrap()).unwrap();
+        p
+    };
+    let old_path = write("old.json", &old);
+    let run = |new: &Value| {
+        bin()
+            .arg("abi-diff")
+            .arg(&old_path)
+            .arg(write("new.json", new))
+            .output()
+            .unwrap()
+    };
+
+    // `Item` is a parameter of `everything`: a field callers may leave out is compatible.
+    let mut optional = old.clone();
+    optional["types"]["Item"]["fields"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(["rank", "option<u32>"]));
+    let out = run(&optional);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout)
+        .contains("compatible type Item: optional field `rank` added (option<u32>)"));
+
+    // `Status` sits inside `Item`, which `lookup` returns: a new variant breaks readers.
+    let mut variant = old;
+    variant["types"]["Status"]["variants"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "name": "Archived" }));
+    let out = run(&variant);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout)
+        .contains("breaking   type Status: variant `Archived` added: a client that decodes"));
+}

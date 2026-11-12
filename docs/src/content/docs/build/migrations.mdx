@@ -42,7 +42,7 @@ node's upgrade gate can tell which state layout a bundle expects. Bump it when
 the state's shape changes.
 
 `mero-app-build abi-diff <old> <new>` lists what changed in the state section
-(and in the methods, errors and events), and
+(and in the methods, errors, events and the shapes of the types they name), and
 `mero-sign sign --previous <last release>` refuses to sign a release that removes a state field or changes its
 kind without bumping the version ([App interface](/core/build/app-abi/#check-a-new-version-against-the-last)).
 
