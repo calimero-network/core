@@ -222,7 +222,7 @@ fn tcb_evaluation_data_number_of(tcb_info_json: &str) -> Option<u32> {
 }
 
 /// `TDATTRIBUTES.DEBUG` is bit 0 of the little-endian `TDATTRIBUTES` field.
-fn is_debug_td(tdattributes: &[u8; 8]) -> bool {
+pub(crate) fn is_debug_td(tdattributes: &[u8; 8]) -> bool {
     tdattributes[0] & 1 == 1
 }
 

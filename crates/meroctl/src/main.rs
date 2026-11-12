@@ -8,14 +8,6 @@
 //! of its teams (`group`); an identity is an account with passkeys
 //! (`account`). The operator's commands (`ops`) take `--ops-token`.
 
-// Tracking: the commands move onto the generated route layer
-// (`client.<group>().<method>()`) in the pull request stacked on this one,
-// which removes this allow.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until the commands use the generated ones"
-)]
-
 use std::path::PathBuf;
 
 use calimero_client::types::ViewsRequestConsistency;

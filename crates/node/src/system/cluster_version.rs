@@ -76,10 +76,14 @@ pub enum Feature {
     Pipelines,
     /// `AcquireRun` naming a pool: an earlier release ignores `pool` and places by memory.
     NamedPool,
+    /// `AttributeByRelease` (#4935): an earlier release cannot read it, so
+    /// its replicas would keep judging apps by the release each bundle was
+    /// first recorded from.
+    AttributeByRelease,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 17] = [
+pub const FEATURES: [Feature; 18] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -97,6 +101,7 @@ pub const FEATURES: [Feature; 17] = [
     Feature::ComputeOnly,
     Feature::Pipelines,
     Feature::NamedPool,
+    Feature::AttributeByRelease,
 ];
 
 impl Feature {
@@ -121,6 +126,7 @@ impl Feature {
             Self::ComputeOnly => "computeOnly",
             Self::Pipelines => "pipelines",
             Self::NamedPool => "namedPool",
+            Self::AttributeByRelease => "attributeByRelease",
         }
     }
 
@@ -141,9 +147,11 @@ impl Feature {
             | Self::RenameOrg
             | Self::TeamMembersBatch
             | Self::AppTeamChildTeams => "1.0.0-rc.16",
-            Self::PriceTable | Self::ComputeOnly | Self::Pipelines | Self::NamedPool => {
-                "1.0.0-rc.19"
-            }
+            Self::PriceTable
+            | Self::ComputeOnly
+            | Self::Pipelines
+            | Self::NamedPool
+            | Self::AttributeByRelease => "1.0.0-rc.19",
         }
     }
 }
@@ -356,6 +364,7 @@ impl SystemCmd {
             Self::SetAllApps { .. } => vec![Feature::AllApps],
             Self::RestoreApp { .. } | Self::FinishRestore { .. } => vec![Feature::RestoreApp],
             Self::RenameOrg { .. } => vec![Feature::RenameOrg],
+            Self::AttributeByRelease => vec![Feature::AttributeByRelease],
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
             }
@@ -590,6 +599,7 @@ mod tests {
                 actor: "alice".into(),
                 consent: Value::Null,
             },
+            Feature::AttributeByRelease => SystemCmd::AttributeByRelease,
             Feature::RestoreApp => SystemCmd::FinishRestore {
                 app_id: "app".into(),
                 group: 2,

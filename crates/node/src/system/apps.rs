@@ -317,8 +317,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err(COMPONENTS_CHANGED);
             }
             let operator = s.governance().app_upgrades == Authority::Operator;
-            let from = s.apps.get(&app_id).map(|a| a.bundle.clone());
-            if !by_operator && from.is_some_and(|f| !s.upgrade_keeps_authority(&f, &bundle)) {
+            let to = s.governing(release.as_ref(), &bundle, at);
+            let keeps = s
+                .apps
+                .get(&app_id)
+                .is_none_or(|a| s.upgrade_keeps_authority(s.governing_release(a), to));
+            if !by_operator && !keeps {
                 return Err(
                         "an app whose owner upgrades it is not moved to a release its publisher upgrades",
                     );

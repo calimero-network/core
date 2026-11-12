@@ -3,14 +3,6 @@
 //! collected when nothing refers to them. A guest reads a sealed file only inside a compute run
 //! (`compute_runs.rs`), so these tests read through the provider such a run uses.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 mod common;
 use common::UploadBytes as _;
 
@@ -19,13 +11,14 @@ use std::time::Duration;
 use std::sync::Arc;
 
 use calimero_client::attest::HttpAttestor;
-use calimero_client::{Client, Consistency, Policy};
+use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::{Client, Policy};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BlobRecord;
 use calimero_node::files::{unwrap_key, FileOpener};
 use calimero_node::node::{CallRequest, PeerBlobs, SEGMENT_GRACE};
 use calimero_node::types::Caller;
-use common::{signed_up, Cluster};
+use common::{signed_up, typed, wire, Cluster};
 use serde_json::{json, Value};
 
 const MIB: usize = 1024 * 1024;
@@ -85,10 +78,17 @@ async fn start() -> Fixture {
 async fn start_with(c: Cluster) -> Fixture {
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
-        .upload_bundle(common::component("files"))
+        .packages()
+        .bundle_put(common::component("files"))
         .await
+        .map(|b| b.hash)
         .unwrap();
-    let app = alice.create_app("files", &bundle, json!({})).await.unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "files", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
     let mut clients = vec![alice];
     for i in 1..c.nodes.len() {
         let client = c.client(i);
@@ -111,10 +111,12 @@ impl Fixture {
     /// entry's index.
     async fn put(&self, len: usize, seed: u64) -> (String, String, u64) {
         let r = self.clients[0]
+            .apps()
             .call(
                 &self.app,
                 "putFile",
-                json!({ "len": len.to_string(), "seed": seed.to_string() }),
+                Some(json!({ "len": len.to_string(), "seed": seed.to_string() })),
+                None,
                 None,
             )
             .await
@@ -384,7 +386,14 @@ async fn a_failing_call_stores_no_bytes_and_no_mark() {
     let f = start().await;
     let before = f.blob_counts();
     let e = f.clients[0]
-        .call(&f.app, "putAndFail", json!({ "len": "100000" }), None)
+        .apps()
+        .call(
+            &f.app,
+            "putAndFail",
+            Some(json!({ "len": "100000" })),
+            None,
+            None,
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
@@ -403,10 +412,12 @@ impl Fixture {
     async fn pass_the_idle_time(&self) -> u64 {
         self.c.advance_all(PAST_IDLE_MS);
         let r = self.clients[0]
+            .apps()
             .call(
                 &self.app,
                 "putUnkept",
-                json!({ "len": "1", "seed": "99" }),
+                Some(json!({ "len": "1", "seed": "99" })),
+                None,
                 None,
             )
             .await
@@ -441,10 +452,12 @@ async fn a_file_kept_by_a_blob_ref_survives_the_idle_time() {
 async fn a_file_finished_but_never_stored_is_collected_on_every_replica() {
     let f = start().await;
     let r = f.clients[0]
+        .apps()
         .call(
             &f.app,
             "putUnkept",
-            json!({ "len": "100000", "seed": "5" }),
+            Some(json!({ "len": "100000", "seed": "5" })),
+            None,
             None,
         )
         .await
@@ -469,7 +482,8 @@ async fn a_file_whose_last_reference_is_removed_is_collected_on_every_replica() 
     f.read_on(1, &id, index).await.unwrap();
     f.read_on(2, &id, index).await.unwrap();
     let _forgot = f.clients[0]
-        .call(&f.app, "forgetFile", json!({ "id": id }), None)
+        .apps()
+        .call(&f.app, "forgetFile", Some(json!({ "id": id })), None, None)
         .await
         .unwrap();
     // Still held until its idle time passes, then forgotten in the same entry everywhere.
@@ -522,13 +536,21 @@ async fn a_call_and_a_view_cannot_open_a_sealed_file() {
     let f = start().await;
     let (id, _sha, _index) = f.put(100_000, 5).await;
     let e = f.clients[0]
-        .call(&f.app, "touchFile", json!({ "id": id }), None)
+        .apps()
+        .call(&f.app, "touchFile", Some(json!({ "id": id })), None, None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("TRAP"), "{e}");
     assert!(format!("{:?}", e.details()).contains("compute run"), "{e}");
     let e = f.clients[0]
-        .view(&f.app, "readFile", json!({ "id": id }), Consistency::Strong)
+        .apps()
+        .view(
+            &f.app,
+            "readFile",
+            Some(json!({ "id": id })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("TRAP"), "{e}");
@@ -574,7 +596,8 @@ async fn a_call_fails_retryably_when_a_majority_cannot_take_the_files() {
     }
     let args = json!({ "len": "100000", "seed": "1" });
     let e = f.clients[0]
-        .call(&f.app, "putFile", args.clone(), Some("k1"))
+        .apps()
+        .call(&f.app, "putFile", Some(args.clone()), Some("k1"), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("FILES_UNAVAILABLE"), "{e}");
@@ -591,7 +614,8 @@ async fn a_call_fails_retryably_when_a_majority_cannot_take_the_files() {
         f.node(i).set_peer_blobs(PeerBlobs::Accept);
     }
     let r = f.clients[0]
-        .call(&f.app, "putFile", args, Some("k1"))
+        .apps()
+        .call(&f.app, "putFile", Some(args), Some("k1"), None)
         .await
         .unwrap();
     assert!(r.index > applied);
@@ -605,7 +629,7 @@ async fn a_forwarded_call_that_cannot_store_its_files_is_attempted_once() {
     for i in (0..3).filter(|i| *i != leader) {
         f.node(i).set_peer_blobs(PeerBlobs::Refuse);
     }
-    let account = f.clients[0].me().await.unwrap()["accountId"]
+    let account = f.clients[0].auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -627,10 +651,12 @@ async fn an_entry_replaced_as_too_large_stores_no_files() {
     let before = f.blob_counts();
     let pushes = f.node(f.leader()).file_pushes();
     let e = f.clients[0]
+        .apps()
         .call(
             &f.app,
             "putPadded",
-            json!({ "len": "100000", "seed": "2", "pad": 800 * 1024 }),
+            Some(json!({ "len": "100000", "seed": "2", "pad": 800 * 1024 })),
+            None,
             None,
         )
         .await
@@ -645,10 +671,12 @@ async fn a_dropped_reference_in_an_entry_replaced_as_too_large_keeps_the_file() 
     let f = start().await;
     let (id, sha, index) = f.put(100_000, 6).await;
     let e = f.clients[0]
+        .apps()
         .call(
             &f.app,
             "forgetPadded",
-            json!({ "id": id, "pad": 800 * 1024 }),
+            Some(json!({ "id": id, "pad": 800 * 1024 })),
+            None,
             None,
         )
         .await
@@ -718,9 +746,18 @@ async fn a_plain_blob_with_a_segments_hash_never_takes_the_segment_with_it() {
         .unwrap()
         .unwrap();
     // The same bytes as a plain blob have the segment's hash as their id.
-    let blob = f.clients[0].upload_blob(&f.app, bytes).await.unwrap();
+    let blob = f.clients[0]
+        .apps()
+        .blob_upload(&f.app, bytes, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(blob["id"].as_str().unwrap(), segment);
-    let _deleted = f.clients[0].delete_blob(&f.app, &segment).await.unwrap();
+    let _deleted = f.clients[0]
+        .apps()
+        .blob_delete(&f.app, &segment)
+        .await
+        .unwrap();
     f.until("the blob is deleted everywhere", || {
         (0..3).all(|i| f.node(i).engine.get_blob(&segment).unwrap().is_none())
     })
@@ -751,8 +788,10 @@ async fn segments_no_app_lists_are_swept_after_the_grace_and_everything_else_sta
     }
     // A plain blob as old as the orphans.
     let plain = f.clients[0]
-        .upload_blob(&f.app, stream(3_000, 4))
+        .apps()
+        .blob_upload(&f.app, stream(3_000, 4), None)
         .await
+        .map(wire)
         .unwrap();
     let plain = plain["id"].as_str().unwrap().to_owned();
 
@@ -1020,7 +1059,7 @@ async fn the_bytes_being_pushed_are_bounded_across_calls() {
     let f = start().await;
     let leader = f.leader();
     f.node(leader).limit_push_bytes(1_000);
-    let account = f.clients[0].me().await.unwrap()["accountId"]
+    let account = f.clients[0].auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -1060,7 +1099,7 @@ async fn a_call_through_a_node_that_hosts_no_replica_keeps_the_leaders_answer() 
     for i in (0..4).filter(|i| *i != leader && *i != outsider) {
         f.node(i).set_peer_blobs(PeerBlobs::Refuse);
     }
-    let account = f.clients[0].me().await.unwrap()["accountId"]
+    let account = f.clients[0].auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -1116,11 +1155,8 @@ async fn a_replica_move_hands_the_files_to_the_joining_node() {
     let ops = f.c.client(leader as usize - 1);
     ops.use_api_key("ops-secret").await;
     let _moved = ops
-        .post_operator_signed(
-            &format!("ops/apps/{}/replicas", f.app),
-            json!({ "replicas": target }),
-            &common::operator_sign,
-        )
+        .ops()
+        .set_replicas(&f.app, typed(json!(target)), Some(&common::operator_sign))
         .await
         .unwrap();
     let joined = f.c.nodes[spare as usize - 1].as_ref().unwrap();
@@ -1153,16 +1189,17 @@ async fn a_file_is_read_the_moment_a_move_took_its_leader_off() {
     let ops = f.c.client(leader as usize - 1);
     ops.use_api_key("ops-secret").await;
     let _moved = ops
-        .post_operator_signed(
-            &format!("ops/apps/{}/replicas", f.app),
-            json!({ "replicas": target }),
-            &common::operator_sign,
-        )
+        .ops()
+        .set_replicas(&f.app, typed(json!(target)), Some(&common::operator_sign))
         .await
         .unwrap();
-    let path = format!("apps/{}/files/{id}", f.app);
     for (who, node) in [("joined", spare), ("left", leader)] {
-        let info = f.clients[node as usize - 1].get(&path).await.unwrap();
+        let info = f.clients[node as usize - 1]
+            .apps()
+            .file_info(&f.app, &id)
+            .await
+            .map(wire)
+            .unwrap();
         assert_eq!(info["size"], json!(150_000), "{who}");
         assert_eq!(info["sha256"], json!(sha), "{who}");
     }
@@ -1185,10 +1222,12 @@ async fn a_snapshot_install_carries_the_marks() {
 
     let writer = &f.clients[(leader + 2) % 3];
     let r = writer
+        .apps()
         .call(
             &f.app,
             "putFile",
-            json!({ "len": "70000", "seed": "4" }),
+            Some(json!({ "len": "70000", "seed": "4" })),
+            None,
             None,
         )
         .await
@@ -1197,7 +1236,14 @@ async fn a_snapshot_install_carries_the_marks() {
     let index = r.index;
     for _ in 0..300 {
         let _r = writer
-            .call(&f.app, "putFile", json!({ "len": "1", "seed": "1" }), None)
+            .apps()
+            .call(
+                &f.app,
+                "putFile",
+                Some(json!({ "len": "1", "seed": "1" })),
+                None,
+                None,
+            )
             .await
             .unwrap();
     }
@@ -1245,11 +1291,13 @@ async fn blobs_info_answers_for_a_file_and_blobs_grant_refuses_it() {
     let (id, sha, index) = f.put(100_000, 14).await;
     for i in 0..3 {
         let info = f.clients[i]
+            .apps()
             .view(
                 &f.app,
                 "blobInfo",
-                json!({ "id": id }),
-                Consistency::Stale { min_index: index },
+                Some(json!({ "id": id })),
+                Some(ViewsRequestConsistency::Stale),
+                Some(index),
             )
             .await
             .unwrap();
@@ -1260,21 +1308,25 @@ async fn blobs_info_answers_for_a_file_and_blobs_grant_refuses_it() {
         );
     }
     let e = f.clients[0]
+        .apps()
         .view(
             &f.app,
             "shareFile",
-            json!({ "id": id }),
-            Consistency::Strong,
+            Some(json!({ "id": id })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
         )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("TRAP"), "{e}");
     let none = f.clients[0]
+        .apps()
         .view(
             &f.app,
             "blobInfo",
-            json!({ "id": "11".repeat(32) }),
-            Consistency::Strong,
+            Some(json!({ "id": "11".repeat(32) })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
         )
         .await
         .unwrap();
@@ -1290,15 +1342,26 @@ async fn the_blob_routes_refuse_a_file_id() {
         assert_eq!(e.code(), Some("NOT_SUPPORTED"), "{what}: {e}");
     };
     refused(
-        alice.download_blob(&f.app, &id).await.unwrap_err(),
+        alice
+            .apps()
+            .blob_download(&f.app, &id, None)
+            .await
+            .unwrap_err(),
         "download",
     );
     // Another node's route answers the same.
     refused(
-        f.clients[2].download_blob(&f.app, &id).await.unwrap_err(),
+        f.clients[2]
+            .apps()
+            .blob_download(&f.app, &id, None)
+            .await
+            .unwrap_err(),
         "download",
     );
-    refused(alice.delete_blob(&f.app, &id).await.unwrap_err(), "delete");
+    refused(
+        alice.apps().blob_delete(&f.app, &id).await.unwrap_err(),
+        "delete",
+    );
     // The preimage of the id, uploaded as a blob, would claim the file's id.
     let mut preimage = b"calimero.file.segments.v1\0".to_vec();
     let hashes = f.segments_of(&id);
@@ -1308,13 +1371,20 @@ async fn the_blob_routes_refuse_a_file_id() {
     }
     assert_eq!(sha256_hex(&preimage), id);
     refused(
-        alice.upload_blob(&f.app, preimage).await.unwrap_err(),
+        alice
+            .apps()
+            .blob_upload(&f.app, preimage, None)
+            .await
+            .unwrap_err(),
         "upload",
     );
     // The owner sees the file in the file listing and not in the blob listing.
-    let listed = alice.get(&format!("apps/{}/files", f.app)).await.unwrap();
+    let listed = alice.apps().files_list(&f.app).await.map(wire).unwrap();
     assert_eq!(listed["files"].as_array().unwrap().len(), 1, "{listed}");
-    assert_eq!(alice.list_blobs(&f.app).await.unwrap()["blobs"], json!([]));
+    assert_eq!(
+        alice.apps().blob_list(&f.app).await.map(wire).unwrap()["blobs"],
+        json!([])
+    );
     for i in 0..3 {
         assert!(f.mark(i, &id).is_some_and(|r| r.file.is_some()), "node {i}");
     }
@@ -1339,10 +1409,12 @@ async fn the_ciphertext_runs_hold_before_their_entries_is_bounded_and_returned()
     let applied = f.applied();
     let before = f.blob_counts();
     let e = f.clients[0]
+        .apps()
         .call(
             &f.app,
             "putFile",
-            json!({ "len": "400000", "seed": "51" }),
+            Some(json!({ "len": "400000", "seed": "51" })),
+            None,
             None,
         )
         .await
@@ -1375,7 +1447,7 @@ fn status(e: calimero_client::Error) -> (u16, String) {
 
 impl Fixture {
     async fn account(&self) -> String {
-        self.clients[0].me().await.unwrap()["accountId"]
+        self.clients[0].auth().me().await.map(wire).unwrap()["accountId"]
             .as_str()
             .unwrap()
             .to_owned()
@@ -1399,17 +1471,20 @@ impl Fixture {
     /// Alice's file bytes, as `/auth/usage` shows them.
     async fn charged(&self) -> u64 {
         let payer = format!("account:{}", self.account().await);
-        used(&self.clients[0].usage().await.unwrap(), &payer)
+        used(
+            &self.clients[0].auth().usage().await.map(wire).unwrap(),
+            &payer,
+        )
     }
 
     async fn set_file_quota(&self, bytes: u64) {
         let ops = self.c.client(1);
         ops.use_api_key("ops-secret").await;
         let _ok = ops
-            .post_operator_signed(
-                "ops/quotas",
-                json!({ "maxFileBytesPerOrg": bytes }),
-                &common::operator_sign,
+            .ops()
+            .quotas_set(
+                typed(json!({ "maxFileBytesPerOrg": bytes })),
+                Some(&common::operator_sign),
             )
             .await
             .unwrap();
@@ -1470,8 +1545,10 @@ async fn an_uploaded_file_is_read_by_the_app_and_stored_sealed() {
     }
 
     let listed = f.clients[0]
-        .get(&format!("apps/{}/files", f.app))
+        .apps()
+        .files_list(&f.app)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(listed["files"].as_array().unwrap().len(), 1, "{listed}");
     assert_eq!(listed["files"][0]["id"], json!(id));
@@ -1487,11 +1564,13 @@ async fn an_uploaded_file_answers_its_uploader_through_every_node_and_a_made_fil
         let f = &f;
         async move {
             let r = f.clients[0]
+                .apps()
                 .view(
                     &f.app,
                     "uploaderOf",
-                    json!({ "id": id }),
-                    Consistency::Strong,
+                    Some(json!({ "id": id })),
+                    Some(ViewsRequestConsistency::Strong),
+                    None,
                 )
                 .await
                 .unwrap();
@@ -1523,7 +1602,8 @@ async fn a_file_is_not_downloadable() {
     let f = start().await;
     let up = f.upload(0, 1000, 1).await.unwrap();
     let e = f.clients[0]
-        .download_blob(&f.app, up["id"].as_str().unwrap())
+        .apps()
+        .blob_download(&f.app, up["id"].as_str().unwrap(), None)
         .await
         .unwrap_err();
     assert_eq!(status(e), (409, "NOT_SUPPORTED".to_owned()));
@@ -1575,11 +1655,13 @@ async fn an_upload_through_a_node_that_hosts_no_replica_is_stored_on_the_replica
 async fn a_read_only_key_cannot_upload() {
     let f = start().await;
     let (_id, key) = f.clients[0]
-        .create_api_key(
-            json!({ "readOnly": true, "apps": [f.app] }),
-            &mut *f.passkey.lock().await,
+        .auth()
+        .apikey_create(
+            typed(json!({ "readOnly": true, "apps": [f.app] })),
+            Some(&mut *f.passkey.lock().await),
         )
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
     let agent = f.c.client(2);
     agent.use_api_key(&key).await;
@@ -1620,10 +1702,12 @@ async fn a_call_creating_a_file_past_the_quota_fails_and_logs_nothing() {
     let (before, applied) = (f.blob_counts(), f.applied());
     let pushes = f.node(f.leader()).file_pushes();
     let e = f.clients[0]
+        .apps()
         .call(
             &f.app,
             "putFile",
-            json!({ "len": "6000", "seed": "2" }),
+            Some(json!({ "len": "6000", "seed": "2" })),
+            None,
             None,
         )
         .await
@@ -1703,12 +1787,20 @@ async fn the_file_commands_are_not_methods_anyone_can_call() {
     let mark = json!({ "id": "ab".repeat(32), "size": 5, "sha256": "", "wrappedKey": "" });
     let args = json!({ "mark": mark });
     let e = f.clients[0]
-        .call(&f.app, "__file", args.clone(), None)
+        .apps()
+        .call(&f.app, "__file", Some(args.clone()), None, None)
         .await
         .unwrap_err();
     assert_ne!(e.code(), None, "{e}");
     let e = f.clients[0]
-        .view(&f.app, "__file", args, Consistency::Strong)
+        .apps()
+        .view(
+            &f.app,
+            "__file",
+            Some(args),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap_err();
     assert_ne!(e.code(), None, "as a view: {e}");
@@ -1775,21 +1867,19 @@ struct Org {
 
 async fn org_with_a_public_app(f: &Fixture) -> Org {
     let alice = &f.clients[0];
-    let org = alice.post("orgs", json!({ "name": "Docs" })).await.unwrap()["orgId"]
+    let org = alice.orgs().create("Docs", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let bundle = alice
-        .upload_bundle(common::component("files"))
+        .packages()
+        .bundle_put(common::component("files"))
         .await
+        .map(|b| b.hash)
         .unwrap();
     let app = alice
-        .create_app(
-            "open",
-            &bundle,
-            json!({ "org": org, "access": { "kind": "public" } }),
-        )
-        .await
+        .apps().create(typed(json!({ "name": "open", "bundle": &bundle, "org": org, "access": { "kind": "public" } })))
+        .await.map(|a| a.app_id)
         .unwrap();
     let join = |role: &'static str, node: usize, name: &'static str| {
         let org = org.clone();
@@ -1797,20 +1887,19 @@ async fn org_with_a_public_app(f: &Fixture) -> Org {
             let (c, _k) = signed_up(&f.c, node, name).await;
             if role != "stranger" {
                 let token = alice
-                    .post_confirmed(
-                        &format!("orgs/{org}/invites"),
-                        json!({ "role": role }),
-                        &mut *f.passkey.lock().await,
+                    .orgs()
+                    .invite_create(
+                        &org,
+                        typed(json!({ "role": role })),
+                        Some(&mut *f.passkey.lock().await),
                     )
                     .await
+                    .map(wire)
                     .unwrap()["token"]
                     .as_str()
                     .unwrap()
                     .to_owned();
-                let _r = c
-                    .post(&format!("invites/{token}/redeem"), json!({}))
-                    .await
-                    .unwrap();
+                let _r = c.orgs().invite_redeem(&token).await.unwrap();
             }
             c
         }
@@ -1854,13 +1943,12 @@ async fn only_members_and_above_list_the_files_of_a_public_app_of_an_organizatio
     let id = up["id"].as_str().unwrap();
 
     // A file's hash is the plaintext's: others may not list the files.
-    let path = format!("apps/{}/files", o.app);
     for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
-        let e = c.get(&path).await.unwrap_err();
+        let e = c.apps().files_list(&o.app).await.unwrap_err();
         assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who}");
     }
     for (who, c) in [("member", &o.member), ("owner", &f.clients[0])] {
-        let listed = c.get(&path).await.unwrap();
+        let listed = c.apps().files_list(&o.app).await.map(wire).unwrap();
         assert_eq!(listed["files"][0]["id"], json!(id), "{who}");
         assert_eq!(
             listed["files"][0]["sha256"],
@@ -1889,9 +1977,8 @@ async fn the_info_of_a_file_is_its_size_and_hash_for_those_who_list_files_and_un
     })
     .await;
 
-    let path = format!("apps/{}/files/{id}", o.app);
     for (who, c) in [("member", &o.member), ("owner", &f.clients[0])] {
-        let info = c.get(&path).await.unwrap();
+        let info = c.apps().file_info(&o.app, id).await.map(wire).unwrap();
         assert_eq!(info["size"], json!(5_000), "{who}");
         assert_eq!(info["sha256"], json!(sha256_hex(&plain)), "{who}");
         // Never the key or any content.
@@ -1901,15 +1988,19 @@ async fn the_info_of_a_file_is_its_size_and_hash_for_those_who_list_files_and_un
     }
     // A caller who may call the app but not list its files may not ask for one either.
     for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
-        let e = c.get(&path).await.unwrap_err();
+        let e = c.apps().file_info(&o.app, id).await.unwrap_err();
         assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who}");
     }
-    let unknown = format!("apps/{}/files/{}", o.app, "11".repeat(32));
-    let e = o.member.get(&unknown).await.unwrap_err();
+    let e = o
+        .member
+        .apps()
+        .file_info(&o.app, &"11".repeat(32))
+        .await
+        .unwrap_err();
     assert_eq!(status(e), (404, "NOT_FOUND".to_owned()));
     // Downloading it stays refused to everyone.
     for c in [&o.member, &f.clients[0]] {
-        let e = c.download_blob(&o.app, id).await.unwrap_err();
+        let e = c.apps().blob_download(&o.app, id, None).await.unwrap_err();
         assert_eq!(status(e), (409, "NOT_SUPPORTED".to_owned()));
     }
 }
@@ -1932,7 +2023,12 @@ async fn the_info_and_the_list_of_an_upload_are_read_from_the_leader() {
     let follower = (leader + 1) % 3;
     f.c.stop(follower).await;
     let owner = &f.clients[leader];
-    let plain = owner.upload_blob(&f.app, stream(2_000, 7)).await.unwrap();
+    let plain = owner
+        .apps()
+        .blob_upload(&f.app, stream(2_000, 7), None)
+        .await
+        .map(wire)
+        .unwrap();
     let file = owner.upload_bytes(&f.app, stream(4_000, 9)).await.unwrap();
     let (plain, file) = (plain["id"].as_str().unwrap(), file["id"].as_str().unwrap());
     f.c.restart(follower, |_| {}).await;
@@ -1988,8 +2084,10 @@ async fn internal_storage_answers_strongly_only_as_the_leader() {
     let follower = (leader + 1) % 3;
     f.c.stop(follower).await;
     let up = f.clients[leader]
-        .upload_blob(&f.app, stream(2_000, 7))
+        .apps()
+        .blob_upload(&f.app, stream(2_000, 7), None)
         .await
+        .map(wire)
         .unwrap();
     let id = hex_id(up["id"].as_str().unwrap());
     f.c.restart(follower, |_| {}).await;
@@ -2041,8 +2139,10 @@ async fn a_node_that_hosts_no_replica_reads_the_upload_from_the_leader() {
     assert_ne!(leader, first, "the first replica still leads");
     f.c.stop(first).await;
     let up = f.clients[leader]
-        .upload_blob(&f.app, stream(2_000, 7))
+        .apps()
+        .blob_upload(&f.app, stream(2_000, 7), None)
         .await
+        .map(wire)
         .unwrap();
     let id = hex_id(up["id"].as_str().unwrap());
     f.c.restart(first, |_| {}).await;
@@ -2065,10 +2165,7 @@ async fn a_deleted_apps_sealed_files_leave_every_replica_and_the_quota() {
     assert_eq!(f.charged().await, 32_000);
     assert!(!f.holders(&uploaded).is_empty() && !f.holders(&made).is_empty());
 
-    let _ok = f.clients[0]
-        .delete(&format!("apps/{}", f.app))
-        .await
-        .unwrap();
+    let _ok = f.clients[0].apps().delete(&f.app).await.unwrap();
     f.wait_gone(&uploaded).await;
     f.wait_gone(&made).await;
     assert_eq!(f.charged().await, 0);
@@ -2093,15 +2190,12 @@ type Answer = Result<Value, Box<calimero_client::Error>>;
 
 /// The upload session routes, as a client calls them through node `via`.
 impl Fixture {
-    fn session_path(&self, tail: &str) -> String {
-        format!("apps/{}/files/uploads{tail}", self.app)
-    }
-
     async fn begin(&self, via: usize, size: usize) -> Answer {
-        let path = self.session_path("");
         self.clients[via]
-            .post(&path, json!({ "size": size }))
+            .apps()
+            .upload_begin(&self.app, size as u64)
             .await
+            .map(wire)
             .map_err(Box::new)
     }
 
@@ -2112,10 +2206,11 @@ impl Fixture {
 
     async fn put_part(&self, via: usize, upload: &str, k: usize, plain: &[u8]) -> Answer {
         let part = &plain[(k * PART).min(plain.len())..((k + 1) * PART).min(plain.len())];
-        let path = self.session_path(&format!("/{upload}/parts/{k}"));
         self.clients[via]
-            .put_bytes(&path, part.to_vec())
+            .apps()
+            .upload_part(&self.app, upload, &k.to_string(), part.to_vec())
             .await
+            .map(wire)
             .map_err(Box::new)
     }
 
@@ -2127,21 +2222,30 @@ impl Fixture {
     }
 
     async fn upload_status(&self, via: usize, upload: &str) -> Answer {
-        let path = self.session_path(&format!("/{upload}"));
-        self.clients[via].get(&path).await.map_err(Box::new)
+        self.clients[via]
+            .apps()
+            .upload_status(&self.app, upload)
+            .await
+            .map(wire)
+            .map_err(Box::new)
     }
 
     async fn complete(&self, via: usize, upload: &str) -> Answer {
-        let path = self.session_path(&format!("/{upload}/complete"));
         self.clients[via]
-            .post(&path, json!({}))
+            .apps()
+            .upload_complete(&self.app, upload)
             .await
+            .map(wire)
             .map_err(Box::new)
     }
 
     async fn abort(&self, via: usize, upload: &str) -> Answer {
-        let path = self.session_path(&format!("/{upload}"));
-        self.clients[via].delete(&path).await.map_err(Box::new)
+        self.clients[via]
+            .apps()
+            .upload_abort(&self.app, upload)
+            .await
+            .map(wire)
+            .map_err(Box::new)
     }
 
     /// Every segment any running node stores.
@@ -2383,11 +2487,14 @@ async fn a_complete_retried_after_a_leader_change_replays_its_answer() {
     f.c.stop(leader).await;
     let _new = f.until_leader_is_not(leader).await;
     assert_eq!(f.complete(via, &upload).await.unwrap(), done);
-    let me = f.clients[via].me().await.unwrap();
+    let me = f.clients[via].auth().me().await.map(wire).unwrap();
     let payer = format!("account:{}", me["accountId"].as_str().unwrap());
     let mut charged = 0;
     for _ in 0..100 {
-        charged = used(&f.clients[via].usage().await.unwrap(), &payer);
+        charged = used(
+            &f.clients[via].auth().usage().await.map(wire).unwrap(),
+            &payer,
+        );
         if charged == plain.len() as u64 {
             break;
         }
@@ -2400,12 +2507,12 @@ async fn a_complete_retried_after_a_leader_change_replays_its_answer() {
 async fn a_session_belongs_to_the_account_that_began_it() {
     let f = start().await;
     let o = org_with_a_public_app(&f).await;
-    let path = |tail: &str| format!("apps/{}/files/uploads{tail}", o.app);
     let begun = f.clients[0]
-        .post(&path(""), json!({ "size": 1_000 }))
+        .apps()
+        .upload_begin(&o.app, 1_000)
         .await
         .unwrap();
-    let upload = begun["uploadId"].as_str().unwrap().to_owned();
+    let upload = begun.upload_id;
 
     let unknown = |e: calimero_client::Error| {
         let (status, code, _) = refusal(e);
@@ -2413,39 +2520,42 @@ async fn a_session_belongs_to_the_account_that_began_it() {
     };
     unknown(
         o.member
-            .get(&path(&format!("/{upload}")))
+            .apps()
+            .upload_status(&o.app, &upload)
             .await
             .unwrap_err(),
     );
     unknown(
-        (o.member
-            .put_bytes(&path(&format!("/{upload}/parts/0")), vec![1; 1_000]))
-        .await
-        .unwrap_err(),
-    );
-    unknown(
-        (o.member
-            .post(&path(&format!("/{upload}/complete")), json!({})))
-        .await
-        .unwrap_err(),
+        o.member
+            .apps()
+            .upload_part(&o.app, &upload, "0", vec![1; 1_000])
+            .await
+            .unwrap_err(),
     );
     unknown(
         o.member
-            .delete(&path(&format!("/{upload}")))
+            .apps()
+            .upload_complete(&o.app, &upload)
+            .await
+            .unwrap_err(),
+    );
+    unknown(
+        o.member
+            .apps()
+            .upload_abort(&o.app, &upload)
             .await
             .unwrap_err(),
     );
     for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
-        let e = c
-            .post(&path(""), json!({ "size": 1_000 }))
-            .await
-            .unwrap_err();
+        let e = c.apps().upload_begin(&o.app, 1_000).await.unwrap_err();
         assert_eq!(refusal(e).0, 403, "{who}");
     }
     // Still the owner's, untouched.
     let ok = f.clients[0]
-        .get(&path(&format!("/{upload}")))
+        .apps()
+        .upload_status(&o.app, &upload)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(ok["next"], json!(0));
 }
@@ -2470,7 +2580,8 @@ async fn a_session_is_refused_past_the_file_cap_and_a_single_request_past_one_pa
     let (status, code, _) = refusal(f.begin(0, over).await.unwrap_err());
     assert_eq!((status, code.as_str()), (413, "TOO_LARGE"));
     let e = f.clients[0]
-        .post_bytes(&format!("apps/{}/files", f.app), stream(PART + 1, 79))
+        .apps()
+        .files_upload(&f.app, stream(PART + 1, 79))
         .await
         .unwrap_err();
     let (status, code, _) = refusal(e);
@@ -2492,27 +2603,39 @@ async fn files_are_listed_and_described_under_files_and_leave_the_blob_listing()
     keys.sort();
     assert_eq!(keys, ["blobId", "id", "index", "sha256", "size"]);
     let blob = f.clients[0]
-        .upload_blob(&f.app, vec![9; 300])
+        .apps()
+        .blob_upload(&f.app, vec![9; 300], None)
         .await
+        .map(wire)
         .unwrap();
 
     let listed = f.clients[1]
-        .get(&format!("apps/{}/files", f.app))
+        .apps()
+        .files_list(&f.app)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(listed["files"].as_array().unwrap().len(), 1, "{listed}");
     assert_eq!(listed["files"][0]["id"], json!(id));
     assert_eq!(listed["files"][0]["sha256"], json!(sha256_hex(&plain)));
-    let info = (f.clients[2].get(&format!("apps/{}/files/{id}", f.app)))
+    let info = f.clients[2]
+        .apps()
+        .file_info(&f.app, id)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(info["size"], json!(5_000));
     assert_eq!(info["sha256"], json!(sha256_hex(&plain)));
 
-    let blobs = f.clients[0].list_blobs(&f.app).await.unwrap();
+    let blobs = f.clients[0]
+        .apps()
+        .blob_list(&f.app)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(blobs["blobs"].as_array().unwrap().len(), 1, "{blobs}");
     assert_eq!(blobs["blobs"][0]["id"], blob["id"]);
-    let e = f.clients[0].blob_info(&f.app, id).await.unwrap_err();
+    let e = f.clients[0].apps().blob_info(&f.app, id).await.unwrap_err();
     assert_eq!(status(e), (409, "NOT_SUPPORTED".to_owned()));
 }
 
@@ -2520,14 +2643,24 @@ async fn files_are_listed_and_described_under_files_and_leave_the_blob_listing()
 async fn the_sealed_query_is_refused_and_stores_nothing() {
     let f = start().await;
     let bytes = stream(5_000, 82);
-    let path = format!("apps/{}/blobs?sealed=true", f.app);
-    let e = f.clients[0].post_bytes(&path, bytes).await.unwrap_err();
+    let e = f.clients[0]
+        .apps()
+        .blob_upload(&f.app, bytes, Some(true))
+        .await
+        .unwrap_err();
     assert_eq!(status(e), (400, "USE_FILES_API".to_owned()));
-    let blobs = f.clients[0].list_blobs(&f.app).await.unwrap();
+    let blobs = f.clients[0]
+        .apps()
+        .blob_list(&f.app)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(blobs["blobs"], json!([]));
     let files = f.clients[0]
-        .get(&format!("apps/{}/files", f.app))
+        .apps()
+        .files_list(&f.app)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(files["files"], json!([]));
 }
@@ -2747,10 +2880,11 @@ async fn the_export_answer_holds_only_ciphertext_hashes_and_a_wrapped_key() {
     let up = f.upload(0, 5_000, 33).await.unwrap();
     let id = up["id"].as_str().unwrap();
     let (secret, public) = calimero_sealed::wrap::export_keypair();
-    let path = format!("apps/{}/files/{id}/export", f.app);
     let answer = f.clients[0]
-        .post(&path, json!({ "recipient": hex::encode(public) }))
+        .apps()
+        .exports_export(&f.app, id, &hex::encode(public))
         .await
+        .map(wire)
         .unwrap();
     let mut keys: Vec<_> = answer.as_object().unwrap().keys().cloned().collect();
     keys.sort();
@@ -2797,16 +2931,13 @@ async fn a_stranger_on_a_public_app_cannot_export_or_fetch_segments() {
     for (who, c) in [("guest", &o.guest), ("stranger", &o.stranger)] {
         let e = c.export_file(&o.app, id).await.unwrap_err();
         assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who} export");
-        let path = format!("apps/{}/files/{id}/export", o.app);
         let e = c
-            .post(&path, json!({ "recipient": recipient }))
+            .apps()
+            .exports_export(&o.app, id, &recipient)
             .await
             .unwrap_err();
         assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who} raw export");
-        let e = c
-            .get(&format!("apps/{}/files/{id}/segments/0", o.app))
-            .await
-            .unwrap_err();
+        let e = c.apps().exports_segment(&o.app, id, "0").await.unwrap_err();
         assert_eq!(status(e), (403, "FORBIDDEN".to_owned()), "{who} segment");
     }
     for (who, c) in [("member", &o.member), ("owner", &f.clients[0])] {
@@ -2821,7 +2952,12 @@ async fn a_stranger_on_a_public_app_cannot_export_or_fetch_segments() {
 async fn exporting_a_file_the_app_does_not_hold_answers_404() {
     let f = start().await;
     let alice = &f.clients[0];
-    let blob = alice.upload_blob(&f.app, vec![7; 100]).await.unwrap();
+    let blob = alice
+        .apps()
+        .blob_upload(&f.app, vec![7; 100], None)
+        .await
+        .map(wire)
+        .unwrap();
     let up = f.upload(0, 5_000, 34).await.unwrap();
     let real = up["id"].as_str().unwrap();
     let missing = "11".repeat(32);
@@ -2829,16 +2965,21 @@ async fn exporting_a_file_the_app_does_not_hold_answers_404() {
         let e = alice.export_file(&f.app, id).await.unwrap_err();
         assert_eq!(status(e), (404, "NOT_FOUND".to_owned()), "{id}");
         let e = alice
-            .get(&format!("apps/{}/files/{id}/segments/0", f.app))
+            .apps()
+            .exports_segment(&f.app, id, "0")
             .await
             .unwrap_err();
         assert_eq!(status(e), (404, "NOT_FOUND".to_owned()), "{id} segment");
     }
-    let past = format!("apps/{}/files/{real}/segments/1", f.app);
-    let e = alice.get(&past).await.unwrap_err();
+    let e = alice
+        .apps()
+        .exports_segment(&f.app, real, "1")
+        .await
+        .unwrap_err();
     assert_eq!(status(e), (404, "NO_SUCH_SEGMENT".to_owned()));
     let e = alice
-        .get(&format!("apps/{}/files/{real}/segments/x", f.app))
+        .apps()
+        .exports_segment(&f.app, real, "x")
         .await
         .unwrap_err();
     assert_eq!(status(e), (404, "NO_SUCH_SEGMENT".to_owned()));
@@ -2848,7 +2989,6 @@ async fn exporting_a_file_the_app_does_not_hold_answers_404() {
 async fn a_bad_recipient_is_refused() {
     let f = start().await;
     let up = f.upload(0, 5_000, 35).await.unwrap();
-    let path = format!("apps/{}/files/{}/export", f.app, up["id"].as_str().unwrap());
     let one = format!("01{}", "00".repeat(31));
     for bad in [
         "".to_owned(),
@@ -2860,7 +3000,8 @@ async fn a_bad_recipient_is_refused() {
         ORDER_8.to_owned(),
     ] {
         let e = f.clients[0]
-            .post(&path, json!({ "recipient": bad }))
+            .apps()
+            .exports_export(&f.app, up["id"].as_str().unwrap(), &bad)
             .await
             .unwrap_err();
         assert_eq!(status(e), (400, "BAD_RECIPIENT".to_owned()), "{bad}");
@@ -2871,11 +3012,14 @@ async fn a_bad_recipient_is_refused() {
 async fn exports_are_rate_limited() {
     let f = start().await;
     let up = f.upload(0, 5_000, 36).await.unwrap();
-    let path = format!("apps/{}/files/{}/export", f.app, up["id"].as_str().unwrap());
-    let body = json!({ "recipient": hex::encode(calimero_sealed::wrap::export_keypair().1) });
+    let recipient = hex::encode(calimero_sealed::wrap::export_keypair().1);
     let mut refused = None;
     for n in 0..60 {
-        match f.clients[0].post(&path, body.clone()).await {
+        match f.clients[0]
+            .apps()
+            .exports_export(&f.app, up["id"].as_str().unwrap(), &recipient)
+            .await
+        {
             Ok(_) => {}
             Err(e) => {
                 refused = Some((n, status(e)));

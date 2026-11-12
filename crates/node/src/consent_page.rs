@@ -1376,12 +1376,7 @@ async fn upgrade_request(
     p.within(node, &app)?;
     // The route's own authority rules, asked before anything is shown: a
     // package its publisher upgrades is not the instance owner's to approve.
-    let (may, unbound) = node.sys(|s| {
-        (
-            s.may_upgrade(&app, account),
-            !s.upgrades_of(&app.bundle).is_owner() && s.publisher_of(&app.bundle).is_none(),
-        )
-    });
+    let (may, unbound) = node.sys(|s| (s.may_upgrade(&app, account), s.upgrades_unbound(&app)));
     if unbound {
         return Err(ApiError::conflict(
             "this app's package is upgraded by its publisher, and no organization has bound its key yet",
@@ -1409,18 +1404,18 @@ async fn upgrade_request(
             p.bound_app() == Some(package.as_str()),
         )
         .await?;
-    if !node.sys(|s| s.upgrade_keeps_authority(&app.bundle, &bundle)) {
-        return Err(ApiError::forbidden(
-            "an app whose owner upgrades it is not moved to a release its publisher upgrades",
-        ));
-    }
-    crate::api::refuse_stalled(node, &app, &bundle, now_secs())?;
     let to_release = PackageRef {
         package: package.clone(),
         version: subject.to_version.clone(),
         service: service.clone(),
         compute: false,
     };
+    if !node.sys(|s| s.upgrade_keeps_authority(s.governing_release(&app), Some(&to_release))) {
+        return Err(ApiError::forbidden(
+            "an app whose owner upgrades it is not moved to a release its publisher upgrades",
+        ));
+    }
+    crate::api::refuse_stalled(node, &app, &bundle, Some(&to_release), now_secs())?;
     node.require_runtime(
         &app.replicas,
         Some(&to_release),
