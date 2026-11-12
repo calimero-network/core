@@ -174,9 +174,11 @@ An app type with a shape in `types` is a component with that shape: an object
 with its fields, a `oneOf` per enum, a generic type instantiated per use
 (`Listing_Slot`). One without (a type with neither derive, or any type in an ABI
 built before `types`) is an open schema (`x-calimero-abi-type` keeps the Rust
-name) and a typed client types it `unknown` / `Any`. The Swift and Kotlin
-clients do not read `types` yet: they type every app type `JSONValue` /
-`JsonElement`.
+name) and a typed client types it `unknown` / `Any` / `JSONValue` /
+`JsonElement`. The Swift and Kotlin clients make each described type a nested
+type: a record a `struct` / `data class`, an enum an `enum` / `sealed interface`
+coded in its serde tagging, generic where the Rust type is
+([Typed clients](/core/build/guides/typed-clients/#how-the-types-come-out)).
 
 The Swift and Kotlin clients take the Swift or Kotlin type and write its JSON form
 themselves: `u64` is `UInt64` / `ULong`, `i64` `Int64` / `Long`, `bytes` `Data` /

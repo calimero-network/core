@@ -30,15 +30,19 @@
   transport of their own. The TypeScript class takes the narrow `AppTransport` (what it uses of
   `CalimeroClient`, so a test double implements that alone) and an `after` hook that runs after
   every request (mero-js has no session-change event to store a refreshed session from).
-- `codegen::{swift, kotlin}` write one client type over swift-sdk 2.0 (MeroKit) / kotlin-sdk
-  2.0 (mero-core): built on the SDK's `CalimeroClient` and an app id (every method; Kotlin
+- `codegen::{swift, kotlin}` write one client type over swift-sdk (MeroKit) / kotlin-sdk
+  (mero-core), 2.0 or later: built on the SDK's `CalimeroClient` and an app id (every method; Kotlin
   calls `apps.method`, Swift `callJSON` / `callConfirmed` / `viewJSON`) or on its
   `ContextContractCalling` (calls and views, so apps can pass `MeroAppBackend.contract` or a
   test double). The app's events, errors (`Event`, `Refusal`) and types are nested in it,
   so two clients share a module or package without clashing; an app type named like a type
   the file uses is renamed (`Names::reserve`). `u64`/`i64`/`bytes` are native types written
   in their D20 form by `DecimalString`/`Base64URL` (Swift) and `U64AsString`/`I64AsString`/
-  `Base64Url` serializers (Kotlin).
+  `Base64Url` serializers (Kotlin). A type with a shape in `types` is a nested
+  `Codable, Sendable, Equatable` struct or enum (Swift: hand-written `init(from:)`/`encode(to:)`
+  per serde tagging, `indirect` or `@Indirect` where it holds itself) or a data class or sealed
+  interface with a hand-written serializer in its companion (Kotlin: `Item.serializer()`,
+  `Page.serializer(Item.serializer())`, no plugin); one without stays `JSONValue`/`JsonElement`.
 - `diff::diff` classifies changes between two ABIs (`Severity::Breaking` / `Compatible`) and
   sets `state_error` for an unreadable state change without a state version bump.
 - `load` reads an ABI from JSON, a component (top level or nested core module), an `.mpk`, or
@@ -58,7 +62,9 @@
   call to the real client's signature, then runs mypy. `app-abi-clients.yml` runs both on a
   change to this crate; bump the pins when a client's major moves.
 - The Swift and Kotlin goldens must compile with warnings as errors against the SDK releases
-  they target: `.github/workflows/app-abi-native-clients.yml` runs
+  they target, and the kitchen-sink's types must round-trip their JSON (`tests/native/swift`,
+  `tests/native/kotlin`: every enum tagging style, records, recursive and generic types):
+  `.github/workflows/app-abi-native-clients.yml` runs
   `scripts/check-app-abi-clients.py swift|kotlin` (macOS / Android SDK) on a change here.
   Moving to a new SDK release moves `SWIFT_SDK_VERSION` / `KOTLIN_SDK_REF` there.
 

@@ -126,7 +126,7 @@ view `consistency=` and `min_index=`.
 
 ## Use it from Swift
 
-The client is a `Sendable` struct over swift-sdk 2.0's MeroKit (`import MeroKit`):
+The client is a `Sendable` struct over swift-sdk's MeroKit, 2.0 or later (`import MeroKit`):
 
 ```swift
 import MeroKit
@@ -161,7 +161,7 @@ target per service).
 
 ## Use it from Kotlin
 
-The client class is over kotlin-sdk 2.0's mero-core, with kotlinx.serialization
+The client class is over kotlin-sdk's mero-core, 2.0 or later, with kotlinx.serialization
 and kotlinx.coroutines on the classpath (no serialization plugin needed):
 
 ```kotlin
@@ -208,13 +208,37 @@ Your own types come from the ABI's `types`: a record is an interface (a
 type stays generic in TypeScript (`Listing<Slot>`) and is instantiated in Python
 (`Listing_Slot`).
 
+In Swift and Kotlin they are types nested in the client (`KvStoreClient.Slot`),
+whose coding writes the same JSON:
+
+| ABI shape | Swift | Kotlin |
+| --- | --- | --- |
+| record | `struct` with a `var` per field, `Codable, Sendable, Equatable` | `data class`, its serializer `Slot.serializer()` |
+| newtype / `transparent` | `struct` with `value` | `data class` with `value` |
+| tuple struct / unit struct | `struct` with `v0`, `v1`, ... / with nothing (`null`) | `data class` with `v0`, `v1`, ... / `data object` |
+| enum | `enum`, a case per variant (`.closed(at:)`, `.moved(_:)`) | `sealed interface`, a `data class` or `data object` per variant |
+| generic (`Listing<T>`) | generic (`Listing<Slot>`) | generic (`Listing.serializer(Slot.serializer())`) |
+
+Each enum reads and writes the tagging serde gives it: externally tagged as
+`"Open"` or `{ "Closed": { .. } }` (`{ "Open": null }` is read too), internally
+tagged as the variant's fields beside its `tag` (a newtype variant's own object),
+adjacently tagged as `{ tag, content }` (a unit variant without `content`), and
+untagged as the data alone, trying the variants in order as serde does. Unknown
+variant names and arrays of the wrong length are refused. A type that holds itself
+works: a Swift enum that does is `indirect`, and a Swift field that holds its own
+type outside an array or a dictionary (`option<Tree>`) is stored boxed
+(`@Indirect`); Kotlin needs nothing. Fields the JSON may leave out are optional
+(`nil` / `null`) and left out when unset; any other `option` is written as `null`.
+Kotlin's serializers are written out in the client, so no serialization plugin is
+needed: pass them where kotlinx.serialization takes one.
+
 <Aside type="caution">
   A type is described when it derives `Record` or `AbiType`
   ([SDK macros](/core/build/sdk-macros/#deriveabitype)). Any other type, and every
   type of an app built before the SDK wrote `types`, is `unknown` (`Any`): cast or
   validate the value where you use it, or rebuild the app. The Swift and Kotlin
-  clients type every app type MeroKit's `JSONValue` / kotlinx's `JsonElement` for
-  now: decode it where you use it.
+  clients type it MeroKit's `JSONValue` / kotlinx's `JsonElement`: decode it where
+  you use it.
 </Aside>
 
 ## Use any OpenAPI tool
