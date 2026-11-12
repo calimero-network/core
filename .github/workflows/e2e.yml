@@ -110,7 +110,7 @@ jobs:
   # each app component it installs, in its own crate.
   scenarios:
     name: scenarios (${{ matrix.shard }}/2)
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -154,8 +154,8 @@ jobs:
   # soak, rooms_fault.py's randomized nemesis for 50 iterations).
   process-suite:
     name: process suite (merod processes)
-    runs-on: big-machine
-    timeout-minutes: ${{ (github.event_name == 'schedule' || inputs.nightly) && 150 || 45 }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ (github.event_name == 'schedule' || inputs.nightly) && 180 || 60 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -235,8 +235,8 @@ jobs:
   flamegraph:
     name: merod flamegraph (kv-store soak)
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.flamegraph))
-    runs-on: big-machine
-    timeout-minutes: 75
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -320,8 +320,8 @@ jobs:
   # Compute actions on real processes (three replicas, two job nodes), which merobox cannot start.
   compute-e2e:
     name: compute actions, real processes
-    runs-on: big-machine
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     env:
       COMPUTE_E2E_DIR: ${{ github.workspace }}/target/compute-e2e
     steps:
@@ -486,7 +486,7 @@ jobs:
     name: scenario fixtures (release ${{ needs.release-image.outputs.version }})
     needs: release-image
     if: needs.release-image.outputs.scenarios == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout the release's commit
@@ -527,7 +527,7 @@ jobs:
   release-scenarios:
     name: scenarios on release ${{ needs.release-image.outputs.version }} (${{ matrix.shard }}/4)
     needs: [release-image, release-fixtures]
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -568,7 +568,7 @@ jobs:
     name: process suite on release ${{ needs.release-image.outputs.version }}
     needs: release-image
     if: needs.release-image.outputs.testable == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - name: Checkout the release's commit

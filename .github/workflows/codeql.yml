@@ -32,8 +32,7 @@ jobs:
   analyze:
     name: Analyze (CodeQL)
     # A standard runner, free on a public repository: CodeQL's Rust extraction
-    # builds nothing (build-mode none), and nothing waits on this job, so the
-    # slower runner costs only time. On big-machine it was a tenth of the bill.
+    # builds nothing (build-mode none), and nothing waits on this job.
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:

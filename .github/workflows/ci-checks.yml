@@ -105,6 +105,7 @@ jobs:
     if: ${{ !cancelled() }}
     needs: [scope, rust-lint, rust-test, rust-features, rust-supply-chain, compat, previous-release, upgrade-path]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require every Rust job to pass
         env:
@@ -123,7 +124,8 @@ jobs:
     name: Rust lint
     needs: scope
     if: needs.scope.outputs.rust == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -177,7 +179,8 @@ jobs:
     name: Rust tests
     needs: scope
     if: needs.scope.outputs.rust == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -274,13 +277,11 @@ jobs:
             cargo build --manifest-path "$manifest" --release --target wasm32-wasip2
           done
 
-  # A standard runner: one crate's tests, about ten seconds once built; on
-  # big-machine the job was mostly setup, billed by the minute.
   rust-features:
     name: Rust feature-gated tests
     needs: scope
     if: needs.scope.outputs.rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout code
@@ -335,7 +336,7 @@ jobs:
     name: Apps of the previous release
     needs: scope
     if: needs.scope.outputs.rust == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout code
@@ -368,6 +369,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -407,8 +409,8 @@ jobs:
     name: Upgrade path (from the pinned release)
     needs: scope
     if: needs.scope.outputs.upgrade_path == 'true'
-    runs-on: big-machine
-    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

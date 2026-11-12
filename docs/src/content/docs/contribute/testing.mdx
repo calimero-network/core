@@ -701,7 +701,8 @@ inside the Docker image (the suite starts processes, so it is copied out with
 - **A PR's own image** (`.github/workflows/release.yml`, job
   `E2E on the merod image`, on PRs and the merge queue whenever the PR builds
   the image). `Release Merod container` builds the amd64 image as it does for
-  master, loads it instead of pushing it, and hands it on as the artifact
+  master (from binaries built without fat LTO, which only a push to master or
+  the release branch builds with), loads it instead of pushing it, and hands it on as the artifact
   `merod-image`; `Image E2E fixtures` builds a release `meroctl`, kv-store's
   WASM and two signed releases of it alongside the binaries. The job runs
   `suite.py --smoke` against the image's `merod`: `kv-failover`,

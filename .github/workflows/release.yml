@@ -51,8 +51,7 @@ env:
   IMAGE_TAG_PREFIX: ${{ github.ref == 'refs/heads/release-v2-parity' && 'release-v2-' || '' }}
 
 jobs:
-  # Every job that compiles nothing runs on a standard runner (free on a public
-  # repository); big-machine is billed by the minute.
+  # Every job runs on a standard GitHub-hosted runner, free on a public repository.
   prepare:
     name: Prepare
     runs-on: ubuntu-latest
@@ -152,10 +151,8 @@ jobs:
           [ -n "$files" ] || echo "::notice::could not list this change's files; everything builds"
           printf '%s\n' "$files" | python3 scripts/ci-scope.py --workflow release >> "$GITHUB_OUTPUT"
 
-      # Linux x86_64 always (a required check): on a PR on a standard runner (free
-      # on a public repository; fat LTO's link is single-threaded, so more cores
-      # buy little), on a push on big-machine, so a release is not slowed;
-      # arm64 on pushes (master and the
+      # Linux x86_64 always (a required check; the name keeps the runner it once
+      # had, since branch protection requires the check by name); arm64 on pushes (master and the
       # release branch), which the multi-arch edge images need; macOS only when this run publishes binaries,
       # the one job that reads them (platforms.yml builds it nightly). There is no
       # Windows build: nodes run on Linux TDX hosts only.
@@ -167,9 +164,7 @@ jobs:
         run: |
           set -euo pipefail
           # Keep legacy check names for required status checks.
-          linux_runner=ubuntu-latest
-          if [ "$EVENT" = push ]; then linux_runner=big-machine; fi
-          linux="{\"name\":\"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu\",\"runner\":\"$linux_runner\",\"target\":\"x86_64-unknown-linux-gnu\"}"
+          linux='{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}'
           arm='{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"}'
           macos='{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"}'
           matrix="[$linux]"
@@ -216,6 +211,7 @@ jobs:
         include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
       fail-fast: false
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
 
     defaults:
       run:
@@ -265,10 +261,16 @@ jobs:
             printf 'TARGET_BINARIES<<CALIMERO_EOF\n%s\nCALIMERO_EOF\n' "$BINARIES" >> "$GITHUB_ENV"
           fi
 
+      # A push builds what ships (fat LTO, one codegen unit). A PR or the merge
+      # queue builds optimized without fat LTO: its binaries only feed the PR's
+      # image and its e2e, and fat LTO's single-threaded link was most of the
+      # job. Set on the build steps only, so the cache step hashes one environment.
       - name: Build binaries
         if: needs.prepare.outputs.build == 'true'
         env:
           MATRIX_TARGET: ${{ matrix.target }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'push' && 'fat' || 'false' }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'push' && '1' || '16' }}
         run: |
           readarray -t binaries <<< "$TARGET_BINARIES"
 
@@ -298,6 +300,8 @@ jobs:
         if: needs.prepare.outputs.build == 'true'
         env:
           MATRIX_TARGET: ${{ matrix.target }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'push' && 'fat' || 'false' }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'push' && '1' || '16' }}
         run: |
           cargo build -p calimero-app-build --bin mero-app-build --release --target "$MATRIX_TARGET"
 
@@ -310,6 +314,8 @@ jobs:
         if: ${{ needs.prepare.outputs.build == 'true' && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
         env:
           MATRIX_TARGET: ${{ matrix.target }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'push' && 'fat' || 'false' }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'push' && '1' || '16' }}
         run: |
           # With mock-attestation compiled in, the verifier would accept a forged
           # MOCK_TDX_QUOTE_V1 blob.
@@ -560,7 +566,7 @@ jobs:
     name: Image E2E fixtures
     needs: prepare
     if: needs.prepare.outputs.build == 'true' && github.event_name != 'push'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout code
@@ -618,7 +624,7 @@ jobs:
   image-e2e:
     name: E2E on the merod image
     needs: [prepare, release-merod-container, image-e2e-fixtures]
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout code

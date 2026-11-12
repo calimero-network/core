@@ -6,8 +6,7 @@ permissions:
 on:
   # master keeps a nightly baseline; the release branch (release-v2-parity),
   # which has no nightly, one per push. A PR compares against its base commit's
-  # baseline, or else the base branch's newest one. A baseline per master push
-  # cost about 27 minutes of 8-core runner each, for benches nothing gates on.
+  # baseline, or else the base branch's newest one.
   push:
     branches:
       - release-v2-parity
@@ -60,9 +59,10 @@ jobs:
     name: Criterion trend (${{ matrix.crate }})
     needs: plan
     if: needs.plan.outputs.crates != '[]'
-    # timing on shared runners is too noisy to gate on
+    # Timing on shared runners is too noisy to gate on; every run, baseline and
+    # PR alike, benches on the same standard runner, so the comparison is fair.
     continue-on-error: true
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -105,7 +105,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.crates != '[]'
     continue-on-error: true
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout code
@@ -144,7 +144,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.crates != '[]'
     continue-on-error: true
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout code
