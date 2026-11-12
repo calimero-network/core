@@ -316,8 +316,13 @@ is its command line.
   `--app-upgrades`, `--outbound-approvals`. The first leader writes
   `SystemCmd::Genesis` before any account exists (`CreateAccount` waits for it);
   a second genesis is refused, so a restart with other flags changes nothing.
-  Every receipt-key quote binds it (`receipt_key_binding(key, governance)`,
-  `AttestationDoc::governance`), so `verify_app_cluster` proves it. Operator
+  Every receipt-key quote binds it (`receipt_key_binding(key, governance, cluster, node)`,
+  `AttestationDoc::governance`), so `verify_app_cluster` proves it. A node
+  attesting a peer as a session issuer (`Node::attest_issuer`) requires that
+  bound form, and takes a peer's unbound `receipt-key.v2` quote (a release
+  before `RECEIPT_KEY_BOUND_SINCE`) only while the logged cluster version is
+  below that release (`takes_unbound_receipt_key`), so an earlier node's
+  sessions keep working while a cluster rolls onto it. Operator
   side: `POST /ops/releases` (`operator_releases`, which `approved_releases`
   then answers), `POST /ops/apps/{app}/upgrade` (an installed release;
   `UpgradeApp { by_operator }`), `POST /ops/outbound` (`operator_outbound`,

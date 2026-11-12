@@ -101,6 +101,34 @@
   sent. The client's flows (`sign_up*`, `sign_in*`, `add_passkey`,
   `start_recovery`, `verify_app_cluster`, `upload_file`, `events`,
   `presence_stream`) are unchanged.
+### Security
+
+- **Receipt-key quotes bind the cluster and node.** A `purpose=receipts`
+  quote's report data is now `nonce || SHA-256("calimero.tee-attest.receipt-key.v3"
+  || receipt_key || SHA-256(governance JSON) || u32-BE len || cluster || u64-BE
+  node)`. `verify_receipt_key` takes the cluster and node the caller expects
+  and checks them against the quote, not the document's unsigned fields;
+  `verify_app_cluster` reads the cluster from the entry node's sealed answer
+  (`GET /apps/{app}/attestation` now names `cluster`), and a node attesting a
+  peer's session-issuing key checks its own cluster and that peer's id. A v2
+  verifier refuses a new node's receipt-key quote and the other way round,
+  except that a node takes an earlier peer's v2 quote while its cluster still
+  runs that release (below cluster version 1.0.0-rc.19).
+
+  **Hard cutover** (receipt-key quotes, v3 only): Rust clients
+  (`calimero-client`), `meroctl` and calimero-client-py released before this
+  refuse this release's receipt-key quotes (`verify_app_cluster`,
+  `meroctl attest <context>`), and this release's clients refuse an earlier
+  node's. Upgrade the Rust client, `meroctl` and calimero-client-py to the
+  matching release together with the nodes. In a cluster rolling onto this
+  release, a node of this release still attests a peer of the earlier one as
+  a session issuer, from its unbound quote, only while the logged cluster
+  version is below 1.0.0-rc.19; once every node runs this release, the system
+  leader raises it and only bound quotes count. A node of the earlier release
+  cannot attest one of this release, so a session this release's node issued
+  is refreshed on an earlier node until the rollout ends. Stored data and log
+  entries are unchanged.
+
 ### Fixed
 
 - **Entries apply under this release's rules from a mark on.** Commands carry
