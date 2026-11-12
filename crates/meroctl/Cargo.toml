@@ -29,6 +29,7 @@ zeroize.workspace = true
 
 calimero-client = { workspace = true, features = ["testing"] }
 calimero-identity = { workspace = true, features = ["testing"] }
+calimero-utils-fs.workspace = true
 
 [build-dependencies]
 calimero-build-utils.workspace = true

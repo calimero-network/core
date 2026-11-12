@@ -12,6 +12,12 @@ use calimero_node::system::{Authority, Deployers, Deployments, SignUp};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
+/// SHA-256 of the empty string.
+const EMPTY_SHA256: [u8; 32] = [
+    0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+    0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+];
+
 pub fn path(home: &Path) -> PathBuf {
     home.join("config.toml")
 }
@@ -22,19 +28,12 @@ pub fn read(file: &Path) -> eyre::Result<NodeArgs> {
     toml::from_str(&text).map_err(|e| eyre::eyre!("{}: {e}", file.display()))
 }
 
-/// Write `args` to `file`, readable by its owner only: it may hold the ops
-/// token or a development storage key.
+/// Write `args` to `file`, readable by its owner only, whatever mode an
+/// existing one had: it may hold the ops token or a development storage key.
 pub fn write(file: &Path, args: &NodeArgs) -> eyre::Result<()> {
     let text = toml::to_string_pretty(args)?;
-    let mut options = std::fs::OpenOptions::new();
-    let _ = options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let _ = options.mode(0o600);
-    }
-    std::io::Write::write_all(&mut options.open(file)?, text.as_bytes())?;
-    Ok(())
+    calimero_utils_fs::replace_owner_only(file, text.as_bytes())
+        .map_err(|e| eyre::eyre!("writing {}: {e}", file.display()))
 }
 
 fn authority(s: &str) -> Result<Authority, String> {
@@ -337,6 +336,30 @@ impl NodeArgs {
             eyre::eyre!("--cluster-identity is 64 hex digits (meroctl ops cluster)")
         })?;
         Ok(identity)
+    }
+
+    /// Refuse an ops credential that any request carries: an empty token, or
+    /// the hash of one, would match a request with no `Authorization` header.
+    /// A hash is 64 hex digits, as `/ops` compares it.
+    pub fn check_ops_token(&self) -> eyre::Result<()> {
+        if self
+            .ops_token
+            .as_deref()
+            .is_some_and(|t| t.trim().is_empty())
+        {
+            eyre::bail!("--ops-token is empty; leave it out to disable the Ops API");
+        }
+        let Some(hash) = &self.ops_token_sha256 else {
+            return Ok(());
+        };
+        let mut digest = [0u8; 32];
+        if hex::decode_to_slice(hash, &mut digest).is_err() {
+            eyre::bail!("--ops-token-sha256 is 64 hex digits (the token's SHA-256)");
+        }
+        if digest == EMPTY_SHA256 {
+            eyre::bail!("--ops-token-sha256 is the hash of an empty token");
+        }
+        Ok(())
     }
 
     /// These values, and `base`'s where these leave one out.
@@ -686,6 +709,55 @@ mod tests {
         ] {
             assert!(NodeArgs::parse_cluster_identity(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn an_empty_ops_token_or_its_hash_is_refused() {
+        let token = |t: &str| NodeArgs {
+            ops_token: Some(t.to_owned()),
+            ..NodeArgs::default()
+        };
+        let hash = |h: &str| NodeArgs {
+            ops_token_sha256: Some(h.to_owned()),
+            ..NodeArgs::default()
+        };
+        assert!(NodeArgs::default().check_ops_token().is_ok());
+        assert!(token("s3cret").check_ops_token().is_ok());
+        assert!(hash(&"ab".repeat(32)).check_ops_token().is_ok());
+        let empty_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        for bad in [
+            token(""),
+            token("  "),
+            hash(""),
+            hash("ab"),
+            hash(empty_hash),
+            hash(&empty_hash.to_ascii_uppercase()),
+        ] {
+            assert!(bad.check_ops_token().is_err(), "{bad:?}");
+        }
+    }
+
+    /// A config written over one with a wider mode is narrowed: it may hold
+    /// the ops token.
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_config_is_rewritten_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = path(dir.path());
+        std::fs::write(&file, "").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let args = NodeArgs {
+            ops_token: Some("s3cret".into()),
+            ..NodeArgs::default()
+        };
+        write(&file, &args).unwrap();
+
+        assert_eq!(read(&file).unwrap().ops_token.as_deref(), Some("s3cret"));
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

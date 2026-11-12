@@ -270,6 +270,30 @@ async fn a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes(
     assert!(read.is_err(), "{read:?}");
 }
 
+/// The usage routes judge the caller as every other internal route does: an
+/// identified sealed session from the node whose address attests its key, not
+/// only the cluster secret.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_usage_routes_answer_identified_peers_only() {
+    let c = split_cluster().await;
+    let (_alice, _key, _account, app, _bundle) = alices_app(&c).await;
+    let routes = [
+        ("internal/usage", json!({ "app": app })),
+        ("internal/usage/today", json!({ "day": 0 })),
+    ];
+    let peer = as_node(&c, 1, 0);
+    let anon = anonymous(&c, 0);
+    for (path, body) in &routes {
+        let (status, v) = peer_send(&c, &peer, 0, false, path, body, 2).await;
+        assert_eq!(status, 200, "{path}: {v}");
+        let (status, v) = peer_send(&c, &anon, 0, false, path, body, 2).await;
+        assert_eq!(status, 403, "{path} over an anonymous channel: {v}");
+        // Claiming another node's id: its address attests another key.
+        let (status, v) = peer_send(&c, &peer, 0, false, path, body, 3).await;
+        assert_eq!(status, 403, "{path} claiming node 3: {v}");
+    }
+}
+
 // ---------------------------------------------------------------- F3
 
 /// The system leader, by index.

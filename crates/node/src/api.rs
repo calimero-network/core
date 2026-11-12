@@ -1534,6 +1534,9 @@ fn operator(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
         ),
         (None, None) => return Err(ApiError::forbidden("the Ops API is disabled on this node")),
     };
+    // No header and an empty bearer are the same nothing: never a credential,
+    // whatever the node was configured with.
+    let ok = ok && !given.is_empty();
     if ok {
         Ok(())
     } else {

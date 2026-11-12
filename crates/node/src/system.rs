@@ -218,6 +218,11 @@ const COMPUTE_NOT_SHIPPED: &str = "that compute component is not shipped with th
 /// The refusal when an app names a release that does not ship its bundle.
 const RELEASE_NOT_SHIPPED: &str = "that release does not ship the app's bundle";
 
+/// The refusal when a release ships a WASM a release of another package,
+/// signed by another key, ships.
+pub const SHIPS_IN_OTHER_PACKAGE: &str =
+    "a WASM of this release ships in another signer's package; a WASM belongs to one signer";
+
 /// The refusal when an upgrade would add or drop an app's app component.
 const COMPONENTS_CHANGED: &str = "an app keeps the components it was made with";
 
@@ -585,7 +590,7 @@ pub struct SystemState {
     /// organization it is bound to, and how many bindings it has had. Where
     /// owners hold release approvals, that organization's approved releases govern every instance
     /// of every package the key signs, whoever owns the instance
-    /// ([`SystemState::approved_for_bundle`]); where a package declares
+    /// ([`SystemState::approved_for_release`]); where a package declares
     /// `upgrades: publisher`, its `MANAGE_APPLICATION` holders upgrade them
     /// ([`SystemState::may_upgrade`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -621,6 +626,14 @@ pub struct SystemState {
     /// so state from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_proofs_from: Option<u64>,
+    /// Whether an app's upgrades, publisher and release approvals are its
+    /// release's ([`SystemState::governing_release`]), and a package's WASM
+    /// ships in no other package: from the [`SystemCmd::AttributeByRelease`]
+    /// the first leader on a release that judges so wrote. Before it, logged
+    /// entries replay judging the release each bundle was first recorded
+    /// from, as the releases that logged them did. Left out when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub attributes_by_release: bool,
     /// The active cluster version ([`cluster_version`]): the newest core
     /// release every node supports, logged by the system leader
     /// (`SetClusterVersion`), only ever raised. `None` until the first.
@@ -1457,7 +1470,7 @@ impl SystemState {
     /// (state from before approvals), which leaves the app unrestricted.
     #[must_use]
     pub fn approved_releases(&self, app: &AppRecord) -> Option<&BTreeSet<String>> {
-        self.approved_for_bundle(&app.bundle, app.org.as_deref(), &app.owner)
+        self.approved_for_release(self.governing_release(app), app.org.as_deref(), &app.owner)
     }
 
     /// The organization that publishes the package `signer` signs: the one
@@ -1490,27 +1503,72 @@ impl SystemState {
         })
     }
 
-    /// The organization that publishes the release `bundle` ships in; `None`
-    /// for a raw upload or a package whose key is bound to no organization.
+    /// The organization that publishes `release` (a governing release:
+    /// [`Self::governing_release`]); `None` for a raw upload or a package
+    /// whose key is bound to no organization.
     #[must_use]
-    pub fn publisher_of(&self, bundle: &str) -> Option<&OrgId> {
-        let at = self.bundles.get(bundle)?.package.as_ref()?;
-        self.publisher_of_signer(&self.packages.get(&at.package)?.signer_id)
+    pub fn publisher_of(&self, release: Option<&PackageRef>) -> Option<&OrgId> {
+        self.publisher_of_signer(&self.packages.get(&release?.package)?.signer_id)
     }
 
-    /// The releases approved to hold an app running `bundle`, of `org` (or of
-    /// `owner` outside one): the operator's where it holds release
-    /// approvals; else the bundle's publisher's, for every instance of its
-    /// packages; else, for a raw upload or an unbound package, the app's own
-    /// organization's or owner's ([`Self::approved_for`]).
+    /// The release whose rules govern an app running `app.bundle`: its
+    /// upgrades, its publisher and so its release approvals
+    /// ([`Self::governing`]).
     #[must_use]
-    pub fn approved_for_bundle(
-        &self,
+    pub fn governing_release<'a>(&'a self, app: &'a AppRecord) -> Option<&'a PackageRef> {
+        // When it took its bundle: created with it, or upgraded to it since.
+        let since = app
+            .last_upgrade
+            .as_ref()
+            .filter(|u| u.ok && u.to == app.bundle)
+            .map_or(app.created_at, |u| u.at);
+        self.governing(app.release.as_ref(), &app.bundle, since)
+    }
+
+    /// The release whose rules govern `bundle`, named as release `release`
+    /// and taken at `since`: `release` itself, never merely the first one
+    /// recorded as shipping the same WASM. Without one (a raw upload, a
+    /// bundle named by hash, a record from before releases were kept), the
+    /// release the bundle is recorded from, if it was installed by `since`:
+    /// a release installed later does not take over an app running a raw
+    /// upload of the same WASM. Before [`Self::attributes_by_release`], the
+    /// recorded release alone, as earlier releases judged.
+    #[must_use]
+    pub fn governing<'a>(
+        &'a self,
+        release: Option<&'a PackageRef>,
         bundle: &str,
+        since: u64,
+    ) -> Option<&'a PackageRef> {
+        let recorded = || self.bundles.get(bundle).and_then(|b| b.package.as_ref());
+        if !self.attributes_by_release {
+            return recorded();
+        }
+        if release.is_some() {
+            return release;
+        }
+        recorded().filter(|r| {
+            self.packages
+                .get(&r.package)
+                .and_then(|p| p.versions.get(&r.version))
+                .is_some_and(|v| v.installed_at <= since)
+        })
+    }
+
+    /// The releases approved to hold an app governed by `release`
+    /// ([`Self::governing_release`]), of `org` (or of `owner` outside one):
+    /// the operator's where it holds release approvals; else the release's
+    /// publisher's, for every instance of its package; else, for a raw
+    /// upload or an unbound package, the app's own organization's or
+    /// owner's ([`Self::approved_for`]).
+    #[must_use]
+    pub fn approved_for_release(
+        &self,
+        release: Option<&PackageRef>,
         org: Option<&str>,
         owner: &str,
     ) -> Option<&BTreeSet<String>> {
-        match self.publisher_of(bundle) {
+        match self.publisher_of(release) {
             Some(p) if self.governance().releases == Authority::Owner => {
                 self.approved_for(Some(p), owner)
             }
@@ -1553,6 +1611,30 @@ impl SystemState {
         p.versions
             .values()
             .filter(move |v| self.sees_release(v, who))
+    }
+
+    /// Whether a WASM of `release`, to be installed under `package` signed by
+    /// `signer_id`, ships in a release of another package signed by another
+    /// key: a WASM belongs to one signer, whose packages alone may name it.
+    /// One signer may ship a WASM in several packages: each instance is
+    /// judged by the release it runs ([`AppRecord::release`]).
+    #[must_use]
+    pub fn ships_in_other_package(
+        &self,
+        package: &str,
+        signer_id: &str,
+        release: &PackageVersion,
+    ) -> bool {
+        release.parts(package).any(|(hash, _)| {
+            self.packages
+                .iter()
+                .filter(|(name, p)| name.as_str() != package && p.signer_id != signer_id)
+                .any(|(name, p)| {
+                    p.versions
+                        .values()
+                        .any(|v| v.parts(name).any(|(h, _)| h == hash))
+                })
+        })
     }
 
     /// Whether a release other than `package`'s own pins `package@version` as a pipeline module.
@@ -2085,32 +2167,44 @@ impl SystemState {
         }
     }
 
-    /// Who upgrades an app running `bundle`: its release's declaration; a raw
-    /// upload is its owner's.
+    /// Who upgrades an app governed by `release`
+    /// ([`Self::governing_release`]): its declaration; a raw upload is its
+    /// owner's.
     #[must_use]
-    pub fn upgrades_of(&self, bundle: &str) -> UpgradeAuthority {
-        self.bundles
-            .get(bundle)
-            .and_then(|b| b.package.as_ref())
-            .and_then(|at| self.packages.get(&at.package)?.versions.get(&at.version))
+    pub fn upgrades_of(&self, release: Option<&PackageRef>) -> UpgradeAuthority {
+        release
+            .and_then(|r| self.packages.get(&r.package)?.versions.get(&r.version))
             .map_or(UpgradeAuthority::Owner, |v| v.upgrades)
     }
 
-    /// The publisher that upgrades an app running `bundle`: only when its
-    /// release declares `publisher` and its key is bound to an organization.
+    /// The publisher that upgrades an app governed by `release`: only when
+    /// it declares `publisher` and its key is bound to an organization.
     #[must_use]
-    pub fn upgraded_by_publisher(&self, bundle: &str) -> Option<&OrgId> {
-        if self.upgrades_of(bundle).is_owner() {
+    pub fn upgraded_by_publisher(&self, release: Option<&PackageRef>) -> Option<&OrgId> {
+        if self.upgrades_of(release).is_owner() {
             return None;
         }
-        self.publisher_of(bundle)
+        self.publisher_of(release)
     }
 
-    /// Whether moving an app from `from` to `to` keeps upgrades where they
-    /// may go: never from an `owner` release to a `publisher` one.
+    /// Whether moving an app governed by release `from` to one governed by
+    /// `to` keeps upgrades where they may go: never from an `owner` release
+    /// to a `publisher` one.
     #[must_use]
-    pub fn upgrade_keeps_authority(&self, from: &str, to: &str) -> bool {
+    pub fn upgrade_keeps_authority(
+        &self,
+        from: Option<&PackageRef>,
+        to: Option<&PackageRef>,
+    ) -> bool {
         !(self.upgrades_of(from).is_owner() && !self.upgrades_of(to).is_owner())
+    }
+
+    /// Whether `app`'s package is upgraded by its publisher while no
+    /// organization has bound the publisher's key: then nobody upgrades it.
+    #[must_use]
+    pub fn upgrades_unbound(&self, app: &AppRecord) -> bool {
+        let r = self.governing_release(app);
+        !self.upgrades_of(r).is_owner() && self.publisher_of(r).is_none()
     }
 
     /// Whether `account` may upgrade `app`. For a `publisher` package whose
@@ -2218,9 +2312,10 @@ impl SystemState {
     /// logged the command did ([`OwnerRule`]).
     #[must_use]
     pub fn may_upgrade_as_logged(&self, app: &AppRecord, account: &str, rule: OwnerRule) -> bool {
-        if !self.upgrades_of(&app.bundle).is_owner() {
+        let release = self.governing_release(app);
+        if !self.upgrades_of(release).is_owner() {
             return self
-                .upgraded_by_publisher(&app.bundle)
+                .upgraded_by_publisher(release)
                 .is_some_and(|p| self.manages_apps(p, account, None));
         }
         let team = match &app.access {
@@ -2952,8 +3047,9 @@ impl SystemState {
             return Err(MOVE_OWNER_NOT_IN_TARGET);
         }
 
-        let before = self.approved_for_bundle(&app.bundle, from.as_deref(), &app.owner);
-        let after = self.approved_for_bundle(&app.bundle, Some(to_org), &app.owner);
+        let release = self.governing_release(app);
+        let before = self.approved_for_release(release, from.as_deref(), &app.owner);
+        let after = self.approved_for_release(release, Some(to_org), &app.owner);
         if let (Some(b), Some(a)) = (before, after) {
             if b.is_disjoint(a) {
                 return Err(MOVE_RELEASES_DISJOINT);
@@ -3203,17 +3299,18 @@ impl SystemState {
         self.stalled(self.approved_for(org, owner), now)
     }
 
-    /// [`Self::stalled`] for an app of `org` (or of `owner`) running `bundle`:
-    /// judged on the set that governs it ([`Self::approved_for_bundle`]).
+    /// [`Self::stalled`] for an app of `org` (or of `owner`) governed by
+    /// `release`: judged on the set that governs it
+    /// ([`Self::approved_for_release`]).
     #[must_use]
-    pub fn stalled_for_bundle(
+    pub fn stalled_for_release(
         &self,
-        bundle: &str,
+        release: Option<&PackageRef>,
         org: Option<&str>,
         owner: &str,
         now: u64,
     ) -> Option<Stall> {
-        self.stalled(self.approved_for_bundle(bundle, org, owner), now)
+        self.stalled(self.approved_for_release(release, org, owner), now)
     }
 
     /// Whether `actor` may install no release at `now`. An installed release
@@ -3720,6 +3817,7 @@ impl SystemCmd {
             Self::RenameOrg { .. } => Area::Orgs,
             Self::Genesis { .. } => Area::Fleet,
             Self::RequireSessionProofs { .. } => Area::Fleet,
+            Self::AttributeByRelease => Area::Fleet,
             Self::SetClusterVersion { .. } => Area::Fleet,
             Self::SetOperatorRelease { .. } => Area::Approvals,
             Self::SetReleaseApproval { .. } => Area::Approvals,
@@ -4541,6 +4639,11 @@ pub enum SystemCmd {
     /// (genesis sets it in a new one). It only ever tightens: a node that
     /// logs it early takes nothing from anyone.
     RequireSessionProofs,
+    /// From this entry on, an app is judged by the release it runs
+    /// ([`SystemState::attributes_by_release`]). Written once by the first
+    /// system leader on a release that judges so; entries before it replay
+    /// as they applied.
+    AttributeByRelease,
     /// The system leader raises the active cluster version
     /// ([`SystemState::cluster_version`]) to `version`, once every registered
     /// node advertises it or newer (`nodes`: each one's, by id). Only forward;
@@ -5317,14 +5420,22 @@ impl SystemMachine {
     fn new_work_refusal(&self, cmd: &SystemCmd) -> Option<Stall> {
         let s = &self.state;
         match cmd {
-            SystemCmd::CreateApp { app } => {
-                s.stalled_for_bundle(&app.bundle, app.org.as_deref(), &app.owner, app.created_at)
-            }
+            SystemCmd::CreateApp { app } => s.stalled_for_release(
+                s.governing_release(app),
+                app.org.as_deref(),
+                &app.owner,
+                app.created_at,
+            ),
             SystemCmd::UpgradeApp {
-                app_id, bundle, at, ..
+                app_id,
+                bundle,
+                at,
+                release,
+                ..
             } => {
                 let a = s.apps.get(app_id)?;
-                s.stalled_for_bundle(bundle, a.org.as_deref(), &a.owner, *at)
+                let to = s.governing(release.as_ref(), bundle, *at);
+                s.stalled_for_release(to, a.org.as_deref(), &a.owner, *at)
             }
             SystemCmd::InstallPackage {
                 release, signer_id, ..

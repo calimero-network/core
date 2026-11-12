@@ -10,10 +10,6 @@
 //! (see `harness/cluster.rs`).
 
 #![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-#![allow(
     clippy::result_large_err,
     reason = "the helpers pass on calimero_client::Error as the client returns it"
 )]
@@ -22,7 +18,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use calimero_client::{Client, Consistency, Policy};
+use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::{Client, Policy};
 use calimero_node::recovery_disk::{self as disk, Kind};
 use calimero_node::system::{Authority, BackupHolder};
 use serde_json::{json, Value};
@@ -34,7 +31,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, operator_sign, signed_up, Cluster};
+use harness::{kv_wasm, operator_sign, signed_up, typed, wire, Cluster};
 
 fn operator_upgrades(config: &mut calimero_node::Config) {
     config.governance.app_upgrades = Authority::Operator;
@@ -51,6 +48,45 @@ async fn ops(url: &str) -> Client {
     .unwrap();
     cl.use_api_key("ops-secret").await;
     cl
+}
+
+/// Deploy the kv fixture as `cl`; answers the app's id.
+async fn deploy(cl: &Client) -> String {
+    let bundle = cl.packages().bundle_put(kv_wasm()).await.unwrap().hash;
+    let created = cl
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .await
+        .map(wire)
+        .unwrap();
+    created["appId"].as_str().unwrap().to_owned()
+}
+
+async fn put(cl: &Client, app: &str, key: &str, value: &str) {
+    let _i = cl
+        .apps()
+        .call(
+            app,
+            "set",
+            Some(json!({ "key": key, "value": value })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+async fn get(cl: &Client, app: &str, key: &str) -> Result<Value, calimero_client::Error> {
+    cl.apps()
+        .view(
+            app,
+            "get",
+            Some(json!({ "key": key })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
+        .await
+        .map(|v| v.result)
 }
 
 /// The newest file in `dir` whose name starts `prefix`.
@@ -79,19 +115,9 @@ fn opened(dir: &Path, name: &str, secret: &[u8; 32]) -> Value {
 async fn a_cluster_comes_back_from_its_recovery_disk_after_every_kms_is_gone() {
     let mut old = Cluster::start_with(3, operator_upgrades).await;
     let (alice, _pk) = signed_up(&old, 0, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let kv = alice
-        .post("apps", json!({ "name": "kv", "bundle": bundle }))
-        .await
-        .unwrap()["appId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    let kv = deploy(&alice).await;
     for (k, v) in [("a", "1"), ("b", "2")] {
-        let _i = alice
-            .call(&kv, "set", json!({ "key": k, "value": v }), None)
-            .await
-            .unwrap();
+        put(&alice, &kv, k, v).await;
     }
 
     // Without a key nothing is written.
@@ -103,21 +129,17 @@ async fn a_cluster_comes_back_from_its_recovery_disk_after_every_kms_is_gone() {
     let (secret, public) = disk::new_keypair();
     let set = ops(&old.urls[0])
         .await
-        .post_operator_signed(
-            "ops/backup-key",
-            json!({ "publicKey": hex::encode(public) }),
-            &operator_sign,
-        )
+        .ops()
+        .set_backup_key(&hex::encode(public), Some(&operator_sign))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(set["holder"], json!({ "kind": "operator" }));
     assert_eq!(set["apps"], 1);
     // An owner cannot set a key where the operator upgrades apps.
     let e = alice
-        .post(
-            "auth/backup-key",
-            json!({ "publicKey": hex::encode(public) }),
-        )
+        .auth()
+        .account_set_backup_key(&hex::encode(public), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
@@ -182,23 +204,27 @@ async fn a_cluster_comes_back_from_its_recovery_disk_after_every_kms_is_gone() {
     let mut wrong = opened(&disk_at, &system, &secret);
     wrong["key"] = json!(hex::encode([7_u8; 32]));
     let e = op
-        .post("ops/recover", json!({ "system": wrong, "code": code }))
+        .ops()
+        .recover(typed(wrong), Some(typed(json!(code))))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_RECOVERY_FILE"), "{e}");
     let out = op
-        .post(
-            "ops/recover",
-            json!({ "system": opened(&disk_at, &system, &secret), "code": code }),
+        .ops()
+        .recover(
+            typed(opened(&disk_at, &system, &secret)),
+            Some(typed(json!(code))),
         )
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(out["apps"], 1, "{out}");
     // Once is all: the state is no longer empty.
     let e = op
-        .post(
-            "ops/recover",
-            json!({ "system": opened(&disk_at, &system, &secret), "code": code }),
+        .ops()
+        .recover(
+            typed(opened(&disk_at, &system, &secret)),
+            Some(typed(json!(code))),
         )
         .await
         .unwrap_err();
@@ -226,19 +252,19 @@ async fn a_cluster_comes_back_from_its_recovery_disk_after_every_kms_is_gone() {
     .unwrap();
     cl.use_session(alice.session().await.unwrap()).await;
     let _fresh = cl.refresh().await.unwrap();
-    let e = cl
-        .view(&kv, "get", json!({ "key": "a" }), Consistency::Strong)
-        .await
-        .unwrap_err();
+    let e = get(&cl, &kv, "a").await.unwrap_err();
     assert_eq!(e.code(), Some("APP_RESTORING"), "{e}");
 
     let restored = op
-        .post_operator_signed(
-            &format!("ops/apps/{kv}/restore"),
-            json!({ "recovery": opened(&disk_at, &app_file, &secret) }),
-            &operator_sign,
+        .ops()
+        .restore(
+            &kv,
+            None,
+            Some(typed(opened(&disk_at, &app_file, &secret))),
+            Some(&operator_sign),
         )
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(
         restored["status"]["voters"].as_array().unwrap().len(),
@@ -246,22 +272,32 @@ async fn a_cluster_comes_back_from_its_recovery_disk_after_every_kms_is_gone() {
         "{restored}"
     );
     for (k, v) in [("a", "1"), ("b", "2")] {
-        let got = cl
-            .view(&kv, "get", json!({ "key": k }), Consistency::Strong)
-            .await
-            .unwrap()
-            .result;
+        let got = get(&cl, &kv, k).await.unwrap();
         assert_eq!(got, json!(v), "{k}");
     }
-    let _i = cl
-        .call(&kv, "set", json!({ "key": "after", "value": "1" }), None)
-        .await
-        .unwrap();
+    put(&cl, &kv, "after", "1").await;
 
     founder.stop().await;
     for r in others {
         r.stop().await;
     }
+}
+
+/// `POST /recover/holder` with `body`'s files, signed by the operator when `signed`.
+async fn recover_holder(
+    cl: &Client,
+    body: &Value,
+    signed: bool,
+) -> Result<calimero_client::types::RestoreRecoverHolderResponse, calimero_client::Error> {
+    cl.public()
+        .restore_recover_holder(
+            body["holder"].as_str().unwrap(),
+            typed(body["slice"].clone()),
+            Some(typed(body["apps"].clone())),
+            Some(typed(body["code"].clone())),
+            signed.then_some(&operator_sign as &calimero_client::OperatorSigner<'_>),
+        )
+        .await
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -285,19 +321,9 @@ fn copy_dir(from: &Path, to: &Path) {
 async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
     let mut old = Cluster::start(3).await;
     let (alice, mut pk) = signed_up(&old, 0, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let kv = alice
-        .post("apps", json!({ "name": "kv", "bundle": bundle }))
-        .await
-        .unwrap()["appId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let _i = alice
-        .call(&kv, "set", json!({ "key": "a", "value": "1" }), None)
-        .await
-        .unwrap();
-    let account = alice.get("auth/me").await.unwrap()["accountId"]
+    let kv = deploy(&alice).await;
+    put(&alice, &kv, "a", "1").await;
+    let account = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -313,23 +339,18 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
 
     let (secret, public) = disk::new_keypair();
     let set = alice
-        .post_confirmed(
-            "auth/backup-key",
-            json!({ "publicKey": hex::encode(public) }),
-            &mut pk,
-        )
+        .auth()
+        .account_set_backup_key(&hex::encode(public), Some(&mut pk))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(set["holder"], json!({ "kind": "account", "id": account }));
     assert_eq!(set["apps"], 1);
     // Here the owner upgrades apps: the operator holds no key.
     let e = ops(&old.urls[0])
         .await
-        .post_operator_signed(
-            "ops/backup-key",
-            json!({ "publicKey": hex::encode(public) }),
-            &operator_sign,
-        )
+        .ops()
+        .set_backup_key(&hex::encode(public), Some(&operator_sign))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
@@ -379,14 +400,11 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
     });
     let device = new.client(0);
     // The cluster has not admitted it yet.
-    let e = device
-        .post("recover/holder", body.clone())
-        .await
-        .unwrap_err();
+    let e = recover_holder(&device, &body, false).await.unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
-    let out = device
-        .post_operator_signed("recover/holder", body.clone(), &operator_sign)
+    let out = recover_holder(&device, &body, true)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(
         out["apps"][0]["status"]["voters"].as_array().unwrap().len(),
@@ -394,10 +412,7 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
         "{out}"
     );
     // Once: the account is here now.
-    let e = device
-        .post_operator_signed("recover/holder", body, &operator_sign)
-        .await
-        .unwrap_err();
+    let e = recover_holder(&device, &body, true).await.unwrap_err();
     assert!(e.to_string().contains("holds that"), "{e}");
 
     // The file is back, its segment handed to every replica, and its data
@@ -420,20 +435,16 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
 
     let cl = new.client(1);
     let _session = cl.sign_in(&mut pk).await.unwrap();
-    let info = cl.get(&format!("apps/{kv}/files/{file_id}")).await.unwrap();
+    let info = cl.apps().file_info(&kv, &file_id).await.map(wire).unwrap();
     assert_eq!(info["size"], json!(5_000));
-    assert_eq!(cl.get("auth/me").await.unwrap()["accountId"], account);
-    let got = cl
-        .view(&kv, "get", json!({ "key": "a" }), Consistency::Strong)
-        .await
-        .unwrap()
-        .result;
+    assert_eq!(
+        cl.auth().me().await.map(wire).unwrap()["accountId"],
+        account
+    );
+    let got = get(&cl, &kv, "a").await.unwrap();
     assert_eq!(got, json!("1"));
-    let _i = cl
-        .call(&kv, "set", json!({ "key": "after", "value": "1" }), None)
-        .await
-        .unwrap();
+    put(&cl, &kv, "after", "1").await;
     // The account's files keep going to the key they were sealed to.
-    let key = cl.get("auth/backup-key").await.unwrap();
+    let key = cl.auth().account_backup_key().await.map(wire).unwrap();
     assert_eq!(key["key"]["publicKey"], hex::encode(public));
 }

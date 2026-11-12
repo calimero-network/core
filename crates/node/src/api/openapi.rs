@@ -1979,7 +1979,7 @@ fn tag(path: &str) -> &'static str {
         .next()
         .unwrap_or_default();
     match first {
-        "health" | "attestation" | "releases" | "publishers" => "Public",
+        "health" | "attestation" | "releases" | "publishers" | "recover" => "Public",
         "auth" => "Accounts",
         "bundles" | "packages" | "package-origins" => "Packages",
         "apps" | "pipelines" => "Apps",

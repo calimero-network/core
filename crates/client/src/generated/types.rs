@@ -3852,33 +3852,6 @@ pub struct DeploymentOrgsResponse {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RestoreRecoverHolderRequestSlice {
-    pub file: String,
-    pub key: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RestoreRecoverHolderRequestAppsItem {
-    pub file: String,
-    pub key: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RestoreRecoverHolderRequestCodeItem {
-    pub file: String,
-    pub key: String,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RestoreRecoverHolderResponse {
-    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-    pub apps: Value,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SignUpPublicResponse {
     pub policy: SignUp,
@@ -5157,6 +5130,33 @@ pub struct PublisherBindingResponse {
     pub cluster: String,
     pub generation: u64,
     pub bound: bool,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestoreRecoverHolderRequestSlice {
+    pub file: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestoreRecoverHolderRequestAppsItem {
+    pub file: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestoreRecoverHolderRequestCodeItem {
+    pub file: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestoreRecoverHolderResponse {
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub apps: Value,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

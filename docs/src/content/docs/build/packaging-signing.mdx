@@ -56,8 +56,9 @@ detail.
    <Aside type="caution">
    For local development you can sign with the built-in well-known dev key via
    `mero-sign sign <manifest> --dev` instead of `--key`. A dev-signed bundle is
-   marked as such and **cannot be published to the registry** — use a generated
-   key for anything real.
+   marked as such, **cannot be published to the registry**, and is refused
+   (`403 DEV_SIGNED_PACKAGE`) by a node not running with `--dev` or
+   `--allow-unsigned-bundles` — use a generated key for anything real.
    </Aside>
 
 3. **Write and sign the manifest, and create the `.mpk`.**
@@ -134,7 +135,9 @@ identity of your app and guard it accordingly.
 There is one rule, not a per-path split: a bundle must carry a valid Ed25519
 manifest signature to be installed, whether it comes from a registry, a URL, or
 a local file. Dev builds are not an exception - they sign with the well-known
-dev key (`mero-sign sign --dev`) and are verified like any other bundle. The
+dev key (`mero-sign sign --dev`) and are verified like any other bundle; since
+that key's seed is public, only a development node (`--dev` or
+`--allow-unsigned-bundles`) installs a release it signed. The
 signature also binds the wasm bytes: each wasm artifact is checked against the
 SHA-256 the signed manifest records for it. The exact verification rules are
 documented in [Upgrades & migration](/protocol/upgrades/).

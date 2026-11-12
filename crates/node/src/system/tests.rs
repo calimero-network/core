@@ -1,8 +1,8 @@
 use serde_json::{json, Value};
 
 use super::{
-    Authority, Governance, OrgRole, Quotas, ReleaseScope, SystemCmd, SystemMachine, SystemState,
-    INVITE_GONE, OPERATOR, QUOTA_PREFIX,
+    Authority, Governance, OrgRole, PackageRef, Quotas, ReleaseScope, SystemCmd, SystemMachine,
+    SystemState, INVITE_GONE, OPERATOR, QUOTA_PREFIX, SHIPS_IN_OTHER_PACKAGE,
 };
 use crate::types::RefreshRecord;
 
@@ -5354,7 +5354,10 @@ fn a_publisher_approves_the_releases_of_every_instance_of_its_packages() {
     let _ok = m
         .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "bob"))
         .unwrap();
-    assert_eq!(m.state.publisher_of("b1"), Some(&"pub".to_owned()));
+    assert_eq!(
+        m.state.publisher_of(m.state.governing_release(&inst(&m))),
+        Some(&"pub".to_owned())
+    );
     assert_eq!(m.state.binding_generation(&signer), 1);
     assert_eq!(
         m.state.approved_releases(&inst(&m)),
@@ -5410,7 +5413,10 @@ fn a_publisher_approves_the_releases_of_every_instance_of_its_packages() {
     let _ok = m
         .run_unproven(bind(&key, &signer, ("cust", "cust"), 1, "cora"))
         .unwrap();
-    assert_eq!(m.state.publisher_of("b1"), Some(&"cust".to_owned()));
+    assert_eq!(
+        m.state.publisher_of(m.state.governing_release(&inst(&m))),
+        Some(&"cust".to_owned())
+    );
     assert_eq!(m.state.binding_generation(&signer), 2);
 }
 
@@ -5463,7 +5469,13 @@ fn a_deleted_organization_takes_its_publisher_bindings_with_it() {
         })
         .unwrap();
     assert_eq!(m.state.publisher_of_signer(&signer), None);
-    assert_eq!(m.state.publisher_of("b1"), None);
+    let p1 = PackageRef {
+        package: "p".into(),
+        version: "1.0.0".into(),
+        service: None,
+        compute: false,
+    };
+    assert_eq!(m.state.publisher_of(Some(&p1)), None);
     assert_eq!(m.state.binding_generation(&signer), 1);
     assert!(m
         .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "dan"))
@@ -5694,6 +5706,234 @@ fn a_package_says_whether_its_publisher_or_each_owner_upgrades_it() {
         "never back to the publisher"
     );
     let _ok = m.run_unproven(upgrade("cora", "h1.2.0")).unwrap();
+}
+
+/// An upgrade of `app` to `bundle` of `release` (`package@version`) by `actor`.
+fn upgrade_to(app: &str, actor: &str, bundle: &str, release: Option<(&str, &str)>) -> SystemCmd {
+    SystemCmd::UpgradeApp {
+        compute_bundle: None,
+        app_id: app.into(),
+        bundle: bundle.into(),
+        by_operator: false,
+        actor: actor.into(),
+        at: 10,
+        run: None,
+        consent: serde_json::Value::Null,
+        release: release.map(|(package, version)| PackageRef {
+            package: package.into(),
+            version: version.into(),
+            service: None,
+            compute: false,
+        }),
+        owner_in_org: true,
+        owner_in_team: true,
+    }
+}
+
+/// The customer's instance `app` of `cust`, running `bundle` as
+/// `release`, created at 0.
+fn instance_of(m: &mut SystemMachine, app: &str, bundle: &str, release: Value) {
+    let _prev = m.state.apps.insert(
+        app.into(),
+        serde_json::from_value(json!({
+            "appId": app, "name": app, "group": 3, "bundle": bundle, "owner": "cora",
+            "org": "cust", "access": { "kind": "org" }, "replicas": [1], "createdAt": 0,
+            "release": release
+        }))
+        .unwrap(),
+    );
+}
+
+/// A release that ships the WASM of an earlier one of its package is an
+/// upgrade of its own: an instance running it is upgraded as that
+/// release says, not as the first release with that WASM did. An
+/// `owner` release is its owners' even when a `publisher` one shipped
+/// the same WASM first. Entries logged before `AttributeByRelease`
+/// replay judging the bundle's first release, as they applied.
+#[test]
+fn an_instance_is_upgraded_as_the_release_it_runs_says() {
+    use crate::types::caps::MANAGE_APPLICATION;
+    let (key, signer) = publisher_key(10);
+    let mut m = publishing(&signer, "publisher");
+    if let Some(o) = m.state.orgs.get_mut("pub") {
+        let _prev = o.capabilities.insert("bob".into(), MANAGE_APPLICATION);
+    }
+    let _ok = m
+        .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "pam"))
+        .unwrap();
+    let _ok = m.run_unproven(SystemCmd::AttributeByRelease).unwrap();
+    assert!(
+        m.run_unproven(SystemCmd::AttributeByRelease).is_err(),
+        "once"
+    );
+    // 2.0.0 gives upgrades to owners and ships 1.0.0's WASM.
+    let _ok = m
+        .run_unproven(SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: signer.clone(),
+            release: serde_json::from_value(json!({
+                "version": "2.0.0", "mpk": "20", "mpkSize": 1, "source": "upload",
+                "services": { "": "b1" }, "installedBy": "pam", "installedAt": 0,
+                "upgrades": "owner"
+            }))
+            .unwrap(),
+        })
+        .unwrap();
+    instance_of(
+        &mut m,
+        "own",
+        "b1",
+        json!({ "package": "p", "version": "2.0.0" }),
+    );
+    let may =
+        |m: &SystemMachine, app: &str, who: &str| m.state.may_upgrade(&m.state.apps[app], who);
+    assert!(may(&m, "own", "cora"), "the owner upgrades it");
+    assert!(
+        !may(&m, "own", "pam") && !may(&m, "own", "bob"),
+        "the publisher does not"
+    );
+    assert!(!m.state.upgrades_unbound(&m.state.apps["own"]));
+    // An instance that names no release is judged by its bundle's.
+    assert!(may(&m, "inst", "bob") && !may(&m, "inst", "cora"));
+
+    let e = m
+        .run_unproven(upgrade_to("own", "pam", "b1", Some(("p", "2.0.0"))))
+        .unwrap_err();
+    assert!(e.contains("needs its owner"), "{e}");
+    let e = m
+        .run_unproven(upgrade_to("own", "cora", "b2", Some(("p", "1.1.0"))))
+        .unwrap_err();
+    assert!(e.contains("not moved"), "never to a publisher release: {e}");
+
+    // Replayed before the mark, the bundle's first release judged it.
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    old.state.attributes_by_release = false;
+    assert!(may(&old, "own", "pam") && !may(&old, "own", "cora"));
+}
+
+/// A WASM belongs to one signer: a release of another signer's package
+/// that ships it is refused, so that signer never gains
+/// the upgrades or the release approvals of the instances that run it.
+/// Where a cluster holds such a release from before, an instance is
+/// judged by the release it runs, and a release installed after an
+/// instance took a raw upload of the same WASM does not take it over.
+#[test]
+fn a_wasm_of_one_package_gives_another_no_authority() {
+    use crate::types::caps::MANAGE_APPLICATION;
+    let (key, signer) = publisher_key(11);
+    let (evil_key, evil_signer) = publisher_key(12);
+    let mut m = publishing(&signer, "owner");
+    let _ok = m.run_unproven(account("eve")).unwrap();
+    let mut o = org(
+        &[("eve", "owner")],
+        &[("eve", MANAGE_APPLICATION)],
+        &["0.1.0"],
+    );
+    o.org_id = "evil".into();
+    let _prev = m.state.orgs.insert("evil".into(), o);
+    let _ok = m
+        .run_unproven(bind(&key, &signer, ("pub", "pub"), 0, "pam"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(bind(&evil_key, &evil_signer, ("evil", "evil"), 0, "eve"))
+        .unwrap();
+    let _ok = m.run_unproven(SystemCmd::AttributeByRelease).unwrap();
+    instance_of(
+        &mut m,
+        "victim",
+        "b1",
+        json!({ "package": "p", "version": "1.0.0" }),
+    );
+    let q = |version: &str, wasm: &str, at: u64| SystemCmd::InstallPackage {
+        package: "q".into(),
+        signer_id: evil_signer.clone(),
+        release: serde_json::from_value(json!({
+            "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+            "services": { "": wasm }, "installedBy": "eve", "installedAt": at,
+            "upgrades": "publisher"
+        }))
+        .unwrap(),
+    };
+    let e = m.run_unproven(q("1.0.0", "b1", 0)).unwrap_err();
+    assert_eq!(e, SHIPS_IN_OTHER_PACKAGE);
+    assert!(!m.state.packages.contains_key("q"));
+
+    // A cluster that installed one before: the bundle is recorded under
+    // `q`, and the instance is still judged by the release it runs.
+    let mut legacy = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    legacy.state.attributes_by_release = false;
+    let _ok = legacy.run_unproven(q("1.0.0", "b1", 0)).unwrap();
+    if let Some(b) = legacy.state.bundles.get_mut("b1") {
+        b.package = Some(PackageRef {
+            package: "q".into(),
+            version: "1.0.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let victim = |m: &SystemMachine| m.state.apps["victim"].clone();
+    assert!(
+        legacy.state.may_upgrade(&victim(&legacy), "eve"),
+        "as replayed"
+    );
+    legacy.state.attributes_by_release = true;
+    assert!(!legacy.state.may_upgrade(&victim(&legacy), "eve"));
+    assert!(legacy.state.may_upgrade(&victim(&legacy), "cora"));
+    assert_eq!(
+        legacy.state.approved_releases(&victim(&legacy)),
+        m.state.orgs.get("pub").map(|o| &o.approved_releases),
+        "the victim's publisher approves its releases"
+    );
+
+    // A raw upload's instance: a release installed later that ships the
+    // same WASM takes nothing from its owner.
+    let _ok = m.run_unproven(q("1.0.0", "raw", 5)).unwrap();
+    let rawapp = m.state.apps["rawapp"].clone();
+    assert_eq!(
+        m.state.bundles["raw"]
+            .package
+            .as_ref()
+            .map(|r| r.package.as_str()),
+        Some("q")
+    );
+    assert!(!m.state.may_upgrade(&rawapp, "eve"));
+    assert!(m.state.may_upgrade(&rawapp, "cora"));
+    assert_eq!(
+        m.state.approved_releases(&rawapp),
+        m.state.orgs.get("cust").map(|o| &o.approved_releases)
+    );
+
+    // The same signer may ship the WASM in another package of its own:
+    // each instance is governed by the release it runs.
+    let _ok = m
+        .run_unproven(SystemCmd::InstallPackage {
+            package: "p2".into(),
+            signer_id: signer.clone(),
+            release: serde_json::from_value(json!({
+                "version": "1.0.0", "mpk": "p2-1", "mpkSize": 1, "source": "upload",
+                "services": { "": "b1" }, "installedBy": "pam", "installedAt": 6,
+                "upgrades": "publisher"
+            }))
+            .unwrap(),
+        })
+        .unwrap();
+    instance_of(
+        &mut m,
+        "twin",
+        "b1",
+        json!({ "package": "p2", "version": "1.0.0" }),
+    );
+    let twin = m.state.apps["twin"].clone();
+    assert!(m.state.may_upgrade(&victim(&m), "cora"));
+    assert!(!m.state.may_upgrade(&victim(&m), "pam"));
+    assert!(m.state.may_upgrade(&twin, "pam"), "p2 says publisher");
+    assert!(!m.state.may_upgrade(&twin, "cora"));
 }
 
 // ------------------------------------------------------------ deployers
