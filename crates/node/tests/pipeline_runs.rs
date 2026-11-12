@@ -3,14 +3,6 @@
 //! decides which step starts when. The package is the `compute` fixture's compute component
 //! alone (a compute-only app).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 mod common;
 use common::UploadBytes as _;
 
@@ -22,7 +14,7 @@ use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BLOB_IDLE_MS;
 use calimero_node::component::{FailedReason, FinalOutcome, RunRecord, MAX_ACTIVE_PIPELINE_RUNS};
 use calimero_node::Node;
-use common::{mpk_with_pipelines, signed_up, Cluster, JobNode, PUBLISHER};
+use common::{mpk_with_pipelines, signed_up, typed, wire, Cluster, JobNode, PUBLISHER};
 use serde_json::{json, Value};
 
 const JOB_A: u64 = 4;
@@ -247,7 +239,8 @@ impl Rig {
         ];
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice
-            .upload_package(mpk_with_pipelines(
+            .packages()
+            .upload(mpk_with_pipelines(
                 "com.test.job",
                 "1.0.0",
                 None,
@@ -258,8 +251,12 @@ impl Rig {
             .await
             .unwrap();
         let app = alice
-            .create_app_from_package("job", "com.test.job", Some("1.0.0"), None, json!({}))
+            .apps()
+            .create(typed(
+                json!({ "name": "job", "package": "com.test.job", "version": "1.0.0" }),
+            ))
             .await
+            .map(|a| a.app_id)
             .unwrap();
         let mut jobs = Vec::new();
         for id in job_ids {
@@ -768,14 +765,8 @@ async fn only_those_who_handle_the_apps_files_start_cancel_or_retry_a_pipeline()
     let rig = Rig::start(&[JOB_A]).await;
     let public = rig
         .alice
-        .create_app_from_package(
-            "open",
-            "com.test.job",
-            Some("1.0.0"),
-            None,
-            json!({ "access": { "kind": "public" } }),
-        )
-        .await
+        .apps().create(typed(json!({ "name": "open", "package": "com.test.job", "version": "1.0.0", "access": { "kind": "public" } })))
+        .await.map(|a| a.app_id)
         .unwrap();
     let doc = rig
         .alice
@@ -857,7 +848,8 @@ async fn a_run_started_on_v1_keeps_running_v1_after_an_upgrade_to_v2() {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let _installed = rig
         .alice
-        .upload_package(mpk_with_pipelines(
+        .packages()
+        .upload(mpk_with_pipelines(
             "com.test.job",
             "2.0.0",
             None,
@@ -873,8 +865,14 @@ async fn a_run_started_on_v1_keeps_running_v1_after_an_upgrade_to_v2() {
         .await;
     let up = rig
         .alice
-        .upgrade_app(&rig.app, json!({ "version": "2.0.0" }), &mut rig.pk)
+        .apps()
+        .upgrade(
+            &rig.app,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut rig.pk),
+        )
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(up["status"], "ok", "{up}");
     let now = rig.leader().app(&rig.app).await.unwrap();
@@ -907,7 +905,8 @@ async fn starting_needs_every_node_on_this_release() {
         .expect("a compute component");
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let _installed = alice
-        .upload_package(mpk_with_pipelines(
+        .packages()
+        .upload(mpk_with_pipelines(
             "com.test.job",
             "1.0.0",
             None,
@@ -918,8 +917,12 @@ async fn starting_needs_every_node_on_this_release() {
         .await
         .unwrap();
     let app = alice
-        .create_app_from_package("job", "com.test.job", Some("1.0.0"), None, json!({}))
+        .apps()
+        .create(typed(
+            json!({ "name": "job", "package": "com.test.job", "version": "1.0.0" }),
+        ))
         .await
+        .map(|a| a.app_id)
         .unwrap();
     let file = loop {
         match alice.upload_bytes(&app, b"bytes".to_vec()).await {
@@ -1427,9 +1430,14 @@ async fn a_retry_keeps_the_original_release_after_an_upgrade() {
         &pipelines,
         &key,
     );
-    rig.alice.upload_package(mpk).await.unwrap();
+    rig.alice.packages().upload(mpk).await.unwrap();
     rig.alice
-        .upgrade_app(&rig.app, json!({ "version": "1.0.1" }), &mut rig.pk)
+        .apps()
+        .upgrade(
+            &rig.app,
+            typed(json!({ "version": "1.0.1" })),
+            Some(&mut rig.pk),
+        )
         .await
         .unwrap();
     let fresh = rig
@@ -1486,7 +1494,8 @@ async fn a_step_runs_another_packages_module_under_the_callers_keys_and_payer() 
     .unwrap();
     let _module = rig
         .alice
-        .upload_package(common::mpk_parts(
+        .packages()
+        .upload(common::mpk_parts(
             "com.test.module",
             "1.0.0",
             None,
@@ -1498,7 +1507,8 @@ async fn a_step_runs_another_packages_module_under_the_callers_keys_and_payer() 
         .unwrap();
     let _user = rig
         .alice
-        .upload_package(mpk_with_pipelines(
+        .packages()
+        .upload(mpk_with_pipelines(
             "com.test.job",
             "2.0.0",
             None,
@@ -1510,7 +1520,12 @@ async fn a_step_runs_another_packages_module_under_the_callers_keys_and_payer() 
         .unwrap();
     let _up = rig
         .alice
-        .upgrade_app(&rig.app, json!({ "version": "2.0.0" }), &mut rig.pk)
+        .apps()
+        .upgrade(
+            &rig.app,
+            typed(json!({ "version": "2.0.0" })),
+            Some(&mut rig.pk),
+        )
         .await
         .unwrap();
 
@@ -1801,14 +1816,8 @@ async fn a_stranger_cannot_read_a_receipt() {
     let rig = Rig::start(&[JOB_A]).await;
     let public = rig
         .alice
-        .create_app_from_package(
-            "open",
-            "com.test.job",
-            Some("1.0.0"),
-            None,
-            json!({ "access": { "kind": "public" } }),
-        )
-        .await
+        .apps().create(typed(json!({ "name": "open", "package": "com.test.job", "version": "1.0.0", "access": { "kind": "public" } })))
+        .await.map(|a| a.app_id)
         .unwrap();
     let doc = rig
         .alice
@@ -1901,8 +1910,10 @@ async fn events_never_carry_results_or_file_ids() {
     // The raw frames are read through the sealed client's generic stream, not the typed one.
     let raw = rig
         .alice
-        .get(&format!("apps/{}/pipeline-runs/{run}", rig.app))
+        .apps()
+        .pipelines_get(&rig.app, &run)
         .await
+        .map(wire)
         .unwrap();
     assert!(
         raw.to_string().contains(&secrets[1]),
@@ -1972,11 +1983,7 @@ async fn a_stream_ends_and_frees_its_slot_when_its_app_is_deleted() {
     ));
     let node = &rig.c.nodes[0].as_ref().unwrap().node;
     assert_eq!(node.pipeline_subscribers.lock().unwrap().len(), 1);
-    let _gone = rig
-        .alice
-        .delete(&format!("apps/{}", rig.app))
-        .await
-        .unwrap();
+    let _gone = rig.alice.apps().delete(&rig.app).await.unwrap();
     let ended = tokio::time::timeout(Duration::from_secs(5), async {
         while events.next().await.is_some() {}
     })
@@ -2047,7 +2054,8 @@ async fn validate_reports_every_error_with_its_path_and_writes_nothing() {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let refused = rig
         .alice
-        .upload_package(mpk_with_pipelines(
+        .packages()
+        .upload(mpk_with_pipelines(
             "com.test.job",
             "1.0.1",
             None,
@@ -2225,14 +2233,8 @@ async fn a_stranger_cannot_estimate_on_a_public_app() {
     let rig = Rig::start(&[]).await;
     let public = rig
         .alice
-        .create_app_from_package(
-            "open",
-            "com.test.job",
-            Some("1.0.0"),
-            None,
-            json!({ "access": { "kind": "public" } }),
-        )
-        .await
+        .apps().create(typed(json!({ "name": "open", "package": "com.test.job", "version": "1.0.0", "access": { "kind": "public" } })))
+        .await.map(|a| a.app_id)
         .unwrap();
     let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
     let e = bob

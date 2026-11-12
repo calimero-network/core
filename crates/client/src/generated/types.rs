@@ -3369,6 +3369,74 @@ pub struct ConsentPageCreateRequestOutboundSubject {
     pub prefixes: Option<Vec<String>>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestCreateOrgSubject {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ConsentPageCreateRequestCreateInviteSubjectRole {
+    /// `guest`.
+    Guest,
+    /// `member`.
+    Member,
+    /// `admin`.
+    Admin,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl ConsentPageCreateRequestCreateInviteSubjectRole {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Guest => "guest",
+            Self::Member => "member",
+            Self::Admin => "admin",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for ConsentPageCreateRequestCreateInviteSubjectRole {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ConsentPageCreateRequestCreateInviteSubjectRole {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "guest" => Self::Guest,
+            "member" => Self::Member,
+            "admin" => Self::Admin,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestCreateInviteSubject {
+    pub org: String,
+    pub role: ConsentPageCreateRequestCreateInviteSubjectRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teams: Option<Vec<String>>,
+    #[serde(rename = "ttlSecs")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uses: Option<u64>,
+    #[serde(rename = "allApps")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub all_apps: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestAcceptInviteSubject {
+    pub token: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum ConsentPageCreateRequest {
@@ -3391,6 +3459,24 @@ pub enum ConsentPageCreateRequest {
         return_to: String,
         scope: ConsentPageCreateRequestOutboundScope,
         subject: ConsentPageCreateRequestOutboundSubject,
+    },
+    #[serde(rename = "createOrg")]
+    CreateOrg {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestCreateOrgSubject,
+    },
+    #[serde(rename = "createInvite")]
+    CreateInvite {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestCreateInviteSubject,
+    },
+    #[serde(rename = "acceptInvite")]
+    AcceptInvite {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestAcceptInviteSubject,
     },
 }
 
@@ -3415,6 +3501,12 @@ pub enum ConsentPageResultResponseKind {
     Upgrade,
     /// `outbound`.
     Outbound,
+    /// `createOrg`.
+    CreateOrg,
+    /// `createInvite`.
+    CreateInvite,
+    /// `acceptInvite`.
+    AcceptInvite,
     /// A value this client does not know yet.
     Other(String),
 }
@@ -3427,6 +3519,9 @@ impl ConsentPageResultResponseKind {
             Self::Release => "release",
             Self::Upgrade => "upgrade",
             Self::Outbound => "outbound",
+            Self::CreateOrg => "createOrg",
+            Self::CreateInvite => "createInvite",
+            Self::AcceptInvite => "acceptInvite",
             Self::Other(s) => s,
         }
     }
@@ -3444,6 +3539,9 @@ impl<'de> Deserialize<'de> for ConsentPageResultResponseKind {
             "release" => Self::Release,
             "upgrade" => Self::Upgrade,
             "outbound" => Self::Outbound,
+            "createOrg" => Self::CreateOrg,
+            "createInvite" => Self::CreateInvite,
+            "acceptInvite" => Self::AcceptInvite,
             other => Self::Other(other.to_owned()),
         })
     }
@@ -3491,6 +3589,20 @@ impl<'de> Deserialize<'de> for ConsentPageResultResponseStatus {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageResultResponseOutcome {
+    #[serde(rename = "orgId")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ConsentPageResultResponse {
     #[serde(rename = "requestId")]
@@ -3499,6 +3611,8 @@ pub struct ConsentPageResultResponse {
     pub status: ConsentPageResultResponseStatus,
     #[serde(rename = "decidedAt")]
     pub decided_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ConsentPageResultResponseOutcome>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

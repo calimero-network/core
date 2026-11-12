@@ -262,6 +262,13 @@ async fn local(args: LocalArgs) -> eyre::Result<()> {
     // The local cluster's rp id is `localhost`, its apps domain `localhost`.
     node_config::check_rp_id("localhost", &args.origins, Some("localhost"))
         .map_err(|e| eyre::eyre!("--rp-id \"localhost\" does not cover a passkey host: {e}"))?;
+    if args
+        .ops_token
+        .as_deref()
+        .is_some_and(|t| t.trim().is_empty())
+    {
+        eyre::bail!("--ops-token is empty; leave it out for a new random one");
+    }
     let token = args
         .ops_token
         .unwrap_or_else(|| hex::encode(calimero_identity::random::<16>()));
@@ -492,6 +499,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     if args.job_slots.is_some() {
         eyre::bail!("--job-slots is for --job-node only");
     }
+    args.check_ops_token()?;
     let node_id = args.node_id.ok_or_else(|| {
         eyre::eyre!("the node's id is not set: merod --node NAME init --node-id N ...")
     })?;

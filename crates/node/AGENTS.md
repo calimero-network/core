@@ -397,7 +397,7 @@ is its command line.
   `system::tests::sign_up`.
 - **The approval model** (where governance says `owner`; the same on every
   cluster, shared or dedicated). Decision × who holds it × who acts × where:
-  - *Node images* (`SystemState::approved_for_bundle`): the app's **publisher**,
+  - *Node images* (`SystemState::approved_for_release`): the app's **publisher**,
     the org its package's signing key is bound to (`BindPublisher`,
     `POST /orgs/{org}/publishers { signerId, publicKey, signature }` by an
     `APPROVE_RELEASES` holder with passkey consent; the key's Ed25519 signature
@@ -434,12 +434,28 @@ is its command line.
     `SystemState::upgrade_keeps_authority` at upgrade (API and apply). Each with
     their own passkey assertion (`consent` on `UpgradeApp`). `run_upgrade` judges
     who and where before anything runs on the app's group.
+  - *Which release governs* (`SystemState::governing_release`, `governing`):
+    upgrades, publisher and approvals follow the release the app runs
+    (`AppRecord::release`, or an upgrade's or create's target release); with
+    none (raw upload, by hash, a record from before), the bundle's recorded
+    release, only if installed by the time the app took the bundle
+    (`created_at`, or its last successful upgrade's `at`). A WASM belongs to
+    one signer: `InstallPackage` of a release shipping a WASM a release of
+    another signer's package ships is refused (`SHIPS_IN_OTHER_PACKAGE`, `409`
+    in `verify_release`); one signer may ship it in several packages, each
+    instance judged by the release it runs. Both hold from `SystemState::attributes_by_release`
+    on, set by the `AttributeByRelease` the first system leader on this
+    release writes (`reconcile`, once the logged cluster version brings
+    `Feature::AttributeByRelease`); entries before it replay judging the
+    bundle's first recorded release, as they applied. Regressions:
+    `system::tests::an_instance_is_upgraded_as_the_release_it_runs_says`,
+    `a_wasm_of_one_package_gives_another_no_authority`.
   - *Release deadlines* (`SetReleaseDeadline`, `SystemState::release_deadlines`):
     the operator's, any governance, `POST|DELETE /ops/releases/{version}/deadline`
     (signed with the operator key, `__release_deadline`; `after: null` lifts),
     public at `GET /releases`. Past one, a party whose newest approved release is
     older (judged on the set that governs the app) creates, installs and upgrades
-    nothing (`SystemState::stalled_for_bundle`, `install_stalled`; `409
+    nothing (`SystemState::stalled_for_release`, `install_stalled`; `409
     RELEASE_DEADLINE`, `node::stalled`), placement skips retired nodes
     (`SystemState::retired`); running apps go on. Judged at the command's own
     time (`createdAt`, `at`, `installedAt`), never a node's clock; `run_upgrade`
@@ -1099,7 +1115,9 @@ is its command line.
   and by the console); `returnTo` is the package's own frontend origin or one its
   newest signed manifest names (unbound sessions: `config.origins`). The
   request (this node's memory,
-  `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
+  `CONSENT_REQUEST_TTL`, one undecided request per account and node (a new one
+  replaces it, so a forged page has no other request to swap in), a per-node
+  bound, decided once; page answers carry HSTS) freezes
   a model from node state and verified manifests (an upgrade's capability
   sheet is `consent_page::diff`, its methods, events, timers and state version from the
   `calimero:abi` each component embeds, `component::embedded_abi`; regression:

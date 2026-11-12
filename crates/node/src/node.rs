@@ -19,6 +19,7 @@ use crate::app::{AppMachine, Applied, Status};
 use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
 use crate::membership::{grow_voters, PROMOTE_MAX_LAG, SYSTEM_VOTERS};
+use crate::system::cluster_version::{self as cv, Feature};
 use crate::system::{normalize_addr, output, SystemCmd, SystemMachine, SystemState};
 use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord, NodeRole};
 use crate::usage::{Meter, Usage};
@@ -2139,6 +2140,19 @@ impl Node {
                 let _r = self.sys_write(&SystemCmd::RequireSessionProofs).await;
             }
             self.raise_cluster_version();
+            // Apps are judged by the release they run from here on; what was
+            // logged before applies as it did (`AttributeByRelease`). Only
+            // once the logged cluster version brings it (`attributeByRelease`):
+            // below it a node of the release before would skip the mark, and
+            // `sys_write` would refuse it each pass.
+            if self.sys(|s| {
+                !s.attributes_by_release
+                    && (s.governance.is_some() || !s.accounts.is_empty())
+                    && cv::check(s.cluster_version.as_deref(), &[Feature::AttributeByRelease])
+                        .is_ok()
+            }) {
+                let _r = self.sys_write(&SystemCmd::AttributeByRelease).await;
+            }
             self.admit_registered_nodes();
             self.promote_learners();
         }

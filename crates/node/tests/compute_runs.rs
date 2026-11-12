@@ -2,20 +2,13 @@
 //! on a lost job node, cancel, caps, the result method, usage and the queue. The app is the
 //! `compute` fixture (`apps/v2-fixtures/compute`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 mod common;
 use common::UploadBytes as _;
 
 use std::time::{Duration, Instant};
 
-use calimero_client::{Client, Consistency};
+use calimero_client::types::{AppCreateRequest, ViewsRequestConsistency};
+use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BlobRecord;
 use calimero_node::component::{
@@ -27,7 +20,7 @@ use calimero_node::job_wire::{Report, ReportStatus, ReportUsage};
 use calimero_node::node::{ComputeLimits, PeerBlobs, JOB_CONTROL_TIMEOUT, JOB_POLL, SEGMENT_GRACE};
 use calimero_node::types::Caller;
 use calimero_node::Node;
-use common::{mpk_with, signed_up, Cluster, JobNode, PUBLISHER};
+use common::{mpk_with, signed_up, typed, wire, Cluster, JobNode, PUBLISHER};
 use futures_util::FutureExt;
 use rand_chacha::rand_core::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
@@ -67,7 +60,8 @@ impl Rig {
         let compute = both.compute.expect("a compute component");
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice
-            .upload_package(mpk_with(
+            .packages()
+            .upload(mpk_with(
                 "com.test.compute",
                 "1.0.0",
                 &both.app,
@@ -77,8 +71,15 @@ impl Rig {
             .await
             .unwrap();
         let app = alice
-            .create_app_from_package("compute", "com.test.compute", Some("1.0.0"), None, options)
+            .apps()
+            .create(AppCreateRequest {
+                name: Some("compute".to_owned()),
+                package: Some("com.test.compute".to_owned()),
+                version: Some("1.0.0".to_owned()),
+                ..typed(options)
+            })
             .await
+            .map(|a| a.app_id)
             .unwrap();
         let mut jobs = Vec::new();
         for id in job_ids {
@@ -121,7 +122,8 @@ impl Rig {
     async fn begin(&self, method: &str, args: Value) -> String {
         let r = self
             .alice
-            .call(&self.app, method, args, None)
+            .apps()
+            .call(&self.app, method, Some(args), None, None)
             .await
             .unwrap();
         r.result.as_str().unwrap().to_owned()
@@ -141,11 +143,13 @@ impl Rig {
         loop {
             let v = self
                 .alice
+                .apps()
                 .view(
                     &self.app,
                     "outcome",
-                    json!({ "run": run }),
-                    Consistency::Strong,
+                    Some(json!({ "run": run })),
+                    Some(ViewsRequestConsistency::Strong),
+                    None,
                 )
                 .await
                 .unwrap();
@@ -184,7 +188,7 @@ impl Rig {
         let leader = self.c.app_leader(&self.app).unwrap();
         let ops = self.c.client(leader);
         ops.use_api_key("ops-secret").await;
-        ops.get_text("ops/metrics").await.unwrap()
+        ops.ops().metrics().await.unwrap()
     }
 
     fn slot_granted(&self, run: &str) -> Option<bool> {
@@ -248,7 +252,8 @@ impl Rig {
         self.c.advance_all(PAST_IDLE_MS);
         let _ok = self
             .alice
-            .call(&self.app, "ping", json!({}), None)
+            .apps()
+            .call(&self.app, "ping", Some(json!({})), None, None)
             .await
             .unwrap();
     }
@@ -265,11 +270,11 @@ impl Rig {
 
     /// The file bytes the payer of alice's apps is charged for.
     async fn charged(&self) -> u64 {
-        let account = self.alice.me().await.unwrap()["accountId"]
+        let account = self.alice.auth().me().await.map(wire).unwrap()["accountId"]
             .as_str()
             .unwrap()
             .to_owned();
-        let usage = self.alice.usage().await.unwrap();
+        let usage = self.alice.auth().usage().await.map(wire).unwrap();
         usage["fileBytes"][format!("account:{account}")]
             .as_u64()
             .unwrap_or(0)
@@ -379,7 +384,14 @@ async fn a_run_ends_with_its_output_usage_and_one_result() {
     assert_eq!(record.final_.as_ref().unwrap().outputs.len(), 1);
     let done = rig
         .alice
-        .view(&rig.app, "done", json!({}), Consistency::Strong)
+        .apps()
+        .view(
+            &rig.app,
+            "done",
+            Some(json!({})),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(done.result, json!("1"), "one result");
@@ -397,8 +409,10 @@ async fn a_run_ends_with_its_output_usage_and_one_result() {
     // The API shows the record without its arguments.
     let shown = rig
         .alice
-        .get(&format!("apps/{}/runs/{run}", rig.app))
+        .apps()
+        .run(&rig.app, &run)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(shown["state"], "done", "{shown}");
     assert!(shown.get("args").is_none());
@@ -431,7 +445,14 @@ async fn the_run_restarts_on_the_other_job_node_when_its_node_is_lost() {
     );
     let done = rig
         .alice
-        .view(&rig.app, "done", json!({}), Consistency::Strong)
+        .apps()
+        .view(
+            &rig.app,
+            "done",
+            Some(json!({})),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(done.result, json!("1"), "exactly one result");
@@ -445,7 +466,8 @@ async fn a_cancel_ends_the_run_and_stops_the_job() {
         .await;
     let _ok = rig
         .alice
-        .call(&rig.app, "cancel", json!({ "run": run }), None)
+        .apps()
+        .call(&rig.app, "cancel", Some(json!({ "run": run })), None, None)
         .await
         .unwrap();
     let outcome = rig.outcome(&run).await;
@@ -563,7 +585,14 @@ async fn a_new_leader_keeps_polling_the_same_attempt() {
     let alice = rig.c.client(client);
     let _s = alice.sign_in(&mut pk).await.unwrap();
     let done = alice
-        .view(&rig.app, "done", json!({}), Consistency::Strong)
+        .apps()
+        .view(
+            &rig.app,
+            "done",
+            Some(json!({})),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(done.result, json!("1"), "the result method ran once");
@@ -611,8 +640,13 @@ async fn a_stranger_sees_a_runs_record_without_file_hashes() {
     let file = rig.upload(&input()).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     let _ = rig.outcome(&run).await;
-    let path = format!("apps/{}/runs/{run}", rig.app);
-    let owner = rig.alice.get(&path).await.unwrap();
+    let owner = rig
+        .alice
+        .apps()
+        .run(&rig.app, &run)
+        .await
+        .map(wire)
+        .unwrap();
     assert!(owner["inputs"][0]["sha256"].is_string(), "{owner}");
     assert!(
         owner["final"]["outputs"][0]["sha256"].is_string(),
@@ -620,7 +654,7 @@ async fn a_stranger_sees_a_runs_record_without_file_hashes() {
     );
 
     let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
-    let shown = bob.get(&path).await.unwrap();
+    let shown = bob.apps().run(&rig.app, &run).await.map(wire).unwrap();
     assert_eq!(shown["state"], "done", "{shown}");
     assert!(shown["inputs"][0].get("sha256").is_none(), "{shown}");
     assert!(shown["inputs"][0].get("size").is_none(), "{shown}");
@@ -641,9 +675,14 @@ async fn the_run_list_pages_newest_first_with_caps_and_the_single_run_view() {
     let first = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     let _ = rig.outcome(&first).await;
     let second = rig.begin("startRun", json!({ "method": "spin" })).await;
-    let path = format!("apps/{}/runs", rig.app);
 
-    let all = rig.alice.get(&path).await.unwrap();
+    let all = rig
+        .alice
+        .apps()
+        .runs(&rig.app, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     let runs = all["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 2, "{all}");
     assert_eq!(all["next"], Value::Null);
@@ -652,48 +691,81 @@ async fn the_run_list_pages_newest_first_with_caps_and_the_single_run_view() {
     assert!(runs[1]["caps"]["wallSecs"].is_u64(), "{all}");
     assert!(runs[1]["caps"]["memoryMib"].is_u64() && runs[1]["caps"]["fuel"].is_u64());
     assert!(runs[1]["inputs"][0]["sha256"].is_string(), "{all}");
-    let single = rig.alice.get(&format!("{path}/{first}")).await.unwrap();
+    let single = rig
+        .alice
+        .apps()
+        .run(&rig.app, &first)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(runs[1], single, "the same object as the single run");
 
-    let page = rig.alice.get(&format!("{path}?limit=1")).await.unwrap();
+    let page = rig
+        .alice
+        .apps()
+        .runs(&rig.app, Some("1"), None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(page["runs"].as_array().unwrap().len(), 1);
     let next = page["next"].as_str().unwrap().to_owned();
     let rest = rig
         .alice
-        .get(&format!("{path}?limit=1&before={next}"))
+        .apps()
+        .runs(&rig.app, Some("1"), Some(&next))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(rest["runs"][0]["run"], json!(first), "{rest}");
     assert_eq!(rest["next"], Value::Null);
 
-    for query in ["limit=0", "limit=101", "limit=x", "limit=-1"] {
-        let e = rig.alice.get(&format!("{path}?{query}")).await.unwrap_err();
-        assert_eq!(e.code(), Some("BAD_LIMIT"), "{query}");
+    for limit in ["0", "101", "x", "-1"] {
+        let e = rig
+            .alice
+            .apps()
+            .runs(&rig.app, Some(limit), None)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("BAD_LIMIT"), "limit={limit}");
     }
     let e = rig
         .alice
-        .get(&format!("{path}?before=zz"))
+        .apps()
+        .runs(&rig.app, None, Some("zz"))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_CURSOR"));
-    let e = rig.alice.get(&format!("{path}?before=")).await.unwrap_err();
+    let e = rig
+        .alice
+        .apps()
+        .runs(&rig.app, None, Some(""))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("BAD_CURSOR"), "an empty cursor");
     let long = format!("1:{}", "a".repeat(255));
     let e = rig
         .alice
-        .get(&format!("{path}?before={long}"))
+        .apps()
+        .runs(&rig.app, None, Some(&long))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_CURSOR"), "a cursor over the byte bound");
     let colon = rig
         .alice
-        .get(&format!("{path}?before=99999999999999:x:y"))
+        .apps()
+        .runs(&rig.app, None, Some("99999999999999:x:y"))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(colon["runs"].as_array().unwrap().len(), 2, "{colon}");
 
     let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
-    let shown = bob.get(&path).await.unwrap();
+    let shown = bob
+        .apps()
+        .runs(&rig.app, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(shown["runs"][1]["state"], "done", "{shown}");
     assert!(
         shown["runs"][1]["inputs"][0].get("sha256").is_none(),
@@ -707,8 +779,13 @@ async fn a_stranger_lists_runs_without_file_sizes_hashes_or_keys() {
     let file = rig.upload(&input()).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     let _ = rig.outcome(&run).await;
-    let path = format!("apps/{}/runs", rig.app);
-    let owner = rig.alice.get(&path).await.unwrap();
+    let owner = rig
+        .alice
+        .apps()
+        .runs(&rig.app, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert!(
         owner["runs"][0]["inputs"][0]["sha256"].is_string(),
         "{owner}"
@@ -719,7 +796,12 @@ async fn a_stranger_lists_runs_without_file_sizes_hashes_or_keys() {
     );
 
     let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
-    let shown = bob.get(&path).await.unwrap();
+    let shown = bob
+        .apps()
+        .runs(&rig.app, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     let listed = &shown["runs"][0];
     assert_eq!(listed["state"], "done", "{shown}");
     for file in [&listed["inputs"][0], &listed["final"]["outputs"][0]] {
@@ -907,7 +989,8 @@ async fn a_cancel_ends_the_run_even_when_the_job_node_never_stops() {
     rig.jobs[0].running.answer_running_always();
     let _ok = rig
         .alice
-        .call(&rig.app, "cancel", json!({ "run": run }), None)
+        .apps()
+        .call(&rig.app, "cancel", Some(json!({ "run": run })), None, None)
         .await
         .unwrap();
     let outcome = rig.outcome_within(&run, 30).await;
@@ -927,7 +1010,14 @@ async fn a_cancel_ends_the_run_even_when_the_job_node_never_stops() {
     assert_eq!(rig.record(&run).final_, record.final_);
     let done = rig
         .alice
-        .view(&rig.app, "done", json!({}), Consistency::Strong)
+        .apps()
+        .view(
+            &rig.app,
+            "done",
+            Some(json!({})),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(done.result, json!("1"), "the result method ran once");
@@ -1230,7 +1320,8 @@ async fn a_cancel_ends_within_its_deadline_when_the_job_node_stops_answering() {
     rig.jobs[0].running.freeze();
     let _ok = rig
         .alice
-        .call(&rig.app, "cancel", json!({ "run": run }), None)
+        .apps()
+        .call(&rig.app, "cancel", Some(json!({ "run": run })), None, None)
         .await
         .unwrap();
     let started = Instant::now();
@@ -1261,7 +1352,8 @@ async fn a_cancel_whose_job_node_goes_silent_ends_with_the_report_the_leader_hol
     // Cancel while finals still conflict, so the held report cannot end the run first.
     let _ok = rig
         .alice
-        .call(&rig.app, "cancel", json!({ "run": run }), None)
+        .apps()
+        .call(&rig.app, "cancel", Some(json!({ "run": run })), None, None)
         .await
         .unwrap();
     for n in rig.c.nodes.iter().flatten() {
@@ -1295,7 +1387,14 @@ async fn a_cancel_is_not_delayed_by_another_run_of_the_app_stuck_in_a_transfer()
     tokio::time::sleep(Duration::from_secs(3)).await;
     let _ok = rig
         .alice
-        .call(&rig.app, "cancel", json!({ "run": first }), None)
+        .apps()
+        .call(
+            &rig.app,
+            "cancel",
+            Some(json!({ "run": first })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let started = Instant::now();
@@ -1320,7 +1419,8 @@ async fn waiting_for_our_own_control_places_is_not_a_job_nodes_silence() {
     }
     let _ok = rig
         .alice
-        .call(&rig.app, "cancel", json!({ "run": run }), None)
+        .apps()
+        .call(&rig.app, "cancel", Some(json!({ "run": run })), None, None)
         .await
         .unwrap();
     // Our own queue is full, not the job node silent: the cancel must not end at zero usage yet.
@@ -1352,7 +1452,8 @@ async fn a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_can
     rig.jobs[0].running.freeze();
     let _ok = rig
         .alice
-        .call(&rig.app, "cancel", json!({ "run": run }), None)
+        .apps()
+        .call(&rig.app, "cancel", Some(json!({ "run": run })), None, None)
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_secs(20)).await;
@@ -1418,11 +1519,13 @@ async fn a_result_method_can_start_the_next_run() {
     let next = loop {
         let v = rig
             .alice
+            .apps()
             .view(
                 &rig.app,
                 "chained",
-                json!({ "run": run }),
-                Consistency::Strong,
+                Some(json!({ "run": run })),
+                Some(ViewsRequestConsistency::Strong),
+                None,
             )
             .await
             .unwrap();
@@ -1575,7 +1678,8 @@ async fn only_a_call_that_starts_a_run_wakes_the_run_driver() {
     let before = leader.run_kicks();
     let _ok = rig
         .alice
-        .call(&rig.app, "ping", json!({}), None)
+        .apps()
+        .call(&rig.app, "ping", Some(json!({})), None, None)
         .await
         .unwrap();
     assert_eq!(leader.run_kicks(), before, "an ordinary call woke it");
@@ -1627,7 +1731,8 @@ async fn a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails(
     rig.jobs[0].running.freeze();
     let _ok = rig
         .alice
-        .call(&rig.app, "cancel", json!({ "run": run }), None)
+        .apps()
+        .call(&rig.app, "cancel", Some(json!({ "run": run })), None, None)
         .await
         .unwrap();
     // The digest method's wall cap is 60 s: the ceiling is that plus the grace and the credit.
@@ -1640,23 +1745,38 @@ async fn a_failed_runs_message_is_shown_in_both_views_only_to_those_who_list_fil
     let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
     let run = rig.begin("startRun", json!({ "method": "big" })).await;
     let _ = rig.outcome(&run).await;
-    let single = format!("apps/{}/runs/{run}", rig.app);
-    let list = format!("apps/{}/runs", rig.app);
 
-    let owner = rig.alice.get(&single).await.unwrap();
+    let owner = rig
+        .alice
+        .apps()
+        .run(&rig.app, &run)
+        .await
+        .map(wire)
+        .unwrap();
     let message = owner["final"]["message"].as_str().unwrap_or_default();
     assert!(message.contains("too large"), "{owner}");
-    let listed = rig.alice.get(&list).await.unwrap();
+    let listed = rig
+        .alice
+        .apps()
+        .runs(&rig.app, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(
         listed["runs"][0]["final"]["message"],
         owner["final"]["message"]
     );
 
     let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
-    let shown = bob.get(&single).await.unwrap();
+    let shown = bob.apps().run(&rig.app, &run).await.map(wire).unwrap();
     assert!(shown["final"]["message"].is_null(), "{shown}");
     assert!(shown["progress"].is_null(), "{shown}");
-    let listed = bob.get(&list).await.unwrap();
+    let listed = bob
+        .apps()
+        .runs(&rig.app, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert!(listed["runs"][0]["final"]["message"].is_null(), "{listed}");
     assert!(listed["runs"][0]["progress"].is_null(), "{listed}");
 }
@@ -1682,10 +1802,7 @@ impl Rig {
     async fn queue_in(&self, who: &Client, run: &str, state: &str) -> Value {
         let started = Instant::now();
         loop {
-            let shown = who
-                .get(&format!("apps/{}/runs/{run}", self.app))
-                .await
-                .unwrap();
+            let shown = who.apps().run(&self.app, run).await.map(wire).unwrap();
             if shown["queue"]["state"] == state {
                 return shown["queue"].clone();
             }
@@ -1716,26 +1833,32 @@ async fn a_queued_run_says_why_it_waits_and_proceeds_once_its_pool_has_a_job_nod
     );
     let listed = rig
         .alice
-        .get(&format!("apps/{}/runs", rig.app))
+        .apps()
+        .runs(&rig.app, None, None)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(listed["runs"][0]["queue"], queue);
 
     let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
-    let seen = bob
-        .get(&format!("apps/{}/runs/{run}", rig.app))
-        .await
-        .unwrap();
+    let seen = bob.apps().run(&rig.app, &run).await.map(wire).unwrap();
     assert!(seen["queue"].is_null(), "{seen}");
-    let listed = bob.get(&format!("apps/{}/runs", rig.app)).await.unwrap();
+    let listed = bob
+        .apps()
+        .runs(&rig.app, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert!(listed["runs"][0]["queue"].is_null(), "{listed}");
 
     let _small = rig.join_pool(JOB_B, "small").await;
     let _ = rig.outcome(&run).await;
     let ended = rig
         .alice
-        .get(&format!("apps/{}/runs/{run}", rig.app))
+        .apps()
+        .run(&rig.app, &run)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(ended["state"], "done", "{ended}");
     assert!(ended["queue"].is_null(), "{ended}");
@@ -1757,7 +1880,14 @@ impl Rig {
     async fn publish(&self, id: &str) -> String {
         let r = self
             .alice
-            .call(&self.app, "publish", json!({ "output": id }), None)
+            .apps()
+            .call(
+                &self.app,
+                "publish",
+                Some(json!({ "output": id })),
+                None,
+                None,
+            )
             .await
             .unwrap();
         r.result.as_str().unwrap().to_owned()
@@ -1766,7 +1896,14 @@ impl Rig {
     async fn grant(&self, id: &str) -> String {
         let r = self
             .alice
-            .call(&self.app, "share", json!({ "id": id, "ttl": 600 }), None)
+            .apps()
+            .call(
+                &self.app,
+                "share",
+                Some(json!({ "id": id, "ttl": 600 })),
+                None,
+                None,
+            )
             .await
             .unwrap();
         r.result.as_str().unwrap().to_owned()
@@ -1781,7 +1918,8 @@ async fn a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote() {
 
     let refused = rig
         .alice
-        .download_blob(&rig.app, &output)
+        .apps()
+        .blob_download(&rig.app, &output, None)
         .await
         .unwrap_err();
     assert_eq!(refused.code(), Some("NOT_SUPPORTED"), "{refused}");
@@ -1795,7 +1933,8 @@ async fn a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote() {
     let grant = rig.grant(&blob).await;
     let bytes = rig
         .alice
-        .download_blob_granted(&rig.app, &blob, &grant)
+        .apps()
+        .blob_download(&rig.app, &blob, Some(&grant))
         .await
         .unwrap();
     assert_eq!(bytes, expected);
@@ -1810,7 +1949,12 @@ async fn a_published_blob_downloads_only_through_a_grant_a_logged_call_made() {
     let (output, expected) = rig.finished_output().await;
     let blob = rig.publish(&output).await;
 
-    let e = rig.alice.download_blob(&rig.app, &blob).await.unwrap_err();
+    let e = rig
+        .alice
+        .apps()
+        .blob_download(&rig.app, &blob, None)
+        .await
+        .unwrap_err();
     assert_eq!(
         e.code(),
         Some("NOT_FOUND"),
@@ -1818,11 +1962,13 @@ async fn a_published_blob_downloads_only_through_a_grant_a_logged_call_made() {
     );
     let peeked = rig
         .alice
+        .apps()
         .view(
             &rig.app,
             "shareView",
-            json!({ "id": blob, "ttl": 600 }),
-            Consistency::Strong,
+            Some(json!({ "id": blob, "ttl": 600 })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
         )
         .await;
     assert!(peeked.is_err(), "a view mints no grant for it");
@@ -1830,7 +1976,8 @@ async fn a_published_blob_downloads_only_through_a_grant_a_logged_call_made() {
     let grant = rig.grant(&blob).await;
     let bytes = rig
         .alice
-        .download_blob_granted(&rig.app, &blob, &grant)
+        .apps()
+        .blob_download(&rig.app, &blob, Some(&grant))
         .await;
     assert_eq!(bytes.unwrap(), expected);
 }
@@ -1842,12 +1989,13 @@ async fn a_revoked_grant_is_refused_on_every_replica_and_after_a_leader_change()
     let blob = rig.publish(&output).await;
     let old = rig.grant(&blob).await;
 
-    rig.alice.revoke_blob(&rig.app, &blob).await.unwrap();
+    rig.alice.apps().blob_revoke(&rig.app, &blob).await.unwrap();
     for i in 0..3 {
         let e = rig
             .c
             .client(i)
-            .download_blob_granted(&rig.app, &blob, &old)
+            .apps()
+            .blob_download(&rig.app, &blob, Some(&old))
             .await
             .unwrap_err();
         assert_eq!(e.code(), Some("NOT_FOUND"), "node {i}: {e}");
@@ -1855,7 +2003,8 @@ async fn a_revoked_grant_is_refused_on_every_replica_and_after_a_leader_change()
     let fresh = rig.grant(&blob).await;
     let bytes = rig
         .alice
-        .download_blob_granted(&rig.app, &blob, &fresh)
+        .apps()
+        .blob_download(&rig.app, &blob, Some(&fresh))
         .await;
     assert_eq!(bytes.unwrap(), expected);
 
@@ -1867,11 +2016,15 @@ async fn a_revoked_grant_is_refused_on_every_replica_and_after_a_leader_change()
     .await;
     let new = rig.c.client(usize::from(was == 0));
     let e = new
-        .download_blob_granted(&rig.app, &blob, &old)
+        .apps()
+        .blob_download(&rig.app, &blob, Some(&old))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
-    let bytes = new.download_blob_granted(&rig.app, &blob, &fresh).await;
+    let bytes = new
+        .apps()
+        .blob_download(&rig.app, &blob, Some(&fresh))
+        .await;
     assert_eq!(bytes.unwrap(), expected);
 }
 
@@ -1881,15 +2034,16 @@ async fn a_revoked_grant_stays_revoked_after_the_blob_is_deleted_and_published_a
     let (output, expected) = rig.finished_output().await;
     let blob = rig.publish(&output).await;
     let revoked = rig.grant(&blob).await;
-    rig.alice.revoke_blob(&rig.app, &blob).await.unwrap();
+    rig.alice.apps().blob_revoke(&rig.app, &blob).await.unwrap();
     let live = rig.grant(&blob).await;
 
-    rig.alice.delete_blob(&rig.app, &blob).await.unwrap();
+    rig.alice.apps().blob_delete(&rig.app, &blob).await.unwrap();
     assert_eq!(rig.publish(&output).await, blob);
     for (name, old) in [("revoked", &revoked), ("deleted", &live)] {
         let e = rig
             .alice
-            .download_blob_granted(&rig.app, &blob, old)
+            .apps()
+            .blob_download(&rig.app, &blob, Some(old))
             .await
             .unwrap_err();
         assert_eq!(e.code(), Some("NOT_FOUND"), "{name} grant: {e}");
@@ -1897,7 +2051,8 @@ async fn a_revoked_grant_stays_revoked_after_the_blob_is_deleted_and_published_a
     let fresh = rig.grant(&blob).await;
     let bytes = rig
         .alice
-        .download_blob_granted(&rig.app, &blob, &fresh)
+        .apps()
+        .blob_download(&rig.app, &blob, Some(&fresh))
         .await;
     assert_eq!(bytes.unwrap(), expected);
 }
@@ -1906,7 +2061,11 @@ impl Rig {
     /// Deletes a published blob and waits for its queued collection to be logged, so a later
     /// publish of the same bytes meets no collection but the one a test starts.
     async fn delete_and_settle(&self, blob: &str) {
-        self.alice.delete_blob(&self.app, blob).await.unwrap();
+        self.alice
+            .apps()
+            .blob_delete(&self.app, blob)
+            .await
+            .unwrap();
         self.until("the collection of the deleted blob is logged", || {
             self.leader()
                 .hosted(&self.app)
@@ -1920,7 +2079,8 @@ impl Rig {
         let fresh = self.grant(blob).await;
         let bytes = self
             .alice
-            .download_blob_granted(&self.app, blob, &fresh)
+            .apps()
+            .blob_download(&self.app, blob, Some(&fresh))
             .await;
         assert_eq!(bytes.unwrap(), expected);
     }
@@ -2027,11 +2187,12 @@ async fn the_owner_takes_a_published_blob_down_and_its_charge_is_released() {
     let grant = rig.grant(&blob).await;
     assert!(rig.charged().await > charged);
 
-    rig.alice.delete_blob(&rig.app, &blob).await.unwrap();
+    rig.alice.apps().blob_delete(&rig.app, &blob).await.unwrap();
     assert!(rig.blob(&blob).is_none());
     let e = rig
         .alice
-        .download_blob_granted(&rig.app, &blob, &grant)
+        .apps()
+        .blob_download(&rig.app, &blob, Some(&grant))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
@@ -2053,7 +2214,14 @@ async fn a_publish_apply_refuses_keeps_no_charge_and_no_bytes() {
     rig.leader().forge_next_publish();
     let e = rig
         .alice
-        .call(&rig.app, "publish", json!({ "output": output }), None)
+        .apps()
+        .call(
+            &rig.app,
+            "publish",
+            Some(json!({ "output": output })),
+            None,
+            None,
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("APP_ERROR"), "{e:?}");
@@ -2073,14 +2241,12 @@ async fn only_an_output_of_this_apps_done_runs_publishes() {
     let uploaded = rig.upload(&input()[..1000]).await;
     let other = rig
         .alice
-        .create_app_from_package(
-            "compute2",
-            "com.test.compute",
-            Some("1.0.0"),
-            None,
-            json!({}),
-        )
+        .apps()
+        .create(typed(
+            json!({ "name": "compute2", "package": "com.test.compute", "version": "1.0.0" }),
+        ))
         .await
+        .map(|a| a.app_id)
         .unwrap();
     for (what, app, id) in [
         ("an uploaded file", rig.app.as_str(), uploaded.as_str()),
@@ -2089,7 +2255,8 @@ async fn only_an_output_of_this_apps_done_runs_publishes() {
     ] {
         let e = rig
             .alice
-            .call(app, "publish", json!({ "output": id }), None)
+            .apps()
+            .call(app, "publish", Some(json!({ "output": id })), None, None)
             .await
             .unwrap_err();
         assert!(
@@ -2100,7 +2267,8 @@ async fn only_an_output_of_this_apps_done_runs_publishes() {
     assert!(rig.blob(&uploaded).is_some_and(|r| r.file.is_some()));
     let e = rig
         .alice
-        .download_blob(&rig.app, &uploaded)
+        .apps()
+        .blob_download(&rig.app, &uploaded, None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NOT_SUPPORTED"), "{e}");
@@ -2121,7 +2289,8 @@ async fn a_published_blob_survives_a_leader_change() {
     .await;
     let new = rig.c.client(client);
     let bytes = new
-        .download_blob_granted(&rig.app, &blob, &grant)
+        .apps()
+        .blob_download(&rig.app, &blob, Some(&grant))
         .await
         .unwrap();
     assert_eq!(bytes, expected);
@@ -2174,8 +2343,10 @@ impl Case<'_> {
         match self.kind {
             Kind::Plain => {
                 let up = self.clients[i]
-                    .upload_blob(&self.rig.app, self.expected.clone())
+                    .apps()
+                    .blob_upload(&self.rig.app, self.expected.clone(), None)
                     .await
+                    .map(wire)
                     .unwrap();
                 up["id"].as_str().unwrap().to_owned()
             }
@@ -2188,10 +2359,12 @@ impl Case<'_> {
             }
             Kind::Published => {
                 let r = self.clients[i]
+                    .apps()
                     .call(
                         &self.rig.app,
                         "publish",
-                        json!({ "output": self.output }),
+                        Some(json!({ "output": self.output })),
+                        None,
                         None,
                     )
                     .await
@@ -2213,7 +2386,8 @@ impl Case<'_> {
     /// The owner's delete through node `i`, then until the leader's queue of collections is empty.
     async fn delete(&self, i: usize, id: &str) {
         self.clients[i]
-            .delete_blob(&self.rig.app, id)
+            .apps()
+            .blob_delete(&self.rig.app, id)
             .await
             .unwrap();
         self.rig
@@ -2236,7 +2410,8 @@ impl Case<'_> {
     async fn assert_downloads_from_a_majority(&self, id: &str) {
         let bytes = match self.kind {
             Kind::Plain => self.clients[self.leader]
-                .download_blob(&self.rig.app, id)
+                .apps()
+                .blob_download(&self.rig.app, id, None)
                 .await
                 .unwrap(),
             Kind::File | Kind::Session => unreachable!("files are read by runs"),
@@ -2244,7 +2419,8 @@ impl Case<'_> {
                 let grant = self.rig.grant(id).await;
                 self.rig
                     .alice
-                    .download_blob_granted(&self.rig.app, id, &grant)
+                    .apps()
+                    .blob_download(&self.rig.app, id, Some(&grant))
                     .await
                     .unwrap()
             }
@@ -2319,7 +2495,8 @@ impl Case<'_> {
     async fn forget_unreferenced(&self, i: usize, id: &str) {
         self.rig.c.advance_all(PAST_IDLE_MS);
         self.clients[i]
-            .call(&self.rig.app, "ping", json!({}), None)
+            .apps()
+            .call(&self.rig.app, "ping", Some(json!({})), None, None)
             .await
             .unwrap();
         self.rig
