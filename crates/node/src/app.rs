@@ -84,6 +84,12 @@ pub(crate) mod rows {
     pub const CKV: u8 = b'c';
     /// A component's compute runs: one record per run, keyed by run id.
     pub const CRUN: u8 = b'u';
+    /// A component's pipeline runs: one record per run, keyed by pipeline run id.
+    pub const CPIPE: u8 = b'p';
+    /// A component's step run proofs: one per step run that ran, keyed by run id.
+    pub const CPROOF: u8 = b'v';
+    /// A component's pipeline step cache: one entry per cache key.
+    pub const CCACHE: u8 = b'x';
     /// A component's idempotency records, by `caller|key`.
     pub const CIDEM: u8 = b'j';
     /// A component's idempotency keys per class in the order they were recorded:
@@ -431,6 +437,13 @@ impl AppMachine {
             .records
             .get(id)
             .is_some_and(|r| r.file.is_some())
+    }
+
+    /// A sealed file's plaintext size and seal; `None` for anything else.
+    #[must_use]
+    pub fn file_record(&self, id: &[u8; 32]) -> Option<(u64, crate::component::blobs::FileSeal)> {
+        let record = self.state.component.blobs.records.get(id)?;
+        Some((record.size, record.file.clone()?))
     }
 
     /// The app's blobs and what its storage holds besides. A component's storage

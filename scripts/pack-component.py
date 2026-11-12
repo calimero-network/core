@@ -10,7 +10,9 @@ minRuntimeVersion and the `app.wasm` artifact), signs it with `mero-sign sign
 another), and writes manifest.json and app.wasm as a tar.gz. Build the component
 first with `mero-app-build <crate-dir> --out <file>`. An app with compute methods also has a compute component
 (`--compute-out <file>` of the same build); `--compute <file>` packs it as
-compute.wasm, the only component a job node is ever given.
+compute.wasm, the only component a job node is ever given. `--compute` without `--wasm`
+packs a compute-only package, which job nodes run and nothing calls. `--pipeline <file.yaml>`
+(repeatable) ships a pipeline over the compute methods as pipelines/<name>.yaml; the node checks it at install.
 
 `--mero-sign` (default MERO_SIGN, else `cargo run -q -p mero-sign --`) names the
 signer. `--previous <old.mpk>` has it compare the component's ABI with the last
@@ -37,8 +39,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--wasm", required=True, help="the component to pack")
+    ap.add_argument("--wasm", help="the app component to pack (omit for a compute-only package)")
     ap.add_argument("--compute", help="the compute component of the same build, packed as compute.wasm")
+    ap.add_argument("--pipeline", action="append", default=[],
+                    help="a pipeline YAML file to ship (repeatable)")
     ap.add_argument("--package", required=True, help="the package id, e.g. com.calimero.kv-store")
     ap.add_argument("--app-version", required=True, help="the release's version, e.g. 1.0.0")
     ap.add_argument("--min-runtime-version", default="0.1.0")
@@ -49,12 +53,19 @@ def main(argv: list[str]) -> int:
                     help="the mero-sign binary (default: cargo run -q -p mero-sign --)")
     args = ap.parse_args(argv)
 
-    parts = {"wasm": ("app.wasm", Path(args.wasm).read_bytes())}
+    if not args.wasm and not args.compute:
+        sys.exit("give --wasm, --compute or both")
+    parts = {}
+    if args.wasm:
+        parts["wasm"] = ("app.wasm", Path(args.wasm).read_bytes())
     if args.compute:
         parts["compute"] = ("compute.wasm", Path(args.compute).read_bytes())
     for key, (_, data) in parts.items():
         if data[:8] != b"\0asm\x0d\0\x01\0":
             sys.exit(f"{getattr(args, key)}: not a WASM component (an SDK 0.12 core module is refused by the node)")
+    pipelines = [(f"pipelines/{Path(f).name}", Path(f).read_bytes()) for f in args.pipeline]
+    if len({name for name, _ in pipelines}) != len(pipelines):
+        sys.exit("two --pipeline files have the same name")
     manifest = {
         "version": "1.0",
         "package": args.package,
@@ -62,6 +73,8 @@ def main(argv: list[str]) -> int:
         "minRuntimeVersion": args.min_runtime_version,
         **{key: {"path": name, "hash": hashlib.sha256(data).hexdigest(), "size": len(data)}
            for key, (name, data) in parts.items()},
+        **({"pipelines": [{"path": name, "hash": hashlib.sha256(data).hexdigest(), "size": len(data)}
+                          for name, data in pipelines]} if pipelines else {}),
     }
     signer = shlex.split(args.mero_sign) if args.mero_sign else ["cargo", "run", "-q", "-p", "mero-sign", "--"]
     with tempfile.TemporaryDirectory() as tmp:
@@ -79,7 +92,7 @@ def main(argv: list[str]) -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(out, "w:gz") as tar:
-        for name, data in [("manifest.json", signed), *parts.values()]:
+        for name, data in [("manifest.json", signed), *parts.values(), *pipelines]:
             info = tarfile.TarInfo(name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))

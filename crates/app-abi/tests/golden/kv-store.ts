@@ -105,47 +105,144 @@ export interface ClientOptions {
   after?: () => void | Promise<void>;
 }
 
+/** A call's whole answer (`raw`): its result, the log index it committed at, its events. */
+export interface CallAnswer<T> {
+  result: T;
+  /** The log index the call committed at. */
+  index: number;
+  /** The app's events the call emitted, in order. */
+  events: AppEvent[];
+}
+
+/** A view's whole answer (`raw`): its result and the log index of the state it read. */
+export interface ViewAnswer<T> {
+  result: T;
+  index: number;
+}
+
 /**
- * What the class uses of mero-js's `CalimeroClient` (`client.apps.call`, `client.apps.view`,
- * `client.events`): a test double implements this alone.
+ * What calls and views use of mero-js's `CalimeroClient` (`client.apps.call`,
+ * `client.apps.view`): `Pick<CalimeroClient, 'apps'>` or a test double of the two. A double
+ * that leaves out `index` or `events` answers `raw` with index 0 and no events.
  */
-export interface AppTransport {
+export interface AppCallTransport {
   apps: {
     call(
       args: { app: string; method: string; args?: unknown; idempotencyKey?: string },
       options?: { confirm?: ConfirmCallback; signal?: AbortSignal },
-    ): Promise<{ result: unknown }>;
+    ): Promise<{ result: unknown; index?: number; events?: { kind: string; data: unknown }[] }>;
     view(
       args: { app: string; method: string; args?: unknown; consistency?: 'strong' | 'stale'; minIndex?: number },
       options?: { signal?: AbortSignal },
-    ): Promise<{ result: unknown }>;
+    ): Promise<{ result: unknown; index?: number }>;
   };
+}
+
+/**
+ * What the class uses of mero-js's `CalimeroClient`: calls and views, and the event stream
+ * (`client.events`) its `events()` reads. A test double implements this alone.
+ */
+export interface AppTransport extends AppCallTransport {
   events(app: string, from?: number, signal?: AbortSignal): AsyncIterable<NodeEvent>;
 }
 
-/** The app's methods, over a signed-in `CalimeroClient` (or any {@link AppTransport}). */
-export class KvStoreClient {
-  readonly #client: AppTransport;
+/** The app's methods: what `KvStoreClient` implements, for a test double to stand in for it. */
+export interface KvStoreApi {
+  /** call `clear`. */
+  clear(options?: CallOptions): Promise<null>;
+  /** view `entries`. */
+  entries(options?: ViewOptions): Promise<Record<string, string>>;
+  /** view `get`. */
+  get(args: GetArgs, options?: ViewOptions): Promise<string | null>;
+  /** call `getOrInsert`. */
+  getOrInsert(args: GetOrInsertArgs, options?: CallOptions): Promise<string>;
+  /** view `getResult`. */
+  getResult(args: GetResultArgs, options?: ViewOptions): Promise<string>;
+  /** view `getUnchecked`. */
+  getUnchecked(args: GetUncheckedArgs, options?: ViewOptions): Promise<string>;
+  /** view `len`. */
+  len(options?: ViewOptions): Promise<string>;
+  /** call `remove`. */
+  remove(args: RemoveArgs, options?: CallOptions): Promise<string | null>;
+  /** call `set`. */
+  set(args: SetArgs, options?: CallOptions): Promise<null>;
+  /** call `updateIfExists`. */
+  updateIfExists(args: UpdateIfExistsArgs, options?: CallOptions): Promise<boolean>;
+  /** The app's events from log index `from`, then live, until `signal` aborts. */
+  events(from?: number, signal?: AbortSignal): AsyncIterable<AppEvent & { id: string }>;
+}
+
+/**
+ * The app's methods answering whole: `KvStoreClient`'s `raw`, for code that reads a call's log
+ * index or events.
+ */
+export interface KvStoreRawApi {
+  /** call `clear`. */
+  clear(options?: CallOptions): Promise<CallAnswer<null>>;
+  /** view `entries`. */
+  entries(options?: ViewOptions): Promise<ViewAnswer<Record<string, string>>>;
+  /** view `get`. */
+  get(args: GetArgs, options?: ViewOptions): Promise<ViewAnswer<string | null>>;
+  /** call `getOrInsert`. */
+  getOrInsert(args: GetOrInsertArgs, options?: CallOptions): Promise<CallAnswer<string>>;
+  /** view `getResult`. */
+  getResult(args: GetResultArgs, options?: ViewOptions): Promise<ViewAnswer<string>>;
+  /** view `getUnchecked`. */
+  getUnchecked(args: GetUncheckedArgs, options?: ViewOptions): Promise<ViewAnswer<string>>;
+  /** view `len`. */
+  len(options?: ViewOptions): Promise<ViewAnswer<string>>;
+  /** call `remove`. */
+  remove(args: RemoveArgs, options?: CallOptions): Promise<CallAnswer<string | null>>;
+  /** call `set`. */
+  set(args: SetArgs, options?: CallOptions): Promise<CallAnswer<null>>;
+  /** call `updateIfExists`. */
+  updateIfExists(args: UpdateIfExistsArgs, options?: CallOptions): Promise<CallAnswer<boolean>>;
+}
+
+/**
+ * The app's methods, over a signed-in `CalimeroClient`, `Pick<CalimeroClient, 'apps'>` or any
+ * {@link AppCallTransport}; `events()` needs an {@link AppTransport}.
+ */
+export class KvStoreClient<T extends AppCallTransport = AppTransport> implements KvStoreApi {
+  readonly #client: T;
   readonly #app: string;
   readonly #after: ClientOptions['after'];
+  /**
+   * The same methods answering whole: `{ result, index, events }` for a call, `{ result, index }`
+   * for a view.
+   */
+  readonly raw: KvStoreRawApi;
 
-  constructor(client: AppTransport, app: string, options: ClientOptions = {}) {
+  constructor(client: T, app: string, options: ClientOptions = {}) {
     this.#client = client;
     this.#app = app;
     this.#after = options.after;
+    this.raw = {
+      clear: (options = {}) => this.#call<null>('clear', {}, options),
+      entries: (options = {}) => this.#view<Record<string, string>>('entries', {}, options),
+      get: (args, options = {}) => this.#view<string | null>('get', args, options),
+      getOrInsert: (args, options = {}) => this.#call<string>('getOrInsert', args, options),
+      getResult: (args, options = {}) => this.#view<string>('getResult', args, options),
+      getUnchecked: (args, options = {}) => this.#view<string>('getUnchecked', args, options),
+      len: (options = {}) => this.#view<string>('len', {}, options),
+      remove: (args, options = {}) => this.#call<string | null>('remove', args, options),
+      set: (args, options = {}) => this.#call<null>('set', args, options),
+      updateIfExists: (args, options = {}) => this.#call<boolean>('updateIfExists', args, options),
+    };
   }
 
-  async #call(method: string, args: object, options: CallOptions): Promise<unknown> {
+  async #call<R>(method: string, args: object, options: CallOptions): Promise<CallAnswer<R>> {
     const { idempotencyKey, ...rest } = options;
     const request = { app: this.#app, method, args, ...(idempotencyKey === undefined ? {} : { idempotencyKey }) };
     try {
-      return (await this.#client.apps.call(request, rest)).result;
+      const { result, index = 0, events = [] } = await this.#client.apps.call(request, rest);
+      return { result: result as R, index, events: events as AppEvent[] };
     } finally {
       await this.#after?.();
     }
   }
 
-  async #view(method: string, args: object, options: ViewOptions): Promise<unknown> {
+  async #view<R>(method: string, args: object, options: ViewOptions): Promise<ViewAnswer<R>> {
     const { consistency, minIndex, signal } = options;
     const request = {
       app: this.#app,
@@ -155,7 +252,8 @@ export class KvStoreClient {
       ...(minIndex === undefined ? {} : { minIndex }),
     };
     try {
-      return (await this.#client.apps.view(request, signal === undefined ? {} : { signal })).result;
+      const { result, index = 0 } = await this.#client.apps.view(request, signal === undefined ? {} : { signal });
+      return { result: result as R, index };
     } finally {
       await this.#after?.();
     }
@@ -163,56 +261,56 @@ export class KvStoreClient {
 
   /** call `clear`. */
   async clear(options: CallOptions = {}): Promise<null> {
-    return (await this.#call('clear', {}, options)) as null;
+    return (await this.#call<null>('clear', {}, options)).result;
   }
 
   /** view `entries`. */
   async entries(options: ViewOptions = {}): Promise<Record<string, string>> {
-    return (await this.#view('entries', {}, options)) as Record<string, string>;
+    return (await this.#view<Record<string, string>>('entries', {}, options)).result;
   }
 
   /** view `get`. */
   async get(args: GetArgs, options: ViewOptions = {}): Promise<string | null> {
-    return (await this.#view('get', args, options)) as string | null;
+    return (await this.#view<string | null>('get', args, options)).result;
   }
 
   /** call `getOrInsert`. */
   async getOrInsert(args: GetOrInsertArgs, options: CallOptions = {}): Promise<string> {
-    return (await this.#call('getOrInsert', args, options)) as string;
+    return (await this.#call<string>('getOrInsert', args, options)).result;
   }
 
   /** view `getResult`. */
   async getResult(args: GetResultArgs, options: ViewOptions = {}): Promise<string> {
-    return (await this.#view('getResult', args, options)) as string;
+    return (await this.#view<string>('getResult', args, options)).result;
   }
 
   /** view `getUnchecked`. */
   async getUnchecked(args: GetUncheckedArgs, options: ViewOptions = {}): Promise<string> {
-    return (await this.#view('getUnchecked', args, options)) as string;
+    return (await this.#view<string>('getUnchecked', args, options)).result;
   }
 
   /** view `len`. */
   async len(options: ViewOptions = {}): Promise<string> {
-    return (await this.#view('len', {}, options)) as string;
+    return (await this.#view<string>('len', {}, options)).result;
   }
 
   /** call `remove`. */
   async remove(args: RemoveArgs, options: CallOptions = {}): Promise<string | null> {
-    return (await this.#call('remove', args, options)) as string | null;
+    return (await this.#call<string | null>('remove', args, options)).result;
   }
 
   /** call `set`. */
   async set(args: SetArgs, options: CallOptions = {}): Promise<null> {
-    return (await this.#call('set', args, options)) as null;
+    return (await this.#call<null>('set', args, options)).result;
   }
 
   /** call `updateIfExists`. */
   async updateIfExists(args: UpdateIfExistsArgs, options: CallOptions = {}): Promise<boolean> {
-    return (await this.#call('updateIfExists', args, options)) as boolean;
+    return (await this.#call<boolean>('updateIfExists', args, options)).result;
   }
 
   /** The app's events from log index `from`, then live, until `signal` aborts. */
-  async *events(from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & { id: string }> {
+  async *events(this: KvStoreClient<AppTransport>, from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & { id: string }> {
     for await (const event of this.#client.events(this.#app, from, signal)) {
       yield event as AppEvent & { id: string };
     }

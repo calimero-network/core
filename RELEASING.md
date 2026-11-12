@@ -179,12 +179,18 @@ All from `release.yml`, on master only:
 
 | What | Where |
 | --- | --- |
-| `merod`, `meroctl`, `mero-sign` (Linux x86_64 and aarch64), `meroctl` and `mero-sign` (macOS aarch64), `calimero-tee-verify` (Linux), `SHA256SUMS` with build provenance | the GitHub Release `X` |
+| `merod`, `meroctl`, `mero-sign` (Linux x86_64 and aarch64), `meroctl` and `mero-sign` (macOS aarch64), `mero-app-build` (Linux x86_64 and aarch64, macOS aarch64), `calimero-tee-verify` (Linux), `SHA256SUMS` with build provenance | the GitHub Release `X` |
 | `kv-store-test-fixture.mpk`, the kv app bundle the upgrade path and clients test with | the GitHub Release `X` |
 | the public crates (`cargo ws publish`) | crates.io |
 | the `merod` image, multi-arch: `X`, plus `latest` for a final or `prerelease` for a pre-release | `ghcr.io/calimero-network/merod` |
 | a `meroctl` formula bump | a pull request in `calimero-network/homebrew-tap` |
 | SDK pin bumps for consumers | pull requests opened by `fleet-bump.yml` (below) |
+
+Each binary is `<binary>_<target triple>.tar.gz`, e.g.
+`mero-app-build_x86_64-unknown-linux-gnu.tar.gz`. `mero-app-build` is a release
+binary only: `calimero-app-build` and the `calimero-app-abi` it builds on are
+`publish = false`, so it is not on crates.io, and an app's CI downloads the
+archive (checked against `SHA256SUMS`) rather than running `cargo install --git`.
 
 Every master push that builds also pushes `ghcr.io/calimero-network/merod:edge`
 and a short-sha tag; neither is a release.
@@ -227,6 +233,12 @@ on the branch `chore/core-X`, as the organization's GitHub App, with
 - `cargo` surface (apps, mero-ar, mero-tag, calimero-studio): pins
   `calimero-network/core` to the tag `X` (`chore(deps): pin the Calimero SDK to X`).
   A source-level break makes that pull request red until someone writes the code.
+  Where the repository pins the client generator in `scripts/install-mero-app-build.sh`
+  (`TAG="${MERO_APP_BUILD_TAG:-X}"`, the apps repository), the pin moves to `X` too,
+  unless it runs ahead, and every package's `codegen` reruns with `X`'s released
+  `mero-app-build` binary, so the committed clients arrive regenerated. When they
+  cannot be (no binary for `X`, a codegen failure), the pull request's list of pins
+  left unmoved names the command to run.
 - `tee` surface (mero-tee): sets `merodVersion` in `mero-tee/versions.json`,
   re-pins `mero-tee/build-inputs.lock.json` from the release's `SHA256SUMS`, and
   cuts a new image version (`chore(image): bundle merod X and cut a new image version`).

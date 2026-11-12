@@ -35,6 +35,7 @@ VERSION=""
 DIR=""
 DRY_RUN=0
 NO_LOCK=0
+NO_CODEGEN=0
 ALLOW_MAJOR=0
 PKGS=""
 
@@ -65,6 +66,7 @@ while [ $# -gt 0 ]; do
     --pkg) PKGS="$PKGS ${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --no-lock) NO_LOCK=1; shift ;;
+    --no-codegen) NO_CODEGEN=1; shift ;;
     --allow-major) ALLOW_MAJOR=1; shift ;;
     -h|--help) usage ;;
     *) die "unknown argument: $1" ;;
@@ -313,6 +315,9 @@ bump_cargo_workspace() {
   # embed an ABI describing a schema the node does not share, and a dev who
   # followed a stale `cargo install` line in a Makefile gets that silently.
   bump_workspace_toolchain
+
+  # The client generator, and the clients it wrote: see bump_app_build_pin.
+  bump_app_build_pin
 
   verify_workspace_consistency
 
@@ -600,6 +605,160 @@ bump_workspace_toolchain() {
   note "$touched tooling file(s) rewritten"
 }
 
+# ---------------------------------------------------------------------------
+# the client generator
+# ---------------------------------------------------------------------------
+#
+# The apps repository commits each app's typed client (apps/<app>/app/src/
+# generated/), written by core's `mero-app-build codegen` from the app's ABI,
+# and its CI fails when running the generator again changes them. The
+# generator's version is pinned in one place:
+#
+#   scripts/install-mero-app-build.sh    TAG="${MERO_APP_BUILD_TAG:-<version>}"
+#
+# A release can change what the generator writes, so the pin and the clients
+# move together: the pin to the release, then every package's `codegen` script
+# reruns with the release's own `mero-app-build` binary (downloaded and checked
+# against its SHA256SUMS, as fast as a download; no Rust build). The pin can run
+# AHEAD of the SDK on purpose (a generator fix the SDK has not caught up with),
+# so it never moves backwards.
+#
+# When the clients cannot be regenerated here (--no-codegen, no pnpm, a release
+# that ships no mero-app-build binary, a codegen failure), the pin still moves
+# and the report says what to run, since a pull request that only lacks that
+# step is still the right pull request.
+APP_BUILD_INSTALLER="scripts/install-mero-app-build.sh"
+CODEGEN_PENDING=""
+
+# True when version $1 is later than $2, by semver precedence
+# (1.0.0-rc.9 < 1.0.0-rc.18 < 1.0.0).
+version_after() {
+  A="$1" B="$2" perl -e '
+    sub parse { my ($core, $pre) = split /-/, $_[0], 2; ([split /\./, $core], defined $pre ? [split /\./, $pre] : undef) }
+    my ($ac, $ap) = parse($ENV{A});
+    my ($bc, $bp) = parse($ENV{B});
+    for my $i (0 .. 2) {
+      my $c = ($ac->[$i] // 0) <=> ($bc->[$i] // 0);
+      exit($c > 0 ? 0 : 1) if $c;
+    }
+    exit 1 if !defined $ap && !defined $bp;
+    exit 0 if !defined $ap;
+    exit 1 if !defined $bp;
+    for my $i (0 .. $#$ap) {
+      exit 0 if $i > $#$bp;
+      my ($x, $y) = ($ap->[$i], $bp->[$i]);
+      my $c = ($x =~ /^\d+$/ && $y =~ /^\d+$/) ? $x <=> $y
+            : ($x =~ /^\d+$/) ? -1 : ($y =~ /^\d+$/) ? 1 : $x cmp $y;
+      exit($c > 0 ? 0 : 1) if $c;
+    }
+    exit 1;
+  '
+}
+
+bump_app_build_pin() {
+  local f="$DIR/$APP_BUILD_INSTALLER" current
+  [ -f "$f" ] || return 0
+
+  current=$(perl -ne 'if (m#^\s*TAG="\$\{MERO_APP_BUILD_TAG:-([^}"]+)\}"\s*$#) { print "$1\n"; exit }' "$f")
+  if [ -z "$current" ]; then
+    note "WARNING: $APP_BUILD_INSTALLER has no TAG=\"\${MERO_APP_BUILD_TAG:-<version>}\" line; mero-app-build is left unpinned by this bump"
+    return 0
+  fi
+  if [ "$current" = "$VERSION" ]; then
+    note "$APP_BUILD_INSTALLER: mero-app-build already at $VERSION"
+    return 0
+  fi
+  if version_after "$current" "$VERSION"; then
+    note "$APP_BUILD_INSTALLER: mero-app-build $current runs ahead of $VERSION; left as it is"
+    return 0
+  fi
+
+  NEW="$VERSION" perl -i -pe 's#^(\s*TAG="\$\{MERO_APP_BUILD_TAG:-)[^}"]+(\}"\s*)$#$1$ENV{NEW}$2#' "$f"
+  record_change "$APP_BUILD_INSTALLER"
+  note "$APP_BUILD_INSTALLER: mero-app-build $current -> $VERSION"
+
+  regenerate_clients
+}
+
+# The release's own `mero-app-build`, checked against its SHA256SUMS, printed as
+# a path; nothing when the release has none for this machine.
+# MERO_APP_BUILD_BIN names a local binary instead, for the fixture tests.
+app_build_binary() {
+  if [ -n "${MERO_APP_BUILD_BIN:-}" ]; then
+    printf '%s' "$MERO_APP_BUILD_BIN"
+    return 0
+  fi
+  local triple asset sum got dir="$TMPDIR_RUN/mero-app-build"
+  case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64) triple=x86_64-unknown-linux-gnu ;;
+    Linux/aarch64|Linux/arm64) triple=aarch64-unknown-linux-gnu ;;
+    Darwin/arm64) triple=aarch64-apple-darwin ;;
+    *) return 0 ;;
+  esac
+  asset="mero-app-build_$triple.tar.gz"
+  sum=$(release_sha256 "$asset")
+  [ -n "$sum" ] || return 0
+  mkdir -p "$dir"
+  curl -fsSL --retry 3 -o "$dir/$asset" \
+    "https://github.com/calimero-network/core/releases/download/$VERSION/$asset" || return 0
+  got=$( (sha256sum "$dir/$asset" 2>/dev/null || shasum -a 256 "$dir/$asset") | awk '{ print $1 }')
+  if [ "$got" != "$sum" ]; then
+    note "WARNING: $asset does not match the release's SHA256SUMS; not running it"
+    return 0
+  fi
+  tar -xzf "$dir/$asset" -C "$dir" mero-app-build || return 0
+  printf '%s' "$dir/mero-app-build"
+}
+
+# Tracked files that differ from HEAD, one per line. Tracked only: the clients
+# are committed already, and anything new a package manager leaves behind is
+# not this bump's to stage.
+dirty_paths() {
+  ( cd "$DIR" && git diff --name-only HEAD ) | sort -u
+}
+
+regenerate_clients() {
+  if [ "$NO_CODEGEN" -eq 1 ]; then
+    CODEGEN_PENDING="--no-codegen"
+    return 0
+  fi
+  if ! command -v pnpm >/dev/null 2>&1; then
+    CODEGEN_PENDING="pnpm is not installed where the bump ran"
+    return 0
+  fi
+  local bin
+  bin=$(app_build_binary)
+  if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+    CODEGEN_PENDING="release $VERSION ships no mero-app-build binary for this machine"
+    return 0
+  fi
+  local built
+  built=$("$bin" --version 2>/dev/null || true)
+  if [ "$built" != "mero-app-build $VERSION" ]; then
+    CODEGEN_PENDING="the release's binary says '${built:-nothing}' to --version, not mero-app-build $VERSION"
+    return 0
+  fi
+
+  local before after p
+  before=$(dirty_paths)
+  # The bin directory first, so every package's `codegen` script runs this
+  # binary under its plain name and not one already on PATH.
+  if ! ( cd "$DIR" && PATH="$(dirname "$bin"):$PATH" pnpm -r --if-present run codegen ) \
+      > "$TMPDIR_RUN/codegen.log" 2>&1; then
+    note "codegen failed:"
+    sed 's/^/      /' "$TMPDIR_RUN/codegen.log" >&2
+    CODEGEN_PENDING="pnpm -r --if-present run codegen failed with $VERSION's generator; see the bump's log"
+    return 0
+  fi
+  after=$(dirty_paths)
+  local n=0
+  for p in $(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after")); do
+    record_change "$p"
+    n=$((n + 1))
+  done
+  note "regenerated the committed clients with mero-app-build $VERSION: $n file(s) changed"
+}
+
 # Every occurrence of a core version pin left in the tree naming some other
 # release, classified.
 #
@@ -657,6 +816,12 @@ $raw
 REPORT
 
   local body=""
+  [ -n "$CODEGEN_PENDING" ] && body="$body
+NOT REGENERATED — $APP_BUILD_INSTALLER now pins mero-app-build $VERSION, but the
+committed clients were not rewritten with it ($CODEGEN_PENDING). The repository's
+\"generated clients are current\" check fails until they are:
+  scripts/install-mero-app-build.sh && pnpm -r --if-present run codegen
+"
   [ -n "$CHECKSUM_PINNED" ] && body="$body
 NOT REWRITTEN — pins asset checksums next to the release, and the release's
 SHA256SUMS lacks one of them (or could not be fetched), so moving the version

@@ -82,6 +82,7 @@ fn release(
             .publisher_upgrades
             .then_some(calimero_bundle::UpgradeAuthority::Publisher),
         services: None,
+        pipelines: Vec::new(),
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();

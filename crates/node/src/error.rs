@@ -85,6 +85,17 @@ impl ApiError {
         Self::new(410, "UNSUPPORTED_ENGINE", crate::app::WASMER_GONE)
     }
 
+    /// `422 NO_APP_COMPONENT`: the app has a compute component only, so there is
+    /// nothing to call, view, initialise or tick.
+    #[must_use]
+    pub fn no_app_component() -> Self {
+        Self::new(
+            422,
+            "NO_APP_COMPONENT",
+            "this app has a compute component only: it has no methods to call or view",
+        )
+    }
+
     /// `400 UNSUPPORTED_BUNDLE`: the bundle's WASM is a core module (SDK 0.12, for
     /// wasmer), not a `calimero:app` component, so no app can run it here.
     #[must_use]
