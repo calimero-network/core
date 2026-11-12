@@ -168,6 +168,50 @@ fn abi_diff_exits_non_zero_on_a_breaking_change() {
 }
 
 #[test]
+fn abi_diff_compares_record_and_enum_shapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../app-abi/tests/fixtures/kitchen-sink.abi.json");
+    let old: Value = serde_json::from_slice(&fs::read(fixture).unwrap()).unwrap();
+    let write = |name: &str, v: &Value| {
+        let p = dir.path().join(name);
+        fs::write(&p, serde_json::to_vec(v).unwrap()).unwrap();
+        p
+    };
+    let old_path = write("old.json", &old);
+    let run = |new: &Value| {
+        bin()
+            .arg("abi-diff")
+            .arg(&old_path)
+            .arg(write("new.json", new))
+            .output()
+            .unwrap()
+    };
+
+    // `Item` is a parameter of `everything`: a field callers may leave out is compatible.
+    let mut optional = old.clone();
+    optional["types"]["Item"]["fields"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(["rank", "option<u32>"]));
+    let out = run(&optional);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout)
+        .contains("compatible type Item: optional field `rank` added (option<u32>)"));
+
+    // `Status` sits inside `Item`, which `lookup` returns: a new variant breaks readers.
+    let mut variant = old;
+    variant["types"]["Status"]["variants"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "name": "Archived" }));
+    let out = run(&variant);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout)
+        .contains("breaking   type Status: variant `Archived` added: a client that decodes"));
+}
+
+#[test]
 fn version_prints_the_release() {
     for flag in ["--version", "-V"] {
         let out = bin().arg(flag).output().unwrap();
@@ -209,7 +253,7 @@ fn codegen_names_a_bare_abi_json_after_its_crate() {
         .unwrap();
     assert!(status.success());
     let text = fs::read_to_string(out.join("client.ts")).unwrap();
-    assert!(text.contains("export class KvStoreClient "), "{text}");
+    assert!(text.contains("export class KvStoreClient<"), "{text}");
     assert!(!text.contains("AbiClient"), "{text}");
 }
 
@@ -277,5 +321,5 @@ fn codegen_runs_in_process() {
     let written = job.run().unwrap();
     assert_eq!(written, [dir.path().join("out/client.ts")]);
     let text = fs::read_to_string(&written[0]).unwrap();
-    assert!(text.contains("export class KvStoreClient "), "{text}");
+    assert!(text.contains("export class KvStoreClient<"), "{text}");
 }

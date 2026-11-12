@@ -2717,6 +2717,318 @@
         }
       }
     },
+    "/apps/{app}/files/{id}/export": {
+      "post": {
+        "operationId": "exports_export",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Export a sealed file's key",
+        "description": "The owner and the organization's members. `recipient` is an X25519 public key (64 hex characters); the file's data key comes back wrapped to it, with the file's `segments` (each one's hash, hex) and `ephemeral` public key. The node never answers plaintext or a key in the clear. 30 a minute per account.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "recipient": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "recipient"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "app": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "sha256": {
+                      "type": "string"
+                    },
+                    "segments": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "ephemeral": {
+                      "type": "string"
+                    },
+                    "wrapped": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "app",
+                    "id",
+                    "size",
+                    "sha256",
+                    "segments",
+                    "ephemeral",
+                    "wrapped"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_RECIPIENT`; `BAD_REQUEST`: the request is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_RECIPIENT",
+              "BAD_REQUEST"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          },
+          "429": {
+            "description": "`TOO_MANY_EXPORTS`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "TOO_MANY_EXPORTS"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/files/{id}/segments/{k}": {
+      "get": {
+        "operationId": "exports_segment",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "One segment of a sealed file",
+        "description": "Segment `k` (from 0) of the file's ciphertext, raw; the owner and the organization's members.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "k",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK: the segment's ciphertext, `application/octet-stream`.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_REQUEST`: the request is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_REQUEST"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see; `NO_SUCH_SEGMENT`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND",
+              "NO_SUCH_SEGMENT"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
     "/apps/{app}/intents": {
       "post": {
         "operationId": "intents",
@@ -3698,6 +4010,1165 @@
             },
             "x-calimero-codes": [
               "BAD_ABI"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/pipeline-runs": {
+      "get": {
+        "operationId": "pipelines_list",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "An app's pipeline runs",
+        "description": "The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          },
+          {}
+        ],
+        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_LIMIT`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_LIMIT"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/pipeline-runs/{run}": {
+      "get": {
+        "operationId": "pipelines_get",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "One pipeline run",
+        "description": "Its record: `state`, `version`, `hash`, `computeBundle`, `inputs`, `params`, per-step `status`, `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap). Sizes, hashes and results only for callers who may list the app's files.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          },
+          {}
+        ],
+        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/pipeline-runs/{run}/cancel": {
+      "post": {
+        "operationId": "pipelines_cancel",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Cancel a pipeline run",
+        "description": "The owner and the organization's members. Its pending steps end cancelled and its running steps' runs stop.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "run"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/pipeline-runs/{run}/events": {
+      "get": {
+        "operationId": "pipeline_events_events",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "A pipeline run as server-sent events",
+        "description": "Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          },
+          {}
+        ],
+        "x-calimero-who": "whoever the app's access admits (a public app: anyone)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-sent events: a `snapshot`, then `run` and `step` per change, then `end`, and the stream closes.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          },
+          "429": {
+            "description": "`TOO_MANY_SUBSCRIBERS`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "TOO_MANY_SUBSCRIBERS"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/pipeline-runs/{run}/receipt": {
+      "get": {
+        "operationId": "pipeline_receipt_receipt",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "A pipeline run's receipt",
+        "description": "The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "receipt": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    },
+                    "node": {
+                      "type": "string"
+                    },
+                    "signature": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "receipt",
+                    "node",
+                    "signature"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`RUN_NOT_ENDED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "RUN_NOT_ENDED"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/pipeline-runs/{run}/retry": {
+      "post": {
+        "operationId": "pipelines_retry",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Retry a pipeline run",
+        "description": "The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "limits": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "fuel": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "memoryMib": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "wallSecs": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        }
+                      }
+                    }
+                  },
+                  "maxCost": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "string"
+                    },
+                    "retryOf": {
+                      "type": "string"
+                    },
+                    "worstCase": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "run",
+                    "retryOf"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_LIMITS`; `BAD_MAX_COST`; `LIMIT_EXCEEDS_CAP`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_LIMITS",
+              "BAD_MAX_COST",
+              "LIMIT_EXCEEDS_CAP"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`CLUSTER_NOT_UPGRADED`; `NO_PRICE_TABLE`; `STILL_RUNNING`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CLUSTER_NOT_UPGRADED",
+              "NO_PRICE_TABLE",
+              "STILL_RUNNING"
+            ]
+          },
+          "410": {
+            "description": "`OUTPUT_EXPIRED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "OUTPUT_EXPIRED"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          },
+          "429": {
+            "description": "`TOO_MANY_PIPELINE_RUNS`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "TOO_MANY_PIPELINE_RUNS"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/pipelines/{name}/estimate": {
+      "post": {
+        "operationId": "pipelines_estimate_run",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Estimate a pipeline run",
+        "description": "The owner and the organization's members. Runs, fuel and cost of a run of a pipeline the app's release registers, for `inputs` (file ids, only counted) or `counts`, not both; numbers as decimal strings.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "inputs": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "counts": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    }
+                  },
+                  "params": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "steps": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "runs": {
+                            "type": "string"
+                          },
+                          "fuel": {
+                            "type": "string"
+                          },
+                          "cost": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "runs",
+                          "fuel"
+                        ]
+                      }
+                    },
+                    "fuel": {
+                      "type": "string"
+                    },
+                    "cost": {
+                      "type": "string"
+                    },
+                    "priceVersion": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "steps",
+                    "fuel"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_INPUTS`; `BAD_PARAMS`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_INPUTS",
+              "BAD_PARAMS"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see; `NO_SUCH_PIPELINE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND",
+              "NO_SUCH_PIPELINE"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/pipelines/{name}/runs": {
+      "post": {
+        "operationId": "pipelines_start",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Start a pipeline run",
+        "description": "The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "inputs": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "params": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "maxCost": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "string"
+                    },
+                    "worstCase": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "run"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_INPUTS`; `BAD_MAX_COST`; `BAD_PARAMS`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_INPUTS",
+              "BAD_MAX_COST",
+              "BAD_PARAMS"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see; `NO_SUCH_PIPELINE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND",
+              "NO_SUCH_PIPELINE"
+            ]
+          },
+          "409": {
+            "description": "`CLUSTER_NOT_UPGRADED`; `NO_PRICE_TABLE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CLUSTER_NOT_UPGRADED",
+              "NO_PRICE_TABLE"
+            ]
+          },
+          "410": {
+            "description": "`OUTPUT_EXPIRED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "OUTPUT_EXPIRED"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          },
+          "422": {
+            "description": "`PIPELINES_NEED_ONE_SERVICE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "PIPELINES_NEED_ONE_SERVICE"
+            ]
+          },
+          "429": {
+            "description": "`TOO_MANY_PIPELINE_RUNS`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "TOO_MANY_PIPELINE_RUNS"
             ]
           }
         }
@@ -13979,6 +15450,272 @@
         }
       }
     },
+    "/ops/prices": {
+      "get": {
+        "operationId": "ops_prices_get",
+        "tags": [
+          "Ops"
+        ],
+        "x-calimero-group": "ops",
+        "summary": "The price table",
+        "description": "In micro-units of the billing currency; `{}` until one is set.\n\n**Who:** the ops token.",
+        "security": [
+          {
+            "opsToken": []
+          }
+        ],
+        "x-calimero-who": "the ops token",
+        "x-calimero-sealed": true,
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "fuelPerVcpuSecond": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "vcpuSecond": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "gibSecond": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "connectorGib": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "storageGibMonth": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    },
+                    "egressGib": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          }
+        }
+      },
+      "post": {
+        "operationId": "ops_prices_set",
+        "tags": [
+          "Ops"
+        ],
+        "x-calimero-group": "ops",
+        "summary": "Set the price table",
+        "description": "Signed over `cluster / __set_price_table / { table }`; `PRICE_VERSION` unless `version` is the current one plus one (1 for the first), `BAD_PRICES` for a zero `fuelPerVcpuSecond`.\n\n**Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
+        "security": [
+          {
+            "opsToken": []
+          }
+        ],
+        "x-calimero-who": "the ops token",
+        "x-calimero-sealed": true,
+        "x-calimero-operator": true,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "table": {
+                    "type": "object",
+                    "properties": {
+                      "version": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      },
+                      "fuelPerVcpuSecond": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      },
+                      "vcpuSecond": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      },
+                      "gibSecond": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      },
+                      "connectorGib": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      },
+                      "storageGibMonth": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      },
+                      "egressGib": {
+                        "type": "integer",
+                        "format": "int64",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "version",
+                      "fuelPerVcpuSecond",
+                      "vcpuSecond",
+                      "gibSecond",
+                      "connectorGib",
+                      "storageGibMonth",
+                      "egressGib"
+                    ]
+                  },
+                  "operatorProof": {
+                    "$ref": "#/components/schemas/OperatorProof"
+                  }
+                },
+                "required": [
+                  "table"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_PRICES`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_PRICES"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_OPERATOR_SIGNATURE",
+              "FORBIDDEN"
+            ]
+          },
+          "409": {
+            "description": "`PRICE_VERSION`; `UPGRADE_PENDING`. `details` of `UPGRADE_PENDING`: a `UpgradePending`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "PRICE_VERSION",
+              "UPGRADE_PENDING"
+            ],
+            "x-calimero-details": {
+              "UPGRADE_PENDING": {
+                "$ref": "#/components/schemas/UpgradePending"
+              }
+            }
+          },
+          "428": {
+            "description": "`OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement. `details` of `OPERATOR_SIGNATURE_REQUIRED`: a `OperatorSignatureRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "OPERATOR_SIGNATURE_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "OPERATOR_SIGNATURE_REQUIRED": {
+                "$ref": "#/components/schemas/OperatorSignatureRequired"
+              }
+            }
+          }
+        }
+      }
+    },
     "/ops/quotas": {
       "get": {
         "operationId": "ops_quotas_get",
@@ -21484,6 +23221,269 @@
         }
       }
     },
+    "/packages/{package}/{version}/pipelines": {
+      "get": {
+        "operationId": "package_pipelines",
+        "tags": [
+          "Packages"
+        ],
+        "x-calimero-group": "packages",
+        "summary": "A release's pipelines",
+        "description": "The pipelines the release registers, by name: `hash`, `worstCaseFuel` (a decimal string), the `modules` they pin and the canonical `pipeline`. `404` for a release the caller may not see.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "package",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "hash": {
+                        "type": "string"
+                      },
+                      "worstCaseFuel": {
+                        "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                      },
+                      "modules": {
+                        "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                      },
+                      "pipeline": {
+                        "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                      }
+                    },
+                    "required": [
+                      "hash",
+                      "worstCaseFuel",
+                      "modules",
+                      "pipeline"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/pipelines/validate": {
+      "post": {
+        "operationId": "pipelines_validate",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Validate a pipeline",
+        "description": "Every problem of `source`; with `package` and `version` (both, a release the caller sees) also against that release's methods, modules and the cluster's pools. Writes nothing.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "package": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "source"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "code": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ]
+                      }
+                    },
+                    "pipeline": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    },
+                    "worstCaseFuel": {
+                      "type": "string"
+                    },
+                    "worstCaseCost": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "errors"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_RELEASE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_RELEASE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
     "/publishers/{signer}": {
       "get": {
         "operationId": "publisher_binding",
@@ -24081,6 +26081,12 @@
           },
           "computeBundle": {
             "type": "string"
+          },
+          "components": {
+            "type": "string",
+            "enum": [
+              "computeOnly"
+            ]
           },
           "metadata": {
             "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."

@@ -153,6 +153,31 @@ pub fn submit(&mut self, file: BlobRef, rows_per_part: Option<u32>) -> app::Resu
 `files::uploader(&file)` is the account the node recorded from the authenticated upload.
 It is `None` for a file a call or a run made, and cannot be called inside a compute run.
 
+## Exporting a file
+
+The node never hands out a sealed file's plaintext or its key in the clear.
+`Client::export_file(app, id)` makes a fresh X25519 key pair for the call and asks `POST /apps/{app}/files/{id}/export { recipient }`.
+The node answers the file's segment hashes and its data key wrapped to that public key, and serves each ciphertext segment at `GET /apps/{app}/files/{id}/segments/{k}`.
+The client checks the segment list against the file id, each segment against its hash, then the plaintext size and SHA-256, and returns bytes only when all of it matches.
+Only the app's owner and members of its organization may export, even on a public app, and one account gets `429 TOO_MANY_EXPORTS` past 30 exports a minute on a node.
+`meroctl file download APP ID --out PATH` runs it on one file, and `meroctl pipeline download APP RUN [--out DIR]` on every output of every step of an ended run, as `STEP-INDEX.bin`.
+
+## Pipeline run receipts
+
+`GET /apps/{app}/pipeline-runs/{run}/receipt` answers `{ receipt, node, signature }` once the run has ended (`409 RUN_NOT_ENDED` before), for the app's owner and members of its organization.
+The receipt names the cluster identity, release, pipeline hash, the compute component of each module, the inputs and params, and per step the status and, for each run, the job node, job key, assignment digest, the hash and signature of the job's report and the files it made; a run answered from the step cache is listed as `cached` with its cache key.
+`signature` is the answering node's receipt key over `"calimero.pipeline.receipt.v1\0"` and the receipt's canonical JSON, and `Client::verify_receipt` checks it under the key `verify_app_cluster` attests.
+`meroctl pipeline receipt APP RUN [--verify] [--out FILE]` prints it, and with `--verify` also downloads each output and compares its SHA-256 with the receipt.
+
+## Watching a run
+
+`GET /apps/{app}/pipeline-runs/{run}/events` streams a run's progress as server-sent events to whoever may read the run.
+The first event is a `snapshot` of the run and every step, then a `run` event when the run's state or cost changes and a `step` event when a step's status, run counts or reason changes, then `end` when the run leaves `running`, after which the stream closes.
+Events carry metadata only: no results, output or input file ids, hashes, params or args.
+A stream lasts at most an hour (reconnect for a new snapshot), a node serves at most 64 per app (`429 TOO_MANY_SUBSCRIBERS`), and quiet streams carry a comment every 15 seconds.
+`Client::pipeline_run_events` returns the typed events and `meroctl pipeline watch APP RUN` prints one JSON line per event.
+It does not yet verify each job's report signature on the client (the node's signature vouches for them), and it carries no module logs.
+
 ## Start, list and cancel runs
 
 There is no "start a run" route.

@@ -1,24 +1,31 @@
-//! The TypeScript client: interfaces for arguments, errors, events and the app's own types
-//! (from the ABI's `types`: an interface per record, a union per enum, generic where the Rust
-//! type is), and a class whose methods call mero-js's `client.apps.call` and
-//! `client.apps.view`.
+//! The TypeScript client: interfaces for arguments (`init`'s too, as `InitArgs`), errors,
+//! events and the app's own types (from the ABI's `types`: an interface per record, a union per
+//! enum, generic where the Rust type is), and a class whose methods call mero-js's
+//! `client.apps.call` and `client.apps.view`, answering the result, and whose `raw` methods
+//! answer it whole (`{ result, index, events }`).
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use crate::abi::{AppAbi, EnumRepr, Field, Fields, Shape, TypeDef, VariantData};
+use crate::abi::{AppAbi, EnumRepr, Field, Fields, Kind, Shape, TypeDef, VariantData};
 use crate::openapi::{all_events, args_name, error_name, event_name, Names};
 use crate::ty::Type;
 
 /// The names every module declares, kept from app types.
 const OWN_NAMES: &[&str] = &[
+    "AppCallTransport",
     "AppErrorCode",
     "AppEvent",
     "AppTransport",
+    "CallAnswer",
     "CallOptions",
     "ClientOptions",
+    "ViewAnswer",
     "ViewOptions",
 ];
+
+/// The arguments of the app's `init`, declared when it takes any.
+const INIT_ARGS: &str = "InitArgs";
 
 /// Who writes the object a type describes: a caller (arguments) may leave an `option` out,
 /// the app (errors, events) always writes it, `null` for none.
@@ -267,47 +274,61 @@ export interface ClientOptions {
   after?: () => void | Promise<void>;
 }
 
+/** A call's whole answer (`raw`): its result, the log index it committed at, its events. */
+export interface CallAnswer<T> {
+  result: T;
+  /** The log index the call committed at. */
+  index: number;
+  /** The app's events the call emitted, in order. */
+  events: AppEvent[];
+}
+
+/** A view's whole answer (`raw`): its result and the log index of the state it read. */
+export interface ViewAnswer<T> {
+  result: T;
+  index: number;
+}
+
 /**
- * What the class uses of mero-js's `CalimeroClient` (`client.apps.call`, `client.apps.view`,
- * `client.events`): a test double implements this alone.
+ * What calls and views use of mero-js's `CalimeroClient` (`client.apps.call`,
+ * `client.apps.view`): `Pick<CalimeroClient, 'apps'>` or a test double of the two. A double
+ * that leaves out `index` or `events` answers `raw` with index 0 and no events.
  */
-export interface AppTransport {
+export interface AppCallTransport {
   apps: {
     call(
       args: { app: string; method: string; args?: unknown; idempotencyKey?: string },
       options?: { confirm?: ConfirmCallback; signal?: AbortSignal },
-    ): Promise<{ result: unknown }>;
+    ): Promise<{ result: unknown; index?: number; events?: { kind: string; data: unknown }[] }>;
     view(
       args: { app: string; method: string; args?: unknown; consistency?: 'strong' | 'stale'; minIndex?: number },
       options?: { signal?: AbortSignal },
-    ): Promise<{ result: unknown }>;
+    ): Promise<{ result: unknown; index?: number }>;
   };
+}
+
+/**
+ * What the class uses of mero-js's `CalimeroClient`: calls and views, and the event stream
+ * (`client.events`) its `events()` reads. A test double implements this alone.
+ */
+export interface AppTransport extends AppCallTransport {
   events(app: string, from?: number, signal?: AbortSignal): AsyncIterable<NodeEvent>;
 }
 ";
 
-/// The class's fields, constructor and the two private senders every method goes through.
-const CLASS_HEAD: &str = r"  readonly #client: AppTransport;
-  readonly #app: string;
-  readonly #after: ClientOptions['after'];
-
-  constructor(client: AppTransport, app: string, options: ClientOptions = {}) {
-    this.#client = client;
-    this.#app = app;
-    this.#after = options.after;
-  }
-
-  async #call(method: string, args: object, options: CallOptions): Promise<unknown> {
+/// The two private senders every method goes through, after the constructor.
+const SENDERS: &str = r"  async #call<R>(method: string, args: object, options: CallOptions): Promise<CallAnswer<R>> {
     const { idempotencyKey, ...rest } = options;
     const request = { app: this.#app, method, args, ...(idempotencyKey === undefined ? {} : { idempotencyKey }) };
     try {
-      return (await this.#client.apps.call(request, rest)).result;
+      const { result, index = 0, events = [] } = await this.#client.apps.call(request, rest);
+      return { result: result as R, index, events: events as AppEvent[] };
     } finally {
       await this.#after?.();
     }
   }
 
-  async #view(method: string, args: object, options: ViewOptions): Promise<unknown> {
+  async #view<R>(method: string, args: object, options: ViewOptions): Promise<ViewAnswer<R>> {
     const { consistency, minIndex, signal } = options;
     const request = {
       app: this.#app,
@@ -317,7 +338,8 @@ const CLASS_HEAD: &str = r"  readonly #client: AppTransport;
       ...(minIndex === undefined ? {} : { minIndex }),
     };
     try {
-      return (await this.#client.apps.view(request, signal === undefined ? {} : { signal })).result;
+      const { result, index = 0 } = await this.#client.apps.view(request, signal === undefined ? {} : { signal });
+      return { result: result as R, index };
     } finally {
       await this.#after?.();
     }
@@ -329,10 +351,26 @@ fn api_name(class: &str) -> String {
     format!("{}Api", class.strip_suffix("Client").unwrap_or(class))
 }
 
+/// The interface of the class's `raw` methods: `KvStoreClient` → `KvStoreRawApi`.
+fn raw_api_name(class: &str) -> String {
+    format!("{}RawApi", class.strip_suffix("Client").unwrap_or(class))
+}
+
 pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     let api = api_name(class);
+    let raw_api = raw_api_name(class);
+    let init = abi
+        .methods
+        .values()
+        .find(|m| m.kind == Kind::Init && !m.params.is_empty());
     let mut names = Names::new(abi);
-    names.reserve(OWN_NAMES.iter().copied().chain([class, api.as_str()]));
+    names.reserve(
+        OWN_NAMES
+            .iter()
+            .copied()
+            .chain([class, api.as_str(), raw_api.as_str()])
+            .chain(init.map(|_| INIT_ARGS)),
+    );
     let mut ts = Ts {
         abi,
         names,
@@ -342,6 +380,15 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     };
     let mut body = String::new();
 
+    if let Some(init) = init {
+        ts.interface(
+            &mut body,
+            "The arguments of the app's `init`: `initArgs` of `client.apps.create`.",
+            INIT_ARGS,
+            &init.params,
+            Side::Input,
+        );
+    }
     for (name, m) in abi.client_methods() {
         if m.params.is_empty() {
             continue;
@@ -400,6 +447,8 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     body.push_str(PRELUDE);
     // The methods alone, so a caller's test double can stand in for the class.
     let mut iface = String::new();
+    let mut raw_iface = String::new();
+    let mut raw_fields = String::new();
     let mut class_body = String::new();
     for (name, m) in abi.client_methods() {
         let ret = ts.ty(&m.returns);
@@ -417,24 +466,38 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
         if m.public {
             doc.push_str("; public");
         }
-        let (send, options) = if m.runs_as_view() {
-            ("view", "ViewOptions")
+        let (send, options, answer) = if m.runs_as_view() {
+            ("view", "ViewOptions", "ViewAnswer")
         } else {
-            ("call", "CallOptions")
+            ("call", "CallOptions", "CallAnswer")
         };
         let _ = writeln!(
             iface,
             "  /** {doc}. */\n  {method}({args_param}options?: {options}): Promise<{ret}>;"
         );
         let _ = writeln!(
+            raw_iface,
+            "  /** {doc}. */\n  {method}({args_param}options?: {options}): Promise<{answer}<{ret}>>;"
+        );
+        let raw_args = if m.params.is_empty() { "" } else { "args, " };
+        let _ = writeln!(
+            raw_fields,
+            "      {method}: ({raw_args}options = {{}}) => this.#{send}<{ret}>({lit}, {args_value}, options),"
+        );
+        let _ = writeln!(
             class_body,
-            "\n  /** {doc}. */\n  async {method}({args_param}options: {options} = {{}}): Promise<{ret}> {{\n    return (await this.#{send}({lit}, {args_value}, options)) as {ret};\n  }}"
+            "\n  /** {doc}. */\n  async {method}({args_param}options: {options} = {{}}): Promise<{ret}> {{\n    return (await this.#{send}<{ret}>({lit}, {args_value}, options)).result;\n  }}"
         );
     }
     let stream = if abi.client_methods().any(|(n, _)| n == "events") {
         "appEvents"
     } else {
         "events"
+    };
+    let raw = if abi.client_methods().any(|(n, _)| n == "raw") {
+        "rawAnswers"
+    } else {
+        "raw"
     };
     let _ = writeln!(
         iface,
@@ -446,13 +509,17 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     );
     let _ = writeln!(
         body,
-        "\n/** The app's methods, over a signed-in `CalimeroClient` (or any {{@link AppTransport}}). */\nexport class {class} implements {api} {{"
+        "\n/**\n * The app's methods answering whole: `{class}`'s `{raw}`, for code that reads a call's log\n * index or events.\n */\nexport interface {raw_api} {{\n{raw_iface}}}"
     );
-    body.push_str(CLASS_HEAD);
+    let _ = writeln!(
+        body,
+        "\n/**\n * The app's methods, over a signed-in `CalimeroClient`, `Pick<CalimeroClient, 'apps'>` or any\n * {{@link AppCallTransport}}; `{stream}()` needs an {{@link AppTransport}}.\n */\nexport class {class}<T extends AppCallTransport = AppTransport> implements {api} {{\n  readonly #client: T;\n  readonly #app: string;\n  readonly #after: ClientOptions['after'];\n  /**\n   * The same methods answering whole: `{{ result, index, events }}` for a call, `{{ result, index }}`\n   * for a view.\n   */\n  readonly {raw}: {raw_api};\n\n  constructor(client: T, app: string, options: ClientOptions = {{}}) {{\n    this.#client = client;\n    this.#app = app;\n    this.#after = options.after;\n    this.{raw} = {{\n{raw_fields}    }};\n  }}\n"
+    );
+    body.push_str(SENDERS);
     body.push_str(&class_body);
     let _ = writeln!(
         body,
-        "\n  /** The app's events from log index `from`, then live, until `signal` aborts. */\n  async *{stream}(from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & {{ id: string }}> {{\n    for await (const event of this.#client.events(this.#app, from, signal)) {{\n      yield event as AppEvent & {{ id: string }};\n    }}\n  }}\n}}"
+        "\n  /** The app's events from log index `from`, then live, until `signal` aborts. */\n  async *{stream}(this: {class}<AppTransport>, from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & {{ id: string }}> {{\n    for await (const event of this.#client.events(this.#app, from, signal)) {{\n      yield event as AppEvent & {{ id: string }};\n    }}\n  }}\n}}"
     );
 
     let mut out = String::new();
@@ -515,5 +582,47 @@ mod tests {
         );
         assert!(ts.contains("Promise<CallOptionsType>"), "{ts}");
         assert_eq!(ts.matches("export interface CallOptions ").count(), 1);
+    }
+
+    #[test]
+    fn a_method_named_raw_keeps_its_name_and_the_whole_answers_move() {
+        let abi = AppAbi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": { "raw": { "kind": "view", "params": [], "returns": "string" } },
+        }))
+        .unwrap();
+        let ts = module(&abi, "AppClient");
+        assert!(
+            ts.contains("  async raw(options: ViewOptions = {}): Promise<string> {"),
+            "{ts}"
+        );
+        assert!(ts.contains("  readonly rawAnswers: AppRawApi;"), "{ts}");
+        assert!(ts.contains("this.rawAnswers = {"), "{ts}");
+    }
+
+    #[test]
+    fn init_args_are_declared_only_when_init_takes_some() {
+        let none = AppAbi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": { "init": { "kind": "init", "params": [] } },
+        }))
+        .unwrap();
+        assert!(!module(&none, "AppClient").contains("InitArgs"));
+        let some = AppAbi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": {
+                "init": { "kind": "init", "params": [["limit", "u64"], ["note", "option<string>"]] },
+                "get": { "kind": "view", "params": [], "returns": "InitArgs" },
+            },
+        }))
+        .unwrap();
+        let ts = module(&some, "AppClient");
+        assert!(
+            ts.contains(
+                "export interface InitArgs {\n  limit: string;\n  note?: string | null;\n}"
+            ),
+            "{ts}"
+        );
+        assert!(ts.contains("export type InitArgsType = unknown;"), "{ts}");
     }
 }

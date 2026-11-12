@@ -668,6 +668,8 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
         package: "p".into(),
         signer_id: "did:key:z".into(),
         release: PackageVersion {
+            components: Default::default(),
+            pipelines: Default::default(),
             version: version.into(),
             mpk: format!("mpk{version}"),
             mpk_size: 1,
@@ -762,6 +764,8 @@ fn a_compute_release_is_charged_each_parts_own_size() {
         package: "p".into(),
         signer_id: "did:key:z".into(),
         release: PackageVersion {
+            components: Default::default(),
+            pipelines: Default::default(),
             version: version.into(),
             mpk: format!("mpk{version}"),
             mpk_size: 40,
@@ -800,6 +804,8 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
         package: "p".into(),
         signer_id: "did:key:z".into(),
         release: PackageVersion {
+            components: Default::default(),
+            pipelines: Default::default(),
             version: version.into(),
             mpk: format!("mpk{version}"),
             mpk_size: 1,

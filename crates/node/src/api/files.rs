@@ -251,7 +251,7 @@ async fn blob_info(
 
 /// The app and signed-in account of a files route: a component app, and an account that may
 /// handle its files (its owner or an organization member).
-async fn files_gate(
+pub(super) async fn files_gate(
     node: &Node,
     headers: &HeaderMap,
     app_id: &str,
@@ -496,4 +496,6 @@ pub(super) fn routes() -> Router<Arc<Node>> {
             post(upload_complete),
         )
         .route("/apps/{app}/files/{id}", get(file_info))
+        .route("/apps/{app}/files/{id}/export", post(exports::export))
+        .route("/apps/{app}/files/{id}/segments/{k}", get(exports::segment))
 }

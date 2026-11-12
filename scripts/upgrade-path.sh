@@ -71,11 +71,17 @@ mero-app-build apps/v2-fixtures/kv --out "$TARGET/app-components/kv.wasm"
 python3 -I scripts/pack-component.py --wasm "$TARGET/app-components/kv.wasm" \
   --mero-sign "$TARGET/release/mero-sign" \
   --package com.calimero.kv-store --app-version 2.0.0 --out "$TARGET/upgrade-path-fixtures/kv-next.mpk"
+# The pipeline cases' package: the compute fixture's compute component and its pipeline, from this tree.
+mero-app-build apps/v2-fixtures/compute --out "$TARGET/app-components/compute-app.wasm" \
+  --compute-out "$TARGET/app-components/compute.wasm"
+python3 -I scripts/pack-component.py --compute "$TARGET/app-components/compute.wasm" \
+  --pipeline apps/v2-fixtures/compute/pipelines/fanout.yaml --mero-sign "$TARGET/release/mero-sign" \
+  --package com.calimero.upgrade.pipelines --app-version 1.0.0 --out "$TARGET/upgrade-path-fixtures/pipelines.mpk"
 
 status=0
 python3 -I crates/node/tests/fault/upgrade_path.py --from-dir "$FROM_DIR" \
   --to-merod "$TARGET/release/merod" --to-meroctl "$TARGET/release/meroctl" \
-  --kv-next "$TARGET/upgrade-path-fixtures/kv-next.mpk" \
+  --kv-next "$TARGET/upgrade-path-fixtures/kv-next.mpk" --pipelines-mpk "$TARGET/upgrade-path-fixtures/pipelines.mpk" \
   --workdir "$TARGET/upgrade-path" --json "$TARGET/upgrade-path.json" || status=$?
 
 python3 -I - "$TARGET/upgrade-path.json" "$FROM" >>"$SUMMARY" <<'EOF' || true

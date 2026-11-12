@@ -3,7 +3,8 @@ name: App ABI native clients
 # The Swift and Kotlin clients `mero-app-build codegen` writes, compiled with warnings as
 # errors against the SDK releases they are written for (scripts/check-app-abi-clients.py):
 # swift-sdk's MeroKit on macOS, kotlin-sdk's mero-core on Linux. `cargo test -p
-# calimero-app-abi` pins what the generator writes (tests/golden); this checks it compiles.
+# calimero-app-abi` pins what the generator writes (tests/golden); this checks it compiles
+# and runs the round-trip tests of the app types' JSON (tests/native).
 # Only a change to the generator or its goldens runs it.
 
 on:
@@ -34,8 +35,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  SWIFT_SDK_VERSION: 2.0.0
-  KOTLIN_SDK_REF: v2.0.0
+  SWIFT_SDK_VERSION: 4.1.0
+  KOTLIN_SDK_REF: v4.0.0
 
 jobs:
   swift:
@@ -46,7 +47,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: swift build
+      - name: swift build and test
         run: |
           swift --version
           python3 scripts/check-app-abi-clients.py swift
@@ -59,7 +60,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Gradle compile
+      - name: Gradle compile and test
         run: |
           # The runner image's JDK 17 and Android SDK, as kotlin-sdk's own CI uses.
           export JAVA_HOME="$JAVA_HOME_17_X64"
