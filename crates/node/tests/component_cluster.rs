@@ -6958,9 +6958,14 @@ async fn the_fuel_cap_is_a_decimal_string() {
         "{me}"
     );
 
+    // A number, not the decimal string the route takes: sent raw, as the
+    // request type cannot carry it.
     let err = ops
-        .ops()
-        .quotas_set(typed(json!({ "maxFuelPerDeveloperPerDay": 5 })), None)
+        .transport()
+        .json(
+            Request::new(Method::POST, "ops/quotas")
+                .json(json!({ "maxFuelPerDeveloperPerDay": 5 })),
+        )
         .await
         .unwrap_err();
     assert!(
