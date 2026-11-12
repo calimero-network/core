@@ -1832,7 +1832,7 @@ API and system group:
 ## Not done yet
 
 keys per app from mero-kms (phase 1 of `docs/specs/rollback-protection.md`), the
-rollback epoch in the attested KMS evidence, event audiences, search indexes that survive a restart (rebuilt from state now, components' too).
+rollback epoch in the attested KMS evidence, search indexes that survive a restart (rebuilt from state now, components' too).
 
 ## Commands
 
