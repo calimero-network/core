@@ -10,8 +10,10 @@ import { Aside } from '@astrojs/starlight/components';
 
 `meroctl` is the command line for Calimero nodes, over the node API through
 `calimero-client`: before anything is sent it fetches the node's attestation
-and judges the quote, then every request travels in the sealed channel. The
-source is `crates/meroctl/src`.
+and judges the quote, then every request travels in the sealed channel. Each
+command calls the client's method for its route, generated from the node's
+[API document](/operate/api-reference/), so the route each one names below is
+the operation it calls. The source is `crates/meroctl/src`.
 
 Its command names differ from the rest of these docs for a few objects
 ([glossary](/protocol/glossary/)):
@@ -24,7 +26,9 @@ Its command names differ from the rest of these docs for a few objects
 | `group` | an organization's teams |
 | `account` | the signed-in account; each passkey is one of its devices |
 
-Output is JSON, pretty-printed. Commands that stream (`context watch`,
+Output is JSON, pretty-printed: the route's answer as the client reads it,
+with any field the client's types do not name kept as the node sent it.
+Commands that stream (`context watch`,
 `context presence stream`, `ops metrics`, `blob download` to stdout, `app
 watch`, `dev`) print their own lines.
 
