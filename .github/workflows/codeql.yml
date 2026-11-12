@@ -2,7 +2,7 @@ name: CodeQL
 
 on:
   push:
-    branches: ["master", "release-v2-parity"]
+    branches: ["master"]
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -17,8 +17,7 @@ on:
       - "!**/*.mdx"
       - "tools/mero-sign/README.md"
 
-# One analysis per branch at a time: master's and the release branch's
-# results are kept apart, so a push to one never queues behind the other.
+# One analysis per branch at a time; a push queues behind the run before it.
 concurrency:
   group: codeql-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: false

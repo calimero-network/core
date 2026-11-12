@@ -20,7 +20,6 @@ on:
   push:
     branches:
       - master
-      - release-v2-parity
     paths:
       - "crates/app-abi/**"
       - ".github/workflows/app-abi-clients.yml"

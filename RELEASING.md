@@ -195,13 +195,10 @@ archive (checked against `SHA256SUMS`) rather than running `cargo install --git`
 Every master push that builds also pushes `ghcr.io/calimero-network/merod:edge`
 and a short-sha tag; neither is a release.
 
-### Pre-releases and the release branch
+### Pre-releases
 
 - Until 1.0 is final, releases are `1.0.0-rc.N`: GitHub pre-releases, the
   `prerelease` image tag, and pre-release crate versions.
-- `release-v2-parity` is a release branch that publishes only the `merod`
-  image, under `release-v2-edge` and `release-v2-<short sha>`. It cuts no
-  GitHub Release, crates, tap or fleet bump.
 
 ### Manual steps that need a human
 

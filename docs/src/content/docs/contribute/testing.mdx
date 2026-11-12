@@ -654,7 +654,7 @@ shows its hit rate. `release.yml` never uses sccache: what it builds ships.
 
 `.github/workflows/e2e.yml` runs on every PR that touches code, and nightly on
 master (a merge into master does not run it again: its PR did, and the nightly
-runs all of it with the long soak; a merge into the release branch does):
+runs all of it with the long soak):
 
 - jobs `build merod and the fixtures` (`build-release`) and `build the
   scenario runner` (`build-scenarios`) compile once what the jobs below run:
@@ -718,8 +718,8 @@ inside the Docker image (the suite starts processes, so it is copied out with
 - **A PR's own image** (`.github/workflows/release.yml`, job
   `E2E on the merod image`, on PRs and the merge queue whenever the PR builds
   the image). `Release Merod container` builds the amd64 image as it does for
-  master (from binaries built without fat LTO, which only a push to master or
-  the release branch builds with), loads it instead of pushing it, and hands it on as the artifact
+  master (from binaries built without fat LTO, which only a push to master
+  builds with), loads it instead of pushing it, and hands it on as the artifact
   `merod-image`; `Image E2E fixtures` builds a release `meroctl`, kv-store's
   WASM and two signed releases of it alongside the binaries. The job runs
   `suite.py --smoke` against the image's `merod`: `kv-failover`,
@@ -728,7 +728,7 @@ inside the Docker image (the suite starts processes, so it is copied out with
 - **The latest release's image, nightly** (`e2e.yml`, jobs
   `Latest release image` (`release-image`) and `process suite on release V`
   (`release-process-suite`); on demand with the `release_image` input:
-  `latest`, a tag of `ghcr.io/<owner>/merod` such as `release-v2-edge`, or an
+  `latest`, a tag of `ghcr.io/<owner>/merod` such as `edge`, or an
   image reference). It pulls `ghcr.io/calimero-network/merod:<version>` for the
   newest published release (a prerelease included) and runs the process suite
   of the commit the image was built from (its
@@ -736,8 +736,6 @@ inside the Docker image (the suite starts processes, so it is copied out with
   fixtures, so a test added after the release does not fail it: every test but
   the upgrade, with a 900 s soak. A release whose commit has no
   `crates/node/tests/fault/suite.py` is reported in the summary and not run.
-  On the release branch the nightly tests `release-v2-edge` instead, the image
-  of the branch's latest merge ([Release branch](#release-branch)).
   The same nightly runs every scenario at that commit, in four shards (jobs
   `scenario fixtures (release V)` (`release-fixtures`) and
   `scenarios on release V (K/4)` (`release-scenarios`)), with that commit's
@@ -750,7 +748,7 @@ To run the smoke set against a binary taken out of an image locally (with the
 fixtures built as in [Process suite](#process-suite)):
 
 ```bash
-docker create --name m ghcr.io/calimero-network/merod:release-v2-edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
+docker create --name m ghcr.io/calimero-network/merod:edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
 python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 ```
 
@@ -778,37 +776,6 @@ MEROD_BINARY=target/profiling/merod MEROCTL_BINARY=target/profiling/meroctl SOAK
 does not match the running kernel; `PROFILE_DELAY`, `PROFILE_SECONDS` and
 `PROFILE_HZ` set when and how it samples, and a second argument names another
 node.
-
-## Release branch
-
-Calimero 1.0 was developed on `release-v2-parity`, which has since been merged
-into master (`1.0.0-rc.1`). CI still treats that branch as a release branch,
-with its own image tags:
-
-| When | What runs | What publishes |
-| --- | --- | --- |
-| PR into the branch | Every check a PR into master runs (no check's `pull_request` trigger leaves the branch out; `abi-guard.yml` and `platforms.yml` name it) | Nothing; `Release Merod container` builds the PR's image and `E2E on the merod image` tests it |
-| Merge (push) into the branch | `ci-checks.yml`, `e2e.yml`, `release.yml`, `benchmarks.yml`, `docs-ci.yml`, `crypto-vectors.yml`, `workflow-lint.yml`, `codeql.yml`; ci-checks and E2E runs are never cancelled, and the ci-checks, wasm-apps and storage-cost caches save, as on master | The multi-arch `merod` image as `ghcr.io/calimero-network/merod:release-v2-edge` and `:release-v2-<short sha>`, labelled with the commit (`org.opencontainers.image.revision`); the release binaries as the run's `artifacts-<target>` artifacts, kept 14 days; the criterion, search and cluster benchmark reports as the base the branch's PRs compare against |
-| Nightly | `e2e.yml` with `nightly: true` (the 15-minute soak, the process suite on `release-v2-edge`, the flamegraph), `fuzz.yml` (30 minutes per target) and `platforms.yml` with `nightly: true` (macOS; a failure opens "Nightly platform build is failing on release-v2-parity") | Nothing |
-
-The branch never publishes a version: no `edge`, `latest`, `prerelease` or
-version tag, no GitHub Release, crates, App Bundle, Homebrew tap update or SDK
-bump PRs. `release.yml` gates each of those on master. The clients job tests
-the clients' own `release-v2-parity` branches when nothing is paired
-(`sdk-ref:`, `py-ref:` or a same-named branch), since their master has no
-cluster tests.
-
-GitHub runs `schedule` only from the default branch, so the branch's nightly
-runs only when dispatched. To run one by hand:
-
-```bash
-gh workflow run e2e.yml --ref release-v2-parity -f nightly=true
-gh workflow run e2e.yml --ref release-v2-parity -f release_image=release-v2-edge   # the 30 s soak, plus the process suite on that image
-```
-
-`docs-site.yml` stays master's: it deploys the public documentation site to
-GitHub Pages, which has one site per repository, so the branch's docs are
-built and link-checked (`docs-ci.yml`) but not deployed.
 
 ## What scenario tests cannot catch
 
@@ -859,8 +826,8 @@ node leaves and the leader raises the cluster version.
 
 Storage cost gates, scaling guards and criterion benches are described in
 [`docs/benchmarking.md`](https://github.com/calimero-network/core/blob/master/docs/benchmarking.md).
-`.github/workflows/benchmarks.yml` runs them nightly on master, on every push to
-the release branch and on a PR labelled `run-benchmarks`: the criterion benches per
+`.github/workflows/benchmarks.yml` runs them nightly on master and on a PR
+labelled `run-benchmarks`: the criterion benches per
 crate (`calimero-log`'s append and commit, `calimero-sealed`'s request round
 trip, the storage and runtime benches), compared with `critcmp` against the
 base commit's run on the PR's base branch, or else that branch's newest one, plus two

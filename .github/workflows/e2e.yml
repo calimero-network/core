@@ -56,11 +56,8 @@ on:
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
-  # Not master: every PR into it ran this already, and the nightly (schedule)
-  # runs all of it again on master, with the long soak. The release branch has
-  # no nightly, so its merges still run here.
-  push:
-    branches: ["release-v2-parity"]
+  # No push trigger: every PR into master ran this already, and the nightly
+  # (schedule) runs all of it again on master, with the long soak.
   merge_group:
   schedule:
     - cron: "23 3 * * *" # nightly soak, off the hour
@@ -76,7 +73,7 @@ on:
         required: false
         default: ""
       release_image:
-        description: Also run the process suite against a release image's merod ("latest" for the newest release, a tag of ghcr.io/<owner>/merod such as release-v2-edge, or an image reference); empty skips it, except on a nightly run
+        description: Also run the process suite against a release image's merod ("latest" for the newest release, a tag of ghcr.io/<owner>/merod such as 1.0.0-rc.18, or an image reference); empty skips it, except on a nightly run
         required: false
         default: ""
       flamegraph:
@@ -89,11 +86,11 @@ permissions:
   contents: read
 
 # A nightly (scheduled or dispatched) run has a group of its own, so a push to
-# the same branch neither cancels it nor waits behind it. Runs of master and the
-# release branch are never cancelled.
+# the same branch neither cancels it nor waits behind it. Runs of master are
+# never cancelled.
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.nightly) && 'nightly' || 'run' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/release-v2-parity' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -478,9 +475,7 @@ jobs:
   # runs the process suite of the commit the image was built from (its
   # org.opencontainers.image.revision label), with that commit's meroctl and
   # fixtures, so a test added after the release cannot fail it. A release
-  # whose commit has no process suite is reported and not run. On the release
-  # branch, until a release with this node ships, a nightly tests the branch's own
-  # image instead: release-v2-edge, which release.yml pushes on every merge.
+  # whose commit has no process suite is reported and not run.
   release-image:
     name: Latest release image
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.release_image != ''))
@@ -512,15 +507,10 @@ jobs:
           REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
           REQUESTED: ${{ inputs.release_image }}
-          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          # The release branch's nightly default: its own published image.
-          if [ -z "$REQUESTED" ] && [ "$REF" = refs/heads/release-v2-parity ]; then
-            REQUESTED=release-v2-edge
-          fi
           if [ -n "$REQUESTED" ] && [ "$REQUESTED" != latest ]; then
-            # A bare tag (release-v2-edge, 0.12.0) names ghcr.io/<owner>/merod:<tag>.
+            # A bare tag (1.0.0-rc.18) names ghcr.io/<owner>/merod:<tag>.
             case "$REQUESTED" in
               */* | *:* | *@*) image=$REQUESTED ;;
               *) image="ghcr.io/${OWNER,,}/merod:$REQUESTED" ;;
@@ -784,15 +774,12 @@ jobs:
       - name: Test the ref pairing
         run: bash scripts/tests/resolve-paired-ref.test.sh
 
-      # Unpaired, a change on the release branch (a push to it, or a PR into it)
-      # tests the clients' release-v2-parity branches, which have the cloud-v2
-      # tests; their master has none.
       - name: Resolve the client refs (paired)
         id: refs
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-          DEFAULT_REF: ${{ (github.base_ref || github.ref_name) == 'release-v2-parity' && 'release-v2-parity' || 'master' }}
+          DEFAULT_REF: master
         run: |
           set -euo pipefail
           js="$(scripts/resolve-paired-ref.sh "$DEFAULT_REF")"

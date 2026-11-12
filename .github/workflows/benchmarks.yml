@@ -4,12 +4,8 @@ permissions:
   contents: read
 
 on:
-  # master keeps a nightly baseline; the release branch (release-v2-parity),
-  # which has no nightly, one per push. A PR compares against its base commit's
+  # master keeps a nightly baseline; a PR compares against its base commit's
   # baseline, or else the base branch's newest one.
-  push:
-    branches:
-      - release-v2-parity
   schedule:
     - cron: "41 4 * * *" # nightly, off the hour
   workflow_dispatch:
@@ -19,8 +15,8 @@ on:
     types: [labeled, opened, synchronize, reopened]
 
 jobs:
-  # Which crates to bench. A nightly (or dispatched) run and a push to the
-  # release branch bench every crate, keeping a baseline for that commit; a PR benches only while it
+  # Which crates to bench. A nightly (or dispatched) run benches every crate,
+  # keeping a baseline for that commit; a PR benches only while it
   # carries the `run-benchmarks` label, then every crate too. Wall-clock benches on shared
   # runners are too noisy to gate on, so a PR opts in rather than paying for
   # them on every change. It checks out nothing.
@@ -175,7 +171,7 @@ jobs:
 
   # Reads only artifacts: this run's (data the PR's benches wrote, parsed by
   # critcmp, never executed) and the baseline's from a nightly or push run of the PR's
-  # base branch (master, or the release branch, release-v2-parity). On a
+  # base branch. On a
   # fork PR the token is read-only whatever this asks for, so the comment step
   # fails and the table stays in the job log; continue-on-error keeps that from
   # failing the PR.
@@ -201,9 +197,8 @@ jobs:
           merge-multiple: true
 
       # The baseline to compare with: the base branch's run at the PR's base
-      # commit if there is one (the release branch benches every push), or else
-      # the base branch's newest successful nightly or push run (master benches
-      # nightly). Finding none, or expired artifacts, must not fail.
+      # commit if there is one, or else the base branch's newest successful
+      # nightly run. Finding none, or expired artifacts, must not fail.
       - name: Find the base branch's benchmark run
         id: base-run
         env:

@@ -9,7 +9,7 @@ name: App ABI native clients
 
 on:
   pull_request:
-    branches: [master, release-v2-parity]
+    branches: [master]
     paths:
       - "crates/app-abi/**"
       - "scripts/check-app-abi-clients.py"

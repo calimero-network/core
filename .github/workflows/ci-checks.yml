@@ -2,9 +2,7 @@ name: CI
 
 on:
   push:
-    # release-v2-parity is the release branch: it never merges into
-    # master, so its merges run CI as master's do.
-    branches: ["master", "release-v2-parity"]
+    branches: ["master"]
   merge_group:
   # Every PR, with no `paths:` filter: the `Rust` check is required, and `scope`
   # below skips what a change cannot reach (all of it, for docs). A filter would
@@ -19,10 +17,10 @@ env:
 permissions:
   contents: read
 
-# Cancel superseded PR runs; never cancel a run of master or the release branch.
+# Cancel superseded PR runs; never cancel a run of master.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/release-v2-parity' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   # The macOS release build of the developer CLIs lives in platforms.yml (nightly).
@@ -219,7 +217,7 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: ci-checks
-          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           sccache: true
 
       - name: Install cargo-nextest
@@ -581,14 +579,14 @@ jobs:
       # wasm32-wasip2: this tree's kv and the release's compute fixture. The release
       # group: the same release build of merod and meroctl (without fat LTO) as
       # e2e's process suite and a PR's Build Binaries. This job saves it, on master
-      # and the release branch only; it was dropped while the repository's cache
+      # only; it was dropped while the repository's cache
       # was capped at 10 GB, and every release build was then cold.
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
           targets: wasm32-wasip2
           shared-key: release
-          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity' }}
+          save-if: ${{ github.ref == 'refs/heads/master' }}
           sccache: true
 
       # This tree's merod is built optimized without fat LTO (as compute-e2e's is):
