@@ -1091,9 +1091,8 @@ pub async fn read_only_in(
     }
     let check = || {
         node.sys(|s| {
-            app.org
-                .as_ref()
-                .and_then(|o| s.orgs.get(o))
+            s.orgs
+                .get(&app.org)
                 .is_some_and(|o| !o.writes_team(a, team))
         })
     };
@@ -1492,10 +1491,8 @@ fn may_handle_files(
 ) -> bool {
     account.is_some_and(|a| {
         s.owner_acts(app, a)
-            || app
-                .org
-                .as_ref()
-                .and_then(|o| s.orgs.get(o))
+            || s.orgs
+                .get(&app.org)
                 .is_some_and(|o| o.role(a).is_some_and(|r| r >= OrgRole::Member))
     })
 }
@@ -1780,9 +1777,11 @@ async fn scope_report(
     let key_apps = p.api_key.as_ref().and_then(|k| k.apps.as_ref());
     let mut out = node.sys(|s| {
         let keep = |a: &crate::types::AppRecord| {
+            // An organization's apps, or (no `org`) the account's own,
+            // wherever they are.
             let in_scope = match org {
-                Some(o) => a.org.as_deref() == Some(o),
-                None => a.org.is_none() && a.owner == account,
+                Some(o) => a.org == o,
+                None => a.owner == account,
             };
             in_scope
                 && (s.may_reach(a, Some(account)) || s.may_upgrade(a, account))
@@ -1799,7 +1798,12 @@ async fn scope_report(
             .into_iter()
             .map(|a| report::app_json(s, a, &releases, &runtimes, Reader::Account(account)))
             .collect();
-        let approved = s.approved_for(org, account);
+        // The organization's set, or for the account's own apps its personal
+        // organization's (each app's own is in its entry).
+        let approved = match org {
+            Some(o) => s.approved_for(o),
+            None => s.personal_org_of(account).and_then(|o| s.approved_for(o)),
+        };
         let scope = match org {
             Some(o) if s.orgs.get(o).is_some_and(|o| o.personal) => {
                 json!({ "kind": "org", "org": o, "personal": true })

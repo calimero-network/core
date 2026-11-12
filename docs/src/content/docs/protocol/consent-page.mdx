@@ -96,8 +96,8 @@ That stays true. Instead, the app asks the **node** to ask the person.
    no-store`. It reads `GET /consent/{id}/model` and shows it.
 3. **Passkey.** *Approve* posts `POST /consent/{id}/approve`. The node runs the
    very route a signed-in client would run (`/apps/{app}/upgrade`,
-   `/auth/releases` or `/orgs/{org}/releases`, `/auth/outbound` or
-   `/orgs/{org}/outbound`) with the arguments frozen in the request, so the
+   `/orgs/{org}/releases`, `/orgs/{org}/outbound`; a request with no scope is
+   the account's personal organization's) with the arguments frozen in the request, so the
    `412 CONFIRM_REQUIRED` challenge commits to exactly what the page showed.
    The page asks the authenticator for a user-verified assertion and posts it
    back as `confirm`. The node checks that the passkey is one of the request's
@@ -228,7 +228,7 @@ declarations it listed) is still the same. Otherwise `409 CONSENT_STALE`, and
 the app asks again so the person sees the new facts.
 
 The routes bind the same arguments whoever calls them: `POST /apps/{app}/upgrade`,
-`POST /auth/releases` and `/orgs/{org}/releases` compute the manifest hash and
+`POST /orgs/{org}/releases` computes the manifest hash and
 the measurements digest themselves, and the challenge they hand out commits to
 them. A target or release that changes between the `412` and the assertion no
 longer matches the challenge, and the approval is refused. Withdrawing a

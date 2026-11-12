@@ -114,7 +114,7 @@ one, in the same PR:
   marker), and write the new format only once every replica of the group
   reads it;
 - a test opens data in the old shape: a data directory, a row or an entry
-  written as the previous release wrote it (`crates/node/tests/old_datadir.rs`,
+  written as the previous release wrote it (`crates/node/tests/upgrade_replay.rs`,
   `calimero-log`'s `migration_tests.rs`).
 
 The PR body says `Door: one-way` and `Reader: <the step or decoder, and its

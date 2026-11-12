@@ -289,7 +289,7 @@ async fn run_upgrade(
                 "an app whose owner upgrades it is not moved to a release its publisher upgrades",
             ));
         }
-        s.stalled_for_bundle(&bundle, a.org.as_deref(), &a.owner, begun)
+        s.stalled_for_bundle(&bundle, &a.org, begun)
             .map(|stall| crate::node::stalled(&stall))
     });
     // Every replica's node must run the runtime the target needs, or the
@@ -385,7 +385,7 @@ pub(crate) fn refuse_stalled(
     bundle: &str,
     now: u64,
 ) -> Result<(), ApiError> {
-    match node.sys(|s| s.stalled_for_bundle(bundle, app.org.as_deref(), &app.owner, now)) {
+    match node.sys(|s| s.stalled_for_bundle(bundle, &app.org, now)) {
         Some(stall) => Err(crate::node::stalled(&stall)),
         None => Ok(()),
     }
@@ -452,7 +452,7 @@ fn run_targets(
         });
         s.apps
             .values()
-            .filter(|a| a.org.as_deref() == Some(org))
+            .filter(|a| a.org == org)
             .filter(|a| match (&teams, &a.access) {
                 (None, _) => true,
                 (Some(ts), Access::Team { team }) => ts.contains(team),

@@ -15,7 +15,12 @@ use serde_json::json;
 async fn a_step_up_route_is_answered_with_the_passkey_given() {
     let c = Cluster::start(1).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
-    let org = alice.orgs().create("acme", None, None).await.unwrap().org_id;
+    let org = alice
+        .orgs()
+        .create("acme", None, None)
+        .await
+        .unwrap()
+        .org_id;
 
     let refused = alice.orgs().delete(&org, None).await.unwrap_err();
     assert_eq!(refused.code(), Some("CONFIRM_REQUIRED"), "{refused:?}");
@@ -125,7 +130,12 @@ async fn raw_bodies_go_up_and_come_back_as_bytes() {
 async fn an_explicit_null_is_sent_and_an_absent_field_is_not() {
     let c = Cluster::start(1).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    let org = alice.orgs().create("acme", None, None).await.unwrap().org_id;
+    let org = alice
+        .orgs()
+        .create("acme", None, None)
+        .await
+        .unwrap()
+        .org_id;
     let eng = alice
         .orgs()
         .team_create(&org, "eng", TeamJoin::Invite, None)

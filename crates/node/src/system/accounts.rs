@@ -214,6 +214,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             invite,
             mut refresh,
             at,
+            personal_org,
             ..
         } => {
             // The first account waits for genesis: the rules it joins
@@ -236,6 +237,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             if refresh.as_ref().is_some_and(|g| s.refresh_known(&g.hash)) {
                 return Err("refresh token already issued");
+            }
+            if personal_org
+                .as_ref()
+                .is_some_and(|p| s.orgs.contains_key(&p.org_id))
+            {
+                return Err("organization exists");
             }
             for c in &account.passkeys {
                 let _prev = s
@@ -266,6 +273,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             let id = account.account_id.clone();
             let _prev = s.accounts.insert(id.clone(), account);
+            if let Some(p) = personal_org {
+                let org = super::orgs::new_org(
+                    p.org_id.clone(),
+                    PERSONAL_ORG_NAME.to_owned(),
+                    id.clone(),
+                    p.release,
+                    true,
+                );
+                let _prev = s.orgs.insert(p.org_id, org);
+            }
             if let Some(entry) = signed_in {
                 s.record_activity(&id, entry);
             }

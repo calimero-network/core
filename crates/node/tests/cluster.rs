@@ -1299,9 +1299,13 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     assert!(e.to_string().starts_with("404"), "{e}");
     // Approving its outbound hosts answers as for a missing package, before
     // any passkey ceremony.
+    let bobs = bob.personal_org().await.unwrap();
     for package in ["com.acme.secret", "com.never.installed"] {
         let e = bob
-            .post("auth/outbound", json!({ "package": package }))
+            .post(
+                &format!("orgs/{bobs}/outbound"),
+                json!({ "package": package }),
+            )
             .await
             .unwrap_err();
         assert!(e.to_string().starts_with("404"), "{package}: {e}");
@@ -1516,8 +1520,11 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     })
     .await;
     let (alice, mut key) = signed_up(&c, 0, "alice").await;
+    // Her personal organization, made at sign-up, approves the release she
+    // signed up through.
+    let mine = alice.personal_org().await.unwrap();
     assert_eq!(
-        alice.me().await.unwrap()["approvedReleases"],
+        alice.get(&format!("orgs/{mine}")).await.unwrap()["approvedReleases"],
         json!(["1.0.0"])
     );
     let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
@@ -1614,7 +1621,7 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     // Withdrawn again: node 3 is sent nothing new.
     let _ok = alice
         .post_confirmed(
-            "auth/releases",
+            &format!("orgs/{mine}/releases"),
             json!({ "version": "2.0.0", "approved": false }),
             &mut key,
         )

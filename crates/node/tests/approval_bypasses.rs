@@ -303,7 +303,8 @@ fn consent(pk: &mut SoftAuthenticator, subject: &str, method: &str, args: &Value
     .unwrap()
 }
 
-/// Every node's view of alice's approvals and her app's owner.
+/// Every node's view of alice's approvals (her personal organization's) and
+/// her app's owner.
 async fn settled(c: &Cluster, account: &str, app: &str) -> Vec<(Value, String)> {
     tokio::time::sleep(Duration::from_millis(500)).await;
     c.nodes
@@ -311,8 +312,9 @@ async fn settled(c: &Cluster, account: &str, app: &str) -> Vec<(Value, String)> 
         .flatten()
         .map(|r| {
             r.node.sys(|s| {
+                let mine = s.personal_org_of(account).unwrap();
                 (
-                    json!(s.accounts[account].approved_releases),
+                    json!(s.orgs[mine].approved_releases),
                     s.apps[app].owner.clone(),
                 )
             })
@@ -337,13 +339,19 @@ async fn forged_decisions_are_refused_where_they_apply_on_every_node() {
     let before = settled(&c, &alice, &app).await;
     assert_eq!(before[0], (json!(["1.0.0"]), alice.clone()));
 
+    let mine = c.nodes[0]
+        .as_ref()
+        .unwrap()
+        .node
+        .sys(|s| s.personal_org_of(&alice).cloned())
+        .unwrap();
     let approve = |consent: Value| {
         json!({
-            "op": "setReleaseApproval", "scope": { "kind": "account" },
+            "op": "setReleaseApproval", "scope": { "kind": "org", "org": mine },
             "version": "2.0.0", "approved": true, "actor": alice, "consent": consent,
         })
     };
-    let subject = format!("account:{alice}");
+    let subject = format!("org:{mine}");
     let args = json!({ "version": "2.0.0" });
     let refused = [
         ("no consent", approve(Value::Null)),

@@ -16,8 +16,10 @@ records live in the [system group](/protocol/system-group/).
 
 An account id is 32 random bytes in base64url, made when someone signs up. The
 account record holds a display name, its passkeys (at most 10) and their
-labels, the account's aliases for apps, and the approvals it makes for apps it
-owns outside any organization (mero-tee releases and outbound prefixes; see
+labels and the account's aliases for apps. Its apps' approvals (mero-tee
+releases and outbound prefixes) are its organizations', its personal one's for
+the apps it makes without naming another (see
+[Personal organizations](/protocol/organizations/#personal-organizations) and
 [Deployment governance](/protocol/governance/)). Who may sign up is the
 cluster's [sign-up policy](/protocol/governance/#sign-up): `open` (the
 default; the operator's `maxAccounts` quota bounds how many accounts a cluster

@@ -271,11 +271,15 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
     let _s = in_app.sign_in(&mut in_app_passkey).await.unwrap();
 
     // It may not approve anything itself: the routes refuse it, ceremony or not.
+    let mine = alice.personal_org().await.unwrap();
     for (path, body) in [
         (format!("apps/{app}/upgrade"), json!({ "version": "2.0.0" })),
-        ("auth/releases".to_owned(), json!({ "version": "9.9.9" })),
         (
-            "auth/outbound".to_owned(),
+            format!("orgs/{mine}/releases"),
+            json!({ "version": "9.9.9" }),
+        ),
+        (
+            format!("orgs/{mine}/outbound"),
             json!({ "package": PACKAGE, "prefixes": ["https://metrics.example/"] }),
         ),
     ] {
@@ -802,7 +806,8 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
         args,
         json!({ "version": "2.0.0", "policyDigest": digest, "__method": "__approve_release" })
     );
-    let me = alice.me().await.unwrap();
+    let mine = alice.personal_org().await.unwrap();
+    let me = alice.get(&format!("orgs/{mine}")).await.unwrap();
     assert!(
         me["approvedReleases"]
             .as_array()
@@ -911,8 +916,10 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
             "returnTo": back,
         })
     };
+    // A request with no organization (`account`) is her personal one's.
+    let mine = alice.personal_org().await.unwrap();
     let approved = || async {
-        alice.me().await.unwrap()["approvedReleases"]
+        alice.get(&format!("orgs/{mine}")).await.unwrap()["approvedReleases"]
             .as_array()
             .unwrap()
             .clone()

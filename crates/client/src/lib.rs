@@ -1314,33 +1314,44 @@ impl Client {
         .await
     }
 
+    /// The caller's personal organization (`personal` in `/auth/me`), made with
+    /// the account at sign-up.
+    pub async fn personal_org(&self) -> Result<String> {
+        let me = self.auth().me().await?;
+        me.orgs
+            .iter()
+            .find(|o| o.personal == Some(true))
+            .map(|o| o.org_id.clone())
+            .ok_or_else(|| {
+                Error::Transport(eyre::eyre!("the account has no personal organization"))
+            })
+    }
+
     /// Approve a mero-tee release for an organization's apps (`org`), or for
-    /// the account's own apps outside one (`None`). Until then, nodes on that
-    /// release get none of those apps' data.
-    #[deprecated(
-        note = "use client.orgs().release_approval() or client.auth().account_release_approval()"
-    )]
+    /// the account's own (`None`: its personal organization's). Until then,
+    /// nodes on that release get none of those apps' data.
+    #[deprecated(note = "use client.orgs().release_approval()")]
     pub async fn approve_release(
         &self,
         org: Option<&str>,
         version: &str,
         passkey: &mut dyn Passkey,
     ) -> Result<Value> {
-        let path = match org {
-            Some(o) => format!("orgs/{}/releases", path_segment(o)),
-            None => "auth/releases".to_owned(),
+        let org = match org {
+            Some(o) => o.to_owned(),
+            None => self.personal_org().await?,
         };
+        let path = format!("orgs/{}/releases", path_segment(&org));
         self.post_confirmed(&path, json!({ "version": version }), passkey)
             .await
     }
 
     /// Approve URL prefixes `package`'s publisher may call out to, from an
-    /// organization's apps (`org`) or the account's own (`None`): `prefixes`
-    /// `None` approves every prefix its latest release declares; `replace`
-    /// sets exactly `prefixes` (how one is revoked).
-    #[deprecated(
-        note = "use client.orgs().outbound_approval() or client.auth().account_outbound_approval()"
-    )]
+    /// organization's apps (`org`) or the account's own (`None`: its personal
+    /// organization's): `prefixes` `None` approves every prefix its latest
+    /// release declares; `replace` sets exactly `prefixes` (how one is
+    /// revoked).
+    #[deprecated(note = "use client.orgs().outbound_approval()")]
     pub async fn approve_outbound(
         &self,
         org: Option<&str>,
@@ -1349,10 +1360,11 @@ impl Client {
         replace: bool,
         passkey: &mut dyn Passkey,
     ) -> Result<Value> {
-        let path = match org {
-            Some(o) => format!("orgs/{}/outbound", path_segment(o)),
-            None => "auth/outbound".to_owned(),
+        let org = match org {
+            Some(o) => o.to_owned(),
+            None => self.personal_org().await?,
         };
+        let path = format!("orgs/{}/outbound", path_segment(&org));
         let prefixes = prefixes.map_or_else(|| json!("manifest"), |p| json!(p));
         self.post_confirmed(
             &path,

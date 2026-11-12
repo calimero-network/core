@@ -966,7 +966,7 @@ fn components() -> Vec<Component> {
         .of::<crate::types::OutboundApproval>(),
         component(
             "AppScope",
-            "The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization), or its owner's account (never named), for an app from before outside any organization.",
+            "The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.",
             r#"{ kind: "org", org: string, personal?: bool } | { kind: "account" }"#,
         ),
         component(
@@ -1184,18 +1184,9 @@ fn operations() -> Vec<Op> {
             .about("Newest first, the last 100: sign-ins (`app`, `origin`) and approvals (`method`, `subject`); `after` keeps the entries after that Unix second.")
             .query::<super::ActivityQuery>("{ after?: uint }")
             .ok(r#"{ activity: { at: uint, passkey: string, kind: "signIn" | "approval", app?: string | null, origin?: string | null, method?: string, subject?: string }[] }"#),
-        post("/auth/releases", "account_release_approval", AccountHolder, "Approve a mero-tee release for the account's apps")
-            .about("Where the owner holds release approvals; `412` first.")
-            .json::<super::ReleaseApprovalBody>(APPROVAL)
-            .ok("#ApprovedReleases")
-            .step_up(),
-        post("/auth/outbound", "account_outbound_approval", AccountHolder, "Approve outbound prefixes for the account's apps")
-            .json::<super::OutboundApprovalBody>(OUTBOUND)
-            .ok("#OutboundApproved")
-            .step_up(),
         get("/auth/me", "me", SignedIn, "The caller's account")
-            .about("The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations, approvals and recovery state, and how the caller came (`via`).")
-            .ok(r#"{ accountId: string, name: string, passkeys: { id: string, signCount: uint, label: string | null, addedAt?: uint | null, lastSignInAt?: uint | null }[], orgs: { orgId: string, name: string, role: #OrgRole, personal?: bool }[], via: "session" | "apiKey", passkeyId: string | null, app?: string | null, origin?: string | null, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, recoveryCode?: bool, recoveryPending?: { accountId: string, credentialId: string, startedAt: uint, readyAt: uint } | null }"#)
+            .about("The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: the one made at sign-up, where its instances go unless they name another; its approvals are that organization's), recovery state, and how the caller came (`via`).")
+            .ok(r#"{ accountId: string, name: string, passkeys: { id: string, signCount: uint, label: string | null, addedAt?: uint | null, lastSignInAt?: uint | null }[], orgs: { orgId: string, name: string, role: #OrgRole, personal?: bool }[], via: "session" | "apiKey", passkeyId: string | null, app?: string | null, origin?: string | null, recoveryCode?: bool, recoveryPending?: { accountId: string, credentialId: string, startedAt: uint, readyAt: uint } | null }"#)
             .errors(&[(404, "NOT_FOUND")]),
         post("/auth/account-proof", "account_proof::prove", Session, "Prove the account to another party")
             .about("A statement signed with this node's receipt key that the caller's passkey session asked to bind `nonce` for `audience`.")
@@ -1203,7 +1194,7 @@ fn operations() -> Vec<Op> {
             .ok("#AccountProof")
             .errors(&[(400, "BAD_AUDIENCE"), (400, "BAD_NONCE")]),
         get("/auth/apps", "account_apps", SignedIn, "The account's own apps")
-            .about("Outside any organization (a package-bound session: its package's): each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.")
+            .about("The apps the account owns, in any organization (a package-bound session: its package's), with its personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.")
             .query::<super::PageQuery>(PAGE)
             .ok("{ scope: #AppScope, governance: #Governance, approvedReleases: string[] | null, clusterReleases: #ClusterRelease[], apps: #ReportApp[], next: string | null }"),
         get("/auth/usage", "usage", SignedIn, "The account's usage against its quotas")
@@ -1273,7 +1264,7 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         // ---------------------------------------------------------------- apps
         post("/apps", "app_create", Installer, "Create an app instance")
-            .about("From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization, made the first time (on a cluster below version 1.0.0-rc.19: outside any organization). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.")
+            .about("From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization. Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.")
             .json::<super::CreateAppBody>("{ name?: string, bundle?: string, package?: string, version?: string, service?: string, org?: string, access?: #Access, initArgs?: any, metadata?: any, deployment?: string }")
             .ok("{ appId: string, contextId: string, group: uint, replicas: uint[], compute: bool }")
             .errors(&[(400, "BAD_REQUEST"), (400, "NOT_OFFERED"), (400, "VERSION_REQUIRED"), (400, "NO_SUCH_SERVICE"), (400, "AMBIGUOUS_COMPUTE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "INIT_FAILED"), (429, "QUOTA_EXCEEDED"), (503, "UNAVAILABLE")]),

@@ -408,7 +408,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // The previous owner's apps in the organization reach their
             // owner whatever the membership: they move with it.
             for app in s.apps.values_mut() {
-                if app.org.as_deref() == Some(org.as_str()) && previous.contains(&app.owner) {
+                if app.org == org && previous.contains(&app.owner) {
                     app.owner.clone_from(&actor);
                 }
             }

@@ -123,8 +123,11 @@ pub struct AppRecord {
     pub group: u64,
     pub bundle: String,
     pub owner: AccountId,
-    #[serde(default)]
-    pub org: Option<OrgId>,
+    /// The organization the app belongs to. Every app has one: an app made
+    /// without naming one is in its owner's personal organization
+    /// ([`Org::personal`]). Apps outside any organization were removed in a
+    /// hard cutover (1.0.0-rc.19).
+    pub org: OrgId,
     #[serde(default)]
     pub access: Access,
     /// Methods that needed a fresh passkey assertion (`#[app::confirm]`), as an
@@ -309,14 +312,6 @@ pub struct Account {
     pub name: String,
     pub created_at: u64,
     pub passkeys: Vec<Credential>,
-    /// mero-tee releases approved to hold the apps this account owns outside
-    /// an organization (as [`Org::approved_releases`]).
-    #[serde(default)]
-    pub approved_releases: std::collections::BTreeSet<String>,
-    /// Outbound URL prefixes approved for the apps this account owns outside
-    /// an organization (as [`Org::outbound_approvals`]).
-    #[serde(default)]
-    pub outbound_approvals: std::collections::BTreeMap<String, OutboundApproval>,
     /// A name for each of the account's passkeys (its devices), by credential
     /// id: a device label.
     #[serde(default)]

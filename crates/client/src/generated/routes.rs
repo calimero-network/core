@@ -593,27 +593,6 @@ impl Auth<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
-    /// Approve outbound prefixes for the account's apps.
-    ///
-    /// `POST /auth/outbound` (`account_outbound_approval`). Who: an account holder (a passkey session not bound to an app's frontend).
-    ///
-    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
-    pub async fn account_outbound_approval(
-        self,
-        package: &str,
-        prefixes: Option<OutboundSelection>,
-        replace: Option<bool>,
-        passkey: Option<&mut dyn Passkey>,
-    ) -> Result<OutboundApproved> {
-        let mut fields = Map::new();
-        route::put(&mut fields, "package", &package)?;
-        route::put_some(&mut fields, "prefixes", prefixes)?;
-        route::put_some(&mut fields, "replace", replace)?;
-        let body = Value::Object(fields);
-        let req = Request::new(Method::POST, "auth/outbound").json(body);
-        route::json(self.client.transport(), req, passkey, None, false).await
-    }
-
     /// Prove the account to another party.
     ///
     /// `POST /auth/account-proof` (`account_proof_prove`). Who: a passkey session (an API key is refused).
@@ -684,25 +663,6 @@ impl Auth<'_> {
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "auth/recovery/start").json(body);
         route::json(self.client.transport(), req, None, None, false).await
-    }
-
-    /// Approve a mero-tee release for the account's apps.
-    ///
-    /// `POST /auth/releases` (`account_release_approval`). Who: an account holder (a passkey session not bound to an app's frontend).
-    ///
-    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
-    pub async fn account_release_approval(
-        self,
-        version: &str,
-        approved: Option<bool>,
-        passkey: Option<&mut dyn Passkey>,
-    ) -> Result<ApprovedReleases> {
-        let mut fields = Map::new();
-        route::put(&mut fields, "version", &version)?;
-        route::put_some(&mut fields, "approved", approved)?;
-        let body = Value::Object(fields);
-        let req = Request::new(Method::POST, "auth/releases").json(body);
-        route::json(self.client.transport(), req, passkey, None, false).await
     }
 
     /// What the account's passkeys did.

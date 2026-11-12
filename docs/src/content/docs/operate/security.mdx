@@ -32,8 +32,9 @@ run, so they can reach what those apps hold, members' private data included.
 Tell members so where they join, for example: "Admins of this organization can read your data in its
 apps."
 
-An app a person deploys outside any organization has no admin: only its
-owner reaches it.
+An app a person deploys without naming an organization is in their personal
+organization, of which they are the only member until they invite someone:
+only its owner reaches it, and the accounts it is shared with.
 
 About the members themselves, admins and owners see what tells them someone
 may be locked out, and nothing more: a passkey count capped at "3+", whether
@@ -165,9 +166,9 @@ formed:
 
 | Decision | Flag | Owner side | Operator side |
 | --- | --- | --- | --- |
-| Which mero-tee releases may hold the data | `--release-approvals` | `POST /orgs/{org}/releases`, `/auth/releases` with a passkey | `POST /ops/releases` |
+| Which mero-tee releases may hold the data | `--release-approvals` | `POST /orgs/{org}/releases` with a passkey | `POST /ops/releases` |
 | Which bundle an app runs | `--app-upgrades` | `POST /apps/{app}/upgrade`, `/orgs/{org}/upgrade` with a passkey | `POST /ops/apps/{app}/upgrade`, `/ops/orgs/{org}/upgrade` |
-| Which URL prefixes apps may call | `--outbound-approvals` | `POST /orgs/{org}/outbound`, `/auth/outbound` with a passkey | `POST /ops/outbound` |
+| Which URL prefixes apps may call | `--outbound-approvals` | `POST /orgs/{org}/outbound` with a passkey | `POST /ops/outbound` |
 
 - The default is `owner` for all three.
 - The party that does not hold a decision is refused (`403`), and the system

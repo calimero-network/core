@@ -271,47 +271,11 @@ def personal_org(p):
 
 
 @case
-class PersonalAppMovedIn(DeepCase):
-    name = "personal-app-moved-in"
-    area = "Organizations"
-    seeds = "an app made outside any organization (a personal app), with data"
-    verifies = ("the app stays outside an organization through the roll, its data and its owner's access; on the "
-                "new release its owner makes a personal organization and moves the app in, keeping its data, "
-                "and an outsider is still refused")
-
-    def populate(self, w):
-        vic, wes = people(w, "vic", "wes")
-        del wes  # an outsider
-        app = vic.deploy(kv_wasm(w), "vic-notes")
-        vic.call(app, "set", {"key": "k", "value": "before"})
-        s = {"app": app, "org": None}
-        eq(vic.get(f"apps/{app}").get("org"), None, "a personal app made on the old release")
-        return s
-
-    def check(self, w, s):
-        vic, wes = people(w, "vic", "wes")
-        eq(vic.get(f"apps/{s['app']}").get("org"), s["org"], "the app's organization")
-        eq(vic.result(s["app"], "get", {"key": "k"}), "before", "the app's data")
-        refused(("FORBIDDEN", "NOT_FOUND"), lambda: wes.view(s["app"], "get", {"key": "k"}),
-                "an outsider reads the app")
-
-    def exercise(self, w, s):
-        vic = person(w, "vic")
-        if s["org"] is None:
-            org = personal_org(vic) or vic.raw("post", "orgs", {"name": "Vic", "personal": True})["orgId"]
-            moved = vic.raw("post", f"apps/{s['app']}/move", {"toOrg": org})
-            eq(moved.get("org"), org, "the move into the personal organization")
-            s["org"] = org
-        eq(vic.get(f"orgs/{s['org']}").get("personal"), True, "the organization is personal")
-        self.check(w, s)
-
-
-@case
 class PersonalOrg(DeepCase):
     name = "personal-org"
     area = "Organizations"
     since = "1.0.0-rc.19"
-    seeds = "instances created without naming an organization, which go to their owner's personal organization"
+    seeds = "instances created without naming an organization, which go to the personal organization made at sign-up"
     verifies = ("both instances in the one personal organization, marked personal, with their data; a second "
                 "personal organization is refused; another instance made without one joins the same organization")
 

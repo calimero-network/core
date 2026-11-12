@@ -156,16 +156,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     let o = s.orgs.get_mut(org).ok_or("no such organization")?;
                     &mut o.approved_releases
                 }
-                ReleaseScope::Account => {
-                    &mut s
-                        .accounts
-                        .get_mut(&actor)
-                        .ok_or("unknown account")?
-                        .approved_releases
-                }
             };
             if approved {
-                let _new = set.insert(version.clone());
+                let _new = set.insert(version);
             } else {
                 // An empty set would leave the apps unrestricted.
                 if set.len() == 1 && set.contains(&version) {
@@ -173,20 +166,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 }
                 let _gone = set.remove(&version);
             }
-            let out = json!({ "approvedReleases": set });
-            // The account's own approvals cover its personal organization's
-            // apps too, which hold what its apps outside one did.
-            if scope == ReleaseScope::Account {
-                if let Some(o) = personal_org_mut(s, &actor) {
-                    let set = &mut o.approved_releases;
-                    if approved {
-                        let _new = set.insert(version);
-                    } else if !(set.len() == 1 && set.contains(&version)) {
-                        let _gone = set.remove(&version);
-                    }
-                }
-            }
-            Ok(out)
+            Ok(json!({ "approvedReleases": set }))
         }
         SystemCmd::SetOutboundApproval {
             scope,
@@ -223,13 +203,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     let o = s.orgs.get_mut(org).ok_or("no such organization")?;
                     &mut o.outbound_approvals
                 }
-                ReleaseScope::Account => {
-                    &mut s
-                        .accounts
-                        .get_mut(&actor)
-                        .ok_or("unknown account")?
-                        .outbound_approvals
-                }
             };
             let existing = approvals.get(&signer).map(|a| calimero_outbound::Approval {
                 prefixes: a.prefixes.clone(),
@@ -247,28 +220,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 reviewed: merged.reviewed,
             };
             let _prev = approvals.insert(signer.clone(), approval.clone());
-            // As for releases: the personal organization follows the account.
-            if scope == ReleaseScope::Account {
-                if let Some(o) = personal_org_mut(s, &actor) {
-                    let _prev = o
-                        .outbound_approvals
-                        .insert(signer.clone(), approval.clone());
-                }
-            }
             Ok(json!({ "signer": signer, "approval": approval }))
         }
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached approvals::apply"),
     }
-}
-
-/// `account`'s personal organization ([`crate::types::Org::personal`]), to
-/// change with the account's own approvals.
-fn personal_org_mut<'a>(
-    s: &'a mut SystemState,
-    account: &str,
-) -> Option<&'a mut crate::types::Org> {
-    let org = s.personal_org_of(account)?.clone();
-    s.orgs.get_mut(&org)
 }

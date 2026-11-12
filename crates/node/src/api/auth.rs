@@ -212,10 +212,6 @@ async fn register_finish(
         name,
         created_at: now_secs(),
         passkeys: vec![cred.clone()],
-        // The release this account began on holds its apps until the
-        // owner approves another.
-        approved_releases: [node.own_release()].into_iter().collect(),
-        outbound_approvals: std::collections::BTreeMap::new(),
         passkey_labels: std::collections::BTreeMap::new(),
         aliases: std::collections::BTreeMap::new(),
         // Set at apply, from the sign-up's time (`CreateAccount::at`).
@@ -334,6 +330,12 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
             }),
             consent: serde_json::to_value(&consent).unwrap_or_default(),
             at: now,
+            // Every account has its personal organization from the start,
+            // approving the release it signed up through.
+            personal_org: Some(crate::system::PersonalOrgSeed {
+                org_id: typed_id::<16>(),
+                release: Some(node.own_release()),
+            }),
         })
         .await?;
     Ok(session_answer(&account_id, &token, &session))
@@ -996,10 +998,6 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
         // origin that opened it.
         "app": p.bound_app(),
         "origin": p.session.as_ref().and_then(|s| s.origin.clone()),
-        // Releases approved to hold this account's own apps.
-        "approvedReleases": acc.approved_releases,
-        // Outbound prefixes approved for this account's own apps, by signer.
-        "outboundApprovals": acc.outbound_approvals,
         // Whether a recovery code is set (`/auth/recovery`); never the code.
         "recoveryCode": recovery,
         // A recovery under way (`/auth/recovery/start`), which a passkey of

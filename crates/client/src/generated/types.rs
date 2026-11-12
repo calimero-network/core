@@ -1752,7 +1752,7 @@ pub struct OutboundApproval {
     pub extra: Map<String, Value>,
 }
 
-/// The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization), or its owner's account (never named), for an app from before outside any organization.
+/// The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum AppScope {
@@ -3022,10 +3022,6 @@ pub struct MeResponse {
         with = "crate::route::present"
     )]
     pub origin: Option<Option<String>>,
-    #[serde(rename = "approvedReleases")]
-    pub approved_releases: Vec<String>,
-    #[serde(rename = "outboundApprovals")]
-    pub outbound_approvals: BTreeMap<String, OutboundApproval>,
     #[serde(rename = "recoveryCode")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_code: Option<bool>,

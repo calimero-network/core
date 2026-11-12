@@ -64,14 +64,12 @@ package-bound session:
    with no zones is placed by load alone. Moves (`/ops/apps/{app}/replicas`)
    go where the operator says.
 3. **Record.** `CreateApp` applies in the system group: the bundle must be
-   known, the owner within their app quota, a member (at least `member`) of the
-   organization if one is named, and a writer of the team for `access: team`.
-   It assigns the app its group number. The default access is `org` inside an
-   organization and `owner` outside one. A request that names no organization
-   gets its owner's personal organization, made first if they have none
-   ([Personal organizations](/protocol/organizations/#personal-organizations)),
-   so a new instance is outside an organization only on a cluster below
-   version `1.0.0-rc.19`.
+   known, the owner within their app quota, a member (at least `member`) of its
+   organization, and a writer of the team for `access: team`.
+   It assigns the app its group number. Every app is in an organization: a
+   request that names none gets its owner's personal organization
+   ([Personal organizations](/protocol/organizations/#personal-organizations)).
+   The default access is `org`.
 4. **Start the group.** Each replica's reconcile loop starts the group; the
    first replica in the list forms it with all replicas as voters.
 5. **Init.** The group's first leader runs `init` with `initArgs` as the owner

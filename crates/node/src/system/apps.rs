@@ -238,8 +238,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     return Err("the deployment does not offer the release this app would run");
                 }
             }
-            if let Some(org) = &app.org {
-                let o = s.orgs.get(org);
+            {
+                let o = s.orgs.get(&app.org);
                 let member = o.and_then(|o| o.role(&app.owner));
                 if !member.is_some_and(|r| r >= OrgRole::Member) {
                     return Err("owner is not a member of the organization");
@@ -265,7 +265,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 }
             }
             if let Access::Team { team } = &app.access {
-                let o = app.org.as_ref().and_then(|o| s.orgs.get(o));
+                let o = s.orgs.get(&app.org);
                 // A team's app is created by someone who writes the team.
                 if !o.is_some_and(|o| o.writes_team(&app.owner, team)) {
                     return Err("not a member of that team");
@@ -458,15 +458,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // outside it goes to theirs, as a personal app went with its new
             // owner.
             let mut to_org = None;
-            if let Some(org) = org {
-                let o = s.orgs.get(&org);
-                let role = o.and_then(|o| o.role(&to));
-                if !role.is_some_and(|r| r >= OrgRole::Member) {
-                    match (o.is_some_and(|o| o.personal), s.personal_org_of(&to)) {
-                        (true, Some(theirs)) => to_org = Some(theirs.clone()),
-                        (true, None) => return Err(NO_PERSONAL_ORG),
-                        _ => return Err("the new owner is not a member of the app's organization"),
-                    }
+            let o = s.orgs.get(&org);
+            let role = o.and_then(|o| o.role(&to));
+            if !role.is_some_and(|r| r >= OrgRole::Member) {
+                match (o.is_some_and(|o| o.personal), s.personal_org_of(&to)) {
+                    (true, Some(theirs)) => to_org = Some(theirs.clone()),
+                    (true, None) => return Err(NO_PERSONAL_ORG),
+                    _ => return Err("the new owner is not a member of the app's organization"),
                 }
             }
             let app = s.apps.get(&app_id).ok_or("no such app")?;
@@ -478,20 +476,19 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             {
                 return Err(ONLY_MANAGERS_TRANSFER);
             }
-            // A personal app's files move to the new owner's quota; one
-            // going to their personal organization, to that organization's.
+            // An app going to its new owner's personal organization takes its
+            // files to that organization's quota.
             let held = s.app_file_bytes.get(&app_id).copied().unwrap_or(0);
-            let new_payer = to_org.clone().unwrap_or_else(|| format!("account:{to}"));
-            if (app.org.is_none() || to_org.is_some())
-                && s.file_bytes(&new_payer).saturating_add(held) > s.payer_quotas(&new_payer).2
-            {
-                return Err("quota exceeded: file bytes");
+            if let Some(new_payer) = &to_org {
+                if s.file_bytes(new_payer).saturating_add(held) > s.payer_quotas(new_payer).2 {
+                    return Err("quota exceeded: file bytes");
+                }
             }
             s.set_app_file_bytes(&app_id, 0);
             if let Some(app) = s.apps.get_mut(&app_id) {
                 app.owner = to;
                 if let Some(org) = to_org {
-                    app.org = Some(org);
+                    app.org = org;
                     // A team of the organization it left means nothing there.
                     if matches!(app.access, Access::Team { .. }) {
                         app.access = Access::Org;
@@ -535,7 +532,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             owner_in_team,
         } => {
             let app = s.apps.get(&app_id).ok_or("no such app")?;
-            let admin = app.org.as_ref().is_some_and(|o| s.is_org_admin(o, &actor));
+            let admin = s.is_org_admin(&app.org, &actor);
             if !s.owner_acts_as_logged(app, &actor, OwnerRule::logged(owner_in_org, owner_in_team))
                 && !admin
             {
@@ -616,10 +613,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err("only the app's owner, an organization admin, or whoever manages its team's apps (MANAGE_APPLICATION) may change its access");
             }
             if let Access::Team { team } = &access {
-                let in_org = app
-                    .org
-                    .as_ref()
-                    .and_then(|o| s.orgs.get(o))
+                let in_org = s
+                    .orgs
+                    .get(&app.org)
                     .is_some_and(|o| o.teams.contains_key(team));
                 if !in_org {
                     return Err("no such team in the app's organization");
@@ -638,7 +634,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         } => {
             metadata_fits(&metadata)?;
             let app = s.apps.get(&app_id).ok_or("no such app")?;
-            let admin = app.org.as_ref().is_some_and(|o| s.is_org_admin(o, &actor));
+            let admin = s.is_org_admin(&app.org, &actor);
             if !s.owner_acts_as_logged(app, &actor, OwnerRule::logged(owner_in_org, owner_in_team))
                 && !admin
             {

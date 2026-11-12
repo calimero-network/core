@@ -176,7 +176,7 @@ async fn ops_orgs(
             .map(|id| {
                 json!({
                     "org": id,
-                    "approvedReleases": report::approved_releases(s.approved_for(Some(id), "")),
+                    "approvedReleases": report::approved_releases(s.approved_for(id)),
                 })
             })
             .collect();

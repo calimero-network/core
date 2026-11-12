@@ -67,14 +67,10 @@ pub enum Feature {
     /// `ScopeApps` naming one app team's `childTeams` (#4917): an earlier
     /// `ScopeApp` refuses unknown fields.
     AppTeamChildTeams,
-    /// `CreateOrg { personal }`: an earlier release drops the flag, so its
-    /// replicas would count the organization against the owner's quota and
-    /// let them make a second one.
-    PersonalOrg,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 14] = [
+pub const FEATURES: [Feature; 13] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -88,7 +84,6 @@ pub const FEATURES: [Feature; 14] = [
     Feature::RenameOrg,
     Feature::TeamMembersBatch,
     Feature::AppTeamChildTeams,
-    Feature::PersonalOrg,
 ];
 
 impl Feature {
@@ -109,7 +104,6 @@ impl Feature {
             Self::RenameOrg => "renameOrg",
             Self::TeamMembersBatch => "teamMembersBatch",
             Self::AppTeamChildTeams => "appTeamChildTeams",
-            Self::PersonalOrg => "personalOrg",
         }
     }
 
@@ -130,7 +124,6 @@ impl Feature {
             | Self::RenameOrg
             | Self::TeamMembersBatch
             | Self::AppTeamChildTeams => "1.0.0-rc.16",
-            Self::PersonalOrg => "1.0.0-rc.19",
         }
     }
 }
@@ -347,7 +340,6 @@ impl SystemCmd {
                 vec![Feature::TeamMembersBatch]
             }
             Self::CreateInvite { invite, .. } if invite.all_apps => vec![Feature::AllApps],
-            Self::CreateOrg { personal: true, .. } => vec![Feature::PersonalOrg],
             Self::RegisterNode { .. }
             | Self::RemoveNode { .. }
             | Self::PutBundle { .. }
@@ -471,7 +463,6 @@ mod tests {
     const RC14: &str = "1.0.0-rc.14";
     const RC15: &str = "1.0.0-rc.15";
     const RC16: &str = "1.0.0-rc.16";
-    const RC19: &str = "1.0.0-rc.19";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -559,16 +550,6 @@ mod tests {
                 teams: vec!["team".into()],
                 actor: "alice".into(),
                 consent: Value::Null,
-            },
-            Feature::PersonalOrg => SystemCmd::CreateOrg {
-                org_id: "personal".into(),
-                name: "Personal".into(),
-                actor: "alice".into(),
-                release: None,
-                recovery_key: None,
-                at: 0,
-                name_fits: true,
-                personal: true,
             },
             Feature::RenameOrg => SystemCmd::RenameOrg {
                 org: "org".into(),
@@ -766,31 +747,11 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        let (by_rc16, later): (Vec<Feature>, Vec<Feature>) = FEATURES
-            .into_iter()
-            .partition(|f| compare_versions(f.since(), RC16) != std::cmp::Ordering::Greater);
-        for feature in by_rc16 {
+        for feature in FEATURES {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));
         assert!(nodes[0].machine.state.org_quotas.contains_key("org"));
-
-        // A later release's features wait for every node to run it.
-        for feature in &later {
-            assert!(propose(&mut nodes, &uses(*feature)).is_err(), "{feature:?}");
-        }
-        for n in &mut nodes {
-            n.release = RC19;
-        }
-        let raise = SystemCmd::SetClusterVersion {
-            version: RC19.into(),
-            nodes: (1..=3).map(|id| (id, RC19.to_owned())).collect(),
-        };
-        propose(&mut nodes, &raise).unwrap();
-        for feature in later {
-            propose(&mut nodes, &uses(feature)).unwrap();
-        }
-        assert!(same_state(&nodes));
     }
 
     /// Between rc.15 and rc.16 the rc.15 features stay on: the floor is

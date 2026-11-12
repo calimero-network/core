@@ -105,7 +105,7 @@ A call, view, timer or `init` may create a file and ask for its size and hash, b
   A file is held while a stored `BlobRef` names it, and is forgotten `BLOB_IDLE_MS` (1 hour) after it was made or after its last reference went.
   Every replica forgets the record in the same entry, and the bytes are then collected from every node that holds them.
   An uploaded file is held the same way, so the app has that hour to store its `BlobRef`.
-- **Quota.** Stored plaintext bytes are counted per organization in the [system group](/protocol/system-group/) (a personal account for an app outside one).
+- **Quota.** Stored plaintext bytes are counted per organization in the [system group](/protocol/system-group/).
   A write is charged before its record commits and released when R8 collects the file or the app is deleted; one past `maxFileBytesPerOrg` is refused with `429 QUOTA_EXCEEDED`.
 - **Who may use them.** Calls, timers and `init` create files.
   Views and actions may read them, and an action may send what it read out over outbound HTTP, but an action cannot write one.
@@ -128,7 +128,7 @@ It is deliberately **not** a replica.
 **Attestation, `purpose=jobs`.**
 A job node answers `GET /attestation?purpose=jobs` and nothing else: one TDX quote binds the nonce, the cluster identity, the node id, its X25519 transport key, an Ed25519 **job key** and its release.
 A replica answers `404` to the same request.
-The leader verifies the quote with the same code clients use (`verify_job_key`, sharing `verify_report` and the peer policy), then checks that the attested release is approved for the app's organization (for a personal app, its owner's account), as `Node::may_send` does for replicas.
+The leader verifies the quote with the same code clients use (`verify_job_key`, sharing `verify_report` and the peer policy), then checks that the attested release is approved for the app's organization, as `Node::may_send` does for replicas.
 Because a job node attests only for jobs, no channel that carries the cluster secret, the cluster key, Raft or blob traffic can open to it.
 
 **Only compute components.** A job node prepares what it is given on the compute world, so an app component, which imports state and `runs`, is refused with `BAD_BUNDLE` even when the cluster signed it.
