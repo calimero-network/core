@@ -250,8 +250,32 @@ export interface AppTransport {
   events(app: string, from?: number, signal?: AbortSignal): AsyncIterable<NodeEvent>;
 }
 
+/** The app's methods: what `KitchenSinkClient` implements, for a test double to stand in for it. */
+export interface KitchenSinkApi {
+  /** view `blobOf`. */
+  blobOf(args: BlobOfArgs, options?: ViewOptions): Promise<string | null>;
+  /** view `count`. */
+  count(args: CountArgs, options?: ViewOptions): Promise<string>;
+  /** call `events`. */
+  events(args: EventsArgs, options?: CallOptions): Promise<[number, string]>;
+  /** call `everything`. */
+  everything(args: EverythingArgs, options?: CallOptions): Promise<Item[]>;
+  /** call `fromPeer`. */
+  fromPeer(args: FromPeerArgs, options?: CallOptions): Promise<null>;
+  /** view `lookup`; public. */
+  lookup(args: LookupArgs, options?: ViewOptions): Promise<Item | null>;
+  /** view `secret`; a passkey approves it (`options.confirm`, else the client's own). */
+  secret(options?: CallOptions): Promise<string>;
+  /** view `shapes`. */
+  shapes(args: ShapesArgs, options?: ViewOptions): Promise<Tree>;
+  /** call `wipe`; a passkey approves it (`options.confirm`, else the client's own). */
+  wipe(args: WipeArgs, options?: CallOptions): Promise<null>;
+  /** The app's events from log index `from`, then live, until `signal` aborts. */
+  appEvents(from?: number, signal?: AbortSignal): AsyncIterable<AppEvent & { id: string }>;
+}
+
 /** The app's methods, over a signed-in `CalimeroClient` (or any {@link AppTransport}). */
-export class KitchenSinkClient {
+export class KitchenSinkClient implements KitchenSinkApi {
   readonly #client: AppTransport;
   readonly #app: string;
   readonly #after: ClientOptions['after'];

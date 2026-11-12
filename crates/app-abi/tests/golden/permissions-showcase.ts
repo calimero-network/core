@@ -215,8 +215,52 @@ export interface AppTransport {
   events(app: string, from?: number, signal?: AbortSignal): AsyncIterable<NodeEvent>;
 }
 
+/** The app's methods: what `PermissionsShowcaseClient` implements, for a test double to stand in for it. */
+export interface PermissionsShowcaseApi {
+  /** call `addModerator`. */
+  addModerator(args: AddModeratorArgs, options?: CallOptions): Promise<null>;
+  /** call `addRevision`. */
+  addRevision(args: AddRevisionArgs, options?: CallOptions): Promise<null>;
+  /** call `announce`. */
+  announce(args: AnnounceArgs, options?: CallOptions): Promise<null>;
+  /** view `announcements`. */
+  announcements(options?: ViewOptions): Promise<MessageView[]>;
+  /** view `channel`. */
+  channel(args: ChannelArgs, options?: ViewOptions): Promise<MessageView[]>;
+  /** call `createPage`. */
+  createPage(args: CreatePageArgs, options?: CallOptions): Promise<null>;
+  /** call `deletePage`. */
+  deletePage(args: DeletePageArgs, options?: CallOptions): Promise<boolean>;
+  /** view `evidence`. */
+  evidence(args: EvidenceArgs, options?: ViewOptions): Promise<Evidence | null>;
+  /** view `evidenceOfKind`. */
+  evidenceOfKind(args: EvidenceOfKindArgs, options?: ViewOptions): Promise<Evidence[]>;
+  /** call `fileEvidence`. */
+  fileEvidence(args: FileEvidenceArgs, options?: CallOptions): Promise<string>;
+  /** view `founder`. */
+  founder(options?: ViewOptions): Promise<string | null>;
+  /** view `founding`. */
+  founding(options?: ViewOptions): Promise<Founding>;
+  /** view `me`. */
+  me(options?: ViewOptions): Promise<string>;
+  /** view `moderators`. */
+  moderators(options?: ViewOptions): Promise<string[]>;
+  /** view `page`. */
+  page(args: PageArgs, options?: ViewOptions): Promise<PageView | null>;
+  /** call `postMessage`. */
+  postMessage(args: PostMessageArgs, options?: CallOptions): Promise<string>;
+  /** view `quorum`. */
+  quorum(options?: ViewOptions): Promise<string>;
+  /** call `removeAnnouncement`. */
+  removeAnnouncement(args: RemoveAnnouncementArgs, options?: CallOptions): Promise<boolean>;
+  /** call `renamePage`. */
+  renamePage(args: RenamePageArgs, options?: CallOptions): Promise<null>;
+  /** The app's events from log index `from`, then live, until `signal` aborts. */
+  events(from?: number, signal?: AbortSignal): AsyncIterable<AppEvent & { id: string }>;
+}
+
 /** The app's methods, over a signed-in `CalimeroClient` (or any {@link AppTransport}). */
-export class PermissionsShowcaseClient {
+export class PermissionsShowcaseClient implements PermissionsShowcaseApi {
   readonly #client: AppTransport;
   readonly #app: string;
   readonly #after: ClientOptions['after'];
