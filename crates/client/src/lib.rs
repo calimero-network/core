@@ -15,6 +15,7 @@ mod files;
 mod generated;
 pub mod pipeline_events;
 pub mod receipt;
+pub mod recovery;
 mod route;
 pub mod transport;
 

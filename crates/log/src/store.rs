@@ -97,7 +97,7 @@ impl Sealer {
 }
 
 /// A key derived from the storage key for one purpose.
-fn derive(storage_key: &[u8; 32], label: &str) -> [u8; 32] {
+pub(crate) fn derive(storage_key: &[u8; 32], label: &str) -> [u8; 32] {
     let tag = hmac::sign(
         &hmac::Key::new(hmac::HMAC_SHA256, storage_key),
         label.as_bytes(),
@@ -124,7 +124,7 @@ pub fn hide(hider: &hmac::Key, group: GroupId, tag: u8, key: &[u8]) -> Vec<u8> {
 }
 
 /// A hidden row's value: the key it stands for, then the value.
-fn wrap_hidden(key: &[u8], value: &[u8]) -> Vec<u8> {
+pub(crate) fn wrap_hidden(key: &[u8], value: &[u8]) -> Vec<u8> {
     let len = u32::try_from(key.len()).unwrap_or(u32::MAX);
     let mut out = len.to_be_bytes().to_vec();
     out.extend_from_slice(key);
@@ -393,7 +393,7 @@ impl Db {
             snapshot_sealer: Sealer::new(&derive(key, "calimero.log.snapshot.v1")),
             hider: hmac::Key::new(
                 hmac::HMAC_SHA256,
-                &derive(key, "calimero.log.hidden-keys.v1"),
+                &derive(key, crate::machine::HIDDEN_KEYS_LABEL),
             ),
             snapshot_dir,
             #[cfg(feature = "testing")]

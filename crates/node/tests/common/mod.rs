@@ -181,6 +181,8 @@ impl Cluster {
                     metrics_listen: None,
                     replicas: 3,
                     backup_dir: Some(dir.path().join("backups")),
+                    recovery_dir: Some(dir.path().join("recovery")),
+                    recover_from: None,
                     restore_from: None,
                     raft: calimero_log::Config {
                         heartbeat_ms: 100,

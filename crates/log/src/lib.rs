@@ -36,7 +36,9 @@ pub mod types;
 
 pub use format::{NewerStore, STORE_FORMAT};
 pub use legacy::MigrationReport;
-pub use machine::{read_snapshot_file, Applied, Machine, Shared, SNAPSHOT_FORMAT};
+pub use machine::{
+    read_snapshot_file, read_snapshot_rows, Applied, Machine, PortableRow, Shared, SNAPSHOT_FORMAT,
+};
 pub use network::{BoxFuture, RpcRequest, RpcResponse, Transport};
 use store::{Db, LogStore};
 pub use store::{GroupState, StateTx};
@@ -569,6 +571,19 @@ impl<M: Machine> Group<M> {
     ) -> eyre::Result<u64> {
         self.sole_leader()?;
         machine::replace_state(&self.state, &self.shared, from, snapshot_id, path)
+    }
+
+    /// [`Self::replace_state`] from portable rows (a recovery backup's,
+    /// [`read_snapshot_rows`]): hidden rows are hidden again under this
+    /// node's key. `rows` hands each row to the function it is given, in
+    /// any order, so a large state streams. The same rules hold: only the
+    /// group's sole voter, as its leader. Answers how many rows it wrote.
+    pub fn replace_state_rows(
+        &self,
+        rows: impl FnOnce(&mut dyn FnMut(PortableRow) -> eyre::Result<()>) -> eyre::Result<()>,
+    ) -> eyre::Result<u64> {
+        self.sole_leader()?;
+        machine::replace_state_rows(&self.state, &self.shared, rows)
     }
 
     /// [`Self::replace_state`] for an in-memory machine: its whole state is

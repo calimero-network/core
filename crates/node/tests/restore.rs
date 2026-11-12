@@ -167,7 +167,7 @@ async fn an_app_is_restored_from_its_backup_on_every_replica_and_takes_writes() 
     let e = ops_at(&c, at)
         .await
         .ops()
-        .restore(&kv, None, None)
+        .restore(&kv, None, None, None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");

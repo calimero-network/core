@@ -36,6 +36,7 @@ pub mod packages;
 pub mod placement;
 pub mod presence;
 pub mod proof;
+pub mod recovery_disk;
 pub mod report;
 pub mod rollback;
 pub mod runtime;
@@ -344,6 +345,29 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
                 let Some(node) = weak.upgrade() else { return };
                 if let Err(e) = node.backup().await {
                     warn!(error = %e, "backup failed");
+                }
+            }
+        }));
+    }
+
+    // The recovery disk: backups sealed to each app's holder's key.
+    if node.config.recovery_dir.is_some() {
+        let weak = Arc::downgrade(&node);
+        let stop = shutdown.clone();
+        drop(tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = stop.cancelled() => return,
+                    () = tokio::time::sleep(crate::node::recovery_disk::RECOVERY_EVERY) => {}
+                }
+                let Some(node) = weak.upgrade() else { return };
+                match node.write_recovery().await {
+                    Ok(pass) if pass.without_key > 0 => warn!(
+                        apps = pass.without_key,
+                        "apps whose holder set no backup key are not on the recovery disk"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => warn!(error = %e, "recovery disk write failed"),
                 }
             }
         }));

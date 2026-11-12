@@ -195,6 +195,11 @@ pub async fn resolve(
         return Ok((k, listener));
     }
     let existing = calimero_log::store::store_path(&config.data_dir).exists();
+    // Founding again from a recovery disk: a new K_c (the founder's, as at any
+    // founding), as every mero-kms the old cluster used may be gone.
+    if config.recover_from.is_some() && !(config.bootstrap && !existing) {
+        bail!("--recover-from founds a cluster again: it needs --bootstrap and an empty data directory");
+    }
     let (key, listener) = match &config.restore_from {
         // Founding the cluster again: its own K_c, from a copy this node's K_r opens.
         Some(dir) if config.bootstrap && !existing => (

@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The recovery disk: backups that outlive every mero-kms, opened with the key of
+  whoever upgrades the app.** `merod --recovery-dir DIR` writes, every 5 minutes, on
+  every node that holds an app (leader or not), the app's state, the code it runs and
+  its holder's slice of the system state (an organization or account's apps, people
+  and passkeys; the operator's: the whole state), each sealed to that holder's X25519
+  public key (HPKE, RFC 9180) and signed by the node's attested receipt key
+  (`calimero_node::recovery_disk`, `calimero_client::recovery`; `.rbak` format 1). The
+  holder is whoever upgrades the app (`SystemState::backup_holder`): the operator
+  where it holds app upgrades, else the app's organization or owner account, also for
+  packages that declare `upgrades: publisher`. `SystemCmd::SetBackupKey`
+  (`Feature::BackupKeys`, rc.20): `POST /ops/backup-key` (operator-signed),
+  `POST /orgs/{org}/backup-key` (org-wide `MANAGE_APPLICATION`, passkey) and
+  `POST /auth/backup-key` (passkey), each with a `GET`. No node holds a private key.
+  A cluster whose operator upgrades apps comes back from one recovery disk under a
+  new cluster key: `merod run --bootstrap --recover-from DIR`, `POST /ops/recover`
+  (the `system` and `code` files, opened on the operator's machine), then
+  `POST /ops/apps/{app}/restore { recovery: { file, key } }`; `GET /ops/recovery-files`
+  lists the headers to check first. meroctl: `ops recovery-keygen`, `ops backup-key`,
+  `ops recover`, `ops restore --recovery-key-file`. An organization's or account's
+  apps come back on a cluster that does not hold them with `POST /recover/holder`
+  (`SystemCmd::ImportHolder`): its own device sends the data keys of its `holder`
+  file, its apps' files and their code over the sealed channel, and the operator
+  admits it with a signature over `cluster / __recover_holder / { holder, slice,
+  apps }`; the org, its people (who sign in with the passkeys they had), its apps
+  and its backup key are added, refused where any of them is here already. Sealed files come along: their segments are copied to the disk as they are
+  stored (ciphertext under each file's own key), checked against their hash when
+  read back, and each file's data key is wrapped again under the new cluster's
+  file key (`409 RECOVERY_SEGMENTS_MISSING` while one is missing). Every file a
+  recovery uses must carry an attestation the node accepts under its peer
+  policy (`400 UNATTESTED_RECOVERY_FILE`). `calimero-log` gains `read_snapshot_rows` and
+  `Group::replace_state_rows` (state rows that move between cluster keys).
+
 ## [1.0.0-rc.19] - 2026-11-12
 
 ### Added

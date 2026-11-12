@@ -304,7 +304,8 @@ pub fn group(route: &str) -> &'static str {
         {
             "packages"
         }
-        _ if route.starts_with("/ops") => "ops",
+        // A holder's recovery is admitted by the operator: an ops question.
+        _ if route.starts_with("/ops") || route.starts_with("/recover/") => "ops",
         _ if route.starts_with("/consent") => "consent",
         _ if route.starts_with("/internal") => "internal",
         _ => "other",
@@ -903,6 +904,7 @@ mod tests {
         assert_eq!(group("/releases"), "attestation");
         assert_eq!(group("/sign-up/invites/{key}"), "sign_in");
         assert_eq!(group("/ops/sign-up"), "ops");
+        assert_eq!(group("/recover/holder"), "ops");
         assert_eq!(group("/publishers/{signer}"), "packages");
         assert_eq!(group("/pipelines/validate"), "packages");
     }

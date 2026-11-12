@@ -804,6 +804,7 @@ dependencies = [
  "eyre",
  "futures-util",
  "hex",
+ "hpke",
  "reqwest 0.12.28",
  "ring",
  "serde",
@@ -815,6 +816,7 @@ dependencies = [
  "tokio",
  "tower",
  "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -2960,6 +2962,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "hpke"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f65d16b699dd1a1fa2d851c970b0c971b388eeeb40f744252b8de48860980c8f"
+dependencies = [
+ "aead 0.5.2",
+ "aes-gcm 0.10.3",
+ "chacha20poly1305",
+ "digest 0.10.7",
+ "generic-array",
+ "hkdf",
+ "hmac 0.12.1",
+ "rand_core 0.9.5",
+ "sha2 0.10.9",
+ "subtle",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "html5ever"
 version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3838,6 +3860,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -8620,6 +8643,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
+]
+
+[[package]]
+name = "x25519-dalek"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
+dependencies = [
+ "curve25519-dalek 4.1.3",
+ "rand_core 0.6.4",
 ]
 
 [[package]]
