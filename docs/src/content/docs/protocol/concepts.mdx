@@ -25,9 +25,9 @@ import RaftGroups from '../../../components/diagrams/RaftGroups.astro';
   the system group when the instance is created.
 - **App instance** (an *app*, and what `meroctl` still calls a *context*) — One
   running copy of an application: a bundle, an owner, the organization it is
-  in, an access rule and its own replicated state. Its id is 16 random bytes in base64url; its **context
-  id**, what the app reads as `env::context_id()`, is `SHA-256(app_id)` in hex.
-  The API takes either.
+  in, an access rule and its own replicated state. Its id is 16 random bytes in base64url; an app reads it
+  with `env::app_id()`. Its **context id** is `SHA-256(app_id)` in hex, the id
+  SDK 0.12 apps saw; the API takes either.
 - **Bundle** — One WASM component (`calimero:app`), named by `hex(SHA-256(wasm))`. Bundles live in
   each node's sealed blob store; the system log records only their hash and
   size.
