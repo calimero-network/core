@@ -10,15 +10,7 @@
 //! made under says which cluster, and a sign-in with one this cluster does
 //! not hold says so (`401 PASSKEY_UNKNOWN_HERE`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
-use calimero_client::{Client, Passkey};
+use calimero_client::{Client, Passkey, Request};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::system::{SignUp, SystemCmd};
 use serde_json::{json, Value};
@@ -30,7 +22,8 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{ops_signed, Cluster, ORIGIN};
+use harness::{ops_signed, typed, wire, Cluster, ORIGIN};
+use reqwest::Method;
 
 /// A client holding the ops token.
 async fn ops(c: &Cluster) -> Client {
@@ -76,17 +69,15 @@ async fn operator_invite(ops: &Client, token: &str, uses: u32) -> Value {
 
 /// An organization of `owner`'s, and an invite to it for one member.
 async fn org_invite(owner: &Client, pk: &mut SoftAuthenticator) -> (String, String) {
-    let org = owner.post("orgs", json!({ "name": "Docs" })).await.unwrap()["orgId"]
+    let org = owner.orgs().create("Docs", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let token = owner
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "member" }),
-            pk,
-        )
+        .orgs()
+        .invite_create(&org, typed(json!({ "role": "member" })), Some(&mut *pk))
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
@@ -95,7 +86,7 @@ async fn org_invite(owner: &Client, pk: &mut SoftAuthenticator) -> (String, Stri
 }
 
 async fn account_of(client: &Client) -> String {
-    client.me().await.unwrap()["accountId"]
+    client.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -106,7 +97,13 @@ async fn account_of(client: &Client) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_open_cluster_takes_anyone() {
     let c = Cluster::start(3).await;
-    let info = c.client(1).get("sign-up").await.unwrap();
+    let info = c
+        .client(1)
+        .deployments()
+        .sign_up_public()
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(info["policy"], "open", "{info}");
     assert_eq!(info["inviteRequired"], false, "{info}");
     let (alice, mut a) = sign_up(&c, 0, "alice", None).await.unwrap();
@@ -116,7 +113,7 @@ async fn an_open_cluster_takes_anyone() {
     );
     let (org, token) = org_invite(&alice, &mut a).await;
     let (bob, _b) = sign_up(&c, 2, "bob", Some(&token)).await.unwrap();
-    let orgs = bob.get(&format!("orgs/{org}")).await.unwrap();
+    let orgs = bob.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(orgs["members"][account_of(&bob).await], "member", "{orgs}");
 }
 
@@ -127,7 +124,13 @@ async fn an_open_cluster_takes_anyone() {
 async fn an_invite_only_cluster_takes_invited_people() {
     let c = Cluster::start_with(3, |cfg| cfg.governance.sign_up = SignUp::Invite).await;
     let ops = ops(&c).await;
-    let info = c.client(1).get("sign-up").await.unwrap();
+    let info = c
+        .client(1)
+        .deployments()
+        .sign_up_public()
+        .await
+        .map(wire)
+        .unwrap();
     for (key, want) in [
         ("policy", json!("invite")),
         ("orgInvites", json!(true)),
@@ -145,7 +148,8 @@ async fn an_invite_only_cluster_takes_invited_people() {
     // Refused at begin: the passkey is never asked.
     let e = c
         .client(0)
-        .post("auth/passkey/register/begin", json!({ "name": "eve" }))
+        .auth()
+        .register_begin(Some("eve"), None, None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("SIGN_UP_REFUSED"), "{e}");
@@ -167,7 +171,7 @@ async fn an_invite_only_cluster_takes_invited_people() {
 
     let (org, token) = org_invite(&alice, &mut a).await;
     let (bob, _b) = sign_up(&c, 2, "bob", Some(&token)).await.unwrap();
-    let o = bob.get(&format!("orgs/{org}")).await.unwrap();
+    let o = bob.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(o["members"][account_of(&bob).await], "member", "{o}");
     refused(
         sign_up(&c, 0, "eve", Some(&token)).await,
@@ -178,18 +182,20 @@ async fn an_invite_only_cluster_takes_invited_people() {
     let _i = operator_invite(&ops, "sup_carol_000000000", 1).await;
     let client = c.client(0);
     let begin = client
-        .post(
-            "auth/passkey/register/begin",
-            json!({ "name": "eve", "invite": "sup_carol_000000000" }),
-        )
+        .auth()
+        .register_begin(Some("eve"), None, Some("sup_carol_000000000"))
         .await
+        .map(wire)
         .unwrap();
     let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
     let registration = Passkey::create(&mut pk, &begin["options"]);
     let e = client
-        .post(
-            "auth/passkey/register/finish",
-            json!({ "challengeId": begin["challengeId"], "registration": registration }),
+        .auth()
+        .register_finish(
+            begin["challengeId"].as_str().unwrap(),
+            registration,
+            None,
+            None,
         )
         .await
         .unwrap_err();
@@ -202,7 +208,13 @@ async fn an_invite_only_cluster_takes_invited_people() {
 async fn a_closed_cluster_takes_only_preauthorized_people() {
     let c = Cluster::start_with(3, |cfg| cfg.governance.sign_up = SignUp::Closed).await;
     let ops = ops(&c).await;
-    let info = c.client(0).get("sign-up").await.unwrap();
+    let info = c
+        .client(0)
+        .deployments()
+        .sign_up_public()
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(info["policy"], "closed");
     assert_eq!(info["orgInvites"], false);
     refused(sign_up(&c, 0, "eve", None).await, "no pre-authorization");
@@ -215,7 +227,7 @@ async fn a_closed_cluster_takes_only_preauthorized_people() {
 
     // The operator lists what it issued, never a token, and withdraws one.
     let _i = operator_invite(&ops, "sup_bob_00000000000", 1).await;
-    let listed = ops.get("ops/sign-up/invites").await.unwrap();
+    let listed = ops.ops().sign_up_invite_list().await.map(wire).unwrap();
     assert_eq!(listed["invites"].as_array().unwrap().len(), 1, "{listed}");
     assert!(!listed.to_string().contains("sup_bob"), "{listed}");
     let key = listed["invites"][0]["inviteKey"]
@@ -223,17 +235,15 @@ async fn a_closed_cluster_takes_only_preauthorized_people() {
         .unwrap()
         .to_owned();
     let _ok = ops
-        .delete_operator_signed(
-            &format!("ops/sign-up/invites/{key}"),
-            &harness::operator_sign,
-        )
+        .ops()
+        .sign_up_invite_revoke_delete(&key, Some(&harness::operator_sign))
         .await
         .unwrap();
     refused(
         sign_up(&c, 1, "bob", Some("sup_bob_00000000000")).await,
         "a withdrawn invite",
     );
-    let e = alice.get("ops/sign-up/invites").await.unwrap_err();
+    let e = alice.ops().sign_up_invite_list().await.unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
 }
 
@@ -246,7 +256,11 @@ async fn a_policy_change_needs_the_operators_signature() {
     let c = Cluster::start(3).await;
     let ops = ops(&c).await;
     let body = json!({ "policy": "invite" });
-    let e = ops.post("ops/sign-up", body.clone()).await.unwrap_err();
+    let e = ops
+        .transport()
+        .json(Request::new(Method::POST, "ops/sign-up").json(body.clone()))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
     let mut other = body.clone();
     other["operatorProof"] = {
@@ -256,13 +270,25 @@ async fn a_policy_change_needs_the_operators_signature() {
             ed25519_dalek::SigningKey::from_bytes(&[8; 32]).sign(&st.operator_message(&c.name));
         json!({ "nonce": st.nonce, "signature": hex::encode(sig.to_bytes()) })
     };
-    let e = ops.post("ops/sign-up", other).await.unwrap_err();
+    let e = ops
+        .transport()
+        .json(Request::new(Method::POST, "ops/sign-up").json(other))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("BAD_OPERATOR_SIGNATURE"), "{e}");
     // A person cannot change it.
     let (alice, _a) = sign_up(&c, 0, "alice", None).await.unwrap();
-    let e = alice.post("ops/sign-up", body.clone()).await.unwrap_err();
+    let e = alice
+        .transport()
+        .json(Request::new(Method::POST, "ops/sign-up").json(body.clone()))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
-    let e = alice.post("sign-up", body.clone()).await.unwrap_err();
+    let e = alice
+        .transport()
+        .json(Request::new(Method::POST, "sign-up").json(body.clone()))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
     // Logged without a signature (a node's own code): refused at apply.
     let forged = serde_json::to_value(SystemCmd::SetSignUp {
@@ -285,17 +311,36 @@ async fn a_policy_change_needs_the_operators_signature() {
         .await
         .unwrap();
     assert!(calimero_node::system::output(&out).is_err());
-    assert_eq!(c.client(1).get("sign-up").await.unwrap()["policy"], "open");
+    assert_eq!(
+        c.client(1)
+            .deployments()
+            .sign_up_public()
+            .await
+            .map(wire)
+            .unwrap()["policy"],
+        "open"
+    );
 
     let v = ops_signed(&ops, "ops/sign-up", body).await.unwrap();
     assert_eq!(v["governance"]["signUp"], "invite", "{v}");
     for i in 0..3 {
         assert_eq!(
-            c.client(i).get("sign-up").await.unwrap()["policy"],
+            c.client(i)
+                .deployments()
+                .sign_up_public()
+                .await
+                .map(wire)
+                .unwrap()["policy"],
             "invite"
         );
     }
-    let public = c.client(2).get("releases").await.unwrap();
+    let public = c
+        .client(2)
+        .public()
+        .releases_public()
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(public["governance"]["signUp"], "invite", "{public}");
     refused(sign_up(&c, 1, "bob", None).await, "invite only now");
 }
@@ -319,8 +364,10 @@ async fn a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here() 
     let shown = format!("alice · {} · {tag}", home.name);
     let begin = home
         .client(0)
-        .post("auth/passkey/register/begin", json!({ "name": "alice" }))
+        .auth()
+        .register_begin(Some("alice"), None, None)
         .await
+        .map(wire)
         .unwrap();
     let user = &begin["options"]["user"];
     assert_eq!(user["name"], shown, "{begin}");
@@ -353,7 +400,13 @@ async fn a_passkey_from_another_cluster_is_named_for_its_own_and_refused_here() 
 
 /// The tag this cluster's passkeys are named with (`GET /sign-up`, public).
 async fn passkey_tag(c: &Cluster) -> String {
-    let public = c.client(0).get("sign-up").await.unwrap();
+    let public = c
+        .client(0)
+        .deployments()
+        .sign_up_public()
+        .await
+        .map(wire)
+        .unwrap();
     let tag = public["passkeyTag"].as_str().unwrap_or_default().to_owned();
     assert_eq!(tag.len(), 4, "{public}");
     assert_eq!(public["cluster"], c.name.as_str(), "{public}");
@@ -370,14 +423,8 @@ async fn each_added_passkey_gets_a_user_handle_of_its_own() {
     let c = Cluster::start(1).await;
     let tag = passkey_tag(&c).await;
     let (alice, _pk) = sign_up(&c, 0, "alice", None).await.unwrap();
-    let first = alice
-        .post("auth/passkeys/add/begin", json!({}))
-        .await
-        .unwrap();
-    let second = alice
-        .post("auth/passkeys/add/begin", json!({}))
-        .await
-        .unwrap();
+    let first = alice.auth().passkey_add_begin().await.map(wire).unwrap();
+    let second = alice.auth().passkey_add_begin().await.map(wire).unwrap();
     let (a, b) = (&first["options"]["user"], &second["options"]["user"]);
     assert!(a["id"].as_str().is_some_and(|id| !id.is_empty()), "{first}");
     assert_ne!(a["id"], b["id"], "{first} {second}");

@@ -7,14 +7,6 @@
 //! token presented again after it was exchanged revokes its session.
 //! (`tests/cluster.rs` runs the harness's zero: every refresh exchanges.)
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use std::time::Duration;
 
 use calimero_client::{Client, Passkey, Session};
@@ -30,7 +22,7 @@ use serde_json::json;
 )]
 mod harness;
 
-use harness::{signed_up, Cluster, ORIGIN};
+use harness::{signed_up, wire, Cluster, ORIGIN};
 
 /// The hash the log keeps a refresh token under.
 fn refresh_hash(token: &str) -> String {
@@ -86,7 +78,10 @@ async fn a_young_refresh_token_refreshes_on_every_node_without_a_system_write() 
         assert_eq!(s.refresh_token, first.refresh_token, "round {round}");
         for i in 0..3 {
             let other = holding(&c, i, s.clone()).await;
-            assert_eq!(other.me().await.unwrap()["accountId"], json!(s.account_id));
+            assert_eq!(
+                other.auth().me().await.map(wire).unwrap()["accountId"],
+                json!(s.account_id)
+            );
         }
     }
     assert!(held_unexchanged(&c, &first.refresh_token).await);
@@ -104,24 +99,24 @@ async fn revocations_end_a_kept_refresh_token_on_every_node() {
     let _s = other.sign_in(&mut pk).await.unwrap();
     let kept = laptop.refresh().await.unwrap();
     assert!(held_unexchanged(&c, &kept.refresh_token).await);
-    let _ok = laptop.post("auth/logout", json!({})).await.unwrap();
+    let _ok = laptop.auth().logout().await.unwrap();
     for i in 0..3 {
         let holder = holding(&c, i, kept.clone()).await;
         assert!(refused(&holder).await, "signed out, node {i}");
     }
     let still = other.refresh().await.unwrap();
-    assert!(other.me().await.is_ok());
+    assert!(other.auth().me().await.is_ok());
 
     // Sign-out everywhere, made on node 3: every session of the account ends.
     let third = c.client(2);
     let _s = third.sign_in(&mut pk).await.unwrap();
     let thirds = third.refresh().await.unwrap();
-    let _ok = third.sign_out_everywhere().await.unwrap();
+    let _ok = third.auth().logout_all().await.unwrap();
     for i in 0..3 {
         for session in [&still, &thirds] {
             let holder = holding(&c, i, session.clone()).await;
             assert!(refused(&holder).await, "signed out everywhere, node {i}");
-            let e = holder.me().await.unwrap_err();
+            let e = holder.auth().me().await.unwrap_err();
             assert!(e.to_string().starts_with("401"), "node {i}: {e}");
         }
     }
@@ -136,7 +131,8 @@ async fn revocations_end_a_kept_refresh_token_on_every_node() {
     let phones = phone.refresh().await.unwrap();
     assert!(held_unexchanged(&c, &phones.refresh_token).await);
     let _ok = device
-        .delete_confirmed(&format!("auth/passkeys/{phone_cred}"), &mut pk)
+        .auth()
+        .passkey_remove(&phone_cred, Some(&mut pk))
         .await
         .unwrap();
     for i in 0..3 {
@@ -145,7 +141,7 @@ async fn revocations_end_a_kept_refresh_token_on_every_node() {
     }
     let _s = device.refresh().await.unwrap();
     assert!(
-        device.me().await.is_ok(),
+        device.auth().me().await.is_ok(),
         "the other passkey's session stays"
     );
 }
@@ -155,10 +151,12 @@ async fn revocations_end_a_kept_refresh_token_on_every_node() {
 async fn a_recovery_ends_a_kept_refresh_token() {
     let c = Cluster::start_with(3, |cfg| cfg.refresh_rotate_after = REFRESH_ROTATE_AFTER).await;
     let (alice, mut lost) = signed_up(&c, 0, "alice").await;
-    let account = alice.me().await.unwrap()["accountId"].clone();
+    let account = alice.auth().me().await.map(wire).unwrap()["accountId"].clone();
     let code = alice
-        .post_confirmed("auth/recovery", json!({}), &mut lost)
+        .auth()
+        .recovery_create(Some(&mut lost))
         .await
+        .map(wire)
         .unwrap()["code"]
         .as_str()
         .unwrap()
@@ -169,15 +167,15 @@ async fn a_recovery_ends_a_kept_refresh_token() {
     let rescuer = c.client(1);
     let mut laptop = SoftAuthenticator::new("localhost", ORIGIN);
     let begin = rescuer
-        .post("auth/recovery/begin", json!({ "code": code }))
+        .auth()
+        .account_recovery_begin(&code)
         .await
+        .map(wire)
         .unwrap();
     let registration = laptop.create(&begin["options"]);
     let _started = rescuer
-        .post(
-            "auth/recovery/start",
-            json!({ "challengeId": begin["challengeId"], "code": code, "registration": registration }),
-        )
+        .auth()
+        .account_recovery_start(begin["challengeId"].as_str().unwrap(), &code, registration)
         .await
         .unwrap();
     let ms = i64::try_from(RECOVERY_DELAY_SECS * 1000).unwrap();
@@ -186,12 +184,10 @@ async fn a_recovery_ends_a_kept_refresh_token() {
     }
     let _finished = c
         .client(2)
-        .post_confirmed(
-            "auth/recovery/finish",
-            json!({ "accountId": account }),
-            &mut laptop,
-        )
+        .auth()
+        .account_recovery_finish(Some(account.as_str().unwrap()), Some(&mut laptop))
         .await
+        .map(wire)
         .unwrap();
     for i in 0..3 {
         let holder = holding(&c, i, kept.clone()).await;
@@ -216,7 +212,7 @@ async fn an_old_refresh_token_is_exchanged_and_its_reuse_revokes_the_session() {
     let thief = holding(&c, 1, young).await;
     let e = thief.refresh().await.unwrap_err().to_string();
     assert!(e.contains("already used"), "{e}");
-    let e = owner.me().await.unwrap_err().to_string();
+    let e = owner.auth().me().await.unwrap_err().to_string();
     assert!(e.starts_with("401"), "{e}");
     assert!(refused(&owner).await, "the new token went with the session");
 }

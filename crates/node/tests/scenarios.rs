@@ -14,14 +14,6 @@
 //! are reported ignored unless `--include-ignored` / `--ignored` (or `SCENARIO_INCLUDE_SKIPPED=1`).
 //! `SCENARIO_FILES=a.json,b.json` runs those cluster scenario files instead of the discovered ones.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 #[path = "harness/cluster.rs"]
 #[allow(dead_code)]
 mod cluster;

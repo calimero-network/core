@@ -70,6 +70,37 @@
   and with none `codegen` fails asking for `--name`. `--name`, a service or a
   bundle's package still win.
 
+### Removed
+
+- **`calimero-client`'s hand-written route methods** (breaking). The 77 methods
+  deprecated for the generated route layer are gone, with the types and helpers
+  only they used: `CallResult`, `ViewResult`, `Consistency` and
+  `package_origins_path`. Each one's replacement is the route's generated method
+  on its group's accessor, named as its deprecation note named it:
+  - `client.call(app, m, args, key)` becomes
+    `client.apps().call(app, m, Some(args), key, None)`, and `call_confirmed`
+    passes the passkey as the last argument.
+  - `client.view(app, m, args, Consistency::Stale { min_index })` becomes
+    `client.apps().view(app, m, Some(args), Some(ViewsRequestConsistency::Stale), Some(min_index))`.
+  - `client.create_app(..)` and `create_app_from_package(..)` become
+    `client.apps().create(AppCreateRequest { .. })`, which answers `app_id`.
+  - `client.upload_bundle(wasm)` becomes `client.packages().bundle_put(wasm)`,
+    which answers `hash`.
+  - `client.me()` becomes `client.auth().me()`.
+  - Step-up and operator routes take `passkey` and `operator` as their last
+    arguments: `post_confirmed`, `delete_confirmed` and the operator-signed
+    variants.
+  - A raw route goes through `client.transport()`, with
+    `.json(Request)`, `.confirmed(Request, passkey)` or
+    `.approved(Request, passkey, operator)`. This replaces `post`, `get`,
+    `put`, `delete` and `delete_with_body` where no generated method fits.
+  - `get_text("ops/metrics")` becomes `client.ops().metrics()`.
+
+  Answers are the routes' typed structs. Every field the node sent is kept,
+  named or in `extra`, so `serde_json::to_value(answer)` is the JSON the node
+  sent. The client's flows (`sign_up*`, `sign_in*`, `add_passkey`,
+  `start_recovery`, `verify_app_cluster`, `upload_file`, `events`,
+  `presence_stream`) are unchanged.
 ### Fixed
 
 - **Entries apply under this release's rules from a mark on.** Commands carry

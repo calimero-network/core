@@ -161,9 +161,12 @@ generate theirs, and checked in under `src/generated/` (never edited by hand):
 The hand-written flows are built on the generated methods: `sign_up*`,
 `sign_in*`, `add_passkey`, `start_recovery` (passkey and recovery ceremonies),
 `verify_app_cluster` (attestation), `upload_file` (`files.rs`), and the event
-streams. The route methods written by hand before (`Client::get`, `post`,
-`call`, `create_app`, ...) are `#[deprecated]`, each naming its replacement, and
-go once `crates/node/tests` and `crates/merod/tests` stop calling them.
+streams. Every other route is a generated method; a route no method fits (an
+`internal/*` route, or a request a test makes malformed on purpose) is a raw
+`Request` through `client.transport()` (`json`, `confirmed`, `approved`). The
+node's tests read a typed answer as JSON with `wire` and write a typed request
+as JSON with `typed` (`crates/node/tests/harness/cluster.rs`,
+`tests/common/mod.rs`), which panics if the type would drop any of it.
 
 A route change regenerates the document and then this layer, in the same change:
 

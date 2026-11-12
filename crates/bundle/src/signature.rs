@@ -15,6 +15,10 @@ use sha2::{Digest, Sha256};
 /// Multicodec indicator for ed25519-pub (0xed01, varint encoded).
 const ED25519_PUB_MULTICODEC: [u8; 2] = [0xed, 0x01];
 
+/// The signerId of `mero-sign --dev`'s well-known key. Its seed is public, so
+/// anyone can sign as it: a production node refuses packages it signed.
+pub const DEV_SIGNER_ID: &str = "did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd";
+
 /// Result of manifest signature verification.
 #[derive(Debug, Clone)]
 pub struct ManifestVerification {
