@@ -79,7 +79,7 @@ NOT_COVERED = [
     ("Blobs and files", "Revoking a published blob's grants (`/blobs/{id}/revoke`)",
      "not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow"),
     ("Pipelines", "A pipeline run in flight across the roll",
-     "the engine ships in 1.0.0-rc.18, after the pinned release, so the case is seeded on the rolled cluster; "
+     "the engine ships in 1.0.0-rc.19, after the pinned release, so the case is seeded on the rolled cluster; "
      "a run there ends in seconds, and the suite cannot hold one open without a flaky timing race"),
     ("Pipelines", "Live pipeline events (`meroctl pipeline watch`)",
      "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "

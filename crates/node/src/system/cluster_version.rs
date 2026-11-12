@@ -142,7 +142,7 @@ impl Feature {
             | Self::TeamMembersBatch
             | Self::AppTeamChildTeams => "1.0.0-rc.16",
             Self::PriceTable | Self::ComputeOnly | Self::Pipelines | Self::NamedPool => {
-                "1.0.0-rc.18"
+                "1.0.0-rc.19"
             }
         }
     }
@@ -495,7 +495,7 @@ mod tests {
     const RC14: &str = "1.0.0-rc.14";
     const RC15: &str = "1.0.0-rc.15";
     const RC16: &str = "1.0.0-rc.16";
-    const RC18: &str = "1.0.0-rc.18";
+    const RC19: &str = "1.0.0-rc.19";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -811,7 +811,7 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        let (older, engine): (Vec<_>, Vec<_>) = FEATURES.iter().partition(|f| f.since() != RC18);
+        let (older, engine): (Vec<_>, Vec<_>) = FEATURES.iter().partition(|f| f.since() != RC19);
         for feature in older {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -826,11 +826,11 @@ mod tests {
         assert!(nodes[0].machine.state.org_quotas.contains_key("org"));
 
         for n in &mut nodes {
-            n.release = RC18;
+            n.release = RC19;
         }
         let raise = SystemCmd::SetClusterVersion {
-            version: RC18.into(),
-            nodes: (1..=3).map(|id| (id, RC18.to_owned())).collect(),
+            version: RC19.into(),
+            nodes: (1..=3).map(|id| (id, RC19.to_owned())).collect(),
         };
         propose(&mut nodes, &raise).unwrap();
         for feature in engine {
@@ -1019,7 +1019,7 @@ mod tests {
             Feature::NamedPool,
         ] {
             assert_eq!(uses(f).features(), [f]);
-            assert_eq!(f.since(), RC18, "rc.17 was cut without the pipeline engine");
+            assert_eq!(f.since(), RC19, "rc.18 was cut without the pipeline engine");
         }
         let mut run = json!({
             "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1, "memory_mib": 1,
