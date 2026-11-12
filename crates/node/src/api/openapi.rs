@@ -1177,6 +1177,60 @@ fn operations() -> Vec<Op> {
             .about("Its plaintext size and SHA-256, never its key.")
             .ok("{ blobId: string, id: string, size: uint, sha256: string }")
             .errors(&[(404, "NOT_FOUND")]),
+        post("/apps/{app}/files/{id}/export", "exports::export", SignedIn, "Export a sealed file's key")
+            .about("The owner and the organization's members. `recipient` is an X25519 public key (64 hex characters); the file's data key comes back wrapped to it, with the file's `segments` count and `ephemeral` public key. The node never answers plaintext or a key in the clear. 30 a minute per account.")
+            .json::<super::exports::ExportBody>("{ recipient: string }")
+            .ok("{ app: string, id: string, size: uint, sha256: string, segments: uint[], ephemeral: string, wrapped: string }")
+            .errors(&[(400, "BAD_RECIPIENT"), (400, "BAD_REQUEST"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (429, "TOO_MANY_EXPORTS")]),
+        get("/apps/{app}/files/{id}/segments/{k}", "exports::segment", SignedIn, "One segment of a sealed file")
+            .about("Segment `k` (from 0) of the file's ciphertext, raw; the owner and the organization's members.")
+            .any_bytes("the segment's ciphertext, `application/octet-stream`")
+            .errors(&[(400, "BAD_REQUEST"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_SUCH_SEGMENT")]),
+        post("/pipelines/validate", "pipelines::validate", SignedIn, "Validate a pipeline")
+            .about("Every problem of `source`; with `package` and `version` (both, a release the caller sees) also against that release's methods, modules and the cluster's pools. Writes nothing.")
+            .json::<super::pipelines::ValidateBody>("{ source: string, package?: string, version?: string }")
+            .ok("{ ok: bool, errors: { path: string, code: string, message: string }[], pipeline?: any, worstCaseFuel?: string, worstCaseCost?: string }")
+            .errors(&[(400, "BAD_RELEASE"), (404, "NOT_FOUND")]),
+        get("/packages/{package}/{version}/pipelines", "package_pipelines", SignedIn, "A release's pipelines")
+            .about("The pipelines the release registers, by name: `hash`, `worstCaseFuel` (a decimal string), the `modules` they pin and the canonical `pipeline`. `404` for a release the caller may not see.")
+            .ok("{ [string]: { hash: string, worstCaseFuel: any, modules: any, pipeline: any } }")
+            .errors(&[(404, "NOT_FOUND")]),
+        post("/apps/{app}/pipelines/{name}/estimate", "pipelines::estimate_run", SignedIn, "Estimate a pipeline run")
+            .about("The owner and the organization's members. Runs, fuel and cost of a run of a pipeline the app's release registers, for `inputs` (file ids, only counted) or `counts`, not both; numbers as decimal strings.")
+            .json::<super::pipelines::EstimateBody>("{ inputs?: { [string]: string[] }, counts?: { [string]: uint }, params?: { [string]: any } }")
+            .ok("{ steps: { [string]: { runs: string, fuel: string, cost?: string } }, fuel: string, cost?: string, priceVersion?: uint }")
+            .errors(&[(400, "BAD_INPUTS"), (400, "BAD_PARAMS"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_SUCH_PIPELINE")]),
+        post("/apps/{app}/pipelines/{name}/runs", "pipelines::start", SignedIn, "Start a pipeline run")
+            .about("The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.")
+            .json::<super::pipelines::StartBody>("{ inputs?: { [string]: string[] }, params?: { [string]: any }, maxCost?: string }")
+            .ok("{ run: string, worstCase?: string }")
+            .errors(&[(400, "BAD_INPUTS"), (400, "BAD_MAX_COST"), (400, "BAD_PARAMS"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_SUCH_PIPELINE"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (410, "OUTPUT_EXPIRED"), (422, "PIPELINES_NEED_ONE_SERVICE"), (429, "TOO_MANY_PIPELINE_RUNS")]),
+        get("/apps/{app}/pipeline-runs", "pipelines::list", AppAccess, "An app's pipeline runs")
+            .about("The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.")
+            .query::<super::pipelines::ListQuery>("{ limit?: string }")
+            .ok("{ [string]: any }")
+            .errors(&[(400, "BAD_LIMIT"), (404, "NOT_FOUND")]),
+        get("/apps/{app}/pipeline-runs/{run}", "pipelines::get", AppAccess, "One pipeline run")
+            .about("Its record: `state`, `version`, `hash`, `computeBundle`, `inputs`, `params`, per-step `status`, `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap). Sizes, hashes and results only for callers who may list the app's files.")
+            .ok("{ [string]: any }")
+            .errors(&[(404, "NOT_FOUND")]),
+        get("/apps/{app}/pipeline-runs/{run}/events", "pipeline_events::events", AppAccess, "A pipeline run as server-sent events")
+            .about("Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.")
+            .events("a `snapshot`, then `run` and `step` per change, then `end`, and the stream closes")
+            .errors(&[(404, "NOT_FOUND"), (429, "TOO_MANY_SUBSCRIBERS")]),
+        get("/apps/{app}/pipeline-runs/{run}/receipt", "pipeline_receipt::receipt", SignedIn, "A pipeline run's receipt")
+            .about("The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key.")
+            .ok("{ receipt: any, node: string, signature: string }")
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RUN_NOT_ENDED")]),
+        post("/apps/{app}/pipeline-runs/{run}/cancel", "pipelines::cancel", SignedIn, "Cancel a pipeline run")
+            .about("The owner and the organization's members. Its pending steps end cancelled and its running steps' runs stop.")
+            .ok("{ run: string }")
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
+        post("/apps/{app}/pipeline-runs/{run}/retry", "pipelines::retry", SignedIn, "Retry a pipeline run")
+            .about("The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.")
+            .json::<super::pipelines::RetryBody>("{ limits?: { [string]: { fuel?: uint, memoryMib?: uint, wallSecs?: uint } }, maxCost?: string }")
+            .ok("{ run: string, retryOf: string, worstCase?: string }")
+            .errors(&[(400, "BAD_LIMITS"), (400, "BAD_MAX_COST"), (400, "LIMIT_EXCEEDS_CAP"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (409, "STILL_RUNNING"), (410, "OUTPUT_EXPIRED"), (429, "TOO_MANY_PIPELINE_RUNS")]),
         get("/apps/{app}/xcalls", "app_xcalls", SignedIn, "An app's cross-app calls")
             .about("The owner or an organization admin: how many calls wait in its outbox for delivery (`pending`, a count), and its dead letters, oldest first (`atMs`: the entry time it was dead-lettered at, Unix milliseconds).")
             .ok("{ pending: uint, deadLetters: #DeadLetter[] }")
@@ -1538,6 +1592,15 @@ fn operations() -> Vec<Op> {
             .ok("{}")
             .operator()
             .errors(&[(409, "POOL_IN_USE"), (409, "UPGRADE_PENDING")]),
+        get("/ops/prices", "ops_prices_get", Ops, "The price table")
+            .about("In micro-units of the billing currency; `{}` until one is set.")
+            .ok("{ version?: uint, fuelPerVcpuSecond?: uint, vcpuSecond?: uint, gibSecond?: uint, connectorGib?: uint, storageGibMonth?: uint, egressGib?: uint }"),
+        post("/ops/prices", "ops_prices_set", Ops, "Set the price table")
+            .about("Signed over `cluster / __set_price_table / { table }`; `PRICE_VERSION` unless `version` is the current one plus one (1 for the first), `BAD_PRICES` for a zero `fuelPerVcpuSecond`.")
+            .json::<super::PricesBody>("{ table: { version: uint, fuelPerVcpuSecond: uint, vcpuSecond: uint, gibSecond: uint, connectorGib: uint, storageGibMonth: uint, egressGib: uint }, operatorProof?: #OperatorProof }")
+            .ok("{}")
+            .operator()
+            .errors(&[(400, "BAD_PRICES"), (409, "PRICE_VERSION"), (409, "UPGRADE_PENDING")]),
         // ---------------------------------------------------------------- the cluster's owner
         post("/sign-up", "sign_up_set", AccountHolder, "Set the sign-up policy")
             .about("The cluster's owner, once named, with a passkey (`412` first).")
@@ -2017,6 +2080,10 @@ mod tests {
         ("account_proof::", include_str!("account_proof.rs")),
         ("crate::consent_page::", include_str!("../consent_page.rs")),
         ("restore::", include_str!("restore.rs")),
+        ("exports::", include_str!("exports.rs")),
+        ("pipelines::", include_str!("pipelines.rs")),
+        ("pipeline_events::", include_str!("pipeline_events.rs")),
+        ("pipeline_receipt::", include_str!("pipeline_receipt.rs")),
     ];
 
     /// `(method, path, handler)` of every `.route(..)` in `router`.
