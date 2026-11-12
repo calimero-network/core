@@ -5,16 +5,8 @@
 //! proof itself. Only a passkey session gets one: no API key, no anonymous
 //! caller; and only the operator reads the keys.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use calimero_client::attest::AccountProof;
-use calimero_client::{Client, Error};
+use calimero_client::{Client, Error, Request};
 use serde_json::{json, Value};
 
 #[path = "harness/cluster.rs"]
@@ -24,7 +16,8 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{signed_up, Cluster};
+use harness::{signed_up, typed, wire, Cluster};
+use reqwest::Method;
 
 const NONCE: &str = "4f2b9c0d1e3a5b7c9d0e1f2a3b4c5d6e";
 
@@ -45,17 +38,16 @@ fn status(e: &Error) -> u16 {
 async fn a_nodes_account_proof_verifies_under_the_receipt_key_the_operator_reads() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
-    let account = alice.me().await.unwrap()["accountId"]
+    let account = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
 
     let answer = alice
-        .post(
-            "auth/account-proof",
-            json!({ "nonce": NONCE, "audience": "mdma" }),
-        )
+        .auth()
+        .account_proof_prove(NONCE, "mdma")
         .await
+        .map(wire)
         .unwrap();
     let proof: AccountProof = serde_json::from_value(answer).unwrap();
     let s = &proof.statement;
@@ -71,8 +63,10 @@ async fn a_nodes_account_proof_verifies_under_the_receipt_key_the_operator_reads
     assert_eq!(s.node, 1);
     let key = ops(&c, 2)
         .await
-        .get(&format!("ops/nodes/{}/receipt-key", s.node))
+        .ops()
+        .receipt_key(&s.node.to_string())
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(key["node"], json!(s.node));
     let key: [u8; 32] = hex::decode(key["key"].as_str().unwrap())
@@ -112,13 +106,18 @@ async fn a_nodes_account_proof_verifies_under_the_receipt_key_the_operator_reads
             "BAD_AUDIENCE",
         ),
     ] {
-        let e = alice.post("auth/account-proof", body).await.unwrap_err();
+        let e = alice
+            .transport()
+            .json(Request::new(Method::POST, "auth/account-proof").json(body))
+            .await
+            .unwrap_err();
         assert_eq!(e.code(), Some(code), "{e}");
     }
     let refused = alice
-        .post(
-            "auth/account-proof",
-            json!({ "nonce": NONCE, "audience": "mdma", "account": "someone-else" }),
+        .transport()
+        .json(
+            Request::new(Method::POST, "auth/account-proof")
+                .json(json!({ "nonce": NONCE, "audience": "mdma", "account": "someone-else" })),
         )
         .await
         .is_err();
@@ -127,41 +126,37 @@ async fn a_nodes_account_proof_verifies_under_the_receipt_key_the_operator_reads
     // Only a passkey session vouches for its account.
     let anonymous = c.client(0);
     let e = anonymous
-        .post(
-            "auth/account-proof",
-            json!({ "nonce": NONCE, "audience": "mdma" }),
-        )
+        .auth()
+        .account_proof_prove(NONCE, "mdma")
         .await
         .unwrap_err();
     assert_eq!(status(&e), 401, "{e}");
     let (_id, api_key) = alice
-        .create_api_key(json!({ "label": "ci" }), &mut alice_pk)
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), Some(&mut alice_pk))
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
     let keyed = c.client(0);
     keyed.use_api_key(&api_key).await;
     let e = keyed
-        .post(
-            "auth/account-proof",
-            json!({ "nonce": NONCE, "audience": "mdma" }),
-        )
+        .auth()
+        .account_proof_prove(NONCE, "mdma")
         .await
         .unwrap_err();
     assert_eq!(status(&e), 403, "an API key is not the person: {e}");
 
     // Only the operator reads receipt keys, and only of the cluster's nodes.
-    let e = alice.get("ops/nodes/1/receipt-key").await.unwrap_err();
+    let e = alice.ops().receipt_key("1").await.unwrap_err();
     assert!(matches!(status(&e), 401 | 403), "{e}");
-    let e = ops(&c, 0)
-        .await
-        .get("ops/nodes/99/receipt-key")
-        .await
-        .unwrap_err();
+    let e = ops(&c, 0).await.ops().receipt_key("99").await.unwrap_err();
     assert_eq!(status(&e), 404, "{e}");
     let own: Value = ops(&c, 0)
         .await
-        .get("ops/nodes/1/receipt-key")
+        .ops()
+        .receipt_key("1")
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(own["node"], json!(1));
 }

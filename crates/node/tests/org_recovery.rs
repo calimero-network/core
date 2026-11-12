@@ -6,15 +6,8 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
-use calimero_client::Client;
+use calimero_client::types::OrgRole;
+use calimero_client::{Client, Request};
 use calimero_identity::recovery::{recovery_public, sign_recovery};
 use calimero_node::system::SystemCmd;
 use calimero_node::types::RECOVERY_DELAY_SECS;
@@ -27,10 +20,11 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, signed_up, Cluster};
+use harness::{kv_wasm, signed_up, typed, wire, Cluster};
+use reqwest::Method;
 
 async fn account_of(client: &Client) -> String {
-    client.me().await.unwrap()["accountId"]
+    client.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -61,35 +55,35 @@ async fn an_owner_who_lost_every_passkey_recovers_the_org() {
     let bob_id = account_of(&bob).await;
     let seed = calimero_identity::recovery::new_recovery_seed();
     let org = alice
-        .post(
-            "orgs",
-            json!({ "name": "Acme", "recoveryKey": recovery_public(&seed) }),
-        )
+        .orgs()
+        .create("Acme", Some(&recovery_public(&seed)))
         .await
+        .map(wire)
         .unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let _ = alice
-        .post_confirmed(
-            &format!("orgs/{org}/members"),
-            json!({ "account": bob_id, "role": "member" }),
-            &mut apk,
-        )
+        .orgs()
+        .set_member(&org, &bob_id, OrgRole::Member, Some(&mut apk))
         .await
         .unwrap();
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app = alice
-        .post(
-            "apps",
-            json!({ "name": "kv", "bundle": bundle, "org": org }),
-        )
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle, "org": org })))
+        .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let o = bob.get(&format!("orgs/{org}")).await.unwrap();
+    let o = bob.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(o["recovery"]["publicKey"], json!(recovery_public(&seed)));
     assert_eq!(o["recovery"]["pending"], Value::Null);
 
@@ -104,41 +98,49 @@ async fn an_owner_who_lost_every_passkey_recovers_the_org() {
         RECOVERY_DELAY_SECS
     );
     // Every member sees it.
-    let o = bob.get(&format!("orgs/{org}")).await.unwrap();
+    let o = bob.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(o["recovery"]["pending"]["account"], json!(again_id));
     assert_eq!(o["recovery"]["pending"]["readyAt"], json!(ready));
 
     // Not before the delay; not for anyone else.
     let e = again
-        .finish_recovery(&org, &mut again_pk)
+        .orgs()
+        .recovery_finish(&org, Some(&mut again_pk))
         .await
         .unwrap_err();
     assert_eq!(code(&e), Some("RECOVERY_NOT_READY"), "{e}");
     advance(&c, RECOVERY_DELAY_SECS);
     let (carol, mut cpk) = signed_up(&c, 0, "carol").await;
-    let e = carol.finish_recovery(&org, &mut cpk).await.unwrap_err();
+    let e = carol
+        .orgs()
+        .recovery_finish(&org, Some(&mut cpk))
+        .await
+        .unwrap_err();
     assert_eq!(code(&e), Some("NOT_FOUND"), "{e}");
 
-    let done = again.finish_recovery(&org, &mut again_pk).await.unwrap();
+    let done = again
+        .orgs()
+        .recovery_finish(&org, Some(&mut again_pk))
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(done["previousOwners"], json!([account_of(&alice).await]));
-    let o = again.get(&format!("orgs/{org}")).await.unwrap();
+    let o = again.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(o["members"][&again_id], json!("owner"));
     assert_eq!(o["members"][&bob_id], json!("member"));
     assert!(o["members"].get(account_of(&alice).await).is_none());
     assert_eq!(o["recovery"]["pending"], Value::Null);
     // The app moved with the organization; the old account reaches neither.
-    let a = again.get(&format!("apps/{app}")).await.unwrap();
+    let a = again.apps().get(&app).await.map(wire).unwrap();
     assert_eq!(a["owner"], json!(again_id));
-    assert!(alice.get(&format!("orgs/{org}")).await.is_err());
-    assert!(alice.get(&format!("apps/{app}")).await.is_err());
+    assert!(alice.orgs().get(&org).await.is_err());
+    assert!(alice.apps().get(&app).await.is_err());
     // The new owner acts for the organization with the new passkey.
     let _ = again
-        .post_confirmed(
-            &format!("orgs/{org}/members"),
-            json!({ "account": bob_id, "role": "admin" }),
-            &mut again_pk,
-        )
+        .orgs()
+        .set_member(&org, &bob_id, OrgRole::Admin, Some(&mut again_pk))
         .await
+        .map(wire)
         .unwrap();
 }
 
@@ -152,21 +154,20 @@ async fn a_wrong_seed_a_non_owner_a_rotated_seed_and_a_node_recover_nothing() {
     let (bob, mut bpk) = signed_up(&c, 1, "bob").await;
     let bob_id = account_of(&bob).await;
     // Created without a key, as every organization before this change.
-    let org = alice.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let org = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let _ = alice
-        .post_confirmed(
-            &format!("orgs/{org}/members"),
-            json!({ "account": bob_id, "role": "admin" }),
-            &mut apk,
-        )
+        .orgs()
+        .set_member(&org, &bob_id, OrgRole::Admin, Some(&mut apk))
         .await
         .unwrap();
     assert!(alice
-        .get(&format!("orgs/{org}"))
+        .orgs()
+        .get(&org)
         .await
+        .map(wire)
         .unwrap()
         .get("recovery")
         .is_none());
@@ -176,20 +177,20 @@ async fn a_wrong_seed_a_non_owner_a_rotated_seed_and_a_node_recover_nothing() {
 
     // Only the owner sets it, with a passkey: an admin cannot.
     let e = bob
-        .set_recovery_key(&org, Some(&recovery_public(&seed)), &mut bpk)
+        .orgs()
+        .recovery_set(&org, Some(Some(&recovery_public(&seed))), Some(&mut bpk))
         .await
         .unwrap_err();
     assert_eq!(code(&e), Some("FORBIDDEN"), "{e}");
     let e = alice
-        .post(
-            &format!("orgs/{org}/recovery"),
-            json!({ "publicKey": recovery_public(&seed) }),
-        )
+        .orgs()
+        .recovery_set(&org, Some(Some(&recovery_public(&seed))), None)
         .await
         .unwrap_err();
     assert_eq!(code(&e), Some("CONFIRM_REQUIRED"), "{e}");
     let _ = alice
-        .set_recovery_key(&org, Some(&recovery_public(&seed)), &mut apk)
+        .orgs()
+        .recovery_set(&org, Some(Some(&recovery_public(&seed))), Some(&mut apk))
         .await
         .unwrap();
 
@@ -201,15 +202,30 @@ async fn a_wrong_seed_a_non_owner_a_rotated_seed_and_a_node_recover_nothing() {
     assert_eq!(code(&e), Some("WRONG_RECOVERY_KEY"), "{e}");
     let nonce = "n-1";
     let signed = json!({ "nonce": nonce, "signature": sign_recovery(&seed, &org, &bob_id, nonce) });
-    let start = format!("orgs/{org}/recovery/start");
-    let _ = bob.post(&start, signed.clone()).await.unwrap();
+    let _ = bob
+        .transport()
+        .json(Request::new(Method::POST, format!("orgs/{org}/recovery/start")).json(signed.clone()))
+        .await
+        .unwrap();
     let e = bob.start_recovery(&org, &bob_id, &seed).await.unwrap_err();
     assert_eq!(code(&e), Some("RECOVERY_PENDING"), "{e}");
 
     // Only the owner cancels; the cancelled signature does not start again.
-    assert!(bob.cancel_recovery(&org, &mut bpk).await.is_err());
-    let _ = alice.cancel_recovery(&org, &mut apk).await.unwrap();
-    let e = bob.post(&start, signed).await.unwrap_err();
+    assert!(bob
+        .orgs()
+        .recovery_cancel(&org, Some(&mut bpk))
+        .await
+        .is_err());
+    let _ = alice
+        .orgs()
+        .recovery_cancel(&org, Some(&mut apk))
+        .await
+        .unwrap();
+    let e = bob
+        .orgs()
+        .recovery_start(&org, nonce, &sign_recovery(&seed, &org, &bob_id, nonce))
+        .await
+        .unwrap_err();
     assert_eq!(code(&e), Some("REJECTED"), "{e}");
 
     // A node logging a start the seed signed for someone else, or a finish
@@ -236,14 +252,23 @@ async fn a_wrong_seed_a_non_owner_a_rotated_seed_and_a_node_recover_nothing() {
     // Rotation cancels the recovery under way and retires the old seed.
     let new_seed = [7_u8; 32];
     let _ = alice
-        .set_recovery_key(&org, Some(&recovery_public(&new_seed)), &mut apk)
+        .orgs()
+        .recovery_set(
+            &org,
+            Some(Some(&recovery_public(&new_seed))),
+            Some(&mut apk),
+        )
         .await
         .unwrap();
-    let e = bob.finish_recovery(&org, &mut bpk).await.unwrap_err();
+    let e = bob
+        .orgs()
+        .recovery_finish(&org, Some(&mut bpk))
+        .await
+        .unwrap_err();
     assert_eq!(code(&e), Some("NOT_FOUND"), "{e}");
     let e = bob.start_recovery(&org, &bob_id, &seed).await.unwrap_err();
     assert_eq!(code(&e), Some("WRONG_RECOVERY_KEY"), "{e}");
-    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    let o = alice.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(o["members"][account_of(&alice).await], json!("owner"));
     assert_eq!(
         o["recovery"]["publicKey"],
@@ -251,7 +276,12 @@ async fn a_wrong_seed_a_non_owner_a_rotated_seed_and_a_node_recover_nothing() {
     );
 
     // Removing the key: nothing to recover with.
-    let _ = alice.set_recovery_key(&org, None, &mut apk).await.unwrap();
+    let _ = alice
+        .orgs()
+        .recovery_set(&org, Some(None), Some(&mut apk))
+        .await
+        .map(wire)
+        .unwrap();
     let e = bob
         .start_recovery(&org, &bob_id, &new_seed)
         .await

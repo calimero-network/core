@@ -8,19 +8,11 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use calimero_client::Client;
+use calimero_client::{Client, Request};
 use calimero_node::system::{Deployers, Deployments, SystemCmd};
 use serde_json::{json, Value};
 
@@ -31,7 +23,8 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, ops_signed, signed_up, Cluster, OPERATOR_SEED};
+use harness::{kv_wasm, ops_signed, signed_up, typed, wire, Cluster, OPERATOR_SEED};
+use reqwest::Method;
 
 /// A signed single-service `.mpk`, the shape `mero-sign` signs.
 fn mpk(package: &str, version: &str, wasm: &[u8]) -> Vec<u8> {
@@ -139,7 +132,7 @@ impl Registry {
 
 /// The client's account id.
 async fn account_of(client: &Client) -> String {
-    client.me().await.unwrap()["accountId"]
+    client.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -232,22 +225,35 @@ async fn only_granted_accounts_install_on_a_granted_cluster() {
     // No grant: refused before any work, through every way in.
     refused(
         &alice
-            .install_package("com.test.kv", "1.0.0")
+            .packages()
+            .install("com.test.kv", "1.0.0")
             .await
             .unwrap_err(),
     );
     assert_eq!(registry.hits(), 0, "refused before the registry is asked");
     refused(
         &alice
-            .upload_package(mpk("com.test.up", "1.0.0", &kv_wasm()))
+            .packages()
+            .upload(mpk("com.test.up", "1.0.0", &kv_wasm()))
             .await
             .unwrap_err(),
     );
-    refused(&alice.upload_bundle(kv_wasm()).await.unwrap_err());
     refused(
         &alice
-            .create_app_from_package("kv", "com.test.kv", Some("1.0.0"), None, json!({}))
+            .packages()
+            .bundle_put(kv_wasm())
             .await
+            .map(|b| b.hash)
+            .unwrap_err(),
+    );
+    refused(
+        &alice
+            .apps()
+            .create(typed(
+                json!({ "name": "kv", "package": "com.test.kv", "version": "1.0.0" }),
+            ))
+            .await
+            .map(|a| a.app_id)
             .unwrap_err(),
     );
     assert_eq!(registry.hits(), 0);
@@ -277,60 +283,105 @@ async fn only_granted_accounts_install_on_a_granted_cluster() {
     // The operator's grant: the token alone gets the bytes to sign; another
     // key's signature is refused; the operator's applies, once.
     let body = json!({ "deployer": { "account": alice_id } });
-    let e = ops.post("ops/deployers", body.clone()).await.unwrap_err();
+    let e = ops
+        .transport()
+        .json(Request::new(Method::POST, "ops/deployers").json(body.clone()))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
     let args = json!({ "deployer": { "account": alice_id }, "until": null });
     let mut other = body.clone();
     other["operatorProof"] = operator_proof(&c, [8; 32], "__grant_deployer", &args);
-    let e = ops.post("ops/deployers", other).await.unwrap_err();
+    let e = ops
+        .transport()
+        .json(Request::new(Method::POST, "ops/deployers").json(other))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("BAD_OPERATOR_SIGNATURE"), "{e}");
     let mut signed = body.clone();
     signed["operatorProof"] = operator_proof(&c, OPERATOR_SEED, "__grant_deployer", &args);
-    let _ok = ops.post("ops/deployers", signed.clone()).await.unwrap();
-    let e = ops.post("ops/deployers", signed).await.unwrap_err();
-    assert!(e.to_string().contains("used already"), "{e}");
-
-    let _ok = alice.install_package("com.test.kv", "1.0.0").await.unwrap();
-    let app = alice
-        .create_app_from_package("kv", "com.test.kv", Some("1.0.0"), None, json!({}))
+    let _ok = ops
+        .transport()
+        .json(Request::new(Method::POST, "ops/deployers").json(signed.clone()))
         .await
         .unwrap();
+    let e = ops
+        .transport()
+        .json(Request::new(Method::POST, "ops/deployers").json(signed))
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("used already"), "{e}");
+
     let _ok = alice
-        .call(&app, "set", json!({ "key": "k", "value": "v1" }), None)
+        .packages()
+        .install("com.test.kv", "1.0.0")
+        .await
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "kv", "package": "com.test.kv", "version": "1.0.0" }),
+        ))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let _ok = alice
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     // Customers: an instance of a release they see (the operator's catalog)
     // needs no grant; one the registry would install first does.
     let _ok = ops
-        .ops_install_package("com.test.catalog", "1.0.0")
+        .ops()
+        .package_install("com.test.catalog", "1.0.0")
         .await
+        .map(wire)
         .unwrap();
     let _app = bob
-        .create_app_from_package("cat", "com.test.catalog", Some("1.0.0"), None, json!({}))
+        .apps()
+        .create(typed(
+            json!({ "name": "cat", "package": "com.test.catalog", "version": "1.0.0" }),
+        ))
         .await
+        .map(|a| a.app_id)
         .unwrap();
     refused(
-        &bob.create_app_from_package("kv", "com.test.kv", Some("1.1.0"), None, json!({}))
+        &bob.apps()
+            .create(typed(
+                json!({ "name": "kv", "package": "com.test.kv", "version": "1.1.0" }),
+            ))
             .await
+            .map(|a| a.app_id)
             .unwrap_err(),
     );
 
     // Only the operator (and the owner) read the grants.
-    let listed = ops.get("deployers").await.unwrap();
+    let listed = ops.deployments().deployer_list().await.map(wire).unwrap();
     assert_eq!(listed["deployments"], "granted");
     assert_eq!(listed["deployers"], "operator");
     assert_eq!(
         listed["grants"][0]["deployer"],
         json!({ "account": alice_id })
     );
-    let e = bob.get("deployers").await.unwrap_err();
+    let e = bob.deployments().deployer_list().await.unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
 
     // Revoked: no new install; her app runs, and she still creates
     // instances of the release she installed.
     let path = format!("ops/deployers/account:{alice_id}");
-    let e = ops.delete(&path).await.unwrap_err();
+    let e = ops
+        .ops()
+        .deployer_revoke_delete(&format!("account:{alice_id}"), None)
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
     let proof = operator_proof(
         &c,
@@ -340,22 +391,38 @@ async fn only_granted_accounts_install_on_a_granted_cluster() {
     );
     // The POST form, for a client whose DELETE carries no body.
     let _ok = ops
-        .post(&format!("{path}/revoke"), json!({ "operatorProof": proof }))
+        .transport()
+        .json(
+            Request::new(Method::POST, format!("{path}/revoke"))
+                .json(json!({ "operatorProof": proof })),
+        )
         .await
         .unwrap();
     refused(
         &alice
-            .install_package("com.test.kv", "1.2.0")
+            .packages()
+            .install("com.test.kv", "1.2.0")
             .await
             .unwrap_err(),
     );
     let _ok = alice
-        .call(&app, "set", json!({ "key": "k", "value": "v2" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v2" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let _again = alice
-        .create_app_from_package("kv2", "com.test.kv", Some("1.0.0"), None, json!({}))
+        .apps()
+        .create(typed(
+            json!({ "name": "kv2", "package": "com.test.kv", "version": "1.0.0" }),
+        ))
         .await
+        .map(|a| a.app_id)
         .unwrap();
 }
 
@@ -368,9 +435,19 @@ async fn an_open_cluster_installs_as_before_until_the_operator_grants_deployment
     let c = Cluster::start(3).await;
     let ops = ops(&c).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
-    let rules = alice.get("releases").await.unwrap();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let rules = alice.public().releases_public().await.map(wire).unwrap();
     assert_eq!(
         rules["governance"],
         json!({ "releases": "owner", "appUpgrades": "owner", "outbound": "owner" })
@@ -378,18 +455,17 @@ async fn an_open_cluster_installs_as_before_until_the_operator_grants_deployment
     let proven = alice.verify_app_cluster(&app).await.unwrap();
     assert_eq!(proven.governance.deployments, Deployments::Open);
 
-    let e = ops
-        .post("ops/deployments/granted", json!({}))
-        .await
-        .unwrap_err();
+    let e = ops.ops().deployments_granted(None).await.unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
     let granted = |seed| json!({ "operatorProof": operator_proof(&c, seed, "__deployments_granted", &json!({})) });
     let _ok = ops
-        .post("ops/deployments/granted", granted(OPERATOR_SEED))
+        .transport()
+        .json(Request::new(Method::POST, "ops/deployments/granted").json(granted(OPERATOR_SEED)))
         .await
         .unwrap();
     let e = ops
-        .post("ops/deployments/granted", granted(OPERATOR_SEED))
+        .transport()
+        .json(Request::new(Method::POST, "ops/deployments/granted").json(granted(OPERATOR_SEED)))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CONFLICT"), "one way, once: {e}");
@@ -400,9 +476,21 @@ async fn an_open_cluster_installs_as_before_until_the_operator_grants_deployment
     .unwrap();
     assert!(append(&c, &again).await.is_err());
 
-    refused(&alice.upload_bundle(kv_wasm()).await.unwrap_err());
-    let _instance = alice.create_app("kv2", &bundle, json!({})).await.unwrap();
-    let rules = alice.get("releases").await.unwrap();
+    refused(
+        &alice
+            .packages()
+            .bundle_put(kv_wasm())
+            .await
+            .map(|b| b.hash)
+            .unwrap_err(),
+    );
+    let _instance = alice
+        .apps()
+        .create(typed(json!({ "name": "kv2", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let rules = alice.public().releases_public().await.map(wire).unwrap();
     assert_eq!(rules["governance"]["deployments"], "granted");
     // Every replica attests it once it has applied the change.
     let mut proven = None;
@@ -445,10 +533,12 @@ async fn the_cluster_owner_grants_deployers_once_the_operator_names_it() {
     .await
     .unwrap();
     let e = owner
-        .post_confirmed(
-            "deployers",
-            json!({ "deployer": { "account": dev_id } }),
-            &mut owner_pk,
+        .deployments()
+        .deployer_grant(
+            typed(json!({ "account": dev_id })),
+            None,
+            None,
+            Some(&mut owner_pk),
         )
         .await
         .unwrap_err();
@@ -495,34 +585,56 @@ async fn the_cluster_owner_grants_deployers_once_the_operator_names_it() {
     })
     .unwrap();
     assert!(append(&c, &forged).await.is_err());
-    refused(&dev.upload_bundle(kv_wasm()).await.unwrap_err());
+    refused(
+        &dev.packages()
+            .bundle_put(kv_wasm())
+            .await
+            .map(|b| b.hash)
+            .unwrap_err(),
+    );
 
     // Someone else's passkey grants nothing; the owner's does.
     let e = other
-        .post_confirmed(
-            "deployers",
-            json!({ "deployer": { "account": dev_id } }),
-            &mut other_pk,
+        .deployments()
+        .deployer_grant(
+            typed(json!({ "account": dev_id })),
+            None,
+            None,
+            Some(&mut other_pk),
         )
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
     let _ok = owner
-        .post_confirmed(
-            "deployers",
-            json!({ "deployer": { "account": dev_id } }),
-            &mut owner_pk,
+        .deployments()
+        .deployer_grant(
+            typed(json!({ "account": dev_id })),
+            None,
+            None,
+            Some(&mut owner_pk),
         )
         .await
         .unwrap();
-    let _hash = dev.upload_bundle(kv_wasm()).await.unwrap();
-    let listed = owner.get("deployers").await.unwrap();
+    let _hash = dev
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let listed = owner.deployments().deployer_list().await.map(wire).unwrap();
     assert_eq!(listed["owner"], json!({ "account": owner_id }));
     assert_eq!(listed["grants"].as_array().unwrap().len(), 2);
 
     let _ok = owner
-        .delete_confirmed(&format!("deployers/account:{dev_id}"), &mut owner_pk)
+        .deployments()
+        .deployer_revoke(&format!("account:{dev_id}"), Some(&mut owner_pk))
         .await
         .unwrap();
-    refused(&dev.upload_bundle(kv_wasm()).await.unwrap_err());
+    refused(
+        &dev.packages()
+            .bundle_put(kv_wasm())
+            .await
+            .map(|b| b.hash)
+            .unwrap_err(),
+    );
 }

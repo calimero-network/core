@@ -1,14 +1,6 @@
 //! Starting and cancelling compute runs from app code on a cluster, through the `compute`
 //! fixture (`apps/v2-fixtures/compute`). No job node is registered, so a run stays queued.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 mod common;
 use common::UploadBytes as _;
 
@@ -16,7 +8,7 @@ use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::{RunRecord, RunState};
 use calimero_node::Node;
-use common::{mpk_with, signed_up, Cluster, PUBLISHER};
+use common::{mpk_with, signed_up, typed, wire, Cluster, PUBLISHER};
 use serde_json::json;
 use sha2::Digest;
 
@@ -53,7 +45,8 @@ async fn cluster_with_releases(r: &Releases) -> (Cluster, Client, SoftAuthentica
 async fn install(owner: &Client, version: &str, app: &[u8], compute: &[u8]) {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let _installed = owner
-        .upload_package(mpk_with(
+        .packages()
+        .upload(mpk_with(
             "com.test.compute",
             version,
             app,
@@ -66,11 +59,12 @@ async fn install(owner: &Client, version: &str, app: &[u8], compute: &[u8]) {
 
 async fn create(owner: &Client, version: &str) -> String {
     let created = owner
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "compute", "package": "com.test.compute", "version": version }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap();
     created["appId"].as_str().unwrap().to_owned()
 }
@@ -88,12 +82,19 @@ async fn a_call_starts_a_queued_run_and_an_identical_call_answers_the_same_one()
     let (c, alice, _pk) = cluster_with_releases(&r).await;
     let app = create(&alice, "1.0.0").await;
     // A plain blob is not an input: only the app's sealed files are.
-    let plain = alice.upload_blob(&app, vec![7u8; 5000]).await.unwrap();
+    let plain = alice
+        .apps()
+        .blob_upload(&app, vec![7u8; 5000], None)
+        .await
+        .map(wire)
+        .unwrap();
     let refused = alice
+        .apps()
         .call(
             &app,
             "startDigest",
-            json!({ "inputs": [plain["id"]] }),
+            Some(json!({ "inputs": [plain["id"]] })),
+            None,
             None,
         )
         .await;
@@ -102,12 +103,26 @@ async fn a_call_starts_a_queued_run_and_an_identical_call_answers_the_same_one()
     let file = up["id"].as_str().unwrap().to_owned();
 
     let first = alice
-        .call(&app, "startDigest", json!({ "inputs": [file] }), None)
+        .apps()
+        .call(
+            &app,
+            "startDigest",
+            Some(json!({ "inputs": [file] })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let run = first.result.as_str().unwrap().to_owned();
     let again = alice
-        .call(&app, "startDigest", json!({ "inputs": [file] }), None)
+        .apps()
+        .call(
+            &app,
+            "startDigest",
+            Some(json!({ "inputs": [file] })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(again.result, json!(run), "the same job is the same run");
@@ -141,15 +156,24 @@ async fn a_call_starts_a_queued_run_and_an_identical_call_answers_the_same_one()
 
     // Other inputs are another run, and a file that is not the app's is refused.
     let other = alice
-        .call(&app, "startDigest", json!({ "inputs": [] }), None)
+        .apps()
+        .call(
+            &app,
+            "startDigest",
+            Some(json!({ "inputs": [] })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert_ne!(other.result, json!(run));
     let missing = alice
+        .apps()
         .call(
             &app,
             "startDigest",
-            json!({ "inputs": ["00".repeat(32)] }),
+            Some(json!({ "inputs": ["00".repeat(32)] })),
+            None,
             None,
         )
         .await;
@@ -157,7 +181,8 @@ async fn a_call_starts_a_queued_run_and_an_identical_call_answers_the_same_one()
 
     // A cancel is recorded on the active run; nothing grants it, so the leader may end it cancelled.
     let _ok = alice
-        .call(&app, "cancel", json!({ "run": run }), None)
+        .apps()
+        .call(&app, "cancel", Some(json!({ "run": run })), None, None)
         .await
         .unwrap();
     let (record, _) = leader_record(&c, &app, &run);
@@ -168,7 +193,8 @@ async fn a_call_starts_a_queued_run_and_an_identical_call_answers_the_same_one()
         record.state
     );
     let unknown = alice
-        .call(&app, "cancel", json!({ "run": "nobody" }), None)
+        .apps()
+        .call(&app, "cancel", Some(json!({ "run": "nobody" })), None, None)
         .await;
     assert!(unknown.is_err(), "{unknown:?}");
 }
@@ -178,17 +204,28 @@ async fn a_start_on_an_app_without_a_compute_component_is_refused_and_records_no
     let c = Cluster::start(3).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
-        .upload_bundle(common::component("compute"))
+        .packages()
+        .bundle_put(common::component("compute"))
         .await
+        .map(|b| b.hash)
         .unwrap();
     let app = alice
-        .create_app("compute", &bundle, json!({}))
+        .apps()
+        .create(typed(json!({ "name": "compute", "bundle": &bundle })))
         .await
+        .map(|a| a.app_id)
         .unwrap();
     let up = alice.upload_bytes(&app, vec![7u8; 5000]).await.unwrap();
 
     let refused = alice
-        .call(&app, "startDigest", json!({ "inputs": [up["id"]] }), None)
+        .apps()
+        .call(
+            &app,
+            "startDigest",
+            Some(json!({ "inputs": [up["id"]] })),
+            None,
+            None,
+        )
         .await;
     let error = format!("{refused:?}");
     assert!(error.contains("no compute component"), "{error}");
@@ -210,17 +247,33 @@ async fn a_run_keeps_the_compute_component_it_started_on_through_an_upgrade() {
     let app = create(&owner, "1.0.0").await;
 
     let before = owner
-        .call(&app, "startDigest", json!({ "inputs": [] }), None)
+        .apps()
+        .call(
+            &app,
+            "startDigest",
+            Some(json!({ "inputs": [] })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let up = owner
-        .upgrade_app(&app, json!({ "version": "1.0.1" }), &mut pk)
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.0.1" })), Some(&mut pk))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(up["status"], "ok", "{up}");
     let file = owner.upload_bytes(&app, vec![7u8; 5000]).await.unwrap();
     let after = owner
-        .call(&app, "startDigest", json!({ "inputs": [file["id"]] }), None)
+        .apps()
+        .call(
+            &app,
+            "startDigest",
+            Some(json!({ "inputs": [file["id"]] })),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -266,18 +319,28 @@ async fn an_upgrade_that_drops_the_result_method_of_an_active_run_is_refused() {
     .await;
     let idle = create(&owner, "1.0.0").await;
     let up = owner
-        .upgrade_app(&idle, json!({ "version": "1.0.1" }), &mut pk)
+        .apps()
+        .upgrade(&idle, typed(json!({ "version": "1.0.1" })), Some(&mut pk))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(up["status"], "ok", "no run needs it: {up}");
 
     let app = create(&owner, "1.0.0").await;
     let _run = owner
-        .call(&app, "startDigest", json!({ "inputs": [] }), None)
+        .apps()
+        .call(
+            &app,
+            "startDigest",
+            Some(json!({ "inputs": [] })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let e = owner
-        .upgrade_app(&app, json!({ "version": "1.0.1" }), &mut pk)
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.0.1" })), Some(&mut pk))
         .await
         .unwrap_err();
     assert!(
