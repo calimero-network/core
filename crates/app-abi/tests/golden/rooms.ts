@@ -164,8 +164,30 @@ export interface AppTransport {
   events(app: string, from?: number, signal?: AbortSignal): AsyncIterable<NodeEvent>;
 }
 
+/** The app's methods: what `RoomsClient` implements, for a test double to stand in for it. */
+export interface RoomsApi {
+  /** call `addRoom`. */
+  addRoom(args: AddRoomArgs, options?: CallOptions): Promise<null>;
+  /** call `adminRelease`; a passkey approves it (`options.confirm`, else the client's own). */
+  adminRelease(args: AdminReleaseArgs, options?: CallOptions): Promise<null>;
+  /** view `availability`. */
+  availability(args: AvailabilityArgs, options?: ViewOptions): Promise<SlotView[]>;
+  /** call `book`. */
+  book(args: BookArgs, options?: CallOptions): Promise<string>;
+  /** view `booking`. */
+  booking(args: BookingArgs, options?: ViewOptions): Promise<Booking>;
+  /** call `cancel`. */
+  cancel(args: CancelArgs, options?: CallOptions): Promise<null>;
+  /** call `checkIn`. */
+  checkIn(args: CheckInArgs, options?: CallOptions): Promise<null>;
+  /** view `myBookings`. */
+  myBookings(options?: ViewOptions): Promise<Booking[]>;
+  /** The app's events from log index `from`, then live, until `signal` aborts. */
+  events(from?: number, signal?: AbortSignal): AsyncIterable<AppEvent & { id: string }>;
+}
+
 /** The app's methods, over a signed-in `CalimeroClient` (or any {@link AppTransport}). */
-export class RoomsClient {
+export class RoomsClient implements RoomsApi {
   readonly #client: AppTransport;
   readonly #app: string;
   readonly #after: ClientOptions['after'];

@@ -29,7 +29,9 @@
   (`client.apps.call`, `client.apps.view`, `client.events`; Python through `client.json`); no
   transport of their own. The TypeScript class takes the narrow `AppTransport` (what it uses of
   `CalimeroClient`, so a test double implements that alone) and an `after` hook that runs after
-  every request (mero-js has no session-change event to store a refreshed session from).
+  every request (mero-js has no session-change event to store a refreshed session from), and
+  implements `<Name>Api` (`KvStoreClient` → `KvStoreApi`), the methods alone, which a caller's
+  test double implements instead of the transport.
 - `codegen::{swift, kotlin}` write one client type over swift-sdk 2.0 (MeroKit) / kotlin-sdk
   2.0 (mero-core): built on the SDK's `CalimeroClient` and an app id (every method; Kotlin
   calls `apps.method`, Swift `callJSON` / `callConfirmed` / `viewJSON`) or on its
