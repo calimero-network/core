@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use calimero_log::Machine;
+use calimero_pipeline::PriceTable;
 use serde_json::json;
 
 use super::{
@@ -65,6 +66,7 @@ fn acquire(app: &str, run: &str, fuel: u64) -> SystemCmd {
         payer: payer.into(),
         fuel,
         memory_mib: 0,
+        pool: None,
     }
 }
 
@@ -82,6 +84,7 @@ fn acquire_mem(app: &str, run: &str, memory_mib: u32) -> SystemCmd {
             payer,
             fuel,
             memory_mib,
+            pool: None,
         },
         other => other,
     }
@@ -301,6 +304,7 @@ fn a_run_is_refused_with_a_code_for_an_unknown_app_a_foreign_payer_or_too_much_f
         payer: "y".into(),
         fuel: 1,
         memory_mib: 0,
+        pool: None,
     });
     assert_eq!(refusal(foreign), ("NOT_PAYER".into(), true));
     let heavy = m.run(acquire("a1", "r", calimero_app_host::MAX_COMPUTE_FUEL + 1));
@@ -661,6 +665,92 @@ fn memory_no_pool_fits_is_refused() {
     assert!(m.state.compute.is_empty());
 }
 
+fn acquire_in(app: &str, run: &str, memory_mib: u32, pool: &str) -> SystemCmd {
+    match acquire_mem(app, run, memory_mib) {
+        SystemCmd::AcquireRun {
+            app,
+            run,
+            payer,
+            fuel,
+            memory_mib,
+            ..
+        } => SystemCmd::AcquireRun {
+            app,
+            run,
+            payer,
+            fuel,
+            memory_mib,
+            pool: Some(pool.into()),
+        },
+        other => other,
+    }
+}
+
+fn slot_pool(m: &SystemMachine, app: &str, run: &str) -> String {
+    m.state.run_slot(app, run).unwrap().pool.clone()
+}
+
+#[test]
+fn a_named_pool_that_fits_takes_the_slot_even_when_a_smaller_pool_fits() {
+    let mut m = machine();
+    set_pools(&mut m, &TWO_POOLS).unwrap();
+    pool_node(&mut m, 5, "standard");
+    pool_node(&mut m, 6, "highmem");
+    m.run(acquire_mem("a1", "by-memory", 512)).unwrap();
+    m.run(acquire_in("a1", "named", 512, "highmem")).unwrap();
+    assert_eq!(slot_pool(&m, "a1", "by-memory"), "standard");
+    assert_eq!(slot_pool(&m, "a1", "named"), "highmem");
+    assert_eq!(
+        m.state.dispatch_pool("a1", "named").as_deref(),
+        Some("highmem")
+    );
+}
+
+#[test]
+fn a_named_pool_that_does_not_fit_or_does_not_exist_is_refused() {
+    let mut m = machine();
+    set_pools(&mut m, &TWO_POOLS).unwrap();
+    pool_node(&mut m, 5, "standard");
+    let too_small = m.run(acquire_in("a1", "r1", 8192, "standard"));
+    assert_eq!(refusal(too_small), ("RUN_NO_POOL".into(), false));
+    let unknown = m.run(acquire_in("a1", "r2", 1, "nope"));
+    assert_eq!(refusal(unknown), ("RUN_NO_POOL".into(), false));
+    assert!(m.state.compute.is_empty());
+}
+
+#[test]
+fn a_named_pool_without_any_pools_is_refused() {
+    let mut m = machine();
+    let none = m.run(acquire_in("a1", "r1", 1, "standard"));
+    assert_eq!(refusal(none), ("RUN_NO_POOL".into(), false));
+}
+
+#[test]
+fn a_run_naming_no_pool_keeps_memory_placement() {
+    let mut m = machine();
+    set_pools(&mut m, &TWO_POOLS).unwrap();
+    pool_node(&mut m, 5, "standard");
+    m.run(acquire_mem("a1", "small", 1024)).unwrap();
+    m.run(acquire_mem("a1", "big", 8192)).unwrap();
+    assert_eq!(slot_pool(&m, "a1", "small"), "standard");
+    assert_eq!(slot_pool(&m, "a1", "big"), "highmem");
+}
+
+#[test]
+fn an_acquire_from_before_named_pools_reads_as_it_did() {
+    let old: SystemCmd = serde_json::from_value(
+        json!({ "op": "acquireRun", "app": "a1", "run": "r1", "payer": "x", "fuel": 1, "memory_mib": 8192 }),
+    )
+    .unwrap();
+    assert!(matches!(&old, SystemCmd::AcquireRun { pool: None, .. }));
+    let mut m = machine();
+    set_pools(&mut m, &TWO_POOLS).unwrap();
+    m.run(old).unwrap();
+    assert_eq!(slot_pool(&m, "a1", "r1"), "highmem");
+    let none = serde_json::to_value(acquire("a1", "r2", 1)).unwrap();
+    assert!(!none.to_string().contains("pool"), "{none}");
+}
+
 #[test]
 fn a_run_queued_before_pools_is_dispatched_to_the_default_pool() {
     let mut m = machine();
@@ -892,6 +982,82 @@ fn org_quotas_are_decimal_strings_and_the_file_override_is_read() {
         m.state.payer_quotas("y").2,
         Quotas::default().max_file_bytes_per_org
     );
+}
+
+fn price_table(version: u64) -> PriceTable {
+    PriceTable {
+        version,
+        fuel_per_vcpu_second: 1_000_000_000,
+        vcpu_second: 100,
+        gib_second: 10,
+        connector_gib: 1,
+        storage_gib_month: 2,
+        egress_gib: 3,
+    }
+}
+
+fn set_prices(m: &mut SystemMachine, table: PriceTable) -> Result<serde_json::Value, String> {
+    m.run_authorized(SystemCmd::SetPriceTable {
+        table,
+        proof: serde_json::Value::Null,
+    })
+    .map_err(str::to_owned)
+}
+
+#[test]
+fn a_price_table_version_must_rise_by_exactly_one() {
+    let mut m = machine();
+    assert!(m.state.price_table.is_none());
+    for wrong in [0, 2] {
+        let err = set_prices(&mut m, price_table(wrong)).unwrap_err();
+        assert!(err.starts_with("PRICE_VERSION"), "{err}");
+    }
+    assert!(m.state.price_table.is_none());
+    set_prices(&mut m, price_table(1)).unwrap();
+    for wrong in [1, 3, 0] {
+        let err = set_prices(&mut m, price_table(wrong)).unwrap_err();
+        assert!(err.starts_with("PRICE_VERSION"), "{err}");
+    }
+    set_prices(&mut m, price_table(2)).unwrap();
+    assert_eq!(m.state.price_table, Some(price_table(2)));
+}
+
+#[test]
+fn a_zero_price_rate_is_refused_and_leaves_the_table_alone() {
+    let mut m = machine();
+    let zero = PriceTable {
+        fuel_per_vcpu_second: 0,
+        ..price_table(1)
+    };
+    let err = set_prices(&mut m, zero).unwrap_err();
+    assert!(err.starts_with("BAD_PRICES"), "{err}");
+    assert!(m.state.price_table.is_none());
+    set_prices(&mut m, price_table(1)).unwrap();
+    let err = set_prices(
+        &mut m,
+        PriceTable {
+            fuel_per_vcpu_second: 0,
+            ..price_table(2)
+        },
+    )
+    .unwrap_err();
+    assert!(err.starts_with("BAD_PRICES"), "{err}");
+    assert_eq!(m.state.price_table, Some(price_table(1)));
+}
+
+#[test]
+fn a_stored_price_table_survives_a_snapshot_and_an_old_snapshot_reads_none() {
+    let mut m = machine();
+    let without = m.snapshot();
+    assert!(!String::from_utf8(without.clone())
+        .unwrap()
+        .contains("priceTable"));
+    set_prices(&mut m, price_table(1)).unwrap();
+    let mut restored = SystemMachine::default();
+    restored.restore(&m.snapshot()).unwrap();
+    assert_eq!(restored.state.price_table, Some(price_table(1)));
+    restored.restore(&without).unwrap();
+    assert!(restored.state.price_table.is_none());
 }
 
 #[test]

@@ -57,9 +57,10 @@ NOT_COVERED = [
     ("Accounts", "Sign-up through a cluster sign-up invite, and issuing one",
      "meroctl's login takes no invite and has no command to issue one (an operator-signed request); "
      "the policy and the invite list are read back (`ops-state`)"),
-    ("Accounts", "Consent-page approvals (`/consent/requests`)",
+    ("Accounts", "Consent-page approvals (`/consent/requests`) and the page's verifier link",
      "a consent request is approved in a browser on the node's consent page; the cluster test "
-     "`consent_page.rs` covers it on one build"),
+     "`consent_page.rs` covers it on one build. The verifier link is a startup setting "
+     "(`--attestation-verifier-url`) that stores nothing"),
     ("Apps", "Timers (`#[app::every]`) firing across the roll",
      "the fixture's timer is hourly on the nodes' real clock, which a process cluster cannot move; "
      "the cluster tests move the app clock"),
@@ -78,6 +79,12 @@ NOT_COVERED = [
      "served-frontend path above"),
     ("Blobs and files", "Revoking a published blob's grants (`/blobs/{id}/revoke`)",
      "not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow"),
+    ("Pipelines", "A pipeline run in flight across the roll",
+     "the engine ships in 1.0.0-rc.19, after the pinned release, so the case is seeded on the rolled cluster; "
+     "a run there ends in seconds, and the suite cannot hold one open without a flaky timing race"),
+    ("Pipelines", "Live pipeline events (`meroctl pipeline watch`)",
+     "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
+     "is covered, the stream itself by the cluster tests"),
     ("Ops", "Restoring a backup onto the new release",
      "`POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, "
      "not a rollout"),

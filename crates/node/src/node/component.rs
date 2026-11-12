@@ -25,7 +25,7 @@ pub use self::compute::ComputeLimits;
 pub(super) use self::compute::ComputeLimits;
 pub(super) use self::compute::ComputeState;
 pub use self::compute::JOB_POLL;
-pub(crate) use self::compute::RUN_VIEW;
+pub(crate) use self::compute::{PIPELINE_VIEW, RUN_VIEW};
 #[cfg(feature = "testing")]
 pub(super) use self::files::Probes;
 pub(crate) use self::files::{valid_uploader, Uploaded};
@@ -298,6 +298,9 @@ fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
         ComponentCmd::ComputeFinal(entry) => entry.result = entry.result.denied(DENIED),
         ComponentCmd::Upgrade { .. }
         | ComponentCmd::ComputeAttempt(_)
+        | ComponentCmd::PipelineStart(_)
+        | ComponentCmd::PipelineStep(_)
+        | ComponentCmd::PipelineCancel(_)
         | ComponentCmd::Blob { .. }
         | ComponentCmd::BlobForget { .. }
         | ComponentCmd::BlobRevoke { .. }
@@ -389,12 +392,15 @@ fn marked_blobs(cmd: &ComponentCmd, blobs: &[Blob]) -> Vec<Blob> {
 }
 
 /// Whether a call's outcome changes anything a read-only member may not: keys, events,
-/// files, and the compute runs it starts or cancels (they spend the org's run quota).
+/// files, the xcalls it sends and actions it starts (each a later write), and the
+/// compute runs it starts or cancels (they spend the org's run quota).
 fn writes(outcome: &Outcome) -> bool {
     !outcome.diff.is_empty()
         || !outcome.events.is_empty()
         || !outcome.files.is_empty()
         || !outcome.published.is_empty()
+        || !outcome.xcalls.is_empty()
+        || !outcome.actions.is_empty()
         || moves_runs(outcome)
 }
 
@@ -437,6 +443,11 @@ impl Node {
     #[cfg(feature = "testing")]
     pub fn advance_clock(&self, ms: i64) {
         self.clock.advance(ms);
+    }
+
+    /// The key `app`'s file data keys are wrapped under.
+    pub(crate) fn file_key_of(&self, app: &str) -> zeroize::Zeroizing<[u8; 32]> {
+        zeroize::Zeroizing::new(crate::backup::file_key(&self.cluster_key, app))
     }
 
     /// The key `app`'s file data keys are wrapped under. Tests only.
@@ -821,6 +832,7 @@ impl Node {
                 source: app_id.to_owned(),
                 key,
                 handle,
+                read_only: extras.read_only,
             }) as Arc<dyn calimero_app_host::XcallHost>)
         });
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
@@ -1062,6 +1074,9 @@ impl Node {
         g: &Group<AppMachine>,
         app: &AppRecord,
     ) -> Result<crate::app::Applied, ApiError> {
+        if !app.components.is_app() {
+            return self.init_compute_only(g, app).await;
+        }
         // A component the engine refuses fails `init` for good (reported as
         // INIT_FAILED); anything else is retried by `reconcile`.
         // The bundle the group names if an upgrade gave it one before init applied
@@ -1185,6 +1200,41 @@ impl Node {
         Ok(a)
     }
 
+    /// The first entry of a compute-only app's group: it names no app component, so nothing runs;
+    /// the entry only gives the group its executor, which holds files and pipeline runs.
+    async fn init_compute_only(
+        &self,
+        g: &Group<AppMachine>,
+        app: &AppRecord,
+    ) -> Result<crate::app::Applied, ApiError> {
+        let p = g
+            .propose_led(|m, _, leadership| {
+                if m.state.initialized || m.state.init_error.is_some() {
+                    return Proposal::Reply(Vec::new());
+                }
+                let (id_term, id_seq) =
+                    self.next_id(g.id(), leadership.term, &m.state.component.head);
+                let mut cmd = ComponentCmd::Init {
+                    bundle: app.bundle.clone(),
+                    compute_bundle: app.compute_bundle.clone(),
+                    base_index: m.state.last_index,
+                    ts_ms: self.stamp(m),
+                    id_term,
+                    id_seq,
+                    outcome: Box::default(),
+                };
+                Proposal::Append(entry_bytes(&mut cmd).0)
+            })
+            .await
+            .map_err(|e| status_of(&e))?;
+        if !p.appended {
+            return Err(ApiError::conflict("already initialized"));
+        }
+        let a: Applied =
+            serde_json::from_slice(&p.output).map_err(|e| ApiError::internal(&e.to_string()))?;
+        Ok(to_host_applied(a))
+    }
+
     /// One round of timer ticks (D34), every [`TIMER_POLL`]: for each component
     /// app group this node leads, a task proposes the due ticks, unless the
     /// previous round for that app is still running.
@@ -1227,6 +1277,10 @@ impl Node {
     /// Propose the latest due slot of each of the app's timers not yet applied
     /// (one catch-up tick for a gap). Nothing runs before the app is initialized.
     async fn tick_app(&self, g: &Arc<Group<AppMachine>>) {
+        let id = g.read_local(|m, _| m.app_id.clone());
+        if self.sys(|s| s.apps.get(&id).is_none_or(|a| !a.components.is_app())) {
+            return;
+        }
         let Some((app_id, bundle, install, applied)) = g.read_local(|m, _| {
             let bundle = m.state.bundle.clone().filter(|_| m.state.initialized)?;
             Some((
@@ -1317,6 +1371,7 @@ impl Node {
                         outbound: true,
                         runs: Some(m.runs_provider(None)),
                         compute_component: m.state.component.head.compute_bundle.is_some(),
+                        read_only: false,
                     },
                 );
                 let outcome = ran.outcome;
@@ -1554,8 +1609,10 @@ impl Node {
                                 serde_json::to_string(&req.caller).unwrap_or_default(),
                                 req.idempotency_key.as_deref().unwrap_or_default()
                             )),
-                            // A read-only member's run reaches no outbound host.
+                            // A read-only member's run reaches no outbound host, and
+                            // views other apps without calling them.
                             outbound: !read_only,
+                            read_only,
                             runs: Some(m.runs_provider(None)),
                             compute_component: m.state.component.head.compute_bundle.is_some(),
                         },
@@ -1874,6 +1931,7 @@ impl Node {
         }
         let app = self.app(&req.app_id).await?;
         self.refuse_while_restoring(&app).await?;
+        app.require_app_component()?;
         if !came_keyed {
             self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
                 .await?;
@@ -1969,6 +2027,9 @@ impl Node {
         if req.method == RUN_VIEW {
             return self.run_view(g, req);
         }
+        if req.method == PIPELINE_VIEW {
+            return self.pipeline_view(g, req);
+        }
         let bundle = g
             .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
@@ -2025,6 +2086,7 @@ impl Node {
                         outbound: false,
                         runs: None,
                         compute_component: false,
+                        read_only: false,
                     },
                     search,
                 )
@@ -2201,6 +2263,7 @@ impl Node {
             source: app_id.to_owned(),
             key: format!("action:{}", record.id),
             handle: tokio::runtime::Handle::current(),
+            read_only: false,
         });
         let meter = self.meter(app_id, &prepared.hash);
         let http = Arc::new(NodeHttp(self.outbound_for(
@@ -2651,6 +2714,9 @@ struct RunExtras {
     runs: Option<Arc<dyn Runs>>,
     /// Whether the app's group runs a release that ships a compute component.
     compute_component: bool,
+    /// A read-only member's call: its synchronous xcalls may view, not call, since a
+    /// call commits on the target before this run's outcome is judged.
+    read_only: bool,
 }
 
 /// How long a call, timer or delivery waits for one outbound response (D76): within the
@@ -2700,6 +2766,8 @@ struct NodeXcall {
     source: String,
     key: String,
     handle: tokio::runtime::Handle,
+    /// A read-only member's run: views only.
+    read_only: bool,
 }
 
 /// The node's refusal of a synchronous xcall, for the guest: the target's ABI refusal as
@@ -2710,6 +2778,9 @@ fn refusal_text(e: &ApiError) -> String {
     }
     json!({ "message": e.message, "error": e.code }).to_string()
 }
+
+/// Why a read-only member's run may not call another app synchronously.
+const READ_ONLY_SYNC_CALL: &str = "a read-only member's run views other apps, never calls them";
 
 /// A refusal or failure for the guest, as the JSON text `xcall.*` returns.
 fn xcall_failure(message: &str) -> String {
@@ -2761,6 +2832,9 @@ impl calimero_app_host::XcallHost for NodeXcall {
     }
 
     fn call(&self, app: &str, method: &str, args: &[u8], key: &str) -> Result<Vec<u8>, String> {
+        if self.read_only {
+            return Err(xcall_failure(READ_ONLY_SYNC_CALL));
+        }
         let target = self.target(app)?;
         let args = parse_args(args).map_err(|e| xcall_failure(&e))?;
         let req = CallRequest {
@@ -2899,6 +2973,28 @@ mod tests {
             ..Outcome::default()
         };
         assert!(writes(&cancel));
+    }
+
+    #[test]
+    fn a_call_that_sends_an_xcall_or_starts_an_action_is_a_write() {
+        let xcall = Outcome {
+            xcalls: vec![crate::component::xcall::XcallOut {
+                app: "other".into(),
+                method: "set".into(),
+                args: Value::Null,
+            }],
+            ..Outcome::default()
+        };
+        assert!(writes(&xcall));
+        let action = Outcome {
+            actions: vec![crate::component::action::ActionOut {
+                id: "a.1.1.0".into(),
+                method: "fetch".into(),
+                args: Value::Null,
+            }],
+            ..Outcome::default()
+        };
+        assert!(writes(&action));
     }
 
     #[test]

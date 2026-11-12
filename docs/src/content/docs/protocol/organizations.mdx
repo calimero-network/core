@@ -104,7 +104,7 @@ up. It is an organization like any other: its owner may rename it, invite
 people and make teams. What sets it apart (`Org::personal`, `personal: true`
 in `GET /orgs/{org}`, in the `orgs` of `/auth/me` and in report scopes):
 
-- An account owns at most one (`409 PERSONAL_ORG_EXISTS`), and it does not
+- An account owns exactly one (the log refuses a second, `PERSONAL_ORG_EXISTS`), and it does not
   count against `maxOrgsPerAccount`.
 - Its release and outbound approvals are the account's own: approved with
   `POST /orgs/{org}/releases` and `/orgs/{org}/outbound` like any
@@ -119,7 +119,7 @@ in `GET /orgs/{org}`, in the `orgs` of `/auth/me` and in report scopes):
 - A deployment's report (`GET /deployments/{id}/orgs`) counts its instances in
   `outsideOrgs` and never names it.
 
-Apps outside any organization were removed in a hard cutover (1.0.0-rc.19):
+Apps outside any organization were removed in a hard cutover (1.0.0-rc.20):
 data holding one is not read.
 
 Members have one role each, ordered `guest < member < admin < owner`:

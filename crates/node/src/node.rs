@@ -19,6 +19,7 @@ use crate::app::{AppMachine, Applied, Status};
 use crate::attest::{HttpAttestor, Mode, Policy};
 use crate::error::ApiError;
 use crate::membership::{grow_voters, PROMOTE_MAX_LAG, SYSTEM_VOTERS};
+use crate::system::cluster_version::{self as cv, Feature};
 use crate::system::{normalize_addr, output, SystemCmd, SystemMachine, SystemState};
 use crate::types::{AppRecord, Caller, Executor as Kind, NodeRecord, NodeRole};
 use crate::usage::{Meter, Usage};
@@ -37,12 +38,12 @@ pub use segments::{SegmentPin, SEGMENT_GRACE, SWEEP_EVERY};
 pub use component::ComputeLimits;
 pub use job::{JobPeer, JOB_CONTROL_TIMEOUT, MAX_INFLIGHT_JOB_OPS};
 
-pub(crate) use component::RUN_VIEW;
 pub use component::{
     app_refusal, args_bytes, args_too_large, due_slot, timeout_error, Clock, BAD_BUNDLE, JOB_POLL,
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
+pub(crate) use component::{PIPELINE_VIEW, RUN_VIEW};
 // The refusals the OpenAPI registry's tests build, to hold `details` to its schema.
 #[cfg(test)]
 pub(crate) use component::{files_unavailable, upload_refusal};
@@ -160,6 +161,11 @@ pub struct Config {
     /// The domain app frontends are served under (`--apps-domain`): a
     /// package's at `{label}.{apps_domain}` (`app_host`). `None`: not served.
     pub apps_domain: Option<String>,
+    /// The independent attestation verifier's base URL
+    /// (`--attestation-verifier-url`, checked by `consent_page::verifier_base`):
+    /// the consent page links there to check this node's TDX attestation and
+    /// release on the verifier's own origin. `None`: no link.
+    pub attestation_verifier_url: Option<String>,
     /// Who decides releases, app upgrades and outbound hosts
     /// (`--release-approvals`, `--app-upgrades`, `--outbound-approvals`).
     /// Written to the system state at genesis by the first leader; after that
@@ -294,7 +300,14 @@ pub struct CallRequest {
 /// request: they change what the app is (its bundle, its blob marks), so
 /// authority over them is the API's (`run_upgrade`, the blob routes), never
 /// the app's or a caller's.
-pub const HOST_METHODS: [&str; 4] = ["__upgrade", "__blob", "__blob_forget", "__blob_revoke"];
+pub const HOST_METHODS: [&str; 6] = [
+    "__upgrade",
+    "__blob",
+    "__blob_forget",
+    "__blob_revoke",
+    "__pipeline_start",
+    "__pipeline_cancel",
+];
 
 /// Whether a method name is reserved: the node's commands and the runtime's
 /// own exports (`__calimero_*`) are not methods a client, an xcall or a
@@ -412,6 +425,22 @@ pub const ISSUER_RETRY_SECS: u64 = 5;
 /// would otherwise hold it for the HTTP client's 30 s.
 pub const ISSUER_ATTEST_WAIT: Duration = Duration::from_secs(5);
 
+/// Whether a peer's receipt-key quote may be the unbound form a release
+/// before [`crate::attest::RECEIPT_KEY_BOUND_SINCE`] makes (it binds no
+/// cluster or node): only while the logged cluster version is below that
+/// release (or not logged yet), so while a node on an earlier release may
+/// still be in the cluster. Once every node runs it, the system leader logs a
+/// cluster version at or above it, no older node is admitted again, and only
+/// bound quotes count. A version that does not parse is not taken as earlier.
+#[must_use]
+pub fn takes_unbound_receipt_key(cluster_version: Option<&str>) -> bool {
+    cluster_version.is_none_or(|v| {
+        semver::Version::parse(v).is_ok_and(|v| {
+            semver::Version::parse(crate::attest::RECEIPT_KEY_BOUND_SINCE).is_ok_and(|s| v < s)
+        })
+    })
+}
+
 /// At most this many issuers are attested at once ([`Node::warm_issuers`]).
 pub const MAX_CONCURRENT_ISSUER_ATTESTS: usize = 8;
 
@@ -453,6 +482,8 @@ pub struct Node {
     uploads: component::Uploads,
     /// Pins on blobs an entry stored but did not commit, and deletions in flight.
     pub(crate) blob_guards: Arc<blob_guards::BlobGuards>,
+    /// How many exports each account has asked of this node lately.
+    pub(crate) export_limits: crate::api::ExportLimits,
     /// Knobs and counters for tests (feature `testing`).
     #[cfg(feature = "testing")]
     probes: component::Probes,
@@ -525,6 +556,8 @@ pub struct Node {
     pub runs_kick: Arc<tokio::sync::Notify>,
     /// Event streams this node is serving (`/apps/{app}/events`).
     pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Pipeline run event streams open on this node, by app.
+    pub pipeline_subscribers: Mutex<HashMap<String, usize>>,
     /// Every app's ephemeral presence, in memory only.
     pub presence: crate::presence::Presence,
     /// Release frontends opened for `app_host`.
@@ -790,6 +823,8 @@ pub fn rejected(reason: &str) -> ApiError {
         not_a_deployer()
     } else if reason == crate::system::PERSONAL_ORG_EXISTS {
         ApiError::new(409, PERSONAL_ORG_EXISTS, reason)
+    } else if reason == crate::system::MODULE_IN_USE {
+        ApiError::new(409, "MODULE_IN_USE", reason)
     } else if let Some(code) = recovery_code(reason) {
         ApiError::new(409, code, reason)
     } else {
@@ -895,6 +930,7 @@ impl Node {
             segment_sweep: Mutex::default(),
             uploads: component::Uploads::default(),
             blob_guards: Arc::default(),
+            export_limits: crate::api::ExportLimits::default(),
             #[cfg(feature = "testing")]
             probes: component::Probes::default(),
             clock,
@@ -915,6 +951,7 @@ impl Node {
                 .build()?,
             challenges: Mutex::new(HashMap::new()),
             event_streams: std::sync::Arc::default(),
+            pipeline_subscribers: Mutex::new(HashMap::new()),
             presence: crate::presence::Presence::default(),
             frontends: crate::app_host::FrontendCache::default(),
             consent: crate::consent_page::ConsentRequests::default(),
@@ -1632,16 +1669,29 @@ impl Node {
                 .json()
                 .await
                 .ok()?;
-            let (key, _governance) = crate::attest::verify_receipt_key(
-                &doc,
-                &nonce,
-                &self.config.peer_policy(),
-            )
-            .await
-            .map_err(|e| {
-                warn!(node = id, error = %format!("{e:#}"), "could not attest a session issuer");
-            })
-            .ok()?;
+            // Bound to this cluster and the node asked for: the address
+            // answers in the clear, so another node's quote is refused.
+            let policy = self.config.peer_policy();
+            let bound =
+                crate::attest::verify_receipt_key(&doc, &nonce, &self.config.cluster, id, &policy)
+                    .await;
+            let logged = self.sys(|s| s.cluster_version.clone());
+            let attested = match bound {
+                Ok(attested) => Ok(attested),
+                // A peer still on an earlier release quotes the unbound form,
+                // taken only while the cluster runs that release too.
+                Err(bound) if takes_unbound_receipt_key(logged.as_deref()) => {
+                    crate::attest::verify_unbound_receipt_key(&doc, &nonce, &policy)
+                        .await
+                        .map_err(|unbound| eyre::eyre!("{bound:#}; unbound: {unbound:#}"))
+                }
+                Err(bound) => Err(bound),
+            };
+            let (key, _governance) = attested
+                .map_err(|e| {
+                    warn!(node = id, error = %format!("{e:#}"), "could not attest a session issuer");
+                })
+                .ok()?;
             Some((key, doc.release.version))
         })
         .await
@@ -1788,6 +1838,19 @@ impl Node {
             key: hex::encode(self.receipt_public()),
             signature: hex::encode(signature.to_bytes()),
         }
+    }
+
+    /// A pipeline run's receipt with this node's receipt key's signature over it
+    /// (`calimero_client::receipt::receipt_message`), as the receipt route answers it.
+    #[must_use]
+    pub fn sign_pipeline_receipt(&self, receipt: serde_json::Value) -> serde_json::Value {
+        use ed25519_dalek::Signer;
+        let message = calimero_client::receipt::receipt_message(&receipt);
+        serde_json::json!({
+            "receipt": receipt,
+            "node": self.config.node_id,
+            "signature": hex::encode(self.receipt_key.sign(&message).to_bytes()),
+        })
     }
 
     /// The mero-tee release this node runs, as its attestation names it.
@@ -2111,6 +2174,31 @@ impl Node {
                 let _r = self.sys_write(&SystemCmd::RequireSessionProofs).await;
             }
             self.raise_cluster_version();
+            // Apps are judged by the release they run from here on; what was
+            // logged before applies as it did (`AttributeByRelease`). Only
+            // once the logged cluster version brings it (`attributeByRelease`):
+            // below it a node of the release before would skip the mark, and
+            // `sys_write` would refuse it each pass.
+            if self.sys(|s| {
+                !s.attributes_by_release
+                    && (s.governance.is_some() || !s.accounts.is_empty())
+                    && cv::check(s.cluster_version.as_deref(), &[Feature::AttributeByRelease])
+                        .is_ok()
+            }) {
+                let _r = self.sys_write(&SystemCmd::AttributeByRelease).await;
+            }
+            // Likewise this release's rules: from here on an entry's flags
+            // naming an earlier rule are read as set (`RequireCurrentRules`).
+            // Only once the logged cluster version brings it (`currentRules`):
+            // below it a node of the release before would skip the mark, and
+            // `sys_write` would refuse it each pass.
+            if self.sys(|s| {
+                s.current_rules_from.is_none()
+                    && (s.governance.is_some() || !s.accounts.is_empty())
+                    && cv::check(s.cluster_version.as_deref(), &[Feature::CurrentRules]).is_ok()
+            }) {
+                let _r = self.sys_write(&SystemCmd::RequireCurrentRules).await;
+            }
             self.admit_registered_nodes();
             self.promote_learners();
         }
@@ -2221,7 +2309,7 @@ impl Node {
     }
 
     /// A bundle's WASM: from this node's blob store, else from a peer.
-    pub(crate) async fn bundle_wasm(&self, hash: &str) -> Result<Vec<u8>, ApiError> {
+    pub async fn bundle_wasm(&self, hash: &str) -> Result<Vec<u8>, ApiError> {
         if let Some(w) = self
             .engine
             .get_blob(hash)
@@ -2762,6 +2850,32 @@ impl Node {
         self.blob_asked_strong(app, id, true, false).await
     }
 
+    /// `id`'s size and seal if it is one of `app`'s sealed files, as its leader answers it;
+    /// `None` if no replica answered as leader.
+    pub async fn file_record_strong(
+        &self,
+        app: &AppRecord,
+        id: &[u8; 32],
+    ) -> Option<Option<(u64, crate::component::blobs::FileSeal)>> {
+        let body = json!({
+            "app": app.app_id, "id": hex::encode(id), "strong": true, "file": true, "record": true
+        });
+        self.ask_leader(
+            app,
+            body,
+            |m| m.file_record(id),
+            |v| {
+                let Some(record) = v.get("record") else {
+                    return Some(None);
+                };
+                let size = record["size"].as_u64()?;
+                let seal = serde_json::from_value(record["seal"].clone()).ok()?;
+                Some(Some((size, seal)))
+            },
+        )
+        .await
+    }
+
     /// `id` as `app`'s leader holds it: `None` if no replica answered as leader, `Some(None)` if
     /// not held, else whether it is published and its revocation count.
     pub async fn blob_standing_strong(
@@ -2982,6 +3096,15 @@ impl Node {
         {
             return self.component_blob_cmd(g, req).await;
         }
+        if executor == Some(Kind::Component)
+            && req.host
+            && matches!(
+                req.method.as_str(),
+                "__pipeline_start" | "__pipeline_cancel"
+            )
+        {
+            return self.component_pipeline_cmd(g, req).await;
+        }
         let why = match executor {
             Some(Kind::Component) => COMPONENT_REFUSES,
             _ => crate::app::WASMER_GONE,
@@ -3135,6 +3258,7 @@ impl Node {
             return Err(ApiError::unsupported_engine());
         }
         if !req.host {
+            app.require_app_component()?;
             let a = self.call_here_component(&app, req).await?;
             return serde_json::to_value(a).map_err(|e| ApiError::internal(&e.to_string()));
         }
@@ -3183,7 +3307,13 @@ impl Node {
         if app.executor == Kind::Wasmer {
             return Err(ApiError::unsupported_engine());
         }
-        if req.method != component::RUN_VIEW {
+        if !matches!(
+            req.method.as_str(),
+            component::RUN_VIEW | component::PIPELINE_VIEW
+        ) {
+            app.require_app_component()?;
+        }
+        if req.method != component::RUN_VIEW && req.method != component::PIPELINE_VIEW {
             self.abi_gate(&app, &req.method, &req.caller, true, false)
                 .await?;
         }
@@ -3540,5 +3670,23 @@ mod off_workers_tests {
     #[test]
     fn outside_a_runtime_it_runs_in_place() {
         assert_eq!(off_workers(|| 7), 7);
+    }
+}
+
+#[cfg(test)]
+mod unbound_receipt_key_tests {
+    use super::takes_unbound_receipt_key;
+    use crate::attest::RECEIPT_KEY_BOUND_SINCE;
+
+    /// A cluster rolling from the release before takes its nodes' unbound
+    /// quotes; once the cluster version reaches the bound form's release, it
+    /// does not.
+    #[test]
+    fn only_a_cluster_still_on_an_earlier_release_takes_unbound_quotes() {
+        assert!(takes_unbound_receipt_key(Some("1.0.0-rc.18")));
+        assert!(takes_unbound_receipt_key(None));
+        assert!(!takes_unbound_receipt_key(Some(RECEIPT_KEY_BOUND_SINCE)));
+        assert!(!takes_unbound_receipt_key(Some("1.0.0")));
+        assert!(!takes_unbound_receipt_key(Some("garbage")));
     }
 }

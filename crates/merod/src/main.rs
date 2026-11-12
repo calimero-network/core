@@ -262,6 +262,13 @@ async fn local(args: LocalArgs) -> eyre::Result<()> {
     // The local cluster's rp id is `localhost`, its apps domain `localhost`.
     node_config::check_rp_id("localhost", &args.origins, Some("localhost"))
         .map_err(|e| eyre::eyre!("--rp-id \"localhost\" does not cover a passkey host: {e}"))?;
+    if args
+        .ops_token
+        .as_deref()
+        .is_some_and(|t| t.trim().is_empty())
+    {
+        eyre::bail!("--ops-token is empty; leave it out for a new random one");
+    }
     let token = args
         .ops_token
         .unwrap_or_else(|| hex::encode(calimero_identity::random::<16>()));
@@ -304,6 +311,18 @@ fn read_settings(path: &Path) -> eyre::Result<calimero_outbound::OutboundSetting
     let settings: Settings =
         toml::from_str(&text).map_err(|e| eyre::eyre!("{}: {e}", path.display()))?;
     Ok(settings.outbound)
+}
+
+/// The verifier's base URL, refused unless `consent_page::verifier_base`
+/// takes it.
+fn attestation_verifier_url(args: &NodeArgs) -> eyre::Result<Option<String>> {
+    args.attestation_verifier_url
+        .as_deref()
+        .map(|raw| {
+            calimero_node::consent_page::verifier_base(raw)
+                .map_err(|e| eyre::eyre!("--attestation-verifier-url {raw:?} {e}"))
+        })
+        .transpose()
 }
 
 fn need_node(home: Option<&PathBuf>, what: &str) -> eyre::Result<PathBuf> {
@@ -475,6 +494,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     if args.job_slots.is_some() {
         eyre::bail!("--job-slots is for --job-node only");
     }
+    args.check_ops_token()?;
     let node_id = args.node_id.ok_or_else(|| {
         eyre::eyre!("the node's id is not set: merod --node NAME init --node-id N ...")
     })?;
@@ -491,6 +511,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     let cluster = args.cluster.clone().unwrap_or_else(|| "dev".to_owned());
     let peers = parse_peers(&args)?;
     let peer_measurements = peer_measurements(&args, dev)?;
+    let attestation_verifier_url = attestation_verifier_url(&args)?;
     let (storage_key, (kms_keys, rollback)) = storage_key(&args, dev, &cluster, node_id).await?;
     let outbound = match (&args.settings, &args.outbound) {
         (Some(path), _) => Some(read_settings(path)?),
@@ -546,6 +567,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
             .transpose()?
             .flatten(),
         apps_domain,
+        attestation_verifier_url,
         governance: Governance {
             releases: authority(args.release_approvals),
             app_upgrades: authority(args.app_upgrades),

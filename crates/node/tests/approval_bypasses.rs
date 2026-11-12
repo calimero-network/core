@@ -12,19 +12,12 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use std::sync::Arc;
 use std::time::Duration;
 
 use calimero_client::attest::HttpAttestor;
-use calimero_client::{Client, Policy};
+use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::{Client, Policy, Request};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::node::{ViewRequest, SYSTEM_GROUP};
 use calimero_node::types::Caller;
@@ -39,7 +32,8 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, signed_up, Cluster};
+use harness::{kv_wasm, signed_up, typed, wire, Cluster};
+use reqwest::Method;
 
 fn running(c: &Cluster, i: usize) -> &Running {
     c.nodes[i].as_ref().unwrap()
@@ -124,14 +118,21 @@ async fn split_cluster() -> Cluster {
 /// Alice's kv app on nodes 1 and 2, holding `k = v1`.
 async fn alices_app(c: &Cluster) -> (Client, SoftAuthenticator, String, String, String) {
     let (alice, key) = signed_up(c, 0, "alice").await;
-    let account = alice.me().await.unwrap()["accountId"]
+    let account = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let created = alice
-        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     let mut replicas: Vec<u64> = serde_json::from_value(created["replicas"].clone()).unwrap();
@@ -142,7 +143,14 @@ async fn alices_app(c: &Cluster) -> (Client, SoftAuthenticator, String, String, 
         "the unapproved node is placed nothing"
     );
     let _ = alice
-        .call(&app, "set", json!({ "key": "k", "value": "v1" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v1" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     (alice, key, account, app, bundle)
@@ -250,14 +258,40 @@ async fn a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes(
     let on3 = c.client(2);
     on3.use_session(alice.session().await.unwrap()).await;
     let read = on3
+        .apps()
         .view(
             &app,
             "get",
-            json!({ "key": "k" }),
-            calimero_client::Consistency::Strong,
+            Some(json!({ "key": "k" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
         )
         .await;
     assert!(read.is_err(), "{read:?}");
+}
+
+/// The usage routes judge the caller as every other internal route does: an
+/// identified sealed session from the node whose address attests its key, not
+/// only the cluster secret.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_usage_routes_answer_identified_peers_only() {
+    let c = split_cluster().await;
+    let (_alice, _key, _account, app, _bundle) = alices_app(&c).await;
+    let routes = [
+        ("internal/usage", json!({ "app": app })),
+        ("internal/usage/today", json!({ "day": 0 })),
+    ];
+    let peer = as_node(&c, 1, 0);
+    let anon = anonymous(&c, 0);
+    for (path, body) in &routes {
+        let (status, v) = peer_send(&c, &peer, 0, false, path, body, 2).await;
+        assert_eq!(status, 200, "{path}: {v}");
+        let (status, v) = peer_send(&c, &anon, 0, false, path, body, 2).await;
+        assert_eq!(status, 403, "{path} over an anonymous channel: {v}");
+        // Claiming another node's id: its address attests another key.
+        let (status, v) = peer_send(&c, &peer, 0, false, path, body, 3).await;
+        assert_eq!(status, 403, "{path} claiming node 3: {v}");
+    }
 }
 
 // ---------------------------------------------------------------- F3
@@ -332,7 +366,7 @@ async fn forged_decisions_are_refused_where_they_apply_on_every_node() {
     let c = split_cluster().await;
     let (_alice, mut alice_pk, alice, app, bundle) = alices_app(&c).await;
     let (bob_client, mut bob_pk) = signed_up(&c, 1, "bob").await;
-    let bob = bob_client.me().await.unwrap()["accountId"]
+    let bob = bob_client.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -461,24 +495,28 @@ async fn forged_credentials_memberships_and_redemptions_are_refused() {
     let c = split_cluster().await;
     let (alice_client, mut alice_pk, alice, _app, _bundle) = alices_app(&c).await;
     let (bob_client, mut bob_pk) = signed_up(&c, 1, "bob").await;
-    let bob = bob_client.me().await.unwrap()["accountId"]
+    let bob = bob_client.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
     let org = alice_client
-        .post("orgs", json!({ "name": "Acme" }))
+        .orgs()
+        .create("Acme", None)
         .await
+        .map(wire)
         .unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let token = alice_client
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "member" }),
-            &mut alice_pk,
+        .orgs()
+        .invite_create(
+            &org,
+            typed(json!({ "role": "member" })),
+            Some(&mut alice_pk),
         )
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
@@ -581,8 +619,10 @@ async fn forged_credentials_memberships_and_redemptions_are_refused() {
 
     // The invite still works through a node the token was given to.
     let joined = bob_client
-        .post(&format!("invites/{token}/redeem"), json!({}))
+        .orgs()
+        .invite_redeem(&token)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(joined["org"], json!(org), "{joined}");
 }
@@ -634,13 +674,15 @@ fn refresh_hash(token: &str) -> String {
 async fn forged_sessions_counters_key_revocations_and_accounts_are_refused() {
     let c = split_cluster().await;
     let (alice_client, mut alice_pk) = signed_up(&c, 0, "alice").await;
-    let alice = alice_client.me().await.unwrap()["accountId"]
+    let alice = alice_client.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
     let (key_id, _key) = alice_client
-        .create_api_key(json!({ "label": "ci" }), &mut alice_pk)
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), Some(&mut alice_pk))
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
     let alices_refresh = alice_client.session().await.unwrap().refresh_token;
     let session = running(&c, 0)
@@ -714,11 +756,7 @@ async fn forged_sessions_counters_key_revocations_and_accounts_are_refused() {
     // The leader's tokens open nothing; alice's own still refreshes, her
     // passkey still signs in, and the victim's sign-up goes through.
     for token in [theirs, also_theirs] {
-        let e = c
-            .client(0)
-            .post("auth/refresh", json!({ "refreshToken": token }))
-            .await
-            .unwrap_err();
+        let e = c.client(0).auth().refresh(token).await.unwrap_err();
         assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{e}");
     }
     let _s = alice_client.refresh().await.unwrap();
@@ -737,14 +775,16 @@ async fn forged_bindings_deadlines_and_publisher_runs_are_refused() {
     use ed25519_dalek::Signer;
     let c = Cluster::start(3).await;
     let (alice_client, mut alice_pk) = signed_up(&c, 0, "alice").await;
-    let alice = alice_client.me().await.unwrap()["accountId"]
+    let alice = alice_client.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
     let (_bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let org = alice_client
-        .post("orgs", json!({ "name": "Acme" }))
+        .orgs()
+        .create("Acme", None)
         .await
+        .map(wire)
         .unwrap()["orgId"]
         .as_str()
         .unwrap()
@@ -841,10 +881,8 @@ async fn forged_bindings_deadlines_and_publisher_runs_are_refused() {
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
     let e = ops
-        .post(
-            "ops/releases/2.0.0/deadline",
-            json!({ "after": "2999-01-01T00:00:00Z" }),
-        )
+        .ops()
+        .release_deadline("2.0.0", Some("2999-01-01T00:00:00Z"), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
@@ -908,10 +946,7 @@ async fn operator_decisions_need_the_operator_signature() {
     ops.use_api_key("ops-secret").await;
 
     // The ops token alone is not enough: the node names what to sign.
-    let e = ops
-        .post("ops/releases", json!({ "version": "2.0.0" }))
-        .await
-        .unwrap_err();
+    let e = ops.ops().release("2.0.0", None, None).await.unwrap_err();
     assert_eq!(e.code(), Some("OPERATOR_SIGNATURE_REQUIRED"), "{e}");
     let d = e.details().unwrap().clone();
     let message = base64::Engine::decode(
@@ -934,12 +969,12 @@ async fn operator_decisions_need_the_operator_signature() {
     // A signature by another key: refused.
     let other = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
     let e = ops
-        .post(
-            "ops/releases",
+        .transport()
+        .json(Request::new(Method::POST, "ops/releases").json(
             json!({ "version": "2.0.0", "operatorProof": {
                 "nonce": d["nonce"], "signature": hex::encode(other.sign(&message).to_bytes()),
             } }),
-        )
+        ))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_OPERATOR_SIGNATURE"), "{e}");
@@ -959,16 +994,18 @@ async fn operator_decisions_need_the_operator_signature() {
     // Signed by the operator: applied, once.
     let proof = json!({ "nonce": d["nonce"], "signature": hex::encode(operator.sign(&message).to_bytes()) });
     let _ok = ops
-        .post(
-            "ops/releases",
-            json!({ "version": "2.0.0", "operatorProof": proof }),
+        .transport()
+        .json(
+            Request::new(Method::POST, "ops/releases")
+                .json(json!({ "version": "2.0.0", "operatorProof": proof })),
         )
         .await
         .unwrap();
     let e = ops
-        .post(
-            "ops/releases",
-            json!({ "version": "2.0.0", "operatorProof": proof }),
+        .transport()
+        .json(
+            Request::new(Method::POST, "ops/releases")
+                .json(json!({ "version": "2.0.0", "operatorProof": proof })),
         )
         .await
         .unwrap_err();
@@ -1017,21 +1054,31 @@ async fn sessions_signed_by_an_unapproved_node_reach_nothing() {
         });
     let on1 = c.client(0);
     on1.use_session(minted.clone()).await;
-    let e = on1.me().await.unwrap_err();
+    let e = on1.auth().me().await.unwrap_err();
     assert!(e.to_string().starts_with("401"), "{e}");
     let e = on1
-        .call(&app, "set", json!({ "key": "k", "value": "x" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "x" })),
+            None,
+            None,
+        )
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("401"), "{e}");
     on3.use_session(minted.clone()).await;
-    let e = on3.me().await.unwrap_err();
+    let e = on3.auth().me().await.unwrap_err();
     assert_eq!(e.code(), Some("WRONG_NODE"), "{e}");
 
     // Her session from node 1 works on every approved node.
     let on2 = c.client(1);
     on2.use_session(alice.session().await.unwrap()).await;
-    assert_eq!(on2.me().await.unwrap()["accountId"], json!(account));
+    assert_eq!(
+        on2.auth().me().await.map(wire).unwrap()["accountId"],
+        json!(account)
+    );
 
     // A refresh node 3 may not serve is refused before the refresh token is
     // spent: the same token then works on an approved node (spent, it would
@@ -1043,10 +1090,7 @@ async fn sessions_signed_by_an_unapproved_node_reach_nothing() {
     let fresh = alice.refresh().await.unwrap();
     // A sign-in node 3 may not serve is refused before its challenge is spent:
     // the same ceremony then finishes on an approved node.
-    let begin = on3
-        .post("auth/passkey/login/begin", json!({}))
-        .await
-        .unwrap();
+    let begin = on3.auth().login_begin(None).await.map(wire).unwrap();
     let challenge =
         calimero_identity::from_b64url(begin["options"]["challenge"].as_str().unwrap()).unwrap();
     let finish = json!({
@@ -1054,14 +1098,20 @@ async fn sessions_signed_by_an_unapproved_node_reach_nothing() {
         "assertion": calimero_client::Passkey::get(&mut key, &challenge),
     });
     let e = on3
-        .post("auth/passkey/login/finish", finish.clone())
+        .transport()
+        .json(Request::new(Method::POST, "auth/passkey/login/finish").json(finish.clone()))
         .await
         .unwrap_err();
     assert!(matches!(e, calimero_client::Error::WrongNode { .. }), "{e}");
     let signed_in = c
         .client(0)
-        .post("auth/passkey/login/finish", finish)
+        .auth()
+        .login_finish(
+            begin["challengeId"].as_str().unwrap(),
+            calimero_client::Passkey::get(&mut key, &challenge),
+        )
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(signed_in["accountId"], json!(account));
     assert!(
@@ -1070,5 +1120,8 @@ async fn sessions_signed_by_an_unapproved_node_reach_nothing() {
         fresh.session_token
     );
     on2.use_session(fresh).await;
-    assert_eq!(on2.me().await.unwrap()["accountId"], json!(account));
+    assert_eq!(
+        on2.auth().me().await.map(wire).unwrap()["accountId"],
+        json!(account)
+    );
 }

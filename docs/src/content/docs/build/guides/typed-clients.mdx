@@ -94,6 +94,47 @@ await rooms.adminRelease({ id, reason }, { confirm: passkeyConfirm(passkey) });
 An `option<..>` argument may be left out or be `null`: the SDK reads both as
 `None`. In an error's or an event's fields it is always there, `null` for none.
 
+### Read a call's log index and events
+
+Each method answers its result alone. The same methods under `raw` answer the
+whole answer: a call `{ result, index, events }` (`CallAnswer<T>`: the log index
+it committed at and the app's events it emitted, typed as `AppEvent`), a view
+`{ result, index }` (`ViewAnswer<T>`: the log index of the state it read). Use
+them to resume the event stream from what a call or view already reflects, or to
+read a later view at least as new as a call:
+
+```ts
+const { index, events } = await kv.raw.set({ key: 'greeting', value: 'hello' });
+const value = await kv.get({ key: 'greeting' }, { consistency: 'stale', minIndex: index });
+
+// Render the entries, then follow the events after the state they reflect.
+const { result: entries, index: seen } = await kv.raw.entries();
+for await (const event of kv.events(seen + 1)) { /* ... */ }
+```
+
+`raw` takes the same arguments and options, and runs `after` the same way. Its
+type is `<Name>RawApi` (`KvStoreRawApi`). If the app has a method named `raw`,
+the property is `rawAnswers`.
+
+### Create an instance with its `init` arguments
+
+When the app's `#[app::init]` takes arguments (here mero-chess's
+`init(title: Option<String>, now: Option<u64>)`), the client declares them as
+`InitArgs`, in the types of every other argument (a `u64` is a decimal string, an
+`option` may be left out). `client.apps.create` takes `initArgs` as any JSON, so
+check it with `satisfies`:
+
+```ts
+import type { InitArgs } from './generated/client';
+
+const { appId } = await client.apps.create({
+  package: 'com.calimero.mero-chess',
+  initArgs: { title: 'Friday blitz', now: String(Date.now()) } satisfies InitArgs,
+});
+```
+
+An `init` without arguments declares no `InitArgs`.
+
 ### Keep a refreshed session
 
 mero-js refreshes an expired session on its own, and has no event that says it
@@ -110,18 +151,29 @@ const kv = new KvStoreClient(client, appId, {
 
 The class implements `KvStoreApi` (`<Name>Api`), an interface of the app's
 methods alone. Code that takes a `KvStoreApi`, or the `Pick` of it that it calls,
-is handed the class in the app and a double of those methods in a test:
+is handed the class in the app and a double of those methods in a test; there
+is no need to `Pick` from the class itself (`Pick<KvStoreClient, 'len'>`).
+Code that reads `raw` takes `KvStoreRawApi` the same way (`kv.raw` in the app):
 
 ```tsx
-import type { KvStoreApi } from './generated/client';
+import type { KvStoreApi, KvStoreRawApi } from './generated/client';
 
 function Counter({ kv }: { kv: Pick<KvStoreApi, 'len'> }) { /* ... */ }
 
 render(<Counter kv={{ len: async () => '3' }} />);
+
+async function save(kv: Pick<KvStoreRawApi, 'set'>): Promise<number> {
+  return (await kv.set({ key: 'a', value: 'b' })).index;
+}
+
+await save({ set: async () => ({ result: null, index: 7, events: [] }) });
 ```
 
-To test the class itself, give it a double of `AppTransport`, the part of
-`CalimeroClient` it uses (`apps.call`, `apps.view`, `events`):
+To test the class itself, give it a double of the part of `CalimeroClient` it
+uses. A client that only calls and views takes an `AppCallTransport`
+(`apps.call` and `apps.view`; `Pick<CalimeroClient, 'apps'>` is one), and has no
+`events()`: calling it does not type-check. `events()` needs an `AppTransport`,
+which adds `events`:
 
 ```ts
 const kv = new KvStoreClient(
@@ -130,11 +182,15 @@ const kv = new KvStoreClient(
       call: async () => ({ result: null }),
       view: async ({ method }) => ({ result: method === 'len' ? '0' : null }),
     },
-    async *events() {},
   },
   'app-1',
 );
 ```
+
+A double may answer `{ result }` alone; it answers `raw` with index `0` and no
+events unless it also gives `index` (and a call's `events`), as mero-js does.
+`KvStoreClient` written without a type argument is a client with events
+(`KvStoreClient<AppTransport>`), which is what one built on a `CalimeroClient` is.
 
 ## Use it from Python
 

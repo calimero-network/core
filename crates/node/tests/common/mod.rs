@@ -205,6 +205,7 @@ impl Cluster {
                     outbound: None,
                     governance: Default::default(),
                     apps_domain: None,
+                    attestation_verifier_url: None,
                     operator_key: Some(operator_public()),
                 };
                 configure(&mut config);
@@ -364,15 +365,18 @@ impl Cluster {
     /// Registers `addr` as job node `id` through `/ops/nodes` and waits until
     /// the first node's directory shows it.
     pub async fn register_job_node(&self, id: u64, addr: &str) {
+        self.register_job_node_in(id, addr, None).await;
+    }
+
+    /// [`Cluster::register_job_node`] into the pool `pool` names.
+    pub async fn register_job_node_in(&self, id: u64, addr: &str, pool: Option<&str>) {
         let ops = self.client(0);
         ops.use_api_key("ops-secret").await;
-        let _ = ops_signed(
-            &ops,
-            "ops/nodes",
-            serde_json::json!({ "id": id, "addr": addr, "role": "job" }),
-        )
-        .await
-        .unwrap();
+        let mut body = serde_json::json!({ "id": id, "addr": addr, "role": "job" });
+        if let Some(pool) = pool {
+            body["pool"] = pool.into();
+        }
+        let _ = ops_signed(&ops, "ops/nodes", body).await.unwrap();
         let node = &self.nodes[0].as_ref().unwrap().node;
         for _ in 0..100 {
             if node.sys(|s| s.job_nodes().any(|n| n.id == id)) {
@@ -395,7 +399,7 @@ pub fn mpk_with(
     compute: Option<&[u8]>,
     key: &ed25519_dalek::SigningKey,
 ) -> Vec<u8> {
-    mpk_needing(package, version, wasm, compute, "0.1.0", key)
+    mpk_parts(package, version, Some(wasm), compute, "0.1.0", key)
 }
 
 /// [`mpk_with`], whose manifest declares `min_runtime` as its `minRuntimeVersion`.
@@ -407,13 +411,77 @@ pub fn mpk_needing(
     min_runtime: &str,
     key: &ed25519_dalek::SigningKey,
 ) -> Vec<u8> {
+    mpk_parts(package, version, Some(wasm), compute, min_runtime, key)
+}
+
+/// A signed single-service `.mpk` that may ship only its compute component.
+pub fn mpk_parts(
+    package: &str,
+    version: &str,
+    wasm: Option<&[u8]>,
+    compute: Option<&[u8]>,
+    min_runtime: &str,
+    key: &ed25519_dalek::SigningKey,
+) -> Vec<u8> {
+    mpk_build(
+        package,
+        version,
+        wasm,
+        compute,
+        min_runtime,
+        &[],
+        false,
+        key,
+    )
+}
+
+/// [`mpk_parts`] shipping `pipelines` (file name, YAML source) as well.
+pub fn mpk_with_pipelines(
+    package: &str,
+    version: &str,
+    wasm: Option<&[u8]>,
+    compute: Option<&[u8]>,
+    pipelines: &[(&str, &str)],
+    key: &ed25519_dalek::SigningKey,
+) -> Vec<u8> {
+    mpk_build(
+        package, version, wasm, compute, "0.1.0", pipelines, false, key,
+    )
+}
+
+/// [`mpk_with_pipelines`] with the app, compute component and pipelines declared by one named service.
+pub fn mpk_named_service(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    compute: &[u8],
+    pipelines: &[(&str, &str)],
+    key: &ed25519_dalek::SigningKey,
+) -> Vec<u8> {
+    let (wasm, compute) = (Some(wasm), Some(compute));
+    mpk_build(
+        package, version, wasm, compute, "0.1.0", pipelines, true, key,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mpk_build(
+    package: &str,
+    version: &str,
+    wasm: Option<&[u8]>,
+    compute: Option<&[u8]>,
+    min_runtime: &str,
+    pipelines: &[(&str, &str)],
+    named_service: bool,
+    key: &ed25519_dalek::SigningKey,
+) -> Vec<u8> {
     use sha2::Digest;
     let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
         path: path.to_owned(),
         hash: hex::encode(sha2::Sha256::digest(bytes)),
         size: bytes.len() as u64,
     };
-    let manifest = calimero_bundle::BundleManifest {
+    let mut manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
         package: package.to_owned(),
         app_version: version.to_owned(),
@@ -425,7 +493,7 @@ pub fn mpk_needing(
         handlers: None,
         build_info: None,
         interfaces: None,
-        wasm: Some(artifact("app.wasm", wasm)),
+        wasm: wasm.map(|w| artifact("app.wasm", w)),
         abi: None,
         compute: compute.map(|c| artifact("compute.wasm", c)),
         links: None,
@@ -434,19 +502,31 @@ pub fn mpk_needing(
         upgrades: None,
         outbound: Vec::new(),
         services: None,
+        pipelines: pipelines
+            .iter()
+            .map(|(name, yaml)| artifact(name, yaml.as_bytes()))
+            .collect(),
         signature: None,
     };
+    if named_service {
+        manifest.services = Some(vec![calimero_bundle::BundleService {
+            name: "svc".to_owned(),
+            wasm: manifest.wasm.take().unwrap(),
+            abi: None,
+            compute: manifest.compute.take(),
+            pipelines: std::mem::take(&mut manifest.pipelines),
+        }]);
+    }
     let mut manifest = serde_json::to_value(&manifest).unwrap();
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
     let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
         Vec::new(),
         flate2::Compression::default(),
     ));
-    let mut entries = vec![
-        ("manifest.json", serde_json::to_vec(&manifest).unwrap()),
-        ("app.wasm", wasm.to_vec()),
-    ];
+    let mut entries = vec![("manifest.json", serde_json::to_vec(&manifest).unwrap())];
+    entries.extend(wasm.map(|w| ("app.wasm", w.to_vec())));
     entries.extend(compute.map(|c| ("compute.wasm", c.to_vec())));
+    entries.extend(pipelines.iter().map(|(n, y)| (*n, y.as_bytes().to_vec())));
     for (name, bytes) in entries {
         let mut header = tar::Header::new_gnu();
         header.set_path(name).unwrap();
@@ -476,4 +556,28 @@ impl UploadBytes for Client {
         self.upload_file(app, std::io::Cursor::new(bytes), size)
             .await
     }
+}
+
+/// A generated route's typed answer as the JSON the node sent, for tests that
+/// assert on the wire shape: the answer's types keep every field the node sent
+/// (named, or in `extra`), so nothing is lost on the way back.
+pub fn wire<T: serde::Serialize>(answer: T) -> serde_json::Value {
+    // SAFETY: the generated answer types serialize to JSON objects; nothing
+    // in them (maps keyed by strings, plain values) can fail to serialize.
+    serde_json::to_value(answer).expect("a generated answer is JSON")
+}
+
+/// A generated route's typed request, written as the JSON a test sends. It
+/// must say all of it: a key the type would drop changes the request, so it
+/// panics rather than send less than the test wrote.
+pub fn typed<T: serde::Serialize + serde::de::DeserializeOwned>(body: serde_json::Value) -> T {
+    let typed: T = serde_json::from_value(body.clone())
+        .unwrap_or_else(|e| panic!("not the route's request type: {e}: {body}"));
+    let sent = serde_json::to_value(&typed).ok();
+    assert_eq!(
+        sent.as_ref(),
+        Some(&body),
+        "the request type drops part of {body}"
+    );
+    typed
 }

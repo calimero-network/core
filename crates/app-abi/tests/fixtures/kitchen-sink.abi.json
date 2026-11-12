@@ -7,7 +7,7 @@
     "version": 2
   },
   "methods": {
-    "init": { "kind": "init", "params": [], "returns": null, "confirm": false, "public": false, "allowSystem": false },
+    "init": { "kind": "init", "params": [["owner", "string"], ["limit", "u64"], ["note", "option<string>"], ["first", "option<Item>"]], "returns": null, "confirm": false, "public": false, "allowSystem": false },
     "everything": {
       "kind": "call",
       "params": [

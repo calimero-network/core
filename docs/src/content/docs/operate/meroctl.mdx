@@ -45,7 +45,7 @@ watch`, `dev`) print their own lines.
 | `--min-release VERSION` | `CALIMERO_MIN_RELEASE` | `2.3.109` | The oldest mero-tee release to trust. |
 | `--api-key KEY` | `CALIMERO_API_KEY` | none | Authenticate with this API key instead of a saved session. |
 | `--ops-token TOKEN` | `CALIMERO_OPS_TOKEN` | none | The operator's token, for `ops` commands. |
-| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move`, `ops set-quotas` and `ops set-pools` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
+| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move`, `ops set-quotas` and `ops set-pools`, `ops set-prices` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
 
 Which node: `--api`, else `--node`, else the default saved node. Which
 credential: `--api-key`, else the session saved for that node's URL (refreshed
@@ -105,6 +105,17 @@ same command (`meroctl package origins list PACKAGE`).
 | `app get PACKAGE` | `GET /packages/{package}` | One installed application. |
 | `app versions PACKAGE` (`list-versions`) | `GET /packages/{package}` | Its installed versions. |
 | `app get-latest-version PACKAGE` | `GET /packages/{package}` | Its newest installed version. |
+| `app pipelines PACKAGE [--version V]` | `GET /packages/{package}/{version}/pipelines` | The pipelines a version registered (default: the newest): per name, `hash`, `worstCaseFuel`, the `modules` it pins and the canonical `pipeline`. |
+| `pipeline retry APP RUN [--limit STEP.FIELD=N]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipeline-runs/{run}/retry` | Start a new run of an ended run's pipeline, release, inputs and params with some step limits raised (`fuel`, `memoryMib`, `wallSecs`, each within the method's caps); what already succeeded is answered from the step cache. |
+| `pipeline validate FILE [--package P --version V]` | `POST /pipelines/validate` | Check a pipeline file and print every error with its path and code; exit code 1 when it is not valid. With a release, check it as that release would install it. Writes nothing. |
+| `pipeline estimate APP NAME [--input NAME=ID[,ID...]]... [--count NAME=N]...` | `POST /apps/{app}/pipelines/{name}/estimate` | Runs, fuel and cost per step for the given input file counts, `maxItems` for an input not given. Starts nothing. |
+| `pipeline run APP NAME [--input NAME=ID[,ID...]]... [--param NAME=VALUE]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipelines/{name}/runs` | Start a run of a pipeline the context's release registers; prints `{ run }`, or with `--wait` the run once it is no longer running. `--max-cost` caps what the run may owe under the operator's price table. |
+| `pipeline get APP RUN` | `GET /apps/{app}/pipeline-runs/{run}` | A run's state and each step's status, runs, outputs and reason. |
+| `pipeline cancel APP RUN` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a run. |
+| `pipeline runs APP` | `GET /apps/{app}/pipeline-runs` | The context's recent runs, newest first. |
+| `pipeline receipt APP RUN [--verify] [--out FILE]` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | The node-signed receipt of an ended run; with `--verify`, check it under the node's attested key and compare each downloaded output with its hash. |
+| `pipeline watch APP RUN` | `GET /apps/{app}/pipeline-runs/{run}/events` | One JSON line per `snapshot`, `run` and `step` event, then the `end` event as the answer. |
+| `pipeline download APP RUN [--out DIR]` | the file export routes | Download every output of every step of an ended run as `STEP-INDEX.bin`. |
 | `app uninstall PACKAGE [--version V]` | `DELETE /packages/{package}[/{version}]` | Uninstall one version or the whole application. Refused while a context runs it. |
 | `app watch --path FILE --dev-passkey FILE [-c CONTEXT]... [--once] [--interval-ms MS]` | uploads, then `POST /apps/{app}/upgrade` | Push a build now, then on every save. A `.mpk` is installed and this account's contexts of its package (or the `--context`s named) are updated to its version; a raw `.wasm` updates only the `--context`s named. `--interval-ms` defaults to `500`. |
 | `app origins list PACKAGE` (`ls`) | `GET /package-origins/{package}` | The web origins registered for the application: each `origin`, its `rpId`, `addedBy`, `addedAt` and `served` (whether the cluster serves the frontend there). Its manager's only. |
@@ -204,6 +215,7 @@ A context's sealed files.
 | Command | Route | Meaning |
 | --- | --- | --- |
 | `file upload FILE -c CONTEXT` | `POST /apps/{app}/files`, or a session under `/apps/{app}/files/uploads` | Upload a sealed file (its owner or an org member): one request up to 16 MiB, else parts that resume after a dropped connection; prints its `id`, `size`, `sha256` and `index`. |
+| `file download APP ID --out PATH` | `POST /apps/{app}/files/{id}/export`, `GET /apps/{app}/files/{id}/segments/{k}` | Download a sealed file's plaintext: the node sends ciphertext and the file key wrapped to a key made for the call, and every byte is checked before anything is written. |
 
 ## namespace
 
@@ -310,6 +322,8 @@ node answers `403` for the others.
 | `ops set-quotas JSON` | `POST /ops/quotas` | Replace them. |
 | `ops pools` | `GET /ops/pools` | The compute pools and the runs each takes at once. |
 | `ops set-pools JSON` | `POST /ops/pools` | Set the pools, `{ name: { runsPerNode, maxMemoryMib } }`; a job node joins one with `add-node --pool`. |
+| `ops prices` | `GET /ops/prices` | The price table, `{}` until one is set. |
+| `ops set-prices JSON` | `POST /ops/prices` | Set it, `{ version, fuelPerVcpuSecond, vcpuSecond, gibSecond, connectorGib, storageGibMonth, egressGib }` in micro-units; the version must be the current one plus one. |
 | `ops release VERSION [--withdraw]` | `POST /ops/releases` | Approve (or withdraw) a mero-tee release for every app, where the operator holds release approvals. |
 | `ops outbound --package P [--prefix URL]... [--replace]` | `POST /ops/outbound` | Approve outbound prefixes cluster-wide, where the operator holds outbound approvals. |
 | `ops packages` | `GET /ops/packages` | The applications the operator installed (not the accounts'). |

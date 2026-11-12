@@ -105,9 +105,11 @@ fn a_crate_with_compute_methods_builds_a_second_component_that_cannot_reach_stat
         [
             "big",
             "burn",
+            "check",
             "digest",
             "digestThen",
             "digestUnkept",
+            "echo",
             "hog",
             "peek",
             "spin"

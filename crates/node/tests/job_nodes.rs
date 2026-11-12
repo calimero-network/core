@@ -1,14 +1,6 @@
 //! Job nodes next to a cluster: in the directory, never members, replicas or
 //! blob targets, and attested by the leader's side before any work reaches them.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 mod common;
 use common::UploadBytes as _;
 
@@ -18,9 +10,11 @@ use std::time::Duration;
 
 use axum::extract::RawQuery;
 use axum::routing::get;
+use calimero_client::types::OpsRegisterNodeRequestRole;
 use calimero_client::Client;
 use calimero_node::cluster_key::Request;
-use common::{signed_up, Cluster};
+use common::{signed_up, typed, wire, Cluster};
+use reqwest::Method;
 use serde_json::{json, Value};
 
 const JOB: u64 = 4;
@@ -32,8 +26,18 @@ async fn ops(c: &Cluster) -> Client {
 }
 
 async fn create(alice: &Client, name: &str) -> String {
-    let bundle = alice.upload_bundle(common::component("kv")).await.unwrap();
-    alice.create_app(name, &bundle, json!({})).await.unwrap()
+    let bundle = alice
+        .packages()
+        .bundle_put(common::component("kv"))
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    alice
+        .apps()
+        .create(typed(json!({ "name": name, "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap()
 }
 
 fn replicas(c: &Cluster, app: &str) -> Vec<u64> {
@@ -70,25 +74,25 @@ async fn a_job_node_is_listed_but_never_a_member_a_replica_or_a_key_holder() {
 
     let ops = ops(&c).await;
     let e = ops
-        .post(
-            &format!("ops/apps/{first}/replicas"),
-            json!({ "replicas": [1, 2, JOB] }),
-        )
+        .ops()
+        .set_replicas(&first, vec![1, 2, JOB], None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("JOB_NODE"), "{e}");
 
     // Roles are a closed set.
     assert!(ops
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": 9, "addr": "http://x/", "role": "gpu" }),
-            &common::operator_sign,
+        .transport()
+        .approved(
+            calimero_client::Request::new(Method::POST, "ops/nodes")
+                .json(json!({ "id": 9, "addr": "http://x/", "role": "gpu" })),
+            None,
+            Some(&common::operator_sign)
         )
         .await
         .is_err());
 
-    let placement = ops.get("ops/placement").await.unwrap();
+    let placement = ops.ops().placement().await.map(wire).unwrap();
     let nodes = placement["nodes"].as_array().unwrap();
     let listed = nodes.iter().find(|n| n["id"] == JOB).unwrap();
     assert_eq!(listed["role"], "job", "{placement}");
@@ -97,7 +101,7 @@ async fn a_job_node_is_listed_but_never_a_member_a_replica_or_a_key_holder() {
         .iter()
         .filter(|n| n["id"] != JOB)
         .all(|n| n["role"] == "replica"));
-    let status = ops.get("ops/status").await.unwrap();
+    let status = ops.ops().status().await.map(wire).unwrap();
     let record = status["nodes"]
         .as_array()
         .unwrap()
@@ -106,7 +110,7 @@ async fn a_job_node_is_listed_but_never_a_member_a_replica_or_a_key_holder() {
         .unwrap();
     assert_eq!(record["role"], "job", "{status}");
 
-    let metrics = ops.get_text("ops/metrics").await.unwrap();
+    let metrics = ops.ops().metrics().await.unwrap();
     assert!(metrics.contains("calimero_cluster_nodes 3\n"), "{metrics}");
     assert!(
         metrics.contains("calimero_cluster_job_nodes 1\n"),
@@ -115,14 +119,16 @@ async fn a_job_node_is_listed_but_never_a_member_a_replica_or_a_key_holder() {
 
     // The cluster key goes to no job node.
     let e = alice
-        .post(
-            "internal/cluster-key",
-            serde_json::to_value(Request {
-                cluster: c.configs[0].cluster.clone(),
-                node: JOB,
-                token: hex::encode([1_u8; 32]),
-            })
-            .unwrap(),
+        .transport()
+        .json(
+            calimero_client::Request::new(Method::POST, "internal/cluster-key").json(
+                serde_json::to_value(Request {
+                    cluster: c.configs[0].cluster.clone(),
+                    node: JOB,
+                    token: hex::encode([1_u8; 32]),
+                })
+                .unwrap(),
+            ),
         )
         .await
         .unwrap_err();
@@ -131,7 +137,8 @@ async fn a_job_node_is_listed_but_never_a_member_a_replica_or_a_key_holder() {
     // Removing it changes no voter and no app.
     let voters = status_voters(&ops).await;
     let _ = ops
-        .delete_operator_signed(&format!("ops/nodes/{JOB}"), &common::operator_sign)
+        .ops()
+        .remove_node(&JOB.to_string(), Some(&common::operator_sign))
         .await
         .unwrap();
     assert!(leader
@@ -142,7 +149,7 @@ async fn a_job_node_is_listed_but_never_a_member_a_replica_or_a_key_holder() {
 }
 
 async fn status_voters(ops: &Client) -> Vec<u64> {
-    let v: Value = ops.get("ops/status").await.unwrap();
+    let v: Value = ops.ops().status().await.map(wire).unwrap();
     let mut voters: Vec<u64> = serde_json::from_value(v["system"]["voters"].clone()).unwrap();
     voters.sort_unstable();
     voters
@@ -157,7 +164,12 @@ async fn a_bundles_majority_counts_only_replica_nodes() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     c.stop(2).await;
     // 2 of 3 replicas hold it; counting the job node it would be 2 of 4.
-    let bundle = alice.upload_bundle(common::component("kv")).await.unwrap();
+    let bundle = alice
+        .packages()
+        .bundle_put(common::component("kv"))
+        .await
+        .map(|b| b.hash)
+        .unwrap();
     assert!(!bundle.is_empty());
 }
 
@@ -367,11 +379,12 @@ async fn the_cluster_secret_goes_only_to_replica_addresses() {
     for id in [format!("{JOB}.x"), "9.x".to_owned()] {
         let e = c
             .client(0)
-            .post(
-                "auth/passkey/login/finish",
-                json!({ "challengeId": id, "assertion": {
+            .auth()
+            .login_finish(
+                &id,
+                typed(json!({
                     "credentialId": "a", "authenticatorData": "a",
-                    "clientDataJson": "a", "signature": "a" } }),
+                    "clientDataJson": "a", "signature": "a" })),
             )
             .await
             .unwrap_err();
@@ -399,7 +412,8 @@ async fn a_cached_attestation_does_not_outlive_the_registration_or_the_channel()
     let lead = c.client(leader);
     lead.use_api_key("ops-secret").await;
     let _ = lead
-        .delete_operator_signed(&format!("ops/nodes/{JOB}"), &common::operator_sign)
+        .ops()
+        .remove_node(&JOB.to_string(), Some(&common::operator_sign))
         .await
         .unwrap();
     let port = job
@@ -434,10 +448,14 @@ async fn a_registered_nodes_role_cannot_be_changed_by_registering_it_again() {
     let c = Cluster::start(3).await;
     let ops = ops(&c).await;
     let e = ops
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": 2, "addr": c.urls[1], "role": "job" }),
-            &common::operator_sign,
+        .ops()
+        .register_node(
+            2,
+            &c.urls[1],
+            None,
+            None,
+            Some(OpsRegisterNodeRequestRole::Job),
+            Some(&common::operator_sign),
         )
         .await
         .unwrap_err();
@@ -445,10 +463,14 @@ async fn a_registered_nodes_role_cannot_be_changed_by_registering_it_again() {
     let job = c.start_job_node(JOB, |_| {}).await;
     c.register_job_node(JOB, &job.url).await;
     let e = ops
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": JOB, "addr": job.url }),
-            &common::operator_sign,
+        .ops()
+        .register_node(
+            JOB,
+            &job.url,
+            None,
+            None,
+            None,
+            Some(&common::operator_sign),
         )
         .await
         .unwrap_err();
@@ -469,10 +491,14 @@ async fn a_replicas_address_may_be_respelled_without_stopping_the_cluster() {
         .to_uppercase()
         .replace("HTTP", "http");
     let _ = ops
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": 2, "addr": respelled }),
-            &common::operator_sign,
+        .ops()
+        .register_node(
+            2,
+            &respelled,
+            None,
+            None,
+            None,
+            Some(&common::operator_sign),
         )
         .await
         .unwrap();
@@ -487,10 +513,12 @@ async fn a_replicas_address_may_be_respelled_without_stopping_the_cluster() {
     let app = create(&alice, "kv").await;
     for i in 0..3 {
         let _ = alice
+            .apps()
             .call(
                 &app,
                 "set",
-                json!({ "key": "k", "value": i.to_string() }),
+                Some(json!({ "key": "k", "value": i.to_string() })),
+                None,
                 None,
             )
             .await
@@ -520,10 +548,14 @@ async fn an_address_belongs_to_one_node_in_any_spelling() {
         ("replica", bare),
     ] {
         let e = ops
-            .post_operator_signed(
-                "ops/nodes",
-                json!({ "id": 9, "addr": addr, "role": role }),
-                &common::operator_sign,
+            .ops()
+            .register_node(
+                9,
+                &addr,
+                None,
+                None,
+                Some(typed(json!(role))),
+                Some(&common::operator_sign),
             )
             .await
             .unwrap_err();
@@ -532,11 +564,8 @@ async fn an_address_belongs_to_one_node_in_any_spelling() {
 
     for addr in ["ftp://host/", "host:2528", "not a url"] {
         let e = ops
-            .post_operator_signed(
-                "ops/nodes",
-                json!({ "id": 9, "addr": addr }),
-                &common::operator_sign,
-            )
+            .ops()
+            .register_node(9, addr, None, None, None, Some(&common::operator_sign))
             .await
             .unwrap_err();
         assert_eq!(e.code(), Some("BAD_ADDRESS"), "{addr}: {e}");
@@ -569,10 +598,14 @@ async fn a_job_node_is_registered_only_once_every_replica_node_runs_this_release
     .await;
     let ops = ops(&c).await;
     let e = ops
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": JOB, "addr": "http://127.0.0.1:1/", "role": "job" }),
-            &common::operator_sign,
+        .ops()
+        .register_node(
+            JOB,
+            "http://127.0.0.1:1/",
+            None,
+            None,
+            Some(OpsRegisterNodeRequestRole::Job),
+            Some(&common::operator_sign),
         )
         .await
         .unwrap_err();
@@ -606,20 +639,21 @@ async fn an_older_replica_that_is_not_a_voter_blocks_job_registration() {
     let server = tokio::spawn(async move { axum::serve(listener, relay).await });
     let ops = ops(&c).await;
     let _ = ops
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": 9, "addr": addr }),
-            &common::operator_sign,
-        )
+        .ops()
+        .register_node(9, &addr, None, None, None, Some(&common::operator_sign))
         .await
         .unwrap();
     let st = c.nodes[0].as_ref().unwrap().node.system.status();
     assert!(!st.voters.contains(&9), "{st:?}");
     let e = ops
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": JOB, "addr": "http://127.0.0.1:1/", "role": "job" }),
-            &common::operator_sign,
+        .ops()
+        .register_node(
+            JOB,
+            "http://127.0.0.1:1/",
+            None,
+            None,
+            Some(OpsRegisterNodeRequestRole::Job),
+            Some(&common::operator_sign),
         )
         .await
         .unwrap_err();
@@ -636,10 +670,14 @@ async fn a_job_node_registered_as_a_replica_is_never_admitted() {
     let job = c.start_job_node(JOB, |_| {}).await;
     let ops = ops(&c).await;
     let _ = ops
-        .post_operator_signed(
-            "ops/nodes",
-            json!({ "id": JOB, "addr": job.url }),
-            &common::operator_sign,
+        .ops()
+        .register_node(
+            JOB,
+            &job.url,
+            None,
+            None,
+            None,
+            Some(&common::operator_sign),
         )
         .await
         .unwrap();
@@ -719,10 +757,17 @@ async fn a_sealed_file_is_never_sent_to_a_job_node() {
     .await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
-        .upload_bundle(common::component("files"))
+        .packages()
+        .bundle_put(common::component("files"))
         .await
+        .map(|b| b.hash)
         .unwrap();
-    let app = alice.create_app("files", &bundle, json!({})).await.unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "files", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
     let (addr, hits, server) = spy().await;
     c.register_job_node(JOB, &addr).await;
 
@@ -730,10 +775,12 @@ async fn a_sealed_file_is_never_sent_to_a_job_node() {
     let up = alice.upload_bytes(&app, bytes).await.unwrap();
     assert!(up["id"].is_string(), "{up}");
     let put = alice
+        .apps()
         .call(
             &app,
             "putFile",
-            json!({ "len": "200000", "seed": "7" }),
+            Some(json!({ "len": "200000", "seed": "7" })),
+            None,
             None,
         )
         .await
@@ -750,7 +797,12 @@ async fn a_job_node_on_a_retired_release_is_not_attested() {
     let c = Cluster::start_with(3, |cfg| cfg.tee_release = Some("1.0.0".into())).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let app = create(&alice, "kv").await;
-    let _ok = alice.approve_release(None, "2.0.0", &mut pk).await.unwrap();
+    let mine = alice.personal_org().await.unwrap();
+    let _ok = alice
+        .orgs()
+        .release_approval(&mine, "2.0.0", None, Some(&mut pk))
+        .await
+        .unwrap();
     let node = &c.nodes[0].as_ref().unwrap().node;
     let record = node.sys(|s| s.apps[&app].clone());
     let old = c

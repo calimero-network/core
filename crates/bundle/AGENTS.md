@@ -22,7 +22,7 @@ cargo test -p calimero-bundle
 
 | Item | Kind | Purpose |
 | --- | --- | --- |
-| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi`/`compute` (single-service) or `services` (multi-service), `frontend`, `links`, `frontend_aliases`, `outbound`, `signature` |
+| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi`/`compute`/`pipelines` (single-service) or `services` (multi-service), `frontend`, `links`, `frontend_aliases`, `outbound`, `signature` |
 | `BundleManifest::artifacts()` | fn | Every artifact the manifest declares, paired with its field name; a `..`-free destructure, so a new `BundleManifest` field is a compile error here until classified |
 | `BundleManifest::wasm_artifacts()` | fn | Iterates wasm artifacts, each with its compute component, uniformly across single- and multi-service bundles |
 | `BundleManifest::service_names()` / `is_multi_service()` | fn | Shape queries over `services` |
@@ -38,6 +38,7 @@ cargo test -p calimero-bundle
 | `MAX_MANIFEST_BYTES` | const | 1 MiB cap the node enforces on `manifest.json`, before any signature check |
 | `canonicalize_manifest`, `compute_bundle_hash`, `compute_signing_payload` | fn | RFC 8785 canonical bytes (signature and `_`-prefixed transient fields stripped first), then their SHA-256; the signing payload is that SHA-256 over `MANIFEST_SIGNING_DOMAIN` followed by the canonical bytes |
 | `sign_manifest_json`, `verify_manifest_signature`, `verify_ed25519` | fn | Sign/verify a manifest `Value` in place; `ManifestVerification` carries the result |
+| `DEV_SIGNER_ID` | const | The signerId of `mero-sign --dev`'s public key; a node without `--allow-unsigned-bundles` (on with `--dev`) refuses releases it signed |
 | `derive_signer_id_did_key`, `decode_public_key`, `decode_signature`, `format_bundle_hash` | fn | `did:key` derivation and base64url/hex codecs |
 
 ## Mental Model
@@ -63,6 +64,10 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
   `BundleManifest::compute` and `BundleService::compute` (`Option<BundleArtifact>`) are signed, listed by `artifacts()` and digest-checked by `VerifiedBundle::contents` (`VerifiedWasm::compute`).
   An older node ignores the field, and a manifest without it verifies as before.
   What the compute component may contain is the node's and the engine's rule, not this crate's.
+- **Pipelines are artifacts too.**
+  `BundleManifest::pipelines` and `BundleService::pipelines` list YAML files, signed, in `artifacts()` and digest-checked by `contents()` (`VerifiedWasm::pipelines`, by archive path), each read bounded by its declared size.
+  At most `MAX_PIPELINES_PER_PACKAGE` (16) per package and `MAX_PIPELINE_BYTES` (64 KiB) each, refused when the manifest is read.
+  What a pipeline may say is the pipeline crate's and the node's rule, not this crate's.
 - **`_`-prefixed fields never reach the signed bytes.** `canonicalize_manifest` strips them unconditionally; don't add a real (signed) field with a leading underscore.
 - **`outbound` is signed and is the app's half of the outbound gate.** A node reads it from the stored metadata (`calimero_context::outbound::app_outbound`) and lets a run send a request only to a URL under a prefix listed there (same host; the prefix's path, or one below it at a `/`; any query string), and only to a host its operator also allows. A prefix has no query or fragment. Empty is omitted from the manifest, so a bundle without it signs as before.
 - **`frontend_aliases` is a sibling of `links`, on purpose.** The registry refuses any `links` value that is not one URL string, and clients iterate `links` as one URL each. The aliases do reach `to_metadata_json()`: a node's sign-in page reads them there to trust a login callback to an app's old origin.

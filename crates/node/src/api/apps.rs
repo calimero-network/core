@@ -53,7 +53,11 @@ async fn app_attestation(
             Err(e) => json!({ "node": id, "error": e }),
         });
     }
-    Ok(Json(json!({ "appId": app_id, "replicas": replicas })))
+    // The cluster, said over the caller's attested channel: what each
+    // replica's quote must bind, since the documents came in the clear.
+    Ok(Json(
+        json!({ "appId": app_id, "cluster": node.config.cluster, "replicas": replicas }),
+    ))
 }
 
 /// `422 INIT_FAILED`: app `app_id`'s `init` failed with the app log's `error`.
@@ -86,7 +90,7 @@ async fn offered_bundle(
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
                 .filter_map(|o| {
                     let r = s.offered_release(o)?;
-                    Some((o.version.clone(), r.services.clone(), r.compute.clone()))
+                    Some((o.version.clone(), r.app_parts().clone(), r.compute.clone()))
                 })
                 .collect();
             releases.sort_by(|a, b| a.0.cmp(&b.0));
@@ -287,13 +291,19 @@ async fn app_create(
     };
     // Past a release deadline the app's approver has not met, no new app;
     // `CreateApp` asks again at the same time.
-    if let Some(stall) = node.sys(|s| s.stalled_for_bundle(&bundle, &org, now)) {
+    if let Some(stall) = node.sys(|s| {
+        let governing = s.governing(release.as_ref(), &bundle, now);
+        s.stalled_for_release(governing, &org, now)
+    }) {
         return Err(crate::node::stalled(&stall));
     }
     // Only nodes on an approved release (the publisher's, the owner's for an
     // unbound package, or the operator's where the deployment gave it
     // release approvals) may hold the app.
-    let approved = node.sys(|s| s.approved_for_bundle(&bundle, &org).cloned());
+    let approved = node.sys(|s| {
+        let governing = s.governing(release.as_ref(), &bundle, now);
+        s.approved_for_release(governing, &org).cloned()
+    });
     // Nor a node whose runtime is older than the release needs.
     let min_runtime = node.min_runtime_of(release.as_ref(), &bundle).await;
     let replicas = node
@@ -317,6 +327,7 @@ async fn app_create(
     }
     let app_id = typed_id::<16>();
     let has_compute = compute_bundle.is_some();
+    let components = node.sys(|s| s.components_of(release.as_ref()));
     let access = body.access.unwrap_or(Access::Org);
     let out = node
         .sys_write(&SystemCmd::CreateApp {
@@ -337,12 +348,14 @@ async fn app_create(
                 last_upgrade: None,
                 deployment: body.deployment,
                 compute_bundle,
+                components,
                 release,
                 restore: None,
             }),
         })
         .await?;
-    // Wait for the app's first entry (init) to commit somewhere.
+    // Wait for the app's first entry (init) to commit somewhere; a compute-only app's is empty,
+    // but its group cannot take a pipeline start before it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         match app_ready(&node, &app_id).await {
@@ -510,9 +523,19 @@ async fn app_access(
     Json(body): Json<AccessBody>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let p = holder(&node, &headers).await?;
+    let p = person(&node, &headers).await?;
     let account = p.account()?;
-    p.within(&node, &node.app(&app_id).await?)?;
+    let app = node.app(&app_id).await?;
+    p.within(&node, &app)?;
+    // A package-bound session moves its package's app between its package's
+    // teams only (a channel made private, or back to the app team).
+    match (&app.org, &app.access, &body.access) {
+        (org, Access::Team { team: from }, Access::Team { team: to }) => {
+            p.within_team(&node, org, from, OwnTeam::AppTeamOrBelow)?;
+            p.within_team(&node, org, to, OwnTeam::AppTeamOrBelow)?;
+        }
+        _ => p.unbound()?,
+    }
     let _ok = node
         .sys_write(&SystemCmd::SetAccess {
             app_id,

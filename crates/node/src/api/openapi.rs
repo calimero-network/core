@@ -893,7 +893,7 @@ fn components() -> Vec<Component> {
         component(
             "App",
             "An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.",
-            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, access: #Access, confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } } }"#,
+            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, access: #Access, confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } } }"#,
         )
         .of::<crate::types::AppRecord>(),
         component(
@@ -1325,9 +1325,9 @@ fn operations() -> Vec<Op> {
             .step_up_when("the method is a `confirm` method of the app's ABI")
             .retry_safe_with("idempotencyKey"),
         get("/apps/{app}/attestation", "app_attestation", AppAccess, "Every replica's receipt-key attestation")
-            .about("Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`). Any other query parameter is ignored.")
+            .about("Each replica's `/attestation?purpose=receipts` for `nonce` (32 bytes, hex), or why it could not be had (`error`), and `cluster`, the cluster id each quote binds (with the replica's `node`): the documents are fetched in the clear, so their own `cluster` and `node` fields count for nothing. Any other query parameter is ignored.")
             .query::<super::AppAttestQuery>("{ nonce: string }")
-            .ok("{ appId: string, replicas: ({ node: uint, attestation: #AttestationDoc } | { node: uint, error: string })[] }"),
+            .ok("{ appId: string, cluster: string, replicas: ({ node: uint, attestation: #AttestationDoc } | { node: uint, error: string })[] }"),
         post("/apps/{app}/views", "views", AppAccess, "Read with a view method")
             .about("Read on a caught-up replica (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it), or (`\"stale\"`) on the one answering; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.")
             .json::<super::ViewBody>(r#"{ method: string, args?: any, consistency?: "strong" | "stale", minIndex?: uint }"#)
@@ -1353,6 +1353,7 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
         post("/apps/{app}/access", "app_access", Session, "Set who may reach an app")
+            .about("A package-bound session: only its own package's app, from one of its package's teams to another.")
             .json::<super::AccessBody>("{ access: #Access }")
             .ok("{}"),
         post("/apps/{app}/transfer", "app_transfer", AccountHolder, "Hand an app to another account")
@@ -1420,16 +1421,70 @@ fn operations() -> Vec<Op> {
             .about("Its plaintext size and SHA-256, never its key.")
             .ok("{ blobId: string, id: string, size: uint, sha256: string }")
             .errors(&[(404, "NOT_FOUND")]),
+        post("/apps/{app}/files/{id}/export", "exports::export", SignedIn, "Export a sealed file's key")
+            .about("The owner and the organization's members. `recipient` is an X25519 public key (64 hex characters); the file's data key comes back wrapped to it, with the file's `segments` (each one's hash, hex) and `ephemeral` public key. The node never answers plaintext or a key in the clear. 30 a minute per account.")
+            .json::<super::exports::ExportBody>("{ recipient: string }")
+            .ok("{ app: string, id: string, size: uint, sha256: string, segments: string[], ephemeral: string, wrapped: string }")
+            .errors(&[(400, "BAD_RECIPIENT"), (400, "BAD_REQUEST"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (429, "TOO_MANY_EXPORTS")]),
+        get("/apps/{app}/files/{id}/segments/{k}", "exports::segment", SignedIn, "One segment of a sealed file")
+            .about("Segment `k` (from 0) of the file's ciphertext, raw; the owner and the organization's members.")
+            .any_bytes("the segment's ciphertext, `application/octet-stream`")
+            .errors(&[(400, "BAD_REQUEST"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_SUCH_SEGMENT")]),
+        post("/pipelines/validate", "pipelines::validate", SignedIn, "Validate a pipeline")
+            .about("Every problem of `source`; with `package` and `version` (both, a release the caller sees) also against that release's methods, modules and the cluster's pools. Writes nothing.")
+            .json::<super::pipelines::ValidateBody>("{ source: string, package?: string, version?: string }")
+            .ok("{ ok: bool, errors: { path: string, code: string, message: string }[], pipeline?: any, worstCaseFuel?: string, worstCaseCost?: string }")
+            .errors(&[(400, "BAD_RELEASE"), (404, "NOT_FOUND")]),
+        get("/packages/{package}/{version}/pipelines", "package_pipelines", SignedIn, "A release's pipelines")
+            .about("The pipelines the release registers, by name: `hash`, `worstCaseFuel` (a decimal string), the `modules` they pin and the canonical `pipeline`. `404` for a release the caller may not see.")
+            .ok("{ [string]: { hash: string, worstCaseFuel: any, modules: any, pipeline: any } }")
+            .errors(&[(404, "NOT_FOUND")]),
+        post("/apps/{app}/pipelines/{name}/estimate", "pipelines::estimate_run", SignedIn, "Estimate a pipeline run")
+            .about("The owner and the organization's members. Runs, fuel and cost of a run of a pipeline the app's release registers, for `inputs` (file ids, only counted) or `counts`, not both; numbers as decimal strings.")
+            .json::<super::pipelines::EstimateBody>("{ inputs?: { [string]: string[] }, counts?: { [string]: uint }, params?: { [string]: any } }")
+            .ok("{ steps: { [string]: { runs: string, fuel: string, cost?: string } }, fuel: string, cost?: string, priceVersion?: uint }")
+            .errors(&[(400, "BAD_INPUTS"), (400, "BAD_PARAMS"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_SUCH_PIPELINE")]),
+        post("/apps/{app}/pipelines/{name}/runs", "pipelines::start", SignedIn, "Start a pipeline run")
+            .about("The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.")
+            .json::<super::pipelines::StartBody>("{ inputs?: { [string]: string[] }, params?: { [string]: any }, maxCost?: string }")
+            .ok("{ run: string, worstCase?: string }")
+            .errors(&[(400, "BAD_INPUTS"), (400, "BAD_MAX_COST"), (400, "BAD_PARAMS"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_SUCH_PIPELINE"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (410, "OUTPUT_EXPIRED"), (422, "PIPELINES_NEED_ONE_SERVICE"), (429, "TOO_MANY_PIPELINE_RUNS")]),
+        get("/apps/{app}/pipeline-runs", "pipelines::list", AppAccess, "An app's pipeline runs")
+            .about("The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.")
+            .query::<super::pipelines::ListQuery>("{ limit?: string }")
+            .ok("{ [string]: any }")
+            .errors(&[(400, "BAD_LIMIT"), (404, "NOT_FOUND")]),
+        get("/apps/{app}/pipeline-runs/{run}", "pipelines::get", AppAccess, "One pipeline run")
+            .about("Its record: `state`, `version`, `hash`, `computeBundle`, `inputs`, `params`, per-step `status`, `runs`, `outputs`, `result`, `reason` and `cost` (`cost` and `costSoFar` for a run with a cap). Sizes, hashes and results only for callers who may list the app's files.")
+            .ok("{ [string]: any }")
+            .errors(&[(404, "NOT_FOUND")]),
+        get("/apps/{app}/pipeline-runs/{run}/events", "pipeline_events::events", AppAccess, "A pipeline run as server-sent events")
+            .about("Whoever may read the run. Metadata only; at most 64 streams per app per node, and one lasts an hour.")
+            .events("a `snapshot`, then `run` and `step` per change, then `end`, and the stream closes")
+            .errors(&[(404, "NOT_FOUND"), (429, "TOO_MANY_SUBSCRIBERS")]),
+        get("/apps/{app}/pipeline-runs/{run}/receipt", "pipeline_receipt::receipt", SignedIn, "A pipeline run's receipt")
+            .about("The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key.")
+            .ok("{ receipt: any, node: string, signature: string }")
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RUN_NOT_ENDED")]),
+        post("/apps/{app}/pipeline-runs/{run}/cancel", "pipelines::cancel", SignedIn, "Cancel a pipeline run")
+            .about("The owner and the organization's members. Its pending steps end cancelled and its running steps' runs stop.")
+            .ok("{ run: string }")
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
+        post("/apps/{app}/pipeline-runs/{run}/retry", "pipelines::retry", SignedIn, "Retry a pipeline run")
+            .about("The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.")
+            .json::<super::pipelines::RetryBody>("{ limits?: { [string]: { fuel?: uint, memoryMib?: uint, wallSecs?: uint } }, maxCost?: string }")
+            .ok("{ run: string, retryOf: string, worstCase?: string }")
+            .errors(&[(400, "BAD_LIMITS"), (400, "BAD_MAX_COST"), (400, "LIMIT_EXCEEDS_CAP"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (409, "STILL_RUNNING"), (410, "OUTPUT_EXPIRED"), (429, "TOO_MANY_PIPELINE_RUNS")]),
         get("/apps/{app}/xcalls", "app_xcalls", SignedIn, "An app's cross-app calls")
             .about("The owner or an organization admin: how many calls wait in its outbox for delivery (`pending`, a count), and its dead letters, oldest first (`atMs`: the entry time it was dead-lettered at, Unix milliseconds).")
             .ok("{ pending: uint, deadLetters: #DeadLetter[] }")
             .errors(&[(403, "FORBIDDEN"), (503, "UNAVAILABLE")]),
         // ---------------------------------------------------------------- organizations
         post("/orgs", "org_create", Session, "Create an organization")
-            .about("`recoveryKey` is the public half of an organization recovery key. `personal: true` makes the caller's personal organization (at most one per account, not counted against `maxOrgsPerAccount`); one made for an instance that named no organization is named `Personal`.")
-            .json::<super::OrgBody>("{ name: string, recoveryKey?: string, personal?: bool }")
+            .about("`recoveryKey` is the public half of an organization recovery key. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.")
+            .json::<super::OrgBody>("{ name: string, recoveryKey?: string }")
             .ok("{ orgId: string }")
-            .errors(&[(400, "BAD_REQUEST"), (409, "FEATURE_NOT_ACTIVE"), (409, "PERSONAL_ORG_EXISTS"), (429, "QUOTA_EXCEEDED")]),
+            .errors(&[(400, "BAD_REQUEST"), (429, "QUOTA_EXCEEDED")]),
         get("/orgs/{org}", "org_get", SignedIn, "One organization")
             .about("As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).")
             .ok("#Org")
@@ -1496,18 +1551,18 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "BAD_TEAMS"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/teams", "team_create", Session, "Create a team")
-            .about("An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only).")
+            .about("An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only). A package-bound session: only its own package's teams (its app team and the teams below it): `parent` one of them.")
             .json::<super::TeamBody>("{ name: string, parent?: string, join: #TeamJoin }")
             .ok("{ teamId: string }"),
         get("/orgs/{org}/teams/{team}", "team_get", SignedIn, "One team")
             .ok("#TeamView")
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/teams/{team}", "team_update", Session, "Update a team")
-            .about("Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team.")
+            .about("Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team, moved only within.")
             .json::<super::TeamUpdateBody>("{ name?: string, join?: #TeamJoin, parent?: string | null, metadata?: any }")
             .ok("{}"),
         delete("/orgs/{org}/teams/{team}", "team_delete", Session, "Delete a team")
-            .about("With the teams and apps below it.")
+            .about("With the teams and apps below it. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{ teams: string[], apps: string[] }")
             .step_up()
@@ -1545,10 +1600,12 @@ fn operations() -> Vec<Op> {
             .ok("#OutboundApproved")
             .step_up(),
         post("/orgs/{org}/teams/{team}/members", "team_set_member", Session, "Add or change a team member")
+            .about("A package-bound session: only its own package's teams (its app team and the teams below it).")
             .json::<super::TeamMemberBody>("{ account: string, lead?: bool, role?: #TeamRole, capabilities?: uint, confirm?: #Confirm }")
             .ok("{}")
             .step_up(),
         delete("/orgs/{org}/teams/{team}/members/{account}", "team_remove_member", Session, "Remove a team member, or leave")
+            .about("A package-bound session: only its own package's teams (its app team and the teams below it).")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up(),
@@ -1617,13 +1674,13 @@ fn operations() -> Vec<Op> {
             .ok("{ org: string }"),
         // ---------------------------------------------------------------- consent
         post("/consent/requests", "crate::consent_page::create", Session, "Ask the account's owner to approve")
-            .about("From an app's frontend: a release approval, an upgrade of its instance, or outbound prefixes, approved on the node's own consent page (`url`), which takes the passkey. 64 KiB at most.")
-            .bytes_json::<crate::consent_page::CreateBody>(r#"{ kind: "release", scope: "account" | { org: string }, subject: { version: string, withdraw?: bool }, returnTo: string } | { kind: "upgrade", subject: { app: string, toVersion: string }, returnTo: string } | { kind: "outbound", scope: "account" | { org: string }, subject: { package?: string, prefixes?: string[] }, returnTo: string }"#)
+            .about("From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.")
+            .bytes_json::<crate::consent_page::CreateBody>(r#"{ kind: "release", scope: "account" | { org: string }, subject: { version: string, withdraw?: bool }, returnTo: string } | { kind: "upgrade", subject: { app: string, toVersion: string }, returnTo: string } | { kind: "outbound", scope: "account" | { org: string }, subject: { package?: string, prefixes?: string[] }, returnTo: string } | { kind: "createOrg", subject: { name: string }, returnTo: string } | { kind: "createInvite", subject: { org: string, role: "guest" | "member" | "admin", teams?: string[], ttlSecs?: uint, uses?: uint, allApps?: bool }, returnTo: string } | { kind: "acceptInvite", subject: { token: string }, returnTo: string } | { kind: "leaveOrg", subject: { org: string }, returnTo: string } | { kind: "removeMember", subject: { org: string, account: string }, returnTo: string } | { kind: "setMemberRole", subject: { org: string, account: string, role: "guest" | "member" | "admin" | "owner" }, returnTo: string } | { kind: "setMemberTeams", subject: { org: string, account: string, teams: { team: string, role?: "lead" | "member" | "readOnly", capabilities?: uint }[] }, returnTo: string } | { kind: "removeMemberTeams", subject: { org: string, account: string, teams: string[] }, returnTo: string } | { kind: "revokeInvite", subject: { org: string, inviteKey: string }, returnTo: string } | { kind: "renameOrg", subject: { org: string, name: string }, returnTo: string } | { kind: "deleteOrg", subject: { org: string }, returnTo: string } | { kind: "setCapabilities", subject: { org: string, account?: string, team?: string, capabilities: uint }, returnTo: string } | { kind: "setAllApps", subject: { org: string, account: string, allApps: bool }, returnTo: string }"#)
             .ok("{ requestId: string, url: string, code: string, expiresAt: uint }")
             .errors(&[(400, "BAD_REQUEST"), (413, "TOO_LARGE")]),
         get("/consent/{request}/result", "crate::consent_page::result", Session, "What became of a consent request")
-            .about("`decidedAt` (Unix seconds) is `null` while it is pending.")
-            .ok(r#"{ requestId: string, kind: "release" | "upgrade" | "outbound", status: "pending" | "approved" | "declined", decidedAt: uint | null }"#)
+            .about("`decidedAt` (Unix seconds) is `null` while it is pending. `outcome`, once approved, is what the approval made: `{ orgId }` for `createOrg`, `{ token }` for `createInvite`, `{ org }` for `acceptInvite`, `{ orgId, name }` for `renameOrg`, `{ apps }` (the apps deleted) for `deleteOrg`; absent for the other kinds.")
+            .ok(r#"{ requestId: string, kind: "release" | "upgrade" | "outbound" | "createOrg" | "createInvite" | "acceptInvite" | "leaveOrg" | "removeMember" | "setMemberRole" | "setMemberTeams" | "removeMemberTeams" | "revokeInvite" | "renameOrg" | "deleteOrg" | "setCapabilities" | "setAllApps", status: "pending" | "approved" | "declined", decidedAt: uint | null, outcome?: { orgId?: string, token?: string, org?: string, name?: string, apps?: string[] } }"#)
             .errors(&[(404, "NOT_FOUND"), (503, "UNAVAILABLE")]),
         // ---------------------------------------------------------------- ops
         get("/ops/status", "ops_status", Ops, "The node and the cluster")
@@ -1786,6 +1843,15 @@ fn operations() -> Vec<Op> {
             .ok("{}")
             .operator()
             .errors(&[(409, "POOL_IN_USE"), (409, "UPGRADE_PENDING")]),
+        get("/ops/prices", "ops_prices_get", Ops, "The price table")
+            .about("In micro-units of the billing currency; `{}` until one is set.")
+            .ok("{ version?: uint, fuelPerVcpuSecond?: uint, vcpuSecond?: uint, gibSecond?: uint, connectorGib?: uint, storageGibMonth?: uint, egressGib?: uint }"),
+        post("/ops/prices", "ops_prices_set", Ops, "Set the price table")
+            .about("Signed over `cluster / __set_price_table / { table }`; `PRICE_VERSION` unless `version` is the current one plus one (1 for the first), `BAD_PRICES` for a zero `fuelPerVcpuSecond`.")
+            .json::<super::PricesBody>("{ table: { version: uint, fuelPerVcpuSecond: uint, vcpuSecond: uint, gibSecond: uint, connectorGib: uint, storageGibMonth: uint, egressGib: uint }, operatorProof?: #OperatorProof }")
+            .ok("{}")
+            .operator()
+            .errors(&[(400, "BAD_PRICES"), (409, "PRICE_VERSION"), (409, "UPGRADE_PENDING")]),
         // ---------------------------------------------------------------- the cluster's owner
         post("/sign-up", "sign_up_set", AccountHolder, "Set the sign-up policy")
             .about("The cluster's owner, once named, with a passkey (`412` first).")
@@ -1861,7 +1927,7 @@ fn tag(path: &str) -> &'static str {
         "health" | "attestation" | "releases" | "publishers" => "Public",
         "auth" => "Accounts",
         "bundles" | "packages" | "package-origins" => "Packages",
-        "apps" => "Apps",
+        "apps" | "pipelines" => "Apps",
         "orgs" | "invites" => "Organizations",
         "consent" => "Consent",
         "ops" => "Ops",
@@ -2293,6 +2359,10 @@ mod tests {
         ("account_proof::", include_str!("account_proof.rs")),
         ("crate::consent_page::", include_str!("../consent_page.rs")),
         ("restore::", include_str!("restore.rs")),
+        ("exports::", include_str!("exports.rs")),
+        ("pipelines::", include_str!("pipelines.rs")),
+        ("pipeline_events::", include_str!("pipeline_events.rs")),
+        ("pipeline_receipt::", include_str!("pipeline_receipt.rs")),
     ];
 
     /// `(method, path, handler)` of every `.route(..)` in `router` and in the

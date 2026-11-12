@@ -32,7 +32,17 @@ declaration order; `deployments` and `deployers` are written only when not the
 defaults (`open`, `operator`), so a default cluster binds the bytes it did before
 (`the_default_governance_binds_the_bytes_it_did_before_deployers`). A client that
 recomputes it must keep them when the attested object has them; mero-js does
-not compute this binding yet.
+not compute this binding yet. The binding (`receipt-key.v3`) also takes the
+cluster name (u32-BE length-prefixed) and the node id (u64 BE), and
+`verify_receipt_key` checks them against the cluster and node the caller
+expects, not the document's own fields: `verify_app_cluster` takes the cluster
+from the entry node's sealed answer (`GET /apps/{app}/attestation` names it)
+and each replica's id from the same answer
+(`a_receipt_key_quote_is_bound_to_its_node_and_cluster`). Nodes before
+`RECEIPT_KEY_BOUND_SINCE` (1.0.0-rc.19) quote the unbound `receipt-key.v2`
+form; `verify_unbound_receipt_key` checks it for `calimero-node` alone, while
+its cluster still runs such a node, and a client never takes it
+(`an_unbound_receipt_key_quote_is_not_a_bound_one`).
 
 `verify_job_key` (`purpose=jobs`, a job node's attestation, `AttestationDoc::job_key`,
 absent from every other document) shares `verify_report`: report data =
@@ -95,6 +105,12 @@ retried on `503` with backoff; any other refusal (`413`, `429`) aborts the sessi
 Tests: `files::tests`, against a mock node over the real sealed channel, with a proxy that cuts
 the connection.
 
+`Client::export_file(app, id)` (`files.rs`, `meroctl file download`, `meroctl pipeline download`) returns a sealed file's plaintext: it makes a fresh X25519 key pair, asks `POST .../files/{id}/export`, unwraps the data key with `calimero_sealed::wrap::unwrap_export`, fetches each segment from `GET .../segments/{k}`, and checks the segment list against the file id, each segment against its hash and the size and SHA-256 of the plaintext before returning any byte.
+
+`receipt.rs` holds the signed pipeline run receipt (`PipelineReceipt`, `StepRunProof`) and the one message the node signs and `verify_pipeline_receipt` rebuilds: `"calimero.pipeline.receipt.v1\0" || JCS(receipt)`, checked over the JSON as sent. `Client::pipeline_receipt` fetches it and `Client::verify_receipt` checks it under the answering node's key from `verify_app_cluster`; `meroctl pipeline receipt --verify` also compares each downloaded output with the receipt. A job's own report signature is not verified here yet.
+
+`pipeline_events.rs` holds the typed, metadata-only events of `GET /apps/{app}/pipeline-runs/{run}/events` (`RunEvent`, `StepEvent`, `Snapshot`, `PipelineEvent`) and `RunProgress`, which reads the run view's JSON into only those fields and diffs two views; the node sends them and `Client::pipeline_run_events` (`meroctl pipeline watch`) reads them. A key set test pins each event's fields, so a new record field never reaches a stream.
+
 Runtime and routes (`transport.rs`): `Transport` is everything that is not a
 route: the attested, sealed channel (`SealedTransport::attested`), the
 credential and the `401` refresh above, error mapping (`answer`, `api_error`,
@@ -155,9 +171,12 @@ generate theirs, and checked in under `src/generated/` (never edited by hand):
 The hand-written flows are built on the generated methods: `sign_up*`,
 `sign_in*`, `add_passkey`, `start_recovery` (passkey and recovery ceremonies),
 `verify_app_cluster` (attestation), `upload_file` (`files.rs`), and the event
-streams. The route methods written by hand before (`Client::get`, `post`,
-`call`, `create_app`, ...) are `#[deprecated]`, each naming its replacement, and
-go once `crates/node/tests` and `crates/merod/tests` stop calling them.
+streams. Every other route is a generated method; a route no method fits (an
+`internal/*` route, or a request a test makes malformed on purpose) is a raw
+`Request` through `client.transport()` (`json`, `confirmed`, `approved`). The
+node's tests read a typed answer as JSON with `wire` and write a typed request
+as JSON with `typed` (`crates/node/tests/harness/cluster.rs`,
+`tests/common/mod.rs`), which panics if the type would drop any of it.
 
 A route change regenerates the document and then this layer, in the same change:
 

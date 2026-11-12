@@ -274,10 +274,10 @@ def personal_org(p):
 class PersonalOrg(DeepCase):
     name = "personal-org"
     area = "Organizations"
-    since = "1.0.0-rc.19"
+    since = "1.0.0-rc.20"
     seeds = "instances created without naming an organization, which go to the personal organization made at sign-up"
-    verifies = ("both instances in the one personal organization, marked personal, with their data; a second "
-                "personal organization is refused; another instance made without one joins the same organization")
+    verifies = ("both instances in the one personal organization, marked personal, with their data; another "
+                "instance made without one joins the same organization")
 
     def populate(self, w):
         yan, zed = people(w, "yan", "zed")
@@ -299,8 +299,6 @@ class PersonalOrg(DeepCase):
             eq(yan.result(app, "get", {"key": "k"}), app, "the instance's data")
         refused(("FORBIDDEN", "NOT_FOUND"), lambda: zed.view(s["apps"][0], "get", {"key": "k"}),
                 "an outsider reads the instance")
-        refused("PERSONAL_ORG_EXISTS", lambda: yan.raw("post", "orgs", {"name": "Yan", "personal": True}),
-                "a second personal organization")
 
     def exercise(self, w, s):
         yan = person(w, "yan")

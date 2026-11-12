@@ -27,11 +27,17 @@
   `api::app_method` apply).
 - `codegen::{typescript, python}` write thin clients over mero-js / calimero-client-py
   (`client.apps.call`, `client.apps.view`, `client.events`; Python through `client.json`); no
-  transport of their own. The TypeScript class takes the narrow `AppTransport` (what it uses of
-  `CalimeroClient`, so a test double implements that alone) and an `after` hook that runs after
-  every request (mero-js has no session-change event to store a refreshed session from), and
-  implements `<Name>Api` (`KvStoreClient` → `KvStoreApi`), the methods alone, which a caller's
-  test double implements instead of the transport.
+  transport of their own. The TypeScript class takes the narrow `AppCallTransport` (`apps.call`
+  and `apps.view`, so `Pick<CalimeroClient, 'apps'>` or a test double of the two) and is generic
+  in it (`KvStoreClient<T extends AppCallTransport = AppTransport>`): `events()` takes
+  `this: KvStoreClient<AppTransport>`, so it type-checks only over a transport with `events`.
+  An `after` hook runs after every request (mero-js has no session-change event to store a
+  refreshed session from). Each method answers the result; the same methods under `raw`
+  (`<Name>RawApi`, `rawAnswers` when the app has a method `raw`) answer the whole answer,
+  `CallAnswer<T>` / `ViewAnswer<T>` with the log index and a call's events. The class
+  implements `<Name>Api` (`KvStoreClient` → `KvStoreApi`), the methods alone, which a
+  caller's test double implements instead of the transport. An `init` with parameters gets
+  `InitArgs` (what `apps.create`'s `initArgs` carries).
 - `codegen::{swift, kotlin}` write one client type over swift-sdk (MeroKit) / kotlin-sdk
   (mero-core), 2.0 or later: built on the SDK's `CalimeroClient` and an app id (every method; Kotlin
   calls `apps.method`, Swift `callJSON` / `callConfirmed` / `viewJSON`) or on its
@@ -61,7 +67,7 @@
   against `tests/golden/`. Refresh a fixture from a build: extract the component's
   `calimero:abi` section.
 - The goldens must run against the published clients, which the golden test cannot see:
-  `tests/ts` type-checks every golden `.ts` against mero-js (pinned `^32`) and runs them on a
+  `tests/ts` type-checks every golden `.ts` against mero-js (pinned `^33`) and runs them on a
   test double, `tests/py` imports every golden `.py` with calimero-client-py and binds each
   call to the real client's signature, then runs mypy. `app-abi-clients.yml` runs both on a
   change to this crate; bump the pins when a client's major moves.

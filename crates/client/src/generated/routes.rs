@@ -7,7 +7,7 @@
 //! it. Each sends through [`Client::transport`] and answers the operation's
 //! typed success answer, a refusal as [`crate::Error`]. Event streams are
 //! not here: [`Client::events`] and [`Client::presence_stream`] read them.
-//! Left out: GET /apps/{app}/events, GET /apps/{app}/presence/stream.
+//! Left out: GET /apps/{app}/events, GET /apps/{app}/pipeline-runs/{run}/events, GET /apps/{app}/presence/stream.
 
 use std::collections::BTreeMap;
 
@@ -213,6 +213,46 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Export a sealed file's key.
+    ///
+    /// `POST /apps/{app}/files/{id}/export` (`exports_export`). Who: signed in (a session or an API key).
+    pub async fn exports_export(
+        self,
+        app: &str,
+        id: &str,
+        recipient: &str,
+    ) -> Result<ExportsExportResponse> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "recipient", &recipient)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!(
+                "apps/{}/files/{}/export",
+                route::segment(app),
+                route::segment(id)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// One segment of a sealed file.
+    ///
+    /// `GET /apps/{app}/files/{id}/segments/{k}` (`exports_segment`). Who: signed in (a session or an API key).
+    pub async fn exports_segment(self, app: &str, id: &str, k: &str) -> Result<Vec<u8>> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "apps/{}/files/{}/segments/{}",
+                route::segment(app),
+                route::segment(id),
+                route::segment(k)
+            ),
+        );
+        route::bytes(self.client.transport(), req).await
+    }
+
     /// One sealed file.
     ///
     /// `GET /apps/{app}/files/{id}` (`file_info`). Who: signed in (a session or an API key).
@@ -321,6 +361,173 @@ impl Apps<'_> {
             Method::GET,
             format!("apps/{}/openapi.json", route::segment(app)),
         );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// A pipeline run's receipt.
+    ///
+    /// `GET /apps/{app}/pipeline-runs/{run}/receipt` (`pipeline_receipt_receipt`). Who: signed in (a session or an API key).
+    pub async fn pipeline_receipt_receipt(
+        self,
+        app: &str,
+        run: &str,
+    ) -> Result<PipelineReceiptReceiptResponse> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "apps/{}/pipeline-runs/{}/receipt",
+                route::segment(app),
+                route::segment(run)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Cancel a pipeline run.
+    ///
+    /// `POST /apps/{app}/pipeline-runs/{run}/cancel` (`pipelines_cancel`). Who: signed in (a session or an API key).
+    pub async fn pipelines_cancel(self, app: &str, run: &str) -> Result<PipelinesCancelResponse> {
+        let req = Request::new(
+            Method::POST,
+            format!(
+                "apps/{}/pipeline-runs/{}/cancel",
+                route::segment(app),
+                route::segment(run)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Estimate a pipeline run.
+    ///
+    /// `POST /apps/{app}/pipelines/{name}/estimate` (`pipelines_estimate_run`). Who: signed in (a session or an API key).
+    pub async fn pipelines_estimate_run(
+        self,
+        app: &str,
+        name: &str,
+        inputs: Option<BTreeMap<String, Vec<String>>>,
+        counts: Option<BTreeMap<String, u64>>,
+        params: Option<Map<String, Value>>,
+    ) -> Result<PipelinesEstimateRunResponse> {
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "inputs", inputs)?;
+        route::put_some(&mut fields, "counts", counts)?;
+        route::put_some(&mut fields, "params", params)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!(
+                "apps/{}/pipelines/{}/estimate",
+                route::segment(app),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// One pipeline run.
+    ///
+    /// `GET /apps/{app}/pipeline-runs/{run}` (`pipelines_get`). Who: whoever the app's access admits (a public app: anyone).
+    pub async fn pipelines_get(self, app: &str, run: &str) -> Result<Map<String, Value>> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "apps/{}/pipeline-runs/{}",
+                route::segment(app),
+                route::segment(run)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// An app's pipeline runs.
+    ///
+    /// `GET /apps/{app}/pipeline-runs` (`pipelines_list`). Who: whoever the app's access admits (a public app: anyone).
+    pub async fn pipelines_list(
+        self,
+        app: &str,
+        limit: Option<&str>,
+    ) -> Result<Map<String, Value>> {
+        let mut req = Request::new(
+            Method::GET,
+            format!("apps/{}/pipeline-runs", route::segment(app)),
+        );
+        if let Some(v) = limit {
+            req = req.query("limit", v);
+        }
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Retry a pipeline run.
+    ///
+    /// `POST /apps/{app}/pipeline-runs/{run}/retry` (`pipelines_retry`). Who: signed in (a session or an API key).
+    pub async fn pipelines_retry(
+        self,
+        app: &str,
+        run: &str,
+        limits: Option<BTreeMap<String, PipelinesRetryRequestLimitsValue>>,
+        max_cost: Option<&str>,
+    ) -> Result<PipelinesRetryResponse> {
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "limits", limits)?;
+        route::put_some(&mut fields, "maxCost", max_cost)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!(
+                "apps/{}/pipeline-runs/{}/retry",
+                route::segment(app),
+                route::segment(run)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Start a pipeline run.
+    ///
+    /// `POST /apps/{app}/pipelines/{name}/runs` (`pipelines_start`). Who: signed in (a session or an API key).
+    pub async fn pipelines_start(
+        self,
+        app: &str,
+        name: &str,
+        inputs: Option<BTreeMap<String, Vec<String>>>,
+        params: Option<Map<String, Value>>,
+        max_cost: Option<&str>,
+    ) -> Result<PipelinesStartResponse> {
+        let mut fields = Map::new();
+        route::put_some(&mut fields, "inputs", inputs)?;
+        route::put_some(&mut fields, "params", params)?;
+        route::put_some(&mut fields, "maxCost", max_cost)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!(
+                "apps/{}/pipelines/{}/runs",
+                route::segment(app),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Validate a pipeline.
+    ///
+    /// `POST /pipelines/validate` (`pipelines_validate`). Who: signed in (a session or an API key).
+    pub async fn pipelines_validate(
+        self,
+        source: &str,
+        package: Option<&str>,
+        version: Option<&str>,
+    ) -> Result<PipelinesValidateResponse> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "source", &source)?;
+        route::put_some(&mut fields, "package", package)?;
+        route::put_some(&mut fields, "version", version)?;
+        let body = Value::Object(fields);
+        let req = Request::new(Method::POST, "pipelines/validate").json(body);
         route::json(self.client.transport(), req, None, None, false).await
     }
 
@@ -1562,6 +1769,31 @@ impl Ops<'_> {
         route::json(self.client.transport(), req, None, operator, false).await
     }
 
+    /// The price table.
+    ///
+    /// `GET /ops/prices` (`ops_prices_get`). Who: the ops token.
+    pub async fn prices_get(self) -> Result<OpsPricesGetResponse> {
+        let req = Request::new(Method::GET, "ops/prices");
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Set the price table.
+    ///
+    /// `POST /ops/prices` (`ops_prices_set`). Who: the ops token.
+    ///
+    /// Operator: answers `428 OPERATOR_SIGNATURE_REQUIRED` first where governance gives the decision to the operator; `operator` signs the statement it names, without it the refusal is returned.
+    pub async fn prices_set(
+        self,
+        table: OpsPricesSetRequestTable,
+        operator: Option<&OperatorSigner<'_>>,
+    ) -> Result<Map<String, Value>> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "table", &table)?;
+        let body = Value::Object(fields);
+        let req = Request::new(Method::POST, "ops/prices").json(body);
+        route::json(self.client.transport(), req, None, operator, false).await
+    }
+
     /// The quotas.
     ///
     /// `GET /ops/quotas` (`ops_quotas_get`). Who: the ops token.
@@ -1986,16 +2218,10 @@ impl Orgs<'_> {
     /// Create an organization.
     ///
     /// `POST /orgs` (`org_create`). Who: a passkey session (an API key is refused).
-    pub async fn create(
-        self,
-        name: &str,
-        recovery_key: Option<&str>,
-        personal: Option<bool>,
-    ) -> Result<OrgCreateResponse> {
+    pub async fn create(self, name: &str, recovery_key: Option<&str>) -> Result<OrgCreateResponse> {
         let mut fields = Map::new();
         route::put(&mut fields, "name", &name)?;
         route::put_some(&mut fields, "recoveryKey", recovery_key)?;
-        route::put_some(&mut fields, "personal", personal)?;
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "orgs").json(body);
         route::json(self.client.transport(), req, None, None, false).await
@@ -2767,6 +2993,25 @@ impl Packages<'_> {
         )
         .json(body);
         route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// A release's pipelines.
+    ///
+    /// `GET /packages/{package}/{version}/pipelines` (`package_pipelines`). Who: signed in (a session or an API key).
+    pub async fn pipelines(
+        self,
+        package: &str,
+        version: &str,
+    ) -> Result<BTreeMap<String, PackagePipelinesResponseValue>> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "packages/{}/{}/pipelines",
+                route::segment(package),
+                route::segment(version)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
     }
 
     /// Uninstall a package.

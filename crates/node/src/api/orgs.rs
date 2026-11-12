@@ -99,12 +99,6 @@ pub(super) struct OrgBody {
     /// creator keeps the seed (`docs/specs/org-recovery.md`).
     #[serde(default)]
     recovery_key: Option<String>,
-    /// The caller's personal organization ([`crate::types::Org::personal`]):
-    /// at most one per account, where the instances they create without
-    /// naming an organization go. An account with apps from before moves
-    /// them in with `POST /apps/{app}/move`.
-    #[serde(default)]
-    personal: bool,
 }
 
 async fn org_create(
@@ -113,14 +107,19 @@ async fn org_create(
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
-    let name = body.name;
+    create_org(&node, account, body.name, body.recovery_key, false).await
+}
+
+/// Create an organization `account` owns: `POST /orgs`, and the consent
+/// page's `createOrg` once the person approved it there.
+pub(crate) async fn create_org(
+    node: &Node,
+    account: String,
+    name: String,
+    recovery_key: Option<String>,
+    personal: bool,
+) -> ApiResult {
     crate::system::org_name_fits(&name).map_err(malformed)?;
-    if body.personal {
-        node.sys_fresh().await;
-        if node.sys(|s| s.personal_org_of(&account).is_some()) {
-            return Err(crate::node::rejected(crate::system::PERSONAL_ORG_EXISTS));
-        }
-    }
     let org_id = typed_id::<16>();
     let v = node
         .sys_write(&SystemCmd::CreateOrg {
@@ -128,10 +127,10 @@ async fn org_create(
             name,
             actor: account,
             release: Some(node.own_release()),
-            recovery_key: body.recovery_key,
-            at: recovery_now(&node),
+            recovery_key,
+            at: recovery_now(node),
             name_fits: true,
-            personal: body.personal,
+            personal,
         })
         .await?;
     Ok(Json(v))
@@ -214,6 +213,17 @@ async fn org_delete(
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
+    delete_org(&node, &p, org, body.and_then(|Json(b)| b.confirm)).await
+}
+
+/// Delete organization `org` as `p`: `DELETE /orgs/{org}`, and the consent
+/// page's `deleteOrg`.
+pub(crate) async fn delete_org(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
     let actor = p.account()?;
     let is_owner =
         node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)) == Some(OrgRole::Owner));
@@ -222,10 +232,9 @@ async fn org_delete(
             "only the organization's owner deletes it",
         ));
     }
-    let confirm = body.and_then(|Json(b)| b.confirm);
     let consent = consent(
-        &node,
-        &p,
+        node,
+        p,
         &format!("org:{org}"),
         "__delete_org",
         &json!({ "org": org }),
@@ -260,6 +269,18 @@ async fn org_rename(
     Json(body): Json<RenameOrgBody>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
+    rename_org(&node, &p, org, body.name, body.confirm).await
+}
+
+/// Rename organization `org` as `p`: `POST /orgs/{org}/name`, and the
+/// consent page's `renameOrg`.
+pub(crate) async fn rename_org(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    name: String,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
@@ -269,22 +290,22 @@ async fn org_rename(
     if role < OrgRole::Admin {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_RENAME));
     }
-    crate::system::org_name_fits(&body.name).map_err(malformed)?;
+    crate::system::org_name_fits(&name).map_err(malformed)?;
     // Before the passkey step-up: a node that could not apply it refuses it anyway.
     node.require_features(&[Feature::RenameOrg]).await?;
     let consent = consent(
-        &node,
-        &p,
+        node,
+        p,
         &format!("org:{org}"),
         "__rename_org",
-        &json!({ "name": body.name }),
-        body.confirm,
+        &json!({ "name": name }),
+        confirm,
     )
     .await?;
     Ok(Json(
         node.sys_write(&SystemCmd::RenameOrg {
             org,
-            name: body.name,
+            name,
             actor,
             consent,
         })
@@ -312,6 +333,19 @@ async fn org_all_apps(
     Json(body): Json<AllAppsBody>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
+    set_all_apps(&node, &p, org, body.account, body.all_apps, body.confirm).await
+}
+
+/// Give `account` every app added to `org` from now on, or stop it, as `p`:
+/// `POST /orgs/{org}/all-apps`, and the consent page's `setAllApps`.
+pub(crate) async fn set_all_apps(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    account: String,
+    all_apps: bool,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
@@ -323,21 +357,21 @@ async fn org_all_apps(
     }
     // Before the passkey step-up: a node that could not apply it refuses it anyway.
     node.require_features(&[Feature::AllApps]).await?;
-    let args = crate::system::all_apps_args(&body.account, body.all_apps);
+    let args = crate::system::all_apps_args(&account, all_apps);
     let consent = consent(
-        &node,
-        &p,
+        node,
+        p,
         &format!("org:{org}"),
         "__set_all_apps",
         &args,
-        body.confirm,
+        confirm,
     )
     .await?;
     let _ok = node
         .sys_write(&SystemCmd::SetAllApps {
             org,
-            account: body.account,
-            all_apps: body.all_apps,
+            account,
+            all_apps,
             actor,
             consent,
         })
@@ -395,14 +429,27 @@ async fn org_set_member(
     Json(body): Json<MemberBody>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
+    set_member_role(&node, &p, org, body.account, body.role, body.confirm).await
+}
+
+/// Set `account`'s role in `org` as `p`: `POST /orgs/{org}/members`, and the
+/// consent page's `setMemberRole`.
+pub(crate) async fn set_member_role(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    account: String,
+    role: OrgRole,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
     let actor = p.account()?;
-    let args = json!({ "account": body.account, "role": body.role });
-    let consent = org_consent(&node, &p, &org, "__set_org_role", &args, body.confirm).await?;
+    let args = json!({ "account": account, "role": role });
+    let consent = org_consent(node, p, &org, "__set_org_role", &args, confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::SetOrgRole {
             org,
-            account: body.account,
-            role: body.role,
+            account,
+            role,
             actor,
             consent,
         })
@@ -419,10 +466,22 @@ async fn org_remove_member(
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
+    remove_member(&node, &p, org, account, body.and_then(|Json(b)| b.confirm)).await
+}
+
+/// Remove `account` from `org` as `p`, or leave it (`account` = `p`'s own):
+/// `DELETE /orgs/{org}/members/{account}`, and the consent page's
+/// `removeMember` and `leaveOrg`.
+pub(crate) async fn remove_member(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    account: String,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
     let actor = p.account()?;
     let args = json!({ "account": account });
-    let confirm = body.and_then(|Json(b)| b.confirm);
-    let consent = org_consent(&node, &p, &org, "__remove_member", &args, confirm).await?;
+    let consent = org_consent(node, p, &org, "__remove_member", &args, confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::RemoveOrgMember {
             org,
@@ -448,7 +507,13 @@ async fn team_create(
     Path(org): Path<String>,
     Json(body): Json<TeamBody>,
 ) -> ApiResult {
-    let actor = holder(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    // A package-bound session makes channels under its package's app team.
+    match body.parent.as_deref() {
+        Some(parent) => p.within_team(&node, &org, parent, OwnTeam::AppTeamOrBelow)?,
+        None => p.unbound()?,
+    }
+    let actor = p.account()?;
     let v = node
         .sys_write(&SystemCmd::CreateTeam {
             org,
@@ -482,7 +547,8 @@ async fn team_set_member(
     Path((org, team)): Path<(String, String)>,
     Json(body): Json<TeamMemberBody>,
 ) -> ApiResult {
-    let p = holder(&node, &headers).await?;
+    let p = person(&node, &headers).await?;
+    p.within_team(&node, &org, &team, OwnTeam::AppTeamOrBelow)?;
     let actor = p.account()?;
     let args = json!({
         "team": team, "account": body.account, "lead": body.lead,
@@ -537,17 +603,31 @@ async fn member_set_teams(
     Json(body): Json<TeamRowsBody>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
+    set_member_teams(&node, &p, org, account, body.teams, body.confirm).await
+}
+
+/// `account`'s rows in several teams of `org` as `p`: `POST
+/// /orgs/{org}/members/{account}/teams`, and the consent page's
+/// `setMemberTeams`.
+pub(crate) async fn set_member_teams(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    account: String,
+    teams: Vec<crate::system::TeamRow>,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
     let actor = p.account()?;
-    team_batch(body.teams.iter().map(|r| r.team.as_str()))?;
-    let args = crate::system::team_members_args(&account, &body.teams);
+    team_batch(teams.iter().map(|r| r.team.as_str()))?;
+    let args = crate::system::team_members_args(&account, &teams);
     // Before the passkey step-up: a node that could not apply it refuses it anyway.
     node.require_features(&[Feature::TeamMembersBatch]).await?;
-    let consent = org_consent(&node, &p, &org, "__set_team_members", &args, body.confirm).await?;
+    let consent = org_consent(node, p, &org, "__set_team_members", &args, confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::SetTeamMembers {
             org,
             account,
-            teams: body.teams,
+            teams,
             actor,
             consent,
         })
@@ -567,18 +647,32 @@ async fn member_remove_teams(
     Json(body): Json<TeamIdsBody>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
+    remove_member_teams(&node, &p, org, account, body.teams, body.confirm).await
+}
+
+/// Take `account` out of several teams of `org` as `p`: `DELETE
+/// /orgs/{org}/members/{account}/teams`, and the consent page's
+/// `removeMemberTeams`.
+pub(crate) async fn remove_member_teams(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    account: String,
+    teams: Vec<String>,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
     let actor = p.account()?;
-    team_batch(body.teams.iter().map(String::as_str))?;
-    let args = crate::system::remove_team_members_args(&account, &body.teams);
+    team_batch(teams.iter().map(String::as_str))?;
+    let args = crate::system::remove_team_members_args(&account, &teams);
     let method = "__remove_team_members";
     // Before the passkey step-up: a node that could not apply it refuses it anyway.
     node.require_features(&[Feature::TeamMembersBatch]).await?;
-    let consent = org_consent(&node, &p, &org, method, &args, body.confirm).await?;
+    let consent = org_consent(node, p, &org, method, &args, confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::RemoveTeamMembers {
             org,
             account,
-            teams: body.teams,
+            teams,
             actor,
             consent,
         })
@@ -678,7 +772,16 @@ async fn team_update(
     Path((org, team)): Path<(String, String)>,
     Json(body): Json<TeamUpdateBody>,
 ) -> ApiResult {
-    let actor = holder(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    // A package-bound session changes its package's channels, never its app
+    // team (name, mark, openness) and never moves one out of its package.
+    p.within_team(&node, &org, &team, OwnTeam::Below)?;
+    match body.parent.as_ref() {
+        Some(Some(parent)) => p.within_team(&node, &org, parent, OwnTeam::AppTeamOrBelow)?,
+        Some(None) => p.unbound()?,
+        None => {}
+    }
+    let actor = p.account()?;
     let _ok = node
         .sys_write(&SystemCmd::UpdateTeam {
             org,
@@ -704,7 +807,8 @@ async fn team_delete(
     Path((org, team)): Path<(String, String)>,
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let p = holder(&node, &headers).await?;
+    let p = person(&node, &headers).await?;
+    p.within_team(&node, &org, &team, OwnTeam::BelowHoldingOwnApps)?;
     let actor = p.account()?;
     // Only someone who may delete it learns which apps go (as `DeleteTeam`
     // judges it again where it applies).
@@ -762,14 +866,14 @@ pub(super) fn with_detail(mut e: ApiError, key: &str, value: Value) -> ApiError 
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct CapabilitiesBody {
+pub(crate) struct CapabilitiesBody {
     #[serde(default)]
-    account: Option<String>,
+    pub(crate) account: Option<String>,
     #[serde(default)]
-    team: Option<String>,
-    capabilities: u32,
+    pub(crate) team: Option<String>,
+    pub(crate) capabilities: u32,
     #[serde(default)]
-    confirm: Option<ConfirmBody>,
+    pub(crate) confirm: Option<ConfirmBody>,
 }
 
 /// A member's capabilities (`account`, organization-wide or in `team`), or,
@@ -783,6 +887,17 @@ async fn org_capabilities(
     Json(body): Json<CapabilitiesBody>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
+    set_capabilities(&node, &p, org, body).await
+}
+
+/// A member's capabilities, or a default, in `org` as `p`: `POST
+/// /orgs/{org}/capabilities`, and the consent page's `setCapabilities`.
+pub(crate) async fn set_capabilities(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    body: CapabilitiesBody,
+) -> ApiResult {
     let actor = p.account()?;
     let cmd = match body.account {
         Some(account) => {
@@ -790,7 +905,7 @@ async fn org_capabilities(
                 "team": body.team, "account": account, "capabilities": body.capabilities,
             });
             let consent =
-                org_consent(&node, &p, &org, "__set_capabilities", &args, body.confirm).await?;
+                org_consent(node, p, &org, "__set_capabilities", &args, body.confirm).await?;
             SystemCmd::SetCapabilities {
                 org,
                 team: body.team,
@@ -804,7 +919,7 @@ async fn org_capabilities(
             let args =
                 crate::system::default_capabilities_args(body.team.as_deref(), body.capabilities);
             let method = "__set_default_capabilities";
-            let consent = org_consent(&node, &p, &org, method, &args, body.confirm).await?;
+            let consent = org_consent(node, p, &org, method, &args, body.confirm).await?;
             SystemCmd::SetDefaultCapabilities {
                 org,
                 team: body.team,
@@ -826,7 +941,8 @@ async fn team_remove_member(
     Path((org, team, account)): Path<(String, String, String)>,
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let p = holder(&node, &headers).await?;
+    let p = person(&node, &headers).await?;
+    p.within_team(&node, &org, &team, OwnTeam::AppTeamOrBelow)?;
     let actor = p.account()?;
     let args = json!({ "team": team, "account": account });
     let confirm = body.and_then(|Json(b)| b.confirm);
@@ -846,19 +962,19 @@ async fn team_remove_member(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct InviteBody {
-    role: OrgRole,
+pub(crate) struct InviteBody {
+    pub(crate) role: OrgRole,
     #[serde(default)]
-    teams: Vec<String>,
+    pub(crate) teams: Vec<String>,
     #[serde(default)]
-    ttl_secs: Option<u64>,
+    pub(crate) ttl_secs: Option<u64>,
     #[serde(default)]
-    uses: Option<u32>,
+    pub(crate) uses: Option<u32>,
     /// Whoever redeems it also gets every app added later (an admin's).
     #[serde(default)]
-    all_apps: bool,
+    pub(crate) all_apps: bool,
     #[serde(default)]
-    confirm: Option<ConfirmBody>,
+    pub(crate) confirm: Option<ConfirmBody>,
 }
 
 /// Mint an invite: the actor's, approved with their passkey over the
@@ -872,6 +988,17 @@ async fn invite_create(
     Json(body): Json<InviteBody>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
+    create_invite(&node, &p, org, body).await
+}
+
+/// Mint an invite as `p`: `POST /orgs/{org}/invites`, and the consent page's
+/// `createInvite`, whose principal is the page's for the request's account.
+pub(crate) async fn create_invite(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    body: InviteBody,
+) -> ApiResult {
     let actor = p.account()?;
     if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
@@ -893,8 +1020,8 @@ async fn invite_create(
     };
     let args = crate::system::invite_args(&crate::proof::invite_key(&token), &invite);
     let c = consent_minted(
-        &node,
-        &p,
+        node,
+        p,
         &format!("org:{org}"),
         "__create_invite",
         &args,
@@ -947,11 +1074,17 @@ async fn invite_redeem(
     Path(token): Path<String>,
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
+    redeem_invite(&node, account, &token).await
+}
+
+/// Redeem invite `token` for `account`: `POST /invites/{token}/redeem`, and
+/// the consent page's `acceptInvite` once the person approved it there.
+pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> ApiResult {
     let now = now_secs();
     let v = node
         .sys_write(&SystemCmd::RedeemInvite {
-            invite_key: crate::proof::invite_key(&token),
-            signature: crate::proof::sign_invite_redeem(&token, &account, now),
+            invite_key: crate::proof::invite_key(token),
+            signature: crate::proof::sign_invite_redeem(token, &account, now),
             account,
             now,
             free_when_unchanged: true,
@@ -1013,6 +1146,18 @@ async fn invite_revoke(
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
+    revoke_invite(&node, &p, org, key, body.and_then(|Json(b)| b.confirm)).await
+}
+
+/// Withdraw invite `key` of `org` as `p`: `DELETE /orgs/{org}/invites/{key}`,
+/// and the consent page's `revokeInvite`.
+pub(crate) async fn revoke_invite(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    key: String,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let visible = node.sys(|s| {
@@ -1023,9 +1168,8 @@ async fn invite_revoke(
     if !visible {
         return Err(ApiError::not_found(crate::system::INVITE_GONE));
     }
-    let confirm = body.and_then(|Json(b)| b.confirm);
     let args = json!({ "inviteKey": key });
-    let consent = org_consent(&node, &p, &org, "__revoke_invite", &args, confirm).await?;
+    let consent = org_consent(node, p, &org, "__revoke_invite", &args, confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::RevokeInvite {
             org,

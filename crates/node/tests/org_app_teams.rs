@@ -9,18 +9,14 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
 #![allow(
     clippy::result_large_err,
     reason = "the helpers pass on calimero_client::Error as the client returns it"
 )]
 
+use calimero_client::types::{
+    Access, AppCreateRequest, MemberSetTeamsRequestTeamsItem, OrgRole, TeamJoin,
+};
 use calimero_client::{Client, Error};
 use calimero_identity::testing::SoftAuthenticator;
 use serde_json::{json, Value};
@@ -32,7 +28,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, signed_up, Cluster};
+use harness::{kv_wasm, signed_up, typed, wire, Cluster};
 
 const CHAT: &str = "com.test.chat";
 const BLOCKS: &str = "com.test.blocks";
@@ -85,6 +81,7 @@ fn release_shipping(package: &str, wasm: Vec<u8>) -> Vec<u8> {
         upgrades: None,
         outbound: Vec::new(),
         services: None,
+        pipelines: Vec::new(),
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
@@ -113,7 +110,7 @@ fn s(v: &Value) -> String {
 }
 
 async fn id(c: &Client) -> String {
-    s(&c.me().await.unwrap()["accountId"])
+    s(&c.auth().me().await.map(wire).unwrap()["accountId"])
 }
 
 fn refused(e: &Error, why: &str) {
@@ -122,7 +119,7 @@ fn refused(e: &Error, why: &str) {
 }
 
 async fn new_org(owner: &Client) -> String {
-    s(&owner.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"])
+    s(&owner.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"])
 }
 
 /// An invite into `org` at `role`, naming `teams`, made with `pk`: its token.
@@ -134,35 +131,38 @@ async fn invite(
     teams: &[&str],
 ) -> Result<String, Error> {
     let v = by
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": role, "teams": teams }),
-            pk,
+        .orgs()
+        .invite_create(
+            org,
+            typed(json!({ "role": role, "teams": teams })),
+            Some(&mut *pk),
         )
-        .await?;
+        .await
+        .map(wire)?;
     Ok(s(&v["token"]))
 }
 
 async fn join(c: &Client, token: &str) {
-    let _r = c
-        .post(&format!("invites/{token}/redeem"), json!({}))
-        .await
-        .unwrap();
+    let _r = c.orgs().invite_redeem(token).await.unwrap();
 }
 
 /// An instance of `package` in `org` (`access` as `POST /apps` takes it).
 async fn instance(c: &Client, org: &str, package: &str, access: Value) -> Result<String, Error> {
-    let mut opts = json!({ "org": org });
-    if !access.is_null() {
-        opts["access"] = access;
-    }
-    c.create_app_from_package(package, package, None, None, opts)
+    c.apps()
+        .create(AppCreateRequest {
+            name: Some(package.to_owned()),
+            package: Some(package.to_owned()),
+            org: Some(org.to_owned()),
+            access: (!access.is_null()).then(|| typed(access)),
+            ..AppCreateRequest::default()
+        })
         .await
+        .map(|a| a.app_id)
 }
 
 /// The apps of `org` that `c` reaches, as `GET /orgs/{org}/apps` lists them.
 async fn reaches(c: &Client, org: &str) -> Vec<String> {
-    let v = c.get(&format!("orgs/{org}/apps")).await.unwrap();
+    let v = c.orgs().apps(org, None, None).await.map(wire).unwrap();
     v["apps"]
         .as_array()
         .unwrap()
@@ -173,22 +173,21 @@ async fn reaches(c: &Client, org: &str) -> Vec<String> {
 
 /// The accounts `c` sees in `org`'s member directory (`GET /orgs/{org}`).
 async fn directory(c: &Client, org: &str) -> Vec<String> {
-    let v = c.get(&format!("orgs/{org}")).await.unwrap();
+    let v = c.orgs().get(org).await.map(wire).unwrap();
     v["members"].as_object().unwrap().keys().cloned().collect()
 }
 
 async fn new_team(c: &Client, org: &str, name: &str) -> String {
-    s(&c.post(
-        &format!("orgs/{org}/teams"),
-        json!({ "name": name, "join": "invite" }),
-    )
-    .await
-    .unwrap()["teamId"])
+    s(&c.orgs()
+        .team_create(org, name, TeamJoin::Invite, None)
+        .await
+        .map(wire)
+        .unwrap()["teamId"])
 }
 
 /// The invites of `org` that `c` sees (`GET /orgs/{org}/invites`).
 async fn invites_of(c: &Client, org: &str) -> Vec<Value> {
-    c.get(&format!("orgs/{org}/invites")).await.unwrap()["invites"]
+    c.orgs().invite_list(org).await.map(wire).unwrap()["invites"]
         .as_array()
         .unwrap()
         .clone()
@@ -200,13 +199,17 @@ async fn scope(
     org: &str,
     body: Value,
 ) -> Result<Value, Error> {
-    c.post_confirmed(&format!("orgs/{org}/app-teams"), body, pk)
+    let apps = body.get("apps").map(|a| typed(a.clone()));
+    let shared = body.get("shared").and_then(Value::as_bool);
+    c.orgs()
+        .app_teams_scope(org, apps, shared, Some(&mut *pk))
         .await
+        .map(wire)
 }
 
 /// The app team of `package` in `org`, as `GET /orgs/{org}/app-teams` lists it.
 async fn app_team(c: &Client, org: &str, package: &str) -> Value {
-    let v = c.get(&format!("orgs/{org}/app-teams")).await.unwrap();
+    let v = c.orgs().app_team_list(org).await.map(wire).unwrap();
     v["appTeams"]
         .as_array()
         .unwrap()
@@ -236,96 +239,98 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
     }
     let (bob_id, carol_id) = (id(&bob).await, id(&carol).await);
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "account": bob_id, "capabilities": CREATE_APP }),
-            &mut a,
+        .orgs()
+        .capabilities(
+            &org,
+            u64::from(CREATE_APP),
+            Some(&bob_id),
+            None,
+            Some(&mut a),
         )
         .await
         .unwrap();
-    let bundle = bob.upload_bundle(kv_wasm()).await.unwrap();
+    let bundle = bob
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
     // Bob's app, reached by the organization.
     let app = bob
-        .create_app("b", &bundle, json!({ "org": org }))
+        .apps()
+        .create(typed(json!({ "name": "b", "bundle": &bundle, "org": org })))
         .await
+        .map(|a| a.app_id)
         .unwrap();
     let (t1, t2) = (
         new_team(&alice, &org, "one").await,
         new_team(&alice, &org, "two").await,
     );
-    let access = |t: &str| json!({ "access": { "kind": "team", "team": t } });
+    let access = |t: &str| Access::Team { team: t.to_owned() };
 
     // A plain member is refused; an admin (not the app's owner) is not.
     refused(
-        &carol
-            .post(&format!("apps/{app}/access"), access(&t1))
-            .await
-            .unwrap_err(),
+        &carol.apps().access(&app, access(&t1)).await.unwrap_err(),
         "MANAGE_APPLICATION",
     );
-    let _ok = alice
-        .post(&format!("apps/{app}/access"), access(&t1))
-        .await
-        .unwrap();
+    let _ok = alice.apps().access(&app, access(&t1)).await.unwrap();
 
     // Carol leads team one: she moves its app only to a team she manages too,
     // and never to organization-wide access.
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/teams/{t1}/members"),
-            json!({ "account": carol_id, "lead": true }),
-            &mut a,
+        .orgs()
+        .team_set_member(
+            &org,
+            &t1,
+            typed(json!({ "account": carol_id, "lead": true })),
+            Some(&mut a),
         )
         .await
+        .map(wire)
         .unwrap();
     refused(
-        &carol
-            .post(&format!("apps/{app}/access"), access(&t2))
-            .await
-            .unwrap_err(),
+        &carol.apps().access(&app, access(&t2)).await.unwrap_err(),
         "MANAGE_APPLICATION",
     );
     refused(
         &carol
-            .post(
-                &format!("apps/{app}/access"),
-                json!({ "access": { "kind": "org" } }),
-            )
+            .apps()
+            .access(&app, typed(json!({ "kind": "org" })))
             .await
             .unwrap_err(),
         "MANAGE_APPLICATION",
     );
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/teams/{t2}/members"),
-            json!({ "account": carol_id, "lead": true }),
-            &mut a,
+        .orgs()
+        .team_set_member(
+            &org,
+            &t2,
+            typed(json!({ "account": carol_id, "lead": true })),
+            Some(&mut a),
         )
         .await
         .unwrap();
-    let _ok = carol
-        .post(&format!("apps/{app}/access"), access(&t2))
-        .await
-        .unwrap();
+    let _ok = carol.apps().access(&app, access(&t2)).await.unwrap();
     // The owner, not in team two, holds no owner powers over an app on it;
     // once in it, they may change its access anywhere in the organization.
-    let to_org = json!({ "access": { "kind": "org" } });
+    let to_org = Access::Org;
     refused(
-        &bob.post(&format!("apps/{app}/access"), to_org.clone())
-            .await
-            .unwrap_err(),
+        &bob.apps().access(&app, to_org.clone()).await.unwrap_err(),
         "MANAGE_APPLICATION",
     );
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/teams/{t2}/members"),
-            json!({ "account": bob_id, "role": "member" }),
-            &mut a,
+        .orgs()
+        .team_set_member(
+            &org,
+            &t2,
+            typed(json!({ "account": bob_id, "role": "member" })),
+            Some(&mut a),
         )
         .await
         .unwrap();
     let _ok = bob
-        .post(&format!("apps/{app}/access"), to_org)
+        .apps()
+        .access(&app, typed(json!({ "kind": "org" })))
         .await
         .unwrap();
 }
@@ -351,17 +356,18 @@ async fn invites_are_listed_and_revoked_by_whoever_may_see_them() {
     }
     let (alice_id, bob_id) = (id(&alice).await, id(&bob).await);
     let team = s(&alice
-        .post(
-            &format!("orgs/{org}/teams"),
-            json!({ "name": "design", "join": "invite" }),
-        )
+        .orgs()
+        .team_create(&org, "design", TeamJoin::Invite, None)
         .await
+        .map(wire)
         .unwrap()["teamId"]);
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/teams/{team}/members"),
-            json!({ "account": bob_id, "lead": true }),
-            &mut a,
+        .orgs()
+        .team_set_member(
+            &org,
+            &team,
+            typed(json!({ "account": bob_id, "lead": true })),
+            Some(&mut a),
         )
         .await
         .unwrap();
@@ -387,41 +393,38 @@ async fn invites_are_listed_and_revoked_by_whoever_may_see_them() {
     assert_eq!(bob_sees.len(), 1, "{bob_sees:?}");
     assert_eq!(bob_sees[0]["createdBy"], bob_id);
     assert!(invites_of(&carol, &org).await.is_empty());
-    let outside = dave.get(&format!("orgs/{org}/invites")).await.unwrap_err();
+    let outside = dave.orgs().invite_list(&org).await.unwrap_err();
     assert!(outside.to_string().starts_with("404"), "{outside}");
 
     // Carol may not revoke Bob's (it reads as no invite); Bob may, with his
     // passkey, and its token then redeems nothing.
     let bob_key = s(&of_bob["inviteKey"]);
     let gone = carol
-        .delete_confirmed(&format!("orgs/{org}/invites/{bob_key}"), &mut cpk)
+        .orgs()
+        .invite_revoke(&org, &bob_key, Some(&mut cpk))
         .await
         .unwrap_err();
     assert!(gone.to_string().starts_with("404"), "{gone}");
     let _ok = bob
-        .delete_confirmed(&format!("orgs/{org}/invites/{bob_key}"), &mut b)
+        .orgs()
+        .invite_revoke(&org, &bob_key, Some(&mut b))
         .await
         .unwrap();
     refused(
-        &dave
-            .post(&format!("invites/{bobs}/redeem"), json!({}))
-            .await
-            .unwrap_err(),
+        &dave.orgs().invite_redeem(&bobs).await.unwrap_err(),
         "used up, revoked or never existed",
     );
     assert!(invites_of(&bob, &org).await.is_empty());
     // The admin revokes any, and the one left still works until then.
     let alice_key = s(&invites_of(&alice, &org).await[0]["inviteKey"]);
     let _ok = alice
-        .delete_confirmed(&format!("orgs/{org}/invites/{alice_key}"), &mut a)
+        .orgs()
+        .invite_revoke(&org, &alice_key, Some(&mut a))
         .await
         .unwrap();
     assert!(invites_of(&alice, &org).await.is_empty());
     refused(
-        &dave
-            .post(&format!("invites/{alices}/redeem"), json!({}))
-            .await
-            .unwrap_err(),
+        &dave.orgs().invite_redeem(&alices).await.unwrap_err(),
         "used up, revoked or never existed",
     );
 }
@@ -440,7 +443,7 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     let (dave, _d) = signed_up(&c, 0, "dave").await;
     for p in [CHAT, BLOCKS, NOTES] {
-        let _ok = alice.upload_package(release(p)).await.unwrap();
+        let _ok = alice.packages().upload(release(p)).await.unwrap();
     }
     let org = new_org(&alice).await;
     for p in [&bob, &carol] {
@@ -455,7 +458,7 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
     let blocks = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
     assert_eq!(
-        alice.get(&format!("orgs/{org}")).await.unwrap()["mode"],
+        alice.orgs().get(&org).await.map(wire).unwrap()["mode"],
         "legacy"
     );
     for p in [&bob, &carol] {
@@ -478,7 +481,7 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     assert_eq!(chat_team["member"], true, "{chat_team}");
     assert_eq!(chat_team["manages"], false, "{chat_team}");
     let (chat_team, blocks_team) = (s(&chat_team["teamId"]), s(&blocks_team["teamId"]));
-    let app = alice.get(&format!("apps/{chat}")).await.unwrap();
+    let app = alice.apps().get(&chat).await.map(wire).unwrap();
     assert_eq!(
         app["access"],
         json!({ "kind": "team", "team": chat_team }),
@@ -504,11 +507,10 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     // Carol leaves Blocks: she keeps Chat only. Dave joins with an invite to
     // Blocks only: he gets Blocks only, as the org's new member.
     let _ok = alice
-        .delete_confirmed(
-            &format!("orgs/{org}/teams/{blocks_team}/members/{carol_id}"),
-            &mut a,
-        )
+        .orgs()
+        .team_remove_member(&org, &blocks_team, &carol_id, Some(&mut a))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(reaches(&carol, &org).await, vec![chat.clone()]);
     join(
@@ -531,7 +533,7 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     assert!(!seen.contains(&carol_id), "{seen:?}");
     assert!(!directory(&carol, &org).await.contains(&dave_id));
     assert_eq!(directory(&alice, &org).await.len(), 4);
-    let full = dave.get(&format!("orgs/{org}")).await.unwrap();
+    let full = dave.orgs().get(&org).await.map(wire).unwrap();
     assert!(
         !serde_json::to_string(&full).unwrap().contains(&carol_id),
         "{full}"
@@ -539,48 +541,63 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
 
     // One app team per package; only an admin marks or unmarks one.
     let other = s(&alice
-        .post(
-            &format!("orgs/{org}/teams"),
-            json!({ "name": "chat 2", "join": "invite" }),
-        )
+        .orgs()
+        .team_create(&org, "chat 2", TeamJoin::Invite, None)
         .await
+        .map(wire)
         .unwrap()["teamId"]);
     refused(
         &alice
-            .post(
-                &format!("orgs/{org}/teams/{other}"),
-                json!({ "metadata": { "app": { "package": CHAT } } }),
+            .orgs()
+            .team_update(
+                &org,
+                &other,
+                None,
+                None,
+                None,
+                Some(json!({ "app": { "package": CHAT } })),
             )
             .await
             .unwrap_err(),
         "has an app team in this organization already",
     );
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/teams/{chat_team}/members"),
-            json!({ "account": bob_id, "lead": true }),
-            &mut a,
+        .orgs()
+        .team_set_member(
+            &org,
+            &chat_team,
+            typed(json!({ "account": bob_id, "lead": true })),
+            Some(&mut a),
         )
         .await
         .unwrap();
     refused(
-        &bob.post(
-            &format!("orgs/{org}/teams/{chat_team}"),
-            json!({ "metadata": { "color": "red" } }),
-        )
-        .await
-        .unwrap_err(),
+        &bob.orgs()
+            .team_update(
+                &org,
+                &chat_team,
+                None,
+                None,
+                None,
+                Some(json!({ "color": "red" })),
+            )
+            .await
+            .unwrap_err(),
         "only the organization's owner and admins",
     );
     // Bob, Chat's lead with CREATE_APP everywhere, makes Chat instances, but
     // installing Notes, a package with no app team here, is an admin's.
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "account": bob_id, "capabilities": CREATE_APP }),
-            &mut a,
+        .orgs()
+        .capabilities(
+            &org,
+            u64::from(CREATE_APP),
+            Some(&bob_id),
+            None,
+            Some(&mut a),
         )
         .await
+        .map(wire)
         .unwrap();
     let _second = instance(
         &bob,
@@ -607,7 +624,8 @@ async fn scoping_two_packages_that_ship_one_component_keeps_their_instances_apar
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     for p in [CHAT, NOTES] {
         let _ok = alice
-            .upload_package(release_shipping(p, kv_wasm()))
+            .packages()
+            .upload(release_shipping(p, kv_wasm()))
             .await
             .unwrap();
     }
@@ -621,7 +639,7 @@ async fn scoping_two_packages_that_ship_one_component_keeps_their_instances_apar
         assert_eq!(done["teams"].as_array().unwrap().len(), 2, "{done}");
         for (app, package) in [(&chat, CHAT), (&notes, NOTES)] {
             let team = s(&app_team(&alice, &org, package).await["teamId"]);
-            let record = alice.get(&format!("apps/{app}")).await.unwrap();
+            let record = alice.apps().get(app).await.map(wire).unwrap();
             assert_eq!(
                 record["access"],
                 json!({ "kind": "team", "team": team }),
@@ -644,7 +662,7 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
     let (eve, _e) = signed_up(&c, 2, "eve").await;
     let (gail, _g) = signed_up(&c, 0, "gail").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.upload_package(release(p)).await.unwrap();
+        let _ok = alice.packages().upload(release(p)).await.unwrap();
     }
     let org = new_org(&alice).await;
     join(
@@ -712,20 +730,26 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
         "INVITE_MEMBERS",
     );
     refused(
-        &bob.post_confirmed(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "team": chat_team, "capabilities": INVITE_MEMBERS }),
-            &mut b,
-        )
-        .await
-        .unwrap_err(),
+        &bob.orgs()
+            .capabilities(
+                &org,
+                u64::from(INVITE_MEMBERS),
+                None,
+                Some(&chat_team),
+                Some(&mut b),
+            )
+            .await
+            .unwrap_err(),
         "not allowed to manage this team",
     );
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "team": chat_team, "capabilities": INVITE_MEMBERS }),
-            &mut a,
+        .orgs()
+        .capabilities(
+            &org,
+            u64::from(INVITE_MEMBERS),
+            None,
+            Some(&chat_team),
+            Some(&mut a),
         )
         .await
         .unwrap();
@@ -733,8 +757,10 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
         .await
         .unwrap();
     let team = alice
-        .get(&format!("orgs/{org}/teams/{chat_team}"))
+        .orgs()
+        .team_get(&org, &chat_team)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(team["package"], CHAT, "{team}");
     assert_eq!(team["defaultCapabilities"], INVITE_MEMBERS, "{team}");
@@ -746,13 +772,20 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
     join(&eve, &eve_chat).await;
     assert_eq!(reaches(&eve, &org).await, vec![chat.clone()]);
     assert!(directory(&eve, &org).await.contains(&bob_id));
-    let teams = eve.get(&format!("orgs/{org}/app-teams")).await.unwrap();
+    let teams = eve.orgs().app_team_list(&org).await.map(wire).unwrap();
     assert_eq!(teams["appTeams"].as_array().unwrap().len(), 1, "{teams}");
 }
 
 /// `c` writes `app` (the kv fixture's `set`): `Ok` when it reaches it.
 async fn writes(c: &Client, app: &str) -> Result<(), Error> {
-    c.call(app, "set", json!({ "key": "k", "value": "v" }), None)
+    c.apps()
+        .call(
+            app,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .map(drop)
 }
@@ -774,7 +807,7 @@ async fn a_dm_is_reached_only_by_those_in_its_apps_team() {
     let (frank, _f) = signed_up(&c, 1, "frank").await;
     let (erin, _e) = signed_up(&c, 2, "erin").await;
     for p in [CHAT, NOTES] {
-        let _ok = alice.upload_package(release(p)).await.unwrap();
+        let _ok = alice.packages().upload(release(p)).await.unwrap();
     }
     let org = new_org(&alice).await;
     for p in [&bob, &carol, &frank] {
@@ -808,12 +841,16 @@ async fn a_dm_is_reached_only_by_those_in_its_apps_team() {
         .unwrap();
     // Carol's own DM with Bob.
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "account": carol_id, "capabilities": CREATE_APP | 1 << 2 }),
-            &mut a,
+        .orgs()
+        .capabilities(
+            &org,
+            u64::from(CREATE_APP | 1 << 2),
+            Some(&carol_id),
+            None,
+            Some(&mut a),
         )
         .await
+        .map(wire)
         .unwrap();
     let carols = instance(&carol, &org, CHAT, listing(&json!([bob_id])))
         .await
@@ -832,23 +869,22 @@ async fn a_dm_is_reached_only_by_those_in_its_apps_team() {
     // Carol is kicked from Chat; Bob stays; Frank is removed from the
     // organization.
     let _ok = alice
-        .delete_confirmed(
-            &format!("orgs/{org}/teams/{chat_team}/members/{carol_id}"),
-            &mut a,
-        )
+        .orgs()
+        .team_remove_member(&org, &chat_team, &carol_id, Some(&mut a))
         .await
+        .map(wire)
         .unwrap();
     let _ok = alice
-        .delete_confirmed(&format!("orgs/{org}/members/{frank_id}"), &mut a)
+        .orgs()
+        .remove_member(&org, &frank_id, Some(&mut a))
         .await
         .unwrap();
     // Chat closes: Dave, with no row, is out.
     let _ok = alice
-        .post(
-            &format!("orgs/{org}/teams/{chat_team}"),
-            json!({ "join": "invite" }),
-        )
+        .orgs()
+        .team_update(&org, &chat_team, None, Some(TeamJoin::Invite), None, None)
         .await
+        .map(wire)
         .unwrap();
     for (who, app) in [
         (&carol, &dm),
@@ -868,23 +904,25 @@ async fn a_dm_is_reached_only_by_those_in_its_apps_team() {
 
     // Bob leaves Chat himself.
     let _ok = bob
-        .delete_confirmed(
-            &format!("orgs/{org}/teams/{chat_team}/members/{bob_id}"),
-            &mut b,
-        )
+        .orgs()
+        .team_remove_member(&org, &chat_team, &bob_id, Some(&mut b))
         .await
+        .map(wire)
         .unwrap();
     let err = writes(&bob, &dm).await.unwrap_err();
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
 
     // Back in Chat, Carol has both DMs again.
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/teams/{chat_team}/members"),
-            json!({ "account": carol_id, "role": "member" }),
-            &mut a,
+        .orgs()
+        .team_set_member(
+            &org,
+            &chat_team,
+            typed(json!({ "account": carol_id, "role": "member" })),
+            Some(&mut a),
         )
         .await
+        .map(wire)
         .unwrap();
     writes(&carol, &dm).await.unwrap();
     writes(&carol, &carols).await.unwrap();
@@ -904,7 +942,7 @@ async fn members_of_an_app_team_make_private_channels_below_it() {
     let (dave, _d) = signed_up(&c, 0, "dave").await;
     let (gail, _g) = signed_up(&c, 1, "gail").await;
     let (erin, _e) = signed_up(&c, 2, "erin").await;
-    let _ok = alice.upload_package(release(CHAT)).await.unwrap();
+    let _ok = alice.packages().upload(release(CHAT)).await.unwrap();
     let org = new_org(&alice).await;
     for p in [&bob, &carol, &dave] {
         join(
@@ -928,22 +966,29 @@ async fn members_of_an_app_team_make_private_channels_below_it() {
         &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
     )
     .await;
-    let channel = |join: &str| json!({ "name": "design", "join": join, "parent": chat_team });
-    let teams = format!("orgs/{org}/teams");
 
     // Carol makes a private channel and leads it: she adds Dave.
-    let private = s(&carol.post(&teams, channel("invite")).await.unwrap()["teamId"]);
+    let private = s(&carol
+        .orgs()
+        .team_create(&org, "design", TeamJoin::Invite, Some(&chat_team))
+        .await
+        .map(wire)
+        .unwrap()["teamId"]);
     let _ok = carol
-        .post_confirmed(
-            &format!("orgs/{org}/teams/{private}/members"),
-            json!({ "account": dave_id, "role": "member" }),
-            &mut cpk,
+        .orgs()
+        .team_set_member(
+            &org,
+            &private,
+            typed(json!({ "account": dave_id, "role": "member" })),
+            Some(&mut cpk),
         )
         .await
         .unwrap();
     let view = alice
-        .get(&format!("orgs/{org}/teams/{private}"))
+        .orgs()
+        .team_get(&org, &private)
         .await
+        .map(wire)
         .unwrap();
     assert!(
         view.to_string().contains(&carol_id) && view.to_string().contains(&dave_id),
@@ -951,54 +996,63 @@ async fn members_of_an_app_team_make_private_channels_below_it() {
     );
     // Never an open one; never by someone out of Chat.
     refused(
-        &carol.post(&teams, channel("everyone")).await.unwrap_err(),
+        &carol
+            .orgs()
+            .team_create(&org, "design", TeamJoin::Everyone, Some(&chat_team))
+            .await
+            .unwrap_err(),
         "not allowed to create this team",
     );
     refused(
-        &gail.post(&teams, channel("invite")).await.unwrap_err(),
+        &gail
+            .orgs()
+            .team_create(&org, "design", TeamJoin::Invite, Some(&chat_team))
+            .await
+            .unwrap_err(),
         "not allowed to create this team",
     );
-    let _outside = erin.post(&teams, channel("invite")).await.unwrap_err();
+    let _outside = erin
+        .orgs()
+        .team_create(&org, "design", TeamJoin::Invite, Some(&chat_team))
+        .await
+        .unwrap_err();
     let _ok = alice
-        .delete_confirmed(
-            &format!("orgs/{org}/teams/{chat_team}/members/{bob_id}"),
-            &mut a,
-        )
+        .orgs()
+        .team_remove_member(&org, &chat_team, &bob_id, Some(&mut a))
         .await
         .unwrap();
     refused(
-        &bob.post(&teams, channel("invite")).await.unwrap_err(),
+        &bob.orgs()
+            .team_create(&org, "design", TeamJoin::Invite, Some(&chat_team))
+            .await
+            .unwrap_err(),
         "not allowed to create this team",
     );
 
     // Dave, removed from Chat, and Carol, who leaves it, are out of the
     // channel below it.
     let _ok = alice
-        .delete_confirmed(
-            &format!("orgs/{org}/teams/{chat_team}/members/{dave_id}"),
-            &mut a,
-        )
+        .orgs()
+        .team_remove_member(&org, &chat_team, &dave_id, Some(&mut a))
         .await
+        .map(wire)
         .unwrap();
     let _ok = carol
-        .delete_confirmed(
-            &format!("orgs/{org}/teams/{chat_team}/members/{carol_id}"),
-            &mut cpk,
-        )
+        .orgs()
+        .team_remove_member(&org, &chat_team, &carol_id, Some(&mut cpk))
         .await
         .unwrap();
     let view = alice
-        .get(&format!("orgs/{org}/teams/{private}"))
+        .orgs()
+        .team_get(&org, &private)
         .await
+        .map(wire)
         .unwrap();
     assert!(
         !view.to_string().contains(&carol_id) && !view.to_string().contains(&dave_id),
         "a row is left below: {view}"
     );
-    assert!(dave
-        .get(&format!("orgs/{org}/teams/{private}"))
-        .await
-        .is_err());
+    assert!(dave.orgs().team_get(&org, &private).await.is_err());
 }
 
 /// An admin closes one app's team and no other, in one step, keeping either
@@ -1016,7 +1070,7 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
     let (frank, _f) = signed_up(&c, 1, "frank").await;
     let (erin, mut e) = signed_up(&c, 2, "erin").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.upload_package(release(p)).await.unwrap();
+        let _ok = alice.packages().upload(release(p)).await.unwrap();
     }
     let org = new_org(&alice).await;
     for p in [&bob, &carol, &dave, &frank] {
@@ -1045,17 +1099,18 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
     let chat_team = s(&app_team(&alice, &org, CHAT).await["teamId"]);
     // Carol leads a private channel under Chat, with an instance of its own.
     let channel = s(&alice
-        .post(
-            &format!("orgs/{org}/teams"),
-            json!({ "name": "carol's", "join": "invite", "parent": chat_team }),
-        )
+        .orgs()
+        .team_create(&org, "carol's", TeamJoin::Invite, Some(&chat_team))
         .await
+        .map(wire)
         .unwrap()["teamId"]);
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/teams/{channel}/members"),
-            json!({ "account": carol_id, "lead": true }),
-            &mut a,
+        .orgs()
+        .team_set_member(
+            &org,
+            &channel,
+            typed(json!({ "account": carol_id, "lead": true })),
+            Some(&mut a),
         )
         .await
         .unwrap();
@@ -1070,14 +1125,14 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
     assert!(reaches(&carol, &org).await.contains(&private));
     // Dave left Chat; Frank is removed from the organization.
     let _ok = dave
-        .delete_confirmed(
-            &format!("orgs/{org}/teams/{chat_team}/members/{dave_id}"),
-            &mut d,
-        )
+        .orgs()
+        .team_remove_member(&org, &chat_team, &dave_id, Some(&mut d))
         .await
+        .map(wire)
         .unwrap();
     let _ok = alice
-        .delete_confirmed(&format!("orgs/{org}/members/{frank_id}"), &mut a)
+        .orgs()
+        .remove_member(&org, &frank_id, Some(&mut a))
         .await
         .unwrap();
 
@@ -1148,8 +1203,10 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
         assert!(r.contains(&blocks), "{r:?}");
     }
     let row = alice
-        .get(&format!("orgs/{org}/teams/{channel}"))
+        .orgs()
+        .team_get(&org, &channel)
         .await
+        .map(wire)
         .unwrap();
     assert!(
         !serde_json::to_string(&row).unwrap().contains(&carol_id),
@@ -1183,11 +1240,10 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
 
     // A single team also opens with the team update an admin always had.
     let _ok = alice
-        .post(
-            &format!("orgs/{org}/teams/{chat_team}"),
-            json!({ "join": "everyone" }),
-        )
+        .orgs()
+        .team_update(&org, &chat_team, None, Some(TeamJoin::Everyone), None, None)
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(app_team(&alice, &org, CHAT).await["join"], "everyone");
 }
@@ -1207,7 +1263,7 @@ async fn an_all_apps_member_gets_every_app_added_later() {
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     let (dave, mut d) = signed_up(&c, 0, "dave").await;
     for p in [CHAT, NOTES, BLOCKS] {
-        let _ok = alice.upload_package(release(p)).await.unwrap();
+        let _ok = alice.packages().upload(release(p)).await.unwrap();
     }
     let org = new_org(&alice).await;
     for p in [&carol, &dave] {
@@ -1226,37 +1282,37 @@ async fn an_all_apps_member_gets_every_app_added_later() {
 
     // Dave may invite, but not for every app: that is an admin's.
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "account": dave_id, "capabilities": INVITE_MEMBERS | 1 << 2 }),
-            &mut a,
+        .orgs()
+        .capabilities(
+            &org,
+            u64::from(INVITE_MEMBERS | 1 << 2),
+            Some(&dave_id),
+            None,
+            Some(&mut a),
         )
         .await
+        .map(wire)
         .unwrap();
     let all_apps_invite = |role: &str| json!({ "role": role, "allApps": true });
     let err = dave
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            all_apps_invite("member"),
-            &mut d,
-        )
+        .orgs()
+        .invite_create(&org, typed(all_apps_invite("member")), Some(&mut d))
         .await
+        .map(wire)
         .unwrap_err();
     refused(&err, "every app");
     let token = alice
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            all_apps_invite("member"),
-            &mut a,
-        )
+        .orgs()
+        .invite_create(&org, typed(all_apps_invite("member")), Some(&mut a))
         .await
+        .map(wire)
         .unwrap()["token"]
         .clone();
     let listed = invites_of(&alice, &org).await;
     assert!(listed.iter().any(|i| i["allApps"] == true), "{listed:?}");
     join(&bob, &s(&token)).await;
     let bob_id = id(&bob).await;
-    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    let o = alice.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(o["allApps"], json!([bob_id]), "{o}");
     // Chat was there before: Bob is not in it.
     assert!(!reaches(&bob, &org).await.contains(&chat));
@@ -1270,27 +1326,21 @@ async fn an_all_apps_member_gets_every_app_added_later() {
     }
 
     // An admin sets it on Carol later; a member below admin cannot.
-    let path = format!("orgs/{org}/all-apps");
     let err = dave
-        .post_confirmed(
-            &path,
-            json!({ "account": dave_id, "allApps": true }),
-            &mut d,
-        )
+        .orgs()
+        .all_apps(&org, &dave_id, true, Some(&mut d))
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
     let err = alice
-        .post(&path, json!({ "account": carol_id, "allApps": true }))
+        .orgs()
+        .all_apps(&org, &carol_id, true, None)
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("CONFIRM_REQUIRED"), "{err}");
     let _ok = alice
-        .post_confirmed(
-            &path,
-            json!({ "account": carol_id, "allApps": true }),
-            &mut a,
-        )
+        .orgs()
+        .all_apps(&org, &carol_id, true, Some(&mut a))
         .await
         .unwrap();
     let blocks = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
@@ -1303,10 +1353,12 @@ async fn an_all_apps_member_gets_every_app_added_later() {
 
     // Removed from the organization, Bob's grant goes with him.
     let _ok = alice
-        .delete_confirmed(&format!("orgs/{org}/members/{bob_id}"), &mut a)
+        .orgs()
+        .remove_member(&org, &bob_id, Some(&mut a))
         .await
+        .map(wire)
         .unwrap();
-    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    let o = alice.orgs().get(&org).await.map(wire).unwrap();
     assert_eq!(o["allApps"], json!([carol_id]), "{o}");
 }
 
@@ -1322,7 +1374,7 @@ async fn closing_an_app_team_takes_the_channels_of_whoever_loses_it() {
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (dave, mut d) = signed_up(&c, 2, "dave").await;
-    let _ok = alice.upload_package(release(CHAT)).await.unwrap();
+    let _ok = alice.packages().upload(release(CHAT)).await.unwrap();
     let org = new_org(&alice).await;
     join(
         &bob,
@@ -1346,17 +1398,18 @@ async fn closing_an_app_team_takes_the_channels_of_whoever_loses_it() {
     // Dave makes a private channel below Chat, adds Bob, and puts an
     // instance in it.
     let channel = s(&dave
-        .post(
-            &format!("orgs/{org}/teams"),
-            json!({ "name": "design", "join": "invite", "parent": chat_team }),
-        )
+        .orgs()
+        .team_create(&org, "design", TeamJoin::Invite, Some(&chat_team))
         .await
+        .map(wire)
         .unwrap()["teamId"]);
     let _ok = dave
-        .post_confirmed(
-            &format!("orgs/{org}/teams/{channel}/members"),
-            json!({ "account": bob_id, "role": "member" }),
-            &mut d,
+        .orgs()
+        .team_set_member(
+            &org,
+            &channel,
+            typed(json!({ "account": bob_id, "role": "member" })),
+            Some(&mut d),
         )
         .await
         .unwrap();
@@ -1376,23 +1429,21 @@ async fn closing_an_app_team_takes_the_channels_of_whoever_loses_it() {
     // Alice closes Chat with the plain team update: Dave, with no row in
     // it, loses Chat and the channel below it; Bob keeps both.
     let _ok = alice
-        .post(
-            &format!("orgs/{org}/teams/{chat_team}"),
-            json!({ "join": "invite" }),
-        )
+        .orgs()
+        .team_update(&org, &chat_team, None, Some(TeamJoin::Invite), None, None)
         .await
+        .map(wire)
         .unwrap();
     let r = reaches(&dave, &org).await;
     assert!(!r.contains(&chat) && !r.contains(&private), "{r:?}");
     let err = writes(&dave, &private).await.unwrap_err();
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
-    assert!(dave
-        .get(&format!("orgs/{org}/teams/{channel}"))
-        .await
-        .is_err());
+    assert!(dave.orgs().team_get(&org, &channel).await.is_err());
     let view = alice
-        .get(&format!("orgs/{org}/teams/{channel}"))
+        .orgs()
+        .team_get(&org, &channel)
         .await
+        .map(wire)
         .unwrap();
     assert!(
         !view.to_string().contains(&dave_id),
@@ -1413,7 +1464,7 @@ async fn an_admin_lets_an_app_teams_members_make_channels() {
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, mut b) = signed_up(&c, 1, "bob").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.upload_package(release(p)).await.unwrap();
+        let _ok = alice.packages().upload(release(p)).await.unwrap();
     }
     let org = new_org(&alice).await;
     join(
@@ -1430,17 +1481,22 @@ async fn an_admin_lets_an_app_teams_members_make_channels() {
     let chat_team = s(&app_team(&alice, &org, CHAT).await["teamId"]);
     // Chat's default without it, as an app team made before it had.
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "team": chat_team, "capabilities": INVITE_MEMBERS }),
-            &mut a,
+        .orgs()
+        .capabilities(
+            &org,
+            u64::from(INVITE_MEMBERS),
+            None,
+            Some(&chat_team),
+            Some(&mut a),
         )
         .await
+        .map(wire)
         .unwrap();
-    let teams = format!("orgs/{org}/teams");
-    let channel = json!({ "name": "design", "join": "invite", "parent": chat_team });
     refused(
-        &bob.post(&teams, channel.clone()).await.unwrap_err(),
+        &bob.orgs()
+            .team_create(&org, "design", TeamJoin::Invite, Some(&chat_team))
+            .await
+            .unwrap_err(),
         "not allowed to create this team",
     );
     // Only an admin turns it on.
@@ -1456,7 +1512,12 @@ async fn an_admin_lets_an_app_teams_members_make_channels() {
         "{t}"
     );
     assert_eq!(app_team(&alice, &org, BLOCKS).await["join"], "everyone");
-    let _private = s(&bob.post(&teams, channel).await.unwrap()["teamId"]);
+    let _private = s(&bob
+        .orgs()
+        .team_create(&org, "design", TeamJoin::Invite, Some(&chat_team))
+        .await
+        .map(wire)
+        .unwrap()["teamId"]);
 }
 
 /// Calimero Home's "give all apps": an admin gives one member rows in every
@@ -1472,7 +1533,7 @@ async fn an_admin_gives_a_member_every_app_in_one_step() {
     let (bob, mut b) = signed_up(&c, 1, "bob").await;
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     for p in [CHAT, BLOCKS, NOTES] {
-        let _ok = alice.upload_package(release(p)).await.unwrap();
+        let _ok = alice.packages().upload(release(p)).await.unwrap();
     }
     let org = new_org(&alice).await;
     join(
@@ -1500,34 +1561,49 @@ async fn an_admin_gives_a_member_every_app_in_one_step() {
         teams.push(s(&app_team(&alice, &org, p).await["teamId"]));
     }
     assert!(reaches(&carol, &org).await.is_empty());
-    let rows = |teams: &[String]| json!({ "teams": teams.iter().map(|t| json!({ "team": t })).collect::<Vec<_>>() });
-    let path = format!("orgs/{org}/members/{carol_id}/teams");
+    let rows = |teams: &[String]| {
+        teams
+            .iter()
+            .map(|t| MemberSetTeamsRequestTeamsItem {
+                team: t.clone(),
+                ..MemberSetTeamsRequestTeamsItem::default()
+            })
+            .collect::<Vec<_>>()
+    };
 
     // Bob leads none of them: refused, nothing set.
     let err = bob
-        .post_confirmed(&path, rows(&teams), &mut b)
+        .orgs()
+        .member_set_teams(&org, &carol_id, rows(&teams), Some(&mut b))
         .await
         .unwrap_err();
     refused(&err, "not allowed to manage this team");
     assert!(reaches(&carol, &org).await.is_empty());
     // A batch naming one team twice, or none, is refused before a passkey.
     for body in [rows(&[teams[0].clone(), teams[0].clone()]), rows(&[])] {
-        let err = alice.post(&path, body).await.unwrap_err();
+        let err = alice
+            .orgs()
+            .member_set_teams(&org, &carol_id, body, None)
+            .await
+            .unwrap_err();
         assert_eq!(err.code(), Some("BAD_TEAMS"), "{err}");
     }
 
     // Bob leads Chat now: a batch of Chat and Blocks is still refused whole.
     let bob_id = id(&bob).await;
     let _ok = alice
-        .post_confirmed(
-            &format!("orgs/{org}/teams/{}/members", teams[0]),
-            json!({ "account": bob_id, "role": "lead" }),
-            &mut a,
+        .orgs()
+        .team_set_member(
+            &org,
+            &teams[0],
+            typed(json!({ "account": bob_id, "role": "lead" })),
+            Some(&mut a),
         )
         .await
         .unwrap();
     let err = bob
-        .post_confirmed(&path, rows(&teams[..2]), &mut b)
+        .orgs()
+        .member_set_teams(&org, &carol_id, rows(&teams[..2]), Some(&mut b))
         .await
         .unwrap_err();
     refused(&err, "not allowed to manage this team");
@@ -1535,7 +1611,8 @@ async fn an_admin_gives_a_member_every_app_in_one_step() {
 
     // Alice gives Carol all three with one approval.
     let _ok = alice
-        .post_confirmed(&path, rows(&teams), &mut a)
+        .orgs()
+        .member_set_teams(&org, &carol_id, rows(&teams), Some(&mut a))
         .await
         .unwrap();
     let mut r = reaches(&carol, &org).await;
@@ -1549,10 +1626,265 @@ async fn an_admin_gives_a_member_every_app_in_one_step() {
 
     // Out of Chat and Notes with one approval; Blocks stays.
     let _ok = alice
-        .delete_confirmed_with(&path, json!({ "teams": [teams[0], teams[2]] }), &mut a)
+        .orgs()
+        .member_remove_teams(
+            &org,
+            &carol_id,
+            typed(json!([teams[0], teams[2]])),
+            Some(&mut a),
+        )
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(reaches(&carol, &org).await, vec![apps[1].clone()]);
     let err = writes(&carol, &apps[0]).await.unwrap_err();
     assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
+}
+
+/// The chat app's channels: a session opened on a package's frontend manages
+/// the teams of its own package (its app team's channels) with the person's
+/// own authority there, no trip to the cluster's page: it creates a channel
+/// under its app team, renames it, adds and removes a member, makes one of
+/// its package's apps private to it, and deletes it with that app. It is
+/// refused (403) anything else: another package's teams, an org-wide team,
+/// the app team's mark and its deletion, a move out of its package, and the
+/// organization's roles.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_frontend_session_manages_its_own_packages_channels() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    for p in [CHAT, BLOCKS] {
+        let _ok = alice.packages().upload(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    join(
+        &bob,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let bob_id = id(&bob).await;
+    let chat_app = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    let blocks_app = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
+    let _done = scope(&alice, &mut a, &org, json!({ "shared": false }))
+        .await
+        .unwrap();
+    let chat_team = s(&app_team(&alice, &org, CHAT).await["teamId"]);
+    let blocks_team = s(&app_team(&alice, &org, BLOCKS).await["teamId"]);
+    let blocks_channel = s(&alice
+        .orgs()
+        .team_create(&org, "blocks-ch", TeamJoin::Invite, Some(&blocks_team))
+        .await
+        .map(wire)
+        .unwrap()["teamId"]);
+    let org_wide = new_team(&alice, &org, "ops").await;
+    // A second chat instance, to be made private to a channel.
+    let room = instance(
+        &alice,
+        &org,
+        CHAT,
+        json!({ "kind": "team", "team": chat_team }),
+    )
+    .await
+    .unwrap();
+
+    // Alice signed in on chat's frontend origin: a session bound to chat.
+    let label = calimero_node::app_host::label(CHAT);
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let origin = format!("http://{label}.localhost:{port}");
+    let site = c.client(0);
+    let mut site_key = SoftAuthenticator::with_key(&a, "localhost", &origin);
+    let _s = site.sign_in(&mut site_key).await.unwrap();
+
+    // Its own package's channels, directly.
+    let channel = s(&site
+        .orgs()
+        .team_create(&org, "general", TeamJoin::Invite, Some(&chat_team))
+        .await
+        .map(wire)
+        .unwrap()["teamId"]);
+    let _ok = site
+        .orgs()
+        .team_update(&org, &channel, Some("random"), None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
+    let _ok = site
+        .orgs()
+        .team_set_member(
+            &org,
+            &channel,
+            typed(json!({ "account": bob_id })),
+            Some(&mut site_key),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let t = alice
+        .orgs()
+        .team_get(&org, &channel)
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(t["name"], "random", "{t}");
+    assert!(t.to_string().contains(&bob_id), "{t}");
+    let _ok = site
+        .orgs()
+        .team_remove_member(&org, &channel, &bob_id, Some(&mut site_key))
+        .await
+        .map(wire)
+        .unwrap();
+    let t = alice
+        .orgs()
+        .team_get(&org, &channel)
+        .await
+        .map(wire)
+        .unwrap();
+    assert!(!t.to_string().contains(&bob_id), "{t}");
+    let _ok = site
+        .apps()
+        .access(&room, typed(json!({ "kind": "team", "team": channel })))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        alice.apps().get(&room).await.map(wire).unwrap()["access"]["team"],
+        json!(channel)
+    );
+
+    let forbidden = |what: &str, r: Result<Value, Error>| {
+        let e = r.expect_err(what);
+        assert!(matches!(e, Error::Api { status: 403, .. }), "{what}: {e}");
+    };
+    forbidden(
+        "create a channel under another package's app team",
+        site.orgs()
+            .team_create(&org, "x", TeamJoin::Invite, Some(&blocks_team))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "create an org-wide team",
+        site.orgs()
+            .team_create(&org, "x", TeamJoin::Invite, None)
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "create a team under an org-wide team",
+        site.orgs()
+            .team_create(&org, "x", TeamJoin::Invite, Some(&org_wide))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "rename another package's channel",
+        site.orgs()
+            .team_update(&org, &blocks_channel, Some("x"), None, None, None)
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "move a channel out of its package",
+        site.orgs()
+            .team_update(&org, &channel, None, None, Some(None), None)
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "change the app team's mark",
+        site.orgs()
+            .team_update(
+                &org,
+                &chat_team,
+                None,
+                None,
+                None,
+                Some(json!({ "app": { "package": BLOCKS } })),
+            )
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "delete the app team",
+        site.orgs()
+            .team_delete(&org, &chat_team, Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "add a member to an org-wide team",
+        site.orgs()
+            .team_set_member(
+                &org,
+                &org_wide,
+                typed(json!({ "account": bob_id })),
+                Some(&mut site_key),
+            )
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "remove a member from another package's app team",
+        site.orgs()
+            .team_remove_member(&org, &blocks_team, &bob_id, Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "delete another package's channel",
+        site.orgs()
+            .team_delete(&org, &blocks_channel, Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "move its app to another package's team",
+        site.apps()
+            .access(&room, typed(json!({ "kind": "team", "team": blocks_team })))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "move its app to an org-wide team",
+        site.apps()
+            .access(&room, typed(json!({ "kind": "team", "team": org_wide })))
+            .await
+            .map(wire),
+    );
+    let _err = site
+        .apps()
+        .access(
+            &blocks_app,
+            typed(json!({ "kind": "team", "team": chat_team })),
+        )
+        .await
+        .map(wire)
+        .expect_err("another package's app");
+    forbidden(
+        "set an organization role",
+        site.orgs()
+            .set_member(&org, &bob_id, OrgRole::Admin, Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "set capabilities on its own channel",
+        site.orgs()
+            .capabilities(&org, 0, None, Some(&channel), Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+
+    // Deleting its channel takes the app private to it, with its passkey.
+    let gone = site
+        .orgs()
+        .team_delete(&org, &channel, Some(&mut site_key))
+        .await
+        .map(wire)
+        .unwrap();
+    assert!(gone.to_string().contains(&room), "{gone}");
+    assert!(alice.apps().get(&room).await.is_err());
+    assert!(alice.orgs().team_get(&org, &channel).await.is_err());
+    assert!(alice.apps().get(&chat_app).await.is_ok());
 }

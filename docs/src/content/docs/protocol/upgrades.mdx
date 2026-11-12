@@ -54,7 +54,22 @@ Releases may share a WASM: one that changes only the frontend is still an
 upgrade, approved by whoever holds the app's upgrades exactly as above, and
 afterwards the instance runs, is reported at, and is served the frontend of the
 new release. An instance recorded before releases were kept (or running a raw
-development bundle) is taken to run the release its bundle ships in.
+development bundle) is taken to run the release its bundle ships in, if that
+release was installed by the time the instance took the bundle.
+
+**Who may upgrade follows the release it runs.** Its `upgrades`, its publisher
+and so its approved releases are those of `AppRecord::release`
+(`SystemState::governing_release`), not of whichever release first shipped the
+same WASM: an instance of an `owner` release stays its owners' even where a
+`publisher` release of the package ships the same WASM, and a release installed
+after an instance took a raw upload of the same WASM takes nothing from its
+owner. A WASM belongs to one signer: a release of another signer's package that
+ships it is refused at install. One signer may ship it in several of its
+packages, and each instance is judged by the release it runs. A cluster begun before this rule replays what it
+logged then as it applied it: the first system leader on a release that judges
+by the release writes `AttributeByRelease` (the `attributeByRelease` feature,
+so only once the [cluster version](#the-cluster-version) brings it), and the
+rule holds from that entry on.
 
 **What the passkey signs.** The challenge's arguments are
 `{ bundle, migrate, manifest }`: the target WASM's hash and the target
@@ -191,7 +206,13 @@ the apps of the teams below it — to `version`.
 - **Record.** `StartUpgradeRun` stores an `UpgradeRun` on the organization (run id,
   package, version, team, cascade, who started it, its apps, which are done and
   which failed, and whether it finished); the organization keeps its newest 20
-  runs.
+  runs. Where it applies, the run's apps are derived from the state and what
+  the consent covers (the organization's apps of `package` in the scope, a
+  publisher's instances the starter may upgrade, or the apps the retried run
+  failed on), never taken from the entry, and it starts with nothing done.
+  Each app's `UpgradeApp` must be one the run names and has not moved yet,
+  still on a release of `package`, and not to an older version than it runs;
+  an app that fails this is recorded as failed without running anything.
 - **Progress.** A background task on the node that started it upgrades the apps
   one by one; each `UpgradeApp` or `UpgradeFailed` notes the app on the run and
   on the instance. An app already on the target bundle is recorded as done.
@@ -278,6 +299,12 @@ every feature gated it stays at zero.
 | `renameOrg` | `RenameOrg`, renaming an organization; an earlier release cannot read it | 1.0.0-rc.16 |
 | `teamMembersBatch` | `SetTeamMembers` and `RemoveTeamMembers`, a member's rows in several teams at once; an earlier release cannot read them | 1.0.0-rc.16 |
 | `appTeamChildTeams` | `ScopeApps` naming one app team's `childTeams`; an earlier `ScopeApp` refuses unknown fields | 1.0.0-rc.16 |
+| `priceTable` | `SetPriceTable`, the operator's compute prices; an earlier release cannot read it | 1.0.0-rc.19 |
+| `computeOnly` | `InstallPackage` or `CreateApp` of a release with only a compute component; an earlier release ignores `components` and treats it as an app | 1.0.0-rc.19 |
+| `pipelines` | `InstallPackage` of a release that registers pipelines; an earlier release drops them | 1.0.0-rc.19 |
+| `namedPool` | `AcquireRun` naming a pool; an earlier release ignores `pool` and places the run by memory | 1.0.0-rc.19 |
+| `attributeByRelease` | `AttributeByRelease`, the system leader's one-time mark after which an app's upgrades, publisher and release approvals follow the release it runs; an earlier release cannot read it. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.19 |
+| `currentRules` | `RequireCurrentRules`, the system leader's one-time mark after which every entry applies under this release's rules; an earlier release cannot read it. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.19 |
 | `clusterVersion` | `SetClusterVersion` | 1.0.0-rc.16 |
 
 The rc.15 features were added before the gate: on a cluster whose every node

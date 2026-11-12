@@ -37,13 +37,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
-use calimero_client::{Client, Consistency, Error as ClientError, Session};
+use calimero_client::types::{
+    OutboundSelection, OutboundSelectionManifest, TeamJoin, ViewsRequestConsistency, ViewsResponse,
+};
+use calimero_client::{Client, Error as ClientError, Request, Session};
 use calimero_identity::testing::SoftAuthenticator;
 use futures_util::StreamExt;
 use serde_json::{json, Map, Value};
 use sha2::Digest as _;
 
-use crate::cluster::{Cluster, ORIGIN};
+use crate::cluster::{typed, wire, Cluster, ORIGIN};
 use crate::py;
 
 /// The repository root.
@@ -1567,6 +1570,32 @@ impl<'a> Runner<'a> {
         Value::Object(opts)
     }
 
+    /// `POST /apps` from a bundle with the step's options, as the scenario
+    /// wrote them: a raw request, since a scenario may send what the route's
+    /// type does not name (`confirmMethods`, which the node ignores).
+    async fn create_from_bundle(
+        &self,
+        cl: &Client,
+        step: &Map<String, Value>,
+        bundle: &str,
+    ) -> Result<String, Box<ClientError>> {
+        let mut body = Map::new();
+        let _p = body.insert(
+            "name".into(),
+            json!(opt_s(step, "app_name").unwrap_or_else(|| "app".into())),
+        );
+        let _p = body.insert("bundle".into(), json!(bundle));
+        if let Value::Object(o) = self.app_options(step) {
+            body.extend(o);
+        }
+        let created = cl
+            .transport()
+            .json(Request::new(Method::POST, "apps").json(Value::Object(body)))
+            .await
+            .map_err(Box::new)?;
+        Ok(created["appId"].as_str().unwrap_or_default().to_owned())
+    }
+
     fn release_body(&self, step: &Map<String, Value>) -> Map<String, Value> {
         let mut body = Map::new();
         let _p = body.insert(
@@ -1592,13 +1621,20 @@ impl<'a> Runner<'a> {
         body: Value,
     ) -> StepResult {
         let cl = self.client(step).await?;
-        match cl.post(path, body.clone()).await {
+        match cl
+            .transport()
+            .json(Request::new(Method::POST, path).json(body.clone()))
+            .await
+        {
             Err(e) if e.code() == Some("CONFIRM_REQUIRED") => {
                 let who = self.actor(step).unwrap_or_default();
                 let Some(pk) = self.passkeys.get_mut(&who) else {
                     return Err(e.into());
                 };
-                Ok(cl.post_confirmed(path, body, pk).await?)
+                Ok(cl
+                    .transport()
+                    .confirmed(Request::new(Method::POST, path).json(body), &mut *pk)
+                    .await?)
             }
             other => Ok(other?),
         }
@@ -1606,13 +1642,20 @@ impl<'a> Runner<'a> {
 
     async fn delete_approved(&mut self, step: &Map<String, Value>, path: &str) -> StepResult {
         let cl = self.client(step).await?;
-        match cl.delete(path).await {
+        match cl
+            .transport()
+            .json(Request::new(Method::DELETE, path))
+            .await
+        {
             Err(e) if e.code() == Some("CONFIRM_REQUIRED") => {
                 let who = self.actor(step).unwrap_or_default();
                 let Some(pk) = self.passkeys.get_mut(&who) else {
                     return Err(e.into());
                 };
-                Ok(cl.delete_confirmed(path, pk).await?)
+                Ok(cl
+                    .transport()
+                    .confirmed(Request::new(Method::DELETE, path).json(json!({})), &mut *pk)
+                    .await?)
             }
             other => Ok(other?),
         }
@@ -1646,7 +1689,16 @@ impl<'a> Runner<'a> {
                 if let Some(v) = step.get("parent") {
                     let _p = body.insert("parent".into(), v.clone());
                 }
-                return Ok(cl.post(&base, Value::Object(body)).await?);
+                return Ok(cl
+                    .transport()
+                    .json(
+                        Request::new(
+                            Method::POST,
+                            format!("orgs/{org}/teams/{}", team.clone().unwrap_or_default()),
+                        )
+                        .json(Value::Object(body)),
+                    )
+                    .await?);
             }
             "team_delete" => return self.delete_approved(step, &base).await,
             "capabilities" => {
@@ -1667,7 +1719,7 @@ impl<'a> Runner<'a> {
                     .await;
             }
             "team_list" => {
-                let o = cl.get(&format!("orgs/{org}")).await?;
+                let o = cl.orgs().get(&org).await.map(wire)?;
                 let teams = o
                     .get("teams")
                     .and_then(Value::as_object)
@@ -1701,7 +1753,11 @@ impl<'a> Runner<'a> {
             }
             _ => {}
         }
-        let t = cl.get(&base).await?;
+        let t = cl
+            .orgs()
+            .team_get(&org, &team.clone().unwrap_or_default())
+            .await
+            .map(wire)?;
         let meta = t.get("metadata").cloned().unwrap_or(Value::Null);
         let mut out = t.as_object().cloned().unwrap_or_default();
         let name = match &meta {
@@ -1737,7 +1793,7 @@ impl<'a> Runner<'a> {
             // Joining is the node's to allow or refuse: a caller the team view does not list
             // as a member (kicked, left, never admitted) asks the node to add it, as one that
             // reaches the team by inheritance does, and the node's answer is the step's.
-            let me = cl.me().await?;
+            let me = cl.auth().me().await.map(wire)?;
             let me_id = me["accountId"].as_str().unwrap_or_default().to_owned();
             let inherited = t.get("myRole").is_none_or(Value::is_null);
             if inherited || !truthy(t.get("member")) {
@@ -1772,11 +1828,17 @@ impl<'a> Runner<'a> {
                     .passkeys
                     .get_mut(&who)
                     .ok_or_else(|| format!("no passkey for {who}"))?;
-                let r = cl.call_confirmed(&app, &method, args, pk).await?;
+                let r = cl
+                    .apps()
+                    .call(&app, &method, Some(args), None, Some(&mut *pk))
+                    .await?;
                 return Ok(serde_json::to_value(r).map_err(|e| e.to_string())?);
             }
             let key = opt_s(step, "idempotency_key");
-            let r = cl.call(&app, &method, args, key.as_deref()).await?;
+            let r = cl
+                .apps()
+                .call(&app, &method, Some(args), key.as_deref(), None)
+                .await?;
             return Ok(serde_json::to_value(r).map_err(|e| e.to_string())?);
         }
         Ok(serde_json::to_value(self.view_once(&cl, step, args).await?)
@@ -1788,18 +1850,24 @@ impl<'a> Runner<'a> {
         cl: &Client,
         step: &Map<String, Value>,
         args: Value,
-    ) -> Result<calimero_client::ViewResult, Box<ClientError>> {
-        let consistency = if truthy(step.get("stale")) {
-            Consistency::Stale {
-                min_index: step
-                    .get("min_index")
-                    .and_then(|v| as_int(v).ok())
-                    .unwrap_or(0) as u64,
-            }
+    ) -> Result<ViewsResponse, Box<ClientError>> {
+        let (consistency, min_index) = if truthy(step.get("stale")) {
+            let min_index = step
+                .get("min_index")
+                .and_then(|v| as_int(v).ok())
+                .unwrap_or(0) as u64;
+            (ViewsRequestConsistency::Stale, Some(min_index))
         } else {
-            Consistency::Strong
+            (ViewsRequestConsistency::Strong, None)
         };
-        cl.view(&s(step, "app"), &s(step, "method"), args, consistency)
+        cl.apps()
+            .view(
+                &s(step, "app"),
+                &s(step, "method"),
+                Some(args),
+                Some(consistency),
+                min_index,
+            )
             .await
             .map_err(Box::new)
     }
@@ -1889,18 +1957,16 @@ impl<'a> Runner<'a> {
                 let cl = self.client(step).await?;
                 let (app, bundle) = if step.contains_key("wasm") {
                     let wasm = self.wasm(step)?;
-                    let bundle = cl.upload_bundle(wasm).await?;
-                    let app = cl
-                        .create_app(
-                            &opt_s(step, "app_name").unwrap_or_else(|| "app".into()),
-                            &bundle,
-                            self.app_options(step),
-                        )
-                        .await?;
+                    let bundle = cl.packages().bundle_put(wasm).await.map(|b| b.hash)?;
+                    let app = self.create_from_bundle(&cl, step, &bundle).await?;
                     (app, json!(bundle))
                 } else {
                     let created = cl
-                        .post("apps", Value::Object(self.release_body(step)))
+                        .transport()
+                        .json(
+                            Request::new(Method::POST, "apps")
+                                .json(Value::Object(self.release_body(step))),
+                        )
                         .await?;
                     (
                         s(created.as_object().unwrap_or(&Map::new()), "appId"),
@@ -1921,22 +1987,22 @@ impl<'a> Runner<'a> {
             "upload_bundle" => {
                 let wasm = self.wasm(step)?;
                 let cl = self.client(step).await?;
-                Ok(json!({ "hash": cl.upload_bundle(wasm).await? }))
+                Ok(json!({ "hash": cl.packages().bundle_put(wasm).await.map(|b| b.hash)? }))
             }
             "create_app" => {
                 let cl = self.client(step).await?;
                 let app = if step.contains_key("package") {
                     let created = cl
-                        .post("apps", Value::Object(self.release_body(step)))
+                        .transport()
+                        .json(
+                            Request::new(Method::POST, "apps")
+                                .json(Value::Object(self.release_body(step))),
+                        )
                         .await?;
                     created["appId"].as_str().unwrap_or_default().to_owned()
                 } else {
-                    cl.create_app(
-                        &opt_s(step, "app_name").unwrap_or_else(|| "app".into()),
-                        &s(step, "bundle"),
-                        self.app_options(step),
-                    )
-                    .await?
+                    self.create_from_bundle(&cl, step, &s(step, "bundle"))
+                        .await?
                 };
                 Ok(json!({ "appId": app, "contextId": context_id(&app) }))
             }
@@ -1944,12 +2010,7 @@ impl<'a> Runner<'a> {
                 let mpk = self.file(&s(step, "mpk"))?;
                 let (package, version) = self.registry.publish(mpk)?;
                 let cl = self.client(step).await?;
-                let out = cl
-                    .post(
-                        "packages/install",
-                        json!({ "package": package, "version": version }),
-                    )
-                    .await?;
+                let out = cl.packages().install(&package, &version).await.map(wire)?;
                 let mut o = out.as_object().cloned().unwrap_or_default();
                 let _p = o.insert("package".into(), json!(package));
                 let _p = o.insert("version".into(), json!(version));
@@ -1971,11 +2032,14 @@ impl<'a> Runner<'a> {
                     path = format!("{path}/{v}");
                 }
                 let cl = self.client(step).await?;
-                Ok(cl.delete(&path).await?)
+                Ok(cl
+                    .transport()
+                    .json(Request::new(Method::DELETE, &path))
+                    .await?)
             }
             "delete_app" => {
                 let cl = self.client(step).await?;
-                Ok(cl.delete(&format!("apps/{}", s(step, "app"))).await?)
+                Ok(cl.apps().delete(&s(step, "app")).await.map(wire)?)
             }
             "migration_status" => {
                 let apps: Vec<String> = step["apps"]
@@ -1983,7 +2047,7 @@ impl<'a> Runner<'a> {
                     .map(|a| a.iter().map(py::str_of).collect())
                     .unwrap_or_default();
                 let cl = self.client(step).await?;
-                let listed = cl.get("apps").await?;
+                let listed = cl.apps().list(None, None).await.map(wire)?;
                 let mut versions: HashMap<String, Value> = HashMap::new();
                 for a in listed["apps"].as_array().cloned().unwrap_or_default() {
                     let id = a["appId"].as_str().unwrap_or_default().to_owned();
@@ -2017,7 +2081,7 @@ impl<'a> Runner<'a> {
             }
             "packages" => {
                 let cl = self.client(step).await?;
-                Ok(cl.get("packages").await?)
+                Ok(cl.packages().list().await.map(wire)?)
             }
             "call" | "view" => {
                 let out = self.call_or_view(&kind, step).await?;
@@ -2033,7 +2097,11 @@ impl<'a> Runner<'a> {
             "upload_blob" => {
                 let data = self.file(&s(step, "file_path"))?;
                 let cl = self.client(step).await?;
-                let up = cl.upload_blob(&s(step, "app"), data).await?;
+                let up = cl
+                    .apps()
+                    .blob_upload(&s(step, "app"), data, None)
+                    .await
+                    .map(wire)?;
                 let mut o = up.as_object().cloned().unwrap_or_default();
                 let id = o.get("blobId").cloned().unwrap_or(Value::Null);
                 let _p = o.insert("blob_id".into(), id);
@@ -2042,7 +2110,8 @@ impl<'a> Runner<'a> {
             "download_blob" => {
                 let cl = self.client(step).await?;
                 let data = cl
-                    .download_blob(&s(step, "app"), &s(step, "blob_id"))
+                    .apps()
+                    .blob_download(&s(step, "app"), &s(step, "blob_id"), None)
                     .await?;
                 let label = opt_s(step, "name").unwrap_or_else(|| "download_blob".into());
                 if let Some(want) = step.get("expected_size").filter(|v| !v.is_null()) {
@@ -2070,27 +2139,47 @@ impl<'a> Runner<'a> {
             }
             "list_blobs" => {
                 let cl = self.client(step).await?;
-                Ok(cl.list_blobs(&s(step, "app")).await?)
+                Ok(cl.apps().blob_list(&s(step, "app")).await.map(wire)?)
             }
             "blob_info" => {
                 let cl = self.client(step).await?;
-                Ok(cl.blob_info(&s(step, "app"), &s(step, "blob_id")).await?)
+                Ok(cl
+                    .apps()
+                    .blob_info(&s(step, "app"), &s(step, "blob_id"))
+                    .await
+                    .map(wire)?)
             }
             "delete_blob" => {
                 let cl = self.client(step).await?;
-                Ok(cl.delete_blob(&s(step, "app"), &s(step, "blob_id")).await?)
+                Ok(cl
+                    .apps()
+                    .blob_delete(&s(step, "app"), &s(step, "blob_id"))
+                    .await
+                    .map(wire)?)
             }
             "publish_presence" => {
                 let cl = self.client(step).await?;
                 let state = step.get("state").filter(|v| !v.is_null()).map(py::str_of);
                 let seq = as_int(&step["seq"])? as u64;
                 Ok(cl
-                    .publish_presence(&s(step, "app"), seq, state.as_deref().map(str::as_bytes))
-                    .await?)
+                    .apps()
+                    .presence_publish(
+                        &s(step, "app"),
+                        seq,
+                        Some(
+                            state
+                                .as_deref()
+                                .map(str::as_bytes)
+                                .map(hex::encode)
+                                .as_deref(),
+                        ),
+                    )
+                    .await
+                    .map(wire)?)
             }
             "presence" => {
                 let cl = self.client(step).await?;
-                Ok(json!({ "presence": cl.presence(&s(step, "app")).await? }))
+                Ok(json!({ "presence": cl.apps().presence_get(&s(step, "app")).await.map(wire)? }))
             }
             "transfer_app" | "approve_release" | "approve_outbound" | "upgrade_org"
             | "retry_upgrade_run" => {
@@ -2100,24 +2189,61 @@ impl<'a> Runner<'a> {
                 let pk = self.passkeys.get_mut(&who).expect("checked");
                 let org = opt_s(step, "org");
                 Ok(match kind.as_str() {
-                    "transfer_app" => cl.transfer_app(&s(step, "app"), &to, pk).await?,
+                    "transfer_app" => cl
+                        .apps()
+                        .transfer(&s(step, "app"), &to, Some(&mut *pk))
+                        .await
+                        .map(wire)?,
                     "approve_release" => {
-                        cl.approve_release(org.as_deref(), &s(step, "version"), pk)
-                            .await?
+                        let version = s(step, "version");
+                        match org.as_deref() {
+                            Some(o) => cl
+                                .orgs()
+                                .release_approval(o, &version, None, Some(&mut *pk))
+                                .await
+                                .map(wire)?,
+                            None => cl
+                                .orgs()
+                                .release_approval(
+                                    &cl.personal_org().await.unwrap(),
+                                    &version,
+                                    None,
+                                    Some(&mut *pk),
+                                )
+                                .await
+                                .map(wire)?,
+                        }
                     }
                     "approve_outbound" => {
                         let prefixes: Option<Vec<String>> = step
                             .get("prefixes")
                             .and_then(Value::as_array)
                             .map(|a| a.iter().map(py::str_of).collect());
-                        cl.approve_outbound(
-                            org.as_deref(),
-                            &s(step, "package"),
-                            prefixes.as_deref(),
-                            truthy(step.get("replace")),
-                            pk,
-                        )
-                        .await?
+                        // No prefixes approves every one the release declares.
+                        let selection = Some(prefixes.map_or(
+                            OutboundSelection::Manifest(OutboundSelectionManifest::Manifest),
+                            OutboundSelection::List,
+                        ));
+                        let (package, replace) =
+                            (s(step, "package"), Some(truthy(step.get("replace"))));
+                        match org.as_deref() {
+                            Some(o) => cl
+                                .orgs()
+                                .outbound_approval(o, &package, selection, replace, Some(&mut *pk))
+                                .await
+                                .map(wire)?,
+                            None => cl
+                                .orgs()
+                                .outbound_approval(
+                                    &cl.personal_org().await.unwrap(),
+                                    &package,
+                                    selection,
+                                    replace,
+                                    Some(&mut *pk),
+                                )
+                                .await
+                                .map(wire)?,
+                        }
                     }
                     "upgrade_org" => {
                         let body = json!({
@@ -2126,21 +2252,29 @@ impl<'a> Runner<'a> {
                             "team": step.get("team").cloned().unwrap_or(Value::Null),
                             "cascade": truthy(step.get("cascade")),
                         });
-                        cl.upgrade_org(&s(step, "org"), body, pk).await?
+                        cl.orgs()
+                            .upgrade(&s(step, "org"), typed(body), Some(&mut *pk))
+                            .await
+                            .map(wire)?
                     }
-                    _ => {
-                        cl.retry_upgrade_run(&s(step, "org"), &s(step, "run"), pk)
-                            .await?
-                    }
+                    _ => cl
+                        .orgs()
+                        .upgrade_retry(&s(step, "org"), &s(step, "run"), Some(&mut *pk), None)
+                        .await
+                        .map(wire)?,
                 })
             }
             "upgrade_run" => {
                 let cl = self.client(step).await?;
-                Ok(cl.upgrade_run(&s(step, "org"), &s(step, "run")).await?)
+                Ok(cl
+                    .orgs()
+                    .upgrade_status(&s(step, "org"), &s(step, "run"))
+                    .await
+                    .map(wire)?)
             }
             "whoami" => {
                 let cl = self.client(step).await?;
-                let me = cl.me().await?;
+                let me = cl.auth().me().await.map(wire)?;
                 let mut o = me.as_object().cloned().unwrap_or_default();
                 let key = account_key(me["accountId"].as_str().unwrap_or_default());
                 let _p = o.insert("publicKey".into(), json!(key));
@@ -2199,7 +2333,7 @@ impl<'a> Runner<'a> {
                 let cl = self.client(step).await?;
                 let org = s(step, "org");
                 if let Some(team) = opt_s(step, "team") {
-                    let t = cl.get(&format!("orgs/{org}/teams/{team}")).await?;
+                    let t = cl.orgs().team_get(&org, &team).await.map(wire)?;
                     let row = t["members"]
                         .as_array()
                         .and_then(|m| m.iter().find(|r| r["account"] == json!(who)).cloned());
@@ -2212,7 +2346,7 @@ impl<'a> Runner<'a> {
                     };
                     return Ok(json!({ "capabilities": row["capabilities"] }));
                 }
-                let o = cl.get(&format!("orgs/{org}")).await?;
+                let o = cl.orgs().get(&org).await.map(wire)?;
                 if !o["members"]
                     .as_object()
                     .is_some_and(|m| m.contains_key(&who))
@@ -2272,12 +2406,20 @@ impl<'a> Runner<'a> {
                         "create_api_key: {who} has no passkey to approve the key"
                     )));
                 };
-                let (key_id, key) = cl.create_api_key(opts, pk).await?;
+                let (key_id, key) = cl
+                    .auth()
+                    .apikey_create(typed(opts), Some(&mut *pk))
+                    .await
+                    .map(|k| (k.key_id, k.key))?;
                 Ok(json!({ "keyId": key_id, "key": key }))
             }
             "create_org" => {
                 let cl = self.client(step).await?;
-                Ok(cl.post("orgs", json!({ "name": step["org_name"] })).await?)
+                Ok(cl
+                    .orgs()
+                    .create(step["org_name"].as_str().unwrap(), None)
+                    .await
+                    .map(wire)?)
             }
             "create_team" => {
                 let cl = self.client(step).await?;
@@ -2289,7 +2431,11 @@ impl<'a> Runner<'a> {
                     body["parent"] = step["parent"].clone();
                 }
                 Ok(cl
-                    .post(&format!("orgs/{}/teams", s(step, "org")), body)
+                    .transport()
+                    .json(
+                        Request::new(Method::POST, format!("orgs/{}/teams", s(step, "org")))
+                            .json(body),
+                    )
                     .await?)
             }
             "invite" => {
@@ -2302,9 +2448,7 @@ impl<'a> Runner<'a> {
             }
             "redeem_invite" => {
                 let cl = self.client(step).await?;
-                Ok(cl
-                    .post(&format!("invites/{}/redeem", s(step, "token")), json!({}))
-                    .await?)
+                Ok(cl.orgs().invite_redeem(&s(step, "token")).await.map(wire)?)
             }
             "remove_member" => {
                 let path = format!(
@@ -2325,12 +2469,18 @@ impl<'a> Runner<'a> {
                 match method.as_str() {
                     "get" => {
                         let cl = self.client(step).await?;
-                        Ok(cl.get(&path).await?)
+                        Ok(cl
+                            .transport()
+                            .json(Request::new(Method::GET, &path))
+                            .await?)
                     }
                     "delete" => self.delete_approved(step, &path).await,
                     "put" => {
                         let cl = self.client(step).await?;
-                        Ok(cl.put(&path, body).await?)
+                        Ok(cl
+                            .transport()
+                            .json(Request::new(Method::PUT, &path).json(body))
+                            .await?)
                     }
                     "post" => self.post_approved(step, &path, body).await,
                     other => Err(Fail::Workflow(format!(
@@ -2980,8 +3130,10 @@ impl<'a> AppRunner<'a> {
         let mut owner = person(c, "owner").await?;
         let o = &owner.on[0];
         let org = str_field(
-            &o.post("orgs", json!({ "name": "Scenario" }))
+            &o.orgs()
+                .create("Scenario", None)
                 .await
+                .map(wire)
                 .map_err(|e| format!("create org: {e}"))?,
             "orgId",
         )?;
@@ -2990,29 +3142,28 @@ impl<'a> AppRunner<'a> {
             let Some(role) = role else { continue };
             let p = person(c, &name).await?;
             let token = str_field(
-                &o.post_confirmed(
-                    &format!("orgs/{org}/invites"),
-                    json!({ "role": role }),
-                    &mut owner.pk,
-                )
-                .await
-                .map_err(|e| format!("invite {name}: {e}"))?,
+                &o.orgs()
+                    .invite_create(&org, typed(json!({ "role": role })), Some(&mut owner.pk))
+                    .await
+                    .map(wire)
+                    .map_err(|e| format!("invite {name}: {e}"))?,
                 "token",
             )?;
             let _r = p.on[0]
-                .post(&format!("invites/{token}/redeem"), json!({}))
+                .orgs()
+                .invite_redeem(&token)
                 .await
+                .map(wire)
                 .map_err(|e| format!("redeem {name}: {e}"))?;
             let _prev = people.insert(name, p);
         }
         let mut teams = BTreeMap::new();
         for (team, members) in &spec.teams {
             let made = o
-                .post(
-                    &format!("orgs/{org}/teams"),
-                    json!({ "name": team, "join": "invite" }),
-                )
+                .orgs()
+                .team_create(&org, team, TeamJoin::Invite, None)
                 .await
+                .map(wire)
                 .map_err(|e| format!("create team {team}: {e}"))?;
             let id = str_field(&made, "teamId")?;
             for m in members {
@@ -3020,12 +3171,15 @@ impl<'a> AppRunner<'a> {
                     .get(m)
                     .map_or_else(|| owner.id.clone(), |p: &Person| p.id.clone());
                 let _r = o
-                    .post_confirmed(
-                        &format!("orgs/{org}/teams/{id}/members"),
-                        json!({ "account": account, "lead": false }),
-                        &mut owner.pk,
+                    .orgs()
+                    .team_set_member(
+                        &org,
+                        &id,
+                        typed(json!({ "account": account, "lead": false })),
+                        Some(&mut owner.pk),
                     )
                     .await
+                    .map(wire)
                     .map_err(|e| format!("add {m} to {team}: {e}"))?;
             }
             let _prev = teams.insert(team.clone(), id);
@@ -3041,20 +3195,25 @@ impl<'a> AppRunner<'a> {
         for (team, id) in &teams {
             if !spec.teams[team].iter().any(|m| m == "owner") {
                 let _r = o
-                    .delete_confirmed(
-                        &format!("orgs/{org}/teams/{id}/members/{}", owner.id),
-                        &mut owner.pk,
-                    )
-                    .await;
+                    .orgs()
+                    .team_remove_member(&org, id, &owner.id, Some(&mut owner.pk))
+                    .await
+                    .map(wire);
             }
         }
         let bundle = o
-            .upload_bundle(wasm)
+            .packages()
+            .bundle_put(wasm)
             .await
+            .map(|b| b.hash)
             .map_err(|e| format!("upload bundle: {e}"))?;
         let app = o
-            .create_app("scenario", &bundle, json!({ "org": org }))
+            .apps()
+            .create(typed(
+                json!({ "name": "scenario", "bundle": &bundle, "org": org }),
+            ))
             .await
+            .map(|a| a.app_id)
             .map_err(|e| format!("create app: {e}"))?;
         let _prev = people.insert("owner".to_owned(), owner);
         Ok(Self {
@@ -3174,9 +3333,19 @@ impl<'a> AppRunner<'a> {
             "@anonymous" => {
                 let cl = &self.anonymous[node];
                 if op == "call" {
-                    cl.call(&app, method, args, None).await.map(|r| r.result)
+                    cl.apps()
+                        .call(&app, method, Some(args), None, None)
+                        .await
+                        .map(|r| r.result)
                 } else {
-                    cl.view(&app, method, args, Consistency::Strong)
+                    cl.apps()
+                        .view(
+                            &app,
+                            method,
+                            Some(args),
+                            Some(ViewsRequestConsistency::Strong),
+                            None,
+                        )
                         .await
                         .map(|r| r.result)
                 }
@@ -3189,12 +3358,24 @@ impl<'a> AppRunner<'a> {
                 let cl = &p.on[node];
                 match (op, confirmed) {
                     ("call", true) => cl
-                        .call_confirmed(&app, method, args, &mut p.pk)
+                        .apps()
+                        .call(&app, method, Some(args), None, Some(&mut p.pk))
                         .await
                         .map(|r| r.result),
-                    ("call", false) => cl.call(&app, method, args, None).await.map(|r| r.result),
+                    ("call", false) => cl
+                        .apps()
+                        .call(&app, method, Some(args), None, None)
+                        .await
+                        .map(|r| r.result),
                     _ => cl
-                        .view(&app, method, args, Consistency::Strong)
+                        .apps()
+                        .view(
+                            &app,
+                            method,
+                            Some(args),
+                            Some(ViewsRequestConsistency::Strong),
+                            None,
+                        )
                         .await
                         .map(|r| r.result),
                 }
@@ -3275,8 +3456,10 @@ impl<'a> AppRunner<'a> {
             .clone();
         let owner = self.people.get_mut("owner").ok_or("no account owner")?;
         let _r = owner.on[0]
-            .delete_confirmed(&format!("orgs/{}/members/{id}", self.org), &mut owner.pk)
+            .orgs()
+            .remove_member(&self.org, &id, Some(&mut owner.pk))
             .await
+            .map(wire)
             .map_err(|e| e.to_string())?;
         for r in self.c.nodes.iter().flatten() {
             let applied = r.node.system.status().last_log.unwrap_or(0);
@@ -3462,6 +3645,7 @@ use checks::{
     placeholders_resolve_as_merobox_does, settle_fails_naming_the_replica_behind,
     statements_evaluate_as_python_does,
 };
+use reqwest::Method;
 
 mod checks {
     use super::*;

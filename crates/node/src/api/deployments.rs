@@ -623,7 +623,7 @@ async fn deployment_orgs(
                 let version = s.packages.get(&o.package).and_then(|p| {
                     p.versions
                         .values()
-                        .find(|v| v.services.values().any(|h| *h == a.bundle))
+                        .find(|v| v.app_parts().values().any(|h| *h == a.bundle))
                 });
                 if let Some(v) = version {
                     let _new = entry.apps.insert((app.as_str(), v.version.as_str()));

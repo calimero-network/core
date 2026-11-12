@@ -28,7 +28,7 @@ is its command line.
   `410 UNSUPPORTED_ENGINE` (`ApiError::unsupported_engine`, `app::WASMER_GONE`). A wasmer
   entry in an app's log applies as a deterministic no-op (`AppMachine::unsupported`:
   `last_index` moves, nothing else). Tests (`old_datadir.rs`, a directory `a09547b2b`
-  wrote, went with the 1.0.0-rc.19 hard cutover, which reads no earlier data):
+  wrote, went with the 1.0.0-rc.20 hard cutover, which reads no earlier data):
   `a_core_module_bundle_is_refused_as_an_sdk_0_12_app`,
   `an_sdk_0_12_apps_entries_apply_as_no_ops`, `a_malformed_entry_applies_as_a_no_op`,
   `a_wasmer_entry_never_applies_to_a_component_app`.
@@ -137,7 +137,7 @@ is its command line.
   `an_owner_opening_their_own_invite_leaves_it_for_the_invitee`). The fleet
   carries the operator's signature (`cluster /
   __register_node { id, addr, zone }`, `__remove_node { id }`,
-  `__set_quotas { quotas }`, `__set_pools { pools }`, `__set_org_quotas { payer, quotas }`; `<app> / __set_replicas { replicas }`, one
+  `__set_quotas { quotas }`, `__set_pools { pools }`, `__set_price_table { table }`, `__set_org_quotas { payer, quotas }`; `<app> / __set_replicas { replicas }`, one
   signature for both of a move's writes: the union applies with it unspent,
   the target spends it). The configured peers come with `Genesis { nodes }`;
   `reconcile` registers nobody. The consent page (`consent_page::act`) logs the same
@@ -177,7 +177,23 @@ is its command line.
   before, the `RequireSessionProofs` its first system leader on this release
   writes (`reconcile`). An entry before it (what an earlier release logged,
   replayed on restart) applies as it did, so replicas never diverge on it
-  (`session_commands_logged_before_their_proofs_apply_as_they_did`).
+  (`session_commands_logged_before_their_proofs_apply_as_they_did`). The flags that name an earlier release's rule
+  (`owner_in_org`, `owner_in_team`, `apps_need_consent`, `teams_seen`,
+  `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
+  `member_child_teams`, `revoke_api_keys`, `by_release`, `close_drops_below`,
+  `all_apps_rows`, `name_fits`) work the same way: from
+  `SystemState::current_rules_from` on (the `RequireCurrentRules` the first
+  system leader on this release writes from `reconcile` once the logged
+  cluster version brings `Feature::CurrentRules`), `SystemMachine::run`
+  reads them as set whatever the entry says (`SystemCmd::hold_to_current_rules`),
+  and an organization's upgrade run is derived at apply (Upgrade runs below);
+  before it, an entry applies as it was logged. The API keeps setting every
+  flag, so a replica on the release before applies this release's entries
+  alike. Regressions: `app_commands_after_the_current_rules_mark_apply_under_them`,
+  `team_commands_after_the_current_rules_mark_apply_under_them`.
+  It is independent of `AttributeByRelease` (release attribution, below):
+  `reconcile` writes each mark once, and each gates only its own rule from
+  where it sits in the log.
 - **Cluster version** (`system/cluster_version.rs`, `node/cluster_version.rs`):
   a new command or field ships with a feature gate. Each log entry shape an
   older release cannot apply alike is a `Feature` (`FEATURES`, `Feature::since`,
@@ -234,6 +250,17 @@ is its command line.
   each with the same caps, and `400 BAD_BUNDLE` when it imports outside the compute world or
   its ABI is not the compute world's.
   A release without one installs and its app runs calls; it cannot run compute.
+  A single-service package may ship the compute component alone (no `wasm`): `PackageVersion::components` is `ComputeOnly`, `services` is empty and `compute[""]` holds the hash.
+  Install skips the ABI agreement and instead needs at least one compute method (`400 NO_COMPUTE_METHODS`).
+  It is installed only once every node runs this release (`409 CLUSTER_NOT_UPGRADED`, `require_upgraded_nodes`): an older node drops `components` and would apply it as an app's release.
+  Every app-level lookup reads `PackageVersion::app_parts` (the services, or the compute map when compute-only), so a compute-only app's `bundle` and `compute_bundle` are both the compute hash.
+  Such an app has `AppRecord::components = ComputeOnly`: it has no app group state, and a call, view, intent, init or tick is `422 NO_APP_COMPONENT` (`AppRecord::require_app_component`).
+  An upgrade between compute-only releases only moves the directory record; one that adds or drops the app component is `409 COMPONENTS_CHANGED`.
+  A release may ship pipelines (`pipelines` in the manifest or a service; `packages/pipelines.rs`).
+  Install compiles each (`calimero_pipeline::compile`) and checks it against an `Env` with the module `self` (the package's compute methods and caps; the default for a step that names none), one module per other package a step names (`module: <package>[@<version>]`, resolved by `Node::resolve_modules` to a release the installer sees, newest when no version, that ships one compute component, else `UNKNOWN_MODULE`), and the cluster's pool memory ceilings; anything else is `400 BAD_PIPELINE` with `details: [{file, path, code, message}]` for every error, a package with pipelines but no compute component included (`NO_COMPUTE`) and a repeated name (`DUPLICATE_NAME`); a named service declaring pipelines is `422 PIPELINES_NEED_ONE_SERVICE`, as start refuses it.
+  `PackageVersion::pipelines` maps name to `PipelineRef { hash, worstCaseFuel }` (hash of the canonical JSON, fuel a decimal string, `modules`: reference as written to `ModulePin { package, version, compute }`, pinned at install so a newer module release moves nothing until the pipeline's package is released again; `InstallPackage` applies only while every pinned release is still installed, and `UninstallPackage` of a pinned release is `409 MODULE_IN_USE`, `SystemState::module_pinned`); the canonical JSON is stored as a blob by its hash beside the wasm parts, and `Node::pipeline_json(hash)` reads it, else recompiles it from the release's `.mpk`.
+  Such a release is installed only once every node runs this release (`409 CLUSTER_NOT_UPGRADED`).
+  `GET /packages/{package}/{version}/pipelines` (who sees the release) answers `{ name: { hash, worstCaseFuel, modules, pipeline } }`; `meroctl app pipelines`.
   `PackageVersion::compute` maps service to that hash, whose `BundleRecord` has
   `PackageRef::compute = true`: never a service (`resolve_release`, `CreateApp` and
   `UpgradeApp` refuse it), and fetched by `release_wasm` like a service.
@@ -289,8 +316,13 @@ is its command line.
   `--app-upgrades`, `--outbound-approvals`. The first leader writes
   `SystemCmd::Genesis` before any account exists (`CreateAccount` waits for it);
   a second genesis is refused, so a restart with other flags changes nothing.
-  Every receipt-key quote binds it (`receipt_key_binding(key, governance)`,
-  `AttestationDoc::governance`), so `verify_app_cluster` proves it. Operator
+  Every receipt-key quote binds it (`receipt_key_binding(key, governance, cluster, node)`,
+  `AttestationDoc::governance`), so `verify_app_cluster` proves it. A node
+  attesting a peer as a session issuer (`Node::attest_issuer`) requires that
+  bound form, and takes a peer's unbound `receipt-key.v2` quote (a release
+  before `RECEIPT_KEY_BOUND_SINCE`) only while the logged cluster version is
+  below that release (`takes_unbound_receipt_key`), so an earlier node's
+  sessions keep working while a cluster rolls onto it. Operator
   side: `POST /ops/releases` (`operator_releases`, which `approved_releases`
   then answers), `POST /ops/apps/{app}/upgrade` (an installed release;
   `UpgradeApp { by_operator }`), `POST /ops/outbound` (`operator_outbound`,
@@ -386,7 +418,7 @@ is its command line.
   `system::tests::sign_up`.
 - **The approval model** (where governance says `owner`; the same on every
   cluster, shared or dedicated). Decision × who holds it × who acts × where:
-  - *Node images* (`SystemState::approved_for_bundle`): the app's **publisher**,
+  - *Node images* (`SystemState::approved_for_release`): the app's **publisher**,
     the org its package's signing key is bound to (`BindPublisher`,
     `POST /orgs/{org}/publishers { signerId, publicKey, signature }` by an
     `APPROVE_RELEASES` holder with passkey consent; the key's Ed25519 signature
@@ -423,12 +455,28 @@ is its command line.
     `SystemState::upgrade_keeps_authority` at upgrade (API and apply). Each with
     their own passkey assertion (`consent` on `UpgradeApp`). `run_upgrade` judges
     who and where before anything runs on the app's group.
+  - *Which release governs* (`SystemState::governing_release`, `governing`):
+    upgrades, publisher and approvals follow the release the app runs
+    (`AppRecord::release`, or an upgrade's or create's target release); with
+    none (raw upload, by hash, a record from before), the bundle's recorded
+    release, only if installed by the time the app took the bundle
+    (`created_at`, or its last successful upgrade's `at`). A WASM belongs to
+    one signer: `InstallPackage` of a release shipping a WASM a release of
+    another signer's package ships is refused (`SHIPS_IN_OTHER_PACKAGE`, `409`
+    in `verify_release`); one signer may ship it in several packages, each
+    instance judged by the release it runs. Both hold from `SystemState::attributes_by_release`
+    on, set by the `AttributeByRelease` the first system leader on this
+    release writes (`reconcile`, once the logged cluster version brings
+    `Feature::AttributeByRelease`); entries before it replay judging the
+    bundle's first recorded release, as they applied. Regressions:
+    `system::tests::an_instance_is_upgraded_as_the_release_it_runs_says`,
+    `a_wasm_of_one_package_gives_another_no_authority`.
   - *Release deadlines* (`SetReleaseDeadline`, `SystemState::release_deadlines`):
     the operator's, any governance, `POST|DELETE /ops/releases/{version}/deadline`
     (signed with the operator key, `__release_deadline`; `after: null` lifts),
     public at `GET /releases`. Past one, a party whose newest approved release is
     older (judged on the set that governs the app) creates, installs and upgrades
-    nothing (`SystemState::stalled_for_bundle`, `install_stalled`; `409
+    nothing (`SystemState::stalled_for_release`, `install_stalled`; `409
     RELEASE_DEADLINE`, `node::stalled`), placement skips retired nodes
     (`SystemState::retired`); running apps go on. Judged at the command's own
     time (`createdAt`, `at`, `installedAt`), never a node's clock; `run_upgrade`
@@ -462,6 +510,10 @@ is its command line.
   `wrap_for_job` re-wraps a secret to a job node: ephemeral X25519, then HKDF over both public keys, the kind (file key or noise seed), the length-prefixed app and run ids, attempt and index.
   The job node opens it through `SealedTransport::derive`, which never returns the raw DH output and labels its HKDF (`calimero_sealed::derive_shared`, shared with the wrap side).
   `noise_seed` and `run_token` derive a run's seed and capability from the file key.
+  **Exporting a file** (`api/exports.rs`; tests `component_files.rs`, `pipeline_runs.rs`): `POST /apps/{app}/files/{id}/export { recipient }` (64 hex, an X25519 public key) and `GET /apps/{app}/files/{id}/segments/{k}` take the `/files` gate (`files_gate`: `api::may_handle_files`, fresh system read, even on a public app) and judge the file on the app's leader (`Node::file_record_strong`: `internal/blob/held` with `record`, which answers the size and `FileSeal`), else `404`; a segment past the last is `404 NO_SUCH_SEGMENT`, and one is read from this node's store or a replica (`segment_from`).
+  The export answer is `{ app, id, size, sha256, segments, ephemeral, wrapped }`; `wrapped` is `nonce || AES-256-GCM` of the data key (unwrapped from the `FileSeal` with the app file key, then zeroized) under `HKDF(X25519(ephemeral secret, recipient))`, salt `calimero.export-wrap.v1`, info `ephemeral public || recipient public || u32 length-prefixed app id || u32 length-prefixed hex file id` (`calimero_sealed::wrap::wrap_export`, over `derive_shared`, which refuses a low-order key: `400 BAD_RECIPIENT`, as does a recipient that is not 64 hex).
+  The construction lives in `calimero-sealed` (`wrap.rs`, with the AES-GCM helpers `wrap_for_job` shares, and `file.rs`, the file STREAM format that used to be `files/seal.rs`) so `calimero_client::Client::export_file` opens it with `unwrap_export`, checks the segment list against the file id, each segment against its hash, and the size and plaintext SHA-256 with `finish_expecting`, and returns bytes only when all match.
+  An account may export `MAX_EXPORTS_PER_MINUTE` (30) times a minute per node (`ExportLimits`, an in-memory token bucket over at most `MAX_TRACKED_ACCOUNTS` accounts): `429 TOO_MANY_EXPORTS`.
 - **Receipts**: every `/intents` and `/views` answer carries a `Receipt` signed by the
   answering node's receipt key (Ed25519, made on the node's first start and kept
   in `<data_dir>/signing-key` wrapped under K_r, `signing_key.rs`: a restart
@@ -570,8 +622,9 @@ is its command line.
   The system group queues runs (`SystemState::compute`, `RunSlot`).
   `AcquireRun` (idempotent; payer must be the app's, fuel at most `MAX_COMPUTE_FUEL`) and `ReleaseRun` run the grant pass.
   Capacity is per pool: `SystemState::pools` (`POST /ops/pools`, operator-signed `cluster / __set_pools / { pools }`, refused `409 UPGRADE_PENDING` by `Node::require_current_release` while a node is behind) names each pool's `runsPerNode` and `maxMemoryMib`, a job node's `NodeRecord::pool` (empty is `DEFAULT_POOL`) puts it in one, and a pool's capacity is its nodes times `runsPerNode` (`pool_capacity`); a node in a pool the cluster does not define adds none.
-  A run goes to the smallest pool whose `maxMemoryMib` fits its caps (`pool_for`, `RunSlot::pool`), `AcquireRun` refuses one that fits none (`RUN_NO_POOL`, permanent), and `pick_job` keeps only job nodes of the slot's pool.
+  A run goes to the smallest pool whose `maxMemoryMib` fits its caps (`pool_for`, `RunSlot::pool`), `AcquireRun` refuses one that fits none (`RUN_NO_POOL`, permanent), and `pick_job` keeps only job nodes of the slot's pool; `AcquireRun { pool: Some(name) }` (a pipeline step's) takes that pool instead when it fits the memory cap.
   `SetPools` refuses removing a pool that still has job nodes or runs (`POOL_IN_USE`).
+  `SystemState::price_table` (`GET`/`POST /ops/prices`, operator-signed `cluster / __set_price_table / { table }`, same release gate) holds the `calimero_pipeline::PriceTable`; `SetPriceTable` accepts only `version` = current + 1 (`PRICE_VERSION`) and a nonzero fuel rate (`BAD_PRICES`).
   With no pools it is the legacy single pool: registered job nodes times `RUNS_PER_JOB_NODE` (2).
   Whether a node is reachable or runs a release an org approved is the leader's attested view, not replicated state, so `apply` cannot count it and the leader bounds a run's wait instead.
   A payer's limits (`SystemState::payer_quotas`: runs, fuel, file bytes) are its override in `SystemState::org_quotas` where it has one (`POST /ops/quotas` with `org`: a field set to `null` clears it; operator-signed `cluster / __set_org_quotas / { payer, quotas }`, refused `409 UPGRADE_PENDING` while a node is behind; all fields cleared removes the entry), else the cluster's.
@@ -641,10 +694,55 @@ is its command line.
   `job_transfer` (assignment, component, inputs, output bodies) has its own pool (`MAX_INFLIGHT_JOB_OPS`) and 300 s.
   A cancel whose poll gets no answer ends from the held report if any (while that report only waits on the leader's own writes the run stays open, up to the run ceiling), else cancelled with no usage, without a delete.
   `GET /apps/{app}/runs/{run}` and `GET /apps/{app}/runs?limit=&before=` (`AppMachine::runs_page`, newest `startTsMs` first, ties by run id descending, `limit` 1 to 100, a `before` cursor of `startTsMs:run` bounded by `MAX_RUNS_CURSOR_BYTES`, at most `MAX_ACTIVE_RUNS` + `FINISHED_RUNS_KEPT` records read per page) are the reserved view `__run` answered by the leader (`Node::run_view`), one shared `run_json` for both; they show plaintext sizes and hashes of files only to those who may list the files.
+- **Pipeline runs** (`component/pipelines.rs` apply, `node/component/compute/pipelines.rs` leader loop, `api/pipelines.rs` routes; tests `component/tests/pipelines.rs`, `pipeline_runs.rs`):
+  A pipeline run lives in the app group of an app made from a release that registered the pipeline, compute-only apps included (their group gets an `init` entry with no outcome, `init_compute_only`, so it has the component executor that holds files).
+  `PipelineRun` is a hidden row (`rows::CPIPE`, by run id) with the release's `version`, the pipeline's `hash` and the compute component, all fixed at start, with `modules` (reference to the module release's compute hash, copied from the release's pins), the bound `inputs` and `params`, the `caller`, `payer`, and per step a `StepState` of counters and flags only (`status`, `started`, `fan`, `finished`, `failed_items`, `cost`, `run_cost`, `capped`, `results_bytes`, `results_too_large`, `reason`), so a step completion rewrites a record whose size does not grow with the fan-out; the head keeps `active_pipelines` (at most `MAX_ACTIVE_PIPELINE_RUNS`, 8) and the last `FINISHED_PIPELINE_RUNS_KEPT` (64) finished ids.
+  Three entries move it, all judged on the record and the entry alone: `pipelineStart` (pins every input, +1 hold; refused for a known id, a full app or an input that is not a held file), `pipelineStep { run, step, decision }` (a pending step takes its first decision only; `Start { runs, fan }` writes one `RunRecord` per run, id `<run>.<step>.<index>`, no result method, `RunRecord::pipeline` linking it with its `index`, and records `fan: { total, items, batch, allowed }`; `More { runs }` is accepted only while the step runs, only for the next indices below `total` and until failures pass `allowed`; a start the app's `MAX_ACTIVE_RUNS` cannot hold or after a cancel or a failFast stop changes nothing, one that can never work fails the step; `Failed` is also accepted for a running fan-out with runs left to create) and `pipelineCancel` (flags the run and its active step runs).
+  A step's per-run data lives in hidden rows of their own (`rows::CITEM`, key `<pipeline run>/<step>/<index as 8 digits>`, `ItemRow { cached_key, outputs, result }`), written once when the run ends or is answered from the cache; a run that made nothing has none.
+  The run's compute id is `run_id(pipeline, step, index)` and its link (`RunRecord::pipeline`) carries the index, so a run's end finds its row without a search.
+  Every run that finished has a row, an empty one for a run that failed, so a step's rows number its `finished`; `StepState::cached_count` and `cached_items` are counters.
+  `AppMachine::pipeline_run` reads the record and fills each step's `runs`, `run_outputs`, `run_results` and `cached_keys` from the rows, stopping once it has found `finished` of them; apply reads the record alone and never stores those fields.
+  `pipeline_head` is the record without them: the leader's loop, the list view, the events view (`items: false`) and a retry read it, and the loop fills only the steps that pending steps and running fan-outs name (`fill_steps`).
+  The leader keeps the runs of each fan-out it started in memory by (group, pipeline run, step), so a wave is cut from them and no item row is read again; entries go when the step has no run left to start or the node stops leading, and a rebuild that fails (rows unreadable) gets `Failed` for the step.
+  A step with fewer readable rows than `finished` is flagged `items_unreadable`, which warns on read, and `plan` fails a step built from it with `ITEMS_UNREADABLE` rather than build from partial data; apply never reads rows except to drop them, so replicas stay in agreement.
+  Dropping an ended run's record deletes its item rows and releases the pins on their outputs in the same apply.
+  The stack is unreleased, so there is no migration of records written with the per-run data inline.
+  `apply_compute_final` settles the step of a linked run in the same apply: outputs pinned (+1 each, released when the record is dropped), outputs and results kept per run index (item rows, so `<step>.outputs` is in item order), a result up to `MAX_STEP_RESULT_BYTES` and a step's together up to `MAX_STEP_RESULTS_BYTES` (past it none are kept and `results_too_large` is set), failed items counted from the runs that failed or were cancelled; the step is `succeeded` once every run it will have is final and `failed_items` is at most `fan.allowed` (zero while the run is cancelled or stopping), else `failed` (one item over cancels its active runs and no more are created), and the run ended once every step is settled (inputs released; `succeededWithFailures` when a step tolerated failed items). `PipelineRun::fail_fast` (the pipeline's `failFast`) makes the first failed step set `stopping`, end the pending steps `cancelled` and flag the running steps' runs.
+  The leader's loop (`Node::drive_pipelines`, beside `drive_runs`) is stateless: `plan` decides every pending step from the records (start when its needs succeeded, `skipped` for no items, `upstreamFailed` when one failed, `cancelled` for a cancelled or stopping run) and the next `More` wave of each running fan-out (`maxParallel` less its active runs, the app's room, `MAX_STEP_RUNS`), and each wave is also cut so its encoded runs stay within `MAX_DECISION_RUNS_BYTES` (a run that cannot fit one decision alone fails the step with `RUN_TOO_LARGE`), and each decision is proposed only while it still applies (the step pending, or the fan-out's next index unchanged). A pipeline whose definition is gone (`pipeline_by_hash` answers 404) gets `Failed{PIPELINE_UNAVAILABLE}` for its steps that have not started or have runs left to create.
+  A step in another package's module (`bundle_of`) is built with that module's caps (`caps_of_component` per bundle) and `StepRun::compute_bundle` (none for `self`); apply accepts only a bundle the run pinned (`UNKNOWN_MODULE` fails the step), writes it as the `RunRecord`'s `compute_bundle`, and the cache key uses it. Owner, payer, `bundle` (usage) and file keys stay the app's; the job node is pushed the module's component like any compute component. Regression: `a_step_runs_another_packages_module_under_the_callers_keys_and_payer`.
+  It keeps only caches of immutable data, a pipeline by hash (`Node::pipeline_by_hash`) and a compute component's caps (`caps_of_component`).
+  A step's args are its `args` with `params.x` replaced by the run's value or the default and `<step>.result` by that step's result as JSON; no args is no bytes; its inputs are `inputs.x` and `<step>.outputs`, deduplicated, at most `MAX_PIPELINE_RUN_INPUTS` (10,000, which the job node's admission and `MAX_ASSIGNMENT_BYTES` (8 MiB) allow; a run an app starts keeps `MAX_RUN_INPUTS`).
+  A `forEach` step makes one run per batch of items; its inputs are the step's `inputs` references in the order written with the run's item files where `item` stands (first when it is not listed), and `item` in `args` is the item (a file id or a result value; a list for a batch above 1). `collect: <step>.outputs` is one run over all of that step's outputs in item order, then its other `inputs`. A step's `pool` is carried on `StepRun::pool` into `RunRecord::pool`; `AcquireRun { pool }` then puts the slot in that pool (`RUN_NO_POOL` when the cluster lacks it or its `maxMemoryMib` is below the run's memory), so `pick_job` uses only its job nodes. A step without `pool` keeps `pool_for`. The leader proposes `pool` only while `Node::nodes_behind_release` is empty (an older node would drop it), else `None`. Regression: `a_steps_pool_places_its_runs_on_that_pools_job_node`, `a_named_pool_waits_until_every_node_runs_this_release`.
+  Only those who may handle the app's files (`api::may_handle_files`: its owner, its organization's members) start, cancel or retry a run, even on a public app (`403 FORBIDDEN`); anyone who reaches the app reads it without results or file hashes. Regression: `only_those_who_handle_the_apps_files_start_cancel_or_retry_a_pipeline`.
+  The routes judge the request against the pinned pipeline first (`NO_SUCH_PIPELINE`, `BAD_INPUTS`, `BAD_PARAMS`, `TOO_MANY_PIPELINE_RUNS`, `PIPELINES_NEED_ONE_SERVICE`, `CLUSTER_NOT_UPGRADED`); start and cancel travel as the host commands `__pipeline_start` and `__pipeline_cancel` to the leader, reads as the reserved view `__pipeline_run` (`PIPELINE_VIEW`).
+  A run with no result method ends with an empty result outcome and prepares nothing on the replica engine.
+  **Receipts**: a linked run's final writes a `StepRunProof` (`component/proofs.rs`, hidden row `rows::CPROOF` by step run id: attempt, node, job key, assignment digest, SHA-256 of the signed report message, the job's signature, outputs, usage; no report fields for a leader-ended run) and the proofs go with the pipeline run's record when it is dropped (`drop_step_proofs`), so they outlive the `RunRecord`s (`FINISHED_RUNS_KEPT`). A cached run has no proof: its item row keeps its cache key (`StepState::cached_keys` once read). `PipelineRun::input_files` records each input's size and hash at start. `GET /apps/{app}/pipeline-runs/{run}/receipt` (`api/pipeline_receipt.rs`; `may_handle_files`, else `403`; `409 RUN_NOT_ENDED`) reads both through `__pipeline_run` with `receipt: true` and answers `{ receipt, node, signature }`: `calimero_client::receipt::PipelineReceipt` (`modules` is the module name to compute hash with `self` for the package's own, `pipelineHash` maps steps to modules), signed by `Node::sign_pipeline_receipt` over `receipt_message` (`"calimero.pipeline.receipt.v1\0" || JCS(receipt)`). Not yet: the client does not verify each job's report signature, and module logs are not in it. Tests: `component/tests/pipelines.rs`, `pipeline_runs.rs` (`a_finished_run_has_a_receipt_signed_by_an_attested_node`, `a_running_run_has_no_receipt_yet`, `a_fan_out_with_cached_items_marks_them_cached_in_its_receipt`, `a_stranger_cannot_read_a_receipt`).
+  **Cost cap** (`PipelineRun::cost: CostCap { maxCost, priceVersion, table, worstCase }`, set by the start route from `sys_fresh`'s price table, `NO_PRICE_TABLE` without one; the table is copied so apply reads no system state): `PipelineRun::committed_cost` is the sum over steps of `StepState::cost` (priced usage of finished runs, `priced_cost`, added in `settle_step_run` even after the step ended) and, for a running step, its active runs (`started - finished`) times `StepState::run_cost` (the worst case of one run, set when a wave starts).
+  `plan` cuts each wave to what `Budget::afford` allows and, when the cap kept runs out that the wave would otherwise carry, adds `Failed{COST_CAP}` for the step in the same round; apply refuses a `Start`/`More` whose new runs' worst case would pass the cap (`COST_CAP`, nothing changes) and takes `Failed{COST_CAP}` on a running step as `StepState::capped`: no more runs, the active ones finish and are paid for, then the step fails with that reason.
+  Cached runs cost zero; the view shows `cost`, `costSoFar` and each step's `cost` as decimal strings.
+  **Retries**: `POST /apps/{app}/pipeline-runs/{run}/retry { limits?, maxCost? }` (`api/pipelines.rs::retry`) reads the ended run through the reserved view, refuses a running one (`STILL_RUNNING`), checks `limits` against the method's caps (`check_limits`: `BAD_LIMITS`, `LIMIT_EXCEEDS_CAP`) and starts a new run through the same `start_launch` as a start, with the original's `version`, `hash`, `computeBundle`, `inputs` and `params`.
+  `PipelineStartEntry`/`PipelineRun` carry `retry_of` and `limits` (a `calimero_pipeline::Limits` per step, applied by `build_step` over the pipeline's own with `Limits::overridden_by`, then clamped to the method's caps); apply refuses limits for a step the run lacks.
+  Failed items rerun because only done runs write cache entries and the key leaves caps out.
+  Tests: `pipeline_runs.rs` (`a_retry_with_raised_limits_reruns_only_the_failed_items`, `a_fuel_failure_is_not_retried_automatically`, `a_lost_item_is_retried_and_billed_once`, `retrying_a_running_run_is_refused`, `a_retry_keeps_the_original_release_after_an_upgrade`).
+  **Events**: `GET /apps/{app}/pipeline-runs/{run}/events` (`api/pipeline_events.rs`; SSE, the run view's gate, so who reads the run subscribes) sends `snapshot`, then `run` and `step` events, then `end` and closes.
+  The events are `calimero_client::pipeline_events` structs read from the `__pipeline_run` view with `files: false` (`RunProgress::from_view`), never a filtered copy of the record.
+  The source is the strong view, polled every `PIPELINE_EVENTS_POLL` (500 ms) and diffed, so a follower answers through the leader as `GET .../pipeline-runs/{run}` does; access is judged when the stream opens. A view that answers 503 is tried again on the next poll; any other error ends the stream and frees its slot (`a_stream_ends_and_frees_its_slot_when_its_app_is_deleted`).
+  Bounds: `MAX_RUN_SUBSCRIBERS_PER_APP` (64 per node, `429 TOO_MANY_SUBSCRIBERS`, `Node::pipeline_subscribers`), keep-alive every 15 s, and `PIPELINE_EVENTS_MAX_SECS` (1 h).
+  Tests: `pipeline_events::tests` (client; key sets, diffs), `pipeline_runs.rs` (`a_subscriber_sees_every_step_move_and_the_end`, `events_never_carry_results_or_file_ids`, `a_stranger_cannot_subscribe_to_a_private_apps_run`, `subscribers_are_bounded`).
+  **Validate and estimate** (`api/pipelines.rs`; reads only, nothing logged): `POST /pipelines/validate { source, package?, version? }` (a signed-in account) answers `{ ok, errors: [{ path, code, message }], pipeline?, worstCaseFuel?, worstCaseCost? }` through `Node::validate_pipeline`, which compiles and, for a release the caller sees (`sees_release`, else `404`; one of `package` and `version` alone is `400 BAD_RELEASE`), checks against the `Env` install builds (`packages/pipelines.rs::env_for`: the release's compute methods as `self`, `resolve_modules` for the caller, `pool_ceilings`) and prices with the price table read through `sys_fresh`.
+  `POST /apps/{app}/pipelines/{name}/estimate { inputs? | counts?, params? }` (`may_run`, the start's gate) answers `calimero_pipeline::estimate` over the pinned pipeline and the run's modules as decimal strings with `priceVersion` when a table exists; input ids are only counted, never checked for being held (`400 BAD_INPUTS` for both forms at once or an undeclared input).
+  Tests: `pipeline_runs.rs` (`validate_reports_every_error_with_its_path_and_writes_nothing`, `validate_against_a_release_uses_its_methods_and_caps`, `validate_a_release_the_caller_cannot_see_is_404`, `estimate_follows_the_input_count`, `a_stranger_cannot_estimate_on_a_public_app`).
+  **Step cache** (`component/step_cache.rs`): a hidden row family `rows::CCACHE` keyed by cache key holds `CacheEntry { outputs, result, ts_ms, source_run }`, the head keeps the keys oldest first (`step_cache`).
+  The leader makes the key (`cache_key`: SHA-256 of the JCS of compute bundle, method, args hash, each input's plaintext SHA-256 in order; not caps, so a retry with raised limits still hits) in `build_step`, puts it in `StepRun::cache_key` (none for `cache: false` or an input of unknown content), and apply never recomputes it; `RunRecord::cache_key` carries it, and a linked run that ends done writes or refreshes its entry (a result past `MAX_STEP_RESULT_BYTES` is not cached) and pins its outputs for the entry's life.
+  `plan` puts each run the cache answers (`CacheView::hit`: an entry whose outputs are all held) in `Start`/`More` `cached: [{ index, key }]` instead of `runs`; hits cost no room, and a wave ends at the first miss past its size.
+  Apply takes the hits as finished runs in index order (an item row each with `cached_key`, `finished` counted, no `RunRecord`), settling the step at once when no run is left; a hit whose entry or outputs are gone ends the wave there (`CACHE_GONE` if it is the first), so the leader decides that index again.
+  Entries leave past `MAX_CACHE_ENTRIES` (oldest first) and after `CACHE_TTL_MS` by the applied entry's timestamp (`expire_step_cache`, at most `CACHE_EXPIRY_STEP` per entry), releasing their holds; a hit refreshes the entry and moves it last.
+  `StepState::is_cached` and `cached_items` feed `cached` and `cachedItems` in the run view; a start naming a file id the app does not hold answers `410 OUTPUT_EXPIRED`.
+  Tests: `component/tests/pipelines.rs` (apply), `compute/pipelines.rs` (`plan` keys and hits), `pipeline_runs.rs` (`rerunning_with_one_changed_param_runs_only_the_steps_it_reaches`, `a_step_with_cache_false_always_runs`, `a_fan_out_reuses_its_cached_items`, `starting_with_an_expired_output_answers_output_expired`).
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas. `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`). `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs`, `tests/move_app.rs`.
 - **Every app is in an organization** (`AppRecord::org`, required; hard
-  cutover in 1.0.0-rc.19: a record or entry without one is not read, so
+  cutover in 1.0.0-rc.20: a record or entry without one is not read, so
   clusters are recreated). **Personal organizations** (`Org::personal`,
   `SystemState::personal_org_of`; docs: protocol organizations "Personal
   organizations"): a sign-up makes the account's in the same entry
@@ -811,6 +909,14 @@ is its command line.
   the run and on `AppRecord::last_upgrade`. `GET /orgs/{org}/upgrades/{run}`
   follows it; `.../retry` runs the failed apps again as a new run. A release
   missing from the cluster is installed from the registry first (owner runs).
+  From `SystemState::current_rules_from` on, `apply` derives the run's apps
+  from the state and its consent's method (`SystemState::upgrade_run_apps`:
+  `org_run_apps`, `published_run_apps`, or a retry's failed apps), clears its
+  progress and refuses a run id any organization holds; `UpgradeApp { run }`
+  moves an app once, only while it runs the run's package and never to an
+  older release (`SystemState::run_may_move`, which `api::start_run` asks
+  first and notes as failed, `NOT_IN_RUN`). Regression:
+  `an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once`.
 - **Aliases**: `Account::aliases`, `PUT/GET/DELETE /auth/aliases/{alias}`
   and `GET /auth/aliases`; an alias names only an app its account reaches.
 - **Metadata and org lifecycle** (org/member/app metadata, device
@@ -1003,9 +1109,22 @@ is its command line.
   reads and writes, listings), `unbound`/`holder` refuse it credentials, API
   keys, approvals, upgrades, uninstalls and uploads, organization, team, member
   and invite changes (redeeming included), and an app's delete and access, and
-  it creates instances of its own package only. Its step-ups come from its own
-  origin only, over one of its package's apps only (`step_up` refuses any other
-  subject). Regression: `a_frontend_session_manages_no_organization_and_no_app`.
+  it creates instances of its own package only. The exception is its own
+  package's teams (`Principal::within_team`, `OwnTeam`; `Org::package_of_team`:
+  the org's app team for the package or a team below it), so a chat app runs
+  its channels: `team_create` under one, `team_update` of a team below the app
+  team (never the app team: name, mark, openness; a move only within),
+  `team_set_member`/`team_remove_member` on any of them, `team_delete` below the
+  app team when every app in its subtree is the package's, and `app_access` of
+  its package's app from one such team to another. Authority is the person's,
+  judged at apply as for any session. Its step-ups come from its own origin
+  only, over one of its package's apps, or `org:{org}` for
+  `BOUND_TEAM_STEP_UPS` (`__set_team_member`, `__remove_team_member`,
+  `__delete_team`) over its own package's team (`step_up` judges
+  `within_team` again and refuses any other subject). Regressions:
+  `a_frontend_session_manages_no_organization_and_no_app`,
+  `a_frontend_session_manages_its_own_packages_channels`
+  (`tests/org_app_teams.rs`).
 - **Registered origins** (`origins.rs`, `api/origins.rs`; docs: protocol
   identities "Registered origins"): a package's manager
   (`SystemState::manages_package`: the bound publisher's org-wide
@@ -1057,14 +1176,16 @@ is its command line.
   `a_custom_domains_host_names_one_origin`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
-  `POST /consent/requests { kind: release|upgrade|outbound, scope?, subject,
-  returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
+  `POST /consent/requests { kind: release|upgrade|outbound|createOrg|createInvite|acceptInvite|leaveOrg|removeMember|setMemberRole|setMemberTeams|removeMemberTeams|revokeInvite|renameOrg|deleteOrg|setCapabilities|setAllApps,
+  scope?, subject, returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
   `withdraw: true` withdrawing its approval) and gets `{ requestId, url,
   expiresAt, code }` (`consent_page::confirmation_code`, shown on the page
   and by the console); `returnTo` is the package's own frontend origin or one its
   newest signed manifest names (unbound sessions: `config.origins`). The
   request (this node's memory,
-  `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
+  `CONSENT_REQUEST_TTL`, one undecided request per account and node (a new one
+  replaces it, so a forged page has no other request to swap in), a per-node
+  bound, decided once; page answers carry HSTS) freezes
   a model from node state and verified manifests (an upgrade's capability
   sheet is `consent_page::diff`, its methods, events, timers and state version from the
   `calimero:abi` each component embeds, `component::embedded_abi`; regression:
@@ -1088,6 +1209,49 @@ is its command line.
   `GET /consent/{id}/result` (sealed, same account; forwarded to the holder
   over `internal/consent/result`).
   Package-bound sessions are still refused the approval routes themselves.
+  `createOrg { name }`, `createInvite { org, role, teams?, ttlSecs?, uses?,
+  allApps? }` and `acceptInvite { token }` are how an app's frontend manages
+  organizations (refused `POST /orgs`, invites and redemption): `act` runs
+  `api::create_org`, `api::create_invite` (its own logged
+  `__create_invite` consent) and `api::redeem_invite`, the first and last
+  behind an unlogged step-up over `account:<a>` (`__create_org { name }`,
+  `__accept_invite { inviteKey }`), so the log entries are exactly the API's
+  and no feature gate is needed. What the approval made (`orgId`, the
+  invite's `token`, the `org` joined) is kept with the decision
+  (`ConsentRequests::decide`, `Outcome`, redacted in `Debug` as
+  `InviteToken` is) and answered as `/result`'s `outcome`, never in the
+  page's clear answer. Regression:
+  `an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page`.
+  Moderation and settings (`consent_page/orgs.rs`): `leaveOrg { org }`,
+  `removeMember { org, account }`, `setMemberRole { org, account, role }`,
+  `setMemberTeams { org, account, teams: [TeamRow] }`, `removeMemberTeams
+  { org, account, teams }`, `revokeInvite { org, inviteKey }`, `renameOrg
+  { org, name }`, `deleteOrg { org }`, `setCapabilities { org, account?,
+  team?, capabilities }` (both shapes) and `setAllApps { org, account,
+  allApps }`. Each is judged at request time with the log's predicates
+  (role, a team's lead or `MANAGE_MEMBERS`, `sees_invite`;
+  `system::judge_team_rows` and `judge_remove_team_rows` run the batch
+  rules on a copy of the org) and the routes' feature gates, and `act`
+  runs the route's `pub(crate)` function (`api::remove_member`,
+  `set_member_role`, `set_member_teams`, `remove_member_teams`,
+  `revoke_invite`, `rename_org`, `delete_org`, `set_capabilities`,
+  `set_all_apps`), so consent and log entry are the API's. `still_current`
+  refuses a page whose role, name, deletion counts, capabilities or
+  all-apps grant changed (`409 CONSENT_STALE`). People are named as the
+  approver sees them (`Org::member_metadata` name, else the account's).
+  The route's non-empty answer is the `outcome` (`renameOrg`, `deleteOrg`).
+  Regressions: `an_apps_frontend_moderates_its_server_on_the_page`,
+  `an_apps_frontend_changes_and_deletes_its_server_on_the_page`.
+  With `Config::attestation_verifier_url` (`merod --attestation-verifier-url`,
+  checked by `consent_page::verifier_base`) `model()` adds `verifier { url,
+  host, release, mock }` for every kind (`null` without it): mdma's link
+  `{base}/mero-tee?node_url=<public_url>&release_tag=mero-tee-v<own_release>`
+  (`verifier_link`). The page links to it (new tab, host shown as text, "check
+  it opens there") and runs no check itself: a tampered node could fake any
+  in-page verdict, so the check runs on the verifier's own origin. On mock
+  attestation it says there is nothing to verify. Regressions:
+  `the_verifier_link_is_mdmas_shape_on_a_checked_base`,
+  `an_app_asks_and_the_person_approves_on_the_nodes_page`.
   Regressions: `tests/consent_page.rs`.
 - **Presence** (`presence.rs`, the ephemeral awareness channel): in memory on
   every node, never in a log. `POST /apps/{app}/presence { seq, state }` (anyone

@@ -79,12 +79,12 @@ pub(super) fn authorize(
             if r.by != by
                 || r.finished
                 || !r.apps.contains(app_id)
-                || !release.is_some_and(|v| v.services.values().any(|h| h == bundle))
+                || !release.is_some_and(|v| v.app_parts().values().any(|h| h == bundle))
                 || target
                     .as_ref()
                     .is_some_and(|t| t.package != r.package || t.version != r.version)
             {
-                return Err("the upgrade is not one its run names");
+                return Err(NOT_IN_RUN);
             }
             Ok(None)
         }
@@ -200,6 +200,7 @@ pub(super) fn authorize(
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
 pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+    let index = m.index;
     let s = &mut m.state;
     match cmd {
         SystemCmd::CreateApp { app } => {
@@ -207,7 +208,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !s.bundles.contains_key(&app.bundle) {
                 return Err("unknown bundle");
             }
-            if s.is_compute_bundle(&app.bundle) {
+            if app.components.is_app() && s.is_compute_bundle(&app.bundle) {
                 return Err(COMPUTE_NOT_AN_APP);
             }
             if !s.ships_compute(&app.bundle, app.compute_bundle.as_deref()) {
@@ -219,6 +220,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .is_some_and(|r| !s.release_ships(r, &app.bundle))
             {
                 return Err(RELEASE_NOT_SHIPPED);
+            }
+            if s.components_of(app.release.as_ref()) != app.components {
+                return Err(COMPONENTS_NOT_RELEASES);
             }
             let owned = s.apps.values().filter(|a| a.owner == app.owner).count();
             if owned >= s.quotas.max_apps_per_account as usize {
@@ -294,7 +298,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !s.bundles.contains_key(&bundle) {
                 return Err("unknown bundle");
             }
-            if s.is_compute_bundle(&bundle) {
+            let components = s.components_of(release.as_ref());
+            if components.is_app() && s.is_compute_bundle(&bundle) {
                 return Err(COMPUTE_NOT_AN_APP);
             }
             if !s.ships_compute(&bundle, compute_bundle.as_deref()) {
@@ -306,9 +311,19 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             {
                 return Err(RELEASE_NOT_SHIPPED);
             }
+            if s.apps
+                .get(&app_id)
+                .is_some_and(|a| a.components != components)
+            {
+                return Err(COMPONENTS_CHANGED);
+            }
             let operator = s.governance().app_upgrades == Authority::Operator;
-            let from = s.apps.get(&app_id).map(|a| a.bundle.clone());
-            if !by_operator && from.is_some_and(|f| !s.upgrade_keeps_authority(&f, &bundle)) {
+            let to = s.governing(release.as_ref(), &bundle, at);
+            let keeps = s
+                .apps
+                .get(&app_id)
+                .is_none_or(|a| s.upgrade_keeps_authority(s.governing_release(a), to));
+            if !by_operator && !keeps {
                 return Err(
                         "an app whose owner upgrades it is not moved to a release its publisher upgrades",
                     );
@@ -335,6 +350,18 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err(
                     "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
                 );
+            }
+            // A run moves each app it names once, along its package and
+            // never back: its consent covers that, not whatever an entry
+            // naming it says.
+            if let (Some(run_id), true) = (&run, s.holds_current_rules(index)) {
+                let r = s
+                    .orgs
+                    .values()
+                    .find_map(|o| o.upgrade_runs.get(run_id))
+                    .ok_or("no such upgrade run")?;
+                let a = s.apps.get(&app_id).ok_or("no such app")?;
+                s.run_may_move(r, a)?;
             }
             let by = if by_operator {
                 OPERATOR.to_owned()
@@ -390,9 +417,28 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         }
         SystemCmd::StartUpgradeRun {
             org,
-            run,
-            consent: _,
+            mut run,
+            consent,
         } => {
+            if s.holds_current_rules(index) {
+                // What the run covers and how far it got are the state's,
+                // not the proposer's: its consent names only the package,
+                // version and scope. Its id names one run in the cluster,
+                // as `UpgradeApp { run }` finds it in any organization.
+                if !s.orgs.contains_key(&org) {
+                    return Err("no such organization");
+                }
+                if s.orgs
+                    .values()
+                    .any(|o| o.upgrade_runs.contains_key(&run.run_id))
+                {
+                    return Err("that run exists");
+                }
+                run.apps = s.upgrade_run_apps(&org, &run, &consent);
+                run.done.clear();
+                run.failed.clear();
+                run.finished = false;
+            }
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
             if o.upgrade_runs.contains_key(&run.run_id) {
                 return Err("that run exists");
@@ -410,8 +456,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     None => break,
                 }
             }
+            let out = serde_json::to_value(&*run).unwrap_or_default();
             let _prev = o.upgrade_runs.insert(run.run_id.clone(), *run);
-            Ok(Value::Null)
+            Ok(out)
         }
         SystemCmd::FinishUpgradeRun { org, run_id } => {
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;

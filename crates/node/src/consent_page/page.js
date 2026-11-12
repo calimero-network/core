@@ -155,7 +155,7 @@
     if (sub) li.appendChild(el("span", sub, "sub"));
   }
   function renderChecks(m, host) {
-    var ul = $("checks");
+    var ul = $("checks"), mockShown = false;
     check(ul, "Served by your node at " + host + ",", " not by the app.", "Your browser's address bar should show " + host + ".");
     check(ul, "Your passkey will ask to sign in to " + m.rpId + ".", "", "If it shows any other site, cancel.");
     var p = m.publisher;
@@ -173,10 +173,31 @@
     } else if (m.kind === "release" && !withdrawing) {
       if (m.release.measurements && m.release.measurements.mock) {
         check(ul, "Test cluster: no hardware checks.", "", "This cluster runs without hardware attestation, so there are no measurements to verify. Use it for testing only.", true);
+        mockShown = true;
       } else {
         check(ul, "Built and published by Calimero's public release process.", "", "Your node verified its signature before showing you this page.");
       }
     }
+    verifier(ul, m.verifier, mockShown);
+  }
+  // The independent verifier: a link, never a check run here. This page is
+  // served by the node it would check, so only the verifier's own origin can
+  // say the node is genuine; the person checks the link opens there.
+  function verifier(ul, v, mockShown) {
+    if (!v) return;
+    if (v.mock) {
+      if (!mockShown) check(ul, "Test cluster: nothing to verify independently.", "", "This cluster runs without hardware attestation, so there is no attestation an independent verifier could check.", true);
+      return;
+    }
+    var u;
+    try { u = new URL(v.url); } catch (e) { return; }
+    if (u.protocol !== "https:" && u.protocol !== "http:") return;
+    var li = add(ul, el("li"));
+    var strong = add(li, el("strong", "Check this server's hardware and software on "));
+    var a = add(strong, el("a", v.host + " \u2197"));
+    a.href = u.href; a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = u.href;
+    li.appendChild(el("span", "An independent verifier checks this node's hardware attestation and its release (mero-tee " + v.release +
+      ") on its own site. Check that the page opens on " + v.host + ", not on this page's address.", "sub"));
   }
 
   function renderTech(m) {

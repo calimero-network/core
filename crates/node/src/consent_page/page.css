@@ -38,6 +38,7 @@ ul { margin: 0; padding: 0; list-style: none; }
 .checks li::before { content: "✓"; position: absolute; left: 0; top: .05rem; width: 1.3rem; height: 1.3rem; border-radius: 50%; background: var(--ok-bg); color: var(--ok); font-weight: 700; font-size: .8rem; line-height: 1.3rem; text-align: center; }
 .checks li.note::before { content: "!"; background: var(--warn-bg); color: var(--warn-fg); }
 .checks strong { font-weight: 600; }
+.checks a { color: var(--accent); }
 .checks .sub { display: block; font-size: .875rem; color: var(--muted); }
 .code-box { margin-top: .9rem; padding-top: .9rem; border-top: 1px solid var(--line); text-align: center; }
 .code-label { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }

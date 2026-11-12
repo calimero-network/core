@@ -7,33 +7,33 @@ use std::sync::Arc;
 use super::*;
 use crate::job_wire::{sign_report, FailReason, OutputRef, Report, ReportStatus, ReportUsage};
 
-const DIGEST: [u8; 32] = [9; 32];
+pub(super) const DIGEST: [u8; 32] = [9; 32];
 /// The sealed file every started run names, held from the start of a `World`.
-const INPUT: u8 = 0xab;
+pub(super) const INPUT: u8 = 0xab;
 
 type Edit = (&'static str, fn(&mut Report));
 type Refusal = (&'static str, &'static str, fn(&mut FinalEntry));
 
 /// A machine and the index its next entry gets.
-struct World {
-    r: Rig,
-    last: u64,
+pub(super) struct World {
+    pub(super) r: Rig,
+    pub(super) last: u64,
 }
 
 impl World {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let mut r = Rig::new();
         let _i = r.apply(1, &init(0));
         let _f = r.apply(2, &file_cmd(INPUT, 0, None));
         Self { r, last: 2 }
     }
 
-    fn push(&mut self, cmd: &ComponentCmd) -> Applied {
+    pub(super) fn push(&mut self, cmd: &ComponentCmd) -> Applied {
         self.last += 1;
         self.r.apply(self.last, &serde_json::to_vec(cmd).unwrap())
     }
 
-    fn record(&self, run: &str) -> RunRecord {
+    pub(super) fn record(&self, run: &str) -> RunRecord {
         self.r.machine.run_record(run).expect("no record")
     }
 
@@ -41,7 +41,7 @@ impl World {
         self.record(run).state
     }
 
-    fn active(&self) -> Vec<String> {
+    pub(super) fn active(&self) -> Vec<String> {
         self.r.machine.active_runs()
     }
 
@@ -56,19 +56,19 @@ impl World {
         self.push(&cmd)
     }
 
-    fn start(&mut self, run: &str) {
+    pub(super) fn start(&mut self, run: &str) {
         let a = self.call(vec![started(run)], &[]);
         assert!(!a.conflict, "{a:?}");
     }
 
     /// The next attempt of `run`, assigned to the job key of `signer`.
-    fn assign(&mut self, run: &str, signer: &SigningKey) -> Applied {
+    pub(super) fn assign(&mut self, run: &str, signer: &SigningKey) -> Applied {
         let n = u32::try_from(self.record(run).attempts.len()).unwrap() + 1;
         self.push(&attempt(run, n, signer, DIGEST))
     }
 
     /// A valid job final of `run`'s latest attempt, to edit.
-    fn done(&self, run: &str, signer: &SigningKey) -> FinalEntry {
+    pub(super) fn done(&self, run: &str, signer: &SigningKey) -> FinalEntry {
         let n = u32::try_from(self.record(run).attempts.len()).unwrap();
         let outputs = vec![out(1)];
         let report = report(run, n, ReportStatus::Done, None, &outputs);
@@ -91,7 +91,7 @@ impl World {
         }
     }
 
-    fn finish(&mut self, entry: FinalEntry) -> Applied {
+    pub(super) fn finish(&mut self, entry: FinalEntry) -> Applied {
         self.push(&ComponentCmd::ComputeFinal(Box::new(entry)))
     }
 
@@ -111,7 +111,7 @@ fn stored_key(key: &str) -> Vec<u8> {
     key.as_bytes().to_vec()
 }
 
-fn job_key(seed: u8) -> SigningKey {
+pub(super) fn job_key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }
 
@@ -147,7 +147,7 @@ fn attempt(run: &str, n: u32, signer: &SigningKey, digest: [u8; 32]) -> Componen
 }
 
 /// A file the run wrote: ids and hashes are hashes, as a report spells them.
-fn out(n: u8) -> FileMark {
+pub(super) fn out(n: u8) -> FileMark {
     FileMark::fixture(n, 10 + u64::from(n))
 }
 
@@ -159,7 +159,7 @@ fn usage() -> ReportUsage {
     }
 }
 
-fn report(
+pub(super) fn report(
     run: &str,
     attempt: u32,
     status: ReportStatus,
@@ -192,7 +192,7 @@ fn report(
 }
 
 /// A leader outcome of the latest attempt, with no usage.
-fn leader(w: &World, run: &str, outcome: FinalOutcome) -> FinalEntry {
+pub(super) fn leader(w: &World, run: &str, outcome: FinalOutcome) -> FinalEntry {
     FinalEntry {
         outcome,
         report: None,
@@ -204,7 +204,7 @@ fn leader(w: &World, run: &str, outcome: FinalOutcome) -> FinalEntry {
 }
 
 /// The reason a permanent refusal answered: nothing changed and it is not a conflict.
-fn why(a: &Applied) -> String {
+pub(super) fn why(a: &Applied) -> String {
     assert!(!a.conflict, "a conflict, not a refusal: {a:?}");
     assert_eq!(a.status, Status::AppError, "{a:?}");
     a.error.as_str().expect("no reason").to_owned()

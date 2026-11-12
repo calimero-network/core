@@ -17,7 +17,7 @@ use calimero_log::{Bytes, GroupState, StateTx};
 use serde::{Deserialize, Serialize};
 
 use super::blobs::{BlobRecord, Blobs};
-use super::{host_answer, parse_hex32, Applied, FileMark, Outcome};
+use super::{get_json, host_answer, parse_hex32, put_json, Applied, FileMark, Outcome};
 use crate::app::{rows, AppMachine};
 use crate::job_wire::{hash_bytes, verify_report, FailReason, Report, ReportStatus, ReportUsage};
 use crate::types::Caller;
@@ -192,6 +192,26 @@ pub struct RunRecord {
     pub attempts: Vec<Attempt>,
     #[serde(rename = "final")]
     pub final_: Option<Final>,
+    /// The pipeline step this run belongs to, if a pipeline started it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<PipelineLink>,
+    /// The step cache key of a pipeline step run; a done run writes its entry under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_key: Option<String>,
+    /// The pool a pipeline step named; its runs go there instead of by memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
+}
+
+/// The step of a pipeline run that a compute run was started for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PipelineLink {
+    pub run: String,
+    pub step: String,
+    /// The run's place among the step's runs, which is its items' place in item order.
+    #[serde(default)]
+    pub index: u32,
 }
 
 impl RunRecord {
@@ -397,6 +417,7 @@ impl AppMachine {
             .iter()
             .filter_map(|run| self.run_record(run))
             .map(|record| record.result_method)
+            .filter(|method| !method.is_empty())
             .collect()
     }
 
@@ -455,18 +476,6 @@ impl AppMachine {
         }
     }
 
-    fn read_run(tx: &StateTx<'_>, run: &str) -> Option<RunRecord> {
-        let raw = tx.get_hidden(rows::CRUN, run.as_bytes())?;
-        serde_json::from_slice(&raw).ok()
-    }
-
-    fn write_run(tx: &mut StateTx<'_>, record: &RunRecord) {
-        match serde_json::to_vec(record) {
-            Ok(row) => tx.put_hidden(rows::CRUN, record.run.as_bytes(), &row),
-            Err(e) => tx.fail(e),
-        }
-    }
-
     /// Records the runs a call started and flags the ones it cancelled. A start past the active
     /// cap, or of an id that has a record, is dropped.
     pub(super) fn apply_run_changes(
@@ -478,8 +487,8 @@ impl AppMachine {
     ) {
         for start in &outcome.compute_starts {
             let head = &mut self.state.component.head;
-            let known =
-                head.active_runs.contains(&start.run) || Self::read_run(tx, &start.run).is_some();
+            let known = head.active_runs.contains(&start.run)
+                || get_json::<RunRecord>(tx, rows::CRUN, &start.run).is_some();
             if known || head.active_runs.len() >= host::MAX_ACTIVE_RUNS {
                 continue;
             }
@@ -506,8 +515,11 @@ impl AppMachine {
                 cancel_requested: false,
                 attempts: Vec::new(),
                 final_: None,
+                pipeline: None,
+                cache_key: None,
+                pool: None,
             };
-            Self::write_run(tx, &record);
+            put_json(tx, rows::CRUN, &record.run, &record);
             let _new = self
                 .state
                 .component
@@ -520,9 +532,9 @@ impl AppMachine {
             if !self.state.component.head.active_runs.contains(run) {
                 continue;
             }
-            if let Some(mut record) = Self::read_run(tx, run) {
+            if let Some(mut record) = get_json::<RunRecord>(tx, rows::CRUN, run) {
                 record.cancel_requested = true;
-                Self::write_run(tx, &record);
+                put_json(tx, rows::CRUN, &record.run, &record);
             }
         }
     }
@@ -535,7 +547,7 @@ impl AppMachine {
         entry: &AttemptEntry,
     ) -> Applied {
         let no_op = |reason| host_answer(index, false, reason);
-        let Some(mut record) = Self::read_run(tx, &entry.run) else {
+        let Some(mut record) = get_json::<RunRecord>(tx, rows::CRUN, &entry.run) else {
             return no_op(NOT_ACTIVE);
         };
         if !record.state.is_active() {
@@ -561,7 +573,7 @@ impl AppMachine {
             assignment_digest: entry.assignment_digest.clone(),
             ts_ms: entry.ts_ms,
         });
-        Self::write_run(tx, &record);
+        put_json(tx, rows::CRUN, &record.run, &record);
         host_answer(index, true, "")
     }
 
@@ -573,7 +585,7 @@ impl AppMachine {
         index: u64,
         entry: &FinalEntry,
     ) -> Applied {
-        let Some(mut record) = Self::read_run(tx, &entry.run) else {
+        let Some(mut record) = get_json::<RunRecord>(tx, rows::CRUN, &entry.run) else {
             return host_answer(index, false, NOT_ACTIVE);
         };
         if let Err(reason) = self.check_final(&record, entry) {
@@ -597,7 +609,7 @@ impl AppMachine {
                 .map(|r| r.message.clone())
                 .unwrap_or_default(),
         });
-        Self::write_run(tx, &record);
+        put_json(tx, rows::CRUN, &record.run, &record);
         self.finish_run(tx, &entry.run);
         self.pin_inputs(tx, &record.inputs, -1, entry.ts_ms);
         // Registered before the result method's diff, so a `BlobRef` it stores is counted.
@@ -608,6 +620,9 @@ impl AppMachine {
                 .blobs
                 .add_output(tx, output, entry.ts_ms);
         }
+        let result = entry.report.as_ref().map_or(&[][..], |r| &r.result[..]);
+        Self::write_step_proof(tx, &record, entry);
+        self.settle_step_run(tx, &record, &entry.outputs, result, entry.ts_ms);
         self.apply_component_outcome(
             tx,
             index,
@@ -638,7 +653,13 @@ impl AppMachine {
     }
 
     /// Counts the inputs of a run as references while it is active, so retention keeps them.
-    fn pin_inputs(&mut self, tx: &mut StateTx<'_>, inputs: &[RunInputRef], delta: i64, ts_ms: u64) {
+    pub(super) fn pin_inputs(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        inputs: &[RunInputRef],
+        delta: i64,
+        ts_ms: u64,
+    ) {
         let mut deltas = BTreeMap::new();
         for id in inputs.iter().filter_map(|i| parse_hex32(&i.id)) {
             *deltas.entry(id).or_insert(0) += delta;

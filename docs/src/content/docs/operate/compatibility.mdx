@@ -26,7 +26,7 @@ which version it is, and how a change that cannot keep it is declared.
 
 | Surface | Version now | Where it is declared | Who reads it |
 | --- | --- | --- | --- |
-| Node release (`merod`, `meroctl`, the SDK) | `1.0.0-rc.18` | `[workspace.metadata.workspaces] version` in `Cargo.toml` | mdma (`release_compat`), the attestation (`--min-release`), a bundle's `minRuntimeVersion` |
+| Node release (`merod`, `meroctl`, the SDK) | `1.0.0-rc.19` | `[workspace.metadata.workspaces] version` in `Cargo.toml` | mdma (`release_compat`), the attestation (`--min-release`), a bundle's `minRuntimeVersion` |
 | App world (WIT) | `calimero:app@0.5.1` | `crates/app-wit/wit/calimero-app.wit` | The engine: a component importing `calimero:app/*@0.5.z` with `z` up to the world's links; anything else is refused at install |
 | App ABI | `abiVersion` 1 | the SDK's `ABI_VERSION` (`crates/sdk-macros`), the host's `SUPPORTED_ABI_VERSIONS` (`crates/app-host`) | The host, when it loads a component's ABI |
 | App package (`.mpk`) | manifest `version` `1.0`, `minRuntimeVersion` | the bundle's `manifest.json` (`crates/bundle`) | The node at install: it refuses a package whose `minRuntimeVersion` is above its release |

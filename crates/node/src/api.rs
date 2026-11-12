@@ -69,6 +69,7 @@ mod auth;
 mod calls;
 mod deployments;
 mod deprecation;
+mod exports;
 mod files;
 mod internal;
 #[cfg(test)]
@@ -78,6 +79,9 @@ mod orgs;
 mod origins;
 mod packages;
 mod passkeys;
+mod pipeline_events;
+pub(crate) mod pipeline_receipt;
+mod pipelines;
 mod recovery;
 mod restore;
 mod sign_up;
@@ -86,7 +90,14 @@ mod upgrades;
 pub(crate) use approvals::{
     set_outbound_approval, set_release_approval, OutboundApprovalBody, ReleaseApprovalBody,
 };
+pub(crate) use exports::ExportLimits;
 pub(crate) use internal::peer_only;
+pub(crate) use orgs::{
+    create_invite, create_org, delete_org, redeem_invite, remove_member, remove_member_teams,
+    rename_org, revoke_invite, set_all_apps, set_capabilities, set_member_role, set_member_teams,
+    CapabilitiesBody, InviteBody,
+};
+pub use pipeline_events::MAX_RUN_SUBSCRIBERS_PER_APP;
 pub(crate) use upgrades::{refuse_stalled, upgrade_app, UpgradeBody};
 // The request bodies the OpenAPI registry names as `super::<Body>`.
 #[cfg(test)]
@@ -100,11 +111,10 @@ use {
     calls::{EventsQuery, IntentBody, MethodBody, PresenceBody, RunsQuery, ViewBody},
     deployments::{ClusterOwnerBody, DeployerBody, DeploymentBody, OfferBody},
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
-    ops::{BackupQuery, NodeBody, PoolsBody, ReplicaBody},
+    ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
     orgs::{
-        AllAppsBody, CapabilitiesBody, InviteBody, MemberBody, MembersQuery, OrgBody,
-        RenameOrgBody, ScopeAppsBody, TeamBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,
-        TeamUpdateBody,
+        AllAppsBody, MemberBody, MembersQuery, OrgBody, RenameOrgBody, ScopeAppsBody, TeamBody,
+        TeamIdsBody, TeamMemberBody, TeamRowsBody, TeamUpdateBody,
     },
     packages::{InstallBody, PublisherBody},
     recovery::{RecoveryBegin, RecoveryFinish, RecoveryKeyBody, RecoveryStart, RecoveryStartBody},
@@ -471,6 +481,56 @@ impl Principal {
         }
     }
 
+    /// Whether this principal may change `team` of `org` as `reach` says: a
+    /// package-bound session only a team of its own package's, the org's
+    /// app team for that package ([`crate::types::Org::package_of_team`])
+    /// or one below it, so an app's frontend runs its own channels (#5014).
+    /// Who may do the change itself is judged where it applies, as for any
+    /// session; this only keeps the session to its package's teams.
+    pub(crate) fn within_team(
+        &self,
+        node: &Node,
+        org: &str,
+        team: &str,
+        reach: OwnTeam,
+    ) -> Result<(), ApiError> {
+        let Some(pkg) = self.bound_app() else {
+            return Ok(());
+        };
+        let refused = || {
+            ApiError::forbidden(
+                "a session opened on an app's frontend changes only that app's own teams; do this on the cluster's own page",
+            )
+        };
+        let (own, app_team, apps) = node.sys(|s| {
+            let Some((package, app_team)) = s
+                .orgs
+                .get(org)
+                .and_then(|o| o.package_of_team(team))
+                .map(|(p, top)| (p == pkg, top))
+            else {
+                return (false, false, Vec::new());
+            };
+            let apps = match reach {
+                OwnTeam::BelowHoldingOwnApps => s
+                    .team_apps(org, team)
+                    .iter()
+                    .filter_map(|a| s.apps.get(a).cloned())
+                    .collect(),
+                OwnTeam::AppTeamOrBelow | OwnTeam::Below => Vec::new(),
+            };
+            (package, app_team, apps)
+        });
+        if !own || (app_team && reach != OwnTeam::AppTeamOrBelow) {
+            return Err(refused());
+        }
+        // A delete takes the apps below the team: only its own package's.
+        for app in &apps {
+            self.within(node, app).map_err(|_| refused())?;
+        }
+        Ok(())
+    }
+
     /// Whether this principal may touch `app` at all: a package-bound
     /// session only an app running a release of its package.
     pub(crate) fn within(
@@ -501,6 +561,31 @@ impl Principal {
         }
     }
 }
+
+/// Which of its own package's teams a package-bound session may change
+/// ([`Principal::within_team`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OwnTeam {
+    /// The package's app team or a team below it: its rows (members), a
+    /// parent for a new channel, an app's team.
+    AppTeamOrBelow,
+    /// A team below the app team, never the app team itself, whose name,
+    /// mark, place and openness are the organization's admins'.
+    Below,
+    /// A team below the app team whose subtree holds only the package's own
+    /// apps: deleting it takes them.
+    BelowHoldingOwnApps,
+}
+
+/// The organization step-ups a package-bound session may make, each over
+/// the team its arguments name (`team`), as [`Principal::within_team`]
+/// judges it. The routes judge it first; [`step_up`] judges it again, so no
+/// other organization consent is ever asked of such a session.
+const BOUND_TEAM_STEP_UPS: [(&str, OwnTeam); 3] = [
+    ("__set_team_member", OwnTeam::AppTeamOrBelow),
+    ("__remove_team_member", OwnTeam::AppTeamOrBelow),
+    ("__delete_team", OwnTeam::BelowHoldingOwnApps),
+];
 
 /// [`person`], and never a package-bound session.
 async fn holder(node: &Node, headers: &HeaderMap) -> Result<Principal, ApiError> {
@@ -896,6 +981,8 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         r[32..].copy_from_slice(&calimero_client::attest::receipt_key_binding(
             &node.receipt_public(),
             &governance,
+            &node.config.cluster,
+            node.config.node_id,
         ));
         r
     } else if let Some(kms) = &kms {
@@ -1240,12 +1327,22 @@ async fn step_up(
             "this method needs the account holder's passkey",
         ));
     }
-    // A package-bound session steps up over its package's apps only: never
-    // for the account, an organization, the cluster or another package.
+    // A package-bound session steps up over its package's apps and teams
+    // only: never for the account, the rest of an organization, the
+    // cluster or another package.
     if p.bound_app().is_some() {
         match node.sys(|s| s.apps.get(app_id).cloned()) {
             Some(app) => p.within(node, &app)?,
-            None => p.unbound()?,
+            None => {
+                let own_team = app_id
+                    .strip_prefix("org:")
+                    .zip(BOUND_TEAM_STEP_UPS.iter().find(|(m, _)| *m == method))
+                    .zip(args.get("team").and_then(Value::as_str));
+                match own_team {
+                    Some(((org, (_, reach)), team)) => p.within_team(node, org, team, *reach)?,
+                    None => p.unbound()?,
+                }
+            }
         }
     }
     let account = p.account()?;
@@ -1522,6 +1619,9 @@ fn operator(node: &Node, headers: &HeaderMap) -> Result<(), ApiError> {
         ),
         (None, None) => return Err(ApiError::forbidden("the Ops API is disabled on this node")),
     };
+    // No header and an empty bearer are the same nothing: never a credential,
+    // whatever the node was configured with.
+    let ok = ok && !given.is_empty();
     if ok {
         Ok(())
     } else {

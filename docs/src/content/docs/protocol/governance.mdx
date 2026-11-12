@@ -55,7 +55,8 @@ changes with it. The [sign-up policy](#sign-up) changes too, with the
 signature of whoever runs it.
 
 Every node's receipt-key attestation binds the governance its system state
-holds (`receipt_key_binding(key, governance)`). `verify_app_cluster` requires
+holds, with its cluster and node id
+(`receipt_key_binding(key, governance, cluster, node)`). `verify_app_cluster` requires
 every replica of an app to attest the same governance and returns it, so a user
 can prove, from hardware quotes, who may move their app to new code before they
 trust it with data ([Attestation & receipts](/protocol/tee-attestation/#verifying-the-whole-app-cluster)).
@@ -103,7 +104,9 @@ which releases may receive it:
   organization its package's key is bound to), covering every instance of
   every package it publishes, its customers' included. An app whose package's
   key is not bound yet, or that runs a raw bundle, is judged by its owning
-  organization's set (`SystemState::approved_for_bundle`). The release of the node an organization
+  organization's set (`SystemState::approved_for_release`). The package is that of the release
+  the instance runs (`AppRecord::release`), never merely of whichever release
+  first shipped the same WASM. The release of the node an organization
   was created through, or an account signed up through, is approved from the
   start.
 - **Changing it.** `POST /orgs/{org}/releases` `{ version, approved }` by a

@@ -117,7 +117,7 @@ pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Opt
             .packages
             .get(&r.package)
             .and_then(|p| p.versions.get(&r.version))
-            .is_some_and(|v| v.services.values().any(|h| h == hash) && s.sees_release(v, who));
+            .is_some_and(|v| v.app_parts().values().any(|h| h == hash) && s.sees_release(v, who));
         if visible {
             return Some(ReleaseName {
                 package: r.package.clone(),
@@ -131,7 +131,7 @@ pub fn release_of_bundle(s: &SystemState, hash: &str, reader: Reader<'_>) -> Opt
         .flat_map(|p| p.versions.values().map(move |v| (p, v)))
         .filter(|(_, v)| s.sees_release(v, who))
         .filter_map(|(p, v)| {
-            let service = v.services.iter().find(|(_, h)| *h == hash)?.0;
+            let service = v.app_parts().iter().find(|(_, h)| *h == hash)?.0;
             Some((p, v, service))
         })
         .max_by(|a, b| compare_versions(&a.1.version, &b.1.version))
@@ -156,7 +156,7 @@ fn newer_versions<'s>(
     let service = current.service.clone().unwrap_or_default();
     let mut newer: Vec<&PackageVersion> = s
         .visible_versions(p, account)
-        .filter(|v| v.services.contains_key(&service))
+        .filter(|v| v.app_parts().contains_key(&service))
         .filter(|v| compare_versions(&v.version, &current.version).is_gt())
         .collect();
     newer.sort_by(|a, b| compare_versions(&a.version, &b.version));
@@ -182,9 +182,15 @@ fn blocked(
     service: &str,
     runtimes: &BTreeMap<u64, NodeRuntime>,
 ) -> Option<Value> {
-    let bundle = v.services.get(service)?;
+    v.services.get(service)?;
+    let to = PackageRef {
+        package: package.to_owned(),
+        version: v.version.clone(),
+        service: Some(service.to_owned()),
+        compute: false,
+    };
     if s.governance().app_upgrades != Authority::Operator
-        && !s.upgrade_keeps_authority(&app.bundle, bundle)
+        && !s.upgrade_keeps_authority(s.governing_release(app), Some(&to))
     {
         return Some(json!({
             "reason": "authority",
@@ -312,27 +318,27 @@ fn approved_json(set: Option<&BTreeSet<String>>) -> Value {
     set.map_or(Value::Null, |s| json!(s))
 }
 
-/// Who upgrades an app running `bundle`: `operator` where the cluster gives
-/// it app upgrades, else what the release's manifest declares (`owner` or
-/// `publisher`; a raw upload is its owner's).
-fn upgrades_held_by(s: &SystemState, bundle: &str) -> &'static str {
+/// Who upgrades `app`: `operator` where the cluster gives it app upgrades,
+/// else what its release's manifest declares (`owner` or `publisher`; a raw
+/// upload is its owner's).
+fn upgrades_held_by(s: &SystemState, app: &AppRecord) -> &'static str {
     if s.governance().app_upgrades == Authority::Operator {
         "operator"
-    } else if s.upgrades_of(bundle).is_owner() {
+    } else if s.upgrades_of(s.governing_release(app)).is_owner() {
         "owner"
     } else {
         "publisher"
     }
 }
 
-/// Whose approvals decide which releases hold an app running `bundle`
-/// (`SystemState::approved_for_bundle`): `operator` where the cluster gives
+/// Whose approvals decide which releases hold `app`
+/// (`SystemState::approved_for_release`): `operator` where the cluster gives
 /// it release approvals, else `publisher` once the package's key is bound
 /// to an organization, else `owner` (the app's organization or account).
-fn releases_approved_by(s: &SystemState, bundle: &str) -> &'static str {
+fn releases_approved_by(s: &SystemState, app: &AppRecord) -> &'static str {
     if s.governance().releases == Authority::Operator {
         "operator"
-    } else if s.publisher_of(bundle).is_some() {
+    } else if s.publisher_of(s.governing_release(app)).is_some() {
         "publisher"
     } else {
         "owner"
@@ -369,8 +375,8 @@ pub fn app_json(
             .as_ref()
             .and_then(|r| s.packages.get(&r.package))
             .map(|p| json!({ "signer": p.signer_id, "org": s.publisher_of_signer(&p.signer_id) })),
-        "upgradesHeldBy": upgrades_held_by(s, &app.bundle),
-        "releasesApprovedBy": releases_approved_by(s, &app.bundle),
+        "upgradesHeldBy": upgrades_held_by(s, app),
+        "releasesApprovedBy": releases_approved_by(s, app),
         "lastUpgrade": app.last_upgrade.as_ref().map(|u| last_upgrade_json(s, app, u, reader)),
         "approvedReleases": approved_json(s.approved_releases(app)),
         "replicas": replicas,

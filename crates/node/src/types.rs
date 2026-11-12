@@ -115,6 +115,24 @@ pub struct NodeRecord {
     pub pool: String,
 }
 
+/// Which components a release, and the app made from it, has.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Components {
+    /// An app component, with a compute component when the release ships one.
+    #[default]
+    App,
+    /// A compute component only: nothing to call, view, initialise or tick.
+    ComputeOnly,
+}
+
+impl Components {
+    #[must_use]
+    pub fn is_app(&self) -> bool {
+        *self == Self::App
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppRecord {
@@ -126,7 +144,7 @@ pub struct AppRecord {
     /// The organization the app belongs to. Every app has one: an app made
     /// without naming one is in its owner's personal organization
     /// ([`Org::personal`]). Apps outside any organization were removed in a
-    /// hard cutover (1.0.0-rc.19).
+    /// hard cutover (1.0.0-rc.20).
     pub org: OrgId,
     #[serde(default)]
     pub access: Access,
@@ -149,6 +167,10 @@ pub struct AppRecord {
     /// and upgrade; `None` when that release ships none (or `bundle` is a raw upload).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute_bundle: Option<String>,
+    /// The components it runs; `bundle` and `compute_bundle` both name the compute
+    /// component when it has no app component.
+    #[serde(default, skip_serializing_if = "Components::is_app")]
+    pub components: Components,
     /// The app instance's metadata: a title, an icon.
     /// Set by its owner or an admin of its organization.
     #[serde(default)]
@@ -214,6 +236,17 @@ impl PendingRestore {
     #[must_use]
     pub const fn awaits_backup(&self) -> bool {
         self.seed.is_none()
+    }
+}
+
+impl AppRecord {
+    /// `422 NO_APP_COMPONENT` unless the app has an app component to call, view, initialise or tick.
+    pub fn require_app_component(&self) -> Result<(), crate::error::ApiError> {
+        if self.components.is_app() {
+            Ok(())
+        } else {
+            Err(crate::error::ApiError::no_app_component())
+        }
     }
 }
 
@@ -888,6 +921,25 @@ impl Org {
         self.teams
             .values()
             .find(|t| t.app_package() == Some(package))
+    }
+
+    /// The package whose app team `team` is or sits below (the
+    /// [`Team::app_package`] of its top-level ancestor), and whether `team`
+    /// is that app team itself; `None` for an unknown team or one under a
+    /// top-level team that is no app team.
+    #[must_use]
+    pub fn package_of_team<'a>(&'a self, team: &'a str) -> Option<(&'a str, bool)> {
+        let mut id = team;
+        // Parents never form a cycle; the bound only keeps a broken state
+        // from looping.
+        for _ in 0..=self.teams.len() {
+            let t = self.teams.get(id)?;
+            match t.parent.as_deref() {
+                Some(parent) => id = parent,
+                None => return t.app_package().map(|p| (p, id == team)),
+            }
+        }
+        None
     }
 
     /// The organization's mode, from its app teams.

@@ -7,14 +7,6 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use std::time::Duration;
 
 use calimero_client::Client;
@@ -28,7 +20,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, signed_up, Cluster};
+use harness::{kv_wasm, signed_up, typed, wire, Cluster};
 
 /// A signed single-service `.mpk`, the shape `mero-sign` signs.
 fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
@@ -59,6 +51,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         upgrades: None,
         outbound: Vec::new(),
         services: None,
+        pipelines: Vec::new(),
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
@@ -115,7 +108,7 @@ async fn append(c: &Cluster, cmd: &Value) -> Result<Value, String> {
 }
 
 async fn account_id(cl: &Client) -> String {
-    cl.me().await.unwrap()["accountId"]
+    cl.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -123,7 +116,7 @@ async fn account_id(cl: &Client) -> String {
 
 /// The WASM hash `package@version` ships, from the installer's listing.
 async fn bundle_of(owner: &Client, package: &str, version: &str) -> String {
-    let p = owner.get(&format!("packages/{package}")).await.unwrap();
+    let p = owner.packages().get(package).await.map(wire).unwrap();
     let versions = p["versions"].as_array().cloned().unwrap_or_default();
     let v = versions
         .iter()
@@ -134,7 +127,7 @@ async fn bundle_of(owner: &Client, package: &str, version: &str) -> String {
 
 /// The bundle `app` runs, as its owner reads it.
 async fn running(owner: &Client, app: &str) -> String {
-    owner.get(&format!("apps/{app}")).await.unwrap()["bundle"]
+    owner.apps().get(app).await.map(wire).unwrap()["bundle"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -162,29 +155,33 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
         ("1.2.0", variant(&kv, "one-two")),
     ] {
         let _ = alice
-            .upload_package(mpk("com.test.ci", version, &wasm, &publisher))
+            .packages()
+            .upload(mpk("com.test.ci", version, &wasm, &publisher))
             .await
             .unwrap();
     }
     let _ = alice
-        .upload_package(mpk(
+        .packages()
+        .upload(mpk(
             "com.test.other",
             "1.0.0",
             &variant(&kv, "other"),
             &stranger,
         ))
         .await
+        .map(wire)
         .unwrap();
     let create = |name: &str| {
         let alice = &alice;
         let name = name.to_owned();
         async move {
             alice
-                .post(
-                    "apps",
+                .apps()
+                .create(typed(
                     json!({ "name": name, "package": "com.test.ci", "version": "1.0.0" }),
-                )
+                ))
                 .await
+                .map(wire)
                 .unwrap()["appId"]
                 .as_str()
                 .unwrap()
@@ -196,21 +193,25 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
 
     // Only the owner, with a passkey, makes it; it carries no other scope.
     let e = alice
-        .create_api_key(
-            json!({ "upgrades": { "app": app }, "methods": ["set"] }),
-            &mut apk,
+        .auth()
+        .apikey_create(
+            typed(json!({ "upgrades": { "app": app }, "methods": ["set"] })),
+            Some(&mut apk),
         )
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap_err();
     assert_eq!(code(&e), Some("BAD_UPGRADE_KEY"), "{e}");
     let (key_id, key) = alice
-        .create_api_key(
-            json!({ "label": "ci", "upgrades": { "app": app } }),
-            &mut apk,
+        .auth()
+        .apikey_create(
+            typed(json!({ "label": "ci", "upgrades": { "app": app } })),
+            Some(&mut apk),
         )
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
-    let keys = alice.get("auth/apikeys").await.unwrap();
+    let keys = alice.auth().apikey_list().await.map(wire).unwrap();
     let listed = keys["keys"]
         .as_array()
         .unwrap()
@@ -236,22 +237,20 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
     let ci = c.client(1);
     ci.use_api_key(&key).await;
     let _ = ci
-        .post(
-            &format!("apps/{app}/upgrade"),
-            json!({ "version": "1.1.0" }),
-        )
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.1.0" })), None)
         .await
         .unwrap();
     assert_eq!(
         running(&alice, &app).await,
         bundle_of(&alice, "com.test.ci", "1.1.0").await
     );
-    // Made without naming an organization: its owner's personal one reports it.
-    let home = alice.get(&format!("apps/{app}")).await.unwrap()["org"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let report = alice.get(&format!("orgs/{home}/apps")).await.unwrap();
+    let report = alice
+        .auth()
+        .account_apps(None, None)
+        .await
+        .map(wire)
+        .unwrap();
     let entry = report["apps"]
         .as_array()
         .unwrap()
@@ -271,44 +270,57 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
         let e = r.expect_err(what);
         assert_eq!(code(&e), Some("UPGRADE_KEY_ONLY"), "{what}: {e}");
     };
-    only(ci.me().await, "auth/me");
-    only(ci.get(&format!("apps/{app}")).await, "read the app");
-    only(ci.get("apps").await, "list apps");
+    only(ci.auth().me().await.map(wire), "auth/me");
+    only(ci.apps().get(&app).await.map(wire), "read the app");
+    only(ci.apps().list(None, None).await.map(wire), "list apps");
     only(
-        ci.call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        ci.apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "k", "value": "v" })),
+                None,
+                None,
+            )
             .await
             .map(|_| Value::Null),
         "call the app",
     );
     only(
-        ci.post(
-            "apps",
-            json!({ "name": "mine", "package": "com.test.ci", "version": "1.0.0" }),
-        )
-        .await,
+        ci.apps()
+            .create(typed(
+                json!({ "name": "mine", "package": "com.test.ci", "version": "1.0.0" }),
+            ))
+            .await
+            .map(wire),
         "create an app",
     );
     only(
-        ci.upload_package(mpk(
-            "com.test.ci",
-            "9.0.0",
-            &variant(&kv, "nine"),
-            &publisher,
-        ))
-        .await,
+        ci.packages()
+            .upload(mpk(
+                "com.test.ci",
+                "9.0.0",
+                &variant(&kv, "nine"),
+                &publisher,
+            ))
+            .await
+            .map(wire),
         "install a package",
     );
-    only(ci.post("auth/apikeys", json!({})).await, "make a key");
     only(
-        ci.post(&format!("apps/{app}/transfer"), json!({ "to": "someone" }))
-            .await,
+        ci.auth()
+            .apikey_create(typed(json!({})), None)
+            .await
+            .map(wire),
+        "make a key",
+    );
+    only(
+        ci.apps().transfer(&app, "someone", None).await.map(wire),
         "transfer the app",
     );
     let e = ci
-        .post(
-            &format!("apps/{other_app}/upgrade"),
-            json!({ "version": "1.1.0" }),
-        )
+        .apps()
+        .upgrade(&other_app, typed(json!({ "version": "1.1.0" })), None)
         .await
         .unwrap_err();
     assert_eq!(code(&e), Some("FORBIDDEN"), "another app: {e}");
@@ -316,14 +328,17 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
     // Only signed releases of its package by its signer.
     let raw = bundle_of(&alice, "com.test.ci", "1.2.0").await;
     let e = ci
-        .post(&format!("apps/{app}/upgrade"), json!({ "bundle": raw }))
+        .apps()
+        .upgrade(&app, typed(json!({ "bundle": raw })), None)
         .await
         .unwrap_err();
     assert_eq!(code(&e), Some("FORBIDDEN"), "a raw bundle: {e}");
     let e = ci
-        .post(
-            &format!("apps/{app}/upgrade"),
-            json!({ "package": "com.test.other", "version": "1.0.0" }),
+        .apps()
+        .upgrade(
+            &app,
+            typed(json!({ "package": "com.test.other", "version": "1.0.0" })),
+            None,
         )
         .await
         .unwrap_err();
@@ -336,27 +351,25 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
 
     // The owner's own upgrades still need a passkey.
     let e = alice
-        .post(
-            &format!("apps/{app}/upgrade"),
-            json!({ "version": "1.2.0" }),
-        )
+        .apps()
+        .upgrade(&app, typed(json!({ "version": "1.2.0" })), None)
         .await
         .unwrap_err();
     assert_eq!(code(&e), Some("CONFIRM_REQUIRED"), "{e}");
 
     // Revoked: refused at once, on every node.
     let _ = alice
-        .delete_confirmed(&format!("auth/apikeys/{key_id}"), &mut apk)
+        .auth()
+        .apikey_revoke(&key_id, Some(&mut apk))
         .await
+        .map(wire)
         .unwrap();
     for i in 0..3 {
         let ci = c.client(i);
         ci.use_api_key(&key).await;
         let e = ci
-            .post(
-                &format!("apps/{app}/upgrade"),
-                json!({ "version": "1.2.0" }),
-            )
+            .apps()
+            .upgrade(&app, typed(json!({ "version": "1.2.0" })), None)
             .await
             .unwrap_err();
         assert!(
@@ -383,11 +396,13 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let stranger = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
     let _ = alice
-        .upload_package(mpk("com.test.ci", "1.0.0", &kv, &publisher))
+        .packages()
+        .upload(mpk("com.test.ci", "1.0.0", &kv, &publisher))
         .await
         .unwrap();
     let _ = alice
-        .upload_package(mpk(
+        .packages()
+        .upload(mpk(
             "com.test.ci",
             "1.1.0",
             &variant(&kv, "next"),
@@ -396,7 +411,8 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
         .await
         .unwrap();
     let _ = alice
-        .upload_package(mpk(
+        .packages()
+        .upload(mpk(
             "com.test.other",
             "1.0.0",
             &variant(&kv, "other"),
@@ -405,18 +421,21 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
         .await
         .unwrap();
     let app = alice
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "ci-target", "package": "com.test.ci", "version": "1.0.0" }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
     let (key_id, key) = alice
-        .create_api_key(json!({ "upgrades": { "app": app } }), &mut apk)
+        .auth()
+        .apikey_create(typed(json!({ "upgrades": { "app": app } })), Some(&mut apk))
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
     let next = bundle_of(&alice, "com.test.ci", "1.1.0").await;
     let foreign = bundle_of(&alice, "com.test.other", "1.0.0").await;
@@ -453,7 +472,8 @@ async fn an_upgrade_keys_proof_is_judged_where_it_applies() {
     let e = append(&c, &upgrade(&foreign, &key)).await.unwrap_err();
     assert!(e.contains("only to signed releases of its package"), "{e}");
     let _ = alice
-        .delete_confirmed(&format!("auth/apikeys/{key_id}"), &mut apk)
+        .auth()
+        .apikey_revoke(&key_id, Some(&mut apk))
         .await
         .unwrap();
     let e = append(&c, &upgrade(&next, &key)).await.unwrap_err();
