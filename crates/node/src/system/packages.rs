@@ -145,6 +145,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     return Ok(json!({ "package": package, "version": release.version }));
                 }
             }
+            if s.attributes_by_release && s.ships_in_other_package(&package, &signer_id, &release) {
+                return Err(SHIPS_IN_OTHER_PACKAGE);
+            }
             if s.packages
                 .get(&package)
                 .is_some_and(|p| !p.upgrades_in_order(&release.version, release.upgrades))

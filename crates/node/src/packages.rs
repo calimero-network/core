@@ -388,6 +388,21 @@ impl Node {
             let _prev = part_sizes.insert(hash.clone(), bytes.len() as u64);
             let _prev = wasm_by_hash.insert(hash, bytes);
         }
+        let shared = self.sys(|s| {
+            s.packages.iter().any(|(name, p)| {
+                *name != package
+                    && p.signer_id != signer_id
+                    && p.versions.values().any(|v| {
+                        v.services
+                            .values()
+                            .chain(v.compute.values())
+                            .any(|h| part_sizes.contains_key(h))
+                    })
+            })
+        });
+        if shared {
+            return Err(ApiError::conflict(crate::system::SHIPS_IN_OTHER_PACKAGE));
+        }
         let pools = self.pool_ceilings();
         let modules = self.resolve_modules(&service_pipelines.0, actor).await;
         let mut pipeline_refs = BTreeMap::new();
