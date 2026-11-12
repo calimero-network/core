@@ -30,6 +30,31 @@ const MAX_JOB_RESPONSE_BYTES: usize = 64 * 1024;
 /// The most a run's status may weigh: a signed report with its result and outputs.
 pub(crate) const MAX_JOB_STATUS_BYTES: usize = 1024 * 1024;
 
+/// How long a look at the replicas' releases answers [`Node::replicas_take_logs`]: the check asks each one.
+const REPLICAS_CURRENT_TTL: Duration = Duration::from_secs(5);
+
+/// A flag and when it was set; it answers only while fresh, so an unknown value is no answer.
+#[derive(Default)]
+pub(super) struct TtlFlag(std::sync::Mutex<Option<(std::time::Instant, bool)>>);
+
+impl TtlFlag {
+    fn get(&self, ttl: Duration) -> Option<bool> {
+        let slot = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.filter(|(at, _)| at.elapsed() < ttl).map(|(_, v)| v)
+    }
+
+    fn set(&self, value: bool) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((std::time::Instant::now(), value));
+    }
+}
+
 /// How many transfers to job nodes one node has under way at once.
 pub const MAX_INFLIGHT_JOB_OPS: usize = 8;
 
@@ -449,7 +474,12 @@ impl Node {
         {
             return false;
         }
-        self.require_upgraded_nodes().await.is_ok()
+        if let Some(known) = self.replicas_current.get(REPLICAS_CURRENT_TTL) {
+            return known;
+        }
+        let current = self.require_upgraded_nodes().await.is_ok();
+        self.replicas_current.set(current);
+        current
     }
 
     /// Refuses unless every replica node, voter and learner runs at least this
@@ -483,7 +513,19 @@ impl Node {
 
 #[cfg(test)]
 mod tests {
-    use super::release_at_least;
+    use super::{release_at_least, TtlFlag};
+    use std::time::Duration;
+
+    #[test]
+    fn a_flag_answers_only_while_fresh() {
+        let flag = TtlFlag::default();
+        assert_eq!(flag.get(Duration::from_secs(60)), None);
+        flag.set(true);
+        assert_eq!(flag.get(Duration::from_secs(60)), Some(true));
+        assert_eq!(flag.get(Duration::ZERO), None);
+        flag.set(false);
+        assert_eq!(flag.get(Duration::from_secs(60)), Some(false));
+    }
 
     #[test]
     fn a_release_is_at_least_the_own_one_only_when_it_can_be_read_and_is_not_older() {

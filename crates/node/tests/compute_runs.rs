@@ -2785,3 +2785,38 @@ async fn a_log_fetched_but_misreported_leaves_none_of_its_bytes_on_the_leader() 
     rig.until("the log's segment is deleted", || stored(&rig) == before)
         .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_held_report_with_a_log_is_not_finished_with_it_once_a_replica_is_behind() {
+    let mut rig = Rig::start(&[JOB_A]).await;
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.conflict_finals(true);
+    }
+    let run = rig.begin("startRun", json!({ "method": "chatter" })).await;
+    let leader = rig.leader();
+    rig.until("the final conflicted with its log staged", || {
+        leader.conflicts.load(std::sync::atomic::Ordering::Relaxed) > 0
+    })
+    .await;
+    // A replica falls behind, and the job node restarts: only the held report is left.
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.set_replica_behind(true);
+    }
+    let old = rig.jobs.remove(0);
+    let listen = old
+        .url
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .parse()
+        .unwrap();
+    old.running.stop().await;
+    let new = rig.c.start_job_node(JOB_A, |c| c.listen = listen).await;
+    rig.jobs.push(new);
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.conflict_finals(false);
+    }
+    let outcome = rig.outcome_within(&run, 90).await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    assert!(rig.record(&run).log.is_none(), "a log no replica may read");
+}

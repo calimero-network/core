@@ -224,6 +224,7 @@ A run keeps the log of its final attempt (stdout, stderr and `log` lines) as a s
 The host keeps at most 64 KiB of log lines per run.
 The log is not an output: it cannot be published, and it is neither a pipeline output nor an input.
 It counts toward the app's file quota and is kept with the last 256 run records.
+A rollback to a release before logs shows a kept log as an ordinary sealed file.
 `GET /apps/{app}/runs/{run}/logs` answers `{ logs: [{ attempt, id, size, sha256 }] }`, at most one, to the app's owner and its organization's members only.
 The bytes are read with the files export.
 A log the leader cannot fetch as the job node signed it is left out, and the run still ends.

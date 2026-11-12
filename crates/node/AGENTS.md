@@ -613,7 +613,8 @@ is its command line.
   `Report::log` (`Option<OutputRef>`) names it, and a failed report may carry one.
   With no log `report_message` signs the bytes it always did; a log appends `calimero.compute.report.log.v1\0` and the ref as an output's.
   `GET /job/runs/{app}/{run}/{attempt}/log/{k}` and `.../log/key` serve it like an output (`404 NO_LOG` when none).
-  A leader sends `x-run-log` (`LOG_HEADER`) on a request only while every replica runs this release (`Node::replicas_take_logs`).
+  A leader sends `x-run-log` (`LOG_HEADER`) on a request only while every replica runs this release (`Node::replicas_take_logs`, looked at once per 5 s).
+  A held report with a log is dropped and asked for again without the header once the gate has closed.
   The job node signs the report both ways and answers with the log only to a request with the header, so an older leader or replica never meets the field.
   The leader fetches the log like an output (`Held::Log`, `finish::stage_log`, charged to the payer) and the final carries it as `FinalEntry::log`.
   A log that is over the cap, already a file of the app, or cannot be charged, fetched or proved is left out with a warn log, and its pushed segments are deleted.
@@ -622,6 +623,7 @@ is its command line.
   `RunRecord::log` names it, held with one reference until `finish_run` drops the record from the last `FINISHED_RUNS_KEPT`.
   It counts toward the app's file quota like any file, and goes `BLOB_IDLE_MS` after its record.
   The app's code does not see it (`NodeFiles::sealed`), and the file list leaves it out.
+  A rollback to a release before logs shows a kept log as an ordinary sealed file.
   `GET /apps/{app}/runs/{run}/logs` answers `{ logs: [{ attempt, id, size, sha256 }] }`, at most one, behind `files_gate` (a stranger gets `403`).
   The bytes are read with the files export.
   The result method takes one argument shaped like the SDK's `ComputeOutcome`: camelCase `run, method, attempt, status, reason, result, outputs: [{ id, size, sha256 }], usage`, where an output `id` is the 64-hex blob id (a `BlobRef`) and 64-bit integers are decimal strings.

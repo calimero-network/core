@@ -9,7 +9,7 @@ use calimero_log::Bytes;
 use serde_json::{json, Value};
 use tracing::warn;
 
-use super::job_io::Held;
+use super::job_io::{Held, Polled};
 use super::{stored_of, Blob, Drive, FinalPlan, Stored, Watch};
 use crate::app::AppMachine;
 use crate::component::{Attempt, FailedReason, FileMark, FinalOutcome, RunRecord, RunState};
@@ -93,6 +93,17 @@ impl Drive<'_> {
     ) -> bool {
         watch.leader_wait = false;
         let started = Instant::now();
+        // The gate may have closed since the report arrived (an older replica joined): a report
+        // with a log is dropped and asked for again without the header, which answers without it.
+        let (report, signature) = if report.log.is_some() && !self.node.replicas_take_logs().await {
+            watch.held = None;
+            match self.poll(attempt).await {
+                Polled::Done(bare, signature) => (*bare, signature),
+                _ => return false,
+            }
+        } else {
+            (report, signature)
+        };
         let acceptable = self.report_is_valid(attempt, &report, &signature)
             && AppMachine::check_usage(&self.rec.caps, &report.usage).is_ok()
             && (report.reason != Some(FailReason::Cancelled) || self.rec.cancel_requested);
@@ -194,8 +205,11 @@ impl Drive<'_> {
                             ..stored_of(&marks)
                         },
                     );
-                    // The finished outputs were undone; the stored segments of this one stay.
-                    watch.fetched.retain(|n, _| *n == i);
+                    // The finished outputs were undone; the stored segments of this one stay. The
+                    // log is staged after the outputs, so it has none to resume.
+                    watch
+                        .fetched
+                        .retain(|n, _| *n == i && *n != Held::Log.slot());
                     return staging;
                 }
             }
@@ -255,6 +269,8 @@ impl Drive<'_> {
                 ..refund
             };
             node.discard(app_id, pushed);
+            // Its stored segments are being deleted: a later try fetches and pushes them again.
+            let _resumed = watch.fetched.remove(&Held::Log.slot());
             skipped("it was not handed over as signed");
             return None;
         };
