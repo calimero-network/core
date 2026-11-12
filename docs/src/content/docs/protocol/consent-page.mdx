@@ -1,6 +1,6 @@
 ---
 title: The consent page
-description: How an app asks its user to approve an upgrade, a mero-tee release (or withdraw one) or outbound addresses — through a page the node serves on its own origin, never the app's — what that page shows, and what the passkey's consent binds.
+description: How an app asks its user to approve an upgrade, a mero-tee release (or withdraw one), outbound addresses, a new organization, an invite or joining with one — through a page the node serves on its own origin, never the app's — what that page shows, and what the passkey's consent binds.
 sidebar:
   order: 15
 ---
@@ -65,7 +65,19 @@ That stays true. Instead, the app asks the **node** to ask the person.
    { "kind": "outbound", "scope": "account" | { "org": "<orgId>" },
      "subject": { "package": "<package>?", "prefixes": ["https://api.example/"]? },
      "returnTo": "…" }
+   { "kind": "createOrg", "subject": { "name": "Acme" }, "returnTo": "…" }
+   { "kind": "createInvite",
+     "subject": { "org": "<orgId>", "role": "member", "teams": ["<teamId>"]?,
+                  "ttlSecs": 604800?, "uses": 1?, "allApps": false? },
+     "returnTo": "…" }
+   { "kind": "acceptInvite", "subject": { "token": "inv_…" }, "returnTo": "…" }
    ```
+
+   The last three are how an app's frontend manages organizations at all: a
+   package-bound session is refused `POST /orgs`, `POST /orgs/{org}/invites`
+   and `POST /invites/{token}/redeem` (`403`), so an app that creates
+   workspaces, invites people or lets them join asks here
+   ([Organizations and invites](#organizations-and-invites)).
 
    A release request approves by default; `"withdraw": true` asks to withdraw
    the release's approval instead (a console's *Withdraw*). Unknown fields are
@@ -108,7 +120,35 @@ That stays true. Instead, the app asks the **node** to ask the person.
    `returnTo?request_id=<id>&result=approved|declined`. If that redirect is
    lost, the app asks `GET /consent/{id}/result` (sealed, the same account;
    any node answers, asking the node that holds the request):
-   `{ "requestId", "kind", "status": "pending|approved|declined", "decidedAt" }`.
+   `{ "requestId", "kind", "status": "pending|approved|declined", "decidedAt" }`,
+   plus `outcome` once a `createOrg`, `createInvite` or `acceptInvite`
+   request is approved (below).
+
+### Organizations and invites
+
+`POST /orgs` and `POST /invites/{token}/redeem` take no passkey from a
+person on the cluster's own page; through the consent page they do, so the
+person, not the app that sent them, creates the organization or joins it.
+Both step-ups are over the account (`account:<id> / __create_org / { name }`,
+`account:<id> / __accept_invite / { inviteKey }`) and are not logged: the
+log records exactly the `CreateOrg` and `RedeemInvite` the routes write.
+`createInvite` runs `POST /orgs/{org}/invites` itself, whose consent
+(`org:<org> / __create_invite`) is logged as always.
+
+The node asks the rules first, before any page exists: an organization's
+name (`400`), the inviter's membership (`404`), an invite above their own
+role or an owner invite (`403`), `allApps` below admin (`403`), a `ttlSecs`
+of 1 second to 90 days and at most 64 teams (`400`), and for
+`acceptInvite` an invite that exists, is unexpired and has uses left
+(`404`). The log judges the rest (`INVITE_MEMBERS`, teams the inviter sees)
+when the approval is written.
+
+What the approval made reaches only the account and app that asked, through
+the sealed `/result`, as `outcome`: `{ "orgId" }` for `createOrg`,
+`{ "token" }` for `createInvite` (the page's own answer, which travels in the
+clear, never carries it) and `{ "org" }` for `acceptInvite`. The request is
+held in memory and never logged, so an invite token in an `acceptInvite`
+request, or minted by a `createInvite` one, leaves with it.
 
 ### Where the app may be sent back
 
@@ -166,6 +206,9 @@ top to bottom:
 | **Release withdrawal** | The version; whether it is approved now (if not, that withdrawing changes nothing) and what else is; whether it is the only approved release, which the node refuses to withdraw; which of the cluster's nodes attest it; this node's profile if it runs it. No measurements: a withdrawal lets nothing in, so it never waits on fetching them. The page says what changes: the nodes that hold the data send nodes on that release no more Raft entries or snapshots, and no app is placed or moved onto them; and what does not: nothing is deleted or moved, a replica already there keeps what it holds until the operator moves it, and one that leads an app keeps leading it until leadership moves |
 | **Upgrade** | The app, current and target version, the publisher's key and author, and a **capability sheet** computed from the two signed manifests and the `calimero:abi` section each component embeds: outbound prefixes added and removed; frontend origin and aliases, with every **new sign-in origin** listed (a page there could act in the app as the person); interfaces used and exported; methods added, removed or changed (kind, passkey confirmation, public and its rate, accepted from the system, other apps or only the app's actions, parameters and result); events; timers; the state version each side declares (an update is code only: no migration runs); SDK and build information; the `.mpk`, WASM and manifest hashes |
 | **Outbound** | The package and its publisher key, the release whose declarations are listed, the prefixes being approved, which of them are new, which are already approved |
+| **New organization** | The name; that the person becomes its owner |
+| **New invite** | The organization, the role, the teams by name, how many may join and until when, `allApps`, and that the app receives the link |
+| **Joining** | The organization, the role, the teams by name, the person's current role there if any (they keep the higher), `allApps` |
 
 Each kind's model also keeps the engineer's wording: `headline`, `before`
 (what holds until the person approves), `after` (what changes once they do)
@@ -247,7 +290,7 @@ consent: `result=approved` (they approved the withdrawal).
 | A request's life (`CONSENT_REQUEST_TTL`) | 10 minutes |
 | A decided request's result stays readable (`CONSENT_RESULT_TTL`) | 10 minutes after the decision |
 | Requests one node holds (`MAX_CONSENT_REQUESTS`) | 1,000, then `429` |
-| Undecided requests per account per node (`MAX_OPEN_REQUESTS_PER_ACCOUNT`) | 8, then `429` |
+| Undecided requests per account per node | 1: a new request replaces the older one, whose page and `/result` then answer `404` |
 | `returnTo` (`MAX_RETURN_TO_BYTES`) | 2 KiB |
 | Prefixes in one outbound request (`MAX_REQUESTED_PREFIXES`) | 64 |
 | Request and page bodies (`MAX_CONSENT_BODY_BYTES`) | 64 KiB |
@@ -261,7 +304,18 @@ consent: `result=approved` (they approved the withdrawal).
   page in its place. It cannot change what is approved (the arguments were fixed
   inside the sealed channel when the app asked, and the passkey signs a
   challenge over them), and cannot approve without the person's passkey.
-  Terminate TLS inside the TD to close this.
+  Terminate TLS inside the TD to close this. Calimero Cloud does: the node's
+  TLS key is made inside the TD and certified only against its attestation,
+  and mdma watches Certificate Transparency for any other certificate on its
+  names.
+- **What a forged page could still do.** Serving a page on the node's own
+  host, it could show one request's words and ask the passkey for another
+  request of the same account. Two rules leave it nothing to swap in: an
+  account has one undecided request per node (a new one replaces the older,
+  whose page and `/result` answer `404`), and an app checks, after the
+  redirect, that `/result` reports its own request decided (the SDKs' consent
+  helpers do). Answers carry `Strict-Transport-Security`, so a browser that
+  has seen the page over TLS never loads it over plain HTTP.
 - **The relying party.** The passkey must be usable on the node's origin: the
   cluster's `--rp-id` must be a registrable suffix of the node's host. The node
   accepts consent-page assertions from its own nodes' origins and the cluster's

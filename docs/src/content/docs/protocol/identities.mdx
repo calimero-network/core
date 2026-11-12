@@ -227,14 +227,16 @@ passkey consent covers all four.
 | Call and read apps it reaches | ✓ | that package's apps only | ✓ | within scope |
 | Install packages, create apps | ✓ | instances of its own package only | ✓ | — |
 | Manage passkeys, API keys, approvals, upgrades, uninstalls | ✓ | — | — | — |
-| Manage organizations, teams, members and invites; delete an app or change its access | ✓ | — | — | — |
+| Manage organizations, teams, members and invites; delete an app or change its access | ✓ | create an organization, mint an invite or join with one through the [consent page](/protocol/consent-page/#organizations-and-invites) only | — | — |
 | Upgrade one app to signed releases of its package, without a step-up | — | — | — | an [upgrade key](#upgrade-keys), and nothing else |
 | Approve a confirm method | ✓ (with step-up) | from its own origin | only with `allowConfirm`, relaying an assertion | same |
 | Ask for an approval on the node's consent page | ✓ | ✓ (returns to its own origin) | — | — |
 
 Deleting an app, changing its access, creating organizations and issuing
-invites also need a passkey session on the cluster's own origin: an API key
-cannot do them, nor can a package-bound session.
+invites also need a passkey session on the cluster's own origin, or, for
+creating an organization and issuing or accepting an invite, the person's
+passkey on the node's consent page: an API key cannot do them, nor can a
+package-bound session by itself.
 
 A session opened on a package's frontend is bound to that package
 (`SessionClaims::app`, carried through refresh): it reaches only apps running a
@@ -242,7 +244,10 @@ release of that package, and the node refuses it credential management, API
 keys, approvals, upgrades, uninstalls and uploads, and every change to
 organizations, teams, members and invites (redeeming one included), and to an
 app's lifetime or access, its own package's apps included. A step-up it makes
-is for one of its package's apps only. An app's page is third-party code; this
+is for one of its package's apps only. An app that creates organizations,
+invites people or lets them join asks the node's
+[consent page](/protocol/consent-page/#organizations-and-invites) instead,
+where the person approves each with their passkey. An app's page is third-party code; this
 keeps it from acting as the whole account.
 
 ## Registered origins

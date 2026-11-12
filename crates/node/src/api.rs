@@ -93,6 +93,7 @@ pub(crate) use approvals::{
 };
 pub(crate) use exports::ExportLimits;
 pub(crate) use internal::peer_only;
+pub(crate) use orgs::{create_invite, create_org, redeem_invite, InviteBody};
 pub use pipeline_events::MAX_RUN_SUBSCRIBERS_PER_APP;
 pub(crate) use upgrades::{refuse_stalled, upgrade_app, UpgradeBody};
 // The request bodies the OpenAPI registry names as `super::<Body>`.
@@ -110,9 +111,8 @@ use {
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
     ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
     orgs::{
-        AllAppsBody, CapabilitiesBody, InviteBody, MemberBody, MembersQuery, OrgBody,
-        RenameOrgBody, ScopeAppsBody, TeamBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,
-        TeamUpdateBody,
+        AllAppsBody, CapabilitiesBody, MemberBody, MembersQuery, OrgBody, RenameOrgBody,
+        ScopeAppsBody, TeamBody, TeamIdsBody, TeamMemberBody, TeamRowsBody, TeamUpdateBody,
     },
     packages::{InstallBody, PublisherBody},
     recovery::{RecoveryBegin, RecoveryFinish, RecoveryKeyBody, RecoveryStart, RecoveryStartBody},

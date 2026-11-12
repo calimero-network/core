@@ -10579,7 +10579,7 @@
         ],
         "x-calimero-group": "consent",
         "summary": "Ask the account's owner to approve",
-        "description": "From an app's frontend: a release approval, an upgrade of its instance, or outbound prefixes, approved on the node's own consent page (`url`), which takes the passkey. 64 KiB at most.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -10739,6 +10739,127 @@
                       "returnTo"
                     ],
                     "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "createOrg"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "createInvite"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "guest",
+                              "member",
+                              "admin"
+                            ]
+                          },
+                          "teams": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "ttlSecs": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "uses": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          },
+                          "allApps": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "org",
+                          "role"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "acceptInvite"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "token": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "token"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
                   }
                 ],
                 "discriminator": {
@@ -10857,7 +10978,7 @@
         ],
         "x-calimero-group": "consent",
         "summary": "What became of a consent request",
-        "description": "`decidedAt` (Unix seconds) is `null` while it is pending.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "`decidedAt` (Unix seconds) is `null` while it is pending. `outcome`, once approved, is what the approval made: `{ orgId }` for `createOrg`, `{ token }` for `createInvite`, `{ org }` for `acceptInvite`; absent for the other kinds.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -10891,7 +11012,10 @@
                       "enum": [
                         "release",
                         "upgrade",
-                        "outbound"
+                        "outbound",
+                        "createOrg",
+                        "createInvite",
+                        "acceptInvite"
                       ]
                     },
                     "status": {
@@ -10909,6 +11033,20 @@
                       ],
                       "format": "int64",
                       "minimum": 0
+                    },
+                    "outcome": {
+                      "type": "object",
+                      "properties": {
+                        "orgId": {
+                          "type": "string"
+                        },
+                        "token": {
+                          "type": "string"
+                        },
+                        "org": {
+                          "type": "string"
+                        }
+                      }
                     }
                   },
                   "required": [
