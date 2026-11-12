@@ -1304,8 +1304,8 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
     let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
     let bob_in_app = c.client(1);
-    let mut bob_in_app_key = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
-    let _s = bob_in_app.sign_in(&mut bob_in_app_key).await.unwrap();
+    let mut bob_in_app_passkey = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = bob_in_app.sign_in(&mut bob_in_app_passkey).await.unwrap();
 
     // What the chat app hit: the frontend may not create an organization.
     let e = post(&in_app, "orgs", json!({ "name": "calimero" }))
@@ -1457,7 +1457,7 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     let mut wrong = SoftAuthenticator::with_key(&alice_page, "localhost", &origin(&url));
     let ((code, refused), _) = page.approve(&c, &mut wrong).await;
     assert_ne!(code, 200, "{refused}");
-    let mut bob_page = SoftAuthenticator::with_key(&bob_in_app_key, "localhost", &origin(&url));
+    let mut bob_page = SoftAuthenticator::with_key(&bob_in_app_passkey, "localhost", &origin(&url));
     let ((code, done), args) = page.approve(&c, &mut bob_page).await;
     assert_eq!(code, 200, "{done}");
     assert_eq!(args["__method"], "__accept_invite", "{args}");
