@@ -226,10 +226,7 @@ impl Client {
     /// app to new code.
     pub async fn verify_app_cluster(&self, app: &str) -> Result<AttestedCluster> {
         let nonce: [u8; 32] = calimero_identity::random::<32>();
-        let answer = self
-            .apps()
-            .attestation(app, &hex::encode(nonce), None, None, None)
-            .await?;
+        let answer = self.apps().attestation(app, &hex::encode(nonce)).await?;
         let mut keys = std::collections::BTreeMap::new();
         let mut governance: Option<attest::Governance> = None;
         for r in answer.replicas {

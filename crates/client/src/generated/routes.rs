@@ -78,28 +78,12 @@ impl Apps<'_> {
     /// Every replica's receipt-key attestation.
     ///
     /// `GET /apps/{app}/attestation` (`app_attestation`). Who: whoever the app's access admits (a public app: anyone).
-    pub async fn attestation(
-        self,
-        app: &str,
-        nonce: &str,
-        app_query: Option<&str>,
-        app_hash: Option<&str>,
-        purpose: Option<AppAttestationPurpose>,
-    ) -> Result<AppAttestationResponse> {
+    pub async fn attestation(self, app: &str, nonce: &str) -> Result<AppAttestationResponse> {
         let mut req = Request::new(
             Method::GET,
             format!("apps/{}/attestation", route::segment(app)),
         );
         req = req.query("nonce", nonce);
-        if let Some(v) = app_query {
-            req = req.query("app", v);
-        }
-        if let Some(v) = app_hash {
-            req = req.query("appHash", v);
-        }
-        if let Some(v) = purpose {
-            req = req.query("purpose", v.as_str());
-        }
         route::json(self.client.transport(), req, None, None, false).await
     }
 

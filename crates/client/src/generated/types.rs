@@ -21,7 +21,7 @@ pub struct Confirm {
     pub assertion: Assertion,
 }
 
-/// `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign with a passkey of the account.
+/// `details` of a `412 CONFIRM_REQUIRED`: the WebAuthn challenge to sign under `rpId` with one of the passkeys `allowCredentials` names (credential ids; empty: any of the account's), and the `challengeId` the retry's `confirm` names. `apps`: deleting a team that holds apps, the apps that go with it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConfirmRequired {
     #[serde(rename = "challengeId")]
@@ -32,6 +32,8 @@ pub struct ConfirmRequired {
     pub rp_id: String,
     #[serde(rename = "allowCredentials")]
     pub allow_credentials: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apps: Option<Vec<String>>,
 }
 
 /// The operator key's Ed25519 signature (hex) over the statement a `428 OPERATOR_SIGNATURE_REQUIRED` named, with that statement's nonce.
@@ -41,12 +43,12 @@ pub struct OperatorProof {
     pub signature: String,
 }
 
-/// `details` of a `428 OPERATOR_SIGNATURE_REQUIRED`: the statement to sign and the exact bytes (`message`, base64).
+/// `details` of a `428 OPERATOR_SIGNATURE_REQUIRED`: the statement to sign (`args` is the JSON text of its arguments, as signed) and the exact bytes to sign (`message`, standard base64).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OperatorSignatureRequired {
     pub subject: String,
     pub method: String,
-    pub args: Value,
+    pub args: String,
     pub nonce: String,
     pub cluster: String,
     pub message: String,
@@ -61,12 +63,242 @@ pub use crate::Session;
 /// What the system log answered for the command this request wrote (for example the id it made).
 pub type Written = Map<String, Value>;
 
-/// An entry an app's log applied: its index, how it ended and the app's error, if any.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AppliedStatus {
+    /// `ok`.
+    Ok,
+    /// `appError`.
+    AppError,
+    /// `trap`.
+    Trap,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AppliedStatus {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Ok => "ok",
+            Self::AppError => "appError",
+            Self::Trap => "trap",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AppliedStatus {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AppliedStatus {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "ok" => Self::Ok,
+            "appError" => Self::AppError,
+            "trap" => Self::Trap,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// An entry an app's log applied: its index, how it ended and the app's error (`null` when it ended `ok`; the app's own error value otherwise, free-form). `details` of a `422 UPGRADE_FAILED`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Applied {
     pub index: u64,
-    pub status: String,
+    pub status: AppliedStatus,
     pub error: Value,
+}
+
+/// `details` of a `421 NOT_LEADER`: the leader's URL to send the same request to, and its node id where known.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NotLeader {
+    #[serde(rename = "leaderUrl")]
+    pub leader_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leader: Option<u64>,
+}
+
+/// `details` of a `409 FEATURE_NOT_ACTIVE`: the feature the request needs, the cluster version it ships in (`needs`) and the version active now (`null`: none logged, and the nodes could not say).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FeatureNotActive {
+    pub feature: String,
+    pub needs: String,
+    pub active: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[allow(clippy::large_enum_variant, reason = "an answer, read once")]
+pub enum RuntimeTooOldNodesItemRuntime {
+    Text(String),
+    Before { before: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeTooOldNodesItem {
+    pub node: u64,
+    pub runtime: RuntimeTooOldNodesItemRuntime,
+}
+
+/// `details` of a `409 RUNTIME_TOO_OLD`: the runtime the release needs and the replicas known to fall short of it, each with what it runs (a version, or `{ before }`: a release older than that one).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RuntimeTooOld {
+    #[serde(rename = "minRuntimeVersion")]
+    pub min_runtime_version: String,
+    pub nodes: Vec<RuntimeTooOldNodesItem>,
+}
+
+/// `details` of a `409 RELEASE_DEADLINE`: the mero-tee release whose deadline passed, and the deadline (`after` RFC 3339, `afterSecs` Unix seconds). Approving that release (or a newer one) lifts it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseDeadline {
+    pub release: String,
+    pub after: String,
+    #[serde(rename = "afterSecs")]
+    pub after_secs: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpgradePendingNodesItem {
+    pub node: u64,
+    pub release: Option<String>,
+}
+
+/// `details` of a `409 UPGRADE_PENDING`: the release every node must run first, and the nodes that run an older one (`release` `null`: one this node could not attest).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpgradePending {
+    pub release: String,
+    pub nodes: Vec<UpgradePendingNodesItem>,
+}
+
+/// `details` of a `422 APP_ERROR`: the app's error code, its fields (the app's own value, free-form: the object its ABI declares for the error, or the app's message as a string when that is not JSON), and the log index of the call (absent when the node refused it before it ran: `UnknownMethod`, `WrongKind`, `Forbidden`, `ConfirmNotAView`, `NotAView`, `ConfirmRequired`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppError {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<u64>,
+    pub code: String,
+    pub fields: Value,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TrapKind {
+    /// `OutOfFuel`.
+    OutOfFuel,
+    /// `Timeout`.
+    Timeout,
+    /// `Cancelled`.
+    Cancelled,
+    /// `Unavailable`.
+    Unavailable,
+    /// `OutOfMemory`.
+    OutOfMemory,
+    /// `StackOverflow`.
+    StackOverflow,
+    /// `Fault`.
+    Fault,
+    /// `HostDenied`.
+    HostDenied,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl TrapKind {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::OutOfFuel => "OutOfFuel",
+            Self::Timeout => "Timeout",
+            Self::Cancelled => "Cancelled",
+            Self::Unavailable => "Unavailable",
+            Self::OutOfMemory => "OutOfMemory",
+            Self::StackOverflow => "StackOverflow",
+            Self::Fault => "Fault",
+            Self::HostDenied => "HostDenied",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for TrapKind {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for TrapKind {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "OutOfFuel" => Self::OutOfFuel,
+            "Timeout" => Self::Timeout,
+            "Cancelled" => Self::Cancelled,
+            "Unavailable" => Self::Unavailable,
+            "OutOfMemory" => Self::OutOfMemory,
+            "StackOverflow" => Self::StackOverflow,
+            "Fault" => Self::Fault,
+            "HostDenied" => Self::HostDenied,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+/// `details` of a `422 TRAP`: the log index of the run, how it trapped, and the engine's account of it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Trap {
+    pub index: u64,
+    pub kind: TrapKind,
+    pub detail: String,
+}
+
+/// `details` of a `422 INIT_FAILED`: the app made, and the error its `init` ended with (the app log's, free-form).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct InitFailed {
+    #[serde(rename = "appId")]
+    pub app_id: String,
+    pub error: Value,
+}
+
+/// `details` of a `409 RECOVERY_NOT_READY`: when the recovery may finish (Unix seconds).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RecoveryNotReady {
+    #[serde(rename = "readyAt")]
+    pub ready_at: u64,
+}
+
+/// `details` of a `409 PART_CONFLICT`, `409 PART_OUT_OF_ORDER` or `409 UPLOAD_INCOMPLETE`: the part the upload expects next.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UploadPosition {
+    pub next: u64,
+}
+
+/// `details` of a `503 TIMEOUT` or `503 FILES_UNAVAILABLE`: the seconds to wait before sending the same request (with the same idempotency key) again.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RetryAfter {
+    #[serde(rename = "retryAfter")]
+    pub retry_after: u64,
+}
+
+/// `details` of a `400 UNSUPPORTED_BUNDLE`, `400 BAD_BUNDLE` or `400 COMPUTE_ABI_MISMATCH` refusing one service of a release: the service, and `compute: true` when it was that service's compute component. Absent when the refusal is of a raw bundle.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ServiceRefused {
+    pub service: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SealedRefusalError {
+    pub code: String,
+    pub message: String,
+}
+
+/// The sealed channel's own refusal, outside the envelope and in the clear: not an `Error`. `busy` (`503`, with `Retry-After: 1`): too many sealed requests or sessions at once, send it again; the other codes (`400`, `malformed` and the like) say the envelope could not be opened.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SealedRefusal {
+    pub error: SealedRefusalError,
 }
 
 pub use crate::attest::Receipt;
@@ -1245,6 +1477,72 @@ pub struct ConfirmOnly {
     pub confirm: Option<Confirm>,
 }
 
+/// The limits `POST /ops/quotas` changes, each optional: without `org`, the cluster's (those `GET /ops/quotas` answers, `maxFuelPerDeveloperPerDay` a decimal string); with `org`, one payer's (`maxConcurrentRuns`, `computeFuel` a decimal string, `maxFileBytes`; `null` clears one). `orgs` is ignored. Any other property is refused `400 UNKNOWN_QUOTA`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct QuotaChanges {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org: Option<String>,
+    #[serde(rename = "operatorProof")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_proof: Option<OperatorProof>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub orgs: Option<Value>,
+    #[serde(rename = "maxAppsPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_apps_per_account: Option<u64>,
+    #[serde(rename = "maxBundleBytesPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bundle_bytes_per_account: Option<u64>,
+    #[serde(rename = "maxApiKeysPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_api_keys_per_account: Option<u64>,
+    #[serde(rename = "maxOrgsPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_orgs_per_account: Option<u64>,
+    #[serde(rename = "maxAccounts")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_accounts: Option<u64>,
+    #[serde(rename = "maxFileBytesPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_bytes_per_org: Option<u64>,
+    #[serde(rename = "maxConcurrentRunsPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_runs_per_org: Option<u64>,
+    #[serde(rename = "computeFuelPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_fuel_per_org: Option<u64>,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "maxFuelPerDeveloperPerDay")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_fuel_per_developer_per_day: Option<String>,
+    #[serde(rename = "maxConcurrentRuns")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub max_concurrent_runs: Option<Option<u64>>,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "computeFuel")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub compute_fuel: Option<Option<String>>,
+    #[serde(rename = "maxFileBytes")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub max_file_bytes: Option<Option<u64>>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppCreateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1322,44 +1620,6 @@ pub struct AppAbiResponse {
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum AppAttestationPurpose {
-    /// `receipts`.
-    Receipts,
-    /// `kms`.
-    Kms,
-    /// A value this client does not know yet.
-    Other(String),
-}
-
-impl AppAttestationPurpose {
-    /// The value on the wire.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Receipts => "receipts",
-            Self::Kms => "kms",
-            Self::Other(s) => s,
-        }
-    }
-}
-
-impl Serialize for AppAttestationPurpose {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for AppAttestationPurpose {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(match String::deserialize(d)?.as_str() {
-            "receipts" => Self::Receipts,
-            "kms" => Self::Kms,
-            other => Self::Other(other.to_owned()),
-        })
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3108,14 +3368,67 @@ pub struct OpsQuotasGetResponse {
     pub extra: Map<String, Value>,
 }
 
-/// Other properties than those listed may be present: the ones listed are those clients rely on.
+/// The limits `POST /ops/quotas` changes, each optional: without `org`, the cluster's (those `GET /ops/quotas` answers, `maxFuelPerDeveloperPerDay` a decimal string); with `org`, one payer's (`maxConcurrentRuns`, `computeFuel` a decimal string, `maxFileBytes`; `null` clears one). `orgs` is ignored. Any other property is refused `400 UNKNOWN_QUOTA`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OpsQuotasSetRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org: Option<String>,
-    /// The fields this client does not name, as the node sent them.
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
+    #[serde(rename = "maxFileBytes")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub max_file_bytes: Option<Option<u64>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub orgs: Option<Value>,
+    #[serde(rename = "maxAppsPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_apps_per_account: Option<u64>,
+    #[serde(rename = "maxBundleBytesPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bundle_bytes_per_account: Option<u64>,
+    #[serde(rename = "maxApiKeysPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_api_keys_per_account: Option<u64>,
+    #[serde(rename = "maxOrgsPerAccount")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_orgs_per_account: Option<u64>,
+    #[serde(rename = "maxAccounts")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_accounts: Option<u64>,
+    #[serde(rename = "maxFileBytesPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_bytes_per_org: Option<u64>,
+    #[serde(rename = "maxConcurrentRunsPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_concurrent_runs_per_org: Option<u64>,
+    #[serde(rename = "computeFuelPerOrg")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compute_fuel_per_org: Option<u64>,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "maxFuelPerDeveloperPerDay")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_fuel_per_developer_per_day: Option<String>,
+    #[serde(rename = "maxConcurrentRuns")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub max_concurrent_runs: Option<Option<u64>>,
+    /// an unsigned 64-bit integer as a decimal string (D20)
+    #[serde(rename = "computeFuel")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::route::present"
+    )]
+    pub compute_fuel: Option<Option<String>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
