@@ -6,6 +6,14 @@
 //! passkey finishes it, which ends every session the account had, revokes
 //! its API keys and signs in.
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 use calimero_client::{Client, Passkey, Session};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::types::RECOVERY_DELAY_SECS;

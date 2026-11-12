@@ -75,7 +75,8 @@ of one a node's data still holds; such an app can still be listed and deleted.
   a later release added), which the app can show. Secrets the operator holds
   (`{{secret:NAME}}`) are filled in by the node and redacted from the answer.
 - **Confirmations.** `#[app::confirm]` methods need a fresh passkey
-  assertion over the exact call (`callConfirmed` in the clients).
+  assertion over the exact call (`client.apps.call(..., { confirm })` in mero-js,
+  `client.apps.call(..., confirm=passkey)` in calimero-client-py).
 - **Ordering.** Calls on one instance are applied in one order, so a write never
   merges with a concurrent one. There are no offline replicas: a client that
   cannot reach the cluster cannot write, so there are never concurrent edits to

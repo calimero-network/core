@@ -43,6 +43,9 @@ pub use component::{
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
+// The refusals the OpenAPI registry's tests build, to hold `details` to its schema.
+#[cfg(test)]
+pub(crate) use component::{files_unavailable, upload_refusal};
 
 /// The system group's id.
 pub const SYSTEM_GROUP: GroupId = 1;
@@ -137,6 +140,9 @@ pub struct Config {
     pub refresh_rotate_after: Duration,
     /// The mero-tee release and image profile this node runs (TDX only); its
     /// attestation names them so clients can fetch the signed measurements.
+    /// On TDX, `run` refuses to start unless the TD's own registers match
+    /// this profile in that release (`attest::check_own_profile`), so the
+    /// peer policy reads a measured profile.
     pub tee_release: Option<String>,
     pub tee_profile: Option<String>,
     /// Which TD images a peer's real quote may come from.
@@ -209,7 +215,8 @@ impl Config {
 }
 
 /// How a node judges a peer's quote. It trusts debug peers only when it runs a
-/// debug image itself.
+/// debug image itself: `tee_profile` is the profile its own registers match
+/// (checked at start on TDX, `attest::check_own_profile`).
 pub(crate) fn peer_policy(
     allow_mock: bool,
     measurements: &calimero_client::Measurements,
@@ -404,6 +411,22 @@ pub const ISSUER_RETRY_SECS: u64 = 5;
 /// How long one attestation of a session issuer may take: a frozen issuer
 /// would otherwise hold it for the HTTP client's 30 s.
 pub const ISSUER_ATTEST_WAIT: Duration = Duration::from_secs(5);
+
+/// Whether a peer's receipt-key quote may be the unbound form a release
+/// before [`crate::attest::RECEIPT_KEY_BOUND_SINCE`] makes (it binds no
+/// cluster or node): only while the logged cluster version is below that
+/// release (or not logged yet), so while a node on an earlier release may
+/// still be in the cluster. Once every node runs it, the system leader logs a
+/// cluster version at or above it, no older node is admitted again, and only
+/// bound quotes count. A version that does not parse is not taken as earlier.
+#[must_use]
+pub fn takes_unbound_receipt_key(cluster_version: Option<&str>) -> bool {
+    cluster_version.is_none_or(|v| {
+        semver::Version::parse(v).is_ok_and(|v| {
+            semver::Version::parse(crate::attest::RECEIPT_KEY_BOUND_SINCE).is_ok_and(|s| v < s)
+        })
+    })
+}
 
 /// At most this many issuers are attested at once ([`Node::warm_issuers`]).
 pub const MAX_CONCURRENT_ISSUER_ATTESTS: usize = 8;
@@ -705,6 +728,22 @@ pub fn stalled(stall: &crate::system::Stall) -> ApiError {
     }))
 }
 
+/// `409 UPGRADE_PENDING`: `what` needs every node on `release`, and the nodes `behind` run
+/// an older one (`None`: a release this node could not attest).
+#[must_use]
+pub fn upgrade_pending(what: &str, release: &str, behind: &[(NodeId, Option<String>)]) -> ApiError {
+    let nodes: Vec<Value> = behind
+        .iter()
+        .map(|(id, release)| json!({ "node": id, "release": release }))
+        .collect();
+    ApiError::new(
+        409,
+        crate::api::UPGRADE_PENDING,
+        &format!("{what} needs every node on this node's release or newer"),
+    )
+    .with_details(json!({ "release": release, "nodes": nodes }))
+}
+
 /// The code of an install refused where deployments are granted and the
 /// installer holds no live deployer grant.
 pub const DEPLOY_NOT_GRANTED: &str = "DEPLOY_NOT_GRANTED";
@@ -971,6 +1010,15 @@ impl Node {
             Some(n) => Some(n.addr.clone()),
             None => self.config.peers.get(&id).cloned(),
         })
+    }
+
+    /// Where K_c may be delivered for node `id` (`cluster_key::recipient_addr`):
+    /// the directory's address, else the system group's membership's; this
+    /// node's `--peers` only before genesis.
+    #[must_use]
+    pub fn key_recipient_addr(&self, id: NodeId) -> Option<String> {
+        let member = self.system.member_addr(id);
+        self.sys(|s| crate::cluster_key::recipient_addr(s, member, &self.config.peers, id))
     }
 
     /// The address the directory or `--peers` holds for the replica node at
@@ -1395,16 +1443,7 @@ impl Node {
         if behind.is_empty() {
             return Ok(());
         }
-        let nodes: Vec<Value> = behind
-            .iter()
-            .map(|(id, release)| json!({ "node": id, "release": release }))
-            .collect();
-        Err(ApiError::new(
-            409,
-            crate::api::UPGRADE_PENDING,
-            &format!("{what} needs every node on this node's release or newer"),
-        )
-        .with_details(json!({ "release": self.own_release(), "nodes": nodes })))
+        Err(upgrade_pending(what, &self.own_release(), &behind))
     }
 
     /// The release node `id` runs, as its verified attestation names it (this
@@ -1606,18 +1645,27 @@ impl Node {
                 .ok()?;
             // Bound to this cluster and the node asked for: the address
             // answers in the clear, so another node's quote is refused.
-            let (key, _governance) = crate::attest::verify_receipt_key(
-                &doc,
-                &nonce,
-                &self.config.cluster,
-                id,
-                &self.config.peer_policy(),
-            )
-            .await
-            .map_err(|e| {
-                warn!(node = id, error = %format!("{e:#}"), "could not attest a session issuer");
-            })
-            .ok()?;
+            let policy = self.config.peer_policy();
+            let bound =
+                crate::attest::verify_receipt_key(&doc, &nonce, &self.config.cluster, id, &policy)
+                    .await;
+            let logged = self.sys(|s| s.cluster_version.clone());
+            let attested = match bound {
+                Ok(attested) => Ok(attested),
+                // A peer still on an earlier release quotes the unbound form,
+                // taken only while the cluster runs that release too.
+                Err(bound) if takes_unbound_receipt_key(logged.as_deref()) => {
+                    crate::attest::verify_unbound_receipt_key(&doc, &nonce, &policy)
+                        .await
+                        .map_err(|unbound| eyre::eyre!("{bound:#}; unbound: {unbound:#}"))
+                }
+                Err(bound) => Err(bound),
+            };
+            let (key, _governance) = attested
+                .map_err(|e| {
+                    warn!(node = id, error = %format!("{e:#}"), "could not attest a session issuer");
+                })
+                .ok()?;
             Some((key, doc.release.version))
         })
         .await
@@ -3516,5 +3564,23 @@ mod off_workers_tests {
     #[test]
     fn outside_a_runtime_it_runs_in_place() {
         assert_eq!(off_workers(|| 7), 7);
+    }
+}
+
+#[cfg(test)]
+mod unbound_receipt_key_tests {
+    use super::takes_unbound_receipt_key;
+    use crate::attest::RECEIPT_KEY_BOUND_SINCE;
+
+    /// A cluster rolling from the release before takes its nodes' unbound
+    /// quotes; once the cluster version reaches the bound form's release, it
+    /// does not.
+    #[test]
+    fn only_a_cluster_still_on_an_earlier_release_takes_unbound_quotes() {
+        assert!(takes_unbound_receipt_key(Some("1.0.0-rc.18")));
+        assert!(takes_unbound_receipt_key(None));
+        assert!(!takes_unbound_receipt_key(Some(RECEIPT_KEY_BOUND_SINCE)));
+        assert!(!takes_unbound_receipt_key(Some("1.0.0")));
+        assert!(!takes_unbound_receipt_key(Some("garbage")));
     }
 }

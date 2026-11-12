@@ -14,6 +14,8 @@
 `build_component_cached` returns the app component of the same entry.
 A miss builds under an exclusive cross-process file lock (`std::fs::File::lock`, `cache_dir/target/<name>.build.lock`, one per crate and target dir; Ruling 46), recomputes the key and re-checks the cache once it holds the lock, so concurrent processes (nextest runs each test in its own) build once and the rest reuse the result. The key walk skips a file that vanishes while it walks. Test: `tests/concurrent_cache.rs` (6 processes on a cold cache, one `cargo build`).
 
+`mero-app-build codegen --abi <abi.json|.wasm|.mpk|manifest.json> --lang ts|python|openapi [-o <dir>] [--name <n>] [--service <s>]` writes the app's `openapi.json` and a typed client (`client.ts` over mero-js, `client.py` over calimero-client-py); `mero-app-build abi-diff <old> <new> [--json] [--service <s>]` prints what changed and exits 1 on a breaking change. Both are `src/abi_tools.rs` over `calimero-app-abi`; test: `tests/abi_tools.rs`. A crate directory named `codegen` or `abi-diff` is passed as `./codegen`.
+
 ## Rules
 
 - Section lifting is raw byte surgery on section boundaries (no re-encode of contents); keep it that way.

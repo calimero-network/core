@@ -3,8 +3,8 @@
 
 use std::path::PathBuf;
 
+use calimero_client::types::AppCreateRequest;
 use clap::Subcommand;
-use serde_json::{json, Value};
 
 use crate::env::{json_arg, Env};
 
@@ -52,21 +52,23 @@ pub async fn run(cmd: DevCmd, env: &Env) -> eyre::Result<()> {
             dev_passkey,
         } => {
             let installed = crate::app::install_file(env, &path).await?;
-            let mut body = json!({ "name": name });
-            match installed["bundle"].as_str() {
-                Some(b) => body["bundle"] = json!(b),
+            let text = |k: &str| installed[k].as_str().map(str::to_owned);
+            let mut body = AppCreateRequest {
+                name: Some(name),
+                init_args: params.as_deref().map(json_arg).transpose()?,
+                ..AppCreateRequest::default()
+            };
+            match text("bundle") {
+                Some(b) => body.bundle = Some(b),
                 None => {
-                    body["package"] = installed["package"].clone();
-                    body["version"] = installed["version"].clone();
+                    body.package = text("package");
+                    body.version = text("version");
                 }
             }
-            if let Some(p) = params {
-                body["initArgs"] = json_arg(&p)?;
-            }
-            let created: Value = env.client.post("apps", body).await?;
+            let created = env.client.apps().create(body).await?;
             println!("{}", serde_json::to_string(&created)?);
             if watch {
-                let app = created["appId"].as_str().unwrap_or_default().to_owned();
+                let app = created.app_id;
                 // The build is installed already: the first push is the next save.
                 crate::app::watch(env, &path, &[app], &dev_passkey, false, 500, false).await?;
             }

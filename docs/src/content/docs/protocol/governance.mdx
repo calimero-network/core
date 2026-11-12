@@ -55,7 +55,8 @@ changes with it. The [sign-up policy](#sign-up) changes too, with the
 signature of whoever runs it.
 
 Every node's receipt-key attestation binds the governance its system state
-holds (`receipt_key_binding(key, governance)`). `verify_app_cluster` requires
+holds, with its cluster and node id
+(`receipt_key_binding(key, governance, cluster, node)`). `verify_app_cluster` requires
 every replica of an app to attest the same governance and returns it, so a user
 can prove, from hardware quotes, who may move their app to new code before they
 trust it with data ([Attestation & receipts](/protocol/tee-attestation/#verifying-the-whole-app-cluster)).

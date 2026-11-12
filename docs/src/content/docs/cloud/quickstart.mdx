@@ -59,18 +59,18 @@ import { CalimeroClient, browserPasskey } from '@calimero-network/mero-js';
 
 const client = new CalimeroClient({ baseUrl: 'http://127.0.0.1:2501', policy: { allowMock: true } });
 await client.signUp(browserPasskey(), 'ada');
-const bundle = await client.uploadBundle(wasm);
-const app = await client.createApp('kv', bundle, { initArgs: {} });
-await client.call(app, 'set', { key: 'a', value: '1' });
+const { hash: bundle } = await client.packages.bundlePut({ body: wasm, contentType: 'application/wasm' });
+const { appId: app } = await client.apps.create({ name: 'kv', bundle });
+await client.apps.call({ app, method: 'set', args: { key: 'a', value: '1' } });
 for await (const ev of client.events(app)) console.log(ev.kind, ev.data);
 ```
 
 ```python
-from calimero_client_py import CloudClient
+from calimero_client_py import Client
 
-client = CloudClient("http://127.0.0.1:2501", allow_mock=True)
+client = Client("http://127.0.0.1:2501", allow_mock=True)
 client.use_api_key("cal_...")
-print(client.view(app_id, "get", {"key": "a"})["result"])
+print(client.apps.view(app=app_id, method="get", args={"key": "a"}).to_dict()["result"])
 ```
 
 The apps repo's `apps/kv-store/app-cloud` is a complete browser frontend (passkey

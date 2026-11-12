@@ -1,0 +1,112 @@
+---
+title: Node API Reference (OpenAPI)
+description: Every public, account, app, organization and ops route of a merod node with its request and response schemas and error codes, generated from the node's code as an OpenAPI 3.1 document.
+sidebar:
+  label: Node API (OpenAPI)
+  order: 7
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import OpenApiReference from '../../../components/OpenApiReference.astro';
+
+This page is the node API as a machine-readable
+[OpenAPI 3.1 document](https://spec.openapis.org/oas/v3.1.0), rendered: every
+route of `router` in `crates/node/src/api.rs` (and the area routers it merges,
+`api/<area>.rs`) outside `/internal/`, with its
+credential, parameters, request body, answer and error codes.
+[Node API](/core/operate/admin-api/) is the same API as an operator's overview
+with the `meroctl` command for each route.
+
+<Aside type="caution" title="Requests are sealed">
+  Only `GET /health` and `GET /attestation` travel in the clear. Every other
+  request goes inside the sealed channel (`calimero-sealed`, Noise NK) to the
+  transport key the node's attestation binds, after the client checked the
+  quote, and a TDX node refuses plain requests. A generic HTTP tool or a client
+  generated from this document therefore needs a sealing transport underneath:
+  `meroctl`, `calimero-client` (Rust), mero-js `CalimeroClient` or
+  calimero-client-py `CloudClient` already are one. A node started with `--dev`
+  also accepts plain requests, which is enough to try a route by hand.
+</Aside>
+
+## Where it comes from
+
+The document is `docs/public/openapi.json`, served beside this page as
+[`openapi.json`](/core/openapi.json). It is generated from the registry next to
+the router, `crates/node/src/api/openapi.rs`, and that registry's tests hold it
+to the code on every CI run:
+
+- every route `router` serves (outside `/internal/`) has exactly one entry, and
+  no entry names a route the router lacks;
+- each entry's request body and query are the ones its handler extracts
+  (`Json<T>`, `Option<Json<T>>`, `Query<T>` or raw bytes), with the same field
+  names as `T`; a sample of the shape deserializes into `T`, and a field is
+  optional in the document exactly when `T` accepts the body without it;
+- `additionalProperties: false` marks a body whose type refuses unknown fields;
+- every error code a handler raises with a literal code is listed for it;
+- each error code that carries `details` names that value's schema, on every
+  error response that lists the code (`x-calimero-details`) and at the
+  document's root (`x-calimero-error-details`), and the schema is held to the
+  constructor that builds the error: each value it builds is one of the schema,
+  and each property is built, always when it is required and not always when it
+  is optional;
+- a response schema the node answers by serializing a Rust type (an app record,
+  an API key, a package release reference, an organization and its teams, an
+  upgrade, `Access`, `Deployer`, an attestation and its KMS evidence, an
+  account proof, a registered node, the quotas) names that type, and is held
+  to it the same way: the same field names, a sample read into the type writes
+  back as a value of the schema, and a field is optional exactly when the type
+  may leave it out; one the type only serializes (a Raft group's status, the
+  rollback counter) is held to real values of the type;
+- the committed `openapi.json` is what the registry builds now.
+
+The other response schemas, those a handler builds with `json!`, are written in
+the registry from the handlers' answers and are not checked against them. A
+value left free-form (`{}` in the schema) is one whose shape is not the API's:
+an app's metadata, `initArgs`, a method's result, an event's data, an app's
+error value, the WebAuthn options a ceremony hands to the browser, an app's ABI
+and its own OpenAPI document. Each says so in its description. To
+change the API, change the handler and its entry, then regenerate:
+
+```bash
+UPDATE_OPENAPI=1 cargo test -p calimero-node --lib openapi
+cargo run -p calimero-client-gen
+```
+
+The second command regenerates the Rust client's route layer from the document
+(`crates/client/src/generated/`, by `tools/client-gen`): one method per
+operation on its `x-calimero-group`'s accessor (`client.orgs().invite_create(..)`,
+`client.apps().call(..)`), named as the other SDKs name it. Its test fails while
+the checked-in code differs from what the document generates, so a route change
+regenerates both in the same pull request.
+
+Every error answers the one `Error` schema, so a client decodes any error,
+including a code a route does not list, the same way; it reads `details` by the
+`error` code with the schema the code names. The sealed channel's own refusal
+(`busy`, outside the envelope) is not an `Error`: its schema is the one
+`x-calimero-sealed-refusal` names at the root.
+
+The SDKs (mero-js, calimero-client-py, swift-sdk and kotlin-sdk, the `openapi`
+repositories in `.github/fleet.json`) each vendor this document and generate
+their client from it. When a push to master changes it, `openapi-sync.yml`
+sends each of them a `core-openapi` event with the commit. Each SDK's own
+`openapi-sync.yml` calls core's reusable `sdk-openapi-sync.yml` (pinned by
+commit), which re-vendors the document at that commit, regenerates, and opens
+or refreshes one pull request (`chore/core-openapi`), so that SDK's CI judges
+the change before anything is released. Run the workflow by hand (dry run by
+default) to resend the event.
+
+The pull request's title sets the SDK's next version. `scripts/openapi-classify.py`
+diffs the document the SDK vendors now against the new one, using a pinned
+`oasdiff` and a set of rules for the `x-calimero-*` extensions:
+
+| Change | Title | SDK release |
+| --- | --- | --- |
+| Something callers of the generated client rely on is removed or changed: a route, a response field, an operationId, a narrowed enum, a new required request field. The same holds for an operation that now needs a step-up, an operator signature or the sealed channel, stops being retry-safe, or moves to another `x-calimero-group`. | `feat(api)!:` with a `BREAKING-CHANGE:` footer | major |
+| Something is added and nothing is broken | `feat(api):` | minor |
+| Descriptions, new `x-calimero-codes` entries, and anything else no generated signature sees | `chore(api):` | patch |
+
+A pull request here that changes the document gets the same verdict in the
+summary of its `OpenAPI impact` run, so its author sees what each SDK will
+release before merging.
+
+<OpenApiReference />

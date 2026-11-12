@@ -1,0 +1,2 @@
+calimero-client-py==1.0.0rc4
+mypy==1.18.2

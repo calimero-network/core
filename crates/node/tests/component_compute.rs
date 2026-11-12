@@ -1,6 +1,14 @@
 //! Starting and cancelling compute runs from app code on a cluster, through the `compute`
 //! fixture (`apps/v2-fixtures/compute`). No job node is registered, so a run stays queued.
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 mod common;
 use common::UploadBytes as _;
 

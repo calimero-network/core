@@ -514,3 +514,35 @@ fn a_tdx_job_node_needs_the_release_and_profile_to_attest_itself() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("MERO_TEE_VERSION"), "{err}");
 }
+
+/// A TDX node holds its peers to at least the built-in release floor: a lower
+/// `--peer-min-release` stops it before it starts.
+#[test]
+fn a_peer_floor_below_the_built_in_one_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    let port = free_port();
+    let out = merod(home.path())
+        .args(["run", "--node-id", "1"])
+        .args(["--public-url", &format!("http://127.0.0.1:{port}/")])
+        .args(["--listen", &format!("127.0.0.1:{port}")])
+        .args(["--storage-key", &"ab".repeat(32)])
+        .args([
+            "--tee-release",
+            "2.4.0",
+            "--tee-profile",
+            "locked-read-only",
+        ])
+        .args(["--peer-min-release", "2.0.0"])
+        .arg("--data-dir")
+        .arg(home.path().join("data"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("--peer-min-release 2.0.0 is below")
+            && err.contains(calimero_client::attest::DEFAULT_MIN_RELEASE),
+        "{err}"
+    );
+    assert!(health(port).is_none(), "nothing started");
+}

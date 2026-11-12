@@ -227,6 +227,69 @@ fn abi_lists_every_method_with_its_attributes() {
 }
 
 #[test]
+fn abi_types_carry_the_shapes_methods_answer_and_the_json_matches() {
+    let abi_json = built().abi.clone().expect("component carries an ABI");
+    assert_eq!(
+        abi_json["types"],
+        json!({
+            "Blob": { "kind": "record", "fields": [["id", "string"], ["data", "bytes"]] },
+            "BlobRef": { "kind": "newtype", "type": "string" },
+            "Booking": {
+                "kind": "record",
+                "fields": [
+                    ["id", "string"],
+                    ["roomId", "string"],
+                    ["start", "u64"],
+                    ["title", "string"],
+                    ["checkedIn", "bool"],
+                ],
+            },
+            "Listing": {
+                "kind": "record",
+                "params": ["T"],
+                "fields": [["items", "list<T>"], ["nextCursor", "option<string>"]],
+            },
+            "Slot": {
+                "kind": "enum",
+                "tag": "state",
+                "variants": [
+                    { "name": "free" },
+                    { "name": "held", "fields": [["booking", "Booking"]] },
+                ],
+            },
+        })
+    );
+    assert_eq!(abi_json["methods"]["slot"]["returns"], "Listing<Slot>");
+
+    // What the method answers is what the shapes say.
+    let mut app = App::new();
+    let id = ok_json(&app.call(
+        "book",
+        &args(json!({ "roomId": "r1", "start": "7", "title": "standup" })),
+    ));
+    assert_eq!(
+        ok_json(&app.view("slot", &args(json!({ "id": id })))),
+        json!({
+            "items": [{
+                "state": "held",
+                "booking": {
+                    "id": id,
+                    "roomId": "r1",
+                    "start": "7",
+                    "title": "standup",
+                    "checkedIn": false,
+                },
+            }],
+            "nextCursor": null,
+        })
+    );
+    assert_eq!(
+        ok_json(&app.view("slot", &args(json!({ "id": "none" })))),
+        json!({ "items": [{ "state": "free" }], "nextCursor": null })
+    );
+}
+
+#[test]
 fn unknown_method_is_an_app_error() {
     let mut app = App::new();
     let out = app.call("noSuchMethod", b"{}");

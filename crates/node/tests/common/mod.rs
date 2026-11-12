@@ -75,8 +75,10 @@ pub async fn ops_signed(
     path: &str,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, calimero_client::Error> {
+    let req = calimero_client::Request::new(reqwest::Method::POST, path).json(body);
     client
-        .post_operator_signed(path, body, &operator_sign)
+        .transport()
+        .approved(req, None, Some(&operator_sign))
         .await
 }
 
@@ -89,7 +91,12 @@ pub async fn ops_signed_delete(
     client: &Client,
     path: &str,
 ) -> Result<serde_json::Value, calimero_client::Error> {
-    client.delete_operator_signed(path, &operator_sign).await
+    let req =
+        calimero_client::Request::new(reqwest::Method::DELETE, path).json(serde_json::json!({}));
+    client
+        .transport()
+        .approved(req, None, Some(&operator_sign))
+        .await
 }
 
 /// The operator key's signature over `message`.

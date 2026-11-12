@@ -13,7 +13,9 @@ first with `mero-app-build <crate-dir> --out <file>`. An app with compute method
 compute.wasm, the only component a job node is ever given.
 
 `--mero-sign` (default MERO_SIGN, else `cargo run -q -p mero-sign --`) names the
-signer.
+signer. `--previous <old.mpk>` has it compare the component's ABI with the last
+release's first (`mero-sign sign --previous`): it warns about changes that break
+the app's callers and refuses a state change made without a state version bump.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--min-runtime-version", default="0.1.0")
     ap.add_argument("--out", required=True, help="the .mpk to write")
     ap.add_argument("--key", help="sign with this key file instead of the development key")
+    ap.add_argument("--previous", help="the last release (.mpk, .wasm or ABI JSON) to check the ABI against")
     ap.add_argument("--mero-sign", default=os.environ.get("MERO_SIGN"),
                     help="the mero-sign binary (default: cargo run -q -p mero-sign --)")
     args = ap.parse_args(argv)
@@ -64,7 +67,12 @@ def main(argv: list[str]) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "manifest.json"
         path.write_text(json.dumps(manifest))
+        # Beside the manifest, where `--previous` reads the new ABI from.
+        for name, data in parts.values():
+            (Path(tmp) / name).write_bytes(data)
         how = ["--key", args.key] if args.key else ["--dev"]
+        if args.previous:
+            how += ["--previous", str(Path(args.previous).resolve())]
         subprocess.run(signer + ["sign", str(path)] + how, check=True, cwd=ROOT, stdout=subprocess.DEVNULL)
         signed = path.read_bytes()
 

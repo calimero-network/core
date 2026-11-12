@@ -293,6 +293,23 @@ pub fn receipt_key_binding(
     h.finalize().into()
 }
 
+/// The first core release whose nodes quote [`receipt_key_binding`]. Nodes of
+/// an earlier release quote the unbound `receipt-key.v2` binding instead
+/// ([`verify_unbound_receipt_key`]).
+pub const RECEIPT_KEY_BOUND_SINCE: &str = "1.0.0-rc.19";
+
+/// The `receipt-key.v2` binding a node of a release before
+/// [`RECEIPT_KEY_BOUND_SINCE`] quotes: the receipt key and the governance,
+/// with no cluster or node.
+fn unbound_receipt_key_binding(receipt_key: &[u8; 32], governance: &Governance) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(b"calimero.tee-attest.receipt-key.v2");
+    h.update(receipt_key);
+    h.update(sha2::Sha256::digest(governance.canonical()));
+    h.finalize().into()
+}
+
 /// What a job-node attestation's report data binds after the nonce: both keys, the
 /// release, cluster and node id (text u32-BE length-prefixed).
 #[must_use]
@@ -522,6 +539,73 @@ pub fn is_debug_profile(name: &str) -> bool {
     name.to_ascii_lowercase().contains("debug")
 }
 
+/// A release floor a node is configured with (`--peer-min-release`), refused
+/// below [`DEFAULT_MIN_RELEASE`]: the floor protects against releases with
+/// known issues, so whoever sets a node's flags cannot lower it.
+pub fn configured_min_release(floor: &str) -> eyre::Result<String> {
+    use calimero_tee_release::{
+        compare_release_versions, normalize_release_version, NODE_RELEASE_TAG_PREFIX,
+    };
+    let version = normalize_release_version(floor, NODE_RELEASE_TAG_PREFIX)
+        .map_err(|e| eyre::eyre!("--peer-min-release {floor}: {e}"))?;
+    match compare_release_versions(&version, DEFAULT_MIN_RELEASE) {
+        Some(std::cmp::Ordering::Less) => eyre::bail!(
+            "--peer-min-release {version} is below the built-in floor {DEFAULT_MIN_RELEASE}; \
+             a node never trusts peers on older releases"
+        ),
+        Some(_) => Ok(version),
+        None => eyre::bail!(
+            "--peer-min-release {version} cannot be compared with {DEFAULT_MIN_RELEASE}"
+        ),
+    }
+}
+
+/// Check that this TD's own registers (`measured`, read from its TDX module)
+/// are listed under `declared` (`MERO_TEE_PROFILE`) in its signed `release`.
+/// The profile decides whether the node trusts debug peers, so it must be the
+/// image's own, not a name the host passes in.
+pub fn check_own_profile(
+    release: &calimero_tee_release::NodeRelease,
+    declared: &str,
+    measured: &QuoteMeasurements,
+) -> eyre::Result<()> {
+    let m = measured;
+    let matches = |names: &[String]| {
+        release
+            .matching_profile(names, &m.mrtd, &m.rtmr0, &m.rtmr1, &m.rtmr2, &m.rtmr3)
+            .map(str::to_owned)
+    };
+    if matches(&[declared.to_owned()]).is_some() {
+        return Ok(());
+    }
+    let all: Vec<String> = release.profiles.keys().cloned().collect();
+    match matches(&all) {
+        Some(actual) => eyre::bail!(
+            "MERO_TEE_PROFILE is {declared} but this TD measures as profile {actual} of \
+             release {}",
+            release.version
+        ),
+        None => eyre::bail!(
+            "this TD's measurements match no profile of release {} (MERO_TEE_PROFILE {declared})",
+            release.version
+        ),
+    }
+}
+
+/// [`check_own_profile`] against the signed release `version` names, fetched
+/// and Sigstore-verified.
+pub async fn verify_own_profile(
+    version: &str,
+    declared: &str,
+    measured: &QuoteMeasurements,
+) -> eyre::Result<()> {
+    let version = claimed_release(version, None)?;
+    let release = fetch_release(version.clone())
+        .await
+        .map_err(|e| eyre::eyre!("mero-tee release {version}: {e:#}"))?;
+    check_own_profile(&release, declared, measured)
+}
+
 /// How a real quote's measurement registers are judged.
 #[derive(Clone, Debug, Default)]
 pub enum Measurements {
@@ -648,6 +732,35 @@ pub async fn verify_receipt_key(
     let mut expected = [0; 64];
     expected[..32].copy_from_slice(nonce);
     expected[32..].copy_from_slice(&receipt_key_binding(&key, &governance, cluster, node));
+    verify_report(doc, nonce, policy, &expected).await?;
+    Ok((key, governance))
+}
+
+/// Verify a receipt-key attestation from a node of a release before
+/// [`RECEIPT_KEY_BOUND_SINCE`], whose quote binds the receipt key and the
+/// governance but no cluster or node (`receipt-key.v2`). It proves that some
+/// genuine node holds the key, not which one, so a client never takes it:
+/// only a node attesting a peer while its cluster still runs that earlier
+/// release (`calimero-node`'s `attest_issuer`), until every node quotes the
+/// bound form.
+#[doc(hidden)]
+pub async fn verify_unbound_receipt_key(
+    doc: &AttestationDoc,
+    nonce: &[u8; 32],
+    policy: &Policy,
+) -> eyre::Result<([u8; 32], Governance)> {
+    let key = hex32(
+        doc.receipt_key
+            .as_deref()
+            .ok_or_else(|| eyre::eyre!("the attestation names no receipt key"))?,
+    )?;
+    let governance = doc
+        .governance
+        .clone()
+        .ok_or_else(|| eyre::eyre!("the attestation names no governance"))?;
+    let mut expected = [0; 64];
+    expected[..32].copy_from_slice(nonce);
+    expected[32..].copy_from_slice(&unbound_receipt_key_binding(&key, &governance));
     verify_report(doc, nonce, policy, &expected).await?;
     Ok((key, governance))
 }
@@ -1019,6 +1132,40 @@ mod tests {
         );
     }
 
+    /// An earlier release's quote (`receipt-key.v2`) verifies only as unbound,
+    /// and a bound quote never as unbound: the two forms do not stand for each
+    /// other.
+    #[tokio::test]
+    async fn an_unbound_receipt_key_quote_is_not_a_bound_one() {
+        let mock = Policy {
+            allow_mock: true,
+            ..Policy::default()
+        };
+        let nonce = [7; 32];
+        let mut report = [0; 64];
+        report[..32].copy_from_slice(&nonce);
+        report[32..].copy_from_slice(&unbound_receipt_key_binding(
+            &[5; 32],
+            &Governance::default(),
+        ));
+        let quote = calimero_tee_attestation::generate_mock_attestation(report).quote_bytes;
+        let earlier = AttestationDoc {
+            quote: STANDARD.encode(quote),
+            ..mock_receipt_doc("c", 1, nonce)
+        };
+        let (key, _) = verify_unbound_receipt_key(&earlier, &nonce, &mock)
+            .await
+            .expect("an earlier release's quote verifies as unbound");
+        assert_eq!(key, [5; 32]);
+        assert!(verify_receipt_key(&earlier, &nonce, "c", 1, &mock)
+            .await
+            .is_err());
+        let bound = mock_receipt_doc("c", 1, nonce);
+        assert!(verify_unbound_receipt_key(&bound, &nonce, &mock)
+            .await
+            .is_err());
+    }
+
     #[tokio::test]
     async fn a_job_key_attestation_binds_both_keys() {
         let mock = Policy {
@@ -1328,6 +1475,62 @@ mod tests {
             ..proof
         };
         assert!(!other.verify(&key));
+    }
+
+    /// A node's configured peer floor may raise the built-in one, never lower it.
+    #[test]
+    fn a_configured_floor_is_never_below_the_built_in_one() {
+        assert_eq!(configured_min_release("2.4.0").unwrap(), "2.4.0");
+        assert_eq!(
+            configured_min_release(&format!("mero-tee-v{DEFAULT_MIN_RELEASE}")).unwrap(),
+            DEFAULT_MIN_RELEASE
+        );
+        let err = configured_min_release("2.3.7").unwrap_err().to_string();
+        assert!(err.contains("below the built-in floor"), "{err}");
+        assert!(configured_min_release("latest").is_err());
+    }
+
+    /// The profile a node runs as is the one its own registers match in the
+    /// signed release, not the one it is told.
+    #[test]
+    fn a_nodes_own_profile_is_the_one_its_registers_match() {
+        let reg = |c: char| c.to_string().repeat(96);
+        let profile = |rtmr3: char| calimero_tee_release::ProfileMeasurements {
+            allowed_mrtd: vec![reg('a')],
+            allowed_rtmr0: Vec::new(),
+            allowed_rtmr1: vec![reg('1')],
+            allowed_rtmr2: vec![reg('2')],
+            allowed_rtmr3: vec![reg(rtmr3)],
+        };
+        let release = calimero_tee_release::NodeRelease {
+            version: "2.4.0".into(),
+            profiles: [
+                ("locked-read-only".to_owned(), profile('3')),
+                ("debug-read-only".to_owned(), profile('d')),
+            ]
+            .into(),
+        };
+        let measured = |rtmr3: char| QuoteMeasurements {
+            mrtd: reg('a'),
+            rtmr0: reg('0'),
+            rtmr1: reg('1'),
+            rtmr2: reg('2'),
+            rtmr3: reg(rtmr3),
+        };
+        check_own_profile(&release, "locked-read-only", &measured('3')).unwrap();
+        check_own_profile(&release, "debug-read-only", &measured('d')).unwrap();
+        // A locked image told it is a debug one (so it would trust debug peers).
+        let err = check_own_profile(&release, "debug-read-only", &measured('3'))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("measures as profile locked-read-only"),
+            "{err}"
+        );
+        let err = check_own_profile(&release, "locked-read-only", &measured('9'))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("match no profile"), "{err}");
     }
 
     #[tokio::test]

@@ -56,8 +56,10 @@ events — must stay under **1 MiB**.
 | Entries whose touched entities search remembers | 4096 | `TOUCHED_RING` |
 | Presence | 512 authors per app, 4 KiB state, 7 s TTL | `MAX_AUTHORS_PER_APP`, `MAX_STATE_BYTES`, `PRESENCE_TTL_MS` |
 | Event and presence streams per node | 4096 | `MAX_EVENT_STREAMS` |
-| Open passkey ceremonies per node | 10 000, each 5 minutes | `MAX_PENDING_CHALLENGES` |
-| Sealed sessions per node | 16 384; 1 h lifetime, 10 min idle | `MAX_SESSIONS`, `SESSION_LIFETIME` |
+| Open passkey ceremonies per node | 10 000 sign-ins and sign-ups; apart from those, 64 per account and 10 000 across accounts; each 5 minutes | `MAX_PENDING_CHALLENGES`, `MAX_CHALLENGES_PER_ACCOUNT`, `MAX_ACCOUNT_CHALLENGES` |
+| Sealed sessions per node | 16 384 anonymous, 4096 identified (peers), each evicting its own; 1 h lifetime, 10 min idle | `MAX_SESSIONS`, `MAX_IDENTIFIED_SESSIONS`, `SESSION_LIFETIME` |
+| Sealed handshakes per node | anonymous 100/s (burst 200); identified 50/s (burst 100), apart | `HANDSHAKES_PER_SECOND`, `IDENTIFIED_HANDSHAKES_PER_SECOND` |
+| Release frontends | 32 open, 4096 releases remembered as shipping none; 4 `.mpk` loads at once, one per release | `CACHED_FRONTENDS`, `CACHED_ABSENT_FRONTENDS`, `FRONTEND_LOADS` |
 | Forward to an app's leader | 5 s, then retry | `FORWARD_TIMEOUT` |
 | Compute runs, files and job nodes | See [Compute actions](/protocol/compute-actions/#limits) | `MAX_COMPUTE_WALL_SECS`, `MAX_COMPUTE_MEMORY_MIB`, `MAX_COMPUTE_FUEL` |
 | Replicas per app | `--replicas`, 3 by default; moves keep at least 3 | |

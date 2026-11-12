@@ -78,14 +78,14 @@ pub struct Evidence {
 }
 
 /// Fixed at founding.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct Founding {
     pub name: String,
     pub motto: String,
 }
 
 /// A message or an announcement as a client sees it.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageView {
     pub key: String,
@@ -96,7 +96,7 @@ pub struct MessageView {
 }
 
 /// A page as a client sees it; `revisions` is `[[revision id, text], ..]` by revision id.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, AbiType)]
 pub struct PageView {
     pub id: String,
     pub author: String,

@@ -1,9 +1,14 @@
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use calimero_app_build::build_components;
 use eyre::Result as EyreResult;
+
+mod abi_tools;
+
+use abi_tools::DiffOutcome;
 
 const COMPUTE_FILE: &str = "compute.component.wasm"; // beside the app component unless --compute-out says otherwise
 
@@ -16,10 +21,25 @@ fn write(out: &Path, bytes: &[u8]) -> EyreResult<()> {
     Ok(())
 }
 
-fn main() -> EyreResult<()> {
+fn main() -> EyreResult<ExitCode> {
     let mut args = env::args().skip(1);
-    let usage = "usage: mero-app-build <crate-dir> [--out <file>] [--compute-out <file>] [--target-dir <dir>]";
-    let crate_dir = PathBuf::from(args.next().ok_or_else(|| eyre::eyre!(usage))?);
+    let usage = "usage: mero-app-build <crate-dir> [--out <file>] [--compute-out <file>] [--target-dir <dir>]\n       mero-app-build codegen ...\n       mero-app-build abi-diff ...";
+    let first = args.next().ok_or_else(|| eyre::eyre!(usage))?;
+    // A crate directory named like a subcommand is passed as `./codegen`.
+    match first.as_str() {
+        "codegen" => {
+            abi_tools::codegen(args)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        "abi-diff" => {
+            return Ok(match abi_tools::abi_diff(args)? {
+                DiffOutcome::Compatible => ExitCode::SUCCESS,
+                DiffOutcome::Breaking => ExitCode::from(1),
+            });
+        }
+        _ => {}
+    }
+    let crate_dir = PathBuf::from(first);
     let mut out = None;
     let mut compute_out = None;
     let mut target = None;
@@ -47,5 +67,5 @@ fn main() -> EyreResult<()> {
         (None, Some(_)) => eyre::bail!("{} has no compute methods", crate_dir.display()),
         (None, None) => {}
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }

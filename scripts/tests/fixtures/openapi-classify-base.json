@@ -1,0 +1,115 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "fixture of the node API", "version": "1" },
+  "paths": {
+    "/orgs/{org}/teams": {
+      "get": {
+        "operationId": "team_list",
+        "tags": ["Orgs"],
+        "x-calimero-group": "orgs",
+        "x-calimero-who": "an account holder",
+        "x-calimero-sealed": true,
+        "x-calimero-retry-safe": true,
+        "description": "Lists the teams of an organization.",
+        "parameters": [
+          { "name": "org", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "The teams.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Team" } }
+              }
+            }
+          },
+          "403": {
+            "description": "`FORBIDDEN`",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } },
+            "x-calimero-codes": ["FORBIDDEN"]
+          }
+        }
+      },
+      "post": {
+        "operationId": "team_create",
+        "tags": ["Orgs"],
+        "x-calimero-group": "orgs",
+        "x-calimero-who": "an account holder",
+        "x-calimero-sealed": true,
+        "description": "Creates a team.",
+        "parameters": [
+          { "name": "org", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "visibility": { "type": "string", "enum": ["open", "invite", "closed"] },
+                  "note": { "type": ["string", "null"] }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The team.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Team" } } }
+          },
+          "409": {
+            "description": "`TEAM_EXISTS`",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } },
+            "x-calimero-codes": ["TEAM_EXISTS"]
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "tags": ["Public"],
+        "x-calimero-group": "public",
+        "x-calimero-who": "anyone",
+        "x-calimero-sealed": false,
+        "description": "Says the node is up.",
+        "responses": {
+          "200": {
+            "description": "Up.",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object", "required": ["status"], "properties": { "status": { "type": "string" } } }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Team": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "parent": { "type": ["string", "null"] }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["status", "error", "message"],
+        "properties": {
+          "status": { "type": "integer", "format": "int64" },
+          "error": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    }
+  }
+}
