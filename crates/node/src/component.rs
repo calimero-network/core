@@ -27,8 +27,11 @@
 
 pub mod action;
 pub mod blobs;
+mod pipelines;
+mod proofs;
 mod runs;
 pub mod search;
+mod step_cache;
 pub mod xcall;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -48,9 +51,20 @@ use crate::idempotency;
 use crate::node::Node;
 use crate::types::{AppId, Audience, Caller, EventRecord};
 
+pub use pipelines::{
+    run_id, CostCap, FanOut, PipelineCancelEntry, PipelineRun, PipelineStartEntry, PipelineState,
+    StepDecisionEntry, StepRun, StepState, StepStatus, StepVerdict, COST_CAP,
+    FINISHED_PIPELINE_RUNS_KEPT, INPUT_NOT_HELD, MAX_ACTIVE_PIPELINE_RUNS, MAX_STEP_RESULTS_BYTES,
+    MAX_STEP_RESULT_BYTES, MAX_STEP_RUNS, NO_ROOM, TOO_MANY_PIPELINE_RUNS,
+};
 pub use runs::{
-    Attempt, AttemptEntry, ComputeStart, FailedReason, Final, FinalEntry, FinalOutcome, RunCaps,
-    RunInputRef, RunRecord, RunState, DEADLINE_GRACE, FINISHED_RUNS_KEPT, MAX_ATTEMPTS,
+    Attempt, AttemptEntry, ComputeStart, FailedReason, Final, FinalEntry, FinalOutcome,
+    PipelineLink, RunCaps, RunInputRef, RunRecord, RunState, DEADLINE_GRACE, FINISHED_RUNS_KEPT,
+    MAX_ATTEMPTS,
+};
+pub use step_cache::{
+    cache_key, CacheEntry, CachedRun, CACHE_EXPIRY_STEP, CACHE_TTL_MS, MAX_CACHED_PER_DECISION,
+    MAX_CACHE_ENTRIES,
 };
 
 /// An event a run emitted, with its audience (R9).
@@ -678,6 +692,15 @@ pub enum ComponentCmd {
     /// A run's end, with the outcome of its result method. The first valid one wins.
     #[serde(rename = "computeFinal")]
     ComputeFinal(Box<FinalEntry>),
+    /// A pipeline run begins, its inputs pinned. The node's own command.
+    #[serde(rename = "pipelineStart")]
+    PipelineStart(Box<PipelineStartEntry>),
+    /// The leader's decision for one pending step of a pipeline run; the first one wins.
+    #[serde(rename = "pipelineStep")]
+    PipelineStep(Box<StepDecisionEntry>),
+    /// A pipeline run was cancelled.
+    #[serde(rename = "pipelineCancel")]
+    PipelineCancel(Box<PipelineCancelEntry>),
 }
 
 impl ComponentCmd {
@@ -844,6 +867,15 @@ pub struct ComponentHead {
     /// The last finished runs, oldest first; their records are kept until they leave it.
     #[serde(default)]
     pub finished_runs: VecDeque<String>,
+    /// The ids of the pipeline runs that are running (at most `MAX_ACTIVE_PIPELINE_RUNS`).
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub active_pipelines: BTreeSet<String>,
+    /// The last finished pipeline runs, oldest first; their records are kept until they leave it.
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    pub finished_pipelines: VecDeque<String>,
+    /// Keys of the pipeline step cache, oldest first.
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    pub step_cache: VecDeque<String>,
     /// The app's usage book (Q20): the summed [`RunUsage`] of its applied `init`,
     /// calls and ticks, per UTC day of their entry timestamps ([`utc_day`]).
     /// Outside the app's keyspace (D39); a snapshot carries it with the rest of the
@@ -1378,6 +1410,9 @@ impl AppMachine {
             Ok(ComponentCmd::Call(call)) => Some(call.ts_ms),
             Ok(ComponentCmd::Tick(tick)) => Some(tick.ts_ms),
             Ok(ComponentCmd::ComputeFinal(done)) => Some(done.ts_ms),
+            Ok(ComponentCmd::PipelineStart(start)) => Some(start.ts_ms),
+            Ok(ComponentCmd::PipelineStep(step)) => Some(step.ts_ms),
+            Ok(ComponentCmd::PipelineCancel(cancel)) => Some(cancel.ts_ms),
             Ok(
                 ComponentCmd::Blob { ts_ms, .. }
                 | ComponentCmd::File { ts_ms, .. }
@@ -1550,6 +1585,11 @@ impl AppMachine {
                 self.apply_compute_attempt(tx, index, &attempt)
             }
             Ok(ComponentCmd::ComputeFinal(done)) => self.apply_compute_final(tx, index, &done),
+            Ok(ComponentCmd::PipelineStart(start)) => self.apply_pipeline_start(tx, index, &start),
+            Ok(ComponentCmd::PipelineStep(step)) => self.apply_pipeline_step(tx, index, &step),
+            Ok(ComponentCmd::PipelineCancel(cancel)) => {
+                self.apply_pipeline_cancel(tx, index, &cancel)
+            }
             Ok(ComponentCmd::BlobForget { id }) => {
                 let c = &mut self.state.component;
                 let forgotten = parse_hex32(&id).and_then(|raw| c.blobs.forget_blob(tx, &raw));
@@ -1628,6 +1668,7 @@ impl AppMachine {
         if let Some(now) =
             idempotency::expiry_now(self.state.component.head.last_ts_ms, entry_ts_ms)
         {
+            self.expire_step_cache(tx, now);
             self.state.component.expire_blobs(tx, now);
         }
         serde_json::to_vec(&applied).unwrap_or_default()
@@ -1665,6 +1706,23 @@ fn replay_in(tx: &StateTx<'_>, caller: &Caller, key: &str) -> Option<Applied> {
 pub(crate) fn parse_hex32(id: &str) -> Option<[u8; 32]> {
     let raw = <[u8; 32]>::try_from(hex::decode(id).ok()?).ok()?;
     (hex::encode(raw) == id).then_some(raw)
+}
+
+/// A hidden row of `family` read as JSON; none when absent or unreadable.
+pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
+    tx: &StateTx<'_>,
+    family: u8,
+    key: &str,
+) -> Option<T> {
+    serde_json::from_slice(&tx.get_hidden(family, key.as_bytes())?).ok()
+}
+
+/// Writes `value` as the JSON hidden row `key` of `family`.
+pub(crate) fn put_json<T: Serialize>(tx: &mut StateTx<'_>, family: u8, key: &str, value: &T) {
+    match serde_json::to_vec(value) {
+        Ok(row) => tx.put_hidden(family, key.as_bytes(), &row),
+        Err(e) => tx.fail(e),
+    }
 }
 
 /// The answer to a host command (an upload, a delete, a collection): `Ok`, or an
@@ -1803,6 +1861,7 @@ pub fn embedded_abi(component: &[u8]) -> Option<Value> {
 mod tests {
     use super::*;
 
+    mod pipelines;
     mod runs;
     use crate::component::blobs::BLOB_IDLE_MS;
 

@@ -11,7 +11,7 @@ directory and reads everything again.
 
     python3 -I crates/node/tests/fault/upgrade_path.py --from-dir target/upgrade-from \\
         --to-merod target/release/merod --to-meroctl target/release/meroctl \\
-        --kv-next dist/upgrade-path/kv-next.mpk
+        --kv-next dist/upgrade-path/kv-next.mpk --pipelines-mpk dist/upgrade-path/pipelines.mpk
 
 **Cases.** What is written and checked lives in cases (`upgrade_cases/NN_*.py`,
 loaded in file-name order), each a `Case` with four steps the runner calls:
@@ -338,6 +338,9 @@ def main(argv=None):
     ap.add_argument("--to-meroctl", default=str(TARGET / "release" / "meroctl"))
     ap.add_argument("--kv-next", required=True,
                     help="kv built from this tree, signed as a later release of the kv package (the app upgrade)")
+    ap.add_argument("--pipelines-mpk", required=True,
+                    help="the compute fixture built from this tree with its pipeline, as a compute-only package "
+                         "(pipeline cases seed it after the roll)")
     ap.add_argument("--cases", default=str(HERE / "upgrade_cases"))
     ap.add_argument("--only", help="comma-separated case names")
     ap.add_argument("--workdir", default=str(TARGET / "upgrade-path"))
@@ -351,6 +354,7 @@ def main(argv=None):
         "kv_from": frm / "kv-store-test-fixture.mpk",
         "compute_from": frm / "compute.mpk",
         "kv_next": Path(args.kv_next).resolve(),
+        "pipelines": Path(args.pipelines_mpk).resolve(),
     }
     old_merod, old_meroctl = str(frm / "merod"), str(frm / "meroctl")
     new_merod, new_meroctl = str(Path(args.to_merod).resolve()), str(Path(args.to_meroctl).resolve())

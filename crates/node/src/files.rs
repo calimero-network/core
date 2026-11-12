@@ -4,10 +4,9 @@
 
 use crate::backup::tag;
 
-mod seal;
 mod wrap;
 
-pub use seal::{
+pub use calimero_sealed::file::{
     file_id, FileOpener, FileSealer, Sealed, Segment, SegmentReader, SegmentWriter, SegmentedFile,
     CHUNK_BYTES, PART_BYTES, SEGMENT_BYTES, SEGMENT_CHUNKS, TAG_BYTES,
 };

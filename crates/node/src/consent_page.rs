@@ -445,7 +445,10 @@ async fn release_facts(
         signer: bundle.signer_id().to_owned(),
         abi: wasm
             .iter()
-            .map(|s| (s.name.clone(), crate::component::embedded_abi(&s.wasm)))
+            .map(|s| {
+                let abi = s.wasm.as_deref().and_then(crate::component::embedded_abi);
+                (s.name.clone(), abi)
+            })
             .collect(),
     });
     node.consent.cache(&v.mpk, Arc::clone(&facts));

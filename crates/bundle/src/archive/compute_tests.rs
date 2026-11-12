@@ -68,7 +68,7 @@ fn a_single_service_bundle_ships_its_compute_component() {
         &[("app.wasm", b"app"), ("compute.wasm", b"job")],
     );
     let contents = open(data).unwrap().contents().unwrap();
-    assert_eq!(&*contents.wasm[0].bytes, b"app");
+    assert_eq!(contents.wasm[0].bytes.as_deref(), Some(&b"app"[..]));
     assert_eq!(contents.wasm[0].compute.as_deref(), Some(&b"job"[..]));
 }
 
@@ -127,4 +127,15 @@ fn a_manifest_without_the_field_still_verifies() {
     let data = bundle(manifest(serde_json::json!({})), &[("app.wasm", b"app")]);
     let contents = open(data).unwrap().contents().unwrap();
     assert!(contents.wasm[0].compute.is_none());
+}
+
+#[test]
+fn a_single_service_bundle_may_ship_only_a_compute_component() {
+    let mut m = manifest(serde_json::json!({ "compute": artifact("compute.wasm", b"job") }));
+    let _removed = m.as_object_mut().unwrap().remove("wasm");
+    let data = bundle(m, &[("compute.wasm", b"job")]);
+    let contents = open(data).unwrap().contents().unwrap();
+    assert_eq!(contents.wasm.len(), 1);
+    assert!(contents.wasm[0].bytes.is_none());
+    assert_eq!(contents.wasm[0].compute.as_deref(), Some(&b"job"[..]));
 }

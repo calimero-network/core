@@ -69,6 +69,7 @@ mod auth;
 mod calls;
 mod deployments;
 mod deprecation;
+mod exports;
 mod files;
 mod internal;
 #[cfg(test)]
@@ -78,6 +79,9 @@ mod orgs;
 mod origins;
 mod packages;
 mod passkeys;
+mod pipeline_events;
+pub(crate) mod pipeline_receipt;
+mod pipelines;
 mod recovery;
 mod restore;
 mod sign_up;
@@ -86,7 +90,9 @@ mod upgrades;
 pub(crate) use approvals::{
     set_outbound_approval, set_release_approval, OutboundApprovalBody, ReleaseApprovalBody,
 };
+pub(crate) use exports::ExportLimits;
 pub(crate) use internal::peer_only;
+pub use pipeline_events::MAX_RUN_SUBSCRIBERS_PER_APP;
 pub(crate) use upgrades::{refuse_stalled, upgrade_app, UpgradeBody};
 // The request bodies the OpenAPI registry names as `super::<Body>`.
 #[cfg(test)]
@@ -100,7 +106,7 @@ use {
     calls::{EventsQuery, IntentBody, MethodBody, PresenceBody, RunsQuery, ViewBody},
     deployments::{ClusterOwnerBody, DeployerBody, DeploymentBody, OfferBody},
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
-    ops::{BackupQuery, NodeBody, PoolsBody, ReplicaBody},
+    ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
     orgs::{
         AllAppsBody, CapabilitiesBody, InviteBody, MemberBody, MembersQuery, OrgBody,
         RenameOrgBody, ScopeAppsBody, TeamBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,

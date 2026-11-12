@@ -67,10 +67,19 @@ pub enum Feature {
     /// `ScopeApps` naming one app team's `childTeams` (#4917): an earlier
     /// `ScopeApp` refuses unknown fields.
     AppTeamChildTeams,
+    /// `SetPriceTable`: an earlier release cannot read it.
+    PriceTable,
+    /// `InstallPackage` or `CreateApp` of a release with only a compute component: an earlier
+    /// release ignores `components` and treats it as an app.
+    ComputeOnly,
+    /// `InstallPackage` of a release that registers pipelines: an earlier release drops them.
+    Pipelines,
+    /// `AcquireRun` naming a pool: an earlier release ignores `pool` and places by memory.
+    NamedPool,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 13] = [
+pub const FEATURES: [Feature; 17] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -84,6 +93,10 @@ pub const FEATURES: [Feature; 13] = [
     Feature::RenameOrg,
     Feature::TeamMembersBatch,
     Feature::AppTeamChildTeams,
+    Feature::PriceTable,
+    Feature::ComputeOnly,
+    Feature::Pipelines,
+    Feature::NamedPool,
 ];
 
 impl Feature {
@@ -104,6 +117,10 @@ impl Feature {
             Self::RenameOrg => "renameOrg",
             Self::TeamMembersBatch => "teamMembersBatch",
             Self::AppTeamChildTeams => "appTeamChildTeams",
+            Self::PriceTable => "priceTable",
+            Self::ComputeOnly => "computeOnly",
+            Self::Pipelines => "pipelines",
+            Self::NamedPool => "namedPool",
         }
     }
 
@@ -124,6 +141,9 @@ impl Feature {
             | Self::RenameOrg
             | Self::TeamMembersBatch
             | Self::AppTeamChildTeams => "1.0.0-rc.16",
+            Self::PriceTable | Self::ComputeOnly | Self::Pipelines | Self::NamedPool => {
+                "1.0.0-rc.19"
+            }
         }
     }
 }
@@ -340,10 +360,22 @@ impl SystemCmd {
                 vec![Feature::TeamMembersBatch]
             }
             Self::CreateInvite { invite, .. } if invite.all_apps => vec![Feature::AllApps],
+            Self::SetPriceTable { .. } => vec![Feature::PriceTable],
+            Self::InstallPackage { release, .. } => {
+                let mut f = Vec::new();
+                if !release.components.is_app() {
+                    f.push(Feature::ComputeOnly);
+                }
+                if !release.pipelines.is_empty() {
+                    f.push(Feature::Pipelines);
+                }
+                f
+            }
+            Self::CreateApp { app } if !app.components.is_app() => vec![Feature::ComputeOnly],
+            Self::AcquireRun { pool: Some(_), .. } => vec![Feature::NamedPool],
             Self::RegisterNode { .. }
             | Self::RemoveNode { .. }
             | Self::PutBundle { .. }
-            | Self::InstallPackage { .. }
             | Self::UninstallPackage { .. }
             | Self::CreateApp { .. }
             | Self::UpgradeApp { .. }
@@ -463,6 +495,7 @@ mod tests {
     const RC14: &str = "1.0.0-rc.14";
     const RC15: &str = "1.0.0-rc.15";
     const RC16: &str = "1.0.0-rc.16";
+    const RC19: &str = "1.0.0-rc.19";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -591,7 +624,38 @@ mod tests {
                 close_drops_below: true,
                 all_apps_rows: false,
             },
+            Feature::PriceTable => entry(json!({ "op": "setPriceTable", "table": {
+                "version": 1, "fuelPerVcpuSecond": 1, "vcpuSecond": 1, "gibSecond": 1,
+                "connectorGib": 1, "storageGibMonth": 1, "egressGib": 1,
+            } })),
+            Feature::ComputeOnly => install(json!({ "components": "computeOnly" })),
+            Feature::Pipelines => install(json!({
+                "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
+            })),
+            Feature::NamedPool => entry(json!({
+                "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
+                "memory_mib": 1, "pool": "big",
+            })),
         }
+    }
+
+    fn entry(v: Value) -> SystemCmd {
+        serde_json::from_value(v).unwrap()
+    }
+
+    /// An `InstallPackage` of a plain release with `extra` fields set.
+    fn install(extra: Value) -> SystemCmd {
+        let mut release = json!({
+            "version": "1.0.0", "mpk": "h", "mpkSize": 1, "source": "upload",
+            "services": {}, "installedBy": "a", "installedAt": 1,
+        });
+        release
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        entry(
+            json!({ "op": "installPackage", "package": "p", "signer_id": "s", "release": release }),
+        )
     }
 
     /// A node of the cluster: the release it runs and its system state.
@@ -747,11 +811,32 @@ mod tests {
         assert!(nodes
             .iter()
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
-        for feature in FEATURES {
+        let (older, engine): (Vec<_>, Vec<_>) = FEATURES.iter().partition(|f| f.since() != RC19);
+        for feature in older {
             propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        for &feature in &engine {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC16))
+            );
         }
         assert!(same_state(&nodes));
         assert!(nodes[0].machine.state.org_quotas.contains_key("org"));
+
+        for n in &mut nodes {
+            n.release = RC19;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC19.into(),
+            nodes: (1..=3).map(|id| (id, RC19.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for feature in engine {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        assert!(same_state(&nodes));
     }
 
     /// Between rc.15 and rc.16 the rc.15 features stay on: the floor is
@@ -921,6 +1006,27 @@ mod tests {
         };
         assert!(invite(false).features().is_empty());
         assert_eq!(invite(true).features(), [Feature::AllApps]);
+    }
+
+    /// Entries an earlier release would misread name their features only when they use them.
+    #[test]
+    fn compute_only_pipeline_pool_and_price_entries_name_their_features() {
+        assert!(install(json!({})).features().is_empty());
+        for f in [
+            Feature::PriceTable,
+            Feature::ComputeOnly,
+            Feature::Pipelines,
+            Feature::NamedPool,
+        ] {
+            assert_eq!(uses(f).features(), [f]);
+            assert_eq!(f.since(), RC19, "rc.18 was cut without the pipeline engine");
+        }
+        let mut run = json!({
+            "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1, "memory_mib": 1,
+        });
+        assert!(entry(run.clone()).features().is_empty());
+        run["pool"] = json!("big");
+        assert_eq!(entry(run).features(), [Feature::NamedPool]);
     }
 
     #[test]

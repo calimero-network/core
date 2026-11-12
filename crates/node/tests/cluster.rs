@@ -870,6 +870,7 @@ fn mpk_full(
         upgrades,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         services: None,
+        pipelines: Vec::new(),
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
