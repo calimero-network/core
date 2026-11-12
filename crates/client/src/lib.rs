@@ -20,6 +20,7 @@ mod route;
 pub mod transport;
 
 pub use attest::{AttestationDoc, HttpAttestor, Measurements, Policy};
+pub use files::ExportedFile;
 pub use generated::{routes, types};
 pub use route::OperatorSigner;
 pub use transport::{Body, Credential, Request, Transport};
