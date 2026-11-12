@@ -869,18 +869,29 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
     let result = alice.get(&format!("consent/{id}/result")).await.unwrap();
     assert_eq!(result["status"], "declined");
 
-    // At most this many undecided requests per account.
+    // One undecided request per account and node: a new one replaces it, so
+    // a page swapped for an older request has nothing to approve, and the app
+    // that asked first finds its request gone.
     let ask = json!({
         "kind": "release",
         "scope": "account",
         "subject": { "version": "4.0.0" },
         "returnTo": back,
     });
-    for _ in 0..calimero_node::consent_page::MAX_OPEN_REQUESTS_PER_ACCOUNT {
-        let _ = alice.post("consent/requests", ask.clone()).await.unwrap();
-    }
-    let e = alice.post("consent/requests", ask).await.unwrap_err();
-    assert_eq!(e.code(), Some("RATE_LIMITED"), "{e}");
+    let older = alice.post("consent/requests", ask.clone()).await.unwrap();
+    let older_id = older["requestId"].as_str().unwrap().to_owned();
+    let newer = alice.post("consent/requests", ask).await.unwrap();
+    let e = alice
+        .get(&format!("consent/{older_id}/result"))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
+    let r = reqwest::get(format!("{}/model", older["url"].as_str().unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404, "the replaced request has no page");
+    let newer_page = Page::new(newer["url"].as_str().unwrap());
+    assert_eq!(newer_page.model().await["status"], "pending");
 
     // An id this node never issued has no page.
     let r = reqwest::get(format!(

@@ -290,7 +290,7 @@ consent: `result=approved` (they approved the withdrawal).
 | A request's life (`CONSENT_REQUEST_TTL`) | 10 minutes |
 | A decided request's result stays readable (`CONSENT_RESULT_TTL`) | 10 minutes after the decision |
 | Requests one node holds (`MAX_CONSENT_REQUESTS`) | 1,000, then `429` |
-| Undecided requests per account per node (`MAX_OPEN_REQUESTS_PER_ACCOUNT`) | 8, then `429` |
+| Undecided requests per account per node | 1: a new request replaces the older one, whose page and `/result` then answer `404` |
 | `returnTo` (`MAX_RETURN_TO_BYTES`) | 2 KiB |
 | Prefixes in one outbound request (`MAX_REQUESTED_PREFIXES`) | 64 |
 | Request and page bodies (`MAX_CONSENT_BODY_BYTES`) | 64 KiB |
@@ -304,7 +304,18 @@ consent: `result=approved` (they approved the withdrawal).
   page in its place. It cannot change what is approved (the arguments were fixed
   inside the sealed channel when the app asked, and the passkey signs a
   challenge over them), and cannot approve without the person's passkey.
-  Terminate TLS inside the TD to close this.
+  Terminate TLS inside the TD to close this. Calimero Cloud does: the node's
+  TLS key is made inside the TD and certified only against its attestation,
+  and mdma watches Certificate Transparency for any other certificate on its
+  names.
+- **What a forged page could still do.** Serving a page on the node's own
+  host, it could show one request's words and ask the passkey for another
+  request of the same account. Two rules leave it nothing to swap in: an
+  account has one undecided request per node (a new one replaces the older,
+  whose page and `/result` answer `404`), and an app checks, after the
+  redirect, that `/result` reports its own request decided (the SDKs' consent
+  helpers do). Answers carry `Strict-Transport-Security`, so a browser that
+  has seen the page over TLS never loads it over plain HTTP.
 - **The relying party.** The passkey must be usable on the node's origin: the
   cluster's `--rp-id` must be a registrable suffix of the node's host. The node
   accepts consent-page assertions from its own nodes' origins and the cluster's

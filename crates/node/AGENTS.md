@@ -1099,7 +1099,9 @@ is its command line.
   and by the console); `returnTo` is the package's own frontend origin or one its
   newest signed manifest names (unbound sessions: `config.origins`). The
   request (this node's memory,
-  `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
+  `CONSENT_REQUEST_TTL`, one undecided request per account and node (a new one
+  replaces it, so a forged page has no other request to swap in), a per-node
+  bound, decided once; page answers carry HSTS) freezes
   a model from node state and verified manifests (an upgrade's capability
   sheet is `consent_page::diff`, its methods, events, timers and state version from the
   `calimero:abi` each component embeds, `component::embedded_abi`; regression:
