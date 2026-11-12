@@ -9,8 +9,9 @@ import { CalimeroClient, passkeyConfirm } from '@calimero-network/mero-js';
 import type { NodeEvent, PasskeyProvider } from '@calimero-network/mero-js';
 
 import { KitchenSinkClient } from '../golden/kitchen-sink.ts';
+import type { Adjacent, Either, Item, Page, Status, Tagged, Tree } from '../golden/kitchen-sink.ts';
 import { KvStoreClient } from '../golden/kv-store.ts';
-import type { AppTransport, AppEvent } from '../golden/kv-store.ts';
+import type { AppTransport, AppEvent, KvStoreApi } from '../golden/kv-store.ts';
 import { RoomsClient } from '../golden/rooms.ts';
 
 // Type-level only: never called, so nothing here touches a node.
@@ -27,6 +28,31 @@ export function withARealClient(client: CalimeroClient, passkey: PasskeyProvider
     sink.wipe({ reason: null }),
   ];
 }
+
+// Code that takes the methods alone (`KvStoreApi`) is handed the class, or in a test a double
+// of the methods it calls, with no transport underneath.
+export function readKey(kv: Pick<KvStoreApi, 'get'>): Promise<string | null> {
+  return kv.get({ key: 'a' });
+}
+export function withTheApi(client: CalimeroClient): Promise<string | null>[] {
+  const api: KvStoreApi = new KvStoreClient(client, 'app-1');
+  return [readKey(api), readKey({ get: async ({ key }) => key })];
+}
+
+// The app types are what serde writes: records with D20 fields, each enum representation,
+// generics instantiated where used.
+export const shapes = {
+  status: ['Open', { Closed: { at: '1' } }, { Moved: 'x' }, { Span: [1, 2] }] satisfies Status[],
+  tagged: [{ type: 'draft' }, { type: 'published', at: '3' }] satisfies Tagged[],
+  adjacent: [{ t: 'Text', c: 'hi' }, { t: 'Empty' }] satisfies Adjacent[],
+  either: [7, { name: 'n' }] satisfies Either[],
+  page: { items: [{ id: '1', title: 't', tags: [], status: 'Open' }], next: null } satisfies Page<Item>,
+  tree: { value: 1, children: [{ value: 2, children: [] }] } satisfies Tree,
+  // @ts-expect-error a u64 field is a decimal string
+  number: { id: 1, title: 't', tags: [], status: 'Open' } satisfies Item,
+  // @ts-expect-error an externally tagged variant with data is an object
+  bare: 'Closed' satisfies Status,
+};
 
 type Sent = { kind: 'call' | 'view'; args: Record<string, unknown>; options: Record<string, unknown> | undefined };
 

@@ -12,7 +12,9 @@
 ## What This Crate Does
 
 - `abi::AppAbi::from_json` reads the `calimero:abi` JSON whole, free-form keys included
-  (`params`, `returns`, `errors`, `events`), or the node's `{ bundle, abi }` answer. The node's
+  (`params`, `returns`, `errors`, `events`, and `types`: each app type's `TypeDef` with its
+  `Shape`, which `AppAbi::shape_of` instantiates for `Page<Item>`; an ABI without it, or an
+  entry that does not read, leaves the type unknown), or the node's `{ bundle, abi }` answer. The node's
   own reader, `calimero_app_host::Abi`, keeps only what it enforces; this one is for clients
   and tools and never decides access.
 - `ty::Type::parse` reads ABI type strings, the SDK's spellings (`option<T>`, `list<T>`,
@@ -27,7 +29,18 @@
   (`client.apps.call`, `client.apps.view`, `client.events`; Python through `client.json`); no
   transport of their own. The TypeScript class takes the narrow `AppTransport` (what it uses of
   `CalimeroClient`, so a test double implements that alone) and an `after` hook that runs after
-  every request (mero-js has no session-change event to store a refreshed session from).
+  every request (mero-js has no session-change event to store a refreshed session from), and
+  implements `<Name>Api` (`KvStoreClient` → `KvStoreApi`), the methods alone, which a caller's
+  test double implements instead of the transport.
+- `codegen::{swift, kotlin}` write one client type over swift-sdk 2.0 (MeroKit) / kotlin-sdk
+  2.0 (mero-core): built on the SDK's `CalimeroClient` and an app id (every method; Kotlin
+  calls `apps.method`, Swift `callJSON` / `callConfirmed` / `viewJSON`) or on its
+  `ContextContractCalling` (calls and views, so apps can pass `MeroAppBackend.contract` or a
+  test double). The app's events, errors (`Event`, `Refusal`) and types are nested in it,
+  so two clients share a module or package without clashing; an app type named like a type
+  the file uses is renamed (`Names::reserve`). `u64`/`i64`/`bytes` are native types written
+  in their D20 form by `DecimalString`/`Base64URL` (Swift) and `U64AsString`/`I64AsString`/
+  `Base64Url` serializers (Kotlin).
 - `diff::diff` classifies changes between two ABIs (`Severity::Breaking` / `Compatible`) and
   sets `state_error` for an unreadable state change without a state version bump.
 - `load` reads an ABI from JSON, a component (top level or nested core module), an `.mpk`, or
@@ -46,6 +59,10 @@
   test double, `tests/py` imports every golden `.py` with calimero-client-py and binds each
   call to the real client's signature, then runs mypy. `app-abi-clients.yml` runs both on a
   change to this crate; bump the pins when a client's major moves.
+- The Swift and Kotlin goldens must compile with warnings as errors against the SDK releases
+  they target: `.github/workflows/app-abi-native-clients.yml` runs
+  `scripts/check-app-abi-clients.py swift|kotlin` (macOS / Android SDK) on a change here.
+  Moving to a new SDK release moves `SWIFT_SDK_VERSION` / `KOTLIN_SDK_REF` there.
 
 ## Verify
 

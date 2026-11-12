@@ -677,10 +677,12 @@ version = "0.0.0"
 dependencies = [
  "calimero-app-abi",
  "calimero-app-wit",
+ "calimero-build-utils",
  "eyre",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
+ "toml",
  "wasmparser 0.263.0",
 ]
 

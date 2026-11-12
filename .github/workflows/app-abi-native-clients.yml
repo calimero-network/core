@@ -1,0 +1,66 @@
+name: App ABI native clients
+
+# The Swift and Kotlin clients `mero-app-build codegen` writes, compiled with warnings as
+# errors against the SDK releases they are written for (scripts/check-app-abi-clients.py):
+# swift-sdk's MeroKit on macOS, kotlin-sdk's mero-core on Linux. `cargo test -p
+# calimero-app-abi` pins what the generator writes (tests/golden); this checks it compiles.
+# Only a change to the generator or its goldens runs it.
+
+on:
+  pull_request:
+    branches: [master, release-v2-parity]
+    paths:
+      - "crates/app-abi/**"
+      - "scripts/check-app-abi-clients.py"
+      - ".github/workflows/app-abi-native-clients.yml"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+  push:
+    branches: [master]
+    paths:
+      - "crates/app-abi/**"
+      - "scripts/check-app-abi-clients.py"
+      - ".github/workflows/app-abi-native-clients.yml"
+      - "!**/*.md"
+      - "!**/*.mdx"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-abi-native-clients-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SWIFT_SDK_VERSION: 2.0.0
+  KOTLIN_SDK_REF: v2.0.0
+
+jobs:
+  swift:
+    name: Swift clients (swift-sdk)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: swift build
+        run: |
+          swift --version
+          python3 scripts/check-app-abi-clients.py swift
+
+  kotlin:
+    name: Kotlin clients (kotlin-sdk)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Gradle compile
+        run: |
+          # The runner image's JDK 17 and Android SDK, as kotlin-sdk's own CI uses.
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          python3 scripts/check-app-abi-clients.py kotlin

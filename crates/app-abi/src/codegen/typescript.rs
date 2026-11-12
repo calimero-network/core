@@ -1,10 +1,12 @@
-//! The TypeScript client: interfaces for arguments, errors and events, and a class whose
-//! methods call mero-js's `client.apps.call` and `client.apps.view`.
+//! The TypeScript client: interfaces for arguments, errors, events and the app's own types
+//! (from the ABI's `types`: an interface per record, a union per enum, generic where the Rust
+//! type is), and a class whose methods call mero-js's `client.apps.call` and
+//! `client.apps.view`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use crate::abi::{AppAbi, Fields};
+use crate::abi::{AppAbi, EnumRepr, Field, Fields, Shape, TypeDef, VariantData};
 use crate::openapi::{all_events, args_name, error_name, event_name, Names};
 use crate::ty::Type;
 
@@ -26,13 +28,18 @@ enum Side {
     Output,
 }
 
-struct Ts {
+struct Ts<'a> {
+    abi: &'a AppAbi,
     names: Names,
-    /// App types met so far: component name to ABI text.
+    /// App types the ABI does not describe, met so far: component name to ABI text.
     named: BTreeMap<String, String>,
+    /// App types it describes, met so far: component name to entry.
+    described: BTreeMap<String, (String, &'a TypeDef)>,
+    /// The generic parameters in scope (inside a generic entry's declaration).
+    params: Vec<String>,
 }
 
-impl Ts {
+impl<'a> Ts<'a> {
     fn ty(&mut self, ty: &Type) -> String {
         match ty {
             Type::Unit => "null".into(),
@@ -54,12 +61,130 @@ impl Ts {
                 format!("[{}]", items.join(", "))
             }
             Type::Map(_, value) => format!("Record<string, {}>", self.ty(value)),
+            Type::Named(text) if self.params.contains(text) => text.clone(),
             Type::Named(text) => {
+                if let Some((entry, def, args)) = self.abi.shape_of(ty) {
+                    let (name, _) = self.names.named(&entry);
+                    let _ = self.described.insert(name.clone(), (entry, def));
+                    if args.is_empty() {
+                        return name;
+                    }
+                    let args: Vec<String> = args.iter().map(|a| self.ty(a)).collect();
+                    return format!("{name}<{}>", args.join(", "));
+                }
                 let (name, _) = self.names.named(text);
                 let _ = self.named.insert(name.clone(), text.clone());
                 name
             }
         }
+    }
+
+    /// `{ a: x; b?: y }`, a tag property first when given.
+    fn object(&mut self, fields: &[Field], tag: Option<(&str, &str)>) -> String {
+        let mut parts = Vec::new();
+        if let Some((tag, name)) = tag {
+            parts.push(format!("{}: {}", property(tag), string_literal(name)));
+        }
+        for f in fields {
+            let opt = if f.optional { "?" } else { "" };
+            parts.push(format!("{}{opt}: {}", property(&f.name), self.ty(&f.ty)));
+        }
+        if parts.is_empty() {
+            return "Record<string, never>".to_owned();
+        }
+        format!("{{ {} }}", parts.join("; "))
+    }
+
+    fn data(&mut self, data: &VariantData) -> String {
+        match data {
+            VariantData::Unit => "null".to_owned(),
+            VariantData::Newtype(t) => self.ty(t),
+            VariantData::Tuple(ts) => self.ty(&Type::Tuple(ts.clone())),
+            VariantData::Record(fs) => self.object(fs, None),
+        }
+    }
+
+    /// The declaration of a described app type.
+    fn declaration(&mut self, name: &str, entry: &str, def: &TypeDef) -> String {
+        self.params.clone_from(&def.params);
+        let generics = if def.params.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", def.params.join(", "))
+        };
+        let mut out = format!(
+            "/** The app type `{entry}`. */
+"
+        );
+        match &def.shape {
+            Shape::Record(fields) => {
+                let _ = writeln!(out, "export interface {name}{generics} {{");
+                for f in fields {
+                    let opt = if f.optional { "?" } else { "" };
+                    let ty = self.ty(&f.ty);
+                    let _ = writeln!(out, "  {}{opt}: {ty};", property(&f.name));
+                }
+                out.push_str(
+                    "}
+",
+                );
+            }
+            Shape::Newtype(t) => {
+                let ty = self.ty(t);
+                let _ = writeln!(out, "export type {name}{generics} = {ty};");
+            }
+            Shape::Tuple(items) => {
+                let ty = self.ty(&Type::Tuple(items.clone()));
+                let _ = writeln!(out, "export type {name}{generics} = {ty};");
+            }
+            Shape::Unit => {
+                let _ = writeln!(out, "export type {name}{generics} = null;");
+            }
+            Shape::Enum { repr, variants } => {
+                let arms: Vec<String> = variants
+                    .iter()
+                    .map(|v| match (repr, &v.data) {
+                        (EnumRepr::External, VariantData::Unit) => string_literal(&v.name),
+                        (EnumRepr::External, data) => {
+                            let data = self.data(data);
+                            format!("{{ {}: {data} }}", property(&v.name))
+                        }
+                        (EnumRepr::Internal { tag }, VariantData::Record(fs)) => {
+                            self.object(fs, Some((tag, &v.name)))
+                        }
+                        (EnumRepr::Internal { tag }, VariantData::Unit)
+                        | (EnumRepr::Adjacent { tag, .. }, VariantData::Unit) => {
+                            self.object(&[], Some((tag, &v.name)))
+                        }
+                        (EnumRepr::Internal { tag }, data) => {
+                            let data = self.data(data);
+                            format!("({} & {data})", self.object(&[], Some((tag, &v.name))))
+                        }
+                        (EnumRepr::Adjacent { tag, content }, data) => {
+                            let data = self.data(data);
+                            format!(
+                                "{{ {}: {}; {}: {data} }}",
+                                property(tag),
+                                string_literal(&v.name),
+                                property(content)
+                            )
+                        }
+                        (EnumRepr::Untagged, data) => self.data(data),
+                    })
+                    .collect();
+                if arms.is_empty() {
+                    let _ = writeln!(out, "export type {name}{generics} = never;");
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "export type {name}{generics} =\n  | {};",
+                        arms.join("\n  | ")
+                    );
+                }
+            }
+        }
+        self.params.clear();
+        out
     }
 
     fn interface(
@@ -199,14 +324,21 @@ const CLASS_HEAD: &str = r"  readonly #client: AppTransport;
   }
 ";
 
+/// The interface of the class's methods: `KvStoreClient` → `KvStoreApi`.
+fn api_name(class: &str) -> String {
+    format!("{}Api", class.strip_suffix("Client").unwrap_or(class))
+}
+
 pub(super) fn module(abi: &AppAbi, class: &str) -> String {
+    let api = api_name(class);
     let mut names = Names::new(abi);
-    for name in OWN_NAMES.iter().copied().chain([class]) {
-        names.reserve(name);
-    }
+    names.reserve(OWN_NAMES.iter().copied().chain([class, api.as_str()]));
     let mut ts = Ts {
+        abi,
         names,
         named: BTreeMap::new(),
+        described: BTreeMap::new(),
+        params: Vec::new(),
     };
     let mut body = String::new();
 
@@ -266,11 +398,9 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     );
 
     body.push_str(PRELUDE);
-    let _ = writeln!(
-        body,
-        "\n/** The app's methods, over a signed-in `CalimeroClient` (or any {{@link AppTransport}}). */\nexport class {class} {{"
-    );
-    body.push_str(CLASS_HEAD);
+    // The methods alone, so a caller's test double can stand in for the class.
+    let mut iface = String::new();
+    let mut class_body = String::new();
     for (name, m) in abi.client_methods() {
         let ret = ts.ty(&m.returns);
         let method = property(name);
@@ -293,7 +423,11 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
             ("call", "CallOptions")
         };
         let _ = writeln!(
-            body,
+            iface,
+            "  /** {doc}. */\n  {method}({args_param}options?: {options}): Promise<{ret}>;"
+        );
+        let _ = writeln!(
+            class_body,
             "\n  /** {doc}. */\n  async {method}({args_param}options: {options} = {{}}): Promise<{ret}> {{\n    return (await this.#{send}({lit}, {args_value}, options)) as {ret};\n  }}"
         );
     }
@@ -302,6 +436,20 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     } else {
         "events"
     };
+    let _ = writeln!(
+        iface,
+        "  /** The app's events from log index `from`, then live, until `signal` aborts. */\n  {stream}(from?: number, signal?: AbortSignal): AsyncIterable<AppEvent & {{ id: string }}>;"
+    );
+    let _ = writeln!(
+        body,
+        "\n/** The app's methods: what `{class}` implements, for a test double to stand in for it. */\nexport interface {api} {{\n{iface}}}"
+    );
+    let _ = writeln!(
+        body,
+        "\n/** The app's methods, over a signed-in `CalimeroClient` (or any {{@link AppTransport}}). */\nexport class {class} implements {api} {{"
+    );
+    body.push_str(CLASS_HEAD);
+    body.push_str(&class_body);
     let _ = writeln!(
         body,
         "\n  /** The app's events from log index `from`, then live, until `signal` aborts. */\n  async *{stream}(from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & {{ id: string }}> {{\n    for await (const event of this.#client.events(this.#app, from, signal)) {{\n      yield event as AppEvent & {{ id: string }};\n    }}\n  }}\n}}"
@@ -317,10 +465,30 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
         out,
         "import type {{ ConfirmCallback, NodeEvent }} from '@calimero-network/mero-js';\n"
     );
+    // The described types, and the ones their shapes name, until none is new.
+    let mut declared: BTreeMap<String, String> = BTreeMap::new();
+    loop {
+        let pending: Vec<(String, (String, &TypeDef))> = ts
+            .described
+            .iter()
+            .filter(|(name, _)| !declared.contains_key(*name))
+            .map(|(n, d)| (n.clone(), d.clone()))
+            .collect();
+        if pending.is_empty() {
+            break;
+        }
+        for (name, (entry, def)) in pending {
+            let decl = ts.declaration(&name, &entry, def);
+            let _ = declared.insert(name, decl);
+        }
+    }
+    for decl in declared.values() {
+        let _ = writeln!(out, "{decl}");
+    }
     for (name, text) in &ts.named {
         let _ = writeln!(
             out,
-            "/** The app type `{text}`: ABI version 1 names it without its shape. */\nexport type {name} = unknown;\n"
+            "/** The app type `{text}`: the ABI names it without its shape. */\nexport type {name} = unknown;\n"
         );
     }
     out.push_str(&body);

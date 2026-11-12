@@ -2,6 +2,82 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`mero-app-build` ships with each release, and is easier to run from an app's CI**
+  (`calimero-app-build`). The release attaches `mero-app-build_<target>.tar.gz` for
+  Linux x86_64 and aarch64 and macOS aarch64, in `SHA256SUMS` with build provenance,
+  so an app that only runs `codegen` downloads it instead of `cargo install --git`.
+  `mero-app-build --version` (`-V`) prints the release. `codegen --no-openapi` writes
+  the client alone. The library exports the codegen run
+  (`calimero_app_build::codegen::Codegen`), so repository tooling can call it in
+  process.
+- **Generated TypeScript clients export the app's methods as an interface**
+  (`calimero-app-abi`). `KvStoreClient implements KvStoreApi` (`<Name>Api`), so code
+  can take the methods alone and a test can hand it a double of them instead of an
+  `AppTransport`.
+- **The fleet bump moves the apps repository's client generator with the SDK.**
+  `bump-fleet.sh` sets the `mero-app-build` pin in `scripts/install-mero-app-build.sh`
+  to the release (unless the pin runs ahead) and reruns every package's `codegen`
+  with the release's binary, so the bump pull request carries regenerated clients.
+
+### Changed
+
+- **`codegen` names a client given a bare `abi.json` after its crate.** The ABI
+  carries no app name, and `--abi logic/res/abi.json` named the class after the file
+  (`AbiClient`). A file stem that names no app (`abi`, `app`, `component`, `compute`,
+  `manifest`) now takes the package name of the nearest `Cargo.toml` above the file,
+  and with none `codegen` fails asking for `--name`. `--name`, a service or a
+  bundle's package still win.
+
+## [1.0.0-rc.18] - 2026-11-12
+
+### Added
+
+- **Swift and Kotlin typed clients from an app's ABI** (#4993, `calimero-app-abi`).
+  `mero-app-build codegen --lang swift|kotlin` writes `<Name>Client.swift` over
+  swift-sdk 2.0's MeroKit and `<Name>Client.kt` over kotlin-sdk 2.0's mero-core
+  (`--package`, default `calimero.generated.<name>`; a multi-service bundle gets
+  a directory and a package per service). Each is built on the SDK's
+  `CalimeroClient` and the app's id (every method: idempotency keys, stale views,
+  `confirm` step-ups, the event stream) or on its `ContextContractCalling`
+  (`MeroAppBackend.contract.bound(app)`, or a test double: calls and views), with
+  the ABI's JSON forms (u64/i64 as decimal strings, bytes base64url) behind
+  `UInt64`/`ULong`, `Int64`/`Long` and `Data`/`ByteArray`, and the app's events
+  and errors as typed enums and sealed interfaces (`Event`, `Refusal`). The
+  `App ABI native clients` workflow compiles the golden clients against both SDKs with
+  warnings as errors. These two clients do not read the ABI's `types` yet: an
+  app's records and enums are `JSONValue` / `JsonElement`.
+- **The ABI carries an app's record and enum shapes** (#4997). `#[derive(Record)]`
+  types and a new `#[derive(AbiType)]` for serde structs and enums (following
+  their renames, the four enum tagging styles, `transparent` and skips) are
+  written to a sorted `types` key in the app's ABI. A shape the macro cannot
+  describe (`flatten`, `into`/`from`, a u64/i64/bytes field without its helper)
+  is a compile error. `abiVersion` stays 1: nodes ignore the new key, and an app
+  with no described types builds a byte-identical ABI. `mero-app-build codegen`
+  uses the shapes for OpenAPI components, TypeScript interfaces and unions, and
+  Python `TypedDict`s (generic types keep their parameters); an ABI without
+  `types` still reads, with those types as `unknown`. `abi-diff` does not yet
+  compare shapes.
+
+### Fixed
+
+- **Generated TypeScript and Python clients call the current SDK API** (#4992).
+  `mero-app-build codegen --lang ts|python` wrote clients over mero-js's and
+  calimero-client-py's removed wrappers (`client.call`, `client.view`), which no
+  longer compiled. They now call `client.apps.call` / `client.apps.view`
+  (mero-js 32 and later, `confirm` step-ups through `options.confirm`) and
+  `client.json.apps.call` / `view` (calimero-client-py 1.0). The TypeScript class
+  takes a narrow `AppTransport` and an `after` hook that runs after every request.
+  The `App ABI clients` workflow type-checks the generated clients and runs them
+  against both published SDKs.
+- **meroctl refuses an unknown field in a closed request body** (#4995).
+  `meroctl ops set-quotas '{"maxAppsPerAcount": 5}'` dropped the misspelled key
+  and sent an empty change. The generated Rust client now refuses unknown fields
+  in request bodies the document closes (`additionalProperties: false`), so the
+  command fails naming the key before anything is sent. Answers and refusal
+  details still accept fields a newer node adds.
+
 ## [1.0.0-rc.17] - 2026-11-12
 
 1.0.0-rc.16 was tagged but never published: its build failed on meroctl
@@ -9,6 +85,8 @@
 changes plus that fix. Its GitHub Release holds only `kv-store-test-fixture.mpk`;
 no binaries, crates, `merod` image or fleet bump exist for it, so nothing can
 run or upgrade from it, and the upgrade path stays pinned to 1.0.0-rc.15.
+
+## [1.0.0-rc.16] - 2026-11-12
 
 ### Added
 

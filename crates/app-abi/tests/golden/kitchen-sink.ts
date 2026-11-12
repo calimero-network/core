@@ -4,11 +4,74 @@
 
 import type { ConfirmCallback, NodeEvent } from '@calimero-network/mero-js';
 
-/** The app type `Item`: ABI version 1 names it without its shape. */
-export type Item = unknown;
+/** The app type `Adjacent`. */
+export type Adjacent =
+  | { t: 'Text'; c: string }
+  | { t: 'Empty' };
 
-/** The app type `Page<Item>`: ABI version 1 names it without its shape. */
-export type Page_Item = unknown;
+/** The app type `Either`. */
+export type Either =
+  | number
+  | { name: string };
+
+/** The app type `Id`. */
+export type Id = string;
+
+/** The app type `Item`. */
+export interface Item {
+  id: string;
+  title: string;
+  tags: string[];
+  note?: string | null;
+  status: Status;
+}
+
+/** The app type `Marker`. */
+export type Marker = null;
+
+/** The app type `Page`. */
+export interface Page<T> {
+  items: T[];
+  next: string | null;
+}
+
+/** The app type `Point`. */
+export type Point = [number, number];
+
+/** The app type `Status`. */
+export type Status =
+  | 'Open'
+  | { Closed: { at: string } }
+  | { Moved: string }
+  | { Span: [number, number] };
+
+/** The app type `Tagged`. */
+export type Tagged =
+  | { type: 'draft' }
+  | { type: 'published'; at: string };
+
+/** The app type `Tree`. */
+export interface Tree {
+  value: number;
+  children: Tree[];
+}
+
+/** The arguments of `blobOf`. */
+export interface BlobOfArgs {
+  key: string;
+}
+
+/** The arguments of `count`. */
+export interface CountArgs {
+  stale: boolean;
+}
+
+/** The arguments of `events`. */
+export interface EventsArgs {
+  in: string;
+  default?: string | null;
+  when?: string | null;
+}
 
 /** The arguments of `everything`. */
 export interface EverythingArgs {
@@ -35,7 +98,7 @@ export interface EverythingArgs {
   byId: Record<string, string>;
   unique: string[];
   item: Item;
-  page: Page_Item;
+  page: Page<Item>;
   nested?: Array<Item | null> | null;
 }
 
@@ -47,6 +110,18 @@ export interface FromPeerArgs {
 /** The arguments of `lookup`. */
 export interface LookupArgs {
   id: string;
+}
+
+/** The arguments of `shapes`. */
+export interface ShapesArgs {
+  status: Status;
+  tagged: Tagged;
+  adjacent: Adjacent;
+  either: Either;
+  id: Id;
+  point: Point;
+  marker: Marker;
+  tree: Tree;
 }
 
 /** The arguments of `wipe`. */
@@ -68,8 +143,16 @@ export interface NotFoundError {
   id: string;
 }
 
+/** The fields of the app error `Rejected`. */
+export interface RejectedError {
+  "0": string;
+}
+
+/** The fields of the app error `Unknown`. */
+export type UnknownError = Record<string, never>;
+
 /** The app's error codes: `details.code` of a `422 APP_ERROR`. */
-export type AppErrorCode = 'Forbidden' | 'Invalid' | 'NotFound';
+export type AppErrorCode = 'Forbidden' | 'Invalid' | 'NotFound' | 'Rejected' | 'Unknown';
 
 /** The fields of the event `ActionFailed`. */
 export interface ActionFailedEvent {
@@ -84,6 +167,14 @@ export interface CreatedEvent {
   item: Item;
 }
 
+/** The fields of the event `Default`. */
+export interface DefaultEvent {
+  at: string | null;
+  blob: string;
+  delta: string;
+  pair: [number, string];
+}
+
 /** The fields of the event `Wiped`. */
 export type WipedEvent = Record<string, never>;
 
@@ -91,6 +182,7 @@ export type WipedEvent = Record<string, never>;
 export type AppEvent =
   | { kind: 'ActionFailed'; data: ActionFailedEvent }
   | { kind: 'Created'; data: CreatedEvent }
+  | { kind: 'Default'; data: DefaultEvent }
   | { kind: 'Wiped'; data: WipedEvent };
 
 /** Options of a call. */
@@ -139,8 +231,32 @@ export interface AppTransport {
   events(app: string, from?: number, signal?: AbortSignal): AsyncIterable<NodeEvent>;
 }
 
+/** The app's methods: what `KitchenSinkClient` implements, for a test double to stand in for it. */
+export interface KitchenSinkApi {
+  /** view `blobOf`. */
+  blobOf(args: BlobOfArgs, options?: ViewOptions): Promise<string | null>;
+  /** view `count`. */
+  count(args: CountArgs, options?: ViewOptions): Promise<string>;
+  /** call `events`. */
+  events(args: EventsArgs, options?: CallOptions): Promise<[number, string]>;
+  /** call `everything`. */
+  everything(args: EverythingArgs, options?: CallOptions): Promise<Item[]>;
+  /** call `fromPeer`. */
+  fromPeer(args: FromPeerArgs, options?: CallOptions): Promise<null>;
+  /** view `lookup`; public. */
+  lookup(args: LookupArgs, options?: ViewOptions): Promise<Item | null>;
+  /** view `secret`; a passkey approves it (`options.confirm`, else the client's own). */
+  secret(options?: CallOptions): Promise<string>;
+  /** view `shapes`. */
+  shapes(args: ShapesArgs, options?: ViewOptions): Promise<Tree>;
+  /** call `wipe`; a passkey approves it (`options.confirm`, else the client's own). */
+  wipe(args: WipeArgs, options?: CallOptions): Promise<null>;
+  /** The app's events from log index `from`, then live, until `signal` aborts. */
+  appEvents(from?: number, signal?: AbortSignal): AsyncIterable<AppEvent & { id: string }>;
+}
+
 /** The app's methods, over a signed-in `CalimeroClient` (or any {@link AppTransport}). */
-export class KitchenSinkClient {
+export class KitchenSinkClient implements KitchenSinkApi {
   readonly #client: AppTransport;
   readonly #app: string;
   readonly #after: ClientOptions['after'];
@@ -177,6 +293,21 @@ export class KitchenSinkClient {
     }
   }
 
+  /** view `blobOf`. */
+  async blobOf(args: BlobOfArgs, options: ViewOptions = {}): Promise<string | null> {
+    return (await this.#view('blobOf', args, options)) as string | null;
+  }
+
+  /** view `count`. */
+  async count(args: CountArgs, options: ViewOptions = {}): Promise<string> {
+    return (await this.#view('count', args, options)) as string;
+  }
+
+  /** call `events`. */
+  async events(args: EventsArgs, options: CallOptions = {}): Promise<[number, string]> {
+    return (await this.#call('events', args, options)) as [number, string];
+  }
+
   /** call `everything`. */
   async everything(args: EverythingArgs, options: CallOptions = {}): Promise<Item[]> {
     return (await this.#call('everything', args, options)) as Item[];
@@ -197,13 +328,18 @@ export class KitchenSinkClient {
     return (await this.#call('secret', {}, options)) as string;
   }
 
+  /** view `shapes`. */
+  async shapes(args: ShapesArgs, options: ViewOptions = {}): Promise<Tree> {
+    return (await this.#view('shapes', args, options)) as Tree;
+  }
+
   /** call `wipe`; a passkey approves it (`options.confirm`, else the client's own). */
   async wipe(args: WipeArgs, options: CallOptions = {}): Promise<null> {
     return (await this.#call('wipe', args, options)) as null;
   }
 
   /** The app's events from log index `from`, then live, until `signal` aborts. */
-  async *events(from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & { id: string }> {
+  async *appEvents(from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & { id: string }> {
     for await (const event of this.#client.events(this.#app, from, signal)) {
       yield event as AppEvent & { id: string };
     }

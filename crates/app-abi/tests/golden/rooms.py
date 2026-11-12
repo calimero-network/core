@@ -7,15 +7,29 @@ client's retries. u64 and i64 are decimal strings and bytes base64url, as on the
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, TypedDict, cast
+from typing import Any, Dict, List, Literal, Optional, TypedDict, Union, cast
 
 from calimero import Client, SoftPasskey
 
-Booking = Any
-"""The app type `Booking`: ABI version 1 names it without its shape."""
+class Booking(TypedDict):
+    """The app type `Booking`."""
 
-SlotView = Any
-"""The app type `SlotView`: ABI version 1 names it without its shape."""
+    id: str
+    roomId: str
+    holder: str
+    start: str
+    end: str
+    title: str
+    checkedIn: bool
+
+class SlotView(TypedDict):
+    """The app type `SlotView`."""
+
+    start: str
+    end: str
+    bookingId: str
+    title: Optional[str]
+    mine: bool
 
 DuplicateError = TypedDict("DuplicateError", {"index": str})
 ForbiddenError = TypedDict("ForbiddenError", {})

@@ -128,6 +128,15 @@ jobs:
         if: matrix.surface == 'cargo'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
+      # A repository that pins mero-app-build commits the clients it generates;
+      # the bump reruns every package's `codegen` with the release's binary
+      # (bump-fleet.sh, "the client generator"), through the repository's pnpm.
+      - name: Set up pnpm
+        if: matrix.surface == 'cargo' && hashFiles('consumer/scripts/install-mero-app-build.sh') != ''
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          package_json_file: consumer/package.json
+
       - name: Rewrite the pins
         id: bump
         env:
@@ -286,6 +295,10 @@ jobs:
           - the cargo-mero pin in \`.github/actions/install-cargo-mero\` and in the
             per-app dev scripts and Makefiles. Nothing checks those, and they had
             drifted up to four releases behind by the time this was automated
+          - the \`mero-app-build\` pin in \`scripts/install-mero-app-build.sh\`
+            (unless it runs ahead), and every committed client its \`codegen\`
+            writes, regenerated with \`$VERSION\`'s generator. When they could not
+            be regenerated, the list of pins left unmoved below says so
           - \`CORE_REF\` in Mero Chat's \`mobile/e2e/run-relay.sh\`, to the commit
             \`$VERSION\` is tagged at. The mobile live tests build their relay's merod
             from it, and that runtime refuses a bundle built against a newer release

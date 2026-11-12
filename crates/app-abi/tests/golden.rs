@@ -1,12 +1,12 @@
 //! Golden files: each `tests/fixtures/<app>.abi.json` (the `calimero:abi` of an example app
 //! under `apps/`, or a crafted one covering every type) against its OpenAPI document and
-//! typed clients in `tests/golden/`. `UPDATE_GOLDEN=1 cargo test -p calimero-app-abi` rewrites
-//! them; review the diff.
+//! typed clients (TypeScript, Python, Swift, Kotlin) in `tests/golden/`.
+//! `UPDATE_GOLDEN=1 cargo test -p calimero-app-abi` rewrites them; review the diff.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use calimero_app_abi::codegen::{python, typescript, Target};
+use calimero_app_abi::codegen::{kotlin, python, swift, typescript, Target};
 use calimero_app_abi::openapi::{document, Info};
 use calimero_app_abi::AppAbi;
 use serde_json::Value;
@@ -68,6 +68,16 @@ fn generated_documents_and_clients_match_the_golden_files() {
         check(
             &golden.join(format!("{app}.py")),
             &python(&abi, &target),
+            &mut stale,
+        );
+        check(
+            &golden.join(format!("{app}.swift")),
+            &swift(&abi, &target),
+            &mut stale,
+        );
+        check(
+            &golden.join(format!("{app}.kt")),
+            &kotlin(&abi, &target, None),
             &mut stale,
         );
     }

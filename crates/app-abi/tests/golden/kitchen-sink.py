@@ -7,24 +7,101 @@ client's retries. u64 and i64 are decimal strings and bytes base64url, as on the
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, TypedDict, cast
+from typing import Any, Dict, List, Literal, Optional, TypedDict, Union, cast
 
 from calimero import Client, SoftPasskey
 
-Item = Any
-"""The app type `Item`: ABI version 1 names it without its shape."""
+Adjacent = Union["Adjacent_Text", "Adjacent_Empty"]
+"""The app type `Adjacent`."""
 
-Page_Item = Any
-"""The app type `Page<Item>`: ABI version 1 names it without its shape."""
+class Adjacent_Empty(TypedDict):
+    """The variant `Empty` of `Adjacent`."""
+
+    t: Literal["Empty"]
+
+Adjacent_Text = TypedDict("Adjacent_Text", {"t": Literal["Text"], "c": str})
+"""The variant `Text` of `Adjacent`."""
+
+Either = Union[int, "Either_NamedFields"]
+"""The app type `Either`."""
+
+class Either_NamedFields(TypedDict):
+    """The fields of the variant `Named` of `Either`."""
+
+    name: str
+
+Id = str
+"""The app type `Id`."""
+
+class Item(TypedDict):
+    """The app type `Item`."""
+
+    id: str
+    title: str
+    tags: List[str]
+    note: Optional[str]
+    status: "Status"
+
+Marker = Literal[None]
+"""The app type `Marker`."""
+
+class Page_Item(TypedDict):
+    """The app type `Page<Item>`."""
+
+    items: List["Item"]
+    next: Optional[str]
+
+Point = List[Any]
+"""The app type `Point`. A JSON array."""
+
+Status = Union[Literal["Open"], "Status_Closed", "Status_Moved", "Status_Span"]
+"""The app type `Status`."""
+
+Status_Closed = TypedDict("Status_Closed", {"Closed": "Status_ClosedFields"})
+"""The variant `Closed` of `Status`."""
+
+class Status_ClosedFields(TypedDict):
+    """The fields of the variant `Closed` of `Status`."""
+
+    at: str
+
+Status_Moved = TypedDict("Status_Moved", {"Moved": str})
+"""The variant `Moved` of `Status`."""
+
+Status_Span = TypedDict("Status_Span", {"Span": List[Any]})
+"""The variant `Span` of `Status`."""
+
+Tagged = Union["Tagged_draft", "Tagged_published"]
+"""The app type `Tagged`."""
+
+class Tagged_draft(TypedDict):
+    """The variant `draft` of `Tagged`."""
+
+    type: Literal["draft"]
+
+class Tagged_published(TypedDict):
+    """The variant `published` of `Tagged`."""
+
+    type: Literal["published"]
+    at: str
+
+class Tree(TypedDict):
+    """The app type `Tree`."""
+
+    value: int
+    children: List["Tree"]
 
 ForbiddenError = TypedDict("ForbiddenError", {})
 InvalidError = TypedDict("InvalidError", {"detail": Optional[str], "field": str})
 NotFoundError = TypedDict("NotFoundError", {"id": str})
-AppErrorCode = Literal["Forbidden", "Invalid", "NotFound"]
+RejectedError = TypedDict("RejectedError", {"0": str})
+UnknownError = TypedDict("UnknownError", {})
+AppErrorCode = Literal["Forbidden", "Invalid", "NotFound", "Rejected", "Unknown"]
 """The app's error codes: `details["code"]` of a 422 APP_ERROR."""
 
 ActionFailedEvent = TypedDict("ActionFailedEvent", {"actionId": str, "method": str, "reason": str})
 CreatedEvent = TypedDict("CreatedEvent", {"id": str, "item": Item})
+DefaultEvent = TypedDict("DefaultEvent", {"at": Optional[str], "blob": str, "delta": str, "pair": List[Any]})
 WipedEvent = TypedDict("WipedEvent", {})
 
 
@@ -63,6 +140,21 @@ class KitchenSinkClient:
         answer = self._client.json.apps.view(app=self._app, method=method, args=args, **fields)
         return answer["result"]
 
+    def blob_of(self, key: str, *, consistency: Optional[Literal["strong", "stale"]] = None, min_index: Optional[int] = None) -> Optional[str]:
+        """view `blobOf`."""
+        args: Dict[str, Any] = {"key": key}
+        return cast(Optional[str], self._view("blobOf", args, consistency, min_index))
+
+    def count(self, stale: bool, *, consistency: Optional[Literal["strong", "stale"]] = None, min_index: Optional[int] = None) -> str:
+        """view `count`."""
+        args: Dict[str, Any] = {"stale": stale}
+        return cast(str, self._view("count", args, consistency, min_index))
+
+    def events(self, in_: str, default: Optional[str] = None, when: Optional[str] = None, *, idempotency_key: Optional[str] = None) -> List[Any]:
+        """call `events`."""
+        args: Dict[str, Any] = {"in": in_, "default": default, "when": when}
+        return cast(List[Any], self._call("events", args, idempotency_key))
+
     def everything(self, flag: bool, small: int, medium: int, count: int, big: str, huge: int, size: int, delta: int, offset: int, balance: str, ratio: float, precise: float, letter: str, title: str, blob: str, names: List[str], pair: List[Any], digest: List[int], scores: Dict[str, int], by_id: Dict[str, str], unique: List[str], item: Item, page: Page_Item, maybe: Optional[str] = None, nested: Optional[List[Optional[Item]]] = None, *, idempotency_key: Optional[str] = None) -> List[Item]:
         """call `everything`."""
         args: Dict[str, Any] = {"flag": flag, "small": small, "medium": medium, "count": count, "big": big, "huge": huge, "size": size, "delta": delta, "offset": offset, "balance": balance, "ratio": ratio, "precise": precise, "letter": letter, "title": title, "blob": blob, "names": names, "pair": pair, "digest": digest, "scores": scores, "byId": by_id, "unique": unique, "item": item, "page": page, "maybe": maybe, "nested": nested}
@@ -83,11 +175,16 @@ class KitchenSinkClient:
         args: Dict[str, Any] = {}
         return cast(str, self._call("secret", args, idempotency_key, passkey))
 
+    def shapes(self, status: Status, tagged: Tagged, adjacent: Adjacent, either: Either, id: Id, point: Point, marker: Marker, tree: Tree, *, consistency: Optional[Literal["strong", "stale"]] = None, min_index: Optional[int] = None) -> Tree:
+        """view `shapes`."""
+        args: Dict[str, Any] = {"status": status, "tagged": tagged, "adjacent": adjacent, "either": either, "id": id, "point": point, "marker": marker, "tree": tree}
+        return cast(Tree, self._view("shapes", args, consistency, min_index))
+
     def wipe(self, reason: Optional[str] = None, *, passkey: Optional[SoftPasskey] = None, idempotency_key: Optional[str] = None) -> None:
         """call `wipe`; `passkey` approves it (confirm), else the client's own."""
         args: Dict[str, Any] = {"reason": reason}
         return cast(None, self._call("wipe", args, idempotency_key, passkey))
 
-    def events(self, start: int = 0, limit: int = 100, timeout: float = 5.0) -> List[Dict[str, Any]]:
+    def app_events(self, start: int = 0, limit: int = 100, timeout: float = 5.0) -> List[Dict[str, Any]]:
         """The app's events from log index `start`: each `{"id", "kind", "data"}`."""
         return cast(List[Dict[str, Any]], self._client.events(self._app, start, limit, timeout))
