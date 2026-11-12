@@ -16,6 +16,7 @@
 //! - `type: [T, "null"]` (or `anyOf` with `{type: null}`) is `Option<T>`; a
 //!   property that may be absent is `Option<T>` too, and one that may be
 //!   absent or `null` is `Option<Option<T>>` (absent, `null`, a value);
+//! - `type: null` alone (an answer that is only `null`) is `()`;
 //! - integers are `format: int64`: `u64` with `minimum: 0`, else `i64`.
 
 use std::collections::BTreeSet;
@@ -63,6 +64,8 @@ pub enum Ty {
     Named(String),
     Nullable(Box<Ty>),
     Bytes,
+    /// `type: null`: the value is always `null`.
+    Unit,
 }
 
 impl Ty {
@@ -80,6 +83,7 @@ impl Ty {
             Self::Named(n) => n.clone(),
             Self::Nullable(t) => format!("Option<{}>", t.rust()),
             Self::Bytes => "Vec<u8>".into(),
+            Self::Unit => "()".into(),
         }
     }
 }
@@ -295,6 +299,7 @@ impl<'d> Types<'d> {
             Some("integer") => Ty::I64,
             Some("number") => Ty::F64,
             Some("boolean") => Ty::Bool,
+            Some("null") => Ty::Unit,
             Some("array") => {
                 let items = self.resolve(&schema["items"], &format!("{name}Item"))?;
                 Ty::Vec(Box::new(items))

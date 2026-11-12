@@ -107,7 +107,7 @@ async fn raw_bodies_go_up_and_come_back_as_bytes() {
 
     let blob = alice
         .apps()
-        .blob_upload(&app, "text/plain", b"hello".to_vec(), None)
+        .blob_upload(&app, b"hello".to_vec(), None)
         .await
         .unwrap();
     assert_eq!(blob.size, 5);
