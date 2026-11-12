@@ -290,7 +290,7 @@ impl Node {
         let mut wasm_by_hash = BTreeMap::new();
         let mut part_sizes = BTreeMap::new();
         let mut only_compute = false;
-        let mut service_pipelines = Vec::new();
+        let mut service_pipelines: pipelines::ServicePipelines = (Vec::new(), None);
         for Service {
             name: service,
             wasm: bytes,
@@ -298,6 +298,13 @@ impl Node {
             pipelines: files,
         } in wasm
         {
+            if !files.is_empty() && !service.is_empty() {
+                return Err(ApiError::new(
+                    422,
+                    "PIPELINES_NEED_ONE_SERVICE",
+                    "pipelines run on a package with one service",
+                ));
+            }
             let Some(bytes) = bytes else {
                 only_compute = true;
                 let job = job.ok_or_else(|| {
@@ -326,7 +333,9 @@ impl Node {
                         "a package with only a compute component must declare at least one compute method",
                     ));
                 }
-                service_pipelines.push((files, Some(pipelines::compute_caps(&prepared.abi))));
+                if !files.is_empty() {
+                    service_pipelines = (files, Some(pipelines::compute_caps(&prepared.abi)));
+                }
                 let _prev = compute.insert(service, job_hash.clone());
                 let _prev = part_sizes.insert(job_hash.clone(), job.len() as u64);
                 let _prev = wasm_by_hash.insert(job_hash, job);
@@ -372,7 +381,9 @@ impl Node {
                 let _prev = part_sizes.insert(job_hash.clone(), job.len() as u64);
                 let _prev = wasm_by_hash.insert(job_hash, job);
             }
-            service_pipelines.push((files, job_caps));
+            if !files.is_empty() {
+                service_pipelines = (files, job_caps);
+            }
             let _prev = services.insert(service, hash.clone());
             let _prev = part_sizes.insert(hash.clone(), bytes.len() as u64);
             let _prev = wasm_by_hash.insert(hash, bytes);

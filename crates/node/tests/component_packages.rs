@@ -19,7 +19,10 @@ use std::collections::BTreeMap;
 use calimero_client::{Client, Consistency};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::types::{Components, Executor};
-use common::{mpk_needing, mpk_parts, mpk_with, mpk_with_pipelines, signed_up, Cluster, PUBLISHER};
+use common::{
+    mpk_named_service, mpk_needing, mpk_parts, mpk_with, mpk_with_pipelines, signed_up, Cluster,
+    PUBLISHER,
+};
 use serde_json::{json, Value};
 
 /// A signed single-service `.mpk`, the shape `mero-sign` signs.
@@ -793,6 +796,25 @@ async fn pipelines_are_refused_when_malformed_duplicated_or_without_a_compute_co
         .await
         .unwrap_err();
     assert_eq!(bad_pipeline(&e)[0]["code"], "NO_COMPUTE");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn pipelines_are_refused_on_a_named_service() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let both = common::components("compute");
+    let e = owner
+        .upload_package(mpk_named_service(
+            "com.test.job",
+            "1.0.0",
+            &both.app,
+            both.compute.as_ref().unwrap(),
+            &[("pipelines/p1.yaml", PIPELINE)],
+            &key,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("PIPELINES_NEED_ONE_SERVICE"), "{e}");
 }
 
 /// An older node drops `pipelines` and would run a release's pipelines as none.

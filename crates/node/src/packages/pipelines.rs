@@ -114,73 +114,70 @@ fn env_for(
     env
 }
 
-/// One service's pipeline files (path, source) and the compute methods they may name;
-/// `None` when the service ships no compute component.
+/// The package's pipeline files (path, source) and the compute methods they may name;
+/// `None` when it ships no compute component.
 pub type ServicePipelines = (Vec<(String, Vec<u8>)>, Option<BTreeMap<String, Caps>>);
 
-/// Compile and check every pipeline file of the package against its services' compute
-/// components and the cluster's `pools` (name to maximum memory in MiB); every problem of
-/// every file is listed, and names are unique across the package.
+/// Compile and check every pipeline file of the package against its compute component and the
+/// cluster's `pools` (name to maximum memory in MiB); every problem of every file is listed,
+/// and names are unique across the package.
 pub fn register(
-    services: &[ServicePipelines],
+    (files, methods): &ServicePipelines,
     pools: &BTreeMap<String, u32>,
     available: &BTreeMap<String, Module>,
 ) -> Result<Vec<(Compiled, PipelineRef)>, ApiError> {
     let (mut details, mut done, mut names) = (Vec::new(), Vec::new(), BTreeSet::new());
-    for (files, methods) in services {
-        if files.is_empty() {
-            continue;
-        }
-        let Some(methods) = methods else {
-            details.push(detail(
-                &files[0].0,
-                "",
-                "NO_COMPUTE",
-                "a package with pipelines must ship a compute component",
-            ));
-            continue;
+    if files.is_empty() {
+        return Ok(done);
+    }
+    let Some(methods) = methods else {
+        return Err(refused(vec![detail(
+            &files[0].0,
+            "",
+            "NO_COMPUTE",
+            "a package with pipelines must ship a compute component",
+        )]));
+    };
+    let env = env_for(methods, pools, available);
+    for (file, source) in files {
+        let from = |errs: Vec<SpecError>| {
+            errs.into_iter()
+                .map(|e| detail(file, &e.path, e.code, &e.message))
+                .collect::<Vec<_>>()
         };
-        let env = env_for(methods, pools, available);
-        for (file, source) in files {
-            let from = |errs: Vec<SpecError>| {
-                errs.into_iter()
-                    .map(|e| detail(file, &e.path, e.code, &e.message))
-                    .collect::<Vec<_>>()
-            };
-            let (pipeline, compiled) = match Compiled::of(source) {
-                Ok(ok) => ok,
-                Err(errs) => {
-                    details.extend(from(errs));
-                    continue;
-                }
-            };
-            if let Err(errs) = check(&pipeline, &env) {
+        let (pipeline, compiled) = match Compiled::of(source) {
+            Ok(ok) => ok,
+            Err(errs) => {
                 details.extend(from(errs));
                 continue;
             }
-            if !names.insert(compiled.name.clone()) {
-                details.push(detail(
-                    file,
-                    "name",
-                    "DUPLICATE_NAME",
-                    &format!(
-                        "another pipeline of the package is named `{}`",
-                        compiled.name
-                    ),
-                ));
-                continue;
-            }
-            let modules = module_refs(&pipeline)
-                .into_iter()
-                .filter_map(|name| Some((name.to_owned(), available.get(name)?.pin.clone())))
-                .collect();
-            let record = PipelineRef {
-                hash: compiled.hash.clone(),
-                worst_case_fuel: worst_case_fuel(&pipeline, &env).to_string(),
-                modules,
-            };
-            done.push((compiled, record));
+        };
+        if let Err(errs) = check(&pipeline, &env) {
+            details.extend(from(errs));
+            continue;
         }
+        if !names.insert(compiled.name.clone()) {
+            details.push(detail(
+                file,
+                "name",
+                "DUPLICATE_NAME",
+                &format!(
+                    "another pipeline of the package is named `{}`",
+                    compiled.name
+                ),
+            ));
+            continue;
+        }
+        let modules = module_refs(&pipeline)
+            .into_iter()
+            .filter_map(|name| Some((name.to_owned(), available.get(name)?.pin.clone())))
+            .collect();
+        let record = PipelineRef {
+            hash: compiled.hash.clone(),
+            worst_case_fuel: worst_case_fuel(&pipeline, &env).to_string(),
+            modules,
+        };
+        done.push((compiled, record));
     }
     if details.is_empty() {
         Ok(done)
@@ -242,11 +239,11 @@ impl Node {
             }
         };
         let methods = self.caps_of_component(hash).await?;
-        let services = [(
+        let own_files = (
             vec![(String::new(), source.to_vec())],
             Some((*methods).clone()),
-        )];
-        let available = self.resolve_modules(&services, actor).await;
+        );
+        let available = self.resolve_modules(&own_files, actor).await;
         let env = env_for(&methods, &self.pool_ceilings(), &available);
         if let Err(errs) = check(&pipeline, &env) {
             return Ok(failed(&errs));
@@ -264,12 +261,11 @@ impl Node {
     /// A reference that resolves to none is left out, so `check` answers `UNKNOWN_MODULE`.
     pub async fn resolve_modules(
         &self,
-        services: &[ServicePipelines],
+        (files, _): &ServicePipelines,
         actor: &str,
     ) -> BTreeMap<String, Module> {
-        let refs: BTreeSet<String> = services
+        let refs: BTreeSet<String> = files
             .iter()
-            .flat_map(|(files, _)| files)
             .filter_map(|(_, source)| Compiled::of(source).ok())
             .flat_map(|(p, _)| {
                 module_refs(&p)

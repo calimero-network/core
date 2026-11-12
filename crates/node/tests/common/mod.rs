@@ -422,7 +422,15 @@ pub fn mpk_parts(
     min_runtime: &str,
     key: &ed25519_dalek::SigningKey,
 ) -> Vec<u8> {
-    mpk_build(package, version, wasm, compute, min_runtime, &[], key)
+    mpk_build(
+        package,
+        version,
+        (wasm, compute),
+        min_runtime,
+        &[],
+        false,
+        key,
+    )
 }
 
 /// [`mpk_parts`] shipping `pipelines` (file name, YAML source) as well.
@@ -434,16 +442,44 @@ pub fn mpk_with_pipelines(
     pipelines: &[(&str, &str)],
     key: &ed25519_dalek::SigningKey,
 ) -> Vec<u8> {
-    mpk_build(package, version, wasm, compute, "0.1.0", pipelines, key)
+    mpk_build(
+        package,
+        version,
+        (wasm, compute),
+        "0.1.0",
+        pipelines,
+        false,
+        key,
+    )
+}
+
+/// [`mpk_with_pipelines`] with the app, compute component and pipelines declared by one named service.
+pub fn mpk_named_service(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    compute: &[u8],
+    pipelines: &[(&str, &str)],
+    key: &ed25519_dalek::SigningKey,
+) -> Vec<u8> {
+    mpk_build(
+        package,
+        version,
+        (Some(wasm), Some(compute)),
+        "0.1.0",
+        pipelines,
+        true,
+        key,
+    )
 }
 
 fn mpk_build(
     package: &str,
     version: &str,
-    wasm: Option<&[u8]>,
-    compute: Option<&[u8]>,
+    (wasm, compute): (Option<&[u8]>, Option<&[u8]>),
     min_runtime: &str,
     pipelines: &[(&str, &str)],
+    named_service: bool,
     key: &ed25519_dalek::SigningKey,
 ) -> Vec<u8> {
     use sha2::Digest;
@@ -452,7 +488,7 @@ fn mpk_build(
         hash: hex::encode(sha2::Sha256::digest(bytes)),
         size: bytes.len() as u64,
     };
-    let manifest = calimero_bundle::BundleManifest {
+    let mut manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
         package: package.to_owned(),
         app_version: version.to_owned(),
@@ -479,6 +515,15 @@ fn mpk_build(
             .collect(),
         signature: None,
     };
+    if named_service {
+        manifest.services = Some(vec![calimero_bundle::BundleService {
+            name: "svc".to_owned(),
+            wasm: manifest.wasm.take().unwrap(),
+            abi: None,
+            compute: manifest.compute.take(),
+            pipelines: std::mem::take(&mut manifest.pipelines),
+        }]);
+    }
     let mut manifest = serde_json::to_value(&manifest).unwrap();
     calimero_bundle::sign_manifest_json(&mut manifest, key).unwrap();
     let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(
