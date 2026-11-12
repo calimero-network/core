@@ -1092,8 +1092,8 @@ is its command line.
   `a_custom_domains_host_names_one_origin`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
-  `POST /consent/requests { kind: release|upgrade|outbound, scope?, subject,
-  returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
+  `POST /consent/requests { kind: release|upgrade|outbound|createOrg|createInvite|acceptInvite,
+  scope?, subject, returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
   `withdraw: true` withdrawing its approval) and gets `{ requestId, url,
   expiresAt, code }` (`consent_page::confirmation_code`, shown on the page
   and by the console); `returnTo` is the package's own frontend origin or one its
@@ -1123,6 +1123,19 @@ is its command line.
   `GET /consent/{id}/result` (sealed, same account; forwarded to the holder
   over `internal/consent/result`).
   Package-bound sessions are still refused the approval routes themselves.
+  `createOrg { name }`, `createInvite { org, role, teams?, ttlSecs?, uses?,
+  allApps? }` and `acceptInvite { token }` are how an app's frontend manages
+  organizations (refused `POST /orgs`, invites and redemption): `act` runs
+  `api::create_org`, `api::create_invite` (its own logged
+  `__create_invite` consent) and `api::redeem_invite`, the first and last
+  behind an unlogged step-up over `account:<a>` (`__create_org { name }`,
+  `__accept_invite { inviteKey }`), so the log entries are exactly the API's
+  and no feature gate is needed. What the approval made (`orgId`, the
+  invite's `token`, the `org` joined) is kept with the decision
+  (`ConsentRequests::decide`, `Outcome`, redacted in `Debug` as
+  `InviteToken` is) and answered as `/result`'s `outcome`, never in the
+  page's clear answer. Regression:
+  `an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page`.
   Regressions: `tests/consent_page.rs`.
 - **Presence** (`presence.rs`, the ephemeral awareness channel): in memory on
   every node, never in a log. `POST /apps/{app}/presence { seq, state }` (anyone

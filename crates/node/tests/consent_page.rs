@@ -1189,3 +1189,185 @@ async fn a_publisher_upgraded_package_is_not_upgraded_on_the_owners_page() {
     assert_eq!(status(&e), 403, "{e}");
     assert!(e.to_string().contains("its publisher upgrades"), "{e}");
 }
+
+/// An app's frontend manages organizations only through the node's page: its
+/// package-bound session is refused `POST /orgs`, invites and redemption
+/// (the chat app's "Create workspace"), and asks the node instead. The
+/// person approves each with their passkey on the node's page; what was made
+/// (the organization's id, the invite's token, the organization joined)
+/// reaches the asking app through the sealed `/result` only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let (bob, bob_key) = signed_up(&c, 2, "bob").await;
+    let bob_id = bob.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.upload_package(v1).await.unwrap();
+
+    // Alice and Bob in the app's own frontend: sessions bound to the package.
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let back = format!("{app_origin}/1.0.0/");
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let bob_in_app = c.client(1);
+    let mut bob_in_app_key = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = bob_in_app.sign_in(&mut bob_in_app_key).await.unwrap();
+
+    // What the chat app hit: the frontend may not create an organization.
+    let e = in_app
+        .post("orgs", json!({ "name": "calimero" }))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+
+    // It asks the node; a name the log would refuse never gets a page.
+    let ask = |kind: &str, subject: Value| json!({ "kind": kind, "subject": subject, "returnTo": back });
+    let e = in_app
+        .post("consent/requests", ask("createOrg", json!({ "name": " " })))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 400, "{e}");
+    let made = in_app
+        .post("consent/requests", ask("createOrg", json!({ "name": "calimero" })))
+        .await
+        .unwrap();
+    let id = made["requestId"].as_str().unwrap().to_owned();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["kind"], "createOrg", "{model}");
+    assert_eq!(model["title"], "Create the organization calimero");
+    assert_eq!(model["requestedBy"]["package"], PACKAGE);
+    let result = in_app.get(&format!("consent/{id}/result")).await.unwrap();
+    assert_eq!(result["status"], "pending");
+    assert!(result.get("outcome").is_none(), "{result}");
+
+    let mut alice_page = SoftAuthenticator::with_key(&alice_key, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(
+        args,
+        json!({ "name": "calimero", "__method": "__create_org" })
+    );
+    assert_eq!(
+        done["redirect"],
+        json!(format!("{back}?request_id={id}&result=approved"))
+    );
+    let result = in_app.get(&format!("consent/{id}/result")).await.unwrap();
+    assert_eq!(result["status"], "approved", "{result}");
+    assert_eq!(result["kind"], "createOrg");
+    let org = result["outcome"]["orgId"].as_str().unwrap().to_owned();
+    let alice_id = alice.me().await.unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["name"], "calimero");
+    assert_eq!(o["members"][&alice_id], "owner", "{o}");
+    // Decided once.
+    let (code, again) = page.post("approve", json!({})).await;
+    assert_eq!(code, 409, "{again}");
+
+    // An invite: refused directly, made on the page, its token to the app only.
+    let e = in_app
+        .post(&format!("orgs/{org}/invites"), json!({ "role": "member" }))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    let e = in_app
+        .post(
+            "consent/requests",
+            ask("createInvite", json!({ "org": org, "role": "owner" })),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "never an owner invite: {e}");
+    let e = bob_in_app
+        .post(
+            "consent/requests",
+            ask("createInvite", json!({ "org": org, "role": "member" })),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 404, "not a member of it: {e}");
+    let made = in_app
+        .post(
+            "consent/requests",
+            ask("createInvite", json!({ "org": org, "role": "member", "uses": 2 })),
+        )
+        .await
+        .unwrap();
+    let id = made["requestId"].as_str().unwrap().to_owned();
+    let page = Page::new(made["url"].as_str().unwrap());
+    let model = page.model().await;
+    assert_eq!(model["kind"], "createInvite", "{model}");
+    assert_eq!(model["title"], "Invite people to calimero");
+    assert_eq!(model["invite"]["uses"], 2);
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["__method"], "__create_invite", "{args}");
+    assert!(
+        !done.to_string().contains("inv_"),
+        "the page's clear answer carries no token: {done}"
+    );
+    let result = in_app.get(&format!("consent/{id}/result")).await.unwrap();
+    let token = result["outcome"]["token"].as_str().unwrap().to_owned();
+    assert!(token.starts_with("inv_"), "{result}");
+    // Another account's app does not read it.
+    let e = bob_in_app
+        .get(&format!("consent/{id}/result"))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
+
+    // Bob joins with it: refused directly, approved on the page.
+    let e = bob_in_app
+        .post(&format!("invites/{token}/redeem"), json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    let e = bob_in_app
+        .post(
+            "consent/requests",
+            ask("acceptInvite", json!({ "token": "inv_unknown" })),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
+    let made = bob_in_app
+        .post("consent/requests", ask("acceptInvite", json!({ "token": token })))
+        .await
+        .unwrap();
+    let id = made["requestId"].as_str().unwrap().to_owned();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["kind"], "acceptInvite", "{model}");
+    assert_eq!(model["title"], "Join calimero");
+    assert!(!model.to_string().contains(&token), "{model}");
+    // Alice's passkey is not Bob's: the page refuses it.
+    let mut wrong = SoftAuthenticator::with_key(&alice_key, "localhost", &origin(&url));
+    let ((code, refused), _) = page.approve(&c, &mut wrong).await;
+    assert_ne!(code, 200, "{refused}");
+    let mut bob_page = SoftAuthenticator::with_key(&bob_key, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut bob_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["__method"], "__accept_invite", "{args}");
+    let result = bob_in_app
+        .get(&format!("consent/{id}/result"))
+        .await
+        .unwrap();
+    assert_eq!(result["outcome"]["org"], json!(org), "{result}");
+    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["members"][&bob_id], "member", "{o}");
+}
