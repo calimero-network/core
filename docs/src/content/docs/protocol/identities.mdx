@@ -5,6 +5,9 @@ sidebar:
   order: 12
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import OrgRecoveryTimeline from '../../../components/diagrams/OrgRecoveryTimeline.astro';
+
 A **person** is an **account**. They prove it with a WebAuthn **passkey**, and
 each passkey on the account is one of their **devices**. Signing in gives them
 a short **session token** that every node of the cluster verifies on its own. A
@@ -16,9 +19,11 @@ records live in the [system group](/protocol/system-group/).
 
 An account id is 32 random bytes in base64url, made when someone signs up. The
 account record holds a display name, its passkeys (at most 10) and their
-labels and the account's aliases for apps. Its apps' approvals (mero-tee
-releases and outbound prefixes) are its organizations', its personal one's for
-the apps it makes without naming another (see
+labels and the account's aliases for apps. An account approves nothing for
+itself: every app is in an organization, and its approvals (mero-tee releases
+and outbound prefixes) are that organization's. The account's own apps are in
+its **personal organization**, made in the same log entry as the account
+(`CreateAccount { personalOrg }`; see
 [Personal organizations](/protocol/organizations/#personal-organizations) and
 [Deployment governance](/protocol/governance/)). Who may sign up is the
 cluster's [sign-up policy](/protocol/governance/#sign-up): `open` (the
@@ -27,8 +32,8 @@ takes), `invite` or `closed`. `CreateAccount` carries the invite a person signs
 up with, as the token key's signature over the new account and the time, and
 `apply` judges it against the policy.
 
-The release of the node an account signed up through is approved for that
-account's own apps from the start, so its apps can run where it began.
+The release of the node an account signed up through is approved for its
+personal organization from the start, so its apps can run where it began.
 
 ## Passkeys
 
@@ -45,7 +50,7 @@ party id.
 | Sign up | `/auth/passkey/register/{begin,finish}` | A new account with this passkey, and a session |
 | Sign in | `/auth/passkey/login/{begin,finish}` | A session for the passkey's account |
 | Add a device | `/auth/passkeys/add/{begin,finish}` (signed in; `finish` answers `412` and is approved by a passkey the account already has) | Another passkey on the account |
-| Recover (lost every passkey) | `/auth/recovery/{begin,start}` (signed out; the account's recovery code and a new passkey), then after 72 hours `/auth/recovery/finish` (the new passkey; `/auth/recovery/cancel` with an existing passkey stops it before) | The code spent and the passkey pending; at finish the passkey on the account, every earlier session revoked, and a session |
+| Recover (lost every passkey) | `/auth/recovery/{begin,start}` (signed out; the account's recovery code and a new passkey), then after 72 hours `/auth/recovery/finish` (the new passkey; `/auth/recovery/cancel` with an existing passkey stops it before) | The code spent and the passkey pending; at finish the passkey on the account, every earlier session and API key revoked, and a session ([Account recovery](#account-recovery)) |
 | Label or remove a device | `POST` / `DELETE /auth/passkeys/{cred}` (removal approved with a passkey, `412` first) | A label; or the passkey gone and its sessions revoked (the last passkey cannot be removed) |
 
 A ceremony's challenge lives in the memory of the node that issued it, for 5
@@ -114,9 +119,10 @@ session token.
 A node verifies a token issued elsewhere without asking the issuer: it checks
 the signature against the issuer's signing key as it attested it at the
 address the cluster registered for that node, checks the expiry, and that the
-issuer's attested release may vouch for the account: a release the account
-approved for its own apps or an organization it belongs to approved (where the
-operator holds release approvals, one it approved). Each app access then also
+issuer's attested release may vouch for the account: a release one of the
+account's organizations approved, its personal organization included (where
+the operator holds release approvals, one it approved;
+`SystemState::release_may_serve_account`). Each app access then also
 requires the issuer's release to be approved for that app's data. So a node on
 a release nobody approved can mint tokens, but no other node takes them. Then —
 on fresh system state — the node checks that the session is not revoked and
@@ -150,8 +156,8 @@ mero-kms holds its root, so only that release opens the key: a key attested
 once under release R signs only for R, and a node on another release booted
 on the same disk cannot sign as this one.
 
-A node on a release the account's owners have not approved neither issues nor
-takes the account's sessions: it answers `421 WRONG_NODE`, and the client uses
+A node on a release none of the account's organizations approved neither
+issues nor takes the account's sessions: it answers `421 WRONG_NODE`, and the client uses
 another node.
 
 ## Devices
@@ -229,7 +235,7 @@ passkey consent covers all four.
 | Call and read apps it reaches | ✓ | that package's apps only | ✓ | within scope |
 | Install packages, create apps | ✓ | instances of its own package only | ✓ | — |
 | Manage passkeys, API keys, approvals, upgrades, uninstalls | ✓ | — | — | — |
-| Manage organizations, teams, members and invites; delete an app or change its access | ✓ | through the [consent page](/protocol/consent-page/#organizations-and-invites) only: create, rename or delete an organization; mint, accept or revoke an invite; leave; remove a member or change their role, teams, capabilities or all-apps grant; a team's or the organization's default capabilities | — | — |
+| Manage organizations, teams, members and invites; delete an app or change its access | ✓ | its own package's channels directly ([below](#package-bound-sessions)); everything else through the [consent page](/protocol/consent-page/#organizations-and-invites) only: create, rename or delete an organization; mint, accept or revoke an invite; leave; remove a member or change their role, teams, capabilities or all-apps grant; a team's or the organization's default capabilities | — | — |
 | Upgrade one app to signed releases of its package, without a step-up | — | — | — | an [upgrade key](#upgrade-keys), and nothing else |
 | Approve a confirm method | ✓ (with step-up) | from its own origin | only with `allowConfirm`, relaying an assertion | same |
 | Ask for an approval on the node's consent page | ✓ | ✓ (returns to its own origin) | — | — |
@@ -242,13 +248,29 @@ a member's removal, role, teams, capabilities and all-apps grant), the
 person's passkey on the node's consent page: an API key cannot do them, nor can a
 package-bound session by itself.
 
+### Package-bound sessions
+
 A session opened on a package's frontend is bound to that package
 (`SessionClaims::app`, carried through refresh): it reaches only apps running a
 release of that package, and the node refuses it credential management, API
 keys, approvals, upgrades, uninstalls and uploads, and every change to
 organizations, teams, members and invites (redeeming one included), and to an
-app's lifetime or access, its own package's apps included. A step-up it makes
-is for one of its package's apps only. An app that creates organizations,
+app's lifetime or access, with one exception below.
+
+**Its own package's channels.** In an organization where the package has an
+[app team](/protocol/organizations/#app-teams), the session may manage the
+teams below that app team (`Principal::within_team`; `Org::package_of_team`):
+create a team under it, rename or move a team below it (never the app team
+itself, and a move only within), add, change and remove members there, delete
+a team below it whose apps are all of the package, and move the package's apps
+between those teams (`POST /apps/{app}/access`). This is how a chat app runs
+its channels. The authority is still the person's, judged where each command
+applies as for any session; the step-ups these need (`__set_team_member`,
+`__remove_team_member`, `__delete_team`, over `org:<org>`) are accepted from the
+package's own origin, and only over its own package's teams. Everything else in
+the organization stays refused to it.
+
+A step-up it makes is otherwise for one of its package's apps only. An app that creates organizations,
 invites people, lets them join or leave, moderates members or changes an
 organization's settings asks the node's
 [consent page](/protocol/consent-page/#organizations-and-invites) instead,
@@ -345,6 +367,120 @@ Not yet: proof that the manager controls the origin (a squatter on another
 developer's origin denies them its use on this cluster, but never sees a
 token: the sessions go to the pages on that origin), and origins scoped to a
 deployment.
+
+## Account recovery
+
+An account acts only with its own passkeys. A person who loses every one can
+no longer sign in, and nobody can act for them: not an organization admin, not
+the operator, not a node. [Organization recovery](/protocol/organizations/#recovery)
+hands an organization to another account and never touches the old one.
+Account recovery gives the account itself a new passkey, after a delay during
+which any passkey the account still has can cancel it.
+
+<OrgRecoveryTimeline />
+
+**The recovery code.** An account may hold one: 160 random bits, shown once as
+32 Crockford base32 characters in groups of four
+(`calimero_identity::new_recovery_code`). It is read back however it is typed:
+case, dashes and spaces are ignored, and `O`, `I`, `L` read as `0`, `1`, `1`
+(`normalize_recovery_code`; at most `MAX_RECOVERY_CODE_CHARS`, 80, are read).
+The code stands for an Ed25519 key, as an invite token does: its seed is
+`SHA-256("calimero.account-recovery-code.v1\0" ‖ code)`
+(`proof::recovery_signing_key`). The log keeps only the public half
+(`SystemState::recovery_keys`, key → account), so neither the code nor anything
+that redeems it is logged.
+
+| Step | Route | Who | Proof logged | Effect where it applies |
+| --- | --- | --- | --- | --- |
+| Make a code | `POST /auth/recovery` (`412` first) | The account, on an unbound passkey session | Passkey consent over `account:<a> / __set_recovery / { recoveryKey }` | `SetAccountRecoveryKey`: replaces any code the account had; the answer carries the code, once |
+| Remove it | `DELETE /auth/recovery` (`412` first) | The account | Consent over `account:<a> / __remove_recovery / {}` | `RemoveAccountRecoveryKey` |
+| Begin | `POST /auth/recovery/begin { code }` | Anyone, signed out | None (nothing is logged) | A passkey registration challenge for the account the code names |
+| Start | `POST /auth/recovery/start { challengeId, code, registration }` | Anyone, signed out | The code key's signature over `recover_message` | `StartAccountRecovery`: the code is spent; `accountRecoveries[a] = { credential, startedAt, readyAt }`; no passkey is added and no session opens |
+| Cancel | `POST /auth/recovery/cancel` (`412` first) | The account, with a passkey it already has | Consent over `account:<a> / __cancel_recovery / { credentialId }` | `CancelAccountRecovery`: the pending recovery goes; the code stays spent |
+| Finish | `POST /auth/recovery/finish { accountId? }` (`412` first) | The new passkey, signed out, at or after `readyAt` | The new passkey's sign-in assertion over `session / __sign_in / sign_in_args(refresh)` | `FinishAccountRecovery`: the passkey is added; every session, refresh token and API key of the account is revoked; the new session's refresh token is recorded |
+
+`recover_message` is
+`"calimero.account-recovery-start.v1\0" ‖ key ‖ 0 ‖ account ‖ 0 ‖ credential id ‖ 0 ‖ SHA-256(credential public key JSON) ‖ 0 ‖ at`
+(`proof::recover_message`). It names the passkey, so a node that saw the log
+cannot put its own in its place, and it is spent once (`used_proofs`). The
+finish opens a session as every sign-in does: the challenge is the new
+session's statement (the refresh token's hash and key, the session and its
+expiry), and the assertion is checked where it applies, under the pending
+credential, with the user verified. So no node can finish a recovery, or open
+its session, without the new passkey.
+
+<SeqDiagram
+  id="d-account-recovery"
+  title="Recovering an account with its code"
+  lanes={[
+    { label: 'New device', color: '#f0883e' },
+    { label: 'Any node', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: 'Old devices', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /auth/recovery/begin { code }' },
+    { from: 1, to: 0, label: 'registration challenge for the account the code names', dashed: true },
+    { from: 0, to: 1, label: 'POST /auth/recovery/start { challengeId, code, registration }' },
+    { from: 1, to: 2, label: 'StartAccountRecovery (code key signs account, passkey, at)' },
+    { from: 2, to: 3, label: '/auth/me: recoveryPending { readyAt }', dashed: true },
+    { type: 'divider', label: '72 hours: any passkey the account still has may cancel' },
+    { from: 0, to: 1, label: 'POST /auth/recovery/finish → 412 (sign-in challenge)' },
+    { from: 0, to: 1, label: "retry with the new passkey's assertion" },
+    { from: 1, to: 2, label: 'FinishAccountRecovery: passkey added, sessions and API keys revoked' },
+    { from: 1, to: 0, label: 'a session for the recovered account', dashed: true },
+  ]}
+/>
+
+**Limits.** `RECOVERY_DELAY_SECS` is 72 hours, the same as for organizations,
+judged at the commands' own `at` (the clock of the node that took the request,
+replicated with the command), never at apply. One recovery per account at a
+time: a begin or a start while one is pending is `409 RECOVERY_PENDING`. One
+code per account; a code starts one recovery and is spent whether that
+finishes or is cancelled. A wrong or spent code is `401` at `begin`, and a
+wrong code at `start` spends the ceremony (begin again). There is no attempt
+counter: a counter changes nothing against guessing 160 bits. A finish before
+`readyAt` is `409 RECOVERY_NOT_READY` with `details.readyAt`; with no recovery
+under way, `404`. The recovered passkey is not held to the per-account passkey
+cap, since each recovery spends a code a passkey approved.
+
+**What clients show.** `/auth/me` answers `recoveryCode` (whether one is set)
+and `recoveryPending` (`{ accountId, credentialId, startedAt, readyAt }` or
+`null`), so every device the account is signed in on can warn that a recovery
+is under way. An organization's owner and admins see only whether each member
+has a code ([Members' security](/protocol/organizations/#members-security)),
+never a recovery under way.
+
+**API keys end with it.** Whoever took the lost passkey may also have made API
+keys with it, and a key works without a passkey, so a finish revokes every API
+key of the account as it ends every session. The machines the person runs need
+new keys once the recovery finishes.
+
+| Who | Can they recover the account? | What limits it |
+| --- | --- | --- |
+| The operator, a node, anyone reading the log | No | The log holds the code's public key and spent signatures, each over one account and one passkey; the finish needs that passkey's assertion |
+| Someone who stole the code | Yes, unless the account acts within 72 hours | Every signed-in device sees `recoveryPending`; any passkey cancels |
+| The person, every passkey lost | Yes | Begin and start with the code and a new passkey, wait 72 hours, finish |
+| The person, code and passkeys lost | No | Nobody can |
+
+## Backup keys
+
+The [recovery disk](/protocol/storage/#recovery-files) seals each app's
+backups to the X25519 public key of whoever upgrades the app: the operator
+where it holds app upgrades, else the app's organization
+(`SystemState::backup_holder`). An account's own apps are in its personal
+organization, so their backups open with that organization's key
+(`POST /orgs/{org}/backup-key`, see
+[Organizations](/protocol/organizations/#backup-key)).
+
+:::caution
+`GET` / `POST /auth/backup-key` (passkey consent over
+`account:<a> / __set_backup_key / { publicKey }`) still records a key for the
+account itself, but since every app is in an organization no app's backups are
+sealed to it (`apps` in its answer stays `0`). Check
+`crates/node/src/api/backup_keys.rs` and `SystemState::backup_holder` before
+relying on it.
+:::
 
 ## Development passkeys
 

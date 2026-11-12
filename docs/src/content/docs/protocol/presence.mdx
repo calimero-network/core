@@ -5,11 +5,34 @@ sidebar:
   order: 22
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 **Presence** is what each person's device says about itself right now: online,
 a cursor, a selection. It changes many times a second and is worthless a few
 seconds later, so it never goes into a log (`crates/node/src/presence.rs`).
 
 ## How it moves
+
+<SeqDiagram
+  id="d-presence"
+  title="One device's presence reaching a viewer on another node"
+  lanes={[
+    { label: 'Device A', color: '#f0883e' },
+    { label: 'Node 1', color: '#3fb950' },
+    { label: 'Node 2', color: '#3fb950' },
+    { label: 'Device B', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 3, to: 2, label: 'GET /apps/{app}/presence/stream' },
+    { from: 2, to: 3, label: 'event: snapshot', dashed: true },
+    { from: 0, to: 1, label: 'POST /apps/{app}/presence { seq: 7, state }' },
+    { from: 1, to: 1, label: 'apply to the in-memory table (newest seq wins)' },
+    { from: 1, to: 2, label: 'internal/presence (no wait, no log)' },
+    { from: 2, to: 3, label: 'event: presence (diff)', dashed: true },
+    { type: 'divider', label: 'no heartbeat for 7 s' },
+    { from: 2, to: 3, label: 'event: presence { state: null }', dashed: true },
+  ]}
+/>
 
 - `POST /apps/{app}/presence { seq, state }` — `state` is hex (at most 4 KiB of
   bytes), `null` to retract. Anyone who reaches the app may publish, and the

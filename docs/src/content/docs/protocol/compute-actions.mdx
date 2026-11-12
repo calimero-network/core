@@ -263,6 +263,16 @@ Their ids are `<run>.<step>.<index>`, and they have no result method: the step k
 The leader decides each pending step and logs it as a `pipelineStep` entry (start with its first runs, skipped, upstream failed, cancelled, or failed with a code); apply accepts the first decision for a step, so a leader that changes mid-run never runs a step twice.
 A step starts when every step it needs succeeded; one whose need failed is `upstreamFailed`; the run is `succeeded` when every step succeeded or was skipped, `succeededWithFailures` when besides that a fan-out tolerated failed items, `cancelled` when it was cancelled, else `failed`.
 A step that cannot be built fails with `TOO_MANY_ITEMS`, `TOO_MANY_INPUTS` (past 10,000 files), `ARGS_TOO_LARGE`, `RUN_TOO_LARGE` (one run's arguments and inputs past what one decision may carry), `BAD_REF`, `NO_RESULT`, `BAD_RESULT` or `RESULTS_TOO_LARGE`; a pipeline whose definition cannot be found fails its steps with `PIPELINE_UNAVAILABLE`.
+Only those who may handle the app's files (its owner and its organization's members) start, cancel or retry a run, even on a public app (`403`); anyone who reaches the app reads it without results or file hashes.
+
+**Step rows.** The pipeline run's record (a hidden row, `rows::CPIPE`) keeps only counters and flags per step, so completing a step rewrites a record whose size does not grow with its fan-out.
+Each step run's outputs, result and cache key live in a hidden row of their own (`rows::CITEM`, keyed `<pipeline run>/<step>/<index>`), written once when that run ends or is answered from the cache; every finished run has one, an empty one for a run that failed.
+The leader keeps each fan-out's runs in memory and reads no row twice.
+A step with fewer readable rows than it finished is flagged, and the leader fails a step that would be built from it with `ITEMS_UNREADABLE` rather than build from part of the data; apply never reads the rows except to drop them with the record.
+A record 1.0.0-rc.19 wrote, with the per-run data inline, is still read.
+
+**Modules.** A step may run a compute method of another package (`module: <package>[@<version>]`), pinned to the release resolved at install, so a newer release of the module changes nothing until the pipeline's own package is released again; uninstalling a pinned release is `409 MODULE_IN_USE`.
+The step runs under the app's owner, payer and file keys; only the compute component and its caps are the module's.
 
 ### Fan-out
 
@@ -326,6 +336,19 @@ Alone it judges the structure; with a release the caller sees (`404` otherwise) 
 A valid answer carries the canonical pipeline, `worstCaseFuel` and, with a price table, `worstCaseCost`.
 `POST /apps/{app}/pipelines/{name}/estimate` answers the runs, fuel and cost per step for the file counts given (ids are only counted, never checked for being held).
 A `forEach` over `inputs.x` makes `ceil(min(count, maxItems) / batch)` runs, and one over a step's outputs keeps `maxItems`; with no counts it is the worst case.
+
+### Events, receipts and exports
+
+`GET /apps/{app}/pipeline-runs/{run}/events` is a server-sent event stream, open to whoever may read the run: a `snapshot`, then `run` and `step` events as the run moves, then `end`, and the stream closes.
+The events carry metadata only, never results or file ids; the node polls the run's strong view every 500 ms and diffs it, so a follower answers through the leader.
+A node serves at most 64 subscribers per app (`429 TOO_MANY_SUBSCRIBERS`), and a stream lasts at most an hour.
+
+`GET /apps/{app}/pipeline-runs/{run}/receipt` answers, once the run ended (`409 RUN_NOT_ENDED` before), `{ receipt, node, signature }`: the run's pipeline hash, the modules by compute hash, each input's size and hash, and per step run the attempt, the job node, its job key, the assignment digest, the hash of its signed report, its signature, outputs and usage (cached runs name their cache key), signed by the answering node's receipt key over `"calimero.pipeline.receipt.v1\0" ‖ JCS(receipt)`.
+Only those who may handle the app's files read it.
+
+An output leaves the cluster sealed to a key its requester holds: `POST /apps/{app}/files/{id}/export { recipient }` (an X25519 public key, 64 hex) answers `{ app, id, size, sha256, segments, ephemeral, wrapped }`, the file's data key wrapped to `recipient`, and the segments come from `GET /apps/{app}/files/{id}/segments/{k}`.
+The client checks every segment against the list and the plaintext's size and SHA-256 before it accepts the file (`meroctl pipeline download` writes `<target>.part` and moves it into place only then).
+An account may export 30 times a minute per node (`429 TOO_MANY_EXPORTS`).
 
 ## Usage and billing
 

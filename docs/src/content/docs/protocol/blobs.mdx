@@ -1,21 +1,24 @@
 ---
 title: Blobs
-description: Large content kept outside the logs — the cluster's sealed blob store, how an app's state marks the blobs that are its own, uploads, runs that write blobs, downloads, and deletion.
+description: Large content kept outside the logs — the cluster's sealed blob store, the host records that make a blob an app's, typed references and retention, uploads, grants, downloads, deletion, sealed files and published compute outputs.
 sidebar:
   order: 21
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 A **blob** is immutable, content-addressed bytes kept outside every log: an
 attachment, an image, a model. Log entries are capped at 1 MiB and should stay
 small, so anything large goes to the **blob store** and the log carries only
-its id. The same store holds bundles and uploaded `.mpk` releases.
+its id. The same store holds bundles and uploaded `.mpk` releases. Apps are
+`calimero:app` components, and the node keeps their blobs as described here
+(spec `app-runtime-v0.14` R8).
 
 ## The store
 
 Each node keeps blobs in its own RocksDB `blobs` column, sealed under the
 cluster's storage key like everything else ([Storage schema](/protocol/storage/)).
-A blob's id is `hex(SHA-256(bytes))`; the API also accepts the base58 form apps
-print (`BlobId`).
+A blob's id is `hex(SHA-256(bytes))`; the API also accepts the base58 form.
 
 - **Writes reach a majority.** Storing a blob writes it locally and pushes it to
   every other node (`internal/blob`); the write succeeds once a majority of the
@@ -24,88 +27,103 @@ print (`BlobId`).
   hold — it was down when the blob was stored — fetches it from a peer
   (`internal/blob/get`), checks the hash, and keeps it.
 
-Every node holds every blob it was reachable for, so there is nothing to
-announce or discover.
+A blob larger than `MAX_BLOB_BYTES` (47 MiB, what still reaches every node
+inside the sealed envelope) is refused `413 TOO_LARGE` up front; one past the
+sealed cap (64 MiB) is refused by the envelope. Larger content is a sealed
+[file](#files-of-component-apps), which is stored in segments.
 
 ## Which blobs are an app's
 
-Bytes in the store belong to no one. What makes a blob an app's is a **mark**
-in the app's state, under the host's key space (`\0calimero.blobs\0 ‖ id` →
-size). Marks are written only by the node, as part of an entry, so they
-replicate with the app and are ordered with its calls.
+Bytes in the store belong to no one. The node records each of an app's blobs
+(`size`, the uploader's `Content-Type`, a reference count) as host-owned hidden
+rows of the app's group (`rows::CBLOB`), outside the keyspace the app writes.
+The records replicate with the app and are ordered with its calls.
 
-A run opens only blobs its app's state marks (`services::AppBlobs`). A run on a
-node that misses the bytes fetches them from a peer, waiting at most 5 seconds.
+- **Typed references.** State refers to a blob through a `BlobRef`, which the
+  SDK stores as CBOR tag 51,739 (`0xCA1B`) around the blob's 32-byte SHA-256
+  and sends in JSON as the 64-hex-digit id. A run that stores a reference to a
+  blob the app does not hold traps `HostDenied`.
+- **Host-tracked retention.** Every replica counts references from the diffs it
+  applies and the values they replace. A blob nothing refers to is held for one
+  hour after its upload or after its last reference went (`BLOB_IDLE_MS`), so a
+  client uploads first and attaches it with a later call. After that the app
+  forgets it, judged against entry timestamps so every replica forgets it in
+  the same entry; the leader then collects the bytes (below) and logs
+  `componentBlobsCollected`.
+- **No bytes in runs.** The WIT `blobs` interface has `info` (size, SHA-256,
+  content type; none for a blob the app does not hold) and `grant(id, ttl)`.
+  Calls, views, timers, `init` and xcall deliveries may use them; actions may
+  not. Content a run must read is a sealed file, below.
+
+<SeqDiagram
+  id="d-blob-attach"
+  title="Uploading a blob and attaching it"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'Any node', color: '#3fb950' },
+    { label: 'Blob store (majority)', color: '#a371f7' },
+    { label: "App's log", color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /apps/{app}/blobs (raw bytes, Content-Type)' },
+    { from: 1, to: 1, label: "pin the id on the app's leader" },
+    { from: 1, to: 2, label: 'store and push; a majority holds it' },
+    { from: 1, to: 3, label: 'componentBlob { id, size, mime, tsMs }' },
+    { from: 1, to: 0, label: '{ blobId, id, size, index }', dashed: true },
+    { type: 'divider', label: 'within the hour' },
+    { from: 0, to: 3, label: 'a call stores the BlobRef in state: refcount 1, kept' },
+    { type: 'divider', label: 'no reference for an hour' },
+    { from: 3, to: 3, label: 'forgotten in one entry on every replica; bytes collected' },
+  ]}
+/>
 
 ## Getting a blob in
 
-- **Upload.** `POST /apps/{app}/blobs` (raw bytes) by a signed-in caller who
-  reaches the app and may write it — not a read-only API key and not a
-  read-only team member. The node stores the bytes on a majority, then commits
-  `AppCmd::Blob { id, size }` to the app's log. The answer names the blob and
-  the entry's index.
-- **From a run.** `env::blob_create` / `blob_write` / `blob_close` in a call
-  produce blobs on the run's outcome, never through the store directly. The
-  leader stores them locally before proposing the entry, the entry's diff marks
-  them as the app's, and after the entry commits the leader spreads them to the
-  other nodes. Bytes are never part of the log entry.
+`POST /apps/{app}/blobs` (raw bytes) by a signed-in caller who reaches the app
+and may write it — not a read-only API key and not a read-only team member.
+The blob is stored with the request's `Content-Type` (printable ASCII, at most
+127 bytes; `application/octet-stream` when none), which downloads answer with.
+The node pins the id on the app's leader, stores the bytes on a majority, then
+commits `componentBlob { id, size, mime, tsMs }` to the app's log. Any `sealed`
+parameter is refused `400 USE_FILES_API`: sealed files have their own routes.
+An app holds at most 100,000 blobs (`429 QUOTA_EXCEEDED` past it).
 
-## Reading and listing
+## Reading, grants and listing
 
-- `GET /apps/{app}/blobs/{id}` downloads a blob the app marks, by anyone who
-  reaches the app, except a published compute output (a grant is needed). A
-  blob the app does not mark is `404`, whether or not the bytes exist.
-- `GET /apps/{app}/blobs` and `/blobs/{id}/info` list the app's blobs and their
-  sizes, from a scan of a replica's state.
+- `GET /apps/{app}/blobs/{id}` downloads a blob the app holds, by anyone who
+  reaches the app, with its recorded content type, except a published compute
+  output (a grant is needed). A blob the app does not hold is `404`, whether or
+  not the bytes exist. A download asks the app's leader whether the app still
+  holds it; with no leader answering, `503`.
+- **Grants.** `blobs.grant(id, ttl)` returns `<expiresMs>.<mac>`, an HMAC under
+  a key derived from the cluster key over the app, the blob and the expiry (the
+  run's clock plus 1 s to 24 h). `GET /apps/{app}/blobs/{id}?grant=<grant>`
+  downloads with no session on any node until it expires; a bad or expired
+  grant answers `404`.
+- `GET /apps/{app}/blobs` and `/blobs/{id}/info` list the app's plain blobs and
+  their sizes (files are listed only to those who may handle them, below).
 - Inside the sealed channel, a download is sealed frame by frame like any
   response.
 
 ## Deleting
 
-`DELETE /apps/{app}/blobs/{id}`, by the app's owner or an admin of its
-organization, commits `AppCmd::BlobForget`: the app no longer has the blob, its
-runs cannot open it, and the API answers `404`. Then the node collects the
-bytes (`Node::collect_blob`): it deletes them on every node unless
+`DELETE /apps/{app}/blobs/{id}`, by the app's owner (while a member of its
+organization) or an organization admin, commits `componentBlobForget`: the app
+no longer has the blob, and the API answers `404` for it. Then the node
+collects the bytes (`Node::collect_blob`): it deletes them on every node
+unless
 
-- another app still marks the same content — asked of each app's **leader**
-  (`blob_held_strong`), because a lagging replica could miss a mark committed a
-  moment ago, and an app whose leader does not answer counts as holding it; or
+- another app still holds the same content — asked of each app's **leader**,
+  because a lagging replica could miss a record committed a moment ago, and an
+  app whose leader does not answer counts as holding it;
+- an upload of the same id is between storing its bytes and committing its
+  record: every path that stores bytes first pins the id on the app's leader
+  until its record commits or fails (a peer's pin is a lease that expires after
+  60 s), and every deletion asks whether the id is held or pinned; or
 - the content is a bundle or a release `.mpk`.
 
-Known window: if the same content is uploaded to another app between that check
-and the deletion, the other app's mark survives but its bytes are gone.
-
-## Component apps (`calimero:app`)
-
-A component app (the v2 SDK, `calimero-sdk`) keeps its blobs in the same
-store, with the same upload, download, list and delete routes. What differs is
-which blobs it holds and for how long (spec `app-runtime-v0.14` R8):
-
-- **Host records, not marks.** The node records each of the app's blobs
-  (`size`, the uploader's `Content-Type`, a reference count) as host-owned rows
-  of the app's group (`rows::CBLOB`, D39), outside the keyspace the app writes.
-  An upload commits `componentBlob { id, size, mime, tsMs }`; the owner's (or an
-  org admin's) delete commits `componentBlobForget`.
-- **Typed references.** State refers to a blob through a `BlobRef`, which both
-  SDKs store as CBOR tag 51,739 (`0xCA1B`) around the blob's 32-byte SHA-256 and
-  send in JSON as the 64-hex-digit id. A run that stores a reference to a blob
-  the app does not hold traps `HostDenied`.
-- **Host-tracked retention.** Every replica counts references from the diffs it
-  applies and the values they replace. A blob nothing refers to is held for one
-  hour after its upload or after its last reference went (`BLOB_IDLE_MS`), so a
-  client uploads first and attaches it with a later call. After that the app
-  forgets it, judged against entry timestamps so every replica forgets it in the
-  same entry; the leader then collects the bytes as above and logs
-  `componentBlobsCollected`.
-- **No bytes in runs.** The WIT `blobs` interface has `info` (size, SHA-256,
-  content type; none for a blob the app does not hold) and `grant(id, ttl)`.
-  Calls, views, timers, `init` and xcall deliveries may use them; actions and
-  migrations may not.
-- **Grants.** `grant` returns `<expiresMs>.<mac>`, an HMAC under a key derived
-  from the cluster key over the app, the blob and the expiry (the run's clock
-  plus 1 s to 24 h). `GET /apps/{app}/blobs/{id}?grant=<grant>` downloads with
-  no session on any node, until it expires; a bad or expired grant answers
-  `404`. Downloads carry the recorded content type.
+A leader change between a pin and its commit is not covered: the pin stays on
+the old leader.
 
 ## Files of component apps
 
@@ -210,14 +228,11 @@ Past that `publish` answers the soft error `run published too much` and records 
 
 | Limit | Value |
 | --- | --- |
-| A sealed request (and so an upload) | 64 MiB |
-| Open blob handles per run | 100 |
-| One read or write chunk | 10 MiB |
-| All blobs one run writes | 512 MiB |
-| A run waiting for a missing blob | 5 s |
-| Blobs one component app holds | 100,000 (`429 QUOTA_EXCEEDED` past it) |
-| A component blob's content type | 127 bytes, printable ASCII |
-| A component blob held with no reference | 1 hour |
+| A plain blob (`MAX_BLOB_BYTES`) | 47 MiB (`413 TOO_LARGE`) |
+| A sealed request (and so one upload request) | 64 MiB |
+| Blobs one app holds (`MAX_COMPONENT_BLOBS`) | 100,000 (`429 QUOTA_EXCEEDED` past it) |
+| A blob's content type | 127 bytes, printable ASCII |
+| A blob held with no reference (`BLOB_IDLE_MS`) | 1 hour |
 | A sealed file held with no reference | 1 hour |
 | Plaintext bytes of an organization's files | `maxFileBytesPerOrg`, 50 GB (`429 QUOTA_EXCEEDED` past it) |
 | New-file ciphertext all runs of a node hold before their entries | 256 MiB |
