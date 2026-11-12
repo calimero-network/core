@@ -1,9 +1,10 @@
 # Rollback protection and keys per app: design
 
-Nov 4, 2026 · Status: **rollback protection implemented** on `claude/kms-epoch-rollback`
-(core: node, client, merod) and `claude/kms-epoch-rollback` (mero-tee: mero-kms);
-**keys per app designed, not implemented yet** (see "Keys per app, phase 1"). Proposed text for the protocol
-chapters is at the end; the chapters themselves are Xabi's and are not changed here.
+Nov 4, 2026 · Status: **rollback protection implemented** (`crates/node/src/rollback.rs`,
+`crates/kms-client/src/kms/rollback.rs`, `merod --accept-rollback`); **keys per app and the
+rollback epoch in the attested KMS evidence are not implemented yet** (see "Keys per app,
+phase 1" and `crates/node/AGENTS.md`, "Not done yet"). What is implemented is described in the
+protocol chapters (storage, encryption, key rotation); this document keeps the design and its reasoning.
 
 It covers two items of `crates/node/AGENTS.md`, "Not done yet": the rollback counter
 (a mero-kms epoch) and keys per app. Earlier notes: PR #4742 (keys per app, closed),
