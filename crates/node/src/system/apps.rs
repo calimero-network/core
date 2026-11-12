@@ -453,11 +453,20 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err("unknown account");
             }
             let org = s.apps.get(&app_id).ok_or("no such app")?.org.clone();
-            // An org's app stays with a member of the org (as `CreateApp`).
+            // An org's app stays with a member of the org (as `CreateApp`),
+            // except that one in a personal organization handed to someone
+            // outside it goes to theirs, as a personal app went with its new
+            // owner.
+            let mut to_org = None;
             if let Some(org) = org {
-                let role = s.orgs.get(&org).and_then(|o| o.role(&to));
+                let o = s.orgs.get(&org);
+                let role = o.and_then(|o| o.role(&to));
                 if !role.is_some_and(|r| r >= OrgRole::Member) {
-                    return Err("the new owner is not a member of the app's organization");
+                    match (o.is_some_and(|o| o.personal), s.personal_org_of(&to)) {
+                        (true, Some(theirs)) => to_org = Some(theirs.clone()),
+                        (true, None) => return Err(NO_PERSONAL_ORG),
+                        _ => return Err("the new owner is not a member of the app's organization"),
+                    }
                 }
             }
             let app = s.apps.get(&app_id).ok_or("no such app")?;
@@ -469,10 +478,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             {
                 return Err(ONLY_MANAGERS_TRANSFER);
             }
-            // A personal app's files move to the new owner's quota.
+            // A personal app's files move to the new owner's quota; one
+            // going to their personal organization, to that organization's.
             let held = s.app_file_bytes.get(&app_id).copied().unwrap_or(0);
-            let new_payer = format!("account:{to}");
-            if app.org.is_none()
+            let new_payer = to_org.clone().unwrap_or_else(|| format!("account:{to}"));
+            if (app.org.is_none() || to_org.is_some())
                 && s.file_bytes(&new_payer).saturating_add(held) > s.payer_quotas(&new_payer).2
             {
                 return Err("quota exceeded: file bytes");
@@ -480,6 +490,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             s.set_app_file_bytes(&app_id, 0);
             if let Some(app) = s.apps.get_mut(&app_id) {
                 app.owner = to;
+                if let Some(org) = to_org {
+                    app.org = Some(org);
+                    // A team of the organization it left means nothing there.
+                    if matches!(app.access, Access::Team { .. }) {
+                        app.access = Access::Org;
+                    }
+                }
             }
             s.set_app_file_bytes(&app_id, held);
             let payer = s.apps.get(&app_id).map(crate::usage::payer);

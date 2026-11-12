@@ -99,6 +99,12 @@ pub(super) struct OrgBody {
     /// creator keeps the seed (`docs/specs/org-recovery.md`).
     #[serde(default)]
     recovery_key: Option<String>,
+    /// The caller's personal organization ([`crate::types::Org::personal`]):
+    /// at most one per account, where the instances they create without
+    /// naming an organization go. An account with apps from before moves
+    /// them in with `POST /apps/{app}/move`.
+    #[serde(default)]
+    personal: bool,
 }
 
 async fn org_create(
@@ -107,17 +113,25 @@ async fn org_create(
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
-    crate::system::org_name_fits(&body.name).map_err(malformed)?;
+    let name = body.name;
+    crate::system::org_name_fits(&name).map_err(malformed)?;
+    if body.personal {
+        node.sys_fresh().await;
+        if node.sys(|s| s.personal_org_of(&account).is_some()) {
+            return Err(crate::node::rejected(crate::system::PERSONAL_ORG_EXISTS));
+        }
+    }
     let org_id = typed_id::<16>();
     let v = node
         .sys_write(&SystemCmd::CreateOrg {
             org_id,
-            name: body.name,
+            name,
             actor: account,
             release: Some(node.own_release()),
             recovery_key: body.recovery_key,
             at: recovery_now(&node),
             name_fits: true,
+            personal: body.personal,
         })
         .await?;
     Ok(Json(v))

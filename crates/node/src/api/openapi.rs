@@ -926,8 +926,8 @@ fn components() -> Vec<Component> {
         .of::<crate::types::ApiKeyRecord>(),
         component(
             "Org",
-            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later.",
-            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
+            "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is its owner's personal organization (where instances created without naming an organization go).",
+            r#"{ orgId: string, name: string, members: { [string]: #OrgRole }, teams: { [string]: #Team }, defaultCapabilities: uint, capabilities: { [string]: uint }, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, metadata: any, memberMetadata: { [string]: any }, upgradeRuns: { [string]: #UpgradeRun }, recovery?: { publicKey: string, setAt: uint, pending: { account: string, startedAt: uint, readyAt: uint } | null }, allApps?: string[], personal?: bool, mode?: "legacy" | "standalone" | "shared", releaseApprovers?: string[], publishes?: string[], newWorkStopped?: { release: string, after: string } | null }"#,
         )
         .of::<OrgAnswer>(),
         component(
@@ -966,8 +966,8 @@ fn components() -> Vec<Component> {
         .of::<crate::types::OutboundApproval>(),
         component(
             "AppScope",
-            "The scope whose approvals cover an app: its organization, or its owner's account (never named).",
-            r#"{ kind: "org", org: string } | { kind: "account" }"#,
+            "The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization), or its owner's account (never named), for an app from before outside any organization.",
+            r#"{ kind: "org", org: string, personal?: bool } | { kind: "account" }"#,
         ),
         component(
             "ClusterRelease",
@@ -1195,7 +1195,7 @@ fn operations() -> Vec<Op> {
             .step_up(),
         get("/auth/me", "me", SignedIn, "The caller's account")
             .about("The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations, approvals and recovery state, and how the caller came (`via`).")
-            .ok(r#"{ accountId: string, name: string, passkeys: { id: string, signCount: uint, label: string | null, addedAt?: uint | null, lastSignInAt?: uint | null }[], orgs: { orgId: string, name: string, role: #OrgRole }[], via: "session" | "apiKey", passkeyId: string | null, app?: string | null, origin?: string | null, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, recoveryCode?: bool, recoveryPending?: { accountId: string, credentialId: string, startedAt: uint, readyAt: uint } | null }"#)
+            .ok(r#"{ accountId: string, name: string, passkeys: { id: string, signCount: uint, label: string | null, addedAt?: uint | null, lastSignInAt?: uint | null }[], orgs: { orgId: string, name: string, role: #OrgRole, personal?: bool }[], via: "session" | "apiKey", passkeyId: string | null, app?: string | null, origin?: string | null, approvedReleases: string[], outboundApprovals: { [string]: #OutboundApproval }, recoveryCode?: bool, recoveryPending?: { accountId: string, credentialId: string, startedAt: uint, readyAt: uint } | null }"#)
             .errors(&[(404, "NOT_FOUND")]),
         post("/auth/account-proof", "account_proof::prove", Session, "Prove the account to another party")
             .about("A statement signed with this node's receipt key that the caller's passkey session asked to bind `nonce` for `audience`.")
@@ -1273,7 +1273,7 @@ fn operations() -> Vec<Op> {
             .errors(&[(404, "NOT_FOUND")]),
         // ---------------------------------------------------------------- apps
         post("/apps", "app_create", Installer, "Create an app instance")
-            .about("From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`) or the caller's own. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.")
+            .about("From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization, made the first time (on a cluster below version 1.0.0-rc.19: outside any organization). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.")
             .json::<super::CreateAppBody>("{ name?: string, bundle?: string, package?: string, version?: string, service?: string, org?: string, access?: #Access, initArgs?: any, metadata?: any, deployment?: string }")
             .ok("{ appId: string, contextId: string, group: uint, replicas: uint[], compute: bool }")
             .errors(&[(400, "BAD_REQUEST"), (400, "NOT_OFFERED"), (400, "VERSION_REQUIRED"), (400, "NO_SUCH_SERVICE"), (400, "AMBIGUOUS_COMPUTE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "INIT_FAILED"), (429, "QUOTA_EXCEEDED"), (503, "UNAVAILABLE")]),
@@ -1435,10 +1435,10 @@ fn operations() -> Vec<Op> {
             .errors(&[(403, "FORBIDDEN"), (503, "UNAVAILABLE")]),
         // ---------------------------------------------------------------- organizations
         post("/orgs", "org_create", Session, "Create an organization")
-            .about("`recoveryKey` is the public half of an organization recovery key.")
-            .json::<super::OrgBody>("{ name: string, recoveryKey?: string }")
+            .about("`recoveryKey` is the public half of an organization recovery key. `personal: true` makes the caller's personal organization (at most one per account, not counted against `maxOrgsPerAccount`); one made for an instance that named no organization is named `Personal`.")
+            .json::<super::OrgBody>("{ name: string, recoveryKey?: string, personal?: bool }")
             .ok("{ orgId: string }")
-            .errors(&[(429, "QUOTA_EXCEEDED")]),
+            .errors(&[(400, "BAD_REQUEST"), (409, "FEATURE_NOT_ACTIVE"), (409, "PERSONAL_ORG_EXISTS"), (429, "QUOTA_EXCEEDED")]),
         get("/orgs/{org}", "org_get", SignedIn, "One organization")
             .about("As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).")
             .ok("#Org")
@@ -1854,7 +1854,7 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(404, "NOT_FOUND")]),
         get("/deployments/{id}/orgs", "deployment_orgs", SignedIn, "The organizations a deployment serves")
-            .about("For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization are only counted (`outsideOrgs`). Never who the members are.")
+            .about("For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or in a personal organization, are only counted (`outsideOrgs`). Never who the members are.")
             .ok("{ deployment: string, orgs: { orgId: string, name: string | null, memberCount: uint, activeMembers30d: uint, instances: uint, apps: { app: string, version: string }[], firstCreatedAt: string }[], outsideOrgs: uint }"),
     ]
 }

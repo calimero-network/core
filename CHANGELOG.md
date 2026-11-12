@@ -4,6 +4,28 @@
 
 ### Added
 
+- **Every new instance is in an organization: one created without naming one goes to
+  its owner's personal organization** (`calimero-node`). `POST /apps` with no `org`
+  makes the caller's personal organization the first time (`CreateOrg { personal }`,
+  named `Personal`) and creates the instance there, so a person who only uses an app
+  still never sets anything up. A personal organization is an ordinary organization
+  its owner can rename and invite people into; an account owns at most one
+  (`409 PERSONAL_ORG_EXISTS`), it does not count against `maxOrgsPerAccount`, it starts
+  with the account's own release and outbound approvals (which keep changing it with the
+  account's), an instance there handed to someone outside it goes to their personal
+  organization, an instance there shared with
+  listed accounts reaches them without making them members (as a personal app's list
+  did), and a deployment's report
+  counts it in `outsideOrgs` without naming it. `POST /orgs { name, personal: true }` makes
+  it ahead of time; `personal: true` marks it in `GET /orgs/{org}`, `/auth/me` and an
+  app report's `scope` (`/ops/apps`, `/orgs/{org}/apps`).
+  Gated on cluster version `1.0.0-rc.19` (`personalOrg`): below it an instance that
+  names no organization is made outside one, as before. Instances from before stay
+  where they are; their owner moves them in with `POST /apps/{app}/move`.
+  **Clients:** such an instance is now reported under its organization
+  (`GET /orgs/{org}/apps`, `/orgs/{org}/usage`, metered as `org="<org id>"`), not under
+  `GET /auth/apps` and `/auth/usage`, which list only apps outside any organization.
+
 - **`abi-diff` compares record and enum shapes** (`calimero-app-abi`).
   `mero-app-build abi-diff` (and `mero-sign sign --previous`) now compares the
   ABI's `types` for every app type a method, error or event names, through the

@@ -513,9 +513,15 @@ async fn mixed_runtimes() -> (Cluster, Client, SoftAuthenticator, String, String
     (c, owner, pk, first, second)
 }
 
-/// `app`'s entry in the account's own report (`GET /auth/apps`).
+/// `app`'s entry in its owner's report: its organization's (`GET
+/// /orgs/{org}/apps`; made without naming one, it is in the owner's personal
+/// organization), else the account's own (`GET /auth/apps`).
 async fn reported(owner: &Client, app: &str) -> Value {
-    let report = owner.get("auth/apps").await.unwrap();
+    let route = match owner.get(&format!("apps/{app}")).await.unwrap()["org"].as_str() {
+        Some(org) => format!("orgs/{org}/apps"),
+        None => "auth/apps".to_owned(),
+    };
+    let report = owner.get(&route).await.unwrap();
     report["apps"]
         .as_array()
         .unwrap()

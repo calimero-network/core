@@ -1569,7 +1569,7 @@ pub struct OrgNewWorkStopped {
     pub extra: Map<String, Value>,
 }
 
-/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later.
+/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is its owner's personal organization (where instances created without naming an organization go).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Org {
     #[serde(rename = "orgId")]
@@ -1595,6 +1595,8 @@ pub struct Org {
     #[serde(rename = "allApps")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub all_apps: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<OrgMode>,
     #[serde(rename = "releaseApprovers")]
@@ -1750,12 +1752,16 @@ pub struct OutboundApproval {
     pub extra: Map<String, Value>,
 }
 
-/// The scope whose approvals cover an app: its organization, or its owner's account (never named).
+/// The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization), or its owner's account (never named), for an app from before outside any organization.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum AppScope {
     #[serde(rename = "org")]
-    Org { org: String },
+    Org {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        personal: Option<bool>,
+        org: String,
+    },
     #[serde(rename = "account")]
     Account,
 }
@@ -2934,6 +2940,8 @@ pub struct MeResponseOrgsItem {
     pub org_id: String,
     pub name: String,
     pub role: OrgRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal: Option<bool>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

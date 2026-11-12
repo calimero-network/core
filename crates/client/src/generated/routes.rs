@@ -2026,10 +2026,16 @@ impl Orgs<'_> {
     /// Create an organization.
     ///
     /// `POST /orgs` (`org_create`). Who: a passkey session (an API key is refused).
-    pub async fn create(self, name: &str, recovery_key: Option<&str>) -> Result<OrgCreateResponse> {
+    pub async fn create(
+        self,
+        name: &str,
+        recovery_key: Option<&str>,
+        personal: Option<bool>,
+    ) -> Result<OrgCreateResponse> {
         let mut fields = Map::new();
         route::put(&mut fields, "name", &name)?;
         route::put_some(&mut fields, "recoveryKey", recovery_key)?;
+        route::put_some(&mut fields, "personal", personal)?;
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "orgs").json(body);
         route::json(self.client.transport(), req, None, None, false).await

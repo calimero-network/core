@@ -386,6 +386,8 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         model["code"],
         json!(calimero_node::consent_page::confirmation_code(&id))
     );
+    let home = alice.get(&format!("apps/{app}")).await.unwrap()["org"].clone();
+    assert!(home.is_string(), "{home}");
     let expected = json!({
         "kind": "upgrade",
         "status": "pending",
@@ -398,7 +400,8 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         "requestedBy": {
             "package": PACKAGE, "name": "Notes", "publisher": "Example", "returnOrigin": app_origin,
         },
-        "scope": { "kind": "app", "app": "<redacted>", "name": "notes", "org": null },
+        // Made without naming an organization: in alice's personal one.
+        "scope": { "kind": "app", "app": "<redacted>", "name": "notes", "org": home },
         "headline": "Upgrade Notes from 1.0.0 to 2.0.0",
         "title": "Update notes to version 2.0.0",
         "points": [

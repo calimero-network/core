@@ -246,7 +246,12 @@ async fn an_upgrade_key_upgrades_its_app_and_does_nothing_else() {
         running(&alice, &app).await,
         bundle_of(&alice, "com.test.ci", "1.1.0").await
     );
-    let report = alice.get("auth/apps").await.unwrap();
+    // Made without naming an organization: its owner's personal one reports it.
+    let home = alice.get(&format!("apps/{app}")).await.unwrap()["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let report = alice.get(&format!("orgs/{home}/apps")).await.unwrap();
     let entry = report["apps"]
         .as_array()
         .unwrap()

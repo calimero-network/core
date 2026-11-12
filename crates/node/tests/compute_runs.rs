@@ -263,16 +263,21 @@ impl Rig {
         }
     }
 
-    /// The file bytes the payer of alice's apps is charged for.
+    /// The file bytes the payer of alice's apps is charged for: her personal
+    /// organization, where an app made without naming one goes.
     async fn charged(&self) -> u64 {
-        let account = self.alice.me().await.unwrap()["accountId"]
-            .as_str()
+        let me = self.alice.me().await.unwrap();
+        let payer = me["orgs"]
+            .as_array()
             .unwrap()
-            .to_owned();
+            .iter()
+            .find(|o| o["personal"] == json!(true))
+            .map_or_else(
+                || format!("account:{}", me["accountId"].as_str().unwrap()),
+                |o| o["orgId"].as_str().unwrap().to_owned(),
+            );
         let usage = self.alice.usage().await.unwrap();
-        usage["fileBytes"][format!("account:{account}")]
-            .as_u64()
-            .unwrap_or(0)
+        usage["fileBytes"][payer].as_u64().unwrap_or(0)
     }
 
     fn limits(&self, limits: ComputeLimits) {

@@ -4,8 +4,9 @@
 //! target. Who may move it is judged on the state of the moment: a member
 //! removed from the source, one who left it, and an admin of the target
 //! demoted are each refused, as are a mover who is not the target's admin and
-//! a move past the target's quota. A personal app moves into an organization
-//! its owner administers.
+//! a move past the target's quota. An instance that names no organization
+//! goes to its owner's personal organization, made once and reused, and moves
+//! out of it into an organization its owner administers.
 //!
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
@@ -156,7 +157,21 @@ async fn set_role(by: &Client, pk: &mut SoftAuthenticator, org: &str, account: &
         .unwrap();
 }
 
-/// An instance of `package` in `org` (organization access), or a personal one.
+/// `c`'s personal organization, as `/auth/me` marks it.
+async fn personal_org(c: &Client) -> String {
+    let me = c.me().await.unwrap();
+    let mine: Vec<&Value> = me["orgs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["personal"] == json!(true))
+        .collect();
+    assert_eq!(mine.len(), 1, "{me}");
+    s(&mine[0]["orgId"])
+}
+
+/// An instance of `package` in `org` (organization access), or, naming none,
+/// in its owner's personal organization.
 async fn instance(c: &Client, org: Option<&str>, package: &str) -> String {
     let opts = org.map_or_else(|| json!({}), |o| json!({ "org": o }));
     c.create_app_from_package(package, package, None, None, opts)
@@ -441,12 +456,14 @@ async fn wrong_movers_and_quotas_are_refused_and_a_personal_app_moves_in() {
         json!(src)
     );
 
-    // A personal app: into an organization its owner administers, and not
-    // into one they are only a member of, or outside.
+    // An instance in its owner's personal organization (made when it named
+    // none): into an organization its owner administers, and not into one
+    // they are only a member of, or outside.
     let mine = instance(&alice, None, CHAT).await;
+    let personal = personal_org(&alice).await;
     let out = move_app(&alice, &mut a, &mine, &dst, false).await.unwrap();
     assert_eq!(out["org"], json!(dst), "{out}");
-    assert_eq!(out["from"], Value::Null, "{out}");
+    assert_eq!(out["from"], json!(personal), "{out}");
     let daves = instance(&dave, None, CHAT).await;
     refused(
         &move_app(&dave, &mut d, &daves, &src, false)
@@ -459,5 +476,78 @@ async fn wrong_movers_and_quotas_are_refused_and_a_personal_app_moves_in() {
             .await
             .unwrap_err(),
         "only an admin or the owner of the target",
+    );
+}
+
+/// An instance created without naming an organization goes to its owner's
+/// personal organization: made the first time, at the organization quota
+/// too, reused after, and each account's own. It is marked `personal`, its
+/// owner reaches the instance there, and a second one is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_instance_naming_no_organization_goes_to_its_owners_personal_one() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    for who in [&alice, &bob] {
+        let _ok = who.upload_package(release(CHAT)).await.unwrap();
+    }
+    let ops = c.client(1);
+    ops.use_api_key("ops-secret").await;
+    let _ok = ops
+        .post_operator_signed(
+            "ops/quotas",
+            json!({ "maxOrgsPerAccount": 1 }),
+            &harness::operator_sign,
+        )
+        .await
+        .unwrap();
+    let team = new_org(&alice, "Team").await;
+
+    let first = instance(&alice, None, CHAT).await;
+    let personal = personal_org(&alice).await;
+    assert_ne!(personal, team);
+    let app = alice.get(&format!("apps/{first}")).await.unwrap();
+    assert_eq!(app["org"], json!(personal), "{app}");
+    let org = alice.get(&format!("orgs/{personal}")).await.unwrap();
+    assert_eq!(
+        (&org["name"], &org["personal"]),
+        (&json!("Personal"), &json!(true)),
+        "{org}"
+    );
+    assert!(alice
+        .get(&format!("orgs/{team}"))
+        .await
+        .unwrap()
+        .get("personal")
+        .is_none());
+
+    // The next one goes to the same organization, from any node.
+    let other = c.client(2);
+    let _session = other.sign_in(&mut a).await.unwrap();
+    let second = instance(&other, None, CHAT).await;
+    assert_eq!(personal_org(&alice).await, personal);
+    let mut listed = reaches(&alice, &personal).await;
+    listed.sort();
+    let mut want = vec![first, second];
+    want.sort();
+    assert_eq!(listed, want);
+
+    // Bob's is his own; Alice reaches nothing in it.
+    let bobs = instance(&bob, None, CHAT).await;
+    let bobs_org = personal_org(&bob).await;
+    assert_ne!(bobs_org, personal);
+    assert!(reaches(&alice, &bobs_org).await.is_empty());
+    assert_eq!(
+        bob.get(&format!("apps/{bobs}")).await.unwrap()["org"],
+        json!(bobs_org)
+    );
+
+    // One per account.
+    refused(
+        &alice
+            .post("orgs", json!({ "name": "Mine", "personal": true }))
+            .await
+            .unwrap_err(),
+        "PERSONAL_ORG_EXISTS",
     );
 }

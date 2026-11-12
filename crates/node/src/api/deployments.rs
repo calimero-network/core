@@ -605,7 +605,13 @@ async fn deployment_orgs(
             .values()
             .filter(|a| a.deployment.as_deref() == Some(id.as_str()))
         {
-            let Some(org) = a.org.as_deref() else {
+            // A personal organization is one person's: counted with the
+            // instances outside any organization, never named.
+            let Some(org) = a
+                .org
+                .as_deref()
+                .filter(|o| !s.orgs.get(*o).is_some_and(|o| o.personal))
+            else {
                 outside += 1;
                 continue;
             };

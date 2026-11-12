@@ -137,6 +137,53 @@ async fn offered_bundle(
     })
 }
 
+/// The organization an instance that names none goes to: `owner`'s personal
+/// organization ([`crate::types::Org::personal`]), made now if they have none.
+/// `None` (the instance is made outside any organization, as before) while the
+/// cluster is below [`crate::system::cluster_version::Feature::PersonalOrg`], so a rolling upgrade keeps
+/// creating instances.
+async fn personal_org(node: &Node, owner: &str) -> Result<Option<String>, ApiError> {
+    if node
+        .require_features(&[crate::system::cluster_version::Feature::PersonalOrg])
+        .await
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let find = || node.sys(|s| s.personal_org_of(owner).cloned());
+    if let Some(org) = find() {
+        return Ok(Some(org));
+    }
+    let _caught_up = node.sys_fresh().await;
+    if let Some(org) = find() {
+        return Ok(Some(org));
+    }
+    let org_id = typed_id::<16>();
+    let made = node
+        .sys_write(&SystemCmd::CreateOrg {
+            org_id: org_id.clone(),
+            name: crate::system::PERSONAL_ORG_NAME.to_owned(),
+            actor: owner.to_owned(),
+            release: Some(node.own_release()),
+            recovery_key: None,
+            at: recovery_now(node),
+            name_fits: true,
+            personal: true,
+        })
+        .await;
+    match made {
+        Ok(_) => Ok(Some(org_id)),
+        // Another request of the same account made it first: use that one.
+        Err(e) if e.code == crate::node::PERSONAL_ORG_EXISTS => {
+            let _caught_up = node.sys_fresh().await;
+            find().map(Some).ok_or_else(|| {
+                ApiError::unavailable("the personal organization is not readable yet")
+            })
+        }
+        Err(e) => Err(e),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CreateAppBody {
@@ -242,18 +289,22 @@ async fn app_create(
         return Err(crate::node::args_too_large());
     }
     let confirm_methods: Vec<String> = Vec::new();
+    // Every instance is in an organization: one that names none goes to its
+    // owner's personal organization, made the first time.
+    let org = match body.org {
+        Some(org) => Some(org),
+        None => personal_org(&node, &owner).await?,
+    };
     // Past a release deadline the app's approver has not met, no new app;
     // `CreateApp` asks again at the same time.
-    if let Some(stall) =
-        node.sys(|s| s.stalled_for_bundle(&bundle, body.org.as_deref(), &owner, now))
-    {
+    if let Some(stall) = node.sys(|s| s.stalled_for_bundle(&bundle, org.as_deref(), &owner, now)) {
         return Err(crate::node::stalled(&stall));
     }
     // Only nodes on an approved release (the publisher's, the owner's for an
     // unbound package, or the operator's where the deployment gave it
     // release approvals) may hold the app.
     let approved = node.sys(|s| {
-        s.approved_for_bundle(&bundle, body.org.as_deref(), &owner)
+        s.approved_for_bundle(&bundle, org.as_deref(), &owner)
             .cloned()
     });
     // Nor a node whose runtime is older than the release needs.
@@ -279,7 +330,7 @@ async fn app_create(
     }
     let app_id = typed_id::<16>();
     let has_compute = compute_bundle.is_some();
-    let access = body.access.unwrap_or(if body.org.is_some() {
+    let access = body.access.unwrap_or(if org.is_some() {
         Access::Org
     } else {
         Access::Owner
@@ -292,7 +343,7 @@ async fn app_create(
                 group: 0,
                 bundle,
                 owner,
-                org: body.org,
+                org,
                 access,
                 confirm_methods,
                 executor,
@@ -526,6 +577,19 @@ async fn app_transfer(
         body.confirm,
     )
     .await?;
+    // An app in a personal organization handed to someone outside it goes to
+    // theirs: make it first if they have none.
+    let leaves_personal = node.sys(|s| {
+        app.org
+            .as_ref()
+            .and_then(|o| s.orgs.get(o))
+            .is_some_and(|o| {
+                o.personal && o.role(&body.to).is_none() && s.accounts.contains_key(&body.to)
+            })
+    });
+    if leaves_personal {
+        let _theirs = personal_org(&node, &body.to).await?;
+    }
     Ok(Json(
         node.sys_write(&SystemCmd::TransferApp {
             app_id,

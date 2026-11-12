@@ -659,6 +659,15 @@ pub struct Org {
     /// empty, so an organization from before writes as it did.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub all_apps: std::collections::BTreeSet<AccountId>,
+    /// Made for one account to hold its instances (`CreateOrg { personal }`):
+    /// an instance created without naming an organization goes to its
+    /// owner's personal organization, made the first time. An account owns
+    /// at most one, and it does not count against `maxOrgsPerAccount`. It is
+    /// an organization like any other otherwise (its owner may invite
+    /// people). Left out when false, so an organization from before writes
+    /// as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub personal: bool,
 }
 
 /// An organization's recovery key: whoever holds its seed can hand the

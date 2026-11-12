@@ -1801,6 +1801,9 @@ async fn scope_report(
             .collect();
         let approved = s.approved_for(org, account);
         let scope = match org {
+            Some(o) if s.orgs.get(o).is_some_and(|o| o.personal) => {
+                json!({ "kind": "org", "org": o, "personal": true })
+            }
             Some(o) => json!({ "kind": "org", "org": o }),
             None => json!({ "kind": "account" }),
         };

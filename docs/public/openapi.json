@@ -128,7 +128,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Create an app instance",
-        "description": "From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`) or the caller's own. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
+        "description": "From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization, made the first time (on a cluster below version 1.0.0-rc.19: outside any organization). `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.\n\n**Who:** an installer (an account holder, or an unscoped API key that is not read-only).",
         "security": [
           {
             "session": []
@@ -6455,6 +6455,9 @@
                           },
                           "role": {
                             "$ref": "#/components/schemas/OrgRole"
+                          },
+                          "personal": {
+                            "type": "boolean"
                           }
                         },
                         "required": [
@@ -10556,7 +10559,7 @@
         ],
         "x-calimero-group": "deployments",
         "summary": "The organizations a deployment serves",
-        "description": "For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization are only counted (`outsideOrgs`). Never who the members are.\n\n**Who:** signed in (a session or an API key).",
+        "description": "For its managers: each organization with instances from it, its name (`null` when unknown), member counts (`activeMembers30d`: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or in a personal organization, are only counted (`outsideOrgs`). Never who the members are.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -15181,7 +15184,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Create an organization",
-        "description": "`recoveryKey` is the public half of an organization recovery key.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "`recoveryKey` is the public half of an organization recovery key. `personal: true` makes the caller's personal organization (at most one per account, not counted against `maxOrgsPerAccount`); one made for an instance that named no organization is named `Personal`.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -15201,6 +15204,9 @@
                   },
                   "recoveryKey": {
                     "type": "string"
+                  },
+                  "personal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -15230,6 +15236,19 @@
               }
             }
           },
+          "400": {
+            "description": "`BAD_REQUEST`: the request is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_REQUEST"
+            ]
+          },
           "401": {
             "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
             "content": {
@@ -15255,6 +15274,25 @@
             "x-calimero-codes": [
               "FORBIDDEN"
             ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`; `PERSONAL_ORG_EXISTS`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE",
+              "PERSONAL_ORG_EXISTS"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
           },
           "421": {
             "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
@@ -24527,6 +24565,9 @@
               "type": "string"
             }
           },
+          "personal": {
+            "type": "boolean"
+          },
           "mode": {
             "type": "string",
             "enum": [
@@ -24579,7 +24620,7 @@
           "memberMetadata",
           "upgradeRuns"
         ],
-        "description": "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later."
+        "description": "An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is its owner's personal organization (where instances created without naming an organization go)."
       },
       "Team": {
         "type": "object",
@@ -24949,6 +24990,9 @@
               },
               "org": {
                 "type": "string"
+              },
+              "personal": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -24974,7 +25018,7 @@
         "discriminator": {
           "propertyName": "kind"
         },
-        "description": "The scope whose approvals cover an app: its organization, or its owner's account (never named)."
+        "description": "The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization), or its owner's account (never named), for an app from before outside any organization."
       },
       "ClusterRelease": {
         "type": "object",

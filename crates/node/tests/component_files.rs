@@ -1396,9 +1396,26 @@ impl Fixture {
         sent.map_err(Box::new)
     }
 
+    /// Who the app's files are charged to: alice's personal organization, where
+    /// the app went as it named none (else alice, outside any), asked of the
+    /// first node that answers (a test may stop one, or delete the app).
+    async fn payer(&self) -> String {
+        for c in &self.clients {
+            let Ok(me) = c.me().await else { continue };
+            let personal = me["orgs"]
+                .as_array()
+                .and_then(|o| o.iter().find(|o| o["personal"] == json!(true)));
+            return personal.map_or_else(
+                || format!("account:{}", me["accountId"].as_str().unwrap()),
+                |o| o["orgId"].as_str().unwrap().to_owned(),
+            );
+        }
+        panic!("no node answers");
+    }
+
     /// Alice's file bytes, as `/auth/usage` shows them.
     async fn charged(&self) -> u64 {
-        let payer = format!("account:{}", self.account().await);
+        let payer = self.payer().await;
         used(&self.clients[0].usage().await.unwrap(), &payer)
     }
 
@@ -2383,8 +2400,7 @@ async fn a_complete_retried_after_a_leader_change_replays_its_answer() {
     f.c.stop(leader).await;
     let _new = f.until_leader_is_not(leader).await;
     assert_eq!(f.complete(via, &upload).await.unwrap(), done);
-    let me = f.clients[via].me().await.unwrap();
-    let payer = format!("account:{}", me["accountId"].as_str().unwrap());
+    let payer = f.payer().await;
     let mut charged = 0;
     for _ in 0..100 {
         charged = used(&f.clients[via].usage().await.unwrap(), &payer);

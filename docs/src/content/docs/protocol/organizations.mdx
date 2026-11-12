@@ -92,6 +92,41 @@ one. A name is checked where the command applies: a `CreateOrg` an earlier
 release logged (without `name_fits`) replays taking any name, and an
 organization keeps the name it has until renamed.
 
+### Personal organizations
+
+Every instance belongs to an organization. An instance created without naming
+one (`POST /apps` with no `org`, from a console, a script or an app's own
+page) goes to its owner's **personal organization**, which the node makes the
+first time (`CreateOrg { personal: true }`, named `Personal`), so a person who
+only wants to use an app never has to set one up. It is an organization like
+any other: its owner may rename it, invite people and make teams. What sets it
+apart (`Org::personal`, `personal: true` in `GET /orgs/{org}` and in the
+`orgs` of `/auth/me`):
+
+- An account owns at most one (`409 PERSONAL_ORG_EXISTS`), and it does not
+  count against `maxOrgsPerAccount`.
+- It starts with the release and outbound approvals the account holds for
+  its apps outside an organization, plus the release it was made on, and the
+  account's own approvals (`/auth/releases`, `/auth/outbound`) change it too
+  from then on, so an instance there runs where one outside would have.
+- An instance there handed to someone outside it (`POST /apps/{app}/transfer`)
+  goes to the new owner's personal organization, made first if they have none
+  (`team` access becoming `org`), as a personal app went with its new owner.
+- An instance there shared with listed accounts (`accounts` access) reaches
+  them without making them members, as a personal app's list did; anywhere
+  else an organization's app reaches only its members (or anyone, `public`).
+- A deployment's report (`GET /deployments/{id}/orgs`) counts its instances
+  with those outside an organization (`outsideOrgs`) and never names it, as
+  it did for personal apps.
+
+`POST /orgs { name, personal: true }` makes it ahead of time.
+Instances from before, outside any organization, keep working as they did;
+their owner moves each in with `POST /apps/{app}/move { toOrg }`
+([Moving an app](#moving-an-app)). On a cluster below version `1.0.0-rc.19`
+([The cluster version](/protocol/upgrades/#the-cluster-version)) an instance
+that names no organization is still made outside one, so creating instances
+keeps working through a rolling upgrade.
+
 Members have one role each, ordered `guest < member < admin < owner`:
 
 | Role | May |

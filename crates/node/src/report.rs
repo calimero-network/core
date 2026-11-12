@@ -297,9 +297,13 @@ fn last_upgrade_json(
     v
 }
 
-/// The scope whose approvals cover `app`: its organization, or its account.
-fn scope_json(app: &AppRecord) -> Value {
+/// The scope whose approvals cover `app`: its organization (`personal` when it
+/// is its owner's personal organization, left out otherwise), or its account.
+fn scope_json(s: &SystemState, app: &AppRecord) -> Value {
     match &app.org {
+        Some(org) if s.orgs.get(org).is_some_and(|o| o.personal) => {
+            json!({ "kind": "org", "org": org, "personal": true })
+        }
         Some(org) => json!({ "kind": "org", "org": org }),
         None => json!({ "kind": "account" }),
     }
@@ -361,7 +365,7 @@ pub fn app_json(
     let mut v = json!({
         "app": app.app_id,
         "group": app.group,
-        "scope": scope_json(app),
+        "scope": scope_json(s, app),
         "bundle": app.bundle,
         "package": current.as_ref().map(|r| json!({ "package": r.package, "version": r.version })),
         "publisher": current

@@ -776,6 +776,9 @@ pub const QUOTA_EXCEEDED: &str = "QUOTA_EXCEEDED";
 /// The code of a system command that `apply` refused: it changed nothing.
 pub const REJECTED: &str = "REJECTED";
 
+/// The code of [`crate::system::PERSONAL_ORG_EXISTS`].
+pub const PERSONAL_ORG_EXISTS: &str = "PERSONAL_ORG_EXISTS";
+
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
         ApiError::new(429, QUOTA_EXCEEDED, reason)
@@ -785,6 +788,8 @@ pub fn rejected(reason: &str) -> ApiError {
         ApiError::new(403, "SIGN_UP_REFUSED", reason)
     } else if reason == crate::system::NOT_A_DEPLOYER {
         not_a_deployer()
+    } else if reason == crate::system::PERSONAL_ORG_EXISTS {
+        ApiError::new(409, PERSONAL_ORG_EXISTS, reason)
     } else if let Some(code) = recovery_code(reason) {
         ApiError::new(409, code, reason)
     } else {

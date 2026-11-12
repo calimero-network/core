@@ -279,10 +279,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             recovery_key,
             at,
             name_fits,
+            personal,
         } => {
-            if !s.accounts.contains_key(&actor) {
+            let Some(account) = s.accounts.get(&actor) else {
                 return Err("unknown account");
-            }
+            };
             if name_fits {
                 org_name_fits(&name)?;
             }
@@ -290,14 +291,29 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if s.orgs.contains_key(&org_id) {
                 return Err("organization exists");
             }
-            let owned = s
-                .orgs
-                .values()
-                .filter(|o| o.members.get(&actor) == Some(&OrgRole::Owner))
-                .count();
-            if owned >= s.quotas.max_orgs_per_account as usize {
-                return Err("quota exceeded: organizations");
-            }
+            // A personal organization starts with what the account approved
+            // for its apps outside one, so an instance there runs where it
+            // would have run outside.
+            let (mut approved_releases, outbound_approvals) = if personal {
+                if s.personal_org_of(&actor).is_some() {
+                    return Err(PERSONAL_ORG_EXISTS);
+                }
+                (
+                    account.approved_releases.clone(),
+                    account.outbound_approvals.clone(),
+                )
+            } else {
+                let owned = s
+                    .orgs
+                    .values()
+                    .filter(|o| !o.personal && o.members.get(&actor) == Some(&OrgRole::Owner))
+                    .count();
+                if owned >= s.quotas.max_orgs_per_account as usize {
+                    return Err("quota exceeded: organizations");
+                }
+                (BTreeSet::new(), BTreeMap::new())
+            };
+            approved_releases.extend(release);
             let mut members = BTreeMap::new();
             let _prev = members.insert(actor, OrgRole::Owner);
             let _prev = s.orgs.insert(
@@ -309,13 +325,14 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     teams: BTreeMap::new(),
                     default_capabilities: crate::types::caps::DEFAULT,
                     capabilities: BTreeMap::new(),
-                    approved_releases: release.into_iter().collect(),
-                    outbound_approvals: BTreeMap::new(),
+                    approved_releases,
+                    outbound_approvals,
                     metadata: Value::Null,
                     member_metadata: BTreeMap::new(),
                     upgrade_runs: BTreeMap::new(),
                     recovery,
                     all_apps: BTreeSet::new(),
+                    personal,
                 },
             );
             Ok(json!({ "orgId": org_id }))

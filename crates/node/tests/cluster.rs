@@ -3998,8 +3998,9 @@ fn sample(text: &str, metric: &str, labels: &str) -> Option<f64> {
 /// that ran its WASM (calls and strong views on the app's leader, a stale view
 /// on the replica that answered it), never on the replicas that applied the
 /// entry, so the cluster's sum is the number of runs. Series are labelled
-/// with the app's id, its payer (the organization, or `account:{owner}` for a
-/// personal app) and its developer, the payer for an app made from a release
+/// with the app's id, its payer (the organization, or `account:{owner}` for an
+/// app from before outside any; one made without naming an organization is in its
+/// owner's personal organization) and its developer, the payer for an app made from a release
 /// directly (`tests/deployments.rs` has an instance of a deployment). State
 /// bytes are a gauge every replica reports alike.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4100,8 +4101,13 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
         texts.push(text);
     }
     let in_org = format!("app=\"{app}\",org=\"{org}\",developer=\"{org}\"");
-    let mine =
-        format!("app=\"{personal}\",org=\"account:{alice_id}\",developer=\"account:{alice_id}\"");
+    // Made without naming an organization: in Alice's personal one, which pays.
+    let home = alice.get(&format!("apps/{personal}")).await.unwrap()["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(home, org);
+    let mine = format!("app=\"{personal}\",org=\"{home}\",developer=\"{home}\"");
     let calls = |labels: &str, kind: &str| -> Vec<f64> {
         texts
             .iter()
@@ -4382,7 +4388,8 @@ async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
     assert!(metrics.contains("# TYPE http_request_duration_seconds histogram"));
     // Ids are labels of the per-app usage series (`calimero_app_*`) only, which
     // bill an app to its payer; a name or a request's path never is.
-    assert!(metrics.contains(&format!("app=\"{app}\",org=\"account:{alice_id}\"")));
+    let home = org_of(&alice, &app).await;
+    assert!(metrics.contains(&format!("app=\"{app}\",org=\"{home}\"")));
     let elsewhere: String = metrics
         .lines()
         .filter(|l| !l.starts_with("calimero_app_"))
@@ -4869,6 +4876,24 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
 
 // ---------------------------------------------------------------- version and approval reports
 
+/// The report that holds `app` for its owner: its organization's
+/// (`orgs/{org}/apps`; an instance made without naming one is in its owner's
+/// personal organization), else the account's own (`auth/apps`).
+async fn own_report(cl: &Client, app: &str) -> String {
+    match cl.get(&format!("apps/{app}")).await.unwrap()["org"].as_str() {
+        Some(org) => format!("orgs/{org}/apps"),
+        None => "auth/apps".to_owned(),
+    }
+}
+
+/// The organization `app` is in.
+async fn org_of(cl: &Client, app: &str) -> String {
+    cl.get(&format!("apps/{app}")).await.unwrap()["org"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{app} is in no organization"))
+        .to_owned()
+}
+
 /// The entry for `app` in a paged app report (`ops/apps`, `orgs/{org}/apps`,
 /// `auth/apps`), reading every page.
 async fn reported_app(cl: &Client, route: &str, app: &str) -> Value {
@@ -5088,9 +5113,20 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
         .as_str()
         .unwrap()
         .to_owned();
-    let own = alice.get("auth/apps").await.unwrap();
-    assert_eq!(own["scope"], json!({ "kind": "account" }), "{own}");
-    assert_eq!(own["approvedReleases"], json!(["1.0.0"]), "{own}");
+    // Made without naming an organization: in her personal one, which holds
+    // the approvals her account had.
+    let home = org_of(&alice, &mine).await;
+    let own = alice.get(&format!("orgs/{home}/apps")).await.unwrap();
+    assert_eq!(
+        own["scope"],
+        json!({ "kind": "org", "org": home, "personal": true }),
+        "{own}"
+    );
+    let approved = own["approvedReleases"].as_array().unwrap();
+    assert!(
+        approved.contains(&json!("1.0.0")) && !approved.contains(&json!("2.0.0")),
+        "{own}"
+    );
     assert!(
         own["clusterReleases"]
             .as_array()
@@ -5099,7 +5135,7 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
             .any(|r| r["release"] == json!("2.0.0") && r["approved"] == json!(false)),
         "{own}"
     );
-    let a = reported_app(&alice, "auth/apps", &mine).await;
+    let a = reported_app(&alice, &own_report(&alice, &mine).await, &mine).await;
     assert_eq!(a["package"]["version"], json!("1.0.0"), "{a}");
     assert_eq!(a["availableVersions"], json!(["1.1.0"]), "{a}");
     assert_eq!(a["lastUpgrade"], Value::Null, "{a}");
@@ -5161,7 +5197,12 @@ async fn an_operator_upgrade_is_reported_as_the_operators() {
     .unwrap();
 
     let a = reported_app(&ops, "ops/apps", &app).await;
-    assert_eq!(a["scope"], json!({ "kind": "account" }), "{a}");
+    let home = org_of(&alice, &app).await;
+    assert_eq!(
+        a["scope"],
+        json!({ "kind": "org", "org": home, "personal": true }),
+        "{a}"
+    );
     assert_eq!(a["upgradesHeldBy"], json!("operator"), "{a}");
     assert_eq!(
         a["package"],
@@ -5177,11 +5218,11 @@ async fn an_operator_upgrade_is_reported_as_the_operators() {
     assert_eq!(a["lastUpgrade"]["actorKind"], json!("operator"), "{a}");
     assert_eq!(a["lastUpgrade"]["from"]["version"], json!("1.0.0"), "{a}");
 
-    let a = reported_app(&alice, "auth/apps", &app).await;
+    let a = reported_app(&alice, &own_report(&alice, &app).await, &app).await;
     assert_eq!(a["lastUpgrade"]["actorKind"], json!("operator"), "{a}");
     assert_eq!(a["lastUpgrade"]["actor"], json!("operator"), "{a}");
     assert_eq!(a["availableVersions"], json!([]), "{a}");
-    let own = alice.get("auth/apps").await.unwrap();
+    let own = alice.get(&own_report(&alice, &app).await).await.unwrap();
     assert_eq!(own["governance"]["appUpgrades"], json!("operator"), "{own}");
 }
 
@@ -5238,7 +5279,7 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
         .as_str()
         .unwrap()
         .to_owned();
-    let a = reported_app(&alice, "auth/apps", &mine).await;
+    let a = reported_app(&alice, &own_report(&alice, &mine).await, &mine).await;
     assert_eq!(a["package"]["version"], json!("1.1.0"), "{a}");
     assert_eq!(a["availableVersions"], json!(["1.2.0"]), "{a}");
     let record = alice.get(&format!("apps/{mine}")).await.unwrap();
@@ -5261,7 +5302,7 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
         .upgrade_app(&mine, json!({ "version": "1.2.0" }), &mut apk)
         .await
         .unwrap();
-    let a = reported_app(&alice, "auth/apps", &mine).await;
+    let a = reported_app(&alice, &own_report(&alice, &mine).await, &mine).await;
     assert_eq!(a["package"]["version"], json!("1.2.0"), "{a}");
     assert_eq!(a["availableVersions"], json!([]), "{a}");
     assert_eq!(a["lastUpgrade"]["ok"], json!(true), "{a}");
@@ -5671,7 +5712,10 @@ async fn an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart() {
             i + 1
         );
     }
-    assert_eq!(reported_last_write(&alice, "auth/apps", &app).await, at);
+    assert_eq!(
+        reported_last_write(&alice, &own_report(&alice, &app).await, &app).await,
+        at
+    );
     let storage = alice.get(&format!("apps/{app}/storage")).await.unwrap();
     assert_eq!(storage["lastWriteAt"], json!(at), "{storage}");
 

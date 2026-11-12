@@ -261,3 +261,86 @@ class RecoveryKey(DeepCase):
         self._start(w, s, "rob")
         s["recovery"] = rhea.get(f"orgs/{s['org']}").get("recovery")
         self.check(w, s)
+
+
+def personal_org(p):
+    """`p`'s personal organization, as `/auth/me` marks it, or None."""
+    mine = [o["orgId"] for o in p.get("auth/me").get("orgs", []) if o.get("personal")]
+    check(len(mine) <= 1, f"more than one personal organization: {mine}")
+    return mine[0] if mine else None
+
+
+@case
+class PersonalAppMovedIn(DeepCase):
+    name = "personal-app-moved-in"
+    area = "Organizations"
+    seeds = "an app made outside any organization (a personal app), with data"
+    verifies = ("the app stays outside an organization through the roll, its data and its owner's access; on the "
+                "new release its owner makes a personal organization and moves the app in, keeping its data, "
+                "and an outsider is still refused")
+
+    def populate(self, w):
+        vic, wes = people(w, "vic", "wes")
+        del wes  # an outsider
+        app = vic.deploy(kv_wasm(w), "vic-notes")
+        vic.call(app, "set", {"key": "k", "value": "before"})
+        s = {"app": app, "org": None}
+        eq(vic.get(f"apps/{app}").get("org"), None, "a personal app made on the old release")
+        return s
+
+    def check(self, w, s):
+        vic, wes = people(w, "vic", "wes")
+        eq(vic.get(f"apps/{s['app']}").get("org"), s["org"], "the app's organization")
+        eq(vic.result(s["app"], "get", {"key": "k"}), "before", "the app's data")
+        refused(("FORBIDDEN", "NOT_FOUND"), lambda: wes.view(s["app"], "get", {"key": "k"}),
+                "an outsider reads the app")
+
+    def exercise(self, w, s):
+        vic = person(w, "vic")
+        if s["org"] is None:
+            org = personal_org(vic) or vic.raw("post", "orgs", {"name": "Vic", "personal": True})["orgId"]
+            moved = vic.raw("post", f"apps/{s['app']}/move", {"toOrg": org})
+            eq(moved.get("org"), org, "the move into the personal organization")
+            s["org"] = org
+        eq(vic.get(f"orgs/{s['org']}").get("personal"), True, "the organization is personal")
+        self.check(w, s)
+
+
+@case
+class PersonalOrg(DeepCase):
+    name = "personal-org"
+    area = "Organizations"
+    since = "1.0.0-rc.19"
+    seeds = "instances created without naming an organization, which go to their owner's personal organization"
+    verifies = ("both instances in the one personal organization, marked personal, with their data; a second "
+                "personal organization is refused; another instance made without one joins the same organization")
+
+    def populate(self, w):
+        yan, zed = people(w, "yan", "zed")
+        del zed  # an outsider
+        first = yan.deploy(kv_wasm(w), "yan-1")
+        second = yan.deploy(kv_wasm(w), "yan-2")
+        org = personal_org(yan)
+        check(org, f"no personal organization after an instance named none: {yan.get('auth/me')}")
+        for app in (first, second):
+            yan.call(app, "set", {"key": "k", "value": app})
+        return {"org": org, "apps": [first, second]}
+
+    def check(self, w, s):
+        yan, zed = people(w, "yan", "zed")
+        eq(personal_org(yan), s["org"], "the personal organization")
+        eq(yan.get(f"orgs/{s['org']}").get("personal"), True, "the organization is personal")
+        for app in s["apps"]:
+            eq(yan.get(f"apps/{app}").get("org"), s["org"], "the instance's organization")
+            eq(yan.result(app, "get", {"key": "k"}), app, "the instance's data")
+        refused(("FORBIDDEN", "NOT_FOUND"), lambda: zed.view(s["apps"][0], "get", {"key": "k"}),
+                "an outsider reads the instance")
+        refused("PERSONAL_ORG_EXISTS", lambda: yan.raw("post", "orgs", {"name": "Yan", "personal": True}),
+                "a second personal organization")
+
+    def exercise(self, w, s):
+        yan = person(w, "yan")
+        app = yan.deploy(kv_wasm(w), f"yan-{len(s['apps']) + 1}")
+        yan.call(app, "set", {"key": "k", "value": app})
+        s["apps"].append(app)
+        self.check(w, s)

@@ -684,6 +684,15 @@ pub const ONLY_ADMINS_RENAME: &str = "only the organization's owner and admins r
 /// whose apps have app teams, is installing an app there: an admin's.
 pub const ONLY_ADMINS_INSTALL: &str =
     "only the organization's owner and admins install apps in it and change its app teams";
+/// A refusal: an app in a personal organization goes to its new owner's
+/// personal organization, and they have none yet (the API makes it first).
+pub const NO_PERSONAL_ORG: &str = "the new owner has no personal organization to take the app";
+/// A refusal: an account owns at most one personal organization
+/// ([`crate::types::Org::personal`]).
+pub const PERSONAL_ORG_EXISTS: &str = "the account has a personal organization already";
+/// The name a personal organization is made with when the request names
+/// none: never the account's name, which the deployment report would show.
+pub const PERSONAL_ORG_NAME: &str = "Personal";
 /// A refusal: a standing grant of every app added later ([`Org::all_apps`]),
 /// by invite or set on a member, is the owner's or an admin's.
 pub const ONLY_ADMINS_ALL_APPS: &str =
@@ -1322,6 +1331,16 @@ impl SystemState {
     pub fn publisher_of(&self, bundle: &str) -> Option<&OrgId> {
         let at = self.bundles.get(bundle)?.package.as_ref()?;
         self.publisher_of_signer(&self.packages.get(&at.package)?.signer_id)
+    }
+
+    /// The personal organization `account` owns
+    /// ([`crate::types::Org::personal`]), if any.
+    #[must_use]
+    pub fn personal_org_of(&self, account: &str) -> Option<&OrgId> {
+        self.orgs
+            .iter()
+            .find(|(_, o)| o.personal && o.role(account) == Some(OrgRole::Owner))
+            .map(|(id, _)| id)
     }
 
     /// The releases approved to hold an app running `bundle`, of `org` (or of
@@ -3077,8 +3096,15 @@ impl SystemState {
         accounts_in_app_team: bool,
     ) -> bool {
         if let (Some(org), Some(a)) = (&app.org, account) {
-            let member = self.orgs.get(org).and_then(|o| o.role(a)).is_some();
-            if !member && app.access != Access::Public {
+            let o = self.orgs.get(org);
+            let member = o.and_then(|o| o.role(a)).is_some();
+            // An app in a personal organization shared with listed accounts
+            // reaches them as a personal app's list did, without making them
+            // members. Only personal organizations, which exist from the
+            // release that judges this, so every replica decides alike.
+            let listed_in_personal =
+                o.is_some_and(|o| o.personal) && matches!(app.access, Access::Accounts { .. });
+            if !member && app.access != Access::Public && !listed_in_personal {
                 return false;
             }
         }
@@ -4136,6 +4162,14 @@ pub enum SystemCmd {
         /// replays taking any name, as that release did.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         name_fits: bool,
+        /// The actor's personal organization ([`crate::types::Org::personal`]):
+        /// at most one per account, not counted against
+        /// `maxOrgsPerAccount`, and it starts with the release and outbound
+        /// approvals the account holds for apps outside an organization, so
+        /// an instance created there runs where one outside would.
+        /// Left out when false ([`cluster_version::Feature::PersonalOrg`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        personal: bool,
     },
     /// Rename an organization: its owner or an admin, with their passkey
     /// consent (`org:<org> / __rename_org / { name }`), to a name that fits

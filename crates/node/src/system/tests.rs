@@ -1969,11 +1969,151 @@ fn a_create_org_entry_from_before_takes_any_name() {
         recovery_key: None,
         at: 0,
         name_fits: true,
+        personal: false,
     };
     assert!(m.run_unproven(create("o2", " padded ")).is_err());
     assert!(!m.state.orgs.contains_key("o2"));
     let _ok = m.run_unproven(create("o2", "Fits")).unwrap();
     assert_eq!(m.state.orgs["o2"].name, "Fits");
+}
+
+/// An account's personal organization, where its instances go when they
+/// name no organization: at most one per account, outside the organization
+/// quota, starting with the approvals the account holds for its apps outside
+/// one. An ordinary organization's entry and state leave the flag out, so
+/// they write as they did.
+#[test]
+fn an_account_has_one_personal_organization_outside_its_quota() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    // Alice may own one more organization than she does.
+    let owned = m
+        .state
+        .orgs
+        .values()
+        .filter(|o| o.role("alice") == Some(OrgRole::Owner))
+        .count();
+    m.state.quotas.max_orgs_per_account = u32::try_from(owned + 1).unwrap();
+    let _new = m
+        .state
+        .accounts
+        .get_mut("alice")
+        .unwrap()
+        .approved_releases
+        .insert("2.3.144".into());
+    let create = |id: &str, actor: &str, personal: bool| SystemCmd::CreateOrg {
+        org_id: id.into(),
+        name: if personal { "Personal" } else { "Team" }.into(),
+        actor: actor.into(),
+        release: Some("2.3.145".into()),
+        recovery_key: None,
+        at: 0,
+        name_fits: true,
+        personal,
+    };
+    let entry = serde_json::to_value(create("team", "alice", false)).unwrap();
+    assert!(entry.get("personal").is_none(), "{entry}");
+    let _ok = m.run_unproven(create("team", "alice", false)).unwrap();
+    let refused = m.run_unproven(create("team2", "alice", false)).unwrap_err();
+    assert!(refused.starts_with(QUOTA_PREFIX), "{refused}");
+    assert_eq!(m.state.personal_org_of("alice"), None);
+
+    // At the quota, the personal one is still made.
+    let _ok = m.run_unproven(create("mine", "alice", true)).unwrap();
+    let mine = &m.state.orgs["mine"];
+    assert!(mine.personal);
+    assert_eq!(mine.role("alice"), Some(OrgRole::Owner));
+    let mut want = m.state.accounts["alice"].approved_releases.clone();
+    assert!(want.contains("2.3.144"));
+    let _new = want.insert("2.3.145".into());
+    assert_eq!(
+        mine.approved_releases, want,
+        "the account's approvals and the release it was made on"
+    );
+    assert_eq!(
+        mine.outbound_approvals,
+        m.state.accounts["alice"].outbound_approvals
+    );
+    assert_eq!(
+        m.state.personal_org_of("alice").map(String::as_str),
+        Some("mine")
+    );
+    assert!(!serde_json::to_value(&m.state.orgs["team"])
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .contains_key("personal"));
+
+    // One per account; another account has its own.
+    assert_eq!(
+        m.run_unproven(create("mine2", "alice", true)),
+        Err(super::PERSONAL_ORG_EXISTS.to_owned())
+    );
+    let _ok = m.run_unproven(create("bobs", "bob", true)).unwrap();
+    assert_eq!(
+        m.state.personal_org_of("bob").map(String::as_str),
+        Some("bobs")
+    );
+
+    // An app there shared with listed accounts reaches them without making
+    // them members, as a personal app's list did; in another organization
+    // the list reaches only its members.
+    let shared = |org: &str| -> crate::types::AppRecord {
+        serde_json::from_value(json!({
+            "appId": format!("in-{org}"), "name": "n", "group": 2, "bundle": "b",
+            "owner": "alice", "org": org, "replicas": [1], "createdAt": 0,
+            "access": { "kind": "accounts", "accounts": ["carol"] },
+        }))
+        .unwrap()
+    };
+    assert!(m.state.may_reach(&shared("mine"), Some("carol")));
+    assert!(!m.state.may_reach(&shared("mine"), Some("bob")));
+    assert!(!m.state.may_reach(&shared("team"), Some("carol")));
+
+    // The account's own approvals change its personal organization's too.
+    let approve = |version: &str, approved: bool| SystemCmd::SetReleaseApproval {
+        scope: ReleaseScope::Account,
+        version: version.into(),
+        approved,
+        actor: "alice".into(),
+        consent: Value::Null,
+    };
+    let _ok = m.run_unproven(approve("3.0.0", true)).unwrap();
+    assert!(m.state.orgs["mine"].approved_releases.contains("3.0.0"));
+    let _ok = m.run_unproven(approve("2.3.144", false)).unwrap();
+    assert!(!m.state.orgs["mine"].approved_releases.contains("2.3.144"));
+    assert!(!m.state.orgs["team"].approved_releases.contains("3.0.0"));
+
+    // An app there handed to someone outside it goes to their personal
+    // organization (team access becoming the organization's); to someone with
+    // none, it is refused (the API makes theirs first).
+    let mut app = shared("mine");
+    app.app_id = "gift".into();
+    app.access = crate::types::Access::Team { team: "t".into() };
+    let _prev = m.state.apps.insert("gift".into(), app);
+    let transfer = |to: &str| SystemCmd::TransferApp {
+        app_id: "gift".into(),
+        to: to.into(),
+        actor: "alice".into(),
+        consent: Value::Null,
+        owner_in_org: true,
+        owner_in_team: true,
+    };
+    assert_eq!(
+        m.run_unproven(transfer("carol")),
+        Err(super::NO_PERSONAL_ORG.to_owned())
+    );
+    let _ok = m.run_unproven(transfer("bob")).unwrap();
+    let gift = &m.state.apps["gift"];
+    assert_eq!(
+        (gift.owner.as_str(), gift.org.as_deref()),
+        ("bob", Some("bobs"))
+    );
+    assert_eq!(gift.access, crate::types::Access::Org);
+
+    // A state written with it reads back the same.
+    let before = serde_json::to_value(&m.state).unwrap();
+    let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&restored).unwrap(), before);
 }
 
 /// Membership changes apply only with the actor's passkey consent over
@@ -5454,6 +5594,7 @@ fn a_deleted_organization_takes_its_publisher_bindings_with_it() {
             recovery_key: None,
             at: 0,
             name_fits: true,
+            personal: false,
         })
         .unwrap();
     assert_eq!(m.state.publisher_of_signer(&signer), None);
@@ -6729,6 +6870,7 @@ fn a_bound_publisher_manages_its_packages_origins() {
             recovery_key: None,
             at: 0,
             name_fits: true,
+            personal: false,
         })
         .unwrap();
     let _prev = m.state.publishers.insert(

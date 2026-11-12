@@ -967,7 +967,7 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
             .values()
             .filter_map(|o| {
                 o.role(&account)
-                    .map(|r| json!({ "orgId": o.org_id, "name": o.name, "role": r }))
+                    .map(|r| json!({ "orgId": o.org_id, "name": o.name, "role": r, "personal": o.personal }))
             })
             .collect();
         (acc, orgs, recovery)
