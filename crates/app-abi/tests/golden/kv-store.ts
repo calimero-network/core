@@ -123,8 +123,34 @@ export interface AppTransport {
   events(app: string, from?: number, signal?: AbortSignal): AsyncIterable<NodeEvent>;
 }
 
+/** The app's methods: what `KvStoreClient` implements, for a test double to stand in for it. */
+export interface KvStoreApi {
+  /** call `clear`. */
+  clear(options?: CallOptions): Promise<null>;
+  /** view `entries`. */
+  entries(options?: ViewOptions): Promise<Record<string, string>>;
+  /** view `get`. */
+  get(args: GetArgs, options?: ViewOptions): Promise<string | null>;
+  /** call `getOrInsert`. */
+  getOrInsert(args: GetOrInsertArgs, options?: CallOptions): Promise<string>;
+  /** view `getResult`. */
+  getResult(args: GetResultArgs, options?: ViewOptions): Promise<string>;
+  /** view `getUnchecked`. */
+  getUnchecked(args: GetUncheckedArgs, options?: ViewOptions): Promise<string>;
+  /** view `len`. */
+  len(options?: ViewOptions): Promise<string>;
+  /** call `remove`. */
+  remove(args: RemoveArgs, options?: CallOptions): Promise<string | null>;
+  /** call `set`. */
+  set(args: SetArgs, options?: CallOptions): Promise<null>;
+  /** call `updateIfExists`. */
+  updateIfExists(args: UpdateIfExistsArgs, options?: CallOptions): Promise<boolean>;
+  /** The app's events from log index `from`, then live, until `signal` aborts. */
+  events(from?: number, signal?: AbortSignal): AsyncIterable<AppEvent & { id: string }>;
+}
+
 /** The app's methods, over a signed-in `CalimeroClient` (or any {@link AppTransport}). */
-export class KvStoreClient {
+export class KvStoreClient implements KvStoreApi {
   readonly #client: AppTransport;
   readonly #app: string;
   readonly #after: ClientOptions['after'];
