@@ -28,7 +28,7 @@ Its command names differ from the rest of these docs for a few objects
 
 Output is JSON, pretty-printed: the route's answer as the client reads it,
 with any field the client's types do not name kept as the node sent it.
-Commands that stream (`context watch`,
+Commands that stream (`context watch`, `pipeline watch`,
 `context presence stream`, `ops metrics`, `blob download` to stdout, `app
 watch`, `dev`) print their own lines.
 
@@ -45,7 +45,7 @@ watch`, `dev`) print their own lines.
 | `--min-release VERSION` | `CALIMERO_MIN_RELEASE` | `2.3.109` | The oldest mero-tee release to trust. |
 | `--api-key KEY` | `CALIMERO_API_KEY` | none | Authenticate with this API key instead of a saved session. |
 | `--ops-token TOKEN` | `CALIMERO_OPS_TOKEN` | none | The operator's token, for `ops` commands. |
-| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move`, `ops set-quotas` and `ops set-pools`, `ops set-prices` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). |
+| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex; the node has its public half from `merod --operator-key`): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move`, `ops restore`, `ops backup-key --public-key`, `ops set-quotas`, `ops set-pools` and `ops set-prices` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). Without it, meroctl says to pass it. |
 
 Which node: `--api`, else `--node`, else the default saved node. Which
 credential: `--api-key`, else the session saved for that node's URL (refreshed
@@ -61,14 +61,17 @@ What an owner approves takes `--dev-passkey FILE`: a passkey kept in a file,
 which only a development cluster's `localhost` relying party accepts.
 Without it, the command sends the request plainly and the node answers
 `412 CONFIRM_REQUIRED`: on a real cluster the owner approves in a browser.
-That holds for `context update`, `context transfer`, `namespace delete`, `namespace outbound`,
+That holds for `call` (a confirm method), `context update`, `context transfer`,
+`context move`, `namespace delete`, `namespace outbound`,
 `namespace approve-release`, `namespace invite`, `namespace leave`,
 `namespace members add`, `namespace members remove`, `namespace capabilities`,
 `account outbound`, `account approve-release`, `account api-key create`,
-`account device revoke`, `group members add`, `group members remove`,
-`group settings`, `group leave`, `group upgrade trigger`,
-`group upgrade retry`, `app origins add` and `app origins remove`. `account device add` takes `--approve-with FILE`, a
-passkey file the account already has.
+`account api-key revoke`, `account device revoke`, `group delete`,
+`group members add`, `group members remove`, `group settings`, `group leave`,
+`group upgrade trigger`, `group upgrade retry`, `app origins add`,
+`app origins remove` and `raw`. `app watch`, `dev start` and `dev watch`
+require it. `account device add` takes `--approve-with FILE`, a passkey file
+the account already has.
 
 ## node
 
@@ -106,16 +109,6 @@ same command (`meroctl package origins list PACKAGE`).
 | `app versions PACKAGE` (`list-versions`) | `GET /packages/{package}` | Its installed versions. |
 | `app get-latest-version PACKAGE` | `GET /packages/{package}` | Its newest installed version. |
 | `app pipelines PACKAGE [--version V]` | `GET /packages/{package}/{version}/pipelines` | The pipelines a version registered (default: the newest): per name, `hash`, `worstCaseFuel`, the `modules` it pins and the canonical `pipeline`. |
-| `pipeline retry APP RUN [--limit STEP.FIELD=N]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipeline-runs/{run}/retry` | Start a new run of an ended run's pipeline, release, inputs and params with some step limits raised (`fuel`, `memoryMib`, `wallSecs`, each within the method's caps); what already succeeded is answered from the step cache. |
-| `pipeline validate FILE [--package P --version V]` | `POST /pipelines/validate` | Check a pipeline file and print every error with its path and code; exit code 1 when it is not valid. With a release, check it as that release would install it. Writes nothing. |
-| `pipeline estimate APP NAME [--input NAME=ID[,ID...]]... [--count NAME=N]...` | `POST /apps/{app}/pipelines/{name}/estimate` | Runs, fuel and cost per step for the given input file counts, `maxItems` for an input not given. Starts nothing. |
-| `pipeline run APP NAME [--input NAME=ID[,ID...]]... [--param NAME=VALUE]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipelines/{name}/runs` | Start a run of a pipeline the context's release registers; prints `{ run }`, or with `--wait` the run once it is no longer running. `--max-cost` caps what the run may owe under the operator's price table. |
-| `pipeline get APP RUN` | `GET /apps/{app}/pipeline-runs/{run}` | A run's state and each step's status, runs, outputs and reason. |
-| `pipeline cancel APP RUN` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a run. |
-| `pipeline runs APP` | `GET /apps/{app}/pipeline-runs` | The context's recent runs, newest first. |
-| `pipeline receipt APP RUN [--verify] [--out FILE]` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | The node-signed receipt of an ended run; with `--verify`, check it under the node's attested key and compare each downloaded output with its hash. |
-| `pipeline watch APP RUN` | `GET /apps/{app}/pipeline-runs/{run}/events` | One JSON line per `snapshot`, `run` and `step` event, then the `end` event as the answer. |
-| `pipeline download APP RUN [--out DIR]` | the file export routes | Download every output of every step of an ended run as `STEP-INDEX.bin`. |
 | `app uninstall PACKAGE [--version V]` | `DELETE /packages/{package}[/{version}]` | Uninstall one version or the whole application. Refused while a context runs it. |
 | `app watch --path FILE --dev-passkey FILE [-c CONTEXT]... [--once] [--interval-ms MS]` | uploads, then `POST /apps/{app}/upgrade` | Push a build now, then on every save. A `.mpk` is installed and this account's contexts of its package (or the `--context`s named) are updated to its version; a raw `.wasm` updates only the `--context`s named. `--interval-ms` defaults to `500`. |
 | `app origins list PACKAGE` (`ls`) | `GET /package-origins/{package}` | The web origins registered for the application: each `origin`, its `rpId`, `addedBy`, `addedAt` and `served` (whether the cluster serves the frontend there). Its manager's only. |
@@ -132,6 +125,34 @@ without it the node answers `412 CONFIRM_REQUIRED` and nothing changes, and on
 a real cluster the manager makes the change in the console (Web addresses),
 where the browser holds their passkey. A frontend the cluster serves from the
 bundle needs no origin here.
+
+## pipeline
+
+A context's pipeline runs: DAGs of compute steps over sealed files, which a
+package's release registers and job nodes run. `APP` is a context (alias or
+id).
+
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `pipeline validate FILE [--package P --version V]` | `POST /pipelines/validate` | Check a pipeline file and print every error with its path and code; exit code 1 when it is not valid. With a release, check it as that release would install it. Writes nothing. |
+| `pipeline estimate APP NAME [--input NAME=ID[,ID...]]... [--count NAME=N]...` | `POST /apps/{app}/pipelines/{name}/estimate` | Runs, fuel and cost per step for the given input file counts, `maxItems` for an input not given. Starts nothing. |
+| `pipeline run APP NAME [--input NAME=ID[,ID...]]... [--param NAME=VALUE]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipelines/{name}/runs` | Start a run of a pipeline the context's release registers; prints `{ run }`, or with `--wait` the run once it is no longer running. `--max-cost` caps what the run may owe under the operator's price table. |
+| `pipeline get APP RUN` | `GET /apps/{app}/pipeline-runs/{run}` | A run's state and each step's status, runs, outputs and reason. |
+| `pipeline runs APP` | `GET /apps/{app}/pipeline-runs` | The context's recent runs, newest first. |
+| `pipeline watch APP RUN` | `GET /apps/{app}/pipeline-runs/{run}/events` | One JSON line per `snapshot`, `run` and `step` event, then the `end` event as the answer. |
+| `pipeline cancel APP RUN` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a run. |
+| `pipeline retry APP RUN [--limit STEP.FIELD=N]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipeline-runs/{run}/retry` | Start a new run of an ended run's pipeline, release, inputs and params with some step limits raised (`fuel`, `memoryMib`, `wallSecs`, each within the method's caps); what already succeeded is answered from the step cache. |
+| `pipeline receipt APP RUN [--verify] [--out FILE]` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | The node-signed receipt of an ended run; with `--verify`, check it under the node's attested key and compare each downloaded output with its hash. |
+| `pipeline download APP RUN [--out DIR]` | the file export routes | Download every output of every step of an ended run as `STEP-INDEX.bin`. |
+
+```bash
+meroctl pipeline validate ./pipelines/ingest.yaml --package com.example.docs --version 1.2.0
+meroctl file upload ./report.pdf -c docs                     # prints { id, size, sha256, index }
+meroctl pipeline estimate docs ingest --input pages=<file-id>
+meroctl pipeline run docs ingest --input pages=<file-id> --param lang=en --max-cost 5000000 --wait
+meroctl pipeline receipt docs <run> --verify
+meroctl pipeline download docs <run> --out ./outputs
+```
 
 ## context
 
@@ -197,7 +218,7 @@ receipt signed by the answering node.
 
 ## blob
 
-A context's blobs.
+A context's blobs. `-c` is `--context` and `-o` is `--output`.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
@@ -215,7 +236,7 @@ A context's sealed files.
 | Command | Route | Meaning |
 | --- | --- | --- |
 | `file upload FILE -c CONTEXT` | `POST /apps/{app}/files`, or a session under `/apps/{app}/files/uploads` | Upload a sealed file (its owner or an org member): one request up to 16 MiB, else parts that resume after a dropped connection; prints its `id`, `size`, `sha256` and `index`. |
-| `file download APP ID --out PATH` | `POST /apps/{app}/files/{id}/export`, `GET /apps/{app}/files/{id}/segments/{k}` | Download a sealed file's plaintext: the node sends ciphertext and the file key wrapped to a key made for the call, and every byte is checked before anything is written. |
+| `file download APP ID (-o\|--out) PATH` | `POST /apps/{app}/files/{id}/export`, `GET /apps/{app}/files/{id}/segments/{k}` | Download a sealed file's plaintext: the node sends ciphertext and the file key wrapped to a key made for the call, and every byte is checked before anything is written. |
 
 ## namespace
 
@@ -229,7 +250,7 @@ or `restricted` (only the members added).
 | `namespace get ORG` | `GET /orgs/{org}` | One organization. |
 | `namespace list` (`ls`) | `GET /auth/me` | The organizations this account belongs to, with its role. |
 | `namespace delete ORG [--dev-passkey FILE]` | `DELETE /orgs/{org}` | Delete it with its teams, invites and contexts (the owner's). |
-| `namespace invite ORG [--role ROLE] [--group TEAM]... [--ttl-secs N] [--uses N]` | `POST /orgs/{org}/invites` | Make an invitation token. `--role` defaults to `member`; `--group` adds teams the invitee joins. |
+| `namespace invite ORG [--role ROLE] [--group TEAM]... [--ttl-secs N] [--uses N] [--dev-passkey FILE]` | `POST /orgs/{org}/invites` | Make an invitation token. `--role` defaults to `member`; `--group` adds teams the invitee joins. |
 | `namespace join TOKEN` | `POST /invites/{token}/redeem` | Join with an invitation token. |
 | `namespace leave ORG` | `DELETE /orgs/{org}/members/{me}` | Leave the organization. |
 | `namespace groups ORG` | `GET /orgs/{org}` | The organization's teams. |
@@ -281,7 +302,8 @@ The signed-in account.
 | `account session list` (`ls`) | `GET /auth/sessions` | Its live sessions: the device each was opened with, the application and origin it is bound to, when it opened and was last active (to within about an hour), and the current one. |
 | `account session revoke SESSION` | `DELETE /auth/sessions/{session}` | End one session. |
 | `account activity [--after T]` | `GET /auth/activity` | What its devices did, newest first: the applications and origins each signed in to, and the changes each approved (needs a passkey session). |
-| `account api-key create [--label L] [--context C]... [--read-only] [--ttl-secs N]` | `POST /auth/apikeys` | Create an API key (needs a passkey session). `--label` defaults to `meroctl`; `--context` limits it to those contexts. The key is printed once. |
+| `account api-key create [--label L] [--context C]... [--read-only] [--ttl-secs N] [--dev-passkey FILE]` | `POST /auth/apikeys` | Create an API key (needs a passkey session). `--label` defaults to `meroctl`; `--context` limits it to those contexts. The key is printed once. |
+| `account api-key create --upgrades CONTEXT [--package P] [--label L] [--ttl-secs N] [--dev-passkey FILE]` | `POST /auth/apikeys` (`upgrades`) | An upgrade key, for CI: it moves that one context to signed releases of its application (`P`, default the one it runs) with `context update --version`, signing in place of the passkey step-up, and is refused everywhere else (`403 UPGRADE_KEY_ONLY`). Conflicts with `--context` and `--read-only`. |
 | `account api-key list` (`ls`) | `GET /auth/apikeys` | Its API keys. |
 | `account api-key revoke KEY_ID [--dev-passkey FILE]` | `DELETE /auth/apikeys/{key}` | Revoke one, approved with a passkey. |
 | `account approve-release VERSION [--dev-passkey FILE]` | `POST /orgs/{org}/releases` | Approve a mero-tee release to hold the account's own contexts (its personal organization's). |
@@ -317,7 +339,12 @@ node answers `403` for the others.
 | `ops add-node ID ADDR [--zone Z] [--role replica\|job] [--pool P]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner (and a voter while fewer than 3 voters are left). `ADDR` is its URL. `--role job` registers a job node (`merod run --job-node`): it is never admitted, placed or sent the cluster key. A node's role is fixed until it is removed. |
 | `ops remove-node ID` | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on; run against the system leader. |
 | `ops move CONTEXT --replicas ID,...` | `POST /ops/apps/{app}/replicas` | Move a context to these replica node ids. A follower answers `421 NOT_LEADER`; meroctl retries at the leader it names. The set it already has answers `unchanged: true`; another move of it running, `409 MOVE_IN_PROGRESS`. |
-| `ops backup` | `POST /ops/backup` | Write encrypted snapshots of the contexts this node leads now. |
+| `ops backup [--all]` | `POST /ops/backup[?all=true]` | Write sealed snapshots, into the node's `--backup-dir`, of the contexts this node leads now and of the system group when it leads it; `--all`: every group it holds, leader or not (a survivor of a lost majority). |
+| `ops restore CONTEXT [--backup NAME]` | `POST /ops/apps/{app}/restore` | Restore a context from a sealed backup in this node's `--backup-dir` (`{backup-dir}/{context}/{name}`, the newest without `--backup`); this node seeds it and becomes its first replica, and what the context wrote after the backup is lost. Signed. |
+| `ops restore CONTEXT --recovery-key-file FILE [--recovery-file NAME]` | `GET /ops/recovery-files`, then `POST /ops/apps/{app}/restore { recovery }` | Restore it from the node's recovery disk (`--recover-from`, else `--recovery-dir`) with the operator's backup key: meroctl checks each file's signature and attestation, opens the file's data key on this machine and sends only that. The context's newest file without `--recovery-file`. Signed. |
+| `ops backup-key [--public-key HEX]` | `GET`, `POST /ops/backup-key` | The operator's backup key (`{ holder, key, apps }`), or set it (64 hex, an X25519 public key; signed): every context's recovery-disk files are sealed to it where the operator upgrades apps. |
+| `ops recovery-keygen --out FILE` | none (local) | Make a backup key pair: the private half (hex) into `FILE` (mode `0600`; keep it off every node), the public half printed as `publicKey` for `ops backup-key --public-key`. |
+| `ops recover --key-file FILE` | `GET /ops/recovery-files`, `POST /ops/recover` | Found the cluster again from its recovery disk, on a founder started with `merod run --bootstrap --recover-from DIR`: the newest `system` file and every `code` file in `DIR/operator/`, each checked and opened on this machine with the backup key. Then `ops restore CONTEXT --recovery-key-file` each context. |
 | `ops quotas` | `GET /ops/quotas` | The per-account quotas. |
 | `ops set-quotas JSON` | `POST /ops/quotas` | Replace them. |
 | `ops pools` | `GET /ops/pools` | The compute pools and the runs each takes at once. |
@@ -333,7 +360,7 @@ node answers `403` for the others.
 | `ops upgrade-namespace ORG --package P --version V [--group TEAM [--cascade]] [--migrate EXPORT]` | `POST /ops/orgs/{org}/upgrade` | Update an organization's contexts (or one team's) to a release; follow it with `group upgrade status`. |
 
 <Aside type="note">
-  `ops move` and `ops upgrade` pass `CONTEXT` to the node as given (an app id
+  `ops move`, `ops upgrade` and `ops restore` pass `CONTEXT` to the node as given (an app id
   or a context id); they do not resolve aliases.
 </Aside>
 
@@ -379,16 +406,23 @@ It never logs a header, a query or a body. See
 ## raw
 
 ```bash
-meroctl raw METHOD PATH [BODY]
+meroctl raw METHOD PATH [BODY] [--dev-passkey FILE]
 ```
 
 Any API route, through the same attested, sealed client. `METHOD` is `get`,
 `post`, `put` or `delete`; `BODY` is JSON (default `{}` for `post` and `put`).
 Use it for what no command covers, such as `POST /auth/apikeys` with
-`methods` or `allowConfirm`. It cannot answer a `412 CONFIRM_REQUIRED`: a route
-that needs a passkey assertion needs a command with `--dev-passkey`, or a
-browser. See the
-[node API reference](/operate/admin-api/).
+`methods` or `allowConfirm`. With `--dev-passkey FILE` (development
+clusters) it answers a `412 CONFIRM_REQUIRED` on a `post` or `delete` with
+that passkey and sends the request again; without it, the `412` is printed. It
+does not sign operator decisions (`428 OPERATOR_SIGNATURE_REQUIRED`): use the
+`ops` command. See the [node API reference](/operate/admin-api/).
+
+```bash
+meroctl raw get /auth/me
+meroctl raw post /auth/apikeys '{"label":"ci","methods":["get"],"readOnly":true}' --dev-passkey ./dev-passkey.json
+meroctl raw delete /auth/aliases/notes
+```
 
 ## Example session
 

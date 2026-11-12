@@ -1,0 +1,91 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-ops-recovery">
+<svg viewBox="0 0 760 430" role="img" aria-label="Two kinds of backup: --backup-dir holds snapshots sealed under the cluster key, which opens only through a release's mero-kms, and a cluster is founded again from it with --restore-from then ops restore; --recovery-dir holds files sealed to the backup key of whoever upgrades each app, which open with that key alone, and come back with --recover-from, ops recover and ops restore --recovery-key-file for the operator, or POST /recover/holder for an organization" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="or-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="430" rx="10" fill="#0f0f16"/>
+
+  <g class="seq-step" style="--step-i:0">
+    <rect x="16" y="150" width="130" height="96" fill="#10210f" stroke="#3fb950"/>
+    <text x="81" y="170" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">a node</text>
+    <text x="81" y="188" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">holding apps and</text>
+    <text x="81" y="200" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">the system group</text>
+    <text x="81" y="222" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">writes both, if</text>
+    <text x="81" y="234" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">both flags are set</text>
+  </g>
+
+  <!-- backup-dir lane -->
+  <g class="seq-step" style="--step-i:1">
+    <text x="440" y="24" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">--backup-dir: the cluster's own key</text>
+    <line x1="146" y1="175" x2="176" y2="90" stroke="#8b949e" stroke-width="1.2" marker-end="url(#or-arrow)"/>
+    <rect x="178" y="40" width="160" height="96" fill="#16222e" stroke="#39d0d8"/>
+    <text x="258" y="58" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">every 60 s, leaders</text>
+    <text x="258" y="74" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">&#123;app&#125;/….snap + .manifest</text>
+    <text x="258" y="86" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">system/, code/</text>
+    <text x="258" y="98" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">cluster-key/&#123;release&#125;</text>
+    <text x="258" y="120" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="7.5">sealed under K_c</text>
+  </g>
+  <g class="seq-step" style="--step-i:2">
+    <line x1="338" y1="88" x2="364" y2="88" stroke="#8b949e" stroke-width="1.2" marker-end="url(#or-arrow)"/>
+    <rect x="366" y="40" width="180" height="96" fill="#161b22" stroke="#444c56"/>
+    <text x="456" y="58" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">opens where K_c opens</text>
+    <text x="456" y="76" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">a node of this cluster, or a</text>
+    <text x="456" y="88" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">founder whose K_r (from a live</text>
+    <text x="456" y="100" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">mero-kms of a kept release)</text>
+    <text x="456" y="112" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">unwraps cluster-key/&#123;release&#125;</text>
+    <line x1="546" y1="88" x2="572" y2="88" stroke="#8b949e" stroke-width="1.2" marker-end="url(#or-arrow)"/>
+    <rect x="574" y="40" width="170" height="96" fill="#161b22" stroke="#39d0d8"/>
+    <text x="659" y="58" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">come back</text>
+    <text x="659" y="76" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">one app:</text>
+    <text x="659" y="88" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">ops restore APP</text>
+    <text x="659" y="106" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">whole cluster: merod run</text>
+    <text x="659" y="118" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">--bootstrap --restore-from</text>
+  </g>
+
+  <!-- recovery-dir lane -->
+  <g class="seq-step" style="--step-i:3">
+    <text x="440" y="170" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">--recovery-dir: the holder's backup key</text>
+    <line x1="146" y1="222" x2="176" y2="252" stroke="#8b949e" stroke-width="1.2" marker-end="url(#or-arrow)"/>
+    <rect x="178" y="186" width="160" height="132" fill="#231708" stroke="#f0883e"/>
+    <text x="258" y="204" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">every 5 min, any holder</text>
+    <text x="258" y="220" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">operator/ or org-&lt;id&gt;/</text>
+    <text x="258" y="232" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">(the holder's directory)</text>
+    <text x="258" y="248" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">app-*, system/holder,</text>
+    <text x="258" y="260" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">code-*, file segments</text>
+    <text x="258" y="282" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="7.5">HPKE to the holder's</text>
+    <text x="258" y="294" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="7.5">X25519 key; signed by</text>
+    <text x="258" y="306" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="7.5">the attested receipt key</text>
+  </g>
+  <g class="seq-step" style="--step-i:4">
+    <line x1="338" y1="252" x2="364" y2="252" stroke="#8b949e" stroke-width="1.2" marker-end="url(#or-arrow)"/>
+    <rect x="366" y="186" width="180" height="132" fill="#161b22" stroke="#444c56"/>
+    <text x="456" y="204" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">opens with the backup key</text>
+    <text x="456" y="222" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">on the holder's own machine:</text>
+    <text x="456" y="234" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">check signature + attestation,</text>
+    <text x="456" y="246" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">open each file's data key,</text>
+    <text x="456" y="258" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">send only that data key</text>
+    <text x="456" y="282" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="7.5">no node, no mero-kms</text>
+    <text x="456" y="294" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="7.5">ever holds the private half</text>
+    <line x1="546" y1="230" x2="572" y2="218" stroke="#8b949e" stroke-width="1.2" marker-end="url(#or-arrow)"/>
+    <line x1="546" y1="276" x2="572" y2="292" stroke="#8b949e" stroke-width="1.2" marker-end="url(#or-arrow)"/>
+    <rect x="574" y="186" width="170" height="70" fill="#161b22" stroke="#f0883e"/>
+    <text x="659" y="202" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">operator</text>
+    <text x="659" y="216" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7">merod run --bootstrap</text>
+    <text x="659" y="227" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7">  --recover-from DIR</text>
+    <text x="659" y="238" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7">ops recover; then per app</text>
+    <text x="659" y="249" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7">ops restore --recovery-key-file</text>
+    <rect x="574" y="264" width="170" height="54" fill="#161b22" stroke="#f0883e"/>
+    <text x="659" y="280" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">organization</text>
+    <text x="659" y="294" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7">POST /recover/holder from</text>
+    <text x="659" y="305" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7">its device; operator admits</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:5">
+    <text x="380" y="352" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">--backup-dir is lost with the last mero-kms of every release that kept a copy of K_c;</text>
+    <text x="380" y="368" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">--recovery-dir outlives every mero-kms, under a new cluster key.</text>
+    <text x="380" y="392" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">The holder is whoever upgrades the app: the operator (--app-upgrades operator), else its organization;</text>
+    <text x="380" y="408" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">nothing is written for a holder that set no backup key.</text>
+  </g>
+</svg>
+</Figure>

@@ -1,0 +1,125 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-ops-topology">
+<svg viewBox="0 0 760 470" role="img" aria-label="A production deployment: browsers, SDK clients and the operator's tools reach the nodes through an HTTPS front; three or more merod nodes in TDX VMs replicate the system group and the apps over sealed internal channels; job nodes run compute; each node takes its storage key from mero-kms after attestation, fetches signed releases from the registry, checks quotes against signed mero-tee releases and Intel collateral, writes sealed backups and the recovery disk, and serves metrics to a private scraper" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ot-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="470" rx="10" fill="#0f0f16"/>
+
+  <!-- callers -->
+  <g class="seq-step" style="--step-i:0">
+    <text x="90" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">callers</text>
+    <rect x="16" y="36" width="148" height="78" fill="#161b22" stroke="#58a6ff"/>
+    <text x="90" y="54" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">people (browsers)</text>
+    <text x="90" y="70" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">passkeys on --rp-id;</text>
+    <text x="90" y="82" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">pages on --origins or</text>
+    <text x="90" y="94" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">&#123;label&#125;.--apps-domain</text>
+    <rect x="16" y="124" width="148" height="64" fill="#161b22" stroke="#58a6ff"/>
+    <text x="90" y="142" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">services</text>
+    <text x="90" y="158" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">SDKs, meroctl, proxy</text>
+    <text x="90" y="170" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">with an API key</text>
+    <rect x="16" y="198" width="148" height="78" fill="#231708" stroke="#f0883e"/>
+    <text x="90" y="216" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">operator (mdma)</text>
+    <text x="90" y="232" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">ops token (/ops/*)</text>
+    <text x="90" y="244" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">operator key (signs)</text>
+    <text x="90" y="256" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">backup key (offline)</text>
+  </g>
+
+  <!-- front -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="164" y1="75" x2="196" y2="120" stroke="#8b949e" stroke-width="1.2" marker-end="url(#ot-arrow)"/>
+    <line x1="164" y1="156" x2="196" y2="156" stroke="#8b949e" stroke-width="1.2" marker-end="url(#ot-arrow)"/>
+    <line x1="164" y1="237" x2="196" y2="192" stroke="#8b949e" stroke-width="1.2" marker-end="url(#ot-arrow)"/>
+    <rect x="198" y="36" width="64" height="240" fill="#161b22" stroke="#444c56"/>
+    <text x="230" y="58" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">HTTPS</text>
+    <text x="230" y="72" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">front</text>
+    <text x="230" y="100" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">TLS, DNS:</text>
+    <text x="230" y="112" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">a name per</text>
+    <text x="230" y="124" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">node, *.apps</text>
+    <text x="230" y="152" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">sees sealed</text>
+    <text x="230" y="164" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">bytes only</text>
+    <text x="230" y="192" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">no buffering</text>
+    <text x="230" y="204" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">for SSE;</text>
+    <text x="230" y="216" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">64 MiB bodies</text>
+    <line x1="262" y1="156" x2="290" y2="156" stroke="#8b949e" stroke-width="1.2" marker-end="url(#ot-arrow)"/>
+  </g>
+
+  <!-- the cluster -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="292" y="20" width="270" height="318" fill="none" stroke="#35354a" stroke-dasharray="4 3"/>
+    <text x="427" y="36" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">cluster (--cluster eu1)</text>
+    <rect x="304" y="48" width="78" height="128" fill="#10210f" stroke="#3fb950"/>
+    <rect x="388" y="48" width="78" height="128" fill="#10210f" stroke="#3fb950"/>
+    <rect x="472" y="48" width="78" height="128" fill="#10210f" stroke="#3fb950"/>
+    <text x="343" y="66" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">TD n1</text>
+    <text x="427" y="66" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">TD n2</text>
+    <text x="511" y="66" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">TD n3</text>
+    <text x="343" y="84" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">merod run</text>
+    <text x="427" y="84" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">merod run</text>
+    <text x="511" y="84" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">merod run</text>
+    <text x="343" y="98" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="7.5">--bootstrap</text>
+    <text x="343" y="118" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="7.5">system voter</text>
+    <text x="427" y="118" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="7.5">system voter</text>
+    <text x="511" y="118" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="7.5">system voter</text>
+    <text x="343" y="134" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="7.5">app replicas</text>
+    <text x="427" y="134" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="7.5">app replicas</text>
+    <text x="511" y="134" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="7.5">app replicas</text>
+    <text x="343" y="160" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7">:2528</text>
+    <text x="427" y="160" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7">:2528</text>
+    <text x="511" y="160" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7">:2528</text>
+    <line x1="304" y1="196" x2="550" y2="196" stroke="#a5ff11" stroke-dasharray="3 3"/>
+    <text x="427" y="190" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="7.5">peers: sealed /internal/*, Raft, cluster secret</text>
+    <rect x="304" y="212" width="246" height="56" fill="#1a1430" stroke="#a371f7"/>
+    <text x="427" y="230" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">job nodes (optional)</text>
+    <text x="427" y="246" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">merod run --job-node --cluster-identity HEX</text>
+    <text x="427" y="258" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">compute only: no store, no vote, no K_c</text>
+    <rect x="304" y="278" width="246" height="48" fill="#161b22" stroke="#444c56"/>
+    <text x="427" y="296" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">every node: data dir sealed under K_c,</text>
+    <text x="427" y="310" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8">K_c wrapped under K_r (cluster-key)</text>
+  </g>
+
+  <!-- services the node uses -->
+  <g class="seq-step" style="--step-i:3">
+    <text x="666" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">what nodes reach</text>
+    <rect x="592" y="36" width="150" height="50" fill="#13160f" stroke="#a5ff11"/>
+    <text x="667" y="54" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">mero-kms</text>
+    <text x="667" y="70" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">--kms-url: K_r after quote</text>
+    <rect x="592" y="94" width="150" height="40" fill="#161b22" stroke="#444c56"/>
+    <text x="667" y="110" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">package registry</text>
+    <text x="667" y="124" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">--registry-url</text>
+    <rect x="592" y="142" width="150" height="40" fill="#161b22" stroke="#444c56"/>
+    <text x="667" y="158" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">signed mero-tee releases</text>
+    <text x="667" y="172" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">+ Intel DCAP collateral</text>
+    <line x1="562" y1="61" x2="590" y2="61" stroke="#8b949e" stroke-width="1.2" marker-end="url(#ot-arrow)"/>
+    <line x1="562" y1="114" x2="590" y2="114" stroke="#8b949e" stroke-width="1.2" marker-end="url(#ot-arrow)"/>
+    <line x1="562" y1="162" x2="590" y2="162" stroke="#8b949e" stroke-width="1.2" marker-end="url(#ot-arrow)"/>
+  </g>
+
+  <!-- storage -->
+  <g class="seq-step" style="--step-i:4">
+    <rect x="592" y="200" width="150" height="56" fill="#16222e" stroke="#39d0d8"/>
+    <text x="667" y="218" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">--backup-dir</text>
+    <text x="667" y="232" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">every 60 s, sealed under K_c</text>
+    <text x="667" y="244" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">copy off the machine</text>
+    <rect x="592" y="264" width="150" height="62" fill="#16222e" stroke="#39d0d8"/>
+    <text x="667" y="282" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">--recovery-dir</text>
+    <text x="667" y="296" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">every 5 min, sealed to</text>
+    <text x="667" y="308" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="7.5">each holder's backup key</text>
+    <line x1="562" y1="228" x2="590" y2="228" stroke="#8b949e" stroke-width="1.2" marker-end="url(#ot-arrow)"/>
+    <line x1="562" y1="295" x2="590" y2="295" stroke="#8b949e" stroke-width="1.2" marker-end="url(#ot-arrow)"/>
+  </g>
+
+  <!-- metrics -->
+  <g class="seq-step" style="--step-i:5">
+    <rect x="292" y="356" width="270" height="44" fill="#161b22" stroke="#444c56"/>
+    <text x="427" y="374" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">metrics scraper (private network)</text>
+    <text x="427" y="390" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">plain GET /metrics on --metrics-listen</text>
+    <line x1="427" y1="354" x2="427" y2="340" stroke="#8b949e" stroke-width="1.2" marker-end="url(#ot-arrow)"/>
+  </g>
+
+  <g class="seq-step" style="--step-i:6">
+    <text x="380" y="426" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">Only /health, /attestation and the consent page travel in the clear; every other request is sealed to the attested node.</text>
+    <text x="380" y="444" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">Each node's --public-url must reach that node itself: peers send Raft traffic there.</text>
+  </g>
+</svg>
+</Figure>

@@ -34,7 +34,7 @@ which version it is, and how a change that cannot keep it is declared.
 | Sealed channel and attestation | the envelope's version | `crates/sealed`, `crates/client/src/attest.rs` (mirrored by mero-js) | Every client and every peer |
 | Peer protocol | the node release | `/internal/*` and a job node's `/job/*` routes, Raft RPCs | The other nodes of a cluster, on this release or the one before |
 | Stored formats | store 1, snapshot 1, app entry 1, sealed files v1 | `calimero_log::STORE_FORMAT`, `SNAPSHOT_FORMAT`, `component::ENTRY_FORMAT`, the file domain strings ([Storage schema](/protocol/storage/)) | The node that opens a data directory, installs a snapshot or applies an entry |
-| Clients | mero-js `29.x`, calimero-client-py | their own repositories | Developers; `e2e.yml`'s `clients` job runs both against every PR's `merod` |
+| Clients | mero-js `35.x`, calimero-client-py | their own repositories | Developers; `e2e.yml`'s `clients` job runs both against every PR's `merod` |
 | Operator tooling | mdma | `shared/mdma_common/release_compat.py` (`CUTOVERS`, `FEATURES`) | mdma, which refuses a rollout across a cutover |
 
 ## Guarantees
@@ -72,6 +72,17 @@ every route the clients of the previous 3 releases call.
 **Hard cutovers** are the exception, never a side effect. A change that breaks
 any of the above is one only once it is declared (below); an undeclared break
 is a bug, and the CI checks below fail it.
+
+## What is deprecated or cut over now
+
+`crates/node/api-deprecations.toml` lists no `[[deprecated]]` route or field
+at 1.0.0-rc.20. Its `[[cutover]]` entries are the ones 1.0.0-rc.20 made when
+every app moved into an organization (#5015): `POST /auth/releases` and
+`POST /auth/outbound` are gone (approve on the personal organization,
+`POST /orgs/{org}/releases` and `/orgs/{org}/outbound`), and so is
+`outboundApprovals` in `/auth/me`. The same release is a hard cutover of
+stored data: a cluster on an earlier release is recreated, not rolled
+(`.github/upgrade-from` says `hard-cutover: 5015`).
 
 ## Declaring a deprecation
 
@@ -128,6 +139,7 @@ test>`. A shape with no reader is a hard cutover.
 | `Compatibility` | `ci-checks.yml` (part of the required `Rust` check), `scripts/check-api-compat.py` | A route or JSON field removed without a deprecation past its `remove_after` or a `[[cutover]]`; the WIT changed without a version bump, or a non-additive WIT change without a cutover; an ABI version dropped |
 | `Apps of the previous release` | `ci-checks.yml` (part of `Rust`) | The last published release's `kv-store-test-fixture.mpk` failing to install, run or upgrade to this tree's build on this tree's node (`crates/node/tests/previous-release/kv-store.json`) |
 | `Compatibility door` | `pr-description.yml`, `scripts/check-compat-door.py` | `Door: one-way` with neither `Reader:` nor `Hard cutover:` (and its CHANGELOG line); a format version moved with no door stated |
+| `Upgrade path` | `ci-checks.yml` (required through `Rust`), `crates/node/tests/fault/upgrade_path.py` | A cluster started on the release in `.github/upgrade-from`, written to, rolled onto this tree's `merod` as mdma rolls a Cloud cluster, then read back: anything lost fails it; a `hard-cutover:` line there reports the cutover instead of running |
 | `clients against merod` | `e2e.yml` | mero-js's or calimero-client-py's tests failing against this tree's `merod` |
 
 Scenarios and the process suite run one build on fresh state, so they test

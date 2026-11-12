@@ -7,9 +7,10 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
-A node has one network surface: an HTTP listener. Clients and peers
-both reach it at the node's public URL, and everything except `/health` and
-`/attestation` travels inside the sealed channel. There is no peer discovery,
+A node has one network surface: an HTTP listener (plus, if you ask for it,
+a metrics listener). Clients and peers both reach it at the node's public URL,
+and everything except `/health`, `/attestation` and the consent page travels
+inside the sealed channel. There is no peer discovery,
 relay or NAT traversal: nodes of a cluster are servers that know each other's
 URLs from the system group.
 
@@ -19,6 +20,7 @@ URLs from the system group.
 | --- | --- | --- |
 | `--listen` | `0.0.0.0:2528` | The socket the API is served on (plain HTTP). |
 | `--public-url` | required | The base URL clients and peers use for this node. |
+| `--metrics-listen` | off | A second, plain-HTTP listener serving only `GET /metrics`, for a scraper on a private network ([Observability](/operate/observability/#collecting-metrics)). |
 
 `--public-url` is recorded in the fleet directory and used by every other node
 to reach this one: Raft traffic, forwarded calls and reads, blob transfers.
@@ -33,6 +35,9 @@ node. Use a trailing slash (`https://n1.example.com/`) as `merod local` does.
 | Peers | every node | `/internal/*`, sealed and carrying the cluster secret. |
 | The operator | any node | `/ops/*`, sealed, with the ops token. Replica moves must reach the app group's leader; others answer `421 NOT_LEADER` with its URL. |
 | Anyone | any node | `/health` and `/attestation`, in the clear. |
+| A person's browser | the node that made the request | The consent page, `/consent/{id}` (and its `/model`, `/approve`, `/decline`), in the clear on the node's own origin; it is reached at the `url` `POST /consent/requests` answered, so it must reach that node. |
+| Peers, for the cluster key | a node on an empty data directory | `/internal/cluster-key/deliver`, while it waits for the cluster key (it serves only that, `/health` and `/attestation` until then). |
+| The cluster's leaders | job nodes | `/job/*`, sealed, each assignment and component signed by the cluster identity. A job node serves nothing else but `/health` and `/attestation?purpose=jobs`. |
 
 ## Between nodes
 
@@ -41,7 +46,9 @@ the peer's quote the way a client would: in TDX mode the quote must match a
 profile in `--peer-profiles` (default: its own `MERO_TEE_PROFILE`) of the
 signed mero-tee release the peer names, at least `--peer-min-release`. On top
 of that, every internal request carries the cluster secret, an HMAC of the
-storage key and `--cluster`, so a genuine TD of another cluster is refused too.
+cluster key K_c and `--cluster`, so a genuine TD of another cluster is refused
+too. The channel is identified: a node names itself, and the peer attests the
+address the cluster has for that node id before it takes the claim.
 
 Forwarded calls and reads wait at most 5 seconds for a leader before retrying
 at whoever leads then. An app's data is sent only to peers whose attested
@@ -123,5 +130,5 @@ signature before a byte is served.
 | Port | Used by |
 | --- | --- |
 | `2528` | The default `--listen` port. |
+| your choice | `--metrics-listen` (Calimero's image uses `127.0.0.1:9464`). |
 | `2501`–`2503` | `merod local` (`--base-port 2500`, nodes 1–3). |
-| `2428` | Exposed by the `Dockerfile`, used by nothing. |

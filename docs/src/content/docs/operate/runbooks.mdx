@@ -1,11 +1,13 @@
 ---
 title: Runbooks
-description: Step-by-step operations on a merod cluster — add a node, move replicas, back up and restore apps, found a cluster again, recover from a lost system majority, set quotas, upgrade the cluster's release, upgrade apps, rotate the ops token, handle a lost node, inspect a stopped one.
+description: Step-by-step operations on a merod cluster — add a node, move replicas, back up and restore apps, found a cluster again, recover from the recovery disk after every key service is gone, recover from a lost system majority, set quotas, upgrade the cluster's release, upgrade apps, rotate the ops token, handle a lost node, inspect a stopped one.
 sidebar:
   order: 9
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import OpsRecoveryFlow from '../../../components/diagrams/OpsRecoveryFlow.astro';
 
 Commands below assume `meroctl` can reach the cluster and trusts it:
 
@@ -303,37 +305,122 @@ Backups in `--backup-dir` open only with the cluster key, which only a live
 mero-kms of a release they hold a copy for can unwrap. The recovery disk
 (`--recovery-dir`, a second disk mdma attaches as `recovery`) holds backups
 that open with the key of whoever upgrades each app instead: the operator where
-it holds app upgrades, else the app's organization or owner. No node ever holds
-that key's private half.
+it holds app upgrades (`--app-upgrades operator`), else the app's
+organization (a person's own apps are in their personal organization). No
+node ever holds that key's private half.
 
-1. Make the key pair on a machine that is not a node, and keep the private
-   half offline: `meroctl ops recovery-keygen --out operator-backup.key`.
-2. Register the public half: `meroctl --operator-key-file op.key ops backup-key
-   --public-key HEX` (owners: `POST /orgs/{org}/backup-key`, with a passkey;
-   an account's own apps are its personal organization's). Until a key is set, nothing is written
-   for that holder's apps and the node logs how many apps are not covered.
-3. After every node and every mero-kms is lost, attach a surviving recovery disk
-   (or a copy of it) to a new node and found the cluster on it, with the same
-   `--cluster`, governance and `--operator-key`:
-   `merod run --bootstrap --recover-from /recovery`.
-4. `meroctl --ops-token T ops recover --key-file operator-backup.key`: every
-   file's signature and attestation are checked on your machine, the newest
-   `system` file and the code files are opened there, and only their data keys
-   go to the node. Start the other nodes; they join as on any founding.
-5. Restore each app: `meroctl --operator-key-file op.key ops restore APP
-   --recovery-key-file operator-backup.key`. It answers `409 APP_RESTORING`
-   until then.
+<OpsRecoveryFlow />
 
-An organization's or account's apps (where owners upgrade apps) come back on
-a cluster that does not hold them, from the files under `org-<id>/` or
-`account-<id>/`: attach the disk to a node of that cluster as its
-`--recovery-dir`, hand the holder the headers `GET /ops/recovery-files?holder=`
-lists (they hold no secret), and the holder's own device checks them, opens
-the data keys with its backup key and sends them in `POST /recover/holder`
-straight to that node; the `428` it answers first names the statement the
-operator signs to admit it. The organization, its people and their passkeys,
-its apps and its backup key come back; the people sign in with the passkeys
-they had. It is refused when the cluster holds any of them already.
+### Before: set the backup key
+
+Do this once the cluster is formed, on every release from 1.0.0-rc.20 (`409
+FEATURE_NOT_ACTIVE` while an older node is registered):
+
+```bash
+# on a machine that is not a node; keep operator-backup.key offline
+meroctl ops recovery-keygen --out operator-backup.key
+meroctl --operator-key-file operator.key ops backup-key --public-key <publicKey printed above>
+meroctl ops backup-key          # { holder: "operator", key: { publicKey, setAt, setBy }, apps }
+```
+
+Where owners upgrade apps, each organization's org-wide `MANAGE_APPLICATION`
+holders set their own with a passkey (`POST /orgs/{org}/backup-key`, `412`
+first). Until a holder's key is set, nothing is written for its apps, and
+every node logs `apps whose holder set no backup key are not on the recovery
+disk`. The disk holds, per holder, `{recovery-dir}/operator/` or
+`{recovery-dir}/org-<id>/`: `app-<app>.<index>.<time>.rbak` per app (its
+state), `code-<hash>.rbak`, the holder's slice of the system state (`system`
+for the operator, the whole state; `holder` for an organization) and the
+segments of the apps' sealed files; the newest 3 of each are kept.
+
+### After: the operator recovers the cluster
+
+<SeqDiagram
+  id="d-ops-recover"
+  title="Recovering a cluster from its recovery disk"
+  lanes={[
+    { label: 'Operator machine', color: '#f0883e' },
+    { label: 'Founder (new node)', color: '#3fb950' },
+    { label: 'Other new nodes', color: '#a371f7' },
+  ]}
+  steps={[
+    { from: 1, to: 1, label: 'merod run --bootstrap --recover-from /recovery (new K_c, no genesis)' },
+    { from: 0, to: 1, label: 'GET /ops/recovery-files?holder=operator' },
+    { from: 1, to: 0, label: 'headers + node signatures (no keys)', dashed: true },
+    { from: 0, to: 0, label: 'check signature + attestation; open data keys with the backup key' },
+    { from: 0, to: 1, label: 'POST /ops/recover { system, code } (data keys only)' },
+    { from: 1, to: 1, label: 'checks governance, operator key, no old node answering; seeds system group' },
+    { from: 2, to: 1, label: 'join as learners, K_c delivered by attestation' },
+    { from: 0, to: 1, label: 'per app: POST /ops/apps/{app}/restore { recovery } (428, signed)' },
+    { from: 1, to: 2, label: 'app group seeded, replicas copy it', color: '#a5ff11' },
+    { from: 1, to: 0, label: '{ app, group, rows, backup, status }', dashed: true },
+  ]}
+/>
+
+<Steps>
+
+1. Make sure every node of the old cluster is stopped for good: `ops
+   recover` is refused while one still answers (`409 OLD_CLUSTER_ANSWERS`).
+
+2. Attach a surviving recovery disk (or a copy of it) to a new node and found
+   the cluster on it with the same `--cluster`, governance flags and
+   `--operator-key` as before, on an empty data directory:
+
+   ```bash
+   merod --node n1 run --bootstrap --recover-from /recovery \
+     --peers 1=https://n1.eu1.example.com/,2=https://n2.eu1.example.com/,3=https://n3.eu1.example.com/ ...
+   ```
+
+   It forms the system group alone under a new cluster key, writes no
+   genesis, and waits.
+
+3. Bring the system state back from your machine:
+
+   ```bash
+   meroctl --api https://n1.eu1.example.com/ --ops-token "$OPS_TOKEN" \
+     ops recover --key-file operator-backup.key
+   ```
+
+   meroctl lists the operator's files (`GET /ops/recovery-files`), checks each
+   one's signature and the attestation of the node that wrote it under your
+   trust flags, opens the newest `system` file's and every `code` file's data
+   key with the backup key, and sends only those (`POST /ops/recover`).
+   People, organizations and packages are back; every app waits for its own
+   file (`409 APP_RESTORING`). Start the other `--peers` without
+   `--bootstrap`; they join as on any founding.
+
+4. Restore each app from its file, signed with the operator key:
+
+   ```bash
+   meroctl --operator-key-file operator.key ops restore <app> \
+     --recovery-key-file operator-backup.key            # the app's newest file
+   ```
+
+   Sealed files (uploads) come back with it, their data keys wrapped again
+   under the new cluster's key.
+
+5. Check the backup key the restored state names (`meroctl ops backup-key`),
+   and give the new nodes a recovery disk of their own (`--recovery-dir`).
+
+</Steps>
+
+### An organization brings its apps back
+
+Where owners upgrade apps, an organization's apps come back on a cluster
+that does not hold them, from the files under `org-<id>/`. Attach the disk to
+a replica node of that cluster as its `--recovery-dir`; the organization's
+own device (holding its backup key) lists the headers with
+`GET /ops/recovery-files?holder=org:<id>` through the operator (they hold no
+secret), checks them, opens each file's data key, and sends them in
+`POST /recover/holder` straight to that node. The node answers `428
+OPERATOR_SIGNATURE_REQUIRED` naming the statement the operator signs to admit
+it (`cluster / __recover_holder / { holder, slice, apps }`); the device sends
+it again with that signature. The organization, its people and their
+passkeys, its apps and its backup key come back, and the people sign in with
+the passkeys they had. It is refused when the cluster holds any of them
+already. There is no meroctl command for this side: `calimero_client::recovery`
+has the checks (`verify_header`, `verify_attestation`, `open_key`) and the
+route is the generated client's.
 
 Sealed files (uploads) come back with their apps: their segments are on the
 disk beside the app's files, as stored, and a restore refuses (`409

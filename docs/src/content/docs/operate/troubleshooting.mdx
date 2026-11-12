@@ -54,6 +54,12 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `403` "a session opened on an app's frontend changes only that app's own teams" | An app-bound session changing a team outside its package's app team, or the app team itself | Do it on the cluster's own page. |
 | `403` "the Ops API is disabled on this node" | No `--ops-token` / `--ops-token-sha256` | Configure one and restart. |
 | `403` "operator credential required" | Wrong ops token | Check the token against the configured hash. |
+| `428 OPERATOR_SIGNATURE_REQUIRED` ("pass --operator-key-file") | An operator decision (a node, a move, quotas, pools, prices, a restore, the backup key, a deadline) without the operator's signature | `meroctl --operator-key-file operator.key ...`; with another client, sign `details.message` and its `nonce` and send it again as `operatorProof`. |
+| `403 BAD_OPERATOR_SIGNATURE` | Signed with another key than the one `--operator-key` recorded at genesis | Use the operator key the cluster was founded with; it cannot change after genesis. |
+| `403 UPGRADE_KEY_ONLY` | An upgrade key used for anything but its app's upgrade | Use another API key or a session. |
+| `403 SIGN_UP_REFUSED` | The cluster's sign-up policy is `invite` or `closed` and no valid invite came with the sign-up | Sign up with an organization or cluster sign-up invite ([Sign-up policy](/operate/auth/#sign-up-policy)). |
+| `403 DEPLOY_NOT_GRANTED` | An install where `--deployments granted` and the account (or its organization) holds no live deployer grant | The operator (or the cluster's owner) grants one: `POST /ops/deployers`. |
+| `409 CONSENT_STALE` | What a consent page showed changed before the person approved it | The app asks again (`POST /consent/requests`). |
 | `412 CONFIRM_REQUIRED` | The action needs a passkey assertion | A browser or SDK client answers it; `meroctl` needs `--dev-passkey` on development clusters. |
 
 ## Calls, reads and leaders
@@ -72,6 +78,22 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `413 TOO_LARGE` | A call's log entry over 1 MiB, or a bundle over 16 MiB | Write less per call; keep large content in blobs. |
 | `429 RATE_LIMITED` on events | The node has 4096 open streams | Use another node, or close idle streams. |
 
+## Backups and recovery
+
+| You see | Cause | Fix |
+| --- | --- | --- |
+| warn `apps whose holder set no backup key are not on the recovery disk` | `--recovery-dir` is set, but the operator or an organization has no backup key | Set one: `meroctl ops backup-key --public-key HEX` (operator), `POST /orgs/{org}/backup-key` (organization). |
+| `409 FEATURE_NOT_ACTIVE` on a backup key | A registered node runs a release before 1.0.0-rc.20 | Finish the rollout ([Runbooks](/operate/runbooks/#409-feature_not_active)). |
+| `409 NO_BACKUP_DIR` | The node has neither `--recovery-dir` nor `--recover-from` | Start it with the disk mounted and the flag set. |
+| `409 NOT_RECOVERING` on `ops recover` | The node was not started with `--bootstrap --recover-from`, or its system state is not empty | Run it against the founder, on an empty data directory. |
+| `409 OLD_CLUSTER_ANSWERS` | A node of the cluster the backups came from still answers | Stop it for good first: two clusters must never hold the same data. |
+| `400 BAD_RECOVERY_KEY` / `BAD_RECOVERY_FILE` | The key does not open the file, or the file is damaged | Use the backup key the holder had set when the file was written; try an older file (`--recovery-file`). |
+| `400 UNATTESTED_RECOVERY_FILE` | The file's writer's attestation fails this node's peer policy (`--peer-profiles`, `--peer-min-release`) | Recover on nodes whose peer policy accepts the release that wrote it. |
+| `409 RECOVERY_SEGMENTS_MISSING` | A sealed file's segment is missing from the disk, or altered | Copy the whole holder directory, `seg-*` included. |
+| `409 APP_RESTORING` | The app waits for its restore, or one is under way | Restore it (`ops restore`), or wait; send the same restore again if it stopped half way. |
+| `400 BAD_BACKUP`, `409 BACKUP_FROM_NEWER_RELEASE`, `409 BUNDLE_GONE` | A `--backup-dir` restore's checks ([Restore an app](/operate/runbooks/#restore-an-app)) | See the runbook. |
+| `no cluster key in ... opens with this node's storage key` | `--restore-from` on a release that kept no copy of the cluster key, or whose mero-kms is gone | Found it on a release the message names; if none is left, use the recovery disk. |
+
 ## Installs, apps and upgrades
 
 | You see | Cause | Fix |
@@ -87,6 +109,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `409 RUNTIME_TOO_OLD` | An upgrade, a new app or a replica move would have a node run a release needing a newer runtime (`minRuntimeVersion`) than it runs; `details.nodes` names them | Move those nodes to a newer release, or move the app off them (`ops move`); the app's report names the newest release it can reach (`latestReachable`). |
 | uninstall refused | An app still runs that release | Upgrade or delete those apps first. |
 | `429 QUOTA_EXCEEDED` | An account quota | `meroctl ops quotas`; raise with `ops set-quotas`. |
+| `409 RELEASE_DEADLINE` | The operator set a deadline on a mero-tee release this organization still relies on (`GET /releases`), and it passed | Approve a newer release (`POST /orgs/{org}/releases`); running apps go on meanwhile. |
 | `403` "deployed with … decided by its operator" / "by each app's owner" | The other party holds that decision | See [Governance](/operate/security/#governance); it cannot change after genesis. |
 | `403` "node N runs release …, which this app's owner has not approved" | A replica move onto a node on an unapproved release | Get the release approved first. |
 | an app's outbound request refused (`NotApproved`, `AwaitingApproval`) | No `[outbound]` policy, the host is not allowed, or the prefix is not approved for the publisher | Configure `[outbound]`; the holder of outbound approvals approves the prefix. |
