@@ -10368,7 +10368,7 @@
         ],
         "x-calimero-group": "consent",
         "summary": "Ask the account's owner to approve",
-        "description": "From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "From an app's frontend: a release approval, an upgrade of its instance, outbound prefixes, a new organization, a new invite or joining with one, leaving an organization, a member's removal, role, teams or capabilities, an invite's revocation, an organization's name, its deletion, defaults or all-apps grants, approved on the node's own consent page (`url`), which takes the passkey. What the approval made (`orgId`, an invite's `token`, the `org` joined, a rename's `{ orgId, name }`, a deletion's `apps`) is in `/consent/{request}/result`'s `outcome`. 64 KiB at most.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -10649,6 +10649,405 @@
                       "returnTo"
                     ],
                     "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "leaveOrg"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "org"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "removeMember"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "account": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "org",
+                          "account"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "setMemberRole"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "account": {
+                            "type": "string"
+                          },
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "guest",
+                              "member",
+                              "admin",
+                              "owner"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "org",
+                          "account",
+                          "role"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "setMemberTeams"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "account": {
+                            "type": "string"
+                          },
+                          "teams": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "team": {
+                                  "type": "string"
+                                },
+                                "role": {
+                                  "type": "string",
+                                  "enum": [
+                                    "lead",
+                                    "member",
+                                    "readOnly"
+                                  ]
+                                },
+                                "capabilities": {
+                                  "type": "integer",
+                                  "format": "int64",
+                                  "minimum": 0
+                                }
+                              },
+                              "required": [
+                                "team"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "org",
+                          "account",
+                          "teams"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "removeMemberTeams"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "account": {
+                            "type": "string"
+                          },
+                          "teams": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "org",
+                          "account",
+                          "teams"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "revokeInvite"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "inviteKey": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "org",
+                          "inviteKey"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "renameOrg"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "org",
+                          "name"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "deleteOrg"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "org"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "setCapabilities"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "account": {
+                            "type": "string"
+                          },
+                          "team": {
+                            "type": "string"
+                          },
+                          "capabilities": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "org",
+                          "capabilities"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "setAllApps"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "org": {
+                            "type": "string"
+                          },
+                          "account": {
+                            "type": "string"
+                          },
+                          "allApps": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "org",
+                          "account",
+                          "allApps"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
                   }
                 ],
                 "discriminator": {
@@ -10767,7 +11166,7 @@
         ],
         "x-calimero-group": "consent",
         "summary": "What became of a consent request",
-        "description": "`decidedAt` (Unix seconds) is `null` while it is pending. `outcome`, once approved, is what the approval made: `{ orgId }` for `createOrg`, `{ token }` for `createInvite`, `{ org }` for `acceptInvite`; absent for the other kinds.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "`decidedAt` (Unix seconds) is `null` while it is pending. `outcome`, once approved, is what the approval made: `{ orgId }` for `createOrg`, `{ token }` for `createInvite`, `{ org }` for `acceptInvite`, `{ orgId, name }` for `renameOrg`, `{ apps }` (the apps deleted) for `deleteOrg`; absent for the other kinds.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -10804,7 +11203,17 @@
                         "outbound",
                         "createOrg",
                         "createInvite",
-                        "acceptInvite"
+                        "acceptInvite",
+                        "leaveOrg",
+                        "removeMember",
+                        "setMemberRole",
+                        "setMemberTeams",
+                        "removeMemberTeams",
+                        "revokeInvite",
+                        "renameOrg",
+                        "deleteOrg",
+                        "setCapabilities",
+                        "setAllApps"
                       ]
                     },
                     "status": {
@@ -10834,6 +11243,15 @@
                         },
                         "org": {
                           "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "apps": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
                         }
                       }
                     }
