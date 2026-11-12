@@ -1533,6 +1533,10 @@
         ],
         "type": "object"
       },
+      "Opaque": {
+        "description": "The app type `Opaque`. The ABI names it without describing its shape, so any JSON value is accepted here.",
+        "x-calimero-abi-type": "Opaque"
+      },
       "Page_Item": {
         "properties": {
           "items": {
@@ -1558,6 +1562,101 @@
         ],
         "type": "object",
         "x-calimero-abi-type": "Page<Item>"
+      },
+      "PlainArgs": {
+        "description": "The arguments of `plain`, by name.",
+        "properties": {
+          "counts": {
+            "items": {
+              "description": "A u64_number as a JSON number, as plain serde writes it; JavaScript loses precision past 2^53.",
+              "maximum": 18446744073709551615,
+              "minimum": 0,
+              "type": "integer",
+              "x-calimero-type": "u64_number"
+            },
+            "type": "array"
+          },
+          "extra": {
+            "$ref": "#/components/schemas/Opaque"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "description": "A i64_number as a JSON number, as plain serde writes it; JavaScript loses precision past 2^53.",
+                "maximum": 9223372036854775807,
+                "minimum": -9223372036854775808,
+                "type": "integer",
+                "x-calimero-type": "i64_number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pixels": {
+            "items": {
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer",
+              "x-calimero-type": "u8"
+            },
+            "type": "array"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/Stats"
+          }
+        },
+        "required": [
+          "stats",
+          "counts",
+          "pixels",
+          "extra"
+        ],
+        "type": "object"
+      },
+      "PlainRequest": {
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/PlainArgs"
+          },
+          "idempotencyKey": {
+            "description": "A retry with the same key is answered once, from the first run.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "type": "object"
+      },
+      "PlainResponse": {
+        "properties": {
+          "events": {
+            "description": "The events the call emitted that the caller is in the audience of.",
+            "items": {
+              "$ref": "#/components/schemas/CallEvent"
+            },
+            "type": "array"
+          },
+          "index": {
+            "description": "The log index the answer reflects.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "result": {
+            "$ref": "#/components/schemas/Stats"
+          }
+        },
+        "required": [
+          "index",
+          "result",
+          "events",
+          "receipt"
+        ],
+        "type": "object"
       },
       "Point": {
         "items": false,
@@ -1765,6 +1864,57 @@
           "receipt"
         ],
         "type": "object"
+      },
+      "Stats": {
+        "properties": {
+          "delta": {
+            "description": "A i64_number as a JSON number, as plain serde writes it; JavaScript loses precision past 2^53.",
+            "maximum": 9223372036854775807,
+            "minimum": -9223372036854775808,
+            "type": "integer",
+            "x-calimero-type": "i64_number"
+          },
+          "label": {
+            "type": "string"
+          },
+          "peak": {
+            "anyOf": [
+              {
+                "description": "A u64_number as a JSON number, as plain serde writes it; JavaScript loses precision past 2^53.",
+                "maximum": 18446744073709551615,
+                "minimum": 0,
+                "type": "integer",
+                "x-calimero-type": "u64_number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pixels": {
+            "items": {
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer",
+              "x-calimero-type": "u8"
+            },
+            "type": "array"
+          },
+          "views": {
+            "description": "A u64_number as a JSON number, as plain serde writes it; JavaScript loses precision past 2^53.",
+            "maximum": 18446744073709551615,
+            "minimum": 0,
+            "type": "integer",
+            "x-calimero-type": "u64_number"
+          }
+        },
+        "required": [
+          "views",
+          "delta",
+          "pixels"
+        ],
+        "type": "object",
+        "x-calimero-abi-type": "Stats"
       },
       "Status": {
         "oneOf": [
@@ -2491,6 +2641,72 @@
           "kind": "view",
           "public": true,
           "rate": "10/s"
+        }
+      }
+    },
+    "/apps/{app}/methods/plain": {
+      "post": {
+        "description": "A call: runs as `POST /apps/{app}/intents` with `method: \"plain\"`.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "operationId": "plain",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlainRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlainResponse"
+                }
+              }
+            },
+            "description": "The method ran."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "422": {
+            "$ref": "#/components/responses/AppError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "call `plain`",
+        "tags": [
+          "call"
+        ],
+        "x-calimero-method": {
+          "confirm": false,
+          "kind": "call",
+          "public": false
         }
       }
     },

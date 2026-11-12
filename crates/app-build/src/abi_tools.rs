@@ -8,7 +8,7 @@ use calimero_app_abi::load::load_one;
 use calimero_app_build::codegen::{Codegen, Lang};
 use eyre::{bail, eyre, Result as EyreResult};
 
-pub const CODEGEN_USAGE: &str = "usage: mero-app-build codegen --abi <abi.json|app.wasm|app.mpk|manifest.json> --lang <ts|python|swift|kotlin|openapi> [-o <dir>] [--name <name>] [--package <kotlin package>] [--service <name>] [--no-openapi]";
+pub const CODEGEN_USAGE: &str = "usage: mero-app-build codegen --abi <abi.json|app.wasm|app.mpk|manifest.json> --lang <ts|python|swift|kotlin|openapi> [-o <dir>] [--name <name>] [--package <kotlin package>] [--kotlin-serialization-plugin] [--service <name>] [--no-openapi]";
 pub const DIFF_USAGE: &str =
     "usage: mero-app-build abi-diff <old> <new> [--service <name>] [--json]";
 
@@ -25,12 +25,24 @@ pub fn codegen(args: impl Iterator<Item = String>) -> EyreResult<()> {
     let mut name = None;
     let mut service = None;
     let mut package = None;
+    let mut plugin = false;
     let mut openapi = true;
     let mut args = args;
     while let Some(flag) = args.next() {
-        if flag == "--no-openapi" {
-            openapi = false;
-            continue;
+        match flag.as_str() {
+            "-h" | "--help" => {
+                println!("{CODEGEN_USAGE}");
+                return Ok(());
+            }
+            "--no-openapi" => {
+                openapi = false;
+                continue;
+            }
+            "--kotlin-serialization-plugin" => {
+                plugin = true;
+                continue;
+            }
+            _ => {}
         }
         let value = args.next().ok_or_else(|| eyre!(CODEGEN_USAGE))?;
         match flag.as_str() {
@@ -56,6 +68,7 @@ pub fn codegen(args: impl Iterator<Item = String>) -> EyreResult<()> {
     job.name = name;
     job.service = service;
     job.package = package;
+    job.kotlin_serialization_plugin = plugin;
     job.openapi = openapi;
     for path in job.run()? {
         println!("wrote {}", path.display());
@@ -72,6 +85,10 @@ pub fn abi_diff(args: impl Iterator<Item = String>) -> EyreResult<DiffOutcome> {
         match arg.as_str() {
             "--service" => service = Some(args.next().ok_or_else(|| eyre!(DIFF_USAGE))?),
             "--json" => as_json = true,
+            "-h" | "--help" => {
+                println!("{DIFF_USAGE}");
+                return Ok(DiffOutcome::Compatible);
+            }
             _ if arg.starts_with("--") => bail!(DIFF_USAGE),
             _ => paths.push(PathBuf::from(arg)),
         }

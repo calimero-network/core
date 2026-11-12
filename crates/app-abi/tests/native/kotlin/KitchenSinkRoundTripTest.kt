@@ -8,6 +8,7 @@ package calimero.generated.kitchensink
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.serializer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -111,5 +112,42 @@ class KitchenSinkRoundTripTest {
         )
         refused("""{"id":"1","title":"t","tags":[]}""", KitchenSinkClient.Item.serializer())
         refused("[1.5]", KitchenSinkClient.Point.serializer())
+    }
+
+    @Test
+    fun plainSerdeNumbersAndByteLists() {
+        val s = KitchenSinkClient.Stats.serializer()
+        // `u64_number`/`i64_number` are JSON numbers and `byte_list` an array of them; an
+        // optional field left out stays out.
+        roundTrip(
+            """{"views":18446744073709551615,"delta":-9223372036854775808,"pixels":[0,255]}""",
+            s,
+            KitchenSinkClient.Stats(ULong.MAX_VALUE, Long.MIN_VALUE, listOf(0u, 255u)),
+        )
+        roundTrip(
+            """{"views":1,"delta":2,"pixels":[],"peak":3,"label":"l"}""",
+            s,
+            KitchenSinkClient.Stats(1u, 2, emptyList(), 3u, "l"),
+        )
+        refused("""{"views":1,"delta":2,"pixels":"AAE"}""", s)
+    }
+
+    @Test
+    fun serializerOfTFindsTheGeneratedSerializers() {
+        // `serializer<T>()` finds each type's serializer through its `@Serializable(with = ..)`,
+        // sealed interfaces too (without it kotlinx answers a polymorphic serializer).
+        roundTrip("\"Open\"", serializer<KitchenSinkClient.Status>(), KitchenSinkClient.Status.Open)
+        roundTrip(itemJson, serializer<KitchenSinkClient.Item>(), item)
+        roundTrip("null", serializer<KitchenSinkClient.Marker>(), KitchenSinkClient.Marker)
+        roundTrip(
+            """{"items":[$itemJson],"next":null}""",
+            serializer<KitchenSinkClient.Page<KitchenSinkClient.Item>>(),
+            KitchenSinkClient.Page(listOf(item), null),
+        )
+        roundTrip(
+            """{"kind":"one","value":$itemJson}""",
+            serializer<KitchenSinkClient.Choice<KitchenSinkClient.Item>>(),
+            KitchenSinkClient.Choice.One(item),
+        )
     }
 }

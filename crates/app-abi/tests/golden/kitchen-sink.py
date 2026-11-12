@@ -71,14 +71,10 @@ Expr_Neg = TypedDict("Expr_Neg", {"Neg": "Expr"})
 Id = str
 """The app type `Id`."""
 
-class Item(TypedDict):
+_ItemRequired = TypedDict("_ItemRequired", {"id": str, "title": str, "tags": List[str], "status": "Status"})
+_ItemOptional = TypedDict("_ItemOptional", {"note": Optional[str]}, total=False)
+class Item(_ItemRequired, _ItemOptional):
     """The app type `Item`."""
-
-    id: str
-    title: str
-    tags: List[str]
-    note: Optional[str]
-    status: "Status"
 
 Marker = Literal[None]
 """The app type `Marker`."""
@@ -91,6 +87,11 @@ class Page_Item(TypedDict):
 
 Point = List[Any]
 """The app type `Point`. A JSON array."""
+
+_StatsRequired = TypedDict("_StatsRequired", {"views": int, "delta": int, "pixels": List[int]})
+_StatsOptional = TypedDict("_StatsOptional", {"peak": Optional[int], "label": str}, total=False)
+class Stats(_StatsRequired, _StatsOptional):
+    """The app type `Stats`."""
 
 Status = Union[Literal["Open"], "Status_Closed", "Status_Moved", "Status_Span"]
 """The app type `Status`."""
@@ -123,12 +124,13 @@ class Tagged_published(TypedDict):
     type: Literal["published"]
     at: str
 
-class Tree(TypedDict):
+_TreeRequired = TypedDict("_TreeRequired", {"value": int, "children": List["Tree"]})
+_TreeOptional = TypedDict("_TreeOptional", {"parent": Optional["Tree"]}, total=False)
+class Tree(_TreeRequired, _TreeOptional):
     """The app type `Tree`."""
 
-    value: int
-    children: List["Tree"]
-    parent: Optional["Tree"]
+Opaque = Any
+"""The app type `Opaque`: the ABI names it without its shape."""
 
 ForbiddenError = TypedDict("ForbiddenError", {})
 InvalidError = TypedDict("InvalidError", {"detail": Optional[str], "field": str})
@@ -191,12 +193,20 @@ class KitchenSinkClient:
 
     def events(self, in_: str, default: Optional[str] = None, when: Optional[str] = None, *, idempotency_key: Optional[str] = None) -> List[Any]:
         """call `events`."""
-        args: Dict[str, Any] = {"in": in_, "default": default, "when": when}
+        args: Dict[str, Any] = {"in": in_}
+        if default is not None:
+            args["default"] = default
+        if when is not None:
+            args["when"] = when
         return cast(List[Any], self._call("events", args, idempotency_key))
 
     def everything(self, flag: bool, small: int, medium: int, count: int, big: str, huge: int, size: int, delta: int, offset: int, balance: str, ratio: float, precise: float, letter: str, title: str, blob: str, names: List[str], pair: List[Any], digest: List[int], scores: Dict[str, int], by_id: Dict[str, str], unique: List[str], item: Item, page: Page_Item, maybe: Optional[str] = None, nested: Optional[List[Optional[Item]]] = None, *, idempotency_key: Optional[str] = None) -> List[Item]:
         """call `everything`."""
-        args: Dict[str, Any] = {"flag": flag, "small": small, "medium": medium, "count": count, "big": big, "huge": huge, "size": size, "delta": delta, "offset": offset, "balance": balance, "ratio": ratio, "precise": precise, "letter": letter, "title": title, "blob": blob, "names": names, "pair": pair, "digest": digest, "scores": scores, "byId": by_id, "unique": unique, "item": item, "page": page, "maybe": maybe, "nested": nested}
+        args: Dict[str, Any] = {"flag": flag, "small": small, "medium": medium, "count": count, "big": big, "huge": huge, "size": size, "delta": delta, "offset": offset, "balance": balance, "ratio": ratio, "precise": precise, "letter": letter, "title": title, "blob": blob, "names": names, "pair": pair, "digest": digest, "scores": scores, "byId": by_id, "unique": unique, "item": item, "page": page}
+        if maybe is not None:
+            args["maybe"] = maybe
+        if nested is not None:
+            args["nested"] = nested
         return cast(List[Item], self._call("everything", args, idempotency_key))
 
     def from_peer(self, note: str, *, idempotency_key: Optional[str] = None) -> None:
@@ -208,6 +218,13 @@ class KitchenSinkClient:
         """view `lookup`; public."""
         args: Dict[str, Any] = {"id": id}
         return cast(Optional[Item], self._view("lookup", args, consistency, min_index))
+
+    def plain(self, stats: Stats, counts: List[int], pixels: List[int], extra: Opaque, limit: Optional[int] = None, *, idempotency_key: Optional[str] = None) -> Stats:
+        """call `plain`."""
+        args: Dict[str, Any] = {"stats": stats, "counts": counts, "pixels": pixels, "extra": extra}
+        if limit is not None:
+            args["limit"] = limit
+        return cast(Stats, self._call("plain", args, idempotency_key))
 
     def secret(self, *, passkey: Optional[SoftPasskey] = None, idempotency_key: Optional[str] = None) -> str:
         """view `secret`; `passkey` approves it (confirm), else the client's own."""
@@ -221,7 +238,9 @@ class KitchenSinkClient:
 
     def wipe(self, reason: Optional[str] = None, *, passkey: Optional[SoftPasskey] = None, idempotency_key: Optional[str] = None) -> None:
         """call `wipe`; `passkey` approves it (confirm), else the client's own."""
-        args: Dict[str, Any] = {"reason": reason}
+        args: Dict[str, Any] = {}
+        if reason is not None:
+            args["reason"] = reason
         return cast(None, self._call("wipe", args, idempotency_key, passkey))
 
     def app_events(self, start: int = 0, limit: int = 100, timeout: float = 5.0) -> List[Dict[str, Any]]:

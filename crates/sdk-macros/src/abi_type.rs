@@ -4,9 +4,15 @@
 //! `rename_all`, `rename_all_fields`, `tag`, `content`, `untagged`, `transparent`, `skip`,
 //! `skip_serializing`, `skip_serializing_if`, `with`) and refuses the ones whose JSON it cannot
 //! know (`flatten`, `into`, `from`, `try_from`, `remote`, a `with` other than the SDK's D20
-//! helpers). A `u64`, `i64` or `Vec<u8>` field must say its D20 form (`#[serde(with =
-//! "calimero_sdk::json::u64_str")]`, ...): plain serde writes a number that loses precision,
-//! or an array of bytes, where the ABI says a string (Ruling 27).
+//! helpers). A field that `skip_serializing_if` may leave out, or that `default` (on the field
+//! or the struct) lets a caller leave out, is optional in the shape.
+//!
+//! A `u64`, `i64` or `Vec<u8>` field says which JSON it travels as: its D20 form (`#[serde(with =
+//! "calimero_sdk::json::u64_str")]`, ...: a decimal string, base64url), or, marked
+//! `#[abi(plain)]` (on the field, or on the type for every field), what plain serde writes: a
+//! JSON number (`u64_number`, `i64_number`, which JavaScript reads exactly only up to 2^53) and
+//! an array of numbers (`byte_list`), at any depth (`Vec<u64>` is `list<u64_number>`). Unmarked,
+//! it is refused (Ruling 27): the ABI's `u64` and `bytes` mean the strings.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -14,7 +20,7 @@ use serde_json::{json, Value};
 use syn::spanned::Spanned;
 use syn::{Attribute, Data, DeriveInput, Fields, Ident, LitStr};
 
-use crate::types::{abi_type, canonical, check_wire, probe_slice, probes, wire};
+use crate::types::{abi_type, canonical, check_wire, plain_abi_type, probe_slice, probes, wire};
 
 /// serde's `rename_all` rules.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -113,6 +119,8 @@ struct Serde {
     transparent: bool,
     skip: bool,
     optional: bool,
+    /// `default`: deserializing fills a missing field, so a caller may leave it out.
+    default: bool,
     with: Option<String>,
 }
 
@@ -170,13 +178,20 @@ fn read(attrs: &[Attribute]) -> syn::Result<Serde> {
                 "with" | "serialize_with" => {
                     out.with = Some(meta.value()?.parse::<LitStr>()?.value());
                 }
+                "default" => {
+                    // `default` or `default = "path"`.
+                    if meta.input.peek(syn::Token![=]) {
+                        let _: LitStr = meta.value()?.parse()?;
+                    }
+                    out.default = true;
+                }
                 "flatten" | "into" | "from" | "try_from" | "remote" | "getter" => {
                     return Err(meta.error(format!(
                         "AbiType cannot describe #[serde({key})]: implement `AbiType` by hand"
                     )));
                 }
                 _ => {
-                    // Keys that do not change the JSON written (`default`, `bound`, `crate`,
+                    // Keys that do not change the JSON written (`bound`, `crate`,
                     // `deny_unknown_fields`, `alias`, `skip_deserializing`, ...): their value,
                     // if any, is skipped.
                     if meta.input.peek(syn::Token![=]) {
@@ -197,6 +212,22 @@ fn read(attrs: &[Attribute]) -> syn::Result<Serde> {
     Ok(out)
 }
 
+/// `#[abi(plain)]`: the item's 64-bit integers and byte vectors travel as plain serde writes
+/// them.
+fn plain(attrs: &[Attribute]) -> syn::Result<bool> {
+    let mut plain = false;
+    for attr in attrs.iter().filter(|a| a.path().is_ident("abi")) {
+        attr.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("plain") {
+                return Err(meta.error("expected `#[abi(plain)]`"));
+            }
+            plain = true;
+            Ok(())
+        })?;
+    }
+    Ok(plain)
+}
+
 /// The SDK's D20 helpers (`calimero_sdk::json::*`): the JSON form the ABI type says.
 const D20: &[&str] = &[
     "u64_str",
@@ -213,8 +244,14 @@ const D20: &[&str] = &[
     "opt_bytes_auto",
 ];
 
-/// A field's ABI type, refusing what the ABI would describe wrongly.
-fn field_type(ty: &syn::Type, serde: &Serde, span: proc_macro2::Span) -> syn::Result<String> {
+/// A field's ABI type, refusing what the ABI would describe wrongly. `plain`: the field is
+/// `#[abi(plain)]` (or its type is).
+fn field_type(
+    ty: &syn::Type,
+    serde: &Serde,
+    plain: bool,
+    span: proc_macro2::Span,
+) -> syn::Result<String> {
     match &serde.with {
         Some(with) => {
             let module = with.rsplit("::").next().unwrap_or(with);
@@ -229,16 +266,25 @@ fn field_type(ty: &syn::Type, serde: &Serde, span: proc_macro2::Span) -> syn::Re
                 ));
             }
         }
+        None if plain => return Ok(plain_abi_type(ty)),
         None if wire(ty).is_some() => {
             return Err(syn::Error::new(
                 span,
                 "plain serde writes u64/i64 as a number that loses precision and Vec<u8> as an \
                  array, where the ABI says a string (D20): add `#[serde(with = \
                  \"calimero_sdk::json::u64_str\")]` (`i64_str`, `bytes_b64url`, `opt_..`), or \
-                 make it a Record",
+                 make it a Record; or, if the JSON is meant to be a number or an array of \
+                 numbers, mark the field `#[abi(plain)]`",
             ));
         }
-        None => check_wire(ty)?,
+        None => check_wire(ty).map_err(|e| {
+            syn::Error::new(
+                span,
+                format!(
+                    "{e}; or, if the JSON is meant to be numbers, mark the field `#[abi(plain)]`"
+                ),
+            )
+        })?,
     }
     Ok(abi_type(ty))
 }
@@ -247,6 +293,10 @@ struct Ctx<'a> {
     own: &'a Ident,
     params: Vec<Ident>,
     deps: Vec<TokenStream>,
+    /// The type is `#[abi(plain)]`: every field is.
+    plain: bool,
+    /// The struct is `#[serde(default)]`: every field may be left out.
+    default: bool,
 }
 
 impl Ctx<'_> {
@@ -271,9 +321,9 @@ impl Ctx<'_> {
                 .rename
                 .clone()
                 .unwrap_or_else(|| rule.map_or(ident.clone(), |r| r.field(&ident)));
-            let ty = field_type(&f.ty, &serde, f.span())?;
+            let ty = field_type(&f.ty, &serde, self.plain || plain(&f.attrs)?, f.span())?;
             self.dep(&f.ty);
-            out.push(if serde.optional {
+            out.push(if serde.optional || serde.default || self.default {
                 json!([name, ty, { "optional": true }])
             } else {
                 json!([name, ty])
@@ -288,10 +338,14 @@ impl Ctx<'_> {
             .iter()
             .filter_map(|f| match read(&f.attrs) {
                 Ok(s) if s.skip => None,
-                Ok(s) => Some(field_type(&f.ty, &s, f.span()).map(|t| {
-                    self.dep(&f.ty);
-                    Value::String(t)
-                })),
+                Ok(s) => Some(
+                    plain(&f.attrs)
+                        .and_then(|p| field_type(&f.ty, &s, self.plain || p, f.span()))
+                        .map(|t| {
+                            self.dep(&f.ty);
+                            Value::String(t)
+                        }),
+                ),
                 Err(e) => Some(Err(e)),
             })
             .collect()
@@ -310,6 +364,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
             .map(|p| p.ident.clone())
             .collect(),
         deps: Vec::new(),
+        plain: plain(&input.attrs)?,
+        default: container.default,
     };
     let mut shape = match &input.data {
         Data::Struct(data) => match &data.fields {
@@ -322,7 +378,8 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
                 let [field] = live.as_slice() else {
                     return Err(syn::Error::new_spanned(name, "transparent needs one field"));
                 };
-                let ty = field_type(&field.ty, &read(&field.attrs)?, field.span())?;
+                let field_plain = ctx.plain || plain(&field.attrs)?;
+                let ty = field_type(&field.ty, &read(&field.attrs)?, field_plain, field.span())?;
                 ctx.dep(&field.ty);
                 json!({ "kind": "newtype", "type": ty })
             }
@@ -470,6 +527,76 @@ mod tests {
         assert_eq!(
             s,
             r#"{"fields":[["items","list<T>"],["next","option<string>"]],"kind":"record","params":["T"]}"#
+        );
+    }
+
+    #[test]
+    fn plain_fields_are_json_numbers_and_byte_lists() {
+        let s = shape(parse_quote! {
+            #[serde(rename_all = "camelCase")]
+            struct Stats {
+                #[abi(plain)]
+                views: u64,
+                #[abi(plain)]
+                deltas: Vec<i64>,
+                #[abi(plain)]
+                shots: Vec<u8>,
+                #[abi(plain)]
+                peak: Option<u64>,
+                #[serde(with = "calimero_sdk::json::u64_str")]
+                at: u64,
+            }
+        });
+        assert_eq!(
+            s,
+            r#"{"fields":[["views","u64_number"],["deltas","list<i64_number>"],["shots","byte_list"],["peak","option<u64_number>"],["at","u64"]],"kind":"record"}"#
+        );
+        // On the type: every field, a D20 `with` still winning; tuple fields too.
+        let s = shape(parse_quote! {
+            #[abi(plain)]
+            struct Plain {
+                size: u64,
+                #[serde(with = "calimero_sdk::json::bytes_b64url")]
+                blob: Vec<u8>,
+            }
+        });
+        assert_eq!(
+            s,
+            r#"{"fields":[["size","u64_number"],["blob","bytes"]],"kind":"record"}"#
+        );
+        let s = shape(parse_quote! { struct Pair(#[abi(plain)] i64, #[abi(plain)] Vec<u8>); });
+        assert_eq!(s, r#"{"items":["i64_number","byte_list"],"kind":"tuple"}"#);
+        let s = shape(parse_quote! { #[abi(plain)] enum Shot { At { x: u64 } } });
+        assert_eq!(
+            s,
+            r#"{"kind":"enum","variants":[{"fields":[["x","u64_number"]],"name":"At"}]}"#
+        );
+        let input: DeriveInput = parse_quote! { struct A { #[abi(number)] at: u64 } };
+        assert!(expand(&input).is_err());
+    }
+
+    #[test]
+    fn default_fields_are_optional() {
+        let s = shape(parse_quote! {
+            struct Change {
+                insert: String,
+                #[serde(default)]
+                attributes: Option<String>,
+                #[serde(default = "zero")]
+                retain: u32,
+            }
+        });
+        assert_eq!(
+            s,
+            r#"{"fields":[["insert","string"],["attributes","option<string>",{"optional":true}],["retain","u32",{"optional":true}]],"kind":"record"}"#
+        );
+        let s = shape(parse_quote! {
+            #[serde(default, rename_all = "camelCase")]
+            struct UpdateCalendarEvent { title: Option<String>, start_at: Option<String> }
+        });
+        assert_eq!(
+            s,
+            r#"{"fields":[["title","option<string>",{"optional":true}],["startAt","option<string>",{"optional":true}]],"kind":"record"}"#
         );
     }
 

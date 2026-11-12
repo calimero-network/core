@@ -1,7 +1,8 @@
 //! The Python client: `TypedDict`s for errors, events and the app's records (from the ABI's
 //! `types`; a generic type instantiated per use, an enum a `Union`), and a class whose methods send
 //! calimero-client-py's `client.apps.call` and `client.apps.view` (answering JSON:
-//! `client.json`), with keyword arguments in snake_case.
+//! `client.json`), with keyword arguments in snake_case. An optional argument left `None` is not
+//! sent: the SDK reads a missing argument as `None`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -101,9 +102,28 @@ impl Py<'_> {
         if let Some((tag, variant)) = tag {
             entries.push((tag.to_owned(), format!("Literal[{variant:?}]")));
         }
+        let mut optional: Vec<(String, String)> = Vec::new();
         for f in fields {
             let ty = self.ty(&f.ty);
-            entries.push((f.name.clone(), ty));
+            if f.optional {
+                optional.push((f.name.clone(), ty));
+            } else {
+                entries.push((f.name.clone(), ty));
+            }
+        }
+        if !optional.is_empty() {
+            // Keys the JSON may leave out: a `total=False` part (`NotRequired` needs 3.11).
+            let required = format!("_{name}Required");
+            let rest = format!("_{name}Optional");
+            let functional = |n: &str, es: &[(String, String)], total: &str| {
+                let es: Vec<String> = es.iter().map(|(k, t)| format!("{k:?}: {t}")).collect();
+                format!("{n} = TypedDict({n:?}, {{{}}}{total})\n", es.join(", "))
+            };
+            return format!(
+                "{}{}class {name}({required}, {rest}):\n    \"\"\"{doc}\"\"\"\n",
+                functional(&required, &entries, ""),
+                functional(&rest, &optional, ", total=False"),
+            );
         }
         if !entries.is_empty() && entries.iter().all(|(k, _)| is_py_ident(k)) {
             let mut out = format!("class {name}(TypedDict):\n    \"\"\"{doc}\"\"\"\n\n");
@@ -355,6 +375,7 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
         let mut taken: BTreeSet<String> = reserved.iter().map(|r| (*r).to_owned()).collect();
         let mut sig = vec!["self".to_owned()];
         let mut dict = Vec::new();
+        let mut unset = Vec::new();
         for (p, t) in params {
             let mut arg = snake(p);
             while !taken.insert(arg.clone()) {
@@ -363,10 +384,15 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
             let ty = py.ty(t);
             if t.is_optional() {
                 sig.push(format!("{arg}: {ty} = None"));
+                // An unset optional argument is left out: the SDK reads it as `None`.
+                unset.push(format!(
+                    "\n        if {arg} is not None:\n            args[{}] = {arg}",
+                    literal(p)
+                ));
             } else {
                 sig.push(format!("{arg}: {ty}"));
+                dict.push(format!("{}: {arg}", literal(p)));
             }
-            dict.push(format!("{}: {arg}", literal(p)));
         }
         sig.push("*".into());
         if view {
@@ -395,9 +421,10 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
         };
         let _ = writeln!(
             body,
-            "\n    def {method}({}) -> {ret}:\n        \"\"\"{doc}.\"\"\"\n        args: Dict[str, Any] = {{{}}}\n        return cast({}, {send})",
+            "\n    def {method}({}) -> {ret}:\n        \"\"\"{doc}.\"\"\"\n        args: Dict[str, Any] = {{{}}}{}\n        return cast({}, {send})",
             sig.join(", "),
             dict.join(", "),
+            unset.concat(),
             ret,
         );
     }

@@ -15,6 +15,9 @@ import MeroKit
 /// its own idempotency key, so `confirm` methods, `appEvents` and an `idempotencyKey` throw
 /// `MeroAppBackendUnsupported`. A refusal throws `AppError`; `Refusal(_:)` types it.
 public struct KitchenSinkClient: Sendable {
+    /// The app type `Opaque`: the ABI names it without its shape, so it is its JSON.
+    public typealias Opaque = JSONValue
+
 
     /// The app type `Adjacent`.
     public enum Adjacent: Codable, Sendable, Equatable {
@@ -357,6 +360,52 @@ public struct KitchenSinkClient: Sendable {
         }
     }
 
+    /// The app type `Stats`.
+    public struct Stats: Codable, Sendable, Equatable {
+        public var views: UInt64
+        public var delta: Int64
+        public var pixels: [UInt8]
+        public var peak: UInt64?
+        public var label: String?
+
+        public init(
+            views: UInt64,
+            delta: Int64,
+            pixels: [UInt8],
+            peak: UInt64? = nil,
+            label: String? = nil
+        ) {
+            self.views = views
+            self.delta = delta
+            self.pixels = pixels
+            self.peak = peak
+            self.label = label
+        }
+
+        public init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: Key.self)
+            let v0 = try fields.decode(UInt64.self, forKey: Key("views"))
+            let v1 = try fields.decode(Int64.self, forKey: Key("delta"))
+            let v2 = try fields.decode([UInt8].self, forKey: Key("pixels"))
+            let v3 = try fields.decodeIfPresent(UInt64.self, forKey: Key("peak"))
+            let v4 = try fields.decodeIfPresent(String.self, forKey: Key("label"))
+            self.views = v0
+            self.delta = v1
+            self.pixels = v2
+            self.peak = v3
+            self.label = v4
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var fields = encoder.container(keyedBy: Key.self)
+            try fields.encode(self.views, forKey: Key("views"))
+            try fields.encode(self.delta, forKey: Key("delta"))
+            try fields.encode(self.pixels, forKey: Key("pixels"))
+            try fields.encodeIfPresent(self.peak, forKey: Key("peak"))
+            try fields.encodeIfPresent(self.label, forKey: Key("label"))
+        }
+    }
+
     /// The app type `Status`.
     public enum Status: Codable, Sendable, Equatable {
         /// `Open`.
@@ -560,8 +609,8 @@ public struct KitchenSinkClient: Sendable {
     ) async throws -> Tuple2<UInt32, String> {
         var args = Args()
         args.add("in", `in`)
-        args.add("default", `default`.map { Base64URL($0) })
-        args.add("when", when.map { DecimalString($0) })
+        if let value = `default` { args.add("default", Base64URL(value)) }
+        if let value = when { args.add("when", DecimalString(value)) }
         let result = try await invokeCall("events", args, idempotencyKey: idempotencyKey, as: Tuple2<UInt32, String>.self)
         return result
     }
@@ -612,7 +661,7 @@ public struct KitchenSinkClient: Sendable {
         args.add("letter", letter)
         args.add("title", title)
         args.add("blob", Base64URL(blob))
-        args.add("maybe", maybe.map { DecimalString($0) })
+        if let value = maybe { args.add("maybe", DecimalString(value)) }
         args.add("names", names)
         args.add("pair", pair)
         args.add("digest", digest)
@@ -621,7 +670,7 @@ public struct KitchenSinkClient: Sendable {
         args.add("unique", unique)
         args.add("item", item)
         args.add("page", page)
-        args.add("nested", nested)
+        if let value = nested { args.add("nested", value) }
         let result = try await invokeCall("everything", args, idempotencyKey: idempotencyKey, as: [Item].self)
         return result
     }
@@ -645,6 +694,26 @@ public struct KitchenSinkClient: Sendable {
         var args = Args()
         args.add("id", DecimalString(id))
         let result = try await invokeView("lookup", args, stale: stale, minIndex: minIndex, as: Item?.self)
+        return result
+    }
+
+    /// call `plain`.
+    @discardableResult
+    public func plain(
+        stats: Stats,
+        counts: [UInt64],
+        pixels: [UInt8],
+        limit: Int64? = nil,
+        extra: Opaque,
+        idempotencyKey: String? = nil
+    ) async throws -> Stats {
+        var args = Args()
+        args.add("stats", stats)
+        args.add("counts", counts)
+        args.add("pixels", pixels)
+        if let value = limit { args.add("limit", value) }
+        args.add("extra", extra)
+        let result = try await invokeCall("plain", args, idempotencyKey: idempotencyKey, as: Stats.self)
         return result
     }
 
@@ -696,7 +765,7 @@ public struct KitchenSinkClient: Sendable {
         idempotencyKey: String? = nil
     ) async throws {
         var args = Args()
-        args.add("reason", reason)
+        if let value = reason { args.add("reason", value) }
         _ = try await invokeConfirmed("wipe", args, passkey: passkey, idempotencyKey: idempotencyKey, as: JSONValue.self)
     }
 

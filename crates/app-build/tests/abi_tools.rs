@@ -217,12 +217,69 @@ fn version_prints_the_release() {
         let out = bin().arg(flag).output().unwrap();
         assert!(out.status.success(), "{flag}: {out:?}");
         let text = String::from_utf8_lossy(&out.stdout);
-        let version = text
+        let rest = text
             .strip_prefix("mero-app-build ")
             .unwrap_or_default()
             .trim();
-        // The release (`[workspace.metadata.workspaces].version`), not the `0.0.0` placeholder.
+        let (version, build) = rest.split_once(' ').unwrap_or((rest, ""));
+        // The release (`[workspace.metadata.workspaces].version`), not the `0.0.0` placeholder,
+        // then what it was built from: `(<git describe>, <commit>)`.
         assert!(!version.is_empty() && version != "0.0.0", "{flag}: {text}");
+        let build = build
+            .strip_prefix('(')
+            .and_then(|b| b.strip_suffix(')'))
+            .unwrap_or_default();
+        let (describe, commit) = build.split_once(", ").unwrap_or_default();
+        assert!(!describe.is_empty() && !commit.is_empty(), "{flag}: {text}");
+    }
+}
+
+#[test]
+fn help_prints_usage_and_succeeds() {
+    for args in [
+        &["--help"][..],
+        &["-h"],
+        &["codegen", "--help"],
+        &["codegen", "-h"],
+        &["codegen", "--abi", "x.json", "--help"],
+        &["abi-diff", "--help"],
+    ] {
+        let out = bin().args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.starts_with("usage: mero-app-build"),
+            "{args:?}: {text}"
+        );
+        assert!(out.stderr.is_empty(), "{args:?}: {out:?}");
+    }
+}
+
+#[test]
+fn codegen_writes_a_kotlin_client_for_the_serialization_plugin() {
+    let dir = tempfile::tempdir().unwrap();
+    for (plugin, declares) in [(false, true), (true, false)] {
+        let out = dir.path().join(plugin.to_string());
+        let mut cmd = bin();
+        cmd.args(["codegen", "--abi"])
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../app-abi/tests/fixtures/kitchen-sink.abi.json"),
+            )
+            .args(["--lang", "kotlin", "--no-openapi", "-o"])
+            .arg(&out);
+        if plugin {
+            let _ = cmd.arg("--kotlin-serialization-plugin");
+        }
+        assert!(cmd.status().unwrap().success(), "plugin {plugin}");
+        let text = fs::read_to_string(out.join("KitchenSinkClient.kt")).unwrap();
+        assert!(text.contains("@Serializable(with = Item.Companion.Wire::class)"));
+        // With the plugin, the plugin writes `serializer()`.
+        assert_eq!(
+            text.contains("fun serializer(): KSerializer<Item> = Wire"),
+            declares,
+            "plugin {plugin}"
+        );
     }
 }
 

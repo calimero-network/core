@@ -82,7 +82,9 @@ clients read it to learn the methods, arguments and results.
   is absent when no type has a shape, and a type it does not list is unknown.
 - **Types**: Rust integer, float and bool names, `string`, `bytes`,
   `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type's name.
-  `u64`, `i64` and `bytes` are strings on the wire.
+  `u64`, `i64` and `bytes` are strings on the wire. `u64_number`, `i64_number`
+  and `byte_list` describe what plain serde writes instead (a field marked
+  `#[abi(plain)]`): a JSON number and an array of byte numbers.
 
 Every object's keys are written in sorted order, so the same source always
 produces the same bytes.
@@ -153,11 +155,13 @@ The JSON form of every ABI type, as the SDK's macros write and read it (D20):
 | `u8`, `u16`, `u32`, `i8`, `i16`, `i32` | number | `integer` with the type's `minimum`/`maximum` (`format: int32` for `i32`) |
 | `usize`, `isize` | number | `integer`, 32-bit range (apps run on wasm32) |
 | `u64`, `i64` | **decimal string** (`"18446744073709551615"`) | `string` with a decimal `pattern`; `x-calimero-type` names it |
+| `u64_number`, `i64_number` (`#[abi(plain)]`) | number, as plain serde writes it | `integer` with the 64-bit range; past 2^53 JavaScript loses precision |
 | `u128`, `i128` | number, only within 64 bits | `integer` with the 64-bit range; past 2^53 JavaScript loses precision, so prefer `u64` or a string |
 | `f32`, `f64` | number (no NaN or infinity) | `number`, `format: float` / `double` |
 | `char` | a one-character string | `string`, length 1 |
 | `string` | string | `string` |
 | `bytes` (`Vec<u8>`) | **base64url** without padding | `string`, `contentEncoding: base64url` |
+| `byte_list` (`Vec<u8>`, `#[abi(plain)]`) | array of numbers 0..=255 | `array` of `integer` |
 | `unit` / `returns: null` | `null` | `{ "type": "null" }` |
 | `option<T>` | `T` or `null`; a parameter may be left out | `anyOf: [T, null]`, not `required` |
 | `list<T>`, `Vec<T>`, `[T]` | array | `array` of `T` |
@@ -169,7 +173,11 @@ The JSON form of every ABI type, as the SDK's macros write and read it (D20):
 | any other name (a record, a serde struct or enum, `Page<Item>`) | the type's serde form | a component named after it (`Page_Item`): its shape from `types`, else any JSON |
 
 A `u64`, `i64` or `Vec<u8>` nested inside another type is a compile error
-(Ruling 27), so the string forms above hold wherever these types appear.
+(Ruling 27), so the string forms above hold wherever these types appear. A
+`#[derive(AbiType)]` field marked `#[abi(plain)]` is described as plain serde
+writes it, at any depth (`Vec<u64>` is `list<u64_number>`): its JSON does not
+change, the ABI only says what it is. `list<u8>` still reads as `bytes`;
+`byte_list` is the array spelling.
 An app type with a shape in `types` is a component with that shape: an object
 with its fields, a `oneOf` per enum, a generic type instantiated per use
 (`Listing_Slot`). One without (a type with neither derive, or any type in an ABI
@@ -182,7 +190,9 @@ coded in its serde tagging, generic where the Rust type is
 
 The Swift and Kotlin clients take the Swift or Kotlin type and write its JSON form
 themselves: `u64` is `UInt64` / `ULong`, `i64` `Int64` / `Long`, `bytes` `Data` /
-`ByteArray`; the other integers keep their width (`u32` is `UInt32` / `UInt`,
+`ByteArray`; `u64_number` / `i64_number` are the same native types written as numbers
+(TypeScript `number`, Python `int`), and `byte_list` is `[UInt8]` / `List<UByte>`
+(`number[]`, `List[int]`); the other integers keep their width (`u32` is `UInt32` / `UInt`,
 `usize` 32 bits, `u128`/`i128` 64 bits), `char` is a `String`, lists, sets and
 `[T; N]` are arrays / `List`, maps `[String: V]` / `Map<String, V>`, and
 `tuple<A, B>` a `Tuple2<A, B>` that is the JSON array `[a, b]`.
