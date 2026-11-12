@@ -704,6 +704,7 @@ is its command line.
   Every run that finished has a row, an empty one for a run that failed, so a step's rows number its `finished`; `StepState::cached_count` and `cached_items` are counters.
   `AppMachine::pipeline_run` reads the record and fills each step's `runs`, `run_outputs`, `run_results` and `cached_keys` from the rows, stopping once it has found `finished` of them; apply reads the record alone and never stores those fields.
   `pipeline_head` is the record without them: the leader's loop, the list view, the events view (`items: false`) and a retry read it, and the loop fills only the steps that pending steps and running fan-outs name (`fill_steps`).
+  The leader keeps the runs of each fan-out it started in memory by (group, pipeline run, step), so a wave is cut from them and no item row is read again; entries go when the step has no run left to start or the node stops leading, and a rebuild that fails (rows unreadable) gets `Failed` for the step.
   A step with fewer readable rows than `finished` is flagged `items_unreadable`, which warns on read, and `plan` fails a step built from it with `ITEMS_UNREADABLE` rather than build from partial data; apply never reads rows except to drop them, so replicas stay in agreement.
   Dropping an ended run's record deletes its item rows and releases the pins on their outputs in the same apply.
   The stack is unreleased, so there is no migration of records written with the per-run data inline.

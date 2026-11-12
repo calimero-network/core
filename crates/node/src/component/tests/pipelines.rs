@@ -1681,3 +1681,24 @@ fn a_run_name_or_step_name_with_a_slash_is_refused() {
     assert_eq!(why(&begin(&mut w, PIPE, &["x/y"])), BAD_START);
     assert!(w.r.machine.active_pipelines().is_empty());
 }
+
+#[test]
+fn a_fan_out_failed_between_waves_for_unreadable_items_ends_the_run() {
+    let mut w = World::new();
+    let _a = begin(&mut w, PIPE, &["a"]);
+    let _s = fan_start(&mut w, "a", 3, 0, 1);
+    let a = decide(
+        &mut w,
+        PIPE,
+        "a",
+        StepVerdict::Failed {
+            reason: "ITEMS_UNREADABLE".into(),
+        },
+    );
+    assert!(a.status == Status::Ok, "{a:?}");
+    let _r = run_failed(&mut w, "p1.a.0");
+    let p = pipeline(&w, PIPE);
+    assert_eq!(p.state, PipelineState::Failed);
+    assert_eq!(p.steps["a"].reason.as_deref(), Some("ITEMS_UNREADABLE"));
+    assert!(w.r.machine.active_pipelines().is_empty());
+}
