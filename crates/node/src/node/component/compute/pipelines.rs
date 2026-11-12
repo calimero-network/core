@@ -14,7 +14,7 @@ use calimero_app_host as host;
 use calimero_log::{Bytes, Group, GroupId, Proposal, WriteError};
 use calimero_pipeline::{parse_ref, AllowFailures, Caps, Pipeline, Ref, Step};
 use serde_json::{json, Map, Value};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::{locked, Driving};
 use crate::app::{AppMachine, Status};
@@ -32,6 +32,8 @@ use crate::types::{AppRecord, Caller};
 const DEFAULT_PAGE: usize = 20; // pipeline runs a list answers when the caller names no limit
 const MAX_PAGE: usize = 100; // the most pipeline runs a list answers
 const MAX_CACHED: usize = 64; // pipelines and compute components kept in memory, by hash
+const MAX_DECISION_RUNS_BYTES: usize = calimero_log::MAX_ENTRY_BYTES - 128 * 1024; // encoded runs of one decision, leaving room for its envelope and cached hits
+const RUN_TOO_LARGE: &str = "RUN_TOO_LARGE"; // the reason of a step with a run too big for one log entry
 const PIPELINE_UNAVAILABLE: &str = "PIPELINE_UNAVAILABLE"; // the reason of a step whose pipeline definition cannot be found
 
 /// The shared-memory state of the loop: what is being driven, and what it has looked up.
@@ -230,8 +232,14 @@ fn wave_size(step: &Step, active: usize, left: usize, room: usize) -> usize {
     left.min(parallel).min(room).min(MAX_STEP_RUNS)
 }
 
+/// The encoded size of a run inside a decision, comma included.
+fn encoded_len(run: &StepRun) -> usize {
+    serde_json::to_vec(run).map_or(0, |b| b.len() + 1)
+}
+
 /// The runs of a step from index `from` on: each run the cache answers goes into the second list,
-/// and at most `wave` others into the first, which ends the wave where it would pass that.
+/// and at most `wave` others into the first, which ends the wave where it would pass that or
+/// where their encoding would pass [`MAX_DECISION_RUNS_BYTES`].
 fn take_wave(
     runs: &[StepRun],
     from: usize,
@@ -239,6 +247,7 @@ fn take_wave(
     view: &CacheView<'_>,
 ) -> (Vec<StepRun>, Vec<CachedRun>) {
     let (mut fresh, mut hits) = (Vec::new(), Vec::new());
+    let mut bytes = 0;
     for (index, run) in runs.iter().enumerate().skip(from) {
         match run.cache_key.as_ref().filter(|k| (view.hit)(k)) {
             Some(key) if hits.len() < MAX_CACHED_PER_DECISION => hits.push(CachedRun {
@@ -246,7 +255,10 @@ fn take_wave(
                 key: key.clone(),
             }),
             Some(_) => break,
-            None if fresh.len() < wave => fresh.push(run.clone()),
+            None if fresh.len() < wave && bytes + encoded_len(run) <= MAX_DECISION_RUNS_BYTES => {
+                bytes += encoded_len(run);
+                fresh.push(run.clone());
+            }
             None => break,
         }
     }
@@ -425,7 +437,7 @@ fn build_step(
             .cache
             .then(|| step_key(bundle, step, &args, &inputs, view))
             .flatten();
-        Ok::<_, &'static str>(StepRun {
+        let built = StepRun {
             run: run_id(&run.id, name, index),
             method: step.method.clone(),
             args: Bytes(args),
@@ -434,7 +446,11 @@ fn build_step(
             compute_bundle: (bundle != run.compute_bundle).then(|| bundle.to_owned()),
             cache_key: key,
             pool: step.pool.clone(),
-        })
+        };
+        if encoded_len(&built) > MAX_DECISION_RUNS_BYTES {
+            return Err(RUN_TOO_LARGE);
+        }
+        Ok::<_, &'static str>(built)
     };
     if let Some(source) = &step.for_each {
         let items = items_of(run, source)?;
@@ -820,7 +836,7 @@ impl Node {
             })
             .await;
         if let Err(e) = proposed {
-            debug!(run, step, error = %e, "step decision not logged");
+            warn!(run, step, error = %e, "step decision not logged");
         }
     }
 
@@ -1554,6 +1570,75 @@ steps:
             bytes.len() < calimero_log::MAX_ENTRY_BYTES,
             "{}",
             bytes.len()
+        );
+    }
+
+    #[test]
+    fn a_wave_of_a_fan_out_with_large_args_fits_one_log_entry() {
+        let big = "a".repeat(50_000);
+        let p = fan_pipeline(&format!(
+            "  each: {{ method: digest, forEach: inputs.docs, maxItems: 200, args: {{ blob: \"{big}\" }} }}\n"
+        ));
+        let run = fan_run(&p, 100);
+        let (runs, fan) = started(&plan(&p, &run, &caps(), 64), "each");
+        assert!(!runs.is_empty() && runs.len() < 64, "{}", runs.len());
+        let mut cmd = ComponentCmd::PipelineStep(Box::new(StepDecisionEntry {
+            run: "r".into(),
+            step: "each".into(),
+            decision: StepVerdict::Start {
+                runs,
+                fan,
+                cached: Vec::new(),
+            },
+            ts_ms: 1,
+        }));
+        let bytes = entry_bytes(&mut cmd).0;
+        assert!(
+            bytes.len() <= calimero_log::MAX_ENTRY_BYTES,
+            "{}",
+            bytes.len()
+        );
+    }
+
+    #[test]
+    fn later_waves_of_a_large_fan_out_continue_until_every_run_started() {
+        let big = "a".repeat(50_000);
+        let p = fan_pipeline(&format!(
+            "  each: {{ method: digest, forEach: inputs.docs, maxItems: 200, args: {{ blob: \"{big}\" }} }}\n"
+        ));
+        let mut run = fan_run(&p, 100);
+        let (first, fan) = started(&plan(&p, &run, &caps(), 64), "each");
+        let step = run.steps.get_mut("each").unwrap();
+        step.status = StepStatus::Running;
+        step.fan = fan;
+        step.runs = first.iter().map(|r| r.run.clone()).collect();
+        let mut waves = 1;
+        while run.steps["each"].runs.len() < 100 {
+            let decided = plan(&p, &run, &caps(), 64);
+            let StepVerdict::More { runs, .. } = &decided[0].1 else {
+                panic!("{decided:?}")
+            };
+            assert!(!runs.is_empty() && runs.len() < 64);
+            assert_eq!(
+                runs[0].run,
+                run_id("r", "each", run.steps["each"].runs.len())
+            );
+            let step = run.steps.get_mut("each").unwrap();
+            step.runs.extend(runs.iter().map(|r| r.run.clone()));
+            waves += 1;
+        }
+        assert!(waves > 2, "{waves}");
+    }
+
+    #[test]
+    fn a_run_too_large_for_one_log_entry_fails_its_step() {
+        let p = fan_pipeline("  all: { method: digest, inputs: [inputs.docs] }\n");
+        let mut run = fan_run(&p, 0);
+        let ids = (0..host::MAX_PIPELINE_RUN_INPUTS).map(|i| format!("{i:0120x}"));
+        run.inputs.insert("docs".to_owned(), ids.collect());
+        assert_eq!(
+            failure(&plan(&p, &run, &caps(), 64), "all"),
+            "RUN_TOO_LARGE"
         );
     }
 

@@ -261,7 +261,7 @@ A step's work is ordinary compute runs (`RunRecord.pipeline` names the step), so
 Their ids are `<run>.<step>.<index>`, and they have no result method: the step keeps the job's result (at most 64 KiB) and its outputs, which are held until the pipeline run's record is dropped (the last 64 finished runs are kept).
 The leader decides each pending step and logs it as a `pipelineStep` entry (start with its first runs, skipped, upstream failed, cancelled, or failed with a code); apply accepts the first decision for a step, so a leader that changes mid-run never runs a step twice.
 A step starts when every step it needs succeeded; one whose need failed is `upstreamFailed`; the run is `succeeded` when every step succeeded or was skipped, `succeededWithFailures` when besides that a fan-out tolerated failed items, `cancelled` when it was cancelled, else `failed`.
-A step that cannot be built fails with `TOO_MANY_ITEMS`, `TOO_MANY_INPUTS` (past 10,000 files), `ARGS_TOO_LARGE`, `BAD_REF`, `NO_RESULT`, `BAD_RESULT` or `RESULTS_TOO_LARGE`; a pipeline whose definition cannot be found fails its steps with `PIPELINE_UNAVAILABLE`.
+A step that cannot be built fails with `TOO_MANY_ITEMS`, `TOO_MANY_INPUTS` (past 10,000 files), `ARGS_TOO_LARGE`, `RUN_TOO_LARGE` (one run's arguments and inputs past what one decision may carry), `BAD_REF`, `NO_RESULT`, `BAD_RESULT` or `RESULTS_TOO_LARGE`; a pipeline whose definition cannot be found fails its steps with `PIPELINE_UNAVAILABLE`.
 
 ### Fan-out
 
