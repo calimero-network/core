@@ -27,13 +27,17 @@ holds no session of theirs (a node the rollout added).
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
 import socket
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -57,9 +61,13 @@ NOT_COVERED = [
     ("Accounts", "Sign-up through a cluster sign-up invite, and issuing one",
      "meroctl's login takes no invite and has no command to issue one (an operator-signed request); "
      "the policy and the invite list are read back (`ops-state`)"),
-    ("Accounts", "Consent-page approvals (`/consent/requests`) and the page's verifier link",
+    ("Accounts", ("Consent-page approvals (`/consent/requests`: release, upgrade and outbound approvals; the "
+                  "organization kinds `createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`, "
+                  "`setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`, `renameOrg`, "
+                  "`deleteOrg`, `setCapabilities`, `setAllApps`) and the page's verifier link"),
      "a consent request is approved in a browser on the node's consent page; the cluster test "
-     "`consent_page.rs` covers it on one build. The verifier link is a startup setting "
+     "`consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as "
+     "the API's route, which the organization and team cases cover. The verifier link is a startup setting "
      "(`--attestation-verifier-url`) that stores nothing"),
     ("Apps", "Timers (`#[app::every]`) firing across the roll",
      "the fixture's timer is hourly on the nodes' real clock, which a process cluster cannot move; "
@@ -368,6 +376,58 @@ class Person:
 
     def __repr__(self):
         return f"Person({self.name})"
+
+
+def app_label(package: str) -> str:
+    """`package`'s frontend host label under the apps domain (`calimero_node::app_host::label`):
+    SHA-256 of `calimero.app-host.v1`, a zero byte and the package, unpadded lowercase base32."""
+    digest = hashlib.sha256(f"calimero.app-host.v1\0{package}".encode()).digest()
+    return base64.b32encode(digest).decode().lower().rstrip("=")
+
+
+class Bound:
+    """`p` signed in on `package`'s frontend origin (`http://{label}.localhost:{port}`, the
+    nodes run with `--apps-domain localhost`): a session bound to that package
+    (`SessionClaims::app`), as the package's own web page holds one. meroctl signs a
+    passkey file's ceremonies with the origin the file names, so each request here
+    names the frontend's origin in `p`'s file while it runs (the counter it moves is
+    kept), signs in again and keeps the session in a meroctl home of its own."""
+
+    def __init__(self, p: Person, package: str):
+        self.p = p
+        self.package = package
+        self.home = scratch(p.w, f"bound-{p.name}-{app_label(package)[:8]}")
+
+    def origin(self, node) -> str:
+        port = urllib.parse.urlsplit(self.p.w.fleet.url(node)).port
+        return f"http://{app_label(self.package)}.localhost:{port}"
+
+    @contextmanager
+    def _on_origin(self, origin):
+        f = Path(self.p.passkey)
+        was = json.loads(f.read_text())["origin"]
+
+        def write(o):
+            k = json.loads(f.read_text())
+            k["origin"] = o
+            f.write_text(json.dumps(k))
+
+        write(origin)
+        try:
+            yield
+        finally:
+            write(was)
+
+    def raw(self, method, path, body=None, approve=True, node=None):
+        """Any route over the bound session; a `412 CONFIRM_REQUIRED` answered with the
+        passkey from the frontend's origin when `approve`."""
+        n = node if node is not None else self.p.order()[0]
+        args = ["raw", method, path] + ([json.dumps(body)] if body is not None else [])
+        if approve and method.lower() != "get":
+            args += ["--dev-passkey", str(self.p.passkey)]
+        with self._on_origin(self.origin(n)):
+            self.p.w.fleet.cli(n, "login", "--dev-passkey", str(self.p.passkey), home=self.home)
+            return self.p.w.fleet.cli(n, *args, home=self.home)
 
 
 def person(w, name) -> Person:
