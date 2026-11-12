@@ -1469,6 +1469,70 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     assert_eq!(o["members"][&bob_id], "member", "{o}");
 }
 
+/// The organization routes these tests call, over the client's sealed
+/// transport (the hand-written methods are gone, #5012).
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error, passed through for the test to read its status"
+)]
+trait Routes {
+    async fn post(&self, path: &str, body: Value) -> Result<Value, calimero_client::Error>;
+    async fn get(&self, path: &str) -> Result<Value, calimero_client::Error>;
+    async fn delete(&self, path: &str) -> Result<Value, calimero_client::Error>;
+    async fn delete_with_body(
+        &self,
+        path: &str,
+        body: Value,
+    ) -> Result<Value, calimero_client::Error>;
+    async fn post_confirmed(
+        &self,
+        path: &str,
+        body: Value,
+        passkey: &mut SoftAuthenticator,
+    ) -> Result<Value, calimero_client::Error>;
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error, passed through for the test to read its status"
+)]
+impl Routes for calimero_client::Client {
+    async fn post(&self, path: &str, body: Value) -> Result<Value, calimero_client::Error> {
+        post(self, path, body).await
+    }
+
+    async fn get(&self, path: &str) -> Result<Value, calimero_client::Error> {
+        get(self, path).await
+    }
+
+    async fn delete(&self, path: &str) -> Result<Value, calimero_client::Error> {
+        self.transport()
+            .json(Request::new(Method::DELETE, path))
+            .await
+    }
+
+    async fn delete_with_body(
+        &self,
+        path: &str,
+        body: Value,
+    ) -> Result<Value, calimero_client::Error> {
+        self.transport()
+            .json(Request::new(Method::DELETE, path).json(body))
+            .await
+    }
+
+    async fn post_confirmed(
+        &self,
+        path: &str,
+        body: Value,
+        passkey: &mut SoftAuthenticator,
+    ) -> Result<Value, calimero_client::Error> {
+        self.transport()
+            .confirmed(Request::new(Method::POST, path).json(body), passkey)
+            .await
+    }
+}
+
 /// A consent request of `kind` over `subject` from `app`, returning to
 /// `back`: its answer, or the refusal's status.
 async fn ask(
@@ -1516,7 +1580,7 @@ async fn refused(app: &calimero_client::Client, back: &str, kind: &str, subject:
 
 /// The account id `c` is signed in as.
 async fn account_of(c: &calimero_client::Client) -> String {
-    c.me().await.unwrap()["accountId"]
+    c.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -1557,7 +1621,7 @@ impl Server {
         );
         let publisher = ed25519_dalek::SigningKey::from_bytes(&[12; 32]);
         let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
-        let _ = alice.upload_package(v1).await.unwrap();
+        let _ = alice.packages().upload(v1).await.unwrap();
 
         let org = alice
             .post("orgs", json!({ "name": "guild" }))
@@ -2056,9 +2120,11 @@ async fn an_apps_frontend_changes_and_deletes_its_server_on_the_page() {
         .await
         .unwrap();
     let stale = Page::new(made["url"].as_str().unwrap());
-    // An invite made after the page counted them.
+    // An invite made after the page counted them, by Bob (who may invite
+    // now): a request of Alice's own would replace hers, as one account
+    // holds one undecided request per node.
     let made = ask(
-        alice_app,
+        &s.bob_app,
         &back,
         "createInvite",
         json!({ "org": org, "role": "member" }),
@@ -2066,7 +2132,7 @@ async fn an_apps_frontend_changes_and_deletes_its_server_on_the_page() {
     .await
     .unwrap();
     let page = Page::new(made["url"].as_str().unwrap());
-    let ((code, done), _) = page.approve(&s.c, &mut s.alice_page).await;
+    let ((code, done), _) = page.approve(&s.c, &mut s.bob_page).await;
     assert_eq!(code, 200, "{done}");
     let (code, answer) = stale.post("approve", json!({})).await;
     assert_eq!(code, 409, "{answer}");
