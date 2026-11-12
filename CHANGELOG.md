@@ -4,6 +4,28 @@
 
 ### Added
 
+- **The recovery disk: backups that outlive every mero-kms, opened with the key of
+  whoever upgrades the app.** `merod --recovery-dir DIR` writes, every 5 minutes, on
+  every node that holds an app (leader or not), the app's state, the code it runs and
+  its holder's slice of the system state (an organization or account's apps, people
+  and passkeys; the operator's: the whole state), each sealed to that holder's X25519
+  public key (HPKE, RFC 9180) and signed by the node's attested receipt key
+  (`calimero_node::recovery_disk`, `calimero_client::recovery`; `.rbak` format 1). The
+  holder is whoever upgrades the app (`SystemState::backup_holder`): the operator
+  where it holds app upgrades, else the app's organization or owner account, also for
+  packages that declare `upgrades: publisher`. `SystemCmd::SetBackupKey`
+  (`Feature::BackupKeys`, rc.16): `POST /ops/backup-key` (operator-signed),
+  `POST /orgs/{org}/backup-key` (org-wide `MANAGE_APPLICATION`, passkey) and
+  `POST /auth/backup-key` (passkey), each with a `GET`. No node holds a private key.
+  A cluster whose operator upgrades apps comes back from one recovery disk under a
+  new cluster key: `merod run --bootstrap --recover-from DIR`, `POST /ops/recover`
+  (the `system` and `code` files, opened on the operator's machine), then
+  `POST /ops/apps/{app}/restore { recovery: { file, key } }`; `GET /ops/recovery-files`
+  lists the headers to check first. meroctl: `ops recovery-keygen`, `ops backup-key`,
+  `ops recover`, `ops restore --recovery-key-file`. Not yet: restoring an
+  organization or account holder's files (they are written already), and sealed files
+  (uploads) on the disk. `calimero-log` gains `read_snapshot_rows` and
+  `Group::replace_state_rows` (state rows that move between cluster keys).
 - **Every app has an OpenAPI document, typed clients and a breaking-change check**
   (`calimero-app-abi`). `GET /apps/{app}/openapi.json` (the access of
   `GET /apps/{app}/abi`) answers the ABI of the bundle the app runs as OpenAPI

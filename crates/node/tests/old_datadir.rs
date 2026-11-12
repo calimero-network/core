@@ -49,6 +49,8 @@ fn config(dir: &std::path::Path, port: u16) -> Config {
         metrics_listen: None,
         replicas: 1,
         backup_dir: None,
+        recovery_dir: None,
+        recover_from: None,
         restore_from: None,
         raft: calimero_log::Config {
             heartbeat_ms: 100,

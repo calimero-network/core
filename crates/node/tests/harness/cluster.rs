@@ -115,6 +115,8 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         metrics_listen: None,
         replicas: 3,
         backup_dir: Some(dir.join("backups")),
+        recovery_dir: Some(dir.join("recovery")),
+        recover_from: None,
         restore_from: None,
         raft: calimero_log::Config {
             heartbeat_ms: 100,

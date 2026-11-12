@@ -67,10 +67,13 @@ pub enum Feature {
     /// `ScopeApps` naming one app team's `childTeams` (#4917): an earlier
     /// `ScopeApp` refuses unknown fields.
     AppTeamChildTeams,
+    /// `SetBackupKey`: an earlier release cannot read it, so its replicas
+    /// keep no key and their recovery disks stay empty.
+    BackupKeys,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 13] = [
+pub const FEATURES: [Feature; 14] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -84,6 +87,7 @@ pub const FEATURES: [Feature; 13] = [
     Feature::RenameOrg,
     Feature::TeamMembersBatch,
     Feature::AppTeamChildTeams,
+    Feature::BackupKeys,
 ];
 
 impl Feature {
@@ -104,6 +108,7 @@ impl Feature {
             Self::RenameOrg => "renameOrg",
             Self::TeamMembersBatch => "teamMembersBatch",
             Self::AppTeamChildTeams => "appTeamChildTeams",
+            Self::BackupKeys => "backupKeys",
         }
     }
 
@@ -123,7 +128,8 @@ impl Feature {
             | Self::RestoreApp
             | Self::RenameOrg
             | Self::TeamMembersBatch
-            | Self::AppTeamChildTeams => "1.0.0-rc.16",
+            | Self::AppTeamChildTeams
+            | Self::BackupKeys => "1.0.0-rc.16",
         }
     }
 }
@@ -336,6 +342,7 @@ impl SystemCmd {
             Self::SetAllApps { .. } => vec![Feature::AllApps],
             Self::RestoreApp { .. } | Self::FinishRestore { .. } => vec![Feature::RestoreApp],
             Self::RenameOrg { .. } => vec![Feature::RenameOrg],
+            Self::SetBackupKey { .. } => vec![Feature::BackupKeys],
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
             }
@@ -467,6 +474,13 @@ mod tests {
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
         match feature {
+            Feature::BackupKeys => SystemCmd::SetBackupKey {
+                holder: crate::system::BackupHolder::Operator,
+                public_key: "ab".repeat(32),
+                actor: "operator".into(),
+                at: 0,
+                proof: Value::Null,
+            },
             Feature::ClusterVersion => SystemCmd::SetClusterVersion {
                 version: RC16.into(),
                 nodes: (1..=3).map(|id| (id, RC16.to_owned())).collect(),

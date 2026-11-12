@@ -591,6 +591,11 @@ fn components() -> Vec<Component> {
             "{ accountId: string, sessionToken: string, expiresAt: uint, refreshToken: string }",
         ),
         component(
+            "BackupKeyAnswer",
+            "A holder's backup key: who holds it (`{ kind: \"operator\" }`, `{ kind: \"org\", id }` or `{ kind: \"account\", id }`), the X25519 public key the recovery disk seals their apps' backups to (`null` while none is set), and how many apps that covers.",
+            "{ holder: { kind: \"operator\" | \"org\" | \"account\", id?: string }, key: { publicKey: string, setAt: uint, setBy: string } | null, apps: uint }",
+        ),
+        component(
             "Written",
             "What the system log answered for the command this request wrote (for example the id it made).",
             "{ [string]: any }",
@@ -894,6 +899,15 @@ fn operations() -> Vec<Op> {
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up(),
+        get("/auth/backup-key", "account_backup_key", AccountHolder, "The account's backup key")
+            .about("The X25519 public key the recovery-disk backups of the account's personal apps are sealed to (`key`, `null` while none is set).")
+            .ok("#BackupKeyAnswer"),
+        post("/auth/backup-key", "account_set_backup_key", AccountHolder, "Set the account's backup key")
+            .about("`publicKey`: 64 lowercase hex, an X25519 public key whose private half the account holder keeps (never a node), for its personal apps, where owners upgrade apps. `412` first.")
+            .json::<super::BackupKeyBody>("{ publicKey: string, confirm?: #Confirm }")
+            .ok("#BackupKeyAnswer")
+            .step_up()
+            .errors(&[(400, "BAD_BACKUP_KEY"), (403, "FORBIDDEN"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/auth/recovery", "recovery_create", AccountHolder, "Make a recovery code")
             .about("Shown once, replacing any; `412` first.")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
@@ -1354,6 +1368,16 @@ fn operations() -> Vec<Op> {
             .ok(r#"{ mode: "legacy" | "standalone" | "shared", teams: { package: string, teamId: string, created: bool, apps: string[], added: uint, join: #TeamJoin | null, dropped: uint }[] }"#)
             .step_up()
             .errors(&[(400, "TOO_MANY_PACKAGES"), (409, "FEATURE_NOT_ACTIVE")]),
+        get("/orgs/{org}/backup-key", "org_backup_key", AccountHolder, "The organization's backup key")
+            .about("The X25519 public key its apps' recovery-disk backups are sealed to (`key`, `null` while none is set), and how many apps that covers. Any member; `404` outside the organization.")
+            .ok("#BackupKeyAnswer")
+            .errors(&[(404, "NOT_FOUND")]),
+        post("/orgs/{org}/backup-key", "org_set_backup_key", AccountHolder, "Set the organization's backup key")
+            .about("`publicKey`: 64 lowercase hex, an X25519 public key whose private half its holder keeps (never a node). Those who upgrade all the organization's apps (org-wide `MANAGE_APPLICATION`), where owners upgrade apps; replaces the key before. `412` first.")
+            .json::<super::BackupKeyBody>("{ publicKey: string, confirm?: #Confirm }")
+            .ok("#BackupKeyAnswer")
+            .step_up()
+            .errors(&[(400, "BAD_BACKUP_KEY"), (403, "FORBIDDEN"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/recovery", "recovery_set", AccountHolder, "Set the organization's recovery key")
             .about("Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first.")
             .json::<super::RecoveryKeyBody>("{ publicKey?: string | null, confirm?: #Confirm }")
@@ -1433,11 +1457,30 @@ fn operations() -> Vec<Op> {
             .operator()
             .errors(&[(400, "DUPLICATE_REPLICA"), (400, "JOB_NODE"), (400, "TOO_FEW"), (400, "UNKNOWN_NODE"), (409, "MOVE_IN_PROGRESS"), (409, "RUNTIME_TOO_OLD"), (421, "NOT_LEADER")]),
         post("/ops/apps/{app}/restore", "restore::ops_restore", Ops, "Restore an app from its sealed backup")
-            .about("Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state.")
-            .json::<super::restore::RestoreBody>("{ backup?: string, operatorProof?: #OperatorProof }")
+            .about("Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's.")
+            .json::<super::restore::RestoreBody>("{ backup?: string, recovery?: { file: string, key: string }, operatorProof?: #OperatorProof }")
             .ok("{ app: string, group: uint, rows: uint, backup: any, status: string }")
             .operator()
-            .errors(&[(400, "BAD_BACKUP"), (400, "NOT_A_REPLICA_NODE"), (403, "FORBIDDEN"), (404, "BACKUP_NOT_FOUND"), (409, "BACKUP_FROM_NEWER_RELEASE"), (409, "BUNDLE_GONE"), (409, "MOVE_IN_PROGRESS"), (409, "NO_BACKUP_DIR"), (409, "UNKNOWN_BACKUP_FORMAT"), (409, "UPGRADE_PENDING")]),
+            .errors(&[(400, "BAD_BACKUP"), (400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "BAD_REQUEST"), (400, "NOT_A_REPLICA_NODE"), (403, "FORBIDDEN"), (404, "BACKUP_NOT_FOUND"), (409, "BACKUP_FROM_NEWER_RELEASE"), (409, "BUNDLE_GONE"), (409, "MOVE_IN_PROGRESS"), (409, "NO_BACKUP_DIR"), (409, "UNKNOWN_BACKUP_FORMAT"), (409, "UPGRADE_PENDING")]),
+        get("/ops/recovery-files", "restore::ops_recovery_files", Ops, "The recovery files a node reads")
+            .about("In `--recover-from`, else `--recovery-dir`, of `holder` (`operator`, the default; `org:<id>`; `account:<id>`): each file's name, its header as signed (JSON text) and the node's Ed25519 signature over `calimero.recovery-backup.v1\\0` and those bytes (hex), for the holder's device to check before it opens a key with its own.")
+            .query::<super::restore::RecoveryFilesQuery>("{ holder?: string }")
+            .ok("{ holder: any, files: { name: string, header: string, signature: string }[] }")
+            .errors(&[(400, "BAD_REQUEST"), (409, "NO_BACKUP_DIR")]),
+        post("/ops/recover", "restore::ops_recover", Ops, "Found the cluster again from its recovery disk")
+            .about("On the founder started with `--bootstrap --recover-from DIR`, its system state empty: the newest `system` file in `DIR/operator/` and the apps' `code` files, each with the data key the operator opened from it (hex). Checked as founding from backups is (governance, operator key, no node of the old cluster answering), then the system group is seeded; each app waits for `POST /ops/apps/{app}/restore { recovery }`.")
+            .json::<super::restore::RecoverBody>("{ system: { file: string, key: string }, code?: { file: string, key: string }[] }")
+            .ok("{ apps: uint, accounts: uint, index: uint }")
+            .errors(&[(400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "TOO_MANY_FILES"), (409, "NOT_RECOVERING"), (409, "OLD_CLUSTER_ANSWERS"), (409, "OTHER_DEPLOYMENT")]),
+        get("/ops/backup-key", "ops_backup_key", Ops, "The operator's backup key")
+            .about("The X25519 public key every app's recovery-disk backups are sealed to where the operator upgrades apps (`key`, `null` while none is set).")
+            .ok("#BackupKeyAnswer"),
+        post("/ops/backup-key", "ops_set_backup_key", Ops, "Set the operator's backup key")
+            .about("Signed over `operator / __set_backup_key / { publicKey }`, where the operator upgrades apps (else `403`). `publicKey`: 64 lowercase hex, an X25519 public key whose private half the operator keeps (never a node).")
+            .json::<super::OpsBackupKeyBody>("{ publicKey: string, operatorProof?: #OperatorProof }")
+            .ok("#BackupKeyAnswer")
+            .operator()
+            .errors(&[(400, "BAD_BACKUP_KEY"), (403, "FORBIDDEN"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/ops/backup", "ops_backup", Ops, "Snapshot the apps this node leads")
             .about("Into `--backup-dir`. With `all=true`, every group this node holds, leader or not: what a node of a cluster that lost a majority still has, to found the cluster again from (`merod --bootstrap --restore-from`).")
             .query::<super::BackupQuery>("{ all?: bool }")

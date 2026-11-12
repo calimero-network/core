@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 pub mod attest;
 mod files;
 mod generated;
+pub mod recovery;
 mod route;
 pub mod transport;
 

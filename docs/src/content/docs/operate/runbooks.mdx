@@ -297,6 +297,37 @@ Once a release's mero-kms is retired, its copy is dead: carry the key forward
 by letting a node of each new release join before the old one is retired
 (it writes its own copy).
 
+## Recover after every key service is gone
+
+Backups in `--backup-dir` open only with the cluster key, which only a live
+mero-kms of a release they hold a copy for can unwrap. The recovery disk
+(`--recovery-dir`, a second disk mdma attaches as `recovery`) holds backups
+that open with the key of whoever upgrades each app instead: the operator where
+it holds app upgrades, else the app's organization or owner. No node ever holds
+that key's private half.
+
+1. Make the key pair on a machine that is not a node, and keep the private
+   half offline: `meroctl ops recovery-keygen --out operator-backup.key`.
+2. Register the public half: `meroctl --operator-key-file op.key ops backup-key
+   --public-key HEX` (owners: `POST /orgs/{org}/backup-key` or
+   `/auth/backup-key`, with a passkey). Until a key is set, nothing is written
+   for that holder's apps and the node logs how many apps are not covered.
+3. After every node and every mero-kms is lost, attach a surviving recovery disk
+   (or a copy of it) to a new node and found the cluster on it, with the same
+   `--cluster`, governance and `--operator-key`:
+   `merod run --bootstrap --recover-from /recovery`.
+4. `meroctl --ops-token T ops recover --key-file operator-backup.key`: every
+   file's signature and attestation are checked on your machine, the newest
+   `system` file and the code files are opened there, and only their data keys
+   go to the node. Start the other nodes; they join as on any founding.
+5. Restore each app: `meroctl --operator-key-file op.key ops restore APP
+   --recovery-key-file operator-backup.key`. It answers `409 APP_RESTORING`
+   until then.
+
+Not yet: restoring the files of an organization or account holder (they are
+written already, under `org-<id>/` and `account-<id>/`), and sealed files
+(uploads), which are not on the disk.
+
 ## Disaster recovery: the system group lost its majority
 
 While a majority of the system group's voters answers, nothing below is

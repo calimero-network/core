@@ -529,6 +529,8 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
         metrics_listen: args.metrics_listen,
         replicas: args.replicas.unwrap_or(3),
         backup_dir: args.backup_dir.clone(),
+        recovery_dir: args.recovery_dir.clone(),
+        recover_from: args.recover_from.clone(),
         restore_from: args.restore_from.clone(),
         raft: calimero_log::Config::default(),
         read_wait: std::time::Duration::from_secs(2),

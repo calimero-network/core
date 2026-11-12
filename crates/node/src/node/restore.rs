@@ -153,12 +153,31 @@ impl Node {
         let found =
             super::off_workers(|| crate::backup::find(&dir, &key, crate::backup::SYSTEM, None))?;
         found.check_release(env!("CARGO_PKG_VERSION"))?;
-        let mut state = super::off_workers(|| system_state_of(&key, &found))?;
+        let state = super::off_workers(|| system_state_of(&key, &found))?;
+        self.check_same_deployment(&state)?;
+        self.refuse_while_old_nodes_answer(&state).await?;
+        for (hash, bytes) in crate::backup::code(&dir, &key)? {
+            self.engine.put_blob(&hash, &bytes)?;
+        }
+        let (apps, accounts) = self.seed_system(state).await?;
+        info!(
+            backup = %found.name,
+            index = found.index,
+            apps,
+            accounts,
+            "founded the cluster again from its system backup; restore each app from its own"
+        );
+        Ok(())
+    }
+
+    /// The state's governance and operator key are this founder's: the
+    /// node attests its governance, and the operator key is who may restore.
+    fn check_same_deployment(&self, state: &SystemState) -> eyre::Result<()> {
         if state.governance.clone().unwrap_or_default() != self.config.governance {
             eyre::bail!(
                 "the backed-up cluster was deployed with governance {:?}; start the founder with \
                  the same flags",
-                state.governance.unwrap_or_default()
+                state.governance.clone().unwrap_or_default()
             );
         }
         let operator = self.operator_key().map(|k| k.key);
@@ -169,10 +188,14 @@ impl Node {
                 state.operator_key.as_ref().map(|k| &k.key)
             );
         }
-        self.refuse_while_old_nodes_answer(&state).await?;
-        for (hash, bytes) in crate::backup::code(&dir, &key)? {
-            self.engine.put_blob(&hash, &bytes)?;
-        }
+        Ok(())
+    }
+
+    /// Seed the system group, which this founder is the only member of, with
+    /// `state` made the state of this fleet (`system::refound`), and make
+    /// that the only way the other nodes catch up. Answers how many apps and
+    /// accounts it holds.
+    async fn seed_system(&self, mut state: SystemState) -> eyre::Result<(usize, usize)> {
         let founders: Vec<NodeRecord> = self
             .config
             .peers
@@ -186,21 +209,98 @@ impl Node {
             })
             .collect();
         crate::system::refound(&mut state, &founders, self.config.replicas);
-        let apps = state.apps.len();
-        let accounts = state.accounts.len();
+        let counts = (state.apps.len(), state.accounts.len());
         self.system
             .replace_machine_data(&serde_json::to_vec(&state)?)?;
         let index = self.system.applied();
         self.system.snapshot_through(index, SEED_WAIT).await?;
         self.system.purge_log_through(index, SEED_WAIT).await?;
-        info!(
-            backup = %found.name,
-            index = found.index,
-            apps,
-            accounts,
-            "founded the cluster again from its system backup; restore each app from its own"
-        );
-        Ok(())
+        Ok(counts)
+    }
+
+    /// On the founder of a cluster founded again from a recovery disk
+    /// (`--bootstrap --recover-from DIR`), while its system state is empty:
+    /// open the operator's `system` file `system` in `DIR/operator/` and its
+    /// `code` files with the keys the operator sent (its own: it holds them),
+    /// put the code in this node's store, and seed the system group with the
+    /// state as [`Self::refound`] does, after the same checks. Answers
+    /// `{ apps, accounts, index }`.
+    pub(crate) async fn recover_system(
+        &self,
+        system: (&str, &[u8; 32]),
+        code: &[(String, [u8; 32])],
+    ) -> Result<Value, ApiError> {
+        use crate::recovery_disk::{self as disk, Kind};
+        use crate::system::BackupHolder;
+        let refused =
+            |e: eyre::Report| ApiError::bad_request("BAD_RECOVERY_FILE", &format!("{e:#}"));
+        let Some(dir) = self.config.recover_from.clone() else {
+            return Err(ApiError::new(
+                409,
+                "NOT_RECOVERING",
+                "this node was not started with --bootstrap --recover-from",
+            ));
+        };
+        if !self.sys(|s| s.governance.is_none() && s.accounts.is_empty()) {
+            return Err(ApiError::new(
+                409,
+                "NOT_RECOVERING",
+                "this cluster's system state is not empty",
+            ));
+        }
+        let at = disk::holder_dir(&dir, &BackupHolder::Operator);
+        let (name, key) = system;
+        let opened =
+            super::off_workers(|| disk::read(&disk::path_in(&at, name)?)).map_err(refused)?;
+        let h = &opened.header;
+        if h.kind != Kind::System || h.holder != BackupHolder::Operator {
+            return Err(refused(eyre::eyre!(
+                "{name} is not the operator's system file"
+            )));
+        }
+        if h.cluster != self.config.cluster {
+            return Err(refused(eyre::eyre!(
+                "{name} is cluster {}'s; start the founder with --cluster {}",
+                h.cluster,
+                h.cluster
+            )));
+        }
+        let index = h.index;
+        let body = super::off_workers(|| opened.whole(key)).map_err(refused)?;
+        let state: SystemState = serde_json::from_slice(&body)
+            .map_err(|e| refused(eyre::eyre!("{name} holds no system state: {e}")))?;
+        self.check_same_deployment(&state)
+            .map_err(|e| ApiError::new(409, "OTHER_DEPLOYMENT", &format!("{e:#}")))?;
+        self.refuse_while_old_nodes_answer(&state)
+            .await
+            .map_err(|e| ApiError::new(409, "OLD_CLUSTER_ANSWERS", &format!("{e:#}")))?;
+        for (file, key) in code {
+            let opened =
+                super::off_workers(|| disk::read(&disk::path_in(&at, file)?)).map_err(refused)?;
+            let Some(hash) = opened
+                .header
+                .hash
+                .clone()
+                .filter(|_| opened.header.kind == Kind::Code)
+            else {
+                return Err(refused(eyre::eyre!("{file} is not a code file")));
+            };
+            let bytes = super::off_workers(|| opened.whole(key)).map_err(refused)?;
+            if hex::encode(ring::digest::digest(&ring::digest::SHA256, &bytes)) != hash {
+                return Err(refused(eyre::eyre!(
+                    "{file} does not hold the code it names"
+                )));
+            }
+            self.engine
+                .put_blob(&hash, &bytes)
+                .map_err(|e| ApiError::internal(&e.to_string()))?;
+        }
+        let (apps, accounts) = self
+            .seed_system(state)
+            .await
+            .map_err(|e| ApiError::unavailable(&format!("{e:#}")))?;
+        info!(file = %name, index, apps, accounts, "founded the cluster again from its recovery disk; restore each app from its own file");
+        Ok(json!({ "apps": apps, "accounts": accounts, "index": index }))
     }
 
     /// Refuse while a replica node of the cluster backed up, at an address the
@@ -247,6 +347,30 @@ impl Node {
         group: GroupId,
         found: &Found,
     ) -> Result<Value, ApiError> {
+        let backup = json!({
+            "name": found.name,
+            "index": found.index,
+            "format": found.format(),
+            "merod": found.manifest.as_ref().map(|m| m.merod.clone()),
+            "release": found.manifest.as_ref().map(|m| m.release.clone()),
+        });
+        self.seed_with(app_id, group, found.index, backup, |g| {
+            g.replace_state(found.group, &found.snapshot_id, &found.path)
+        })
+        .await
+    }
+
+    /// [`Self::seed_restore`] from what `fill` writes into the new group
+    /// (answering how many rows), its state at `from_index` of the group it
+    /// came from; `backup` names it in the answer.
+    pub(crate) async fn seed_with(
+        &self,
+        app_id: &str,
+        group: GroupId,
+        from_index: u64,
+        backup: Value,
+        fill: impl FnOnce(&Group<AppMachine>) -> eyre::Result<u64>,
+    ) -> Result<Value, ApiError> {
         let _caught_up = self.sys_fresh().await;
         let app = self
             .sys_until(|s| s.apps.get(app_id).filter(|a| a.group == group).cloned())
@@ -265,13 +389,10 @@ impl Node {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let rows =
-            super::off_workers(|| g.replace_state(found.group, &found.snapshot_id, &found.path))
-                .map_err(|e| ApiError::internal(&format!("cannot seed the new group: {e:#}")))?;
-        let marker = serde_json::to_vec(&ComponentCmd::Restored {
-            from_index: found.index,
-        })
-        .map_err(|e| ApiError::internal(&e.to_string()))?;
+        let rows = super::off_workers(|| fill(&g))
+            .map_err(|e| ApiError::internal(&format!("cannot seed the new group: {e:#}")))?;
+        let marker = serde_json::to_vec(&ComponentCmd::Restored { from_index })
+            .map_err(|e| ApiError::internal(&e.to_string()))?;
         let (index, _out) = g
             .write(marker)
             .await
@@ -290,18 +411,12 @@ impl Node {
                 group,
             })
             .await?;
-        info!(app = %app_id, group, index, rows, "restored an app from its backup");
+        info!(app = %app_id, group, index, rows, from_index, "restored an app from its backup");
         Ok(json!({
             "app": app_id,
             "group": group,
             "rows": rows,
-            "backup": {
-                "name": found.name,
-                "index": found.index,
-                "format": found.format(),
-                "merod": found.manifest.as_ref().map(|m| m.merod.clone()),
-                "release": found.manifest.as_ref().map(|m| m.release.clone()),
-            },
+            "backup": backup,
             "status": g.status(),
         }))
     }

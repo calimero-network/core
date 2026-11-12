@@ -166,6 +166,21 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_BACKUP_DIR")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_dir: Option<PathBuf>,
+    /// The recovery disk: backups sealed to the public key of whoever
+    /// upgrades each app (the operator, or the app's owner), which open with
+    /// that key alone, so they outlive every mero-kms. A mounted plain
+    /// filesystem; nothing written there opens without the holder's key.
+    #[arg(long, env = "MEROD_RECOVERY_DIR")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_dir: Option<PathBuf>,
+    /// Found a cluster again from a recovery disk (with `--bootstrap`, on an
+    /// empty data directory), after every mero-kms it used is gone: the
+    /// founder waits for the operator's key to the newest `system` file in
+    /// `DIR/operator/` (`meroctl ops recover`), then each app is restored
+    /// from its own file. Every node of the old cluster must be stopped.
+    #[arg(long, env = "MEROD_RECOVER_FROM", conflicts_with = "restore_from")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recover_from: Option<PathBuf>,
     /// Found the cluster again from the backups in this directory (with
     /// `--bootstrap`, on an empty data directory): its cluster key from the
     /// copy this release's mero-kms opens, its system state from the newest
@@ -291,6 +306,8 @@ impl NodeArgs {
             ("--metrics-listen", self.metrics_listen.is_some()),
             ("--replicas", self.replicas.is_some()),
             ("--backup-dir", self.backup_dir.is_some()),
+            ("--recovery-dir", self.recovery_dir.is_some()),
+            ("--recover-from", self.recover_from.is_some()),
             ("--restore-from", self.restore_from.is_some()),
             ("--registry-url", self.registry_url.is_some()),
             (
@@ -353,6 +370,8 @@ impl NodeArgs {
             metrics_listen: self.metrics_listen.or(base.metrics_listen),
             replicas: self.replicas.or(base.replicas),
             backup_dir: self.backup_dir.or(base.backup_dir),
+            recovery_dir: self.recovery_dir.or(base.recovery_dir),
+            recover_from: self.recover_from.or(base.recover_from),
             restore_from: self.restore_from.or(base.restore_from),
             storage_key_file: self.storage_key_file.or(base.storage_key_file),
             kms_url: self.kms_url.or(base.kms_url),

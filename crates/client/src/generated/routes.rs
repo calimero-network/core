@@ -610,6 +610,14 @@ impl Auth<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// The account's backup key.
+    ///
+    /// `GET /auth/backup-key` (`account_backup_key`). Who: an account holder (a passkey session not bound to an app's frontend).
+    pub async fn account_backup_key(self) -> Result<BackupKeyAnswer> {
+        let req = Request::new(Method::GET, "auth/backup-key");
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// Approve outbound prefixes for the account's apps.
     ///
     /// `POST /auth/outbound` (`account_outbound_approval`). Who: an account holder (a passkey session not bound to an app's frontend).
@@ -723,6 +731,23 @@ impl Auth<'_> {
         route::put_some(&mut fields, "approved", approved)?;
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "auth/releases").json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Set the account's backup key.
+    ///
+    /// `POST /auth/backup-key` (`account_set_backup_key`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn account_set_backup_key(
+        self,
+        public_key: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<BackupKeyAnswer> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "publicKey", &public_key)?;
+        let body = Value::Object(fields);
+        let req = Request::new(Method::POST, "auth/backup-key").json(body);
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 
@@ -1366,6 +1391,14 @@ impl Ops<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// The operator's backup key.
+    ///
+    /// `GET /ops/backup-key` (`ops_backup_key`). Who: the ops token.
+    pub async fn backup_key(self) -> Result<BackupKeyAnswer> {
+        let req = Request::new(Method::GET, "ops/backup-key");
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// The cluster's identity.
     ///
     /// `GET /ops/cluster` (`ops_cluster`). Who: the ops token.
@@ -1653,6 +1686,33 @@ impl Ops<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Found the cluster again from its recovery disk.
+    ///
+    /// `POST /ops/recover` (`ops_recover`). Who: the ops token.
+    pub async fn recover(
+        self,
+        system: OpsRecoverRequestSystem,
+        code: Option<Vec<OpsRecoverRequestCodeItem>>,
+    ) -> Result<OpsRecoverResponse> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "system", &system)?;
+        route::put_some(&mut fields, "code", code)?;
+        let body = Value::Object(fields);
+        let req = Request::new(Method::POST, "ops/recover").json(body);
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// The recovery files a node reads.
+    ///
+    /// `GET /ops/recovery-files` (`ops_recovery_files`). Who: the ops token.
+    pub async fn recovery_files(self, holder: Option<&str>) -> Result<OpsRecoveryFilesResponse> {
+        let mut req = Request::new(Method::GET, "ops/recovery-files");
+        if let Some(v) = holder {
+            req = req.query("holder", v);
+        }
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// Register a node.
     ///
     /// `POST /ops/nodes` (`ops_register_node`). Who: the ops token.
@@ -1763,10 +1823,12 @@ impl Ops<'_> {
         self,
         app: &str,
         backup: Option<&str>,
+        recovery: Option<OpsRestoreRequestRecovery>,
         operator: Option<&OperatorSigner<'_>>,
     ) -> Result<OpsRestoreResponse> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "backup", backup)?;
+        route::put_some(&mut fields, "recovery", recovery)?;
         let body = Value::Object(fields);
         let req = Request::new(
             Method::POST,
@@ -1782,6 +1844,23 @@ impl Ops<'_> {
     pub async fn served(self) -> Result<OpsServedResponse> {
         let req = Request::new(Method::GET, "ops/served-origins");
         route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Set the operator's backup key.
+    ///
+    /// `POST /ops/backup-key` (`ops_set_backup_key`). Who: the ops token.
+    ///
+    /// Operator: answers `428 OPERATOR_SIGNATURE_REQUIRED` first where governance gives the decision to the operator; `operator` signs the statement it names, without it the refusal is returned.
+    pub async fn set_backup_key(
+        self,
+        public_key: &str,
+        operator: Option<&OperatorSigner<'_>>,
+    ) -> Result<BackupKeyAnswer> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "publicKey", &public_key)?;
+        let body = Value::Object(fields);
+        let req = Request::new(Method::POST, "ops/backup-key").json(body);
+        route::json(self.client.transport(), req, None, operator, false).await
     }
 
     /// Move an app's replicas.
@@ -2011,6 +2090,17 @@ impl Orgs<'_> {
         if let Some(v) = limit {
             req = req.query("limit", v.to_string());
         }
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// The organization's backup key.
+    ///
+    /// `GET /orgs/{org}/backup-key` (`org_backup_key`). Who: an account holder (a passkey session not bound to an app's frontend).
+    pub async fn backup_key(self, org: &str) -> Result<BackupKeyAnswer> {
+        let req = Request::new(
+            Method::GET,
+            format!("orgs/{}/backup-key", route::segment(org)),
+        );
         route::json(self.client.transport(), req, None, None, false).await
     }
 
@@ -2468,6 +2558,28 @@ impl Orgs<'_> {
         let body = Value::Object(fields);
         let req =
             Request::new(Method::POST, format!("orgs/{}/name", route::segment(org))).json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Set the organization's backup key.
+    ///
+    /// `POST /orgs/{org}/backup-key` (`org_set_backup_key`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn set_backup_key(
+        self,
+        org: &str,
+        public_key: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<BackupKeyAnswer> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "publicKey", &public_key)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("orgs/{}/backup-key", route::segment(org)),
+        )
+        .json(body);
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 

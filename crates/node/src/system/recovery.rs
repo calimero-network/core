@@ -168,6 +168,25 @@ pub(super) fn authorize(
             })?;
             Ok(Some(used))
         }
+        // A backup key: the operator's signature for the operator's own,
+        // else the actor's passkey; either over the key it sets. Who may set
+        // which holder's is judged at apply, on the state then.
+        SystemCmd::SetBackupKey {
+            holder,
+            public_key,
+            actor,
+            proof,
+            ..
+        } => {
+            let (st, used) = if *holder == BackupHolder::Operator {
+                proofs.fresh(proofs.operator(proof)?)?
+            } else {
+                proofs.fresh(proofs.consent_of(actor, proof)?)?
+            };
+            let args = json!({ "publicKey": public_key });
+            proofs.states(&st, &holder.key(), "__set_backup_key", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         _ => Ok(None),
     }
 }
@@ -178,6 +197,28 @@ pub(super) fn authorize(
 pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
     let s = &mut m.state;
     match cmd {
+        SystemCmd::SetBackupKey {
+            holder,
+            public_key,
+            actor,
+            at,
+            ..
+        } => {
+            if !backup_key_fits(&public_key) {
+                return Err(BAD_BACKUP_KEY);
+            }
+            if !s.may_set_backup_key(&holder, &actor) {
+                return Err(NOT_BACKUP_HOLDER);
+            }
+            let key = BackupKey {
+                holder: holder.clone(),
+                public_key,
+                set_at: at,
+                set_by: actor,
+            };
+            let _prev = s.backup_keys.insert(holder.key(), key);
+            Ok(Value::Null)
+        }
         SystemCmd::SetAccountRecoveryKey {
             account,
             recovery_key,
