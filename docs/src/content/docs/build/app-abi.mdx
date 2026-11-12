@@ -201,6 +201,37 @@ change; `--json` prints it as JSON. Parameters may widen and results narrow:
 | An error or event removed, or one of its fields removed or changed outside its old type | An error, event or field added |
 | `abiVersion` changed; `world` moved to another minor | `world` moved to another patch |
 | A state field removed or its collection kind changed; the state version going down or up by more than one | A state field added; the state version up by one (the upgrade runs its `#[app::migrate]` edge); search fields changed |
+| A type's shape in `types` changed in a way its callers notice (below) | A type gaining a shape (it was any JSON) |
+
+The app types the methods, errors and events name, and the types those name, are
+compared by name in `types`, in the direction they travel in the old ABI: a type
+inside a parameter of a method called from outside is **sent** (it may widen), one
+inside a result, error or event is **read** (it may narrow), and a type used both
+ways must hold both. Each change is reported as `type <Name>`:
+
+| Change | Sent | Read |
+| --- | --- | --- |
+| A field added | Breaking unless callers may leave it out (`option<..>` or `optional`) | Compatible |
+| A field removed | Breaking | Breaking, unless it was `optional` |
+| A field retyped, a variant's payload or a tuple item retyped | Compatible when it widens | Compatible when it narrows |
+| A field now `optional` (may be left out) | Compatible | Breaking |
+| A field no longer `optional` | Breaking, unless it is an `option<..>` | Compatible |
+| A variant added | Compatible | Breaking |
+| A variant removed | Breaking | Compatible |
+| Fields or variants reordered | Compatible (an `untagged` enum's variants: breaking, serde tries them in order) | Compatible |
+| The tagging style, the shape's kind (record, enum, ...), a variant's payload kind, a tuple's length or the number of generic parameters changed | Breaking | Breaking |
+| A generic parameter renamed | Compatible | Compatible |
+| The type lost its shape | Breaking | Breaking |
+
+Every generated client ignores a key it does not know, so a field added to what
+it reads is safe: TypeScript and Python read plain objects, Swift's `Decodable`
+skips keys its type does not name, and the Kotlin client decodes with
+`Json { ignoreUnknownKeys = true }`. A variant added to what a client reads is
+not: a client that decodes the enum exhaustively (a Swift or Kotlin enum, a
+`switch` over a TypeScript union) has no case for it. A type the old ABI's callers do not
+exchange (only an `allow(action)` method takes it, or nothing names it) is not
+compared. Recursive types (`Tree` holding `list<Tree>`) and generic ones
+(`Page<T>`, reached as `Page<Item>`) are compared once each.
 
 `mero-sign sign --previous <last release>` (and
 `scripts/pack-component.py --previous`) runs the same check before signing: it prints the changes, warns

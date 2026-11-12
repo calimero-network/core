@@ -4,6 +4,17 @@
 
 ### Added
 
+- **`abi-diff` compares record and enum shapes** (`calimero-app-abi`).
+  `mero-app-build abi-diff` (and `mero-sign sign --previous`) now compares the
+  ABI's `types` for every app type a method, error or event names, through the
+  types those name, and reports each change as `type <Name>`: fields added,
+  removed, retyped or made optional, variants added or removed, variant payloads,
+  the tagging style, generic parameters, and a type gaining or losing its shape.
+  A type is classified by the direction it travels in the old ABI: one callers
+  send may widen (a required field added or a variant removed breaks), one they
+  read may narrow (a field removed or a variant added breaks; a field added does
+  not, since every generated client ignores unknown keys). A breaking change
+  inside a record no longer passes as compatible.
 - **`mero-app-build` ships with each release, and is easier to run from an app's CI**
   (`calimero-app-build`). The release attaches `mero-app-build_<target>.tar.gz` for
   Linux x86_64 and aarch64 and macOS aarch64, in `SHA256SUMS` with build provenance,

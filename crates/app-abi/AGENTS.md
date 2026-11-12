@@ -42,7 +42,9 @@
   in their D20 form by `DecimalString`/`Base64URL` (Swift) and `U64AsString`/`I64AsString`/
   `Base64Url` serializers (Kotlin).
 - `diff::diff` classifies changes between two ABIs (`Severity::Breaking` / `Compatible`) and
-  sets `state_error` for an unreadable state change without a state version bump.
+  sets `state_error` for an unreadable state change without a state version bump. `diff::shapes`
+  compares `types` for each app type the old ABI's callers exchange, by name, in the direction
+  it travels (sent: may widen; read: may narrow; both: must hold both).
 - `load` reads an ABI from JSON, a component (top level or nested core module), an `.mpk`, or
   a `manifest.json` beside its artifacts, each capped at `MAX_INPUT_BYTES`.
 
