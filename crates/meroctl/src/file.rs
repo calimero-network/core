@@ -42,8 +42,12 @@ impl Part {
         let mut name = OsString::from(target.as_os_str());
         name.push(".part");
         let part = PathBuf::from(name);
-        let file = File::create(&part)
-            .await
+        // Drop a stale `.part` (or a link planted there) so O_EXCL creates a fresh private file.
+        if std::fs::symlink_metadata(&part).is_ok() {
+            std::fs::remove_file(&part).wrap_err_with(|| part.display().to_string())?;
+        }
+        let file = calimero_utils_fs::create_owner_only(&part)
+            .map(File::from_std)
             .wrap_err_with(|| part.display().to_string())?;
         Ok(Self {
             file,
@@ -139,5 +143,33 @@ mod tests {
         part.commit(&target).await.unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
         assert_eq!(names(dir.path()), ["out.bin"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_committed_download_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.bin");
+        let mut part = Part::create(&target).await.unwrap();
+        part.file.write_all(b"secret").await.unwrap();
+        part.commit(&target).await.unwrap();
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_link_planted_at_the_part_path_is_not_written_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.bin");
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("out.bin.part")).unwrap();
+        let mut part = Part::create(&target).await.unwrap();
+        part.file.write_all(b"secret").await.unwrap();
+        part.commit(&target).await.unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        assert_eq!(std::fs::read(&target).unwrap(), b"secret");
     }
 }
