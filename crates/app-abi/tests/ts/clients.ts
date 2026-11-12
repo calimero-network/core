@@ -1,7 +1,8 @@
 // What a caller of the generated clients writes, type-checked against the published mero-js
 // (`npm run check`) and run against a test double (`node clients.ts`): a real
-// `CalimeroClient` is the transport, a double needs only `AppTransport`, the options reach
-// the right request, and `after` runs after every request, refused ones included.
+// `CalimeroClient` is the transport, a double needs only `AppTransport` (`AppCallTransport`
+// without events), the options reach the right request, `raw` answers the log index and
+// events, and `after` runs after every request, refused ones included.
 
 import assert from 'node:assert/strict';
 
@@ -9,9 +10,17 @@ import { CalimeroClient, passkeyConfirm } from '@calimero-network/mero-js';
 import type { NodeEvent, PasskeyProvider } from '@calimero-network/mero-js';
 
 import { KitchenSinkClient } from '../golden/kitchen-sink.ts';
-import type { Adjacent, Either, Item, Page, Status, Tagged, Tree } from '../golden/kitchen-sink.ts';
+import type { Adjacent, Either, InitArgs, Item, Page, Status, Tagged, Tree } from '../golden/kitchen-sink.ts';
 import { KvStoreClient } from '../golden/kv-store.ts';
-import type { AppTransport, AppEvent, KvStoreApi } from '../golden/kv-store.ts';
+import type {
+  AppCallTransport,
+  AppTransport,
+  AppEvent,
+  CallAnswer,
+  KvStoreApi,
+  KvStoreRawApi,
+  ViewAnswer,
+} from '../golden/kv-store.ts';
 import { RoomsClient } from '../golden/rooms.ts';
 
 // Type-level only: never called, so nothing here touches a node.
@@ -26,6 +35,55 @@ export function withARealClient(client: CalimeroClient, passkey: PasskeyProvider
     // An `option` argument may be left out or be `null`.
     sink.wipe({}),
     sink.wipe({ reason: null }),
+  ];
+}
+
+// A transport without the event stream: `Pick<CalimeroClient, 'apps'>` calls and views, and a
+// client over it has no `events()`. A client over the whole `CalimeroClient` is the default
+// `KvStoreClient`, as callers declare it.
+export function withCallsAlone(client: CalimeroClient): unknown[] {
+  const apps: Pick<CalimeroClient, 'apps'> = client;
+  const kv = new KvStoreClient(apps, 'app-1');
+  const whole: KvStoreClient = new KvStoreClient(client, 'app-1');
+  const api: KvStoreApi = whole;
+  // @ts-expect-error a client over calls and views alone is not one with events
+  const narrowed: KvStoreClient = kv;
+  return [
+    kv.get({ key: 'a' }),
+    kv.raw.set({ key: 'a', value: 'b' }),
+    // @ts-expect-error `events()` needs a transport with `events`
+    kv.events(),
+    whole.events(),
+    api,
+    narrowed,
+  ];
+}
+
+// `raw` answers a method whole: a call's log index and events, a view's index.
+// A test hands code that reads them a double of the `raw` methods it calls.
+export async function resumeAfter(kv: Pick<KvStoreRawApi, 'set' | 'get'>): Promise<number> {
+  const set: CallAnswer<null> = await kv.set({ key: 'a', value: 'b' });
+  const emitted: AppEvent[] = set.events;
+  const read: ViewAnswer<string | null> = await kv.get({ key: 'a' }, { minIndex: set.index });
+  return emitted.length + read.index;
+}
+export function withRaw(client: CalimeroClient): Promise<number>[] {
+  return [
+    resumeAfter(new KvStoreClient(client, 'app-1').raw),
+    resumeAfter({
+      set: async () => ({ result: null, index: 3, events: [] }),
+      get: async () => ({ result: 'b', index: 3 }),
+    }),
+  ];
+}
+
+// An app whose `init` takes arguments declares them as `InitArgs`, what `apps.create` sends.
+export function createSink(client: CalimeroClient): Promise<unknown>[] {
+  const initArgs = { owner: 'alice', limit: '10', first: null } satisfies InitArgs;
+  return [
+    client.apps.create({ package: 'com.example.kitchen-sink', initArgs }),
+    // @ts-expect-error a u64 init argument is a decimal string
+    client.apps.create({ initArgs: { owner: 'alice', limit: 10 } satisfies InitArgs }),
   ];
 }
 
@@ -94,6 +152,28 @@ assert.deepEqual(sent, [
 const events: AppEvent[] = [];
 for await (const event of kv.events()) events.push(event);
 assert.deepEqual(events, [{ id: '7', kind: 'Inserted', data: { key: 'a', value: 'b' } }]);
+
+// `raw` answers the same requests whole; a double that leaves out `index` and `events` reads as
+// index 0 and none.
+const answers = [
+  { result: null, index: 9, events: [{ kind: 'Inserted', data: { key: 'a', value: 'b' } }] },
+  { result: 'b', index: 9 },
+  { result: null },
+];
+const indexed: AppCallTransport = {
+  apps: {
+    call: async () => answers.shift() ?? { result: null },
+    view: async () => answers.shift() ?? { result: null },
+  },
+};
+const raw = new KvStoreClient(indexed, 'app-1').raw;
+assert.deepEqual(await raw.set({ key: 'a', value: 'b' }), {
+  result: null,
+  index: 9,
+  events: [{ kind: 'Inserted', data: { key: 'a', value: 'b' } }],
+});
+assert.deepEqual(await raw.get({ key: 'a' }, { minIndex: 9 }), { result: 'b', index: 9 });
+assert.deepEqual(await raw.clear(), { result: null, index: 0, events: [] });
 
 // A `confirm` method's step-up answer goes to the request's options, not its body.
 const confirm = double([null]);

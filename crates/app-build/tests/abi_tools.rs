@@ -253,7 +253,7 @@ fn codegen_names_a_bare_abi_json_after_its_crate() {
         .unwrap();
     assert!(status.success());
     let text = fs::read_to_string(out.join("client.ts")).unwrap();
-    assert!(text.contains("export class KvStoreClient "), "{text}");
+    assert!(text.contains("export class KvStoreClient<"), "{text}");
     assert!(!text.contains("AbiClient"), "{text}");
 }
 
@@ -321,5 +321,5 @@ fn codegen_runs_in_process() {
     let written = job.run().unwrap();
     assert_eq!(written, [dir.path().join("out/client.ts")]);
     let text = fs::read_to_string(&written[0]).unwrap();
-    assert!(text.contains("export class KvStoreClient "), "{text}");
+    assert!(text.contains("export class KvStoreClient<"), "{text}");
 }
