@@ -367,3 +367,14 @@ impl Node {
         Ok(Value::Object(out))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_bundle_admits_pipeline_files_up_to_the_compilers_source_cap() {
+        assert_eq!(
+            calimero_bundle::MAX_PIPELINE_BYTES,
+            calimero_pipeline::MAX_SOURCE_BYTES as u64
+        );
+    }
+}
