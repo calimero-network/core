@@ -111,7 +111,7 @@ jobs:
   # built once and handed to each shard.
   fixtures:
     name: merobox cloud-v2 fixtures
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout code
@@ -178,7 +178,7 @@ jobs:
   scenarios:
     name: merobox cloud-v2 (${{ matrix.shard }}/4)
     needs: fixtures
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -348,7 +348,7 @@ jobs:
     name: merobox cloud-v2 fixtures (release ${{ needs.release-image.outputs.version }})
     needs: release-image
     if: needs.release-image.outputs.testable == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout the release's commit
@@ -381,7 +381,7 @@ jobs:
   release-scenarios:
     name: merobox cloud-v2 on release ${{ needs.release-image.outputs.version }} (${{ matrix.shard }}/4)
     needs: [release-image, release-fixtures]
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -464,8 +464,8 @@ jobs:
     name: merod flamegraph (kv-store soak)
     needs: fixtures
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.flamegraph))
-    runs-on: big-machine
-    timeout-minutes: 75
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -565,8 +565,8 @@ jobs:
   examples:
     name: merobox cloud-v2 examples
     needs: fixtures
-    runs-on: big-machine
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - name: Checkout merobox
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -129,7 +129,7 @@ jobs:
     name: Rust lint
     needs: scope
     if: needs.scope.outputs.rust == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -184,7 +184,7 @@ jobs:
     name: Rust tests
     needs: scope
     if: needs.scope.outputs.rust == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -251,7 +251,7 @@ jobs:
     name: Rust feature-gated tests
     needs: scope
     if: needs.scope.outputs.rust == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -279,7 +279,7 @@ jobs:
     name: Rust apps
     needs: scope
     if: needs.scope.outputs.apps == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -343,7 +343,7 @@ jobs:
     name: cargo-mero e2e
     needs: scope
     if: needs.scope.outputs.cargo_mero_e2e == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -377,7 +377,7 @@ jobs:
     name: WASM size gate
     needs: scope
     if: needs.scope.outputs.wasm_size == 'true'
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -412,7 +412,7 @@ jobs:
     name: Storage cost gate
     needs: scope
     if: needs.scope.outputs.storage_cost == 'true'
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     # Row and byte counts depend on what the code does, not how it is optimised,
     # and debug assertions stay off either way: both profiles reproduce the
     # committed snapshot byte for byte. Fat LTO with one codegen unit is for

@@ -58,7 +58,7 @@ jobs:
     if: needs.plan.outputs.crates != '[]'
     # timing on shared runners is too noisy to gate on
     continue-on-error: true
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -101,7 +101,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.crates != '[]'
     continue-on-error: true
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout code
@@ -140,7 +140,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.crates != '[]'
     continue-on-error: true
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout code
@@ -179,7 +179,7 @@ jobs:
     needs: [criterion, cluster]
     if: github.event_name == 'pull_request'
     continue-on-error: true
-    runs-on: ubuntu-24.04-8cpu
+    runs-on: ubuntu-24.04
     # actions: read is needed to download another run's artifacts
     permissions:
       contents: read

@@ -63,7 +63,7 @@ env:
 jobs:
   prepare:
     name: Prepare
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     permissions:
       # Needed by "Create release at trigger time" below.
       contents: write
@@ -171,7 +171,7 @@ jobs:
         run: |
           set -euo pipefail
           # Keep legacy check names for required status checks.
-          linux='{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"big-machine","target":"x86_64-unknown-linux-gnu"}'
+          linux='{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}'
           arm='{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"}'
           macos='{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"}'
           matrix="[$linux]"
@@ -326,7 +326,7 @@ jobs:
   release-binaries:
     name: Release Binaries
     if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     needs: [prepare, build-binaries]
     concurrency:
       # Per-commit, not per-version: a version key would cancel an older, still-good master push.
@@ -497,7 +497,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - name: Checkout repository
@@ -541,8 +541,8 @@ jobs:
     name: Image E2E fixtures
     needs: prepare
     if: needs.prepare.outputs.build == 'true' && github.event_name != 'push'
-    runs-on: big-machine
-    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -584,8 +584,8 @@ jobs:
   image-e2e:
     name: E2E on the merod image
     needs: [prepare, release-merod-container, image-e2e-fixtures]
-    runs-on: big-machine
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -675,7 +675,7 @@ jobs:
   brew-update:
     name: Update Homebrew Tap
     if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     needs: [prepare, release-binaries]
     permissions: {}
     steps:
