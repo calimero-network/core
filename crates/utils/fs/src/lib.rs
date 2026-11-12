@@ -55,6 +55,37 @@ pub fn write_owner_only(path: &Path, contents: &[u8]) -> io::Result<()> {
     file.sync_all()
 }
 
+/// Replace `path`'s contents with `contents`, leaving it readable and writable
+/// by its owner alone whether or not it existed.
+///
+/// For a secret rewritten in place (a config, a session store): the contents
+/// go to a fresh [`write_owner_only`] sibling, which is then renamed over
+/// `path`, so an existing file's wider permissions are never kept and no
+/// reader sees a half-written file.
+///
+/// # Errors
+///
+/// As [`write_owner_only`] for the sibling, plus the rename's failure; the
+/// sibling is removed when the rename fails.
+pub fn replace_owner_only(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(name);
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = path.with_file_name(tmp_name);
+    // Left by a run of this process id that stopped between write and rename.
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    write_owner_only(&tmp, contents)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
 /// Restrict a file or directory that already exists to its owner.
 ///
 /// For the paths a secret arrives at by another route: a directory tree, or a
@@ -281,6 +312,40 @@ mod tests {
             file.metadata().unwrap().permissions().mode() & 0o777,
             0o600,
             "set in the open call, so the file is never briefly world-readable"
+        );
+    }
+
+    #[test]
+    fn replacing_writes_a_new_file_and_overwrites_an_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+
+        replace_owner_only(&path, b"one").unwrap();
+        replace_owner_only(&path, b"two").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "no sibling is left behind"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_narrows_an_existing_files_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        replace_owner_only(&path, b"new").unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
         );
     }
 
