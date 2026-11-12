@@ -14,15 +14,7 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
-use calimero_client::Passkey;
+use calimero_client::{Passkey, Request};
 use calimero_identity::testing::SoftAuthenticator;
 use serde_json::json;
 
@@ -33,7 +25,8 @@ use serde_json::json;
 )]
 mod harness;
 
-use harness::{kv_wasm, ops_signed, signed_up, Cluster, ORIGIN};
+use harness::{kv_wasm, ops_signed, signed_up, typed, wire, Cluster, ORIGIN};
+use reqwest::Method;
 
 const NOTES: &str = "com.test.notes";
 const OTHER: &str = "com.test.other";
@@ -135,17 +128,22 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
-    let _ok = alice.upload_package(release(NOTES, "1.0.0")).await.unwrap();
-    let _ok = bob.upload_package(release(OTHER, "1.0.0")).await.unwrap();
-    let path = format!("package-origins/{NOTES}");
+    let _ok = alice
+        .packages()
+        .upload(release(NOTES, "1.0.0"))
+        .await
+        .unwrap();
+    let _ok = bob
+        .packages()
+        .upload(release(OTHER, "1.0.0"))
+        .await
+        .unwrap();
 
     // Before anything is registered, the site is nobody's.
     let carol = c.client(2);
     let e = carol
-        .post(
-            "auth/passkey/register/begin",
-            json!({ "name": "carol", "origin": SITE }),
-        )
+        .auth()
+        .register_begin(Some("carol"), Some(SITE), None)
         .await
         .unwrap_err();
     assert_eq!(
@@ -155,14 +153,19 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     );
     // A ceremony made there anyway is not one the node takes.
     let begin = carol
-        .post("auth/passkey/register/begin", json!({ "name": "carol" }))
+        .auth()
+        .register_begin(Some("carol"), None, None)
         .await
+        .map(wire)
         .unwrap();
     let mut carol_pk = SoftAuthenticator::new(SITE_RP, SITE);
     let e = carol
-        .post(
-            "auth/passkey/register/finish",
-            json!({ "challengeId": begin["challengeId"], "registration": carol_pk.create(&begin["options"]) }),
+        .auth()
+        .register_finish(
+            begin["challengeId"].as_str().unwrap(),
+            carol_pk.create(&begin["options"]),
+            None,
+            None,
         )
         .await
         .unwrap_err();
@@ -175,8 +178,10 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         c.urls[1].trim_end_matches('/').to_owned(),
     ] {
         let begin = carol
-            .post("auth/passkey/login/begin", json!({ "origin": origin }))
+            .auth()
+            .login_begin(Some(&origin))
             .await
+            .map(wire)
             .unwrap();
         assert_eq!(begin["options"]["rpId"], "localhost", "{origin}: {begin}");
     }
@@ -184,7 +189,8 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     // Bob is not the package's manager: refused, and his own valid passkey
     // consent over the change, logged without the API, is refused at apply.
     let e = bob
-        .add_package_origin(NOTES, SITE, None, &mut bob_pk)
+        .packages()
+        .origins_add(NOTES, SITE, None, None, Some(&mut bob_pk))
         .await
         .unwrap_err();
     assert_eq!(status(&e), 404, "bob does not see the package: {e}");
@@ -198,7 +204,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         "package": NOTES,
         "origin": SITE,
         "rp_id": SITE_RP,
-        "actor": bob.me().await.unwrap()["accountId"],
+        "actor": bob.auth().me().await.map(wire).unwrap()["accountId"],
         "at": 1,
         "consent": calimero_node::proof::Consent {
             assertion: bob_pk.assert(&statement.challenge().unwrap()),
@@ -238,11 +244,19 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         ),
         (json!({ "origin": ORIGIN }), "ORIGIN_TAKEN"),
     ] {
-        let e = alice.post(&path, body.clone()).await.unwrap_err();
+        let e = alice
+            .transport()
+            .json(Request::new(Method::POST, format!("package-origins/{NOTES}")).json(body.clone()))
+            .await
+            .unwrap_err();
         assert_eq!(e.code(), Some(code), "{body}: {e}");
     }
     let e = alice
-        .post(&path, json!({ "origin": SITE, "extra": 1 }))
+        .transport()
+        .json(
+            Request::new(Method::POST, format!("package-origins/{NOTES}"))
+                .json(json!({ "origin": SITE, "extra": 1 })),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -252,13 +266,16 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
 
     // Alice registers her site with her passkey (412 first).
     let e = alice
-        .post(&path, json!({ "origin": SITE }))
+        .packages()
+        .origins_add(NOTES, SITE, None, None, None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
     let added = alice
-        .add_package_origin(NOTES, SITE, None, &mut alice_pk)
+        .packages()
+        .origins_add(NOTES, SITE, None, None, Some(&mut alice_pk))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(
         (added["origin"].as_str(), added["rpId"].as_str()),
@@ -266,14 +283,20 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     );
     let listed = c.client(1);
     listed.use_session(alice.session().await.unwrap()).await;
-    let list = listed.package_origins(NOTES).await.unwrap();
+    let list = listed
+        .packages()
+        .origins_list(NOTES)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(list["origins"][0]["origin"], SITE, "{list}");
     assert_eq!(list["origins"].as_array().unwrap().len(), 1);
-    let e = bob.package_origins(NOTES).await.unwrap_err();
+    let e = bob.packages().origins_list(NOTES).await.unwrap_err();
     assert_eq!(status(&e), 404, "{e}");
     // Bob's package cannot take alice's origin.
     let e = bob
-        .add_package_origin(OTHER, SITE, None, &mut bob_pk)
+        .packages()
+        .origins_add(OTHER, SITE, None, None, Some(&mut bob_pk))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("ORIGIN_TAKEN"), "{e}");
@@ -285,20 +308,27 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     // Carol signs up on the site: a passkey for its rp-id, and a session
     // bound to NOTES that names the site.
     let begin = carol
-        .post("auth/passkey/login/begin", json!({ "origin": SITE }))
+        .auth()
+        .login_begin(Some(SITE))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(begin["options"]["rpId"], SITE_RP, "{begin}");
     // Her password manager lists the passkey under the app and the cluster
     // (the package id: its release names no display name).
     let begin = carol
-        .post(
-            "auth/passkey/register/begin",
-            json!({ "name": "carol", "origin": SITE }),
-        )
+        .auth()
+        .register_begin(Some("carol"), Some(SITE), None)
         .await
+        .map(wire)
         .unwrap();
-    let public = c.client(0).get("sign-up").await.unwrap();
+    let public = c
+        .client(0)
+        .deployments()
+        .sign_up_public()
+        .await
+        .map(wire)
+        .unwrap();
     let tag = public["passkeyTag"].as_str().unwrap().to_owned();
     assert_eq!(
         begin["options"]["user"]["name"],
@@ -309,7 +339,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .sign_up_at(&mut carol_pk, "carol", Some(SITE))
         .await
         .unwrap();
-    let me = carol.me().await.unwrap();
+    let me = carol.auth().me().await.map(wire).unwrap();
     assert_eq!(
         (me["app"].as_str(), me["origin"].as_str()),
         (Some(NOTES), Some(SITE)),
@@ -323,41 +353,60 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     // What a package-bound session does: its own package's instances only,
     // no credentials, no other package.
     let notes_app = carol
-        .create_app_from_package("notes", NOTES, None, None, json!({}))
+        .apps()
+        .create(typed(json!({ "name": "notes", "package": NOTES })))
         .await
+        .map(|a| a.app_id)
         .unwrap();
     assert!(!notes_app.is_empty());
     let e = carol
-        .create_app_from_package("other", OTHER, None, None, json!({}))
+        .apps()
+        .create(typed(json!({ "name": "other", "package": OTHER })))
         .await
+        .map(|a| a.app_id)
         .unwrap_err();
     assert!(matches!(status(&e), 403 | 404), "{e}");
     let e = carol
-        .post("auth/apikeys", json!({ "label": "k" }))
+        .auth()
+        .apikey_create(typed(json!({ "label": "k" })), None)
         .await
         .unwrap_err();
     assert_eq!(status(&e), 403, "{e}");
     let e = carol
-        .post(&path, json!({ "origin": "https://x.example.com" }))
+        .packages()
+        .origins_add(NOTES, "https://x.example.com", None, None, None)
         .await
         .unwrap_err();
     assert_eq!(status(&e), 403, "a bound session registers nothing: {e}");
     // A step-up asked of that session names the site's rp-id, and her
     // passkey there answers it.
-    let intents = format!("apps/{notes_app}/intents");
     let clear = json!({ "method": "clear", "args": {} });
-    let e = carol.post(&intents, clear.clone()).await.unwrap_err();
+    let e = carol
+        .transport()
+        .json(Request::new(Method::POST, format!("apps/{notes_app}/intents")).json(clear.clone()))
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
     assert_eq!(e.details().unwrap()["rpId"], SITE_RP, "{e}");
     let _ok = carol
-        .post_confirmed(&intents, clear, &mut carol_pk)
+        .apps()
+        .call(
+            &notes_app,
+            "clear",
+            Some(json!({})),
+            None,
+            Some(&mut carol_pk),
+        )
         .await
         .unwrap();
     // Her session refreshes on any node.
     let other_node = c.client(0);
     other_node.use_session(carol.session().await.unwrap()).await;
     let _s = other_node.refresh().await.unwrap();
-    assert_eq!(other_node.me().await.unwrap()["origin"], SITE);
+    assert_eq!(
+        other_node.auth().me().await.map(wire).unwrap()["origin"],
+        SITE
+    );
 
     // Alice's cluster passkey does not sign in on the site (another rp-id).
     let alice_there = c.client(1);
@@ -374,12 +423,14 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     // Removal: the sessions opened there end, their refresh with them, and
     // the site may not begin a ceremony or call the node any more.
     let removed = alice
-        .remove_package_origin(NOTES, SITE, &mut alice_pk)
+        .packages()
+        .origins_remove(NOTES, SITE, Some(&mut alice_pk))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(removed["removed"], true);
     for client in [&carol, &other_node] {
-        let e = client.me().await.unwrap_err();
+        let e = client.auth().me().await.unwrap_err();
         assert_eq!(status(&e), 401, "{e}");
         let e = client.refresh().await.unwrap_err();
         assert_eq!(status(&e), 401, "{e}");
@@ -391,7 +442,12 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .unwrap_err();
     assert_eq!(e.code(), Some("ORIGIN_NOT_REGISTERED"), "{e}");
     assert!(!cors_allows(&c.urls[0], SITE).await);
-    assert!(alice.package_origins(NOTES).await.unwrap()["origins"]
+    assert!(alice
+        .packages()
+        .origins_list(NOTES)
+        .await
+        .map(wire)
+        .unwrap()["origins"]
         .as_array()
         .unwrap()
         .is_empty());
@@ -424,9 +480,14 @@ async fn a_registered_origin_signs_up_only_whom_the_cluster_takes() {
         .sign_up_invited(&mut alice_pk, "alice", Some("sup_alice_000000000"))
         .await
         .unwrap();
-    let _ok = alice.upload_package(release(NOTES, "1.0.0")).await.unwrap();
     let _ok = alice
-        .add_package_origin(NOTES, SITE, None, &mut alice_pk)
+        .packages()
+        .upload(release(NOTES, "1.0.0"))
+        .await
+        .unwrap();
+    let _ok = alice
+        .packages()
+        .origins_add(NOTES, SITE, None, None, Some(&mut alice_pk))
         .await
         .unwrap();
 
@@ -448,7 +509,7 @@ async fn a_registered_origin_signs_up_only_whom_the_cluster_takes() {
         )
         .await
         .unwrap();
-    let me = carol.me().await.unwrap();
+    let me = carol.auth().me().await.map(wire).unwrap();
     assert_eq!(
         (me["app"].as_str(), me["origin"].as_str()),
         (Some(NOTES), Some(SITE)),
@@ -471,7 +532,8 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let html: &[u8] = b"<!doctype html><html><body>notes</body></html>";
     let _ok = alice
-        .upload_package(release_with(
+        .packages()
+        .upload(release_with(
             NOTES,
             "1.0.0",
             &[
@@ -481,8 +543,11 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
         ))
         .await
         .unwrap();
-    let _ok = bob.upload_package(release(OTHER, "1.0.0")).await.unwrap();
-    let path = format!("package-origins/{NOTES}");
+    let _ok = bob
+        .packages()
+        .upload(release(OTHER, "1.0.0"))
+        .await
+        .unwrap();
 
     // `merod local`'s stand-in for `https://kv.example.com`: a localhost name,
     // with node 0's port (a custom domain in production has none).
@@ -523,17 +588,15 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
         (node_addr.as_str(), "BAD_ORIGIN"),
     ] {
         let e = alice
-            .post(&path, json!({ "origin": origin, "served": true }))
+            .packages()
+            .origins_add(NOTES, origin, None, Some(true), None)
             .await
             .unwrap_err();
         assert_eq!(e.code(), Some(code), "{origin}: {e}");
     }
     let e = bob
-        .post_confirmed(
-            &path,
-            json!({ "origin": origin, "served": true }),
-            &mut bob_pk,
-        )
+        .packages()
+        .origins_add(NOTES, &origin, None, Some(true), Some(&mut bob_pk))
         .await
         .unwrap_err();
     assert_eq!(status(&e), 404, "bob does not manage the package: {e}");
@@ -541,7 +604,8 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
     // A plain registration is never served.
     let plain = format!("http://plain.localhost:{port}");
     let _ok = alice
-        .add_package_origin(NOTES, &plain, None, &mut alice_pk)
+        .packages()
+        .origins_add(NOTES, &plain, None, None, Some(&mut alice_pk))
         .await
         .unwrap();
     let plain_web = reqwest::Client::builder()
@@ -560,18 +624,24 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
     );
     // ...nor made served by a second registration of it.
     let e = alice
-        .post(&path, json!({ "origin": plain, "served": true }))
+        .packages()
+        .origins_add(NOTES, &plain, None, Some(true), None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("ORIGIN_TAKEN"), "{e}");
 
     // Alice registers the domain served, with her passkey (412 first).
-    let body = json!({ "origin": origin, "served": true });
-    let e = alice.post(&path, body.clone()).await.unwrap_err();
+    let e = alice
+        .packages()
+        .origins_add(NOTES, &origin, None, Some(true), None)
+        .await
+        .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
     let added = alice
-        .post_confirmed(&path, body, &mut alice_pk)
+        .packages()
+        .origins_add(NOTES, &origin, None, Some(true), Some(&mut alice_pk))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(
         (
@@ -583,11 +653,8 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
         "{added}"
     );
     let e = bob
-        .post_confirmed(
-            &format!("package-origins/{OTHER}"),
-            json!({ "origin": origin, "served": true }),
-            &mut bob_pk,
-        )
+        .packages()
+        .origins_add(OTHER, &origin, None, Some(true), Some(&mut bob_pk))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("ORIGIN_TAKEN"), "{e}");
@@ -622,7 +689,7 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
     // The operator sees it, by the package's label, never its name.
     let ops = c.client(1);
     ops.use_api_key("ops-secret").await;
-    let listed = ops.get("ops/served-origins").await.unwrap();
+    let listed = ops.ops().served().await.map(wire).unwrap();
     let served = listed["origins"].as_array().unwrap();
     assert_eq!(served.len(), 1, "the plain origin is not listed: {listed}");
     assert_eq!(served[0]["origin"], origin.as_str());
@@ -632,14 +699,16 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
         calimero_node::app_host::label(NOTES).as_str()
     );
     assert!(served[0].get("package").is_none(), "{listed}");
-    assert!(alice.get("ops/served-origins").await.is_err());
+    assert!(alice.ops().served().await.is_err());
 
     // Carol signs up on the domain: a passkey for its own rp-id, a session
     // bound to the package that names the domain.
     let carol = c.client(2);
     let begin = carol
-        .post("auth/passkey/login/begin", json!({ "origin": origin }))
+        .auth()
+        .login_begin(Some(&origin))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(begin["options"]["rpId"], rp, "{begin}");
     let mut carol_pk = SoftAuthenticator::new(rp, &origin);
@@ -647,15 +716,17 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
         .sign_up_at(&mut carol_pk, "carol", Some(&origin))
         .await
         .unwrap();
-    let me = carol.me().await.unwrap();
+    let me = carol.auth().me().await.map(wire).unwrap();
     assert_eq!(
         (me["app"].as_str(), me["origin"].as_str()),
         (Some(NOTES), Some(origin.as_str())),
         "{me}"
     );
     let e = carol
-        .create_app_from_package("other", OTHER, None, None, json!({}))
+        .apps()
+        .create(typed(json!({ "name": "other", "package": OTHER })))
         .await
+        .map(|a| a.app_id)
         .unwrap_err();
     assert!(matches!(status(&e), 403 | 404), "{e}");
     // Alice's cluster passkey does not answer there.
@@ -669,8 +740,10 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
 
     // Removal: the site goes, and so do its sessions and its CORS.
     let removed = alice
-        .remove_package_origin(NOTES, &origin, &mut alice_pk)
+        .packages()
+        .origins_remove(NOTES, &origin, Some(&mut alice_pk))
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(removed["removed"], true);
     assert!(
@@ -680,10 +753,10 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
         "a removed domain serves nothing"
     );
     assert_ne!(get("/").await.unwrap().status(), 302);
-    let e = carol.me().await.unwrap_err();
+    let e = carol.auth().me().await.unwrap_err();
     assert_eq!(status(&e), 401, "{e}");
     assert!(!cors_allows(&c.urls[0], &origin).await);
-    assert!(ops.get("ops/served-origins").await.unwrap()["origins"]
+    assert!(ops.ops().served().await.map(wire).unwrap()["origins"]
         .as_array()
         .unwrap()
         .is_empty());

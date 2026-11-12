@@ -10,16 +10,9 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use std::time::Duration;
 
+use calimero_client::types::AppCreateRequest;
 use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::system::Deployments;
@@ -32,7 +25,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, ops_signed, signed_up, Cluster};
+use harness::{kv_wasm, ops_signed, signed_up, typed, wire, Cluster};
 
 const MANAGE_APPLICATION: u32 = 1 << 4;
 
@@ -118,7 +111,7 @@ fn release(package: &str, version: &str) -> Vec<u8> {
 }
 
 async fn account_of(client: &Client) -> String {
-    client.me().await.unwrap()["accountId"]
+    client.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -184,7 +177,7 @@ fn forged_offer(
 
 /// A new organization of `owner`'s, named `name`.
 async fn org(owner: &Client, name: &str) -> String {
-    owner.post("orgs", json!({ "name": name })).await.unwrap()["orgId"]
+    owner.orgs().create(name, None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -193,20 +186,19 @@ async fn org(owner: &Client, name: &str) -> String {
 /// `who` joins `org` as a member, invited by `admin`.
 async fn join(admin: &Client, admin_pk: &mut SoftAuthenticator, org: &str, who: &Client) {
     let token = admin
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": "member" }),
-            admin_pk,
+        .orgs()
+        .invite_create(
+            org,
+            typed(json!({ "role": "member" })),
+            Some(&mut *admin_pk),
         )
         .await
+        .map(wire)
         .unwrap()["token"]
         .as_str()
         .unwrap()
         .to_owned();
-    let _ok = who
-        .post(&format!("invites/{token}/redeem"), json!({}))
-        .await
-        .unwrap();
+    let _ok = who.orgs().invite_redeem(&token).await.unwrap();
 }
 
 async fn set_caps(
@@ -217,10 +209,13 @@ async fn set_caps(
     caps: u32,
 ) {
     let _ok = admin
-        .post_confirmed(
-            &format!("orgs/{org}/capabilities"),
-            json!({ "account": account, "capabilities": caps }),
-            admin_pk,
+        .orgs()
+        .capabilities(
+            org,
+            u64::from(caps),
+            Some(account),
+            None,
+            Some(&mut *admin_pk),
         )
         .await
         .unwrap();
@@ -229,8 +224,10 @@ async fn set_caps(
 /// A new deployment of `owner` (`{"account":..}` / `{"org":..}`), created
 /// by `by` with its passkey: its id.
 async fn deploy(by: &Client, pk: &mut SoftAuthenticator, name: &str, owner: Value) -> String {
-    by.post_confirmed("deployments", json!({ "name": name, "owner": owner }), pk)
+    by.deployments()
+        .create(name, typed(json!(owner)), Some(&mut *pk))
         .await
+        .map(wire)
         .unwrap()["id"]
         .as_str()
         .unwrap()
@@ -239,7 +236,7 @@ async fn deploy(by: &Client, pk: &mut SoftAuthenticator, name: &str, owner: Valu
 
 #[allow(
     clippy::result_large_err,
-    reason = "the client's own error type, as its `post` returns it"
+    reason = "the client's own error type, as its route methods return it"
 )]
 async fn offer(
     by: &Client,
@@ -249,18 +246,16 @@ async fn offer(
     package: &str,
     version: &str,
 ) -> Result<Value, calimero_client::Error> {
-    by.post_confirmed(
-        &format!("deployments/{deployment}/apps"),
-        json!({ "app": app, "package": package, "version": version }),
-        pk,
-    )
-    .await
+    by.deployments()
+        .offer(deployment, app, package, version, Some(&mut *pk))
+        .await
+        .map(wire)
 }
 
 /// An instance of `package` from `deployment`, in `org`.
 #[allow(
     clippy::result_large_err,
-    reason = "the client's own error type, as its `post` returns it"
+    reason = "the client's own error type, as its route methods return it"
 )]
 async fn instance(
     by: &Client,
@@ -269,15 +264,15 @@ async fn instance(
     version: Option<&str>,
     org: Option<&str>,
 ) -> Result<String, calimero_client::Error> {
-    let mut body = json!({ "name": "mine", "deployment": deployment, "package": package });
-    if let Some(v) = version {
-        body["version"] = json!(v);
-    }
-    if let Some(o) = org {
-        body["org"] = json!(o);
-    }
-    let out = by.post("apps", body).await?;
-    Ok(out["appId"].as_str().unwrap().to_owned())
+    let body = AppCreateRequest {
+        name: Some("mine".to_owned()),
+        deployment: Some(deployment.to_owned()),
+        package: Some(package.to_owned()),
+        version: version.map(str::to_owned),
+        org: org.map(str::to_owned),
+        ..AppCreateRequest::default()
+    };
+    Ok(by.apps().create(body).await?.app_id)
 }
 
 fn forbidden(e: &calimero_client::Error) {
@@ -300,7 +295,8 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     let (carol, mut carol_pk) = signed_up(&c, 2, "carol").await;
     let carol_id = account_of(&carol).await;
     let _ok = alice
-        .upload_package(release("com.test.notes", "1.0.0"))
+        .packages()
+        .upload(release("com.test.notes", "1.0.0"))
         .await
         .unwrap();
 
@@ -313,13 +309,14 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     )
     .await;
     forbidden(
-        &bob.post_confirmed(
-            "deployments",
-            json!({ "name": "not-hers", "owner": { "account": alice_id } }),
-            &mut bob_pk,
-        )
-        .await
-        .unwrap_err(),
+        &bob.deployments()
+            .create(
+                "not-hers",
+                typed(json!({ "account": alice_id })),
+                Some(&mut bob_pk),
+            )
+            .await
+            .unwrap_err(),
     );
     let _ok = offer(
         &alice,
@@ -337,7 +334,8 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
             .unwrap_err(),
     );
     forbidden(
-        &bob.delete_confirmed(&format!("deployments/{mine}/apps/notes"), &mut bob_pk)
+        &bob.deployments()
+            .withdraw(&mine, "notes", Some(&mut bob_pk))
             .await
             .unwrap_err(),
     );
@@ -370,7 +368,7 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
 
     // Public by id: the name, the owner's kind and name, the offers.
     let anon = c.client(1);
-    let public = anon.get(&format!("deployments/{mine}")).await.unwrap();
+    let public = anon.deployments().get(&mine).await.map(wire).unwrap();
     assert_eq!(public["name"], "alice-labs");
     assert_eq!(
         public["owner"],
@@ -381,26 +379,29 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
         json!([{ "app": "notes", "package": "com.test.notes", "version": "1.0.0" }])
     );
     // The managers' listing.
-    let listed = alice.get("deployments").await.unwrap();
+    let listed = alice.deployments().list().await.map(wire).unwrap();
     assert_eq!(listed["deployments"][0]["id"], json!(mine), "{listed}");
-    let listed = bob.get("deployments").await.unwrap();
+    let listed = bob.deployments().list().await.map(wire).unwrap();
     assert_eq!(listed["deployments"], json!([]), "{listed}");
 
     // Withdrawn, then deleted once it offers nothing.
     let e = alice
-        .delete_confirmed(&format!("deployments/{mine}"), &mut alice_pk)
+        .deployments()
+        .delete(&mine, Some(&mut alice_pk))
         .await
         .unwrap_err();
     assert!(e.to_string().contains("withdraw"), "{e}");
     let _ok = alice
-        .delete_confirmed(&format!("deployments/{mine}/apps/notes"), &mut alice_pk)
+        .deployments()
+        .withdraw(&mine, "notes", Some(&mut alice_pk))
         .await
         .unwrap();
     let _ok = alice
-        .delete_confirmed(&format!("deployments/{mine}"), &mut alice_pk)
+        .deployments()
+        .delete(&mine, Some(&mut alice_pk))
         .await
         .unwrap();
-    let e = anon.get(&format!("deployments/{mine}")).await.unwrap_err();
+    let e = anon.deployments().get(&mine).await.unwrap_err();
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 
     // An organization's deployment: alice owns the org, carol holds
@@ -412,13 +413,10 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     // carol needs to see the release to offer it: she shares the org with
     // its installer.
     forbidden(
-        &bob.post_confirmed(
-            "deployments",
-            json!({ "name": "acme", "owner": { "org": acme } }),
-            &mut bob_pk,
-        )
-        .await
-        .unwrap_err(),
+        &bob.deployments()
+            .create("acme", typed(json!({ "org": acme })), Some(&mut bob_pk))
+            .await
+            .unwrap_err(),
     );
     let theirs = deploy(&carol, &mut carol_pk, "acme", json!({ "org": acme })).await;
     let _ok = offer(
@@ -432,10 +430,10 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     .await
     .unwrap();
     // The org's owner manages it too.
-    let listed = alice.get("deployments").await.unwrap();
+    let listed = alice.deployments().list().await.map(wire).unwrap();
     assert_eq!(listed["deployments"][0]["id"], json!(theirs), "{listed}");
     assert_eq!(
-        anon.get(&format!("deployments/{theirs}")).await.unwrap()["owner"],
+        anon.deployments().get(&theirs).await.map(wire).unwrap()["owner"],
         json!({ "kind": "org", "name": "Acme" })
     );
     forbidden(
@@ -470,7 +468,8 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     set_caps(&alice, &mut alice_pk, &acme, &carol_id, 0).await;
     forbidden(
         &carol
-            .delete_confirmed(&format!("deployments/{theirs}/apps/notes"), &mut carol_pk)
+            .deployments()
+            .withdraw(&theirs, "notes", Some(&mut carol_pk))
             .await
             .unwrap_err(),
     );
@@ -491,7 +490,8 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     // Granted again, then removed from the organization: refused the same.
     set_caps(&alice, &mut alice_pk, &acme, &carol_id, MANAGE_APPLICATION).await;
     let _ok = alice
-        .delete_confirmed(&format!("orgs/{acme}/members/{carol_id}"), &mut alice_pk)
+        .orgs()
+        .remove_member(&acme, &carol_id, Some(&mut alice_pk))
         .await
         .unwrap();
     forbidden(
@@ -521,7 +521,8 @@ async fn accounts_and_organizations_own_deployments_their_managers_change() {
     .unwrap_err();
     assert!(e.contains("manage"), "a removed member: {e}");
     let _ok = alice
-        .delete_confirmed(&format!("deployments/{theirs}/apps/notes"), &mut alice_pk)
+        .deployments()
+        .withdraw(&theirs, "notes", Some(&mut alice_pk))
         .await
         .unwrap();
 }
@@ -543,15 +544,17 @@ async fn deployments_of_one_release_are_independent() {
     let (bob, _bob_pk) = signed_up(&c, 1, "bob").await;
 
     let notes = release("com.test.notes", "1.0.0");
-    let _ok = alice.upload_package(notes.clone()).await.unwrap();
+    let _ok = alice.packages().upload(notes.clone()).await.unwrap();
     // Dave installs the same release: it is his to offer too.
-    let _ok = dave.upload_package(notes).await.unwrap();
+    let _ok = dave.packages().upload(notes).await.map(wire).unwrap();
     let _ok = alice
-        .upload_package(release("com.test.notes", "2.0.0"))
+        .packages()
+        .upload(release("com.test.notes", "2.0.0"))
         .await
         .unwrap();
     let _ok = alice
-        .upload_package(release("com.test.board", "1.0.0"))
+        .packages()
+        .upload(release("com.test.board", "1.0.0"))
         .await
         .unwrap();
 
@@ -579,7 +582,7 @@ async fn deployments_of_one_release_are_independent() {
     let _from_b = instance(&erin, &db, "com.test.notes", Some("1.0.0"), Some(&initech))
         .await
         .unwrap();
-    let rec = carol.get(&format!("apps/{from_a}")).await.unwrap();
+    let rec = carol.apps().get(&from_a).await.map(wire).unwrap();
     assert_eq!(rec["deployment"], json!(da), "{rec}");
 
     // Only the offered release, of an offered package.
@@ -602,7 +605,7 @@ async fn deployments_of_one_release_are_independent() {
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 
     // Each deployment lists its own customers only, for its managers only.
-    let listed = alice.get(&format!("deployments/{da}/orgs")).await.unwrap();
+    let listed = alice.deployments().orgs(&da).await.map(wire).unwrap();
     let orgs = listed["orgs"].as_array().unwrap();
     assert_eq!(orgs.len(), 1, "{listed}");
     assert_eq!(orgs[0]["orgId"], json!(globex));
@@ -620,50 +623,50 @@ async fn deployments_of_one_release_are_independent() {
         !listed.to_string().contains(&account_of(&carol).await),
         "no member's account: {listed}"
     );
-    let listed = dave.get(&format!("deployments/{db}/orgs")).await.unwrap();
+    let listed = dave.deployments().orgs(&db).await.map(wire).unwrap();
     let orgs = listed["orgs"].as_array().unwrap();
     assert_eq!(orgs.len(), 1, "{listed}");
     assert_eq!(orgs[0]["orgId"], json!(initech));
-    forbidden(
-        &bob.get(&format!("deployments/{da}/orgs"))
-            .await
-            .unwrap_err(),
-    );
-    forbidden(
-        &dave
-            .get(&format!("deployments/{da}/orgs"))
-            .await
-            .unwrap_err(),
-    );
+    forbidden(&bob.deployments().orgs(&da).await.unwrap_err());
+    forbidden(&dave.deployments().orgs(&da).await.unwrap_err());
 
     // A withdraw waits for the deployment's own instances.
     let e = alice
-        .delete_confirmed(&format!("deployments/{da}/apps/notes"), &mut alice_pk)
+        .deployments()
+        .withdraw(&da, "notes", Some(&mut alice_pk))
         .await
         .unwrap_err();
     assert!(e.to_string().contains("instance"), "{e}");
-    let _ok = carol.delete(&format!("apps/{from_a}")).await.unwrap();
+    let _ok = carol.apps().delete(&from_a).await.unwrap();
     let _ok = alice
-        .delete_confirmed(&format!("deployments/{da}/apps/notes"), &mut alice_pk)
+        .deployments()
+        .withdraw(&da, "notes", Some(&mut alice_pk))
         .await
         .unwrap();
     // Beta still offers it, and its instance runs on.
-    let beta = alice.get(&format!("deployments/{db}")).await.unwrap();
+    let beta = alice.deployments().get(&db).await.map(wire).unwrap();
     assert_eq!(beta["apps"][0]["version"], "1.0.0", "{beta}");
     let e = dave
-        .delete_confirmed(&format!("deployments/{db}/apps/notes"), &mut dave_pk)
+        .deployments()
+        .withdraw(&db, "notes", Some(&mut dave_pk))
         .await
         .unwrap_err();
     assert!(e.to_string().contains("instance"), "{e}");
 
     // Offered by beta: its first installer cannot uninstall it.
     let e = alice
-        .delete("packages/com.test.notes/1.0.0")
+        .packages()
+        .version_uninstall("com.test.notes", "1.0.0")
         .await
         .unwrap_err();
     assert!(e.to_string().contains("offers"), "{e}");
     // A release nobody offers keeps today's rules.
-    let _ok = alice.delete("packages/com.test.notes/2.0.0").await.unwrap();
+    let _ok = alice
+        .packages()
+        .version_uninstall("com.test.notes", "2.0.0")
+        .await
+        .map(wire)
+        .unwrap();
 }
 
 /// An app's frontend opens at the release its deployment offers
@@ -685,11 +688,13 @@ async fn frontends_open_the_deployed_release() {
         )
     };
     let _ok = alice
-        .upload_package(site("1.0.0", b"<p>one"))
+        .packages()
+        .upload(site("1.0.0", b"<p>one"))
         .await
         .unwrap();
     let _ok = alice
-        .upload_package(release("com.test.other", "1.0.0"))
+        .packages()
+        .upload(release("com.test.other", "1.0.0"))
         .await
         .unwrap();
     let d = deploy(
@@ -706,16 +711,20 @@ async fn frontends_open_the_deployed_release() {
         .await
         .unwrap();
     let other = alice
-        .post("apps", json!({ "name": "o", "package": "com.test.other" }))
+        .apps()
+        .create(typed(json!({ "name": "o", "package": "com.test.other" })))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
         .to_owned();
     // A newer release is installed: `/` moves to it.
     let _ok = alice
-        .upload_package(site("1.1.0", b"<p>two"))
+        .packages()
+        .upload(site("1.1.0", b"<p>two"))
         .await
+        .map(wire)
         .unwrap();
 
     let label = calimero_node::app_host::label("com.test.site");
@@ -810,24 +819,29 @@ async fn each_deployment_serves_its_frontend_on_its_own_host() {
         )
     };
     let _ok = alice
-        .upload_package(site("1.0.0", b"<p>one"))
+        .packages()
+        .upload(site("1.0.0", b"<p>one"))
         .await
         .unwrap();
     let _ok = alice
-        .upload_package(site("1.1.0", b"<p>two"))
+        .packages()
+        .upload(site("1.1.0", b"<p>two"))
         .await
         .unwrap();
     let _ok = alice
-        .upload_package(release("com.test.other", "1.0.0"))
+        .packages()
+        .upload(release("com.test.other", "1.0.0"))
         .await
         .unwrap();
     let created = alice
-        .post_confirmed(
-            "deployments",
-            json!({ "name": "alpha", "owner": { "account": alice_id } }),
-            &mut alice_pk,
+        .deployments()
+        .create(
+            "alpha",
+            typed(json!({ "account": alice_id })),
+            Some(&mut alice_pk),
         )
         .await
+        .map(wire)
         .unwrap();
     let alpha = created["id"].as_str().unwrap().to_owned();
     let alpha_label = calimero_node::app_host::deployment_label(&alpha);
@@ -875,8 +889,10 @@ async fn each_deployment_serves_its_frontend_on_its_own_host() {
     // Read back by anyone: the host travels with the id.
     let read = c
         .client(2)
-        .get(&format!("deployments/{beta}"))
+        .deployments()
+        .get(&beta)
         .await
+        .map(wire)
         .unwrap();
     let beta_host = format!(
         "{}.localhost",
@@ -982,27 +998,46 @@ async fn each_deployment_serves_its_frontend_on_its_own_host() {
         .await
         .unwrap();
     let _ok = dave
-        .call(&mine, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &mine,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     assert!(dave
-        .post("apps", json!({ "name": "x", "package": "com.test.other" }))
+        .apps()
+        .create(typed(json!({ "name": "x", "package": "com.test.other" })))
         .await
         .is_err());
     assert!(dave
-        .create_api_key(json!({ "label": "k" }), &mut dave_pk)
+        .auth()
+        .apikey_create(typed(json!({ "label": "k" })), Some(&mut dave_pk))
         .await
+        .map(|k| (k.key_id, k.key))
         .is_err());
     // And signing in there again, too.
     let dave_again = c.client(2);
     let mut again_pk = SoftAuthenticator::with_key(&dave_pk, "localhost", &origin);
     let _s = dave_again.sign_in(&mut again_pk).await.unwrap();
     assert!(dave_again
-        .create_api_key(json!({ "label": "k" }), &mut again_pk)
+        .auth()
+        .apikey_create(typed(json!({ "label": "k" })), Some(&mut again_pk))
         .await
+        .map(|k| (k.key_id, k.key))
         .is_err());
     let _ok = dave_again
-        .call(&mine, "set", json!({ "key": "k", "value": "w" }), None)
+        .apps()
+        .call(
+            &mine,
+            "set",
+            Some(json!({ "key": "k", "value": "w" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     // CORS admits the deployment's host as an origin.
@@ -1031,7 +1066,8 @@ async fn frontend_redirects_keep_the_query() {
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
     let alice_id = account_of(&alice).await;
     let _ok = alice
-        .upload_package(mpk(
+        .packages()
+        .upload(mpk(
             "com.test.site",
             "1.0.0",
             &variant(&kv_wasm(), "1.0.0"),
@@ -1139,7 +1175,8 @@ async fn an_instance_link_opens_the_release_that_instance_runs() {
     for version in ["1.0.0", "9.0.0", "10.0.0"] {
         let page = format!("<p>{version}");
         let _ok = alice
-            .upload_package(mpk(
+            .packages()
+            .upload(mpk(
                 "com.test.site",
                 version,
                 &wasm,
@@ -1149,11 +1186,12 @@ async fn an_instance_link_opens_the_release_that_instance_runs() {
             .unwrap();
     }
     let app = alice
-        .post(
-            "apps",
+        .apps()
+        .create(typed(
             json!({ "name": "s", "package": "com.test.site", "version": "1.0.0" }),
-        )
+        ))
         .await
+        .map(wire)
         .unwrap()["appId"]
         .as_str()
         .unwrap()
@@ -1199,8 +1237,14 @@ async fn an_instance_link_opens_the_release_that_instance_runs() {
 
     // Upgraded to 10.0.0 (the same WASM): the link follows it.
     let _ok = alice
-        .upgrade_app(&app, json!({ "version": "10.0.0" }), &mut alice_pk)
+        .apps()
+        .upgrade(
+            &app,
+            typed(json!({ "version": "10.0.0" })),
+            Some(&mut alice_pk),
+        )
         .await
+        .map(wire)
         .unwrap();
     assert_eq!(location(app).await, "/10.0.0/");
     assert_eq!(location(offered).await, "/9.0.0/");
@@ -1226,10 +1270,11 @@ async fn on_a_granted_cluster_deploying_needs_a_grant() {
 
     not_granted(
         &alice
-            .post_confirmed(
-                "deployments",
-                json!({ "name": "alpha", "owner": { "account": alice_id } }),
-                &mut alice_pk,
+            .deployments()
+            .create(
+                "alpha",
+                typed(json!({ "account": alice_id })),
+                Some(&mut alice_pk),
             )
             .await
             .unwrap_err(),
@@ -1242,11 +1287,13 @@ async fn on_a_granted_cluster_deploying_needs_a_grant() {
     .await
     .unwrap();
     let _ok = alice
-        .upload_package(release("com.test.notes", "1.0.0"))
+        .packages()
+        .upload(release("com.test.notes", "1.0.0"))
         .await
         .unwrap();
     let _ok = alice
-        .upload_package(release("com.test.notes", "1.1.0"))
+        .packages()
+        .upload(release("com.test.notes", "1.1.0"))
         .await
         .unwrap();
     let d = deploy(
@@ -1271,7 +1318,14 @@ async fn on_a_granted_cluster_deploying_needs_a_grant() {
         .await
         .unwrap();
     let _ok = bob
-        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -1311,7 +1365,14 @@ async fn on_a_granted_cluster_deploying_needs_a_grant() {
     .unwrap_err();
     assert!(e.contains("deployer grant"), "{e}");
     let _ok = bob
-        .call(&app, "set", json!({ "key": "k", "value": "w" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "w" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
 }
@@ -1342,11 +1403,14 @@ async fn an_instances_usage_is_billed_to_its_deployments_developer() {
 
     // Developer A is alice's account; developer B is dave's organization.
     let _ok = alice
-        .upload_package(release("com.test.notes", "1.0.0"))
+        .packages()
+        .upload(release("com.test.notes", "1.0.0"))
         .await
+        .map(wire)
         .unwrap();
     let _ok = dave
-        .upload_package(release("com.test.board", "1.0.0"))
+        .packages()
+        .upload(release("com.test.board", "1.0.0"))
         .await
         .unwrap();
     let dev_b = org(&dave, "Bee Labs").await;
@@ -1382,17 +1446,26 @@ async fn an_instances_usage_is_billed_to_its_deployments_developer() {
         .unwrap();
     for i in 0..3 {
         let _ = carol
+            .apps()
             .call(
                 &of_a,
                 "set",
-                json!({ "key": format!("k{i}"), "value": "v" }),
+                Some(json!({ "key": format!("k{i}"), "value": "v" })),
+                None,
                 None,
             )
             .await
             .unwrap();
     }
     let _ = carol
-        .call(&of_b, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &of_b,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -1461,7 +1534,8 @@ async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
     ops.use_api_key("ops-secret").await;
 
     let _ok = alice
-        .upload_package(release("com.test.notes", "1.0.0"))
+        .packages()
+        .upload(release("com.test.notes", "1.0.0"))
         .await
         .unwrap();
     let alpha = deploy(
@@ -1493,10 +1567,12 @@ async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
     // Globex's instance burns; Initech's has only run its `init`.
     for i in 0..10 {
         let _r = carol
+            .apps()
             .call(
                 &at_globex,
                 "set",
-                json!({ "key": format!("k{i}"), "value": "v" }),
+                Some(json!({ "key": format!("k{i}"), "value": "v" })),
+                None,
                 None,
             )
             .await
@@ -1514,9 +1590,12 @@ async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
     // in both its own total and the developer's), then judge them.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let (globex_fuel, initech_fuel, developer) = loop {
-        let globex_fuel = today(carol.get(&format!("apps/{at_globex}/usage")).await.unwrap());
-        let initech_fuel = today(erin.get(&format!("apps/{at_initech}/usage")).await.unwrap());
-        let developer = fuel(&alice.usage().await.unwrap(), "developerFuelToday");
+        let globex_fuel = today(carol.apps().usage(&at_globex).await.map(wire).unwrap());
+        let initech_fuel = today(erin.apps().usage(&at_initech).await.map(wire).unwrap());
+        let developer = fuel(
+            &alice.auth().usage().await.map(wire).unwrap(),
+            "developerFuelToday",
+        );
         if (initech_fuel > 0 && developer == globex_fuel + initech_fuel)
             || tokio::time::Instant::now() >= deadline
         {
@@ -1533,7 +1612,7 @@ async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
     // A customer is the developer of neither.
     assert_eq!(
         fuel(
-            &erin.get(&format!("orgs/{initech}/usage")).await.unwrap(),
+            &erin.orgs().usage(&initech).await.map(wire).unwrap(),
             "developerFuelToday"
         ),
         0
@@ -1556,17 +1635,26 @@ async fn two_payers_of_one_developers_apps_share_its_fuel_cap() {
         }
     }
     let err = erin
+        .apps()
         .call(
             &at_initech,
             "set",
-            json!({ "key": "k", "value": "v" }),
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
             None,
         )
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
     let err = carol
-        .call(&at_globex, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &at_globex,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap_err();
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");

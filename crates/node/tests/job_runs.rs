@@ -2,14 +2,6 @@
 //! the real node's receipt key, wraps keys with the files crypto and checks the signed reports.
 //! The input is a real sealed file of the `files` fixture; the runs are the `compute` fixture's.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 mod common;
 
 use std::sync::Mutex;
@@ -29,7 +21,7 @@ use calimero_node::job_wire::{
 use calimero_node::types::Caller;
 use calimero_node::{run_job, JobConfig, Node};
 use calimero_sealed::client::{resolve_path, SealedTransport};
-use common::{signed_up, Cluster, JobNode};
+use common::{signed_up, typed, wire, Cluster, JobNode};
 use rand_chacha::rand_core::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use reqwest::Method;
@@ -279,10 +271,17 @@ impl Rig {
         let c = Cluster::start_with(3, more_fuel).await;
         let (alice, _pk) = signed_up(&c, 0, "alice").await;
         let bundle = alice
-            .upload_bundle(common::component("files"))
+            .packages()
+            .bundle_put(common::component("files"))
             .await
+            .map(|b| b.hash)
             .unwrap();
-        let app = alice.create_app("files", &bundle, json!({})).await.unwrap();
+        let app = alice
+            .apps()
+            .create(typed(json!({ "name": "files", "bundle": &bundle })))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
         let file_key = c.nodes[0].as_ref().unwrap().node.app_file_key(&app);
         Self {
             c,
@@ -362,10 +361,12 @@ impl Rig {
     async fn input_len(&self, len: usize, seed: u64) -> Input {
         let r = self
             .alice
+            .apps()
             .call(
                 &self.app,
                 "putFile",
-                json!({ "len": len.to_string(), "seed": seed.to_string() }),
+                Some(json!({ "len": len.to_string(), "seed": seed.to_string() })),
+                None,
                 None,
             )
             .await
@@ -545,7 +546,7 @@ fn expected_output(plain: &[u8], seed: [u8; 32]) -> Vec<u8> {
 async fn wasm_series(c: &Cluster) -> Vec<String> {
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
-    let text = ops.get_text("ops/metrics").await.unwrap();
+    let text = ops.ops().metrics().await.unwrap();
     text.lines()
         .filter(|l| l.starts_with("calimero_app_"))
         .map(str::to_owned)
@@ -1257,12 +1258,12 @@ async fn every_node_names_the_same_cluster_identity_and_a_report_stands_for_its_
     for i in 0..3 {
         let ops = rig.c.client(i);
         ops.use_api_key("ops-secret").await;
-        let answer = ops.get("ops/cluster").await.unwrap();
+        let answer = ops.ops().cluster().await.map(wire).unwrap();
         assert_eq!(answer["identity"], hex::encode(identity), "node {i}");
         assert_eq!(answer["cluster"], rig.c.configs[0].cluster);
     }
     // Operator only.
-    assert!(rig.c.client(0).get("ops/cluster").await.is_err());
+    assert!(rig.c.client(0).ops().cluster().await.is_err());
 
     let (_a, job) = rig.job(JOB_A).await;
     let burn = RunBudget {
@@ -1287,8 +1288,12 @@ async fn two_apps_with_the_same_run_id_run_side_by_side_on_one_job_node() {
     let (_a, job) = rig.job(JOB_A).await;
     let second = rig
         .alice
-        .create_app("files-two", &rig.alice_bundle, json!({}))
+        .apps()
+        .create(typed(
+            json!({ "name": "files-two", "bundle": &rig.alice_bundle }),
+        ))
         .await
+        .map(|a| a.app_id)
         .unwrap();
     assert_ne!(second, rig.app);
     let long_spin = RunBudget {

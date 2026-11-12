@@ -4,14 +4,6 @@
 //! method and subject, newest first. A refresh is no sign-in. Nobody else
 //! sees it: another account reads only its own, and an API key is refused.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use std::time::Duration;
 
 use calimero_identity::testing::SoftAuthenticator;
@@ -24,7 +16,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{signed_up, Cluster, ORIGIN};
+use harness::{signed_up, typed, wire, Cluster, ORIGIN};
 
 /// The listed entries, newest first.
 fn entries(list: &Value) -> Vec<Value> {
@@ -38,11 +30,11 @@ fn entries(list: &Value) -> Vec<Value> {
 async fn sign_ins_and_approvals_are_listed_with_their_passkey() {
     let c = Cluster::start(3).await;
     let (laptop, mut pk) = signed_up(&c, 0, "alice").await;
-    let me = laptop.me().await.unwrap();
+    let me = laptop.auth().me().await.map(wire).unwrap();
     let cred = me["passkeyId"].clone();
     let added = me["passkeys"][0]["addedAt"].as_u64().unwrap();
 
-    let list = laptop.activity(None).await.unwrap();
+    let list = laptop.auth().activity_list(None).await.map(wire).unwrap();
     assert_eq!(
         entries(&list),
         vec![json!({
@@ -55,10 +47,12 @@ async fn sign_ins_and_approvals_are_listed_with_their_passkey() {
     // A step-up: the approval, by the passkey that made it.
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let (_id, key) = laptop
-        .create_api_key(json!({ "label": "ci" }), &mut pk)
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), Some(&mut pk))
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
-    let list = laptop.activity(None).await.unwrap();
+    let list = laptop.auth().activity_list(None).await.map(wire).unwrap();
     let newest = &entries(&list)[0];
     assert_eq!(newest["kind"], "approval", "{list}");
     assert_eq!(newest["method"], "__create_api_key", "{list}");
@@ -78,7 +72,7 @@ async fn sign_ins_and_approvals_are_listed_with_their_passkey() {
     for i in 0..3 {
         let at = c.client(i);
         at.use_session(phone.session().await.unwrap()).await;
-        let list = at.activity(None).await.unwrap();
+        let list = at.auth().activity_list(None).await.map(wire).unwrap();
         let got: Vec<(Value, Value, Value)> = entries(&list)
             .iter()
             .map(|e| (e["kind"].clone(), e["passkey"].clone(), e["method"].clone()))
@@ -96,7 +90,12 @@ async fn sign_ins_and_approvals_are_listed_with_their_passkey() {
     }
 
     // `after`: only what came later.
-    let later = laptop.activity(Some(approved)).await.unwrap();
+    let later = laptop
+        .auth()
+        .activity_list(Some(approved))
+        .await
+        .map(wire)
+        .unwrap();
     assert!(
         entries(&later)
             .iter()
@@ -108,7 +107,12 @@ async fn sign_ins_and_approvals_are_listed_with_their_passkey() {
     // The API key is the account's, but not its holder's session.
     let machine = c.client(2);
     machine.use_api_key(&key).await;
-    let e = machine.activity(None).await.unwrap_err().to_string();
+    let e = machine
+        .auth()
+        .activity_list(None)
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(e.starts_with("403"), "{e}");
 }
 
@@ -118,20 +122,22 @@ async fn each_account_reads_only_its_own_activity() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
     let (bob, _bob_pk) = signed_up(&c, 1, "bob").await;
-    let alices = alice.me().await.unwrap()["passkeyId"].clone();
-    let bobs = bob.me().await.unwrap()["passkeyId"].clone();
+    let alices = alice.auth().me().await.map(wire).unwrap()["passkeyId"].clone();
+    let bobs = bob.auth().me().await.map(wire).unwrap()["passkeyId"].clone();
     let _key = alice
-        .create_api_key(json!({ "label": "ci" }), &mut alice_pk)
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), Some(&mut alice_pk))
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
 
-    let list = bob.activity(None).await.unwrap();
+    let list = bob.auth().activity_list(None).await.map(wire).unwrap();
     assert_eq!(entries(&list).len(), 1, "{list}");
     assert!(
         entries(&list).iter().all(|e| e["passkey"] == bobs),
         "{list}"
     );
-    let list = alice.activity(None).await.unwrap();
+    let list = alice.auth().activity_list(None).await.map(wire).unwrap();
     assert_eq!(entries(&list).len(), 2, "{list}");
     assert!(
         entries(&list).iter().all(|e| e["passkey"] == alices),
@@ -139,6 +145,12 @@ async fn each_account_reads_only_its_own_activity() {
     );
 
     // Signed out, nobody reads any.
-    let e = c.client(2).activity(None).await.unwrap_err().to_string();
+    let e = c
+        .client(2)
+        .auth()
+        .activity_list(None)
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(e.starts_with("401"), "{e}");
 }

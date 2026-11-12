@@ -20,6 +20,10 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 
 #[path = "harness/cluster.rs"]
+#[allow(
+    dead_code,
+    reason = "`wire` and `typed` serve the tests on the generated routes, which this file does not call yet"
+)]
 mod harness;
 
 use harness::{free_port, kv_wasm, node_config, signed_up, Cluster, ORIGIN};

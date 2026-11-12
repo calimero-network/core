@@ -477,3 +477,27 @@ impl UploadBytes for Client {
             .await
     }
 }
+
+/// A generated route's typed answer as the JSON the node sent, for tests that
+/// assert on the wire shape: the answer's types keep every field the node sent
+/// (named, or in `extra`), so nothing is lost on the way back.
+pub fn wire<T: serde::Serialize>(answer: T) -> serde_json::Value {
+    // SAFETY: the generated answer types serialize to JSON objects; nothing
+    // in them (maps keyed by strings, plain values) can fail to serialize.
+    serde_json::to_value(answer).expect("a generated answer is JSON")
+}
+
+/// A generated route's typed request, written as the JSON a test sends. It
+/// must say all of it: a key the type would drop changes the request, so it
+/// panics rather than send less than the test wrote.
+pub fn typed<T: serde::Serialize + serde::de::DeserializeOwned>(body: serde_json::Value) -> T {
+    let typed: T = serde_json::from_value(body.clone())
+        .unwrap_or_else(|e| panic!("not the route's request type: {e}: {body}"));
+    let sent = serde_json::to_value(&typed).ok();
+    assert_eq!(
+        sent.as_ref(),
+        Some(&body),
+        "the request type drops part of {body}"
+    );
+    typed
+}

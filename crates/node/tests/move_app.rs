@@ -10,19 +10,13 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
 #![allow(
     clippy::result_large_err,
     reason = "the helpers pass on calimero_client::Error as the client returns it"
 )]
 
-use calimero_client::{Client, Consistency, Error};
+use calimero_client::types::{AppCreateRequest, ViewsRequestConsistency};
+use calimero_client::{Client, Error};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::system::SystemCmd;
 use serde_json::{json, Value};
@@ -34,7 +28,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{kv_wasm, signed_up, Cluster};
+use harness::{kv_wasm, signed_up, typed, wire, Cluster};
 
 const CHAT: &str = "com.test.chat";
 const BLOCKS: &str = "com.test.blocks";
@@ -106,7 +100,7 @@ fn s(v: &Value) -> String {
 }
 
 async fn id(c: &Client) -> String {
-    s(&c.me().await.unwrap()["accountId"])
+    s(&c.auth().me().await.map(wire).unwrap()["accountId"])
 }
 
 fn refused(e: &Error, why: &str) {
@@ -115,16 +109,13 @@ fn refused(e: &Error, why: &str) {
 }
 
 async fn new_org(owner: &Client, name: &str) -> String {
-    s(&owner.post("orgs", json!({ "name": name })).await.unwrap()["orgId"])
+    s(&owner.orgs().create(name, None).await.map(wire).unwrap()["orgId"])
 }
 
 /// `who` joins `org` at `role`, invited by `by` (its owner) with `pk`.
 async fn join(by: &Client, pk: &mut SoftAuthenticator, org: &str, who: &Client, role: &str) {
     let token = invite(by, pk, org, role, &[]).await;
-    let _r = who
-        .post(&format!("invites/{token}/redeem"), json!({}))
-        .await
-        .unwrap();
+    let _r = who.orgs().invite_redeem(&token).await.unwrap();
 }
 
 async fn invite(
@@ -135,32 +126,37 @@ async fn invite(
     teams: &[&str],
 ) -> String {
     let v = by
-        .post_confirmed(
-            &format!("orgs/{org}/invites"),
-            json!({ "role": role, "teams": teams }),
-            pk,
+        .orgs()
+        .invite_create(
+            org,
+            typed(json!({ "role": role, "teams": teams })),
+            Some(&mut *pk),
         )
         .await
+        .map(wire)
         .unwrap();
     s(&v["token"])
 }
 
 async fn set_role(by: &Client, pk: &mut SoftAuthenticator, org: &str, account: &str, role: &str) {
     let _ok = by
-        .post_confirmed(
-            &format!("orgs/{org}/members"),
-            json!({ "account": account, "role": role }),
-            pk,
-        )
+        .orgs()
+        .set_member(org, account, typed(json!(role)), Some(&mut *pk))
         .await
         .unwrap();
 }
 
 /// An instance of `package` in `org` (organization access), or a personal one.
 async fn instance(c: &Client, org: Option<&str>, package: &str) -> String {
-    let opts = org.map_or_else(|| json!({}), |o| json!({ "org": o }));
-    c.create_app_from_package(package, package, None, None, opts)
+    c.apps()
+        .create(AppCreateRequest {
+            name: Some(package.to_owned()),
+            package: Some(package.to_owned()),
+            org: org.map(str::to_owned),
+            ..AppCreateRequest::default()
+        })
         .await
+        .map(|a| a.app_id)
         .unwrap()
 }
 
@@ -171,17 +167,15 @@ async fn move_app(
     to: &str,
     bring: bool,
 ) -> Result<Value, Error> {
-    c.post_confirmed(
-        &format!("apps/{app}/move"),
-        json!({ "toOrg": to, "bringMembers": bring }),
-        pk,
-    )
-    .await
+    c.apps()
+        .app_move(app, to, Some(bring), Some(&mut *pk))
+        .await
+        .map(wire)
 }
 
 /// The apps of `org` that `c` reaches, as `GET /orgs/{org}/apps` lists them.
 async fn reaches(c: &Client, org: &str) -> Vec<String> {
-    let Ok(v) = c.get(&format!("orgs/{org}/apps")).await else {
+    let Ok(v) = c.orgs().apps(org, None, None).await.map(wire) else {
         return Vec::new();
     };
     v["apps"]
@@ -193,7 +187,7 @@ async fn reaches(c: &Client, org: &str) -> Vec<String> {
 }
 
 async fn invites_of(c: &Client, org: &str) -> Vec<Value> {
-    c.get(&format!("orgs/{org}/invites")).await.unwrap()["invites"]
+    c.orgs().invite_list(org).await.map(wire).unwrap()["invites"]
         .as_array()
         .unwrap()
         .clone()
@@ -210,7 +204,7 @@ async fn an_admin_moves_an_app_with_its_people_and_its_data() {
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.upload_package(release(p)).await.unwrap();
+        let _ok = alice.packages().upload(release(p)).await.unwrap();
     }
     let src = new_org(&alice, "Source").await;
     join(&alice, &mut a, &src, &bob, "member").await;
@@ -218,22 +212,32 @@ async fn an_admin_moves_an_app_with_its_people_and_its_data() {
     let (bob_id, carol_id) = (id(&bob).await, id(&carol).await);
     let app = instance(&alice, Some(&src), CHAT).await;
     let _set = alice
-        .call(&app, "set", json!({ "key": "k", "value": "v" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "v" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     // The source gives its app an app team; invites name it, and one doesn't.
     let _scoped = alice
-        .post_confirmed(&format!("orgs/{src}/app-teams"), json!({}), &mut a)
+        .orgs()
+        .app_teams_scope(&src, None, None, Some(&mut a))
         .await
+        .map(wire)
         .unwrap();
-    let team = s(&alice.get(&format!("apps/{app}")).await.unwrap()["access"]["team"]);
+    let team = s(&alice.apps().get(&app).await.map(wire).unwrap()["access"]["team"]);
     let _into_team = invite(&alice, &mut a, &src, "member", &[&team]).await;
     let _org_wide = invite(&alice, &mut a, &src, "member", &[]).await;
     // The target holds another app on an open app team: standalone.
     let dst = new_org(&alice, "Target").await;
     let _other = instance(&alice, Some(&dst), BLOCKS).await;
     let _scoped = alice
-        .post_confirmed(&format!("orgs/{dst}/app-teams"), json!({}), &mut a)
+        .orgs()
+        .app_teams_scope(&dst, None, None, Some(&mut a))
         .await
         .unwrap();
 
@@ -248,10 +252,10 @@ async fn an_admin_moves_an_app_with_its_people_and_its_data() {
     expected.sort();
     assert_eq!(added, expected, "{out}");
 
-    let record = alice.get(&format!("apps/{app}")).await.unwrap();
+    let record = alice.apps().get(&app).await.map(wire).unwrap();
     assert_eq!(record["org"], json!(dst), "{record}");
     assert_eq!(record["access"]["kind"], "team", "{record}");
-    let members = alice.get(&format!("orgs/{dst}")).await.unwrap()["members"].clone();
+    let members = alice.orgs().get(&dst).await.map(wire).unwrap()["members"].clone();
     assert_eq!(members[&bob_id], "member", "{members}");
     assert_eq!(
         members[&carol_id], "member",
@@ -263,7 +267,14 @@ async fn an_admin_moves_an_app_with_its_people_and_its_data() {
         assert!(!reaches(p, &src).await.contains(&app));
     }
     let got = bob
-        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "get",
+            Some(json!({ "key": "k" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await
         .unwrap()
         .result;
@@ -284,30 +295,26 @@ async fn a_dm_moved_into_a_closed_app_team_keeps_its_people() {
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     let (dave, _d) = signed_up(&c, 0, "dave").await;
-    let _ok = alice.upload_package(release(CHAT)).await.unwrap();
+    let _ok = alice.packages().upload(release(CHAT)).await.unwrap();
     let src = new_org(&alice, "Source").await;
     for p in [&bob, &carol, &dave] {
         join(&alice, &mut a, &src, p, "member").await;
     }
     let (bob_id, carol_id, dave_id) = (id(&bob).await, id(&carol).await, id(&dave).await);
     let dm = alice
-        .create_app_from_package(
-            CHAT,
-            CHAT,
-            None,
-            None,
-            json!({ "org": src, "access": { "kind": "accounts", "accounts": [bob_id, carol_id] } }),
-        )
-        .await
+        .apps().create(typed(json!({ "name": CHAT, "package": CHAT, "org": src, "access": { "kind": "accounts", "accounts": [bob_id, carol_id] } })))
+        .await.map(|a| a.app_id)
         .unwrap();
     // The target keeps Chat apart: its app team is closed, alice alone in it.
     let dst = new_org(&alice, "Target").await;
     let _chat = instance(&alice, Some(&dst), CHAT).await;
     let _scoped = alice
-        .post_confirmed(
-            &format!("orgs/{dst}/app-teams"),
-            json!({ "apps": [{ "package": CHAT, "join": "invite" }] }),
-            &mut a,
+        .orgs()
+        .app_teams_scope(
+            &dst,
+            Some(typed(json!([{ "package": CHAT, "join": "invite" }]))),
+            None,
+            Some(&mut a),
         )
         .await
         .unwrap();
@@ -321,12 +328,19 @@ async fn a_dm_moved_into_a_closed_app_team_keeps_its_people() {
     assert_eq!(added, expected, "{out}");
     for p in [&bob, &carol] {
         let _set = p
-            .call(&dm, "set", json!({ "key": "k", "value": "v" }), None)
+            .apps()
+            .call(
+                &dm,
+                "set",
+                Some(json!({ "key": "k", "value": "v" })),
+                None,
+                None,
+            )
             .await
             .unwrap();
         assert!(reaches(p, &dst).await.contains(&dm));
     }
-    let members = alice.get(&format!("orgs/{dst}")).await.unwrap()["members"].clone();
+    let members = alice.orgs().get(&dst).await.map(wire).unwrap()["members"].clone();
     assert!(members.get(&dave_id).is_none(), "{members}");
     assert!(reaches(&dave, &dst).await.is_empty());
 }
@@ -344,7 +358,7 @@ async fn wrong_movers_and_quotas_are_refused_and_a_personal_app_moves_in() {
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (carol, mut cpk) = signed_up(&c, 2, "carol").await;
     let (dave, mut d) = signed_up(&c, 0, "dave").await;
-    let _ok = alice.upload_package(release(CHAT)).await.unwrap();
+    let _ok = alice.packages().upload(release(CHAT)).await.unwrap();
     let src = new_org(&alice, "Source").await;
     let dst = new_org(&alice, "Target").await;
     join(&alice, &mut a, &src, &bob, "admin").await;
@@ -354,47 +368,65 @@ async fn wrong_movers_and_quotas_are_refused_and_a_personal_app_moves_in() {
     join(&alice, &mut a, &dst, &carol, "admin").await;
     let (bob_id, carol_id) = (id(&bob).await, id(&carol).await);
     let app = instance(&alice, Some(&src), CHAT).await;
-    let to = json!({ "toOrg": dst, "bringMembers": false });
-    let path = format!("apps/{app}/move");
 
     // Bob administers the source but is a member of the target.
     refused(
-        &bob.post(&path, to.clone()).await.unwrap_err(),
+        &bob.apps()
+            .app_move(&app, &dst, Some(false), None)
+            .await
+            .unwrap_err(),
         "only an admin or the owner of the target",
     );
     // Made its admin, then demoted again.
     set_role(&alice, &mut a, &dst, &bob_id, "admin").await;
     set_role(&alice, &mut a, &dst, &bob_id, "member").await;
     refused(
-        &bob.post(&path, to.clone()).await.unwrap_err(),
+        &bob.apps()
+            .app_move(&app, &dst, Some(false), None)
+            .await
+            .unwrap_err(),
         "only an admin or the owner of the target",
     );
     // Its admin again, but removed from the source.
     set_role(&alice, &mut a, &dst, &bob_id, "admin").await;
     let _gone = alice
-        .delete_confirmed(&format!("orgs/{src}/members/{bob_id}"), &mut a)
+        .orgs()
+        .remove_member(&src, &bob_id, Some(&mut a))
         .await
         .unwrap();
     refused(
-        &bob.post(&path, to.clone()).await.unwrap_err(),
+        &bob.apps()
+            .app_move(&app, &dst, Some(false), None)
+            .await
+            .unwrap_err(),
         "only the app's owner",
     );
     // Carol administers both, then leaves the source.
     let _left = carol
-        .delete_confirmed(&format!("orgs/{src}/members/{carol_id}"), &mut cpk)
+        .orgs()
+        .remove_member(&src, &carol_id, Some(&mut cpk))
         .await
+        .map(wire)
         .unwrap();
     refused(
-        &carol.post(&path, to.clone()).await.unwrap_err(),
+        &carol
+            .apps()
+            .app_move(&app, &dst, Some(false), None)
+            .await
+            .unwrap_err(),
         "only the app's owner",
     );
     // Dave, a member who manages nothing.
     refused(
-        &dave.post(&path, to.clone()).await.unwrap_err(),
+        &dave
+            .apps()
+            .app_move(&app, &dst, Some(false), None)
+            .await
+            .unwrap_err(),
         "only the app's owner",
     );
     assert_eq!(
-        alice.get(&path.replace("/move", "")).await.unwrap()["org"],
+        alice.apps().get(&app).await.map(wire).unwrap()["org"],
         json!(src)
     );
 
@@ -425,10 +457,10 @@ async fn wrong_movers_and_quotas_are_refused_and_a_personal_app_moves_in() {
     let ops = c.client(1);
     ops.use_api_key("ops-secret").await;
     let _ok = ops
-        .post_operator_signed(
-            "ops/quotas",
-            json!({ "maxFileBytesPerOrg": 150 }),
-            &harness::operator_sign,
+        .ops()
+        .quotas_set(
+            typed(json!({ "maxFileBytesPerOrg": 150 })),
+            Some(&harness::operator_sign),
         )
         .await
         .unwrap();
@@ -437,7 +469,7 @@ async fn wrong_movers_and_quotas_are_refused_and_a_personal_app_moves_in() {
         .unwrap_err();
     refused(&e, "QUOTA_EXCEEDED");
     assert_eq!(
-        alice.get(&format!("apps/{second}")).await.unwrap()["org"],
+        alice.apps().get(&second).await.map(wire).unwrap()["org"],
         json!(src)
     );
 

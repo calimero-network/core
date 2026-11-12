@@ -6,14 +6,6 @@
 //! passkey finishes it, which ends every session the account had, revokes
 //! its API keys and signs in.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use calimero_client::{Client, Passkey, Session};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::types::RECOVERY_DELAY_SECS;
@@ -26,7 +18,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{signed_up, Cluster, ORIGIN};
+use harness::{signed_up, typed, wire, Cluster, ORIGIN};
 
 /// Moves every node's clock by `secs`, as `tests/org_recovery.rs` does.
 fn advance(c: &Cluster, secs: u64) {
@@ -39,8 +31,10 @@ fn advance(c: &Cluster, secs: u64) {
 /// A new recovery code for the signed-in `client`, approved with `passkey`.
 async fn make_code(client: &Client, passkey: &mut SoftAuthenticator) -> String {
     client
-        .post_confirmed("auth/recovery", json!({}), passkey)
+        .auth()
+        .recovery_create(Some(&mut *passkey))
         .await
+        .map(wire)
         .unwrap()["code"]
         .as_str()
         .unwrap()
@@ -56,16 +50,17 @@ async fn start(
 ) -> Result<Value, String> {
     let refused = |e: calimero_client::Error| e.code().unwrap_or("?").to_owned();
     let begin = client
-        .post("auth/recovery/begin", json!({ "code": code }))
+        .auth()
+        .account_recovery_begin(code)
         .await
+        .map(wire)
         .map_err(refused)?;
     let registration = device.create(&begin["options"]);
     client
-        .post(
-            "auth/recovery/start",
-            json!({ "challengeId": begin["challengeId"], "code": code, "registration": registration }),
-        )
+        .auth()
+        .account_recovery_start(begin["challengeId"].as_str().unwrap(), code, registration)
         .await
+        .map(wire)
         .map_err(refused)
 }
 
@@ -78,16 +73,19 @@ async fn start(
 async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled() {
     let c = Cluster::start(3).await;
     let (alice, mut old) = signed_up(&c, 0, "alice").await;
-    let me = alice.me().await.unwrap();
+    let me = alice.auth().me().await.map(wire).unwrap();
     let account = me["accountId"].clone();
     assert_eq!(me["recoveryCode"], json!(false));
     assert_eq!(me["recoveryPending"], Value::Null);
 
     // Making a code is a credential change: 412 first, then the passkey.
-    let e = alice.post("auth/recovery", json!({})).await.unwrap_err();
+    let e = alice.auth().recovery_create(None).await.unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
     let first = make_code(&alice, &mut old).await;
-    assert_eq!(alice.me().await.unwrap()["recoveryCode"], json!(true));
+    assert_eq!(
+        alice.auth().me().await.map(wire).unwrap()["recoveryCode"],
+        json!(true)
+    );
 
     // Someone with the code starts a recovery, signed out, on another node.
     let rescuer = c.client(1);
@@ -107,7 +105,7 @@ async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled
         "no session: {started}"
     );
     // The account sees it; no passkey was added.
-    let me = alice.me().await.unwrap();
+    let me = alice.auth().me().await.map(wire).unwrap();
     assert_eq!(
         me["recoveryPending"]["credentialId"],
         json!(stolen.credential_id()),
@@ -118,39 +116,39 @@ async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled
 
     // Finishing before the delay is refused, named or not.
     let e = rescuer
-        .post_confirmed(
-            "auth/recovery/finish",
-            json!({ "accountId": account }),
-            &mut stolen,
-        )
+        .auth()
+        .account_recovery_finish(Some(account.as_str().unwrap()), Some(&mut stolen))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("RECOVERY_NOT_READY"), "{e}");
     let e = rescuer
-        .post_confirmed("auth/recovery/finish", json!({}), &mut stolen)
+        .auth()
+        .account_recovery_finish(None, Some(&mut stolen))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("RECOVERY_NOT_READY"), "{e}");
 
     // The account's own passkey cancels it (412 first).
     let e = alice
-        .post("auth/recovery/cancel", json!({}))
+        .auth()
+        .account_recovery_cancel(None)
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
     let _ok = alice
-        .post_confirmed("auth/recovery/cancel", json!({}), &mut old)
+        .auth()
+        .account_recovery_cancel(Some(&mut old))
         .await
         .unwrap();
-    assert_eq!(alice.me().await.unwrap()["recoveryPending"], Value::Null);
+    assert_eq!(
+        alice.auth().me().await.map(wire).unwrap()["recoveryPending"],
+        Value::Null
+    );
     // Cancelled for good: even past the delay, nothing finishes.
     advance(&c, RECOVERY_DELAY_SECS);
     let e = rescuer
-        .post_confirmed(
-            "auth/recovery/finish",
-            json!({ "accountId": account }),
-            &mut stolen,
-        )
+        .auth()
+        .account_recovery_finish(Some(account.as_str().unwrap()), Some(&mut stolen))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
@@ -159,7 +157,8 @@ async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled
     for i in 0..3 {
         let e = c
             .client(i)
-            .post("auth/recovery/begin", json!({ "code": first }))
+            .auth()
+            .account_recovery_begin(&first)
             .await
             .unwrap_err();
         assert_eq!(e.code(), Some("UNAUTHENTICATED"), "node {i}: {e}");
@@ -169,12 +168,17 @@ async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled
     // passkey is lost.
     let code = make_code(&alice, &mut old).await;
     let (_key_id, key) = alice
-        .create_api_key(json!({ "label": "ci" }), &mut old)
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), Some(&mut old))
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
     let machine = c.client(1);
     machine.use_api_key(&key).await;
-    assert_eq!(machine.me().await.unwrap()["accountId"], account);
+    assert_eq!(
+        machine.auth().me().await.map(wire).unwrap()["accountId"],
+        account
+    );
     drop(old);
     // The code as written down (lower case, spaces) starts the recovery.
     let typed = code.to_lowercase().replace('-', " ");
@@ -182,11 +186,8 @@ async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled
     let started = start(&rescuer, &typed, &mut laptop).await.unwrap();
     assert_eq!(started["accountId"], account, "{started}");
     let e = rescuer
-        .post_confirmed(
-            "auth/recovery/finish",
-            json!({ "accountId": account }),
-            &mut laptop,
-        )
+        .auth()
+        .account_recovery_finish(Some(account.as_str().unwrap()), Some(&mut laptop))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("RECOVERY_NOT_READY"), "{e}");
@@ -196,17 +197,15 @@ async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled
     let finisher = c.client(2);
     let session: Session = serde_json::from_value(
         finisher
-            .post_confirmed(
-                "auth/recovery/finish",
-                json!({ "accountId": account }),
-                &mut laptop,
-            )
+            .auth()
+            .account_recovery_finish(Some(account.as_str().unwrap()), Some(&mut laptop))
             .await
+            .map(wire)
             .unwrap(),
     )
     .unwrap();
     finisher.use_session(session).await;
-    let me = finisher.me().await.unwrap();
+    let me = finisher.auth().me().await.map(wire).unwrap();
     assert_eq!(me["accountId"], account, "{me}");
     assert_eq!(me["passkeys"].as_array().unwrap().len(), 2, "{me}");
     assert_eq!(me["passkeyId"], json!(laptop.credential_id()), "{me}");
@@ -214,23 +213,20 @@ async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled
     assert_eq!(me["recoveryCode"], json!(false), "spent: {me}");
 
     // Whoever holds the lost device's session is out, refresh token too.
-    let e = alice.me().await.unwrap_err();
+    let e = alice.auth().me().await.unwrap_err();
     assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{e}");
     assert!(alice.refresh().await.is_err());
     // So is whoever holds the account's API keys: the finish revoked them.
-    let e = machine.me().await.unwrap_err();
+    let e = machine.auth().me().await.unwrap_err();
     assert_eq!(e.code(), Some("UNAUTHENTICATED"), "{e}");
-    let keys = finisher.get("auth/apikeys").await.unwrap();
+    let keys = finisher.auth().apikey_list().await.map(wire).unwrap();
     assert_eq!(keys["keys"], json!([]), "{keys}");
 
     // The finish is spent: the same passkey cannot finish again.
     let e = c
         .client(0)
-        .post_confirmed(
-            "auth/recovery/finish",
-            json!({ "accountId": account }),
-            &mut laptop,
-        )
+        .auth()
+        .account_recovery_finish(Some(account.as_str().unwrap()), Some(&mut laptop))
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
@@ -238,15 +234,25 @@ async fn a_recovery_code_brings_back_an_account_after_the_delay_unless_cancelled
     // The new passkey signs in anywhere, and makes the next code.
     let third = c.client(0);
     let _s = third.sign_in(&mut laptop).await.unwrap();
-    assert_eq!(third.me().await.unwrap()["accountId"], account);
+    assert_eq!(
+        third.auth().me().await.map(wire).unwrap()["accountId"],
+        account
+    );
     let _code = make_code(&third, &mut laptop).await;
-    assert_eq!(third.me().await.unwrap()["recoveryCode"], json!(true));
+    assert_eq!(
+        third.auth().me().await.map(wire).unwrap()["recoveryCode"],
+        json!(true)
+    );
     // Removing it is a credential change too.
-    let e = third.delete("auth/recovery").await.unwrap_err();
+    let e = third.auth().recovery_remove(None).await.unwrap_err();
     assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
     let _ok = third
-        .delete_confirmed("auth/recovery", &mut laptop)
+        .auth()
+        .recovery_remove(Some(&mut laptop))
         .await
         .unwrap();
-    assert_eq!(third.me().await.unwrap()["recoveryCode"], json!(false));
+    assert_eq!(
+        third.auth().me().await.map(wire).unwrap()["recoveryCode"],
+        json!(false)
+    );
 }
