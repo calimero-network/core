@@ -1,33 +1,47 @@
 ---
 title: Build Calimero Apps
-description: Write a Calimero application — a sandboxed WASM module that is a shared, replicated state machine.
+description: Write a Calimero application — a calimero:app WebAssembly component that is a shared, replicated state machine.
 sidebar:
   label: Overview
   order: 1
 ---
 
 import { CardGrid, LinkCard, Steps, Aside } from '@astrojs/starlight/components';
+import BuildAppPipeline from '../../../components/diagrams/BuildAppPipeline.astro';
 
-A Calimero **application** is a sandboxed WASM module that defines a shared,
-replicated state machine — its data types and the methods that mutate them. You
-write it in Rust against the SDK; the cluster runs each call once on the app's
-leader and replicates what it wrote.
+A Calimero **application** is a sandboxed WebAssembly component that defines a
+shared, replicated state machine — its data types and the methods that mutate
+them. You write it in Rust against `calimero-sdk`, build it with
+`mero-app-build` into a component of the `calimero:app` world, and ship it as a
+signed `.mpk` package. Each instance of it (a *context*) lives in an
+organization and has its own Raft log: the cluster runs each call once on the
+instance's leader, on wasmtime, and replicates what it wrote.
+
+<BuildAppPipeline />
+
+<Aside type="note">
+  This is the only app runtime. SDK 0.12 apps (WASM core modules on wasmer)
+  are gone: a node refuses their bundles (`400 UNSUPPORTED_BUNDLE`) and answers
+  `410 UNSUPPORTED_ENGINE` for one left from before. Rebuild them on
+  `calimero-sdk`.
+</Aside>
 
 ## Start here
 
 <Steps>
 
-1. **[Quickstart](/build/quickstart/)** — install a node, install an app, call a method (15 min).
-2. **[Build your first app](/build/tutorial/)** — scaffold → state → methods → build → run, end to end.
-3. **Pick a [how-to guide](/build/guides/)** for the task in front of you.
-4. Keep the **Reference** open as you go.
+1. **[Quickstart](/build/quickstart/)** — build an example app, run a local cluster, call a method, pack a release.
+2. **[Build your first app](/build/tutorial/)** — scaffold → state → methods → test → build → run → share, end to end.
+3. **[Ship the next release](/build/ship-v2/)** — change the state, test it against what you shipped, upgrade.
+4. **Pick a [how-to guide](/build/guides/)** for the task in front of you.
+5. Keep the **Reference** open as you go.
 
 </Steps>
 
 ## Get started
 
 <CardGrid>
-  <LinkCard title="Quickstart" href="/build/quickstart/" description="Zero to a running app in 15 minutes." />
+  <LinkCard title="Quickstart" href="/build/quickstart/" description="From an example's source to a call on a local cluster." />
   <LinkCard title="Build your first app" href="/build/tutorial/" description="The full guided walkthrough." />
 </CardGrid>
 
@@ -37,6 +51,7 @@ leader and replicates what it wrote.
   <LinkCard title="All guides" href="/build/guides/" description="Task-focused recipes." />
   <LinkCard title="Example apps" href="/build/examples/" description="Annotated walkthroughs of real apps." />
   <LinkCard title="Testing your app" href="/build/testing/" description="TestApp on the real engine, and shared JSON scenarios." />
+  <LinkCard title="Packaging & signing" href="/build/packaging-signing/" description="From a component to a signed .mpk a cluster installs." />
 </CardGrid>
 
 ## Reference
@@ -44,8 +59,9 @@ leader and replicates what it wrote.
 <CardGrid>
   <LinkCard title="SDK macros" href="/build/sdk-macros/" description="The app macros, with examples." />
   <LinkCard title="Tables & Collections" href="/build/collections/" description="Tables, collections, pages, costs and limits." />
-  <LinkCard title="The env API" href="/build/host-functions/" description="The caller, the org, time, ids, events, cross-app calls." />
+  <LinkCard title="The env API" href="/build/host-functions/" description="The caller, the org, time, ids, events, cross-app calls, and the WIT imports underneath." />
   <LinkCard title="App interface (ABI)" href="/build/app-abi/" description="What the component declares and the node enforces." />
+  <LinkCard title="Error handling" href="/build/error-handling/" description="App errors, SDK errors, traps, and what a client receives." />
 </CardGrid>
 
 ## Deep dives

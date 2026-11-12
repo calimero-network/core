@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
 
 **Task:** call a service outside the cluster (a captcha check, a payment
 API, a model, any HTTPS API) and write what it answers into state.
@@ -21,7 +22,7 @@ turned them on, for its hosts or for any host an app declares.
 | --- | --- |
 | `[outbound] enabled = true`, and the request's host is in `hosts` (or `hosts` holds `"*"`: any host an installed app declares) | The cluster's operator |
 | The request's URL is under a prefix in the app's signed release manifest (`outbound`): the same host, and the prefix's path or one below it at a `/`, with any query string | The app's publisher |
-| A prefix covering the URL is approved for the app's publisher | The organization's owner (the account itself, for its personal organization); the operator where the cluster was deployed with `--outbound-approvals operator` |
+| A prefix covering the URL is approved for the app's publisher | Whoever holds `MANAGE_APPLICATION` org-wide in the app's organization (its owner and admins; a member granted it), its personal organization included; the operator where the cluster was deployed with `--outbound-approvals operator` |
 | The run is a call that writes: not a view, an `init`, a migration, or a call by a read-only member | The node |
 | One request per run; `GET`, `POST`, `PUT`, `PATCH` or `DELETE`; `https` on port 443 to a DNS name that resolves only to public addresses; no fragment; no redirect followed; no proxy | The node |
 | Request body ≤ 64 KiB, URL ≤ 2 KiB, ≤ 8 headers of ≤ 1 KiB, response body ≤ 1 MiB (a longer one is refused, not cut), 10 s for the whole request | The node (`calimero_primitives::outbound`) |
@@ -53,17 +54,26 @@ secret into state, where it would replicate to every member.
 
 <Steps>
 
-1. Declare the URL prefixes in `Cargo.toml`. They are signed into the
-   release's manifest and shown to whoever approves them, so declare the
-   narrowest that works:
+1. Declare the URL prefixes in the release's `manifest.json`, under
+   `outbound` (`calimero_bundle::BundleManifest::outbound`). They are signed
+   with the rest of the manifest and shown to whoever approves them, so
+   declare the narrowest that works. Each is `https://` with a host and no
+   credentials, query or fragment; the node refuses a bundle with any other:
 
-   ```toml
-   [package.metadata.calimero]
-   outbound = [
+   ```json
+   "outbound": [
      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-     "https://api.stripe.com/v1/",   # every path below /v1/
+     "https://api.stripe.com/v1/"
    ]
    ```
+
+   `https://api.stripe.com/v1/` covers every path below `/v1/`.
+
+   <Aside type="caution">
+   Core's `scripts/pack-component.py` has no flag for `outbound`, and nothing
+   in core reads it from `Cargo.toml`. Whatever writes your manifest must add
+   the field before `mero-sign sign`; check the packaging tool you use.
+   </Aside>
 
 2. Make the request from a method that writes, and store the decision:
 
@@ -100,9 +110,10 @@ see its response. Store the decision, not the response.
 
 ## Approving the prefixes
 
-The organization's data is what a call can send, so its owner agrees to the
-hosts too: the operator allowing a host and the publisher declaring it are not
-enough. The owner approves with a passkey step-up over the exact change:
+The organization's data is what a call can send, so the organization agrees to
+the hosts too: the operator allowing a host and the publisher declaring it are
+not enough. Someone holding `MANAGE_APPLICATION` org-wide approves with a
+passkey step-up over the exact change:
 
 ```http
 POST /orgs/{org}/outbound
@@ -116,8 +127,10 @@ asks for nothing.
 - **Per publisher.** The approval is keyed by the package's pinned signer, so
   a release signed by someone else starts with nothing approved.
 - **Per organization.** It holds for every app of the package in the
-  organization; an app its owner made without naming one is in their personal
-  organization, approved the same way.
+  organization. An app created without naming an organization is in its
+  owner's personal organization, approved the same way on
+  `/orgs/{personal org}/outbound` (there are no per-account approvals since
+  1.0.0-rc.20).
 - **Releases only add.** A prefix a later release declares that the owner was
   never shown answers `AwaitingApproval` until approved; the rest keep working.
 - **Revoke by setting the list.** `"replace": true` sets the publisher's list
@@ -129,7 +142,13 @@ asks for nothing.
   The owner's route then answers that the operator holds them.
 
 With `meroctl`: `namespace outbound <org> --package <pkg> [--prefix <p>]… [--replace]`,
-and `account outbound --package <pkg> …` for the account's personal organization.
+and `account outbound --package <pkg> …`, which does the same on the account's
+personal organization. On a development cluster add `--dev-passkey <file>` to
+approve the step-up.
+
+An app's frontend can also ask for the approval on the node's consent page
+(`POST /consent/requests` with `kind: outbound`), where the person approves
+with their passkey.
 
 ## The operator's side
 
@@ -182,7 +201,7 @@ name a package, only its publisher can sign it.
 
 `env::fetch` needs a component: on the host target it answers an error. In
 `TestApp`, `mock_http(..)` answers it in every run, so a test sets the response
-it wants and checks what the app decided ([Testing](/core/build/testing/)).
+it wants and checks what the app decided ([Testing](/build/testing/)).
 
 End to end, use a node built with `--features calimero-node/outbound-testing`:
 the scenario runner's in-process nodes are, and so is
@@ -201,7 +220,7 @@ echo = true          # .test hosts are answered in-process
 
 [outbound.testing.secrets.ECHO_KEY]
 value = "s3cr3t-e2e"
-packages = ["com.calimero.outbound-probe"]
+packages = ["com.example.my-app"]
 signers = ["did:key:z6Mk…"]
 hosts = ["echo.outbound.test"]
 ```
@@ -209,36 +228,55 @@ hosts = ["echo.outbound.test"]
 The echo answers `200` with the request the node sent, as JSON: method, URL,
 path, query, headers, body and the number of secrets filled in. It answers only
 after every gate has passed, and its answer is redacted like any other, so a
-scenario sees exactly what left the node. `apps/outbound-probe` and its
-scenarios (`scenarios/cluster/outbound.json`, and `outbound-off.json` for a
-cluster with outbound off) cover every gate this way:
+scenario sees exactly what left the node. The node's cluster tests use it
+this way: `actions_run_on_the_leader_and_reach_only_declared_approved_hosts`
+(declared and approved prefixes, secrets, redaction) and
+`a_call_checks_a_turnstile_token_through_a_captcha_service` (a call's
+`env::fetch` through `apps/v2-fixtures/captcha`), both in
+`crates/node/tests/component_cluster.rs`:
 
 ```bash
-cargo test -p calimero-node --test scenarios -- outbound-probe
+cargo test -p calimero-node --test component_cluster -- reach_only_declared_approved_hosts
 ```
 
-## From a component app's call
+## Retries and actions
 
-A component app (`calimero:app`, the v2 SDK) sends from a call, a timer or a
-delivered xcall with `env::fetch`, through the same gates. The request goes out
-once, from the leader, and the call's log entry records it and the response,
-so a retry with the same idempotency key replays the answer instead of fetching
-again (what a single-use token like Turnstile's needs):
-
-```rust
-let request = Request::post(
-    "https://challenges.cloudflare.com/turnstile/v0/siteverify",
-    format!("secret={{{{secret:TURNSTILE_SECRET}}}}&response={token}"),
-)
-.header("Content-Type", "application/x-www-form-urlencoded");
-let passed = env::fetch(&request).is_ok_and(|r| r.status == 200 /* and success */);
-```
-
-The node waits at most 1.5 s for the answer; a timeout or a refusal comes back
-as an error the call handles. Example: `apps/v2-fixtures/captcha`
-(`verifyTurnstile`), a captcha service other apps call synchronously
-([Synchronous xcalls](/protocol/xcall/#synchronous-xcalls)). Protocol detail:
+`env::fetch` works from a call, a timer or a delivered xcall. The request goes
+out once, from the leader, and the call's log entry records it with the
+response, so a retry with the same idempotency key replays the answer instead
+of fetching again (what a single-use token like Turnstile's needs). A timeout
+or a refusal comes back as an error the call handles. Example:
+`apps/v2-fixtures/captcha` (`verifyTurnstile`), a captcha service other apps
+call synchronously ([Synchronous xcalls](/protocol/xcall/#synchronous-xcalls)).
+Protocol detail:
 [Outbound HTTP from component calls](/protocol/execution/#outbound-http-from-component-calls).
+
+For work that needs several requests, or a request that should not hold up the
+call, an `#[app::action]` runs outside the log on the leader: it fetches with
+`ctx.fetch`, reads the app with `ctx.view` and writes through `ctx.call` to an
+`#[app::allow(action)]` method. A call or timer starts one with
+`env::start_action(method, &args)`.
+
+<SeqDiagram id="d-build-outbound-fetch" title="A call that checks a token with an outside service"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'App leader', color: '#58a6ff' },
+    { label: 'Component', color: '#a371f7' },
+    { label: 'Outbound gate', color: '#a5ff11' },
+    { label: 'Service', color: '#39d0d8' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /apps/{app}/intents verifyTurnstile' },
+    { from: 1, to: 2, label: 'handle(call, ...)' },
+    { from: 2, to: 3, label: 'env::fetch(POST .../siteverify)' },
+    { from: 3, to: 3, label: 'enabled? host allowed? prefix declared + approved?' },
+    { from: 3, to: 4, label: 'HTTPS, {{secret:..}} filled in' },
+    { from: 4, to: 3, label: 'response', dashed: true },
+    { from: 3, to: 2, label: 'response, secret redacted', dashed: true },
+    { from: 2, to: 1, label: 'Ok(decision) + writes', dashed: true },
+    { from: 1, to: 1, label: 'one log entry: call, request, response, diff' },
+    { from: 1, to: 0, label: 'result + receipt', dashed: true },
+  ]} />
 
 ## Where it stops
 

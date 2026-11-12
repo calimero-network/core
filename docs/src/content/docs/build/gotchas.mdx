@@ -14,7 +14,7 @@ The short list. Each item links to the page that explains it.
   `{"size": "7"}`, not `{"size": 7}`.
 - The same types nested in another type (`Vec<u64>`, `Option<Vec<i64>>`) do not
   compile: wrap them in a `Record` or send strings
-  ([SDK macros](/core/build/sdk-macros/#applogic)).
+  ([SDK macros](/build/sdk-macros/#applogic)).
 - A `u64` inside your own plain serde struct is invisible to the macro and
   reaches JSON as a number, which JavaScript may round. Use a `Record`, whose
   derive converts it.
@@ -24,33 +24,49 @@ The short list. Each item links to the page that explains it.
 ## State
 
 - Renaming a state field or changing its type orphans its data: an upgrade keeps
-  the state and has no migration step ([Upgrades & state](/core/build/migrations/)).
+  the state and has no migration step ([Upgrades & state](/build/migrations/)).
 - A record must not also derive `Serialize`/`Deserialize`: `#[derive(Record)]`
   writes them.
 - Uniqueness belongs in the key or a `unique(..)` constraint, not in a check
   before an insert.
 - Prefer `env::unique_id()` to a `Counter` for ids.
 - Multi-row reads are pages of at most 1,000; follow `next`
-  ([Tables & Collections](/core/build/collections/)).
+  ([Tables & Collections](/build/collections/)).
 
 ## Access
 
 - A method with no attribute admits any signed-in account the node lets reach
   the app; org membership is the app's to check with `guards`
-  ([Access control](/core/build/guides/access-control/)).
+  ([Access control](/build/guides/access-control/)).
 - Take the caller from `env::caller()` or a guard, never from an argument.
 - `#[app::error]` and `#[app::event]` must be in the `#[app::logic]` module, or
-  the ABI lists none of them.
+  the ABI lists none of them. Every field needs a name: `Invalid(String)` does
+  not compile, `Invalid { reason: String }` does.
+- Every app is in an organization (a personal one when created without one), and
+  a cross-app call reaches only apps in the same organization.
 
 ## Runs
 
 - A call that fails writes nothing and emits nothing; a panic is a trap, not an
-  app error ([Error handling](/core/build/error-handling/)).
+  app error ([Error handling](/build/error-handling/)).
 - `env::xcall` only queues a message: it is delivered after the entry commits,
-  and only if the run succeeds ([Cross-app calls](/core/build/guides/cross-context/)).
+  and only if the run succeeds ([Cross-app calls](/build/guides/cross-context/)).
 - Only views may search; a call that searches traps
-  ([Search](/core/build/guides/search/)).
+  ([Search](/build/guides/search/)).
 - `env::fetch`, actions and cross-app calls answer an error on the host target;
-  test them with `TestApp` ([Testing](/core/build/testing/)).
+  test them with `TestApp` ([Testing](/build/testing/)).
 - A **read-only** team member reaches an app's views only: a call to any other
   method is refused with `403` before it runs.
+- `files::open` works only inside an `#[app::compute]` run; a call or view gets
+  a file's size and hash from `BlobRef::info` ([Files and blobs](/build/guides/blobs/)).
+
+## Build and ship
+
+- An SDK 0.12 app (a WASM core module, `wasm32-unknown-unknown`) is refused at
+  upload and install (`400 UNSUPPORTED_BUNDLE`); one left over from before
+  answers `410 UNSUPPORTED_ENGINE`. Rebuild on `calimero-sdk` for
+  `wasm32-wasip2` with `mero-app-build`.
+- Sign every release of a package with the same key: another key is another
+  application, not an upgrade ([Packaging & signing](/build/packaging-signing/)).
+- Bump `#[app::state(version = N)]` with every state change; `mero-sign sign
+  --previous` refuses a removed or retyped state field without it.

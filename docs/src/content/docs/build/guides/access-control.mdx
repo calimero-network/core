@@ -88,7 +88,7 @@ pub fn set_user_nested(&mut self, key: String, value: String) -> app::Result<()>
 ## Test it
 
 The SDK's harness runs the real component with an org of your choosing, so a
-refusal is a test away ([Testing](/core/build/testing/)):
+refusal is a test away ([Testing](/build/testing/)):
 
 ```rust
 let mut t = TestApp::new(component, Org::new().admins(["ada"]).members(["bob"]).guests(["eve"]), T0);

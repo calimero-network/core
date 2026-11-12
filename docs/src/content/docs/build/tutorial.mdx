@@ -1,58 +1,87 @@
 ---
 title: Build your first app
-description: A guided path from an empty crate to a running Calimero app you can call from the CLI.
+description: A guided path from an empty crate to a running Calimero app - state, methods, events and errors, tests on the real engine, a component, a context on a local cluster, and a second person using it.
 sidebar:
   order: 2.5
 ---
 
-import { Steps, Aside, Tabs, TabItem, LinkCard } from '@astrojs/starlight/components';
+import { Steps, Aside, LinkCard } from '@astrojs/starlight/components';
 import SeqDiagram from '../../../components/SeqDiagram.astro';
+import BuildAppPipeline from '../../../components/diagrams/BuildAppPipeline.astro';
 
 This tutorial walks one path from nothing to a running key-value app on the
 component SDK (`calimero-sdk`): you write a small Rust crate, test it on the
-real engine, build it into a `calimero:app` component, create a context from it,
-and call its methods, checking the output at each step.
+real engine, build it into a `calimero:app` component, create a context (an app
+instance) from it on a local cluster, call its methods, and share it with a
+second person, checking the output at each step.
 
-The worked example is the in-repo [`apps/kv-store`](/build/examples/#kv-store)
-app, trimmed to the parts you need the first time through.
+The app is a smaller cousin of core's [`apps/kv-store`](/build/examples/#start-here):
+where that one keeps an `UnorderedMap`, this one keeps a `Table` of records and
+a `Counter`, the two state types most apps start from.
+
+<BuildAppPipeline />
 
 <Aside type="note">
-  The Rust code, the build command and the `meroctl` flags here are taken from
-  `apps/kv-store/`, `crates/app-build` and the CLI definitions
-  (`crates/meroctl/src`). Run `meroctl <command> --help` to confirm them for
-  your build; every command is in the [meroctl reference](/operate/meroctl/).
+  The code on this page is complete: the crate, its test and its scenario
+  build and pass as shown against `calimero-sdk` at 1.0.0-rc.20. The commands
+  are `crates/app-build`, `crates/merod` and the CLI definitions in
+  `crates/meroctl/src`; every command is in the
+  [meroctl reference](/operate/meroctl/).
 </Aside>
 
 ## 1. Prerequisites
 
 <Steps>
 
-1. **Rust with the `wasm32-wasip2` target:**
+1. **Rust with the `wasm32-wasip2` target**, and a checkout of
+   [core](https://github.com/calimero-network/core) for the node and the
+   tools:
 
    ```sh
    rustup target add wasm32-wasip2
+   git clone https://github.com/calimero-network/core && cd core
+   scripts/install-mero-app-build.sh              # puts mero-app-build on PATH
+   cargo install --locked --path crates/meroctl
    ```
 
-2. **A development cluster.** `merod local` runs three nodes in one process,
-   with mock attestation; save its first node in `meroctl` and sign in with a
-   passkey kept in a file (development clusters only):
+2. **A development cluster.** `merod local` runs three nodes in one process
+   on `127.0.0.1:2501`-`2503`, with mock attestation. Leave it running in its
+   own terminal:
 
    ```sh
-   merod local
-   # in another terminal
+   cargo run -p merod -- local
+   ```
+
+3. **Sign in.** Save its first node in `meroctl` and sign up with a passkey
+   kept in a file (development clusters only):
+
+   ```sh
    meroctl node add local http://127.0.0.1:2501/ --allow-mock
    meroctl login --dev-passkey ./dev-passkey.json --name alice
    ```
 
-   `login` signs up when the file does not exist yet, and saves the session.
-   See [Run local nodes](/contribute/development/#run-local-nodes).
+   `login` signs up when the file does not exist yet and saves the session.
+   The sign-up also makes alice's personal organization, where her contexts
+   go unless she names another. See
+   [Run local nodes](/contribute/development/#run-local-nodes).
 
 </Steps>
 
 ## 2. Create the project
 
-A component app is a standalone `cdylib` crate that depends on the SDK and
-nothing else from Calimero:
+An app is a standalone `cdylib` crate that depends on the SDK and nothing else
+from Calimero. `calimero-sdk` is not on crates.io: take it from core's git
+repository at the release your cluster runs.
+
+```text
+kv-store/
+├── Cargo.toml
+├── src/lib.rs
+├── tests/app.rs
+└── scenarios/basic.json
+```
+
+`Cargo.toml`:
 
 ```toml
 [package]
@@ -64,32 +93,34 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>" }
+calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.20" }
 
 # The test harness (TestApp) and the builder, for `cargo test` on the host.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>", features = ["testing"] }
-calimero-app-build = { git = "https://github.com/calimero-network/core", tag = "<sdk-tag>" }
+calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.20", features = ["testing"] }
+calimero-app-build = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.20" }
 serde_json = "1"
 
 # Its own workspace root.
 [workspace]
 ```
 
-Every module starts from one import:
-
-```rust
-use calimero_sdk::prelude::*;
-```
-
 ## 3. Define the state
 
-State is a struct of handles annotated with `#[app::state]`; loading it reads
-nothing, and each field names its own keys in the app's storage. Records live in
-a `Table`, declared with `#[derive(Record)]` and a `#[table]` attribute naming the
-key (and any indexes, unique constraints and counts):
+State is a struct of handles annotated with `#[app::state]`. Loading it reads
+nothing: each field names its own range of keys in the app's storage, after
+the field's camelCase name. Records live in a `Table`, declared with
+`#[derive(Record)]` and a `#[table]` attribute naming the key (and any indexes,
+unique constraints and counts, see [Tables & Collections](/build/collections/)).
+
+Start `src/lib.rs`:
 
 ```rust
+//! A string key-value store shared by the members of the app's organization.
+
+use calimero_sdk::prelude::*;
+
+/// One stored value, keyed by `key`.
 #[derive(Record)]
 #[table(key = "key")]
 pub struct Entry {
@@ -97,6 +128,7 @@ pub struct Entry {
     pub value: String,
 }
 
+/// The app's state: a table of entries and how many there are.
 #[app::state(version = 1)]
 pub struct KvStore {
     entries: Table<Entry>,
@@ -104,140 +136,211 @@ pub struct KvStore {
 }
 ```
 
-The app runs on its cluster's leader, which orders every write in the app's log,
-so a later `set` of a key replaces an earlier one; there is nothing to merge.
+The app runs on its cluster's leader, which orders every write in the app's
+log, so a later `set` of a key replaces an earlier one: there is nothing to
+merge. `Counter::add` is an add the host applies without a read, so `size`
+stays exact under any number of writers.
 
 ## 4. Add logic, events and errors
 
-<Steps>
-
-1. Declare the events and errors inside the `#[app::logic]` module, where the
-   ABI picks them up:
-
-   ```rust
-   #[app::event]
-   pub enum Event {
-       Inserted { key: String, value: String },
-       Updated { key: String, value: String },
-   }
-
-   #[app::error]
-   pub enum Error {
-       NotFound { key: String },
-   }
-   ```
-
-2. Add the logic block. Every app has one `#[app::init]`; a `&mut self` method is
-   a call, a `#[app::view]` reads:
-
-   ```rust
-   #[app::logic]
-   impl KvStore {
-       #[app::init]
-       pub fn init() -> app::Result<Self> {
-           Ok(Self::load())
-       }
-
-       pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
-           let event = if self.entries.contains(&key)? {
-               Event::Updated { key: key.clone(), value: value.clone() }
-           } else {
-               self.size.add(1)?;
-               Event::Inserted { key: key.clone(), value: value.clone() }
-           };
-           self.entries.upsert(Entry { key, value })?;
-           env::emit(event, Audience::All)?;
-           Ok(())
-       }
-
-       #[app::view]
-       pub fn get(&self, key: String) -> app::Result<Option<String>> {
-           Ok(self.entries.get(&key)?.map(|e| e.value))
-       }
-
-       #[app::view]
-       pub fn get_result(&self, key: String) -> app::Result<String> {
-           match self.entries.get(&key)? {
-               Some(e) => Ok(e.value),
-               None => Err(Error::NotFound { key }.into()),
-           }
-       }
-   }
-   ```
-
-   A few things to notice:
-
-   - Method and argument names reach the ABI in camelCase: `get_result` is
-     `getResult`.
-   - `env::emit` sends an `#[app::event]` value to an audience (`All`, the caller,
-     an org, a team, named accounts).
-   - An `#[app::error]` variant reaches the client as `422 APP_ERROR` with
-     `{ "code": "NotFound", "fields": { "key": ".." } }`.
-   - `u64` and `i64` arguments and results travel as decimal strings.
-
-</Steps>
-
-## 5. Test it
-
-`calimero_sdk::testing::TestApp` runs the built component on the real engine
-in an org you describe, as named accounts, with the node's own checks:
+Add the logic block, the events and the errors to the same file. Every app has
+one `#[app::init]`; a `&mut self` method is a call (a write the leader logs),
+a `#[app::view]` reads:
 
 ```rust
-use calimero_app_build::build_component;
-use calimero_sdk::testing::{Org, TestApp};
-use serde_json::json;
+#[app::logic]
+impl KvStore {
+    /// Runs once, as the owner, when the app is created.
+    #[app::init]
+    pub fn init() -> app::Result<Self> {
+        Ok(Self::load())
+    }
 
-#[test]
-fn set_then_get() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let target = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guest");
-    let component = build_component(dir, &target).unwrap().component;
-    let mut t = TestApp::new(&component, Org::new().members(["bob"]), 1_700_000_000_000);
+    /// Stores `value` under `key`, replacing any value already there.
+    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+        let event = if self.entries.contains(&key)? {
+            Event::Updated { key: key.clone(), value: value.clone() }
+        } else {
+            self.size.add(1)?;
+            Event::Inserted { key: key.clone(), value: value.clone() }
+        };
+        self.entries.upsert(Entry { key, value })?;
+        env::emit(event, Audience::All)?;
+        Ok(())
+    }
 
-    t.as_("bob").call("set", json!({ "key": "k", "value": "v" })).unwrap();
-    assert_eq!(t.as_("owner").view("get", json!({ "key": "k" })).unwrap(), json!("v"));
-    assert_eq!(t.events_for("owner")[0].0, "Inserted");
+    /// Removes `key`; says whether it was there.
+    pub fn remove(&mut self, key: String) -> app::Result<bool> {
+        if !self.entries.remove(&key)? {
+            return Ok(false);
+        }
+        self.size.add(-1)?;
+        env::emit(Event::Removed { key }, Audience::All)?;
+        Ok(true)
+    }
+
+    /// The value under `key`, or `null`.
+    #[app::view]
+    pub fn get(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.entries.get(&key)?.map(|e| e.value))
+    }
+
+    /// The value under `key`, or the app error `NotFound`.
+    #[app::view]
+    pub fn get_result(&self, key: String) -> app::Result<String> {
+        match self.entries.get(&key)? {
+            Some(e) => Ok(e.value),
+            None => Err(Error::NotFound { key }.into()),
+        }
+    }
+
+    /// How many keys are stored (a `u64`: a decimal string on the wire).
+    #[app::view]
+    pub fn len(&self) -> app::Result<u64> {
+        Ok(self.size.get()?)
+    }
+}
+
+/// A change to the store, emitted after the write that caused it.
+#[app::event]
+pub enum Event {
+    Inserted { key: String, value: String },
+    Updated { key: String, value: String },
+    Removed { key: String },
+}
+
+/// A typed failure: `{ code, fields }` on the wire.
+#[app::error]
+pub enum Error {
+    NotFound { key: String },
 }
 ```
 
-The same steps can live in a scenario file, `scenarios/<name>.json`, which
-`calimero_sdk::testing::run_scenario` runs in the harness and the cluster
-runner runs on real nodes (see [Testing](/build/testing/)):
+A few things to notice:
+
+- Method and argument names reach the ABI in camelCase: `get_result` is
+  `getResult`.
+- `#[app::event]` and `#[app::error]` must be in the same module as
+  `#[app::logic]`, where the ABI picks them up; every field has a name.
+- `env::emit` sends an `#[app::event]` value to an audience (`All`, the caller,
+  named accounts, a team, the organization or its admins). It is delivered only
+  if the call succeeds.
+- An `#[app::error]` variant reaches the client as `422 APP_ERROR` with
+  `{ "code": "NotFound", "fields": { "key": ".." } }`. A failed call writes
+  nothing and emits nothing.
+- `u64` and `i64` arguments and results travel as decimal strings, so `len`
+  answers `"1"`, not `1`.
+- `?` works on every SDK call: storage and table errors convert into
+  `AppError`.
+
+## 5. Test it
+
+`calimero_sdk::testing::TestApp` runs the built component on the real
+wasmtime engine, in an organization you describe, as named accounts, with the
+node's own checks. `tests/app.rs`:
+
+```rust
+#![cfg(not(target_arch = "wasm32"))]
+
+use std::path::{Path, PathBuf};
+
+use calimero_app_build::build_component;
+use calimero_sdk::testing::{run_scenario, Failure, Org, TestApp};
+use serde_json::json;
+
+/// This crate built as a `calimero:app` component.
+fn component() -> Vec<u8> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guest");
+    build_component(dir, &target).expect("build the component").component
+}
+
+#[test]
+fn set_get_remove() {
+    let mut t = TestApp::new(&component(), Org::new().members(["bob"]), 1_700_000_000_000);
+
+    t.as_("bob").call("set", json!({ "key": "k", "value": "v" })).unwrap();
+    assert_eq!(t.as_("owner").view("get", json!({ "key": "k" })).unwrap(), json!("v"));
+    assert_eq!(t.as_("owner").view("len", json!({})).unwrap(), json!("1"));
+    assert_eq!(t.events_for("owner")[0].0, "Inserted");
+
+    match t.as_("owner").view("getResult", json!({ "key": "x" })) {
+        Err(Failure::App { code, fields }) => {
+            assert_eq!(code, "NotFound");
+            assert_eq!(fields, json!({ "key": "x" }));
+        }
+        other => panic!("expected NotFound, got {other:?}"),
+    }
+
+    assert_eq!(t.as_("bob").call("remove", json!({ "key": "k" })).unwrap(), json!(true));
+    assert_eq!(t.as_("owner").view("len", json!({})).unwrap(), json!("0"));
+}
+
+#[test]
+fn scenario() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut t = TestApp::new(&component(), Org::new().members(["bob"]), 1_700_000_000_000);
+    run_scenario(&mut t, &dir.join("scenarios/basic.json")).unwrap();
+}
+```
+
+`TestApp::new` runs `init` as the account `"owner"`; `Org::new().members(..)`
+adds the other accounts the app's organization holds. The same steps can live
+in a scenario file, which `run_scenario` runs here and the node's cluster
+runner can run on real nodes ([Testing](/build/testing/)).
+`scenarios/basic.json`:
 
 ```json
 [
-  { "as": "bob", "op": "call", "method": "set", "args": { "key": "k", "value": "v" } },
+  { "as": "bob", "op": "call", "method": "set", "args": { "key": "k", "value": "v" },
+    "events": { "owner": ["Inserted"] } },
   { "as": "owner", "op": "view", "method": "get", "args": { "key": "k" }, "expect": { "ok": "v" } },
+  { "as": "owner", "op": "view", "method": "len", "args": {}, "expect": { "ok": "1" } },
   { "as": "owner", "op": "view", "method": "getResult", "args": { "key": "x" },
     "expect": { "error": "NotFound", "fields": { "key": "x" } } }
 ]
 ```
 
-Run both with `cargo test`.
+Run both:
+
+```sh
+cargo test
+```
+
+```text
+running 2 tests
+test scenario ... ok
+test set_get_remove ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+The first run builds the component for `wasm32-wasip2` and compiles wasmtime,
+so it takes a while; later runs reuse both.
 
 ## 6. Build and run
 
-Build the component (from a checkout of core, or with the `mero-app-build`
-binary):
+Build the component:
 
 ```sh
-scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
 mero-app-build path/to/kv-store --out kv_store.wasm
 ```
 
-It compiles the crate for `wasm32-wasip2` and lifts the ABI into the
-component's `calimero:abi` section, which the node reads.
+It compiles the crate for `wasm32-wasip2`, wraps it as a `calimero:app`
+component and lifts the ABI into the component's `calimero:abi` section, which
+the node reads to dispatch and gate calls ([App interface](/build/app-abi/)).
 
 <Steps>
 
-1. **Create a context** from it. On a development cluster `--path` uploads a raw
-   `.wasm` (a signed `.mpk` installs a package):
+1. **Create a context** from it. On a development cluster `--path` uploads a
+   raw `.wasm` (a real cluster installs signed `.mpk` packages, see
+   [Packaging & signing](/build/packaging-signing/)); `init` runs as you:
 
    ```sh
    meroctl context create --name my-kv --path kv_store.wasm --alias my-kv
    ```
 
-2. **Call the setter.** A call without `--view` is an intent the leader logs:
+2. **Call the setter.** A call without `--view` is a write the leader logs:
 
    ```sh
    meroctl call -c my-kv set --args '{"key": "hello", "value": "world"}'
@@ -249,34 +352,49 @@ component's `calimero:abi` section, which the node reads.
    meroctl call -c my-kv get --args '{"key": "hello"}' --view
    ```
 
-   The answer carries `"world"` and a receipt signed by the answering node.
+   ```json
+   { "index": <n>, "result": "world", "receipt": { … } }
+   ```
+
+   `index` is the log index of the state the view read; the receipt is signed
+   by the node that answered.
+
+4. **Follow its events** (stop with Ctrl-C, or `--limit N`):
+
+   ```sh
+   meroctl context watch my-kv --from 0
+   ```
 
 </Steps>
 
 <SeqDiagram id="d-build-tutorial-exec" title="One call, end to end"
   lanes={[
-    { label: 'Caller', color: '#3fb950' },
-    { label: 'Leader', color: '#58a6ff' },
+    { label: 'meroctl', color: '#3fb950' },
+    { label: 'Any node', color: '#f0883e' },
+    { label: 'App leader', color: '#58a6ff' },
     { label: 'Component', color: '#a371f7' },
-    { label: 'Raft log', color: '#39d0d8' },
+    { label: 'Followers', color: '#39d0d8' },
   ]}
   steps={[
-    { from: 0, to: 1, label: 'POST /apps/{app}/intents set' },
-    { from: 1, to: 2, label: 'handle("set", args)' },
-    { from: 2, to: 2, label: 'writes + Inserted event' },
-    { from: 2, to: 1, label: 'diff', dashed: true },
-    { from: 1, to: 3, label: 'append entry, replicate' },
-    { from: 1, to: 0, label: 'result + receipt', dashed: true },
+    { from: 0, to: 1, label: 'verify attestation, sealed POST /apps/{app}/intents' },
+    { from: 1, to: 1, label: 'session → account; may it reach the app?' },
+    { from: 1, to: 2, label: 'forward the call' },
+    { from: 2, to: 3, label: 'handle(call, "set", {"key":..,"value":..})' },
+    { from: 3, to: 2, label: 'Ok: writes + Inserted event', dashed: true },
+    { from: 2, to: 4, label: 'append one entry, replicate (diff, not re-run)' },
+    { from: 2, to: 1, label: 'committed at index n', dashed: true },
+    { from: 1, to: 0, label: 'result, index, events + receipt', dashed: true },
   ]} />
 
 ## 7. Make it multi-user
 
-A context belongs to an organization, and everyone in it reaches the context.
-Create one, create the context in it, and invite a second person:
+A context belongs to an organization, and the organization decides who reaches
+it. Create one, create the context in it, and invite a second person:
 
 <Steps>
 
-1. **Create an organization** and a context in it:
+1. **Create an organization** and a context in it. `namespace create` answers
+   the new organization's `id`:
 
    ```sh
    meroctl namespace create acme
@@ -287,15 +405,16 @@ Create one, create the context in it, and invite a second person:
    A context created in an organization is reached by every member (access
    `org`, the default there).
 
-2. **Invite** a member. The command prints an invitation token:
+2. **Invite** a member. An invite is approved with your passkey, so pass the
+   file on a development cluster; the answer carries the invitation `token`:
 
    ```sh
-   meroctl namespace invite <org-id> --role member
+   meroctl namespace invite <org-id> --role member --dev-passkey ./dev-passkey.json
    ```
 
 3. **Join** as the second person: a second account, with its own passkey file,
-   on the same cluster. Save the node under another `--home` so the two sessions
-   stay apart:
+   on the same cluster. Save the node under another `--home` so the two
+   sessions stay apart:
 
    ```sh
    meroctl --home ./bob node add local http://127.0.0.1:2501/ --allow-mock
@@ -303,7 +422,8 @@ Create one, create the context in it, and invite a second person:
    meroctl --home ./bob namespace join <token>
    ```
 
-4. **Write as one, read as the other**:
+4. **Write as one, read as the other**. Aliases are per account, so bob names
+   the context by its id (`meroctl context get team-kv` shows it):
 
    ```sh
    meroctl --home ./bob call -c <context-id> set --args '{"key": "from", "value": "bob"}'
@@ -311,21 +431,31 @@ Create one, create the context in it, and invite a second person:
    ```
 
    ```json
-   { "index": 2, "result": "bob", "receipt": { … } }
+   { "index": <n>, "result": "bob", "receipt": { … } }
    ```
 
 </Steps>
 
-Both people wrote and read the same state, each with their own passkey, through
-any node of the cluster. The organization decides who reaches the context;
-what each member may change inside it is the app's own code and its
+Both people wrote and read the same state, each with their own passkey,
+through any node of the cluster. The organization decides who reaches the
+context; what each member may change inside it is the app's own code and its
 [access control](/build/guides/access-control/). See
 [Organizations, teams & access](/protocol/organizations/).
 
 ## 8. Next steps
 
-You have the full loop: write, build, install, create, call. From here:
+You have the full loop: write, test, build, create, call, share. From here:
 
+<LinkCard
+  title="Packaging & signing"
+  href="/build/packaging-signing/"
+  description="Turn the component into a signed .mpk a real cluster installs."
+/>
+<LinkCard
+  title="Ship your app's next release"
+  href="/build/ship-v2/"
+  description="Change the state, test against the shipped release, upgrade instances."
+/>
 <LinkCard
   title="Tables & Collections"
   href="/build/collections/"
@@ -337,17 +467,7 @@ You have the full loop: write, build, install, create, call. From here:
   description="The app attributes: state, logic, methods, errors, events and records."
 />
 <LinkCard
-  title="Example apps"
-  href="/build/examples/"
-  description="A tour of the in-repo apps under apps/ — including the complete kv-store this tutorial trims down."
-/>
-<LinkCard
   title="How-to guides"
   href="/build/guides/"
   description="Task-focused recipes: events, blobs, access control, cross-context calls, and more."
-/>
-<LinkCard
-  title="Quickstart"
-  href="/build/quickstart/"
-  description="The condensed version of this path."
 />

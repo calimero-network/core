@@ -1,35 +1,41 @@
 ---
 title: Quickstart
-description: Build a Calimero app into a calimero:app component, create it on a local cluster, and call a method.
+description: Build the kv-store example into a calimero:app component, create it on a local development cluster, call it, and pack it as a signed release.
 sidebar:
   order: 2
 ---
 
 import { Steps, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import BuildAppPipeline from '../../../components/diagrams/BuildAppPipeline.astro';
 
-This walks from an app's crate to a method call on a local cluster. An app is
-a `calimero:app` component, written with the Rust SDK (`calimero-sdk`) and
-built with `calimero-app-build`; the [tutorial](/build/tutorial/) is the long
-form, checking output at every step.
+This takes core's `apps/kv-store` from source to a method call on a local
+cluster, then packs it the way a real cluster installs it. Everything runs from
+a checkout of [core](https://github.com/calimero-network/core); the
+[tutorial](/build/tutorial/) writes an app of your own and explains each step.
+
+<BuildAppPipeline />
 
 <Aside type="note">
-  The commands are taken from `apps/kv-store/`, `crates/app-build` and the CLI
-  definitions (`crates/meroctl/src`). Run `meroctl <command> --help` to confirm
-  them for your build; every command is in the
-  [meroctl reference](/operate/meroctl/).
+  The commands are `apps/kv-store/`, `crates/app-build` (`mero-app-build`),
+  `crates/merod` and the CLI definitions in `crates/meroctl/src`. Run
+  `meroctl <command> --help` to check them against your build; every command is
+  in the [meroctl reference](/operate/meroctl/).
 </Aside>
 
 <Steps>
 
-1. **Rust with the `wasm32-wasip2` target** (core's `rust-toolchain.toml`
-   lists it):
+1. **Install the tools.** Rust with the `wasm32-wasip2` target (core's
+   `rust-toolchain.toml` lists it), `mero-app-build`, and `meroctl`:
 
    ```sh
    rustup target add wasm32-wasip2
+   scripts/install-mero-app-build.sh               # cargo install of crates/app-build
+   cargo install --locked --path crates/meroctl
    ```
 
-2. **Test the app** on the real engine, with no node (`TestApp`, in
-   `calimero-sdk`'s `testing` module):
+2. **Test the app** on the real engine, with no node. The tests build the crate
+   into a component and run it with `TestApp` (`calimero-sdk`'s `testing`
+   feature):
 
    ```sh
    cargo test --manifest-path apps/kv-store/Cargo.toml
@@ -38,20 +44,34 @@ form, checking output at every step.
 3. **Build the component**:
 
    ```sh
-   scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
    mero-app-build apps/kv-store --out kv_store.wasm
    ```
 
-4. **Start a development cluster** and sign in (mock attestation, a passkey in
-   a file):
+   It compiles the crate for `wasm32-wasip2`, makes it a `calimero:app`
+   component and lifts the ABI the macros wrote into its `calimero:abi`
+   section.
+
+4. **Start a development cluster** in another terminal: three nodes in one
+   process on `127.0.0.1:2501`-`2503`, mock attestation, state in
+   `.merod-local/`:
 
    ```sh
    cargo run -p merod -- local
+   ```
+
+5. **Sign in.** Save the node (trusting its mock quote) and sign up with a
+   passkey kept in a file, which only a development cluster accepts:
+
+   ```sh
    meroctl node add local http://127.0.0.1:2501/ --allow-mock
    meroctl login --dev-passkey ./dev-passkey.json --name alice
    ```
 
-5. **Create an instance and call it**:
+   `login` signs up when the file does not exist yet, and signs in with it
+   after. The sign-up also makes your personal organization.
+
+6. **Create an instance and call it.** On a development cluster `--path`
+   uploads a raw component; the instance goes in your personal organization:
 
    ```sh
    meroctl context create --name my-kv --path kv_store.wasm --alias my-kv
@@ -59,20 +79,49 @@ form, checking output at every step.
    meroctl call -c my-kv get --args '{"key": "hello"}' --view
    ```
 
-6. **Package it for a real cluster**: a signed `.mpk`
-   ([Packaging & signing](/build/packaging-signing/)):
+   The view answers the value with the log index it read and a receipt the
+   answering node signed:
+
+   ```json
+   { "index": <n>, "result": "world", "receipt": { … } }
+   ```
+
+   Methods and arguments are the ABI's camelCase names (`getResult`,
+   `updateIfExists`), and a `u64` travels as a decimal string:
+
+   ```sh
+   meroctl call -c my-kv len --view                       # result: "1"
+   meroctl call -c my-kv getResult --args '{"key": "x"}' --view
+   # refused: 422 APP_ERROR, code NotFound, fields { "key": "x" }
+   meroctl context watch my-kv --limit 1                  # the Inserted event
+   ```
+
+7. **Pack it as a signed release.** A real cluster installs `.mpk` packages
+   from its registry, never a raw component. `pack-component.py` writes the
+   manifest, signs it with `mero-sign` (here the development key; see
+   [Packaging & signing](/build/packaging-signing/) for your own) and packs
+   the archive. A development cluster takes it as an upload too:
 
    ```sh
    python3 -I scripts/pack-component.py --wasm kv_store.wasm --package com.example.kv \
      --app-version 0.1.0 --out dist/com.example.kv-0.1.0.mpk
+   meroctl app install --path dist/com.example.kv-0.1.0.mpk
+   meroctl context create --name kv-pkg --package com.example.kv --alias kv-pkg
    ```
 
 </Steps>
 
+<Aside type="caution">
+  A file passkey (`--dev-passkey`) and `--allow-mock` are for development
+  clusters only: `meroctl login` refuses a file passkey on a node it does not
+  trust as mock. On a real cluster you sign in with a passkey in the console
+  and give `meroctl` an API key (`--api-key`).
+</Aside>
+
 ## Next steps
 
 <CardGrid>
-  <LinkCard title="Build your first app" href="/build/tutorial/" description="The guided long-form walkthrough, checking output at every step." />
-  <LinkCard title="Example apps" href="/build/examples/" description="A tour of the in-repo apps under apps/ and what each teaches." />
+  <LinkCard title="Build your first app" href="/build/tutorial/" description="Write, test, build and run an app of your own, then share it with a second person." />
+  <LinkCard title="Example apps" href="/build/examples/" description="A tour of the apps under apps/ and what each teaches." />
   <LinkCard title="Writing apps for a cluster" href="/cloud/apps/" description="What an app sees once it runs on a cluster." />
 </CardGrid>

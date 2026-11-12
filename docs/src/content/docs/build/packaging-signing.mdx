@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Aside, Steps, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import BuildAppPipeline from '../../../components/diagrams/BuildAppPipeline.astro';
 
 Once your app compiles, it still has to become something a node can install.
 That deliverable is an **`.mpk` bundle**: a single archive carrying your
@@ -17,6 +18,8 @@ writes the manifest, signs it through `mero-sign` and packs the archive. The nod
 side — how a bundle is parsed, verified, and trusted on install — lives in
 [Upgrades & migration](/protocol/upgrades/); this page does not duplicate that
 detail.
+
+<BuildAppPipeline />
 
 ## The workflow
 
@@ -50,7 +53,9 @@ detail.
    ```
 
    The key file is JSON with base64url-encoded `privateKey` and `publicKey` plus
-   the derived `signerId`. **Keep it secret and out of version control** — it is
+   the derived `signerId` (`mero-sign derive-signer-id --key <file>` prints it
+   again). `generate-key` will not overwrite an existing file unless you pass
+   `--force`, which loses the old key for good. **Keep it secret and out of version control** — it is
    your update authority (see below).
 
    <Aside type="caution">
@@ -77,6 +82,24 @@ detail.
      --app-version 1.0.0 --key my-signing-key.json --out dist/com.example.my-app-1.0.0.mpk
    # omit --key to sign with the development key
    ```
+
+   The script runs from a checkout of core: it signs through `cargo run -p
+   mero-sign` unless `--mero-sign` (or `MERO_SIGN`) names a `mero-sign`
+   binary. `--min-runtime-version` (default `0.1.0`) is the oldest `merod`
+   release the app needs; a cluster with an older replica refuses the upgrade
+   (`409 RUNTIME_TOO_OLD`). For every release after the first, pass
+   `--previous <last .mpk>`: `mero-sign` then compares the two ABIs, warns about
+   changes that break callers, and refuses a state change made without a state
+   version bump ([App interface](/build/app-abi/#check-a-new-version-against-the-last)).
+
+   <Aside type="caution">
+   The manifest has fields the script does not write: `outbound` (the URL
+   prefixes a run may call, [Call an external service](/build/guides/outbound/)),
+   `upgrades` (`owner`, the default, or `publisher`), `frontend`, `links` and
+   multi-service `services` (`calimero_bundle::BundleManifest`). A release that
+   needs them is packed by a tool that writes them before `mero-sign sign
+   manifest.json --key <file>`; check the one you use.
+   </Aside>
 
    An app with compute methods also builds a compute component
    (`mero-app-build <crate> --out app.wasm --compute-out compute.wasm`). Pass it
@@ -105,15 +128,25 @@ detail.
    this release (`409 CLUSTER_NOT_UPGRADED`). `meroctl app pipelines PACKAGE`
    prints what a version registered.
 
-4. **Install with `meroctl`.**
+4. **Install it.**
+
+   A real cluster installs releases from its operator's registry
+   (`POST /packages/install { package, version }`); publish the `.mpk` there.
+   A development cluster (`merod --dev`, and `merod local`) also takes an
+   upload:
 
    ```bash
-   meroctl --node node1 app install --path dist/com.example.my-app-1.0.0.mpk
+   meroctl app install --path dist/com.example.my-app-1.0.0.mpk
+   meroctl context create --name my-app --package com.example.my-app --alias my-app
    ```
 
-   The node reads `manifest.json` straight out of the archive and verifies the
-   signature before admitting the app. Installing the bundle is what *produces* an
+   Before it logs the install, the node checks the publisher's signature and
+   every artifact's digest, `minRuntimeVersion`, the package's pinned signer
+   (the first release's), and that each component prepares and imports only
+   what the `calimero:app` world offers. Installing is what *produces* an
    application: the manifest's `package` and `signerId` fix the application id.
+   A WASM that a release of another signer's package already ships is refused
+   (`409`).
 
 </Steps>
 
