@@ -1,5 +1,5 @@
 //! The TypeScript client: interfaces for arguments, errors and events, and a class whose
-//! methods call mero-js's `CalimeroClient`.
+//! methods call mero-js's `client.apps.call` and `client.apps.view`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -7,6 +7,24 @@ use std::fmt::Write;
 use crate::abi::{AppAbi, Fields};
 use crate::openapi::{all_events, args_name, error_name, event_name, Names};
 use crate::ty::Type;
+
+/// The names every module declares, kept from app types.
+const OWN_NAMES: &[&str] = &[
+    "AppErrorCode",
+    "AppEvent",
+    "AppTransport",
+    "CallOptions",
+    "ClientOptions",
+    "ViewOptions",
+];
+
+/// Who writes the object a type describes: a caller (arguments) may leave an `option` out,
+/// the app (errors, events) always writes it, `null` for none.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Input,
+    Output,
+}
 
 struct Ts {
     names: Names,
@@ -44,7 +62,14 @@ impl Ts {
         }
     }
 
-    fn interface(&mut self, out: &mut String, doc: &str, name: &str, fields: &[(String, Type)]) {
+    fn interface(
+        &mut self,
+        out: &mut String,
+        doc: &str,
+        name: &str,
+        fields: &[(String, Type)],
+        side: Side,
+    ) {
         let _ = writeln!(out, "/** {doc} */");
         if fields.is_empty() {
             let _ = writeln!(out, "export type {name} = Record<string, never>;\n");
@@ -52,7 +77,12 @@ impl Ts {
         }
         let _ = writeln!(out, "export interface {name} {{");
         for (field, ty) in fields {
-            let opt = if ty.is_optional() { "?" } else { "" };
+            // The SDK decodes a missing `Option` argument as `None`, the same as `null`.
+            let opt = if side == Side::Input && ty.is_optional() {
+                "?"
+            } else {
+                ""
+            };
             let ty = self.ty(ty);
             let _ = writeln!(out, "  {}{opt}: {ty};", property(field));
         }
@@ -83,9 +113,97 @@ fn fields_vec(fields: &Fields) -> Vec<(String, Type)> {
     fields.iter().map(|(k, t)| (k.clone(), t.clone())).collect()
 }
 
+/// The options and the transport: the same in every module.
+const PRELUDE: &str = r"/** Options of a call. */
+export interface CallOptions {
+  /** A retry with the same key runs once; the client makes one when none is given. */
+  idempotencyKey?: string;
+  /**
+   * Answers a `confirm` method's `412 CONFIRM_REQUIRED` step-up (`passkeyConfirm(passkey)`),
+   * before the `confirm` the `CalimeroClient` was built with.
+   */
+  confirm?: ConfirmCallback;
+  signal?: AbortSignal;
+}
+
+/** Options of a view: `stale` reads the answering replica, at least as new as `minIndex`. */
+export interface ViewOptions {
+  consistency?: 'strong' | 'stale';
+  minIndex?: number;
+  signal?: AbortSignal;
+}
+
+/** Options of the client. */
+export interface ClientOptions {
+  /**
+   * Runs after every call and view, answered or refused: the place to store a session the
+   * client refreshed meanwhile (`client.session`), as mero-js has no session-change event.
+   */
+  after?: () => void | Promise<void>;
+}
+
+/**
+ * What the class uses of mero-js's `CalimeroClient` (`client.apps.call`, `client.apps.view`,
+ * `client.events`): a test double implements this alone.
+ */
+export interface AppTransport {
+  apps: {
+    call(
+      args: { app: string; method: string; args?: unknown; idempotencyKey?: string },
+      options?: { confirm?: ConfirmCallback; signal?: AbortSignal },
+    ): Promise<{ result: unknown }>;
+    view(
+      args: { app: string; method: string; args?: unknown; consistency?: 'strong' | 'stale'; minIndex?: number },
+      options?: { signal?: AbortSignal },
+    ): Promise<{ result: unknown }>;
+  };
+  events(app: string, from?: number, signal?: AbortSignal): AsyncIterable<NodeEvent>;
+}
+";
+
+/// The class's fields, constructor and the two private senders every method goes through.
+const CLASS_HEAD: &str = r"  readonly #client: AppTransport;
+  readonly #app: string;
+  readonly #after: ClientOptions['after'];
+
+  constructor(client: AppTransport, app: string, options: ClientOptions = {}) {
+    this.#client = client;
+    this.#app = app;
+    this.#after = options.after;
+  }
+
+  async #call(method: string, args: object, options: CallOptions): Promise<unknown> {
+    const { idempotencyKey, ...rest } = options;
+    const request = { app: this.#app, method, args, ...(idempotencyKey === undefined ? {} : { idempotencyKey }) };
+    try {
+      return (await this.#client.apps.call(request, rest)).result;
+    } finally {
+      await this.#after?.();
+    }
+  }
+
+  async #view(method: string, args: object, options: ViewOptions): Promise<unknown> {
+    const { consistency, minIndex, signal } = options;
+    const request = {
+      app: this.#app,
+      method,
+      args,
+      ...(consistency === undefined ? {} : { consistency }),
+      ...(minIndex === undefined ? {} : { minIndex }),
+    };
+    try {
+      return (await this.#client.apps.view(request, signal === undefined ? {} : { signal })).result;
+    } finally {
+      await this.#after?.();
+    }
+  }
+";
+
 pub(super) fn module(abi: &AppAbi, class: &str) -> String {
+    let mut names = Names::new(abi);
+    names.reserve(OWN_NAMES.iter().copied().chain([class]));
     let mut ts = Ts {
-        names: Names::new(abi),
+        names,
         named: BTreeMap::new(),
     };
     let mut body = String::new();
@@ -99,6 +217,7 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
             &format!("The arguments of `{name}`."),
             &args_name(name),
             &m.params,
+            Side::Input,
         );
     }
     for (code, fields) in &abi.errors {
@@ -107,6 +226,7 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
             &format!("The fields of the app error `{code}`."),
             &error_name(code),
             &fields_vec(fields),
+            Side::Output,
         );
     }
     let codes: Vec<String> = abi.errors.keys().map(|c| string_literal(c)).collect();
@@ -126,6 +246,7 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
             &format!("The fields of the event `{event}`."),
             &event_name(event),
             &fields_vec(fields),
+            Side::Output,
         );
     }
     let variants: Vec<String> = events
@@ -134,7 +255,7 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
         .collect();
     let _ = writeln!(
         body,
-        "/** An event of the app, as a call's answer and the event stream carry it. */\nexport type AppEvent =\n  | {};\n",
+        "/** An event of the app, as a call's answer (`events`) and the event stream carry it. */\nexport type AppEvent =\n  | {};\n",
         if variants.is_empty() {
             "never".to_owned()
         } else {
@@ -142,35 +263,12 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
         }
     );
 
-    let has_events_method = abi.client_methods().any(|(n, _)| n == "events");
+    body.push_str(PRELUDE);
     let _ = writeln!(
         body,
-        "/** Options of a call: a retry with the same key runs once. */"
+        "\n/** The app's methods, over a signed-in `CalimeroClient` (or any {{@link AppTransport}}). */\nexport class {class} {{"
     );
-    let _ = writeln!(
-        body,
-        "export interface CallOptions {{\n  idempotencyKey?: string;\n}}\n"
-    );
-    let _ = writeln!(
-        body,
-        "/** Options of a view: `stale` reads any replica at least as new as `minIndex`. */"
-    );
-    let _ = writeln!(
-        body,
-        "export interface ViewOptions {{\n  stale?: boolean;\n  minIndex?: number;\n}}\n"
-    );
-
-    let _ = writeln!(
-        body,
-        "/** The app's methods, over a signed-in `CalimeroClient`. */"
-    );
-    let _ = writeln!(body, "export class {class} {{");
-    let _ = writeln!(body, "  readonly #client: CalimeroClient;");
-    let _ = writeln!(body, "  readonly #app: string;\n");
-    let _ = writeln!(
-        body,
-        "  constructor(client: CalimeroClient, app: string) {{\n    this.#client = client;\n    this.#app = app;\n  }}"
-    );
+    body.push_str(CLASS_HEAD);
     for (name, m) in abi.client_methods() {
         let ret = ts.ty(&m.returns);
         let method = property(name);
@@ -182,30 +280,22 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
         };
         let mut doc = format!("{} `{name}`", m.kind.name());
         if m.confirm {
-            doc.push_str("; `passkey` approves it (`confirm`)");
+            doc.push_str("; a passkey approves it (`options.confirm`, else the client's own)");
         }
         if m.public {
             doc.push_str("; public");
         }
-        let _ = writeln!(body, "\n  /** {doc}. */");
-        if m.runs_as_view() {
-            let _ = writeln!(
-                body,
-                "  async {method}({args_param}options: ViewOptions = {{}}): Promise<{ret}> {{\n    const {{ result }} = await this.#client.view(this.#app, {lit}, {args_value}, options);\n    return result as {ret};\n  }}"
-            );
-        } else if m.confirm {
-            let _ = writeln!(
-                body,
-                "  async {method}({args_param}passkey: PasskeyProvider, options: CallOptions = {{}}): Promise<{ret}> {{\n    const {{ result }} = await this.#client.callConfirmed(\n      this.#app,\n      {lit},\n      {args_value},\n      passkey,\n      options.idempotencyKey,\n    );\n    return result as {ret};\n  }}"
-            );
+        let (send, options) = if m.runs_as_view() {
+            ("view", "ViewOptions")
         } else {
-            let _ = writeln!(
-                body,
-                "  async {method}({args_param}options: CallOptions = {{}}): Promise<{ret}> {{\n    const {{ result }} = await this.#client.call(this.#app, {lit}, {args_value}, options.idempotencyKey);\n    return result as {ret};\n  }}"
-            );
-        }
+            ("call", "CallOptions")
+        };
+        let _ = writeln!(
+            body,
+            "\n  /** {doc}. */\n  async {method}({args_param}options: {options} = {{}}): Promise<{ret}> {{\n    return (await this.#{send}({lit}, {args_value}, options)) as {ret};\n  }}"
+        );
     }
-    let stream = if has_events_method {
+    let stream = if abi.client_methods().any(|(n, _)| n == "events") {
         "appEvents"
     } else {
         "events"
@@ -219,19 +309,11 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     let _ = writeln!(out, "// {}", super::provenance(abi));
     let _ = writeln!(
         out,
-        "// A thin typed layer over mero-js: each method calls `CalimeroClient.call`, `callConfirmed`\n// or `view`, so it travels the sealed channel with the client's retries.\n"
+        "// A thin typed layer over mero-js: each method sends `client.apps.call` (through the app's\n// log) or `client.apps.view`, so it travels the sealed channel with the client's retries.\n"
     );
-    let confirm = abi
-        .client_methods()
-        .any(|(_, m)| m.confirm && !m.runs_as_view());
-    let imports = if confirm {
-        "CalimeroClient, PasskeyProvider"
-    } else {
-        "CalimeroClient"
-    };
     let _ = writeln!(
         out,
-        "import type {{ {imports} }} from '@calimero-network/mero-js';\n"
+        "import type {{ ConfirmCallback, NodeEvent }} from '@calimero-network/mero-js';\n"
     );
     for (name, text) in &ts.named {
         let _ = writeln!(
@@ -241,4 +323,27 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     }
     out.push_str(&body);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn an_app_type_named_like_the_module_s_own_is_renamed() {
+        let abi = AppAbi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": { "get": { "kind": "view", "params": [], "returns": "CallOptions" } },
+        }))
+        .unwrap();
+        let ts = module(&abi, "AppClient");
+        assert!(
+            ts.contains("export type CallOptionsType = unknown;"),
+            "{ts}"
+        );
+        assert!(ts.contains("Promise<CallOptionsType>"), "{ts}");
+        assert_eq!(ts.matches("export interface CallOptions ").count(), 1);
+    }
 }

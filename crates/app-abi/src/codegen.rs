@@ -1,8 +1,9 @@
 //! Typed clients for an app, from its ABI: a thin layer over the clients that already speak
 //! the sealed channel (mero-js's `CalimeroClient`, calimero-client-py's `Client`, swift-sdk's and
-//! kotlin-sdk's `CalimeroClient` or `ContextContractCalling`), one method per app method calling
-//! theirs. No new runtime: the types
-//! are the ABI's, mapped as [`crate::openapi`] maps them, and the transport is the client's.
+//! kotlin-sdk's `CalimeroClient` or `ContextContractCalling`), one method per app method sending
+//! theirs (mero-js's and calimero-client-py's `client.apps.call`, through the app's log, or
+//! `client.apps.view`). No new runtime: the types are the ABI's, mapped as [`crate::openapi`]
+//! maps them, and the transport is the client's.
 
 use crate::abi::AppAbi;
 use crate::openapi::pascal;

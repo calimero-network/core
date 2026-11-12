@@ -143,6 +143,10 @@ generate theirs, and checked in under `src/generated/` (never edited by hand):
   `Value` keeps a sent `null`), both through `route::present`; an answer that
   is only `null` (`type: null`) is `()`. A struct an answer
   reaches keeps unnamed fields in `extra`, so re-serializing loses nothing; a
+  struct only requests carry whose schema is closed (`additionalProperties:
+  false`, and no answer or `x-calimero-error-details` reaches it) is
+  `#[serde(deny_unknown_fields)]`, so a body read from a caller's JSON
+  (`meroctl ops set-quotas`) refuses a misspelled key as the node would; a
   string enum keeps an unknown value in `Other(String)`. `Assertion`,
   `Registration`, `Session`, `AttestationDoc`, `Governance`, `Receipt` and
   `Release` are the client's own types (`pub use`), so what `attest` checks is

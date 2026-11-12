@@ -14,7 +14,8 @@ the clients already out there.
 Every app embeds its [ABI](/core/build/app-abi/): its methods, their parameters
 and results, its errors and events. `mero-app-build codegen` turns it into an
 OpenAPI 3.1 document and a thin typed client over the client you already use:
-mero-js's `CalimeroClient`, calimero-client-py's `Client`, or the `CalimeroClient`
+mero-js's `CalimeroClient` (its `client.apps.call` and `client.apps.view`),
+calimero-client-py's `Client` (the same, answering JSON), or the `CalimeroClient`
 and `ContextContractCalling` of swift-sdk (MeroKit) and kotlin-sdk (mero-core). They keep doing the
 work (the attested, sealed channel, sessions, passkey step-ups, retries); the
 generated code only adds the method names and types.
@@ -47,8 +48,8 @@ bundle writes one directory per service, each Kotlin client in `<package>.<servi
 ## Use it from TypeScript
 
 ```ts
-import { CalimeroClient } from '@calimero-network/mero-js';
-import { KvStoreClient, type AppEvent } from './generated/client';
+import { CalimeroClient, passkeyConfirm } from '@calimero-network/mero-js';
+import { KvStoreClient } from './generated/client';
 
 const client = /* a signed-in CalimeroClient */;
 const kv = new KvStoreClient(client, appId);
@@ -62,9 +63,48 @@ for await (const event of kv.events()) {
 }
 ```
 
-A call takes `{ idempotencyKey }` as its last argument, a view
-`{ stale, minIndex }`. A `confirm` method takes the passkey that approves it:
-`await rooms.adminRelease({ id, reason }, passkey)`.
+A call takes `{ idempotencyKey, confirm, signal }` as its last argument, a view
+`{ consistency, minIndex, signal }` (`consistency: 'stale'` reads the replica that
+answers). A `confirm` method's `412 CONFIRM_REQUIRED` step-up is answered by the
+call's `confirm`, else by the `confirm` the `CalimeroClient` was built with
+(here `rooms` is `apps/rooms`' generated client):
+
+```ts
+await rooms.adminRelease({ id, reason }, { confirm: passkeyConfirm(passkey) });
+```
+
+An `option<..>` argument may be left out or be `null`: the SDK reads both as
+`None`. In an error's or an event's fields it is always there, `null` for none.
+
+### Keep a refreshed session
+
+mero-js refreshes an expired session on its own, and has no event that says it
+did. A page that stores the session passes `after`, which runs after every call
+and view, refused ones included:
+
+```ts
+const kv = new KvStoreClient(client, appId, {
+  after: () => saveSession(client.session),
+});
+```
+
+### Test without a node
+
+The class takes an `AppTransport`, the part of `CalimeroClient` it uses
+(`apps.call`, `apps.view`, `events`), so a test double implements that alone:
+
+```ts
+const kv = new KvStoreClient(
+  {
+    apps: {
+      call: async () => ({ result: null }),
+      view: async ({ method }) => ({ result: method === 'len' ? '0' : null }),
+    },
+    async *events() {},
+  },
+  'app-1',
+);
+```
 
 ## Use it from Python
 
@@ -75,10 +115,14 @@ from generated.client import KvStoreClient
 kv = KvStoreClient(client, app_id)  # a signed-in calimero Client
 kv.set("greeting", "hello")
 assert kv.get("greeting") == "hello"
+assert kv.len(consistency="stale") == "1"
+rooms.admin_release("b-1", "late", passkey=passkey)  # apps/rooms' confirm method
 ```
 
 Arguments are keyword arguments in snake_case (`room_id=`); errors and events
-are `TypedDict`s (`NotFoundError`, `InsertedEvent`).
+are `TypedDict`s (`NotFoundError`, `InsertedEvent`). A call also takes
+`idempotency_key=`, a `confirm` method `passkey=` (else the client's own), and a
+view `consistency=` and `min_index=`.
 
 ## Use it from Swift
 
