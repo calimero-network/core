@@ -5937,9 +5937,10 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
     assert_eq!(a["package"]["version"], json!("1.0.0"), "{a}");
     assert_eq!(a["availableVersions"], json!(["1.1.0"]), "{a}");
     assert_eq!(a["lastUpgrade"], Value::Null, "{a}");
+    // The account's own apps are those it owns in any organization.
     assert!(
-        !own.to_string().contains(&app),
-        "an organization's app is not the account's own: {own}"
+        own.to_string().contains(&app),
+        "an app the account owns in an organization is its own: {own}"
     );
     // Another account sees none of alice's.
     let theirs = carol
