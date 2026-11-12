@@ -636,12 +636,16 @@ The test opens each directory, sends every read again (the same status, a body
 holding every field of the old one), then writes.
 
 A release's fixture is written once, with that release's binaries, and kept:
-the PR that moves `.github/upgrade-from` to a release adds its fixture too.
+the PR that moves `.github/upgrade-from` to a release adds its fixture too. A
+hard cutover drops the fixtures of the releases before it, since the tree no
+longer reads their data, and the test passes with none until the first release
+after the cutover records one (`fixtures/upgrade/README.md`); 1.0.0-rc.20's
+cutover dropped 1.0.0-rc.15's, and rc.20's own is the next.
 
 ```bash
-scripts/fetch-release.sh 1.0.0-rc.15 target/upgrade-from
+scripts/fetch-release.sh 1.0.0-rc.20 target/upgrade-from
 python3 -I crates/node/tests/fault/upgrade_fixture.py --from-dir target/upgrade-from \
-  --out crates/node/tests/fixtures/upgrade/1.0.0-rc.15
+  --out crates/node/tests/fixtures/upgrade/1.0.0-rc.20
 cargo test -p calimero-node --test upgrade_replay
 ```
 

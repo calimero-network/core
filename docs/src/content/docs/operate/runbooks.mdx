@@ -483,8 +483,10 @@ app's data moves only to nodes on a release approved for it.
 
    Where owners hold them (the default), each organization's owner approves it
    with a passkey (`POST /orgs/{org}/releases`; `meroctl namespace
-   approve-release` on development clusters), and each account for its own
-   apps. Until then, nodes on the new release get none of that owner's data.
+   approve-release` on development clusters). A person's own apps are in their
+   personal organization, which they approve for (`meroctl account
+   approve-release`). Until then, nodes on the new release get none of that
+   owner's data.
 
 2. **Raise the peers' floor** only after every node runs the new release:
    `--peer-min-release` on nodes, `--min-release` on clients.
@@ -509,6 +511,14 @@ app's data moves only to nodes on a release approved for it.
    /ops/placement`), and no node of an older release joins again.
 
 </Steps>
+
+<Aside type="caution" title="Not across a hard cutover">
+  A release the CHANGELOG marks **Hard cutover** cannot read what the releases
+  before it stored, so a cluster is not rolled onto it: mdma refuses the rollout
+  (`release_compat` `CUTOVERS`) and the cluster is recreated on the new release
+  instead, with an empty state. 1.0.0-rc.20 is one: every app is in an
+  organization, and a cluster from an earlier release is recreated.
+</Aside>
 
 <Aside type="caution" title="New nodes, not new images under old nodes">
   A node does not move to a new release in place: the new release's mero-kms
