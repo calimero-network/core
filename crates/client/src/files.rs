@@ -3,13 +3,15 @@
 use std::io::SeekFrom;
 use std::time::Duration;
 
-use calimero_sealed::file::{file_id, SegmentReader};
+use calimero_sealed::file::{file_id, SegmentReader, SEGMENT_BYTES};
 use calimero_sealed::wrap::{export_keypair, unwrap_export, ExportWrap};
 use eyre::WrapErr;
+use reqwest::Method;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use super::{retry_unavailable, route, Client, Error, Result};
+use crate::transport::Request;
 use crate::types::UploadCompleteResponse;
 
 /// The largest file sent as one request, and the part size a session is asked for.
@@ -154,7 +156,13 @@ impl Client {
         let mut reader = SegmentReader::new(&data_key, segments.clone());
         let sha256 = hex32(&export.sha256, "sha256")?;
         for k in 0..segments.len() {
-            let segment = self.apps().exports_segment(app, id, &k.to_string()).await?;
+            let path = format!(
+                "apps/{}/files/{}/segments/{k}",
+                route::segment(app),
+                route::segment(id)
+            );
+            let req = Request::new(Method::GET, path);
+            let segment = route::bytes_up_to(self.transport(), req, SEGMENT_BYTES).await?;
             write_plaintext(out, &reader.push(&segment)?).await?;
         }
         write_plaintext(out, &reader.finish_expecting(export.size, &sha256)?).await?;
@@ -323,7 +331,7 @@ mod tests {
     use axum::response::{IntoResponse, Response};
     use axum::routing::any;
     use axum::{Json, Router};
-    use calimero_sealed::file::{file_id, SegmentWriter, CHUNK_BYTES};
+    use calimero_sealed::file::{file_id, SegmentWriter, CHUNK_BYTES, SEGMENT_BYTES};
     use calimero_sealed::wrap::{wrap_export, ExportWrap};
     use calimero_sealed::{intercept, SealedOptions, SealedTransport as Server};
     use serde_json::{json, Value};
@@ -1030,6 +1038,18 @@ mod tests {
             .await
             .unwrap_err();
         assert!(out.is_empty(), "nothing of a segment that fails its hash");
+    }
+
+    #[tokio::test]
+    async fn a_segment_longer_than_the_bound_is_refused_unread() {
+        let (client, mock, id) = exporting(&data(TWO_SEGMENTS)).await;
+        stored(&mock, |f| f.segments[1] = vec![0; SEGMENT_BYTES + 1]);
+        let mut out = Vec::new();
+        let err = client
+            .export_file_to("app", &id, &mut out)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("longer than"), "{err}");
     }
 
     #[tokio::test]
