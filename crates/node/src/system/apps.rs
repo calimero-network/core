@@ -84,7 +84,7 @@ pub(super) fn authorize(
                     .as_ref()
                     .is_some_and(|t| t.package != r.package || t.version != r.version)
             {
-                return Err("the upgrade is not one its run names");
+                return Err(NOT_IN_RUN);
             }
             Ok(None)
         }
@@ -200,6 +200,7 @@ pub(super) fn authorize(
 /// judged ([`SystemMachine::run_authorized`]).
 #[allow(clippy::too_many_lines, reason = "one arm per command")]
 pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'static str> {
+    let index = m.index;
     let s = &mut m.state;
     match cmd {
         SystemCmd::CreateApp { app } => {
@@ -350,6 +351,18 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
                 );
             }
+            // A run moves each app it names once, along its package and
+            // never back: its consent covers that, not whatever an entry
+            // naming it says.
+            if let (Some(run_id), true) = (&run, s.holds_current_rules(index)) {
+                let r = s
+                    .orgs
+                    .values()
+                    .find_map(|o| o.upgrade_runs.get(run_id))
+                    .ok_or("no such upgrade run")?;
+                let a = s.apps.get(&app_id).ok_or("no such app")?;
+                s.run_may_move(r, a)?;
+            }
             let by = if by_operator {
                 OPERATOR.to_owned()
             } else {
@@ -404,9 +417,28 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         }
         SystemCmd::StartUpgradeRun {
             org,
-            run,
-            consent: _,
+            mut run,
+            consent,
         } => {
+            if s.holds_current_rules(index) {
+                // What the run covers and how far it got are the state's,
+                // not the proposer's: its consent names only the package,
+                // version and scope. Its id names one run in the cluster,
+                // as `UpgradeApp { run }` finds it in any organization.
+                if !s.orgs.contains_key(&org) {
+                    return Err("no such organization");
+                }
+                if s.orgs
+                    .values()
+                    .any(|o| o.upgrade_runs.contains_key(&run.run_id))
+                {
+                    return Err("that run exists");
+                }
+                run.apps = s.upgrade_run_apps(&org, &run, &consent);
+                run.done.clear();
+                run.failed.clear();
+                run.finished = false;
+            }
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;
             if o.upgrade_runs.contains_key(&run.run_id) {
                 return Err("that run exists");
@@ -424,8 +456,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     None => break,
                 }
             }
+            let out = serde_json::to_value(&*run).unwrap_or_default();
             let _prev = o.upgrade_runs.insert(run.run_id.clone(), *run);
-            Ok(Value::Null)
+            Ok(out)
         }
         SystemCmd::FinishUpgradeRun { org, run_id } => {
             let o = s.orgs.get_mut(&org).ok_or("no such organization")?;

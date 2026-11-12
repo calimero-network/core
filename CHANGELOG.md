@@ -129,6 +129,33 @@
   is refreshed on an earlier node until the rollout ends. Stored data and log
   entries are unchanged.
 
+### Fixed
+
+- **Entries apply under this release's rules from a mark on.** Commands carry
+  flags an earlier release left `false` to name its older rule
+  (`owner_in_org`, `owner_in_team`, `apps_need_consent`, `teams_seen`,
+  `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
+  `member_child_teams`, `revoke_api_keys`, `by_release`,
+  `close_drops_below`, `all_apps_rows`, `name_fits`), so a log it wrote replays as it
+  did, and a new entry was judged by whichever rule it named. The first system
+  leader on this release now writes `RequireCurrentRules`
+  (`SystemState::current_rules_from`; the `currentRules` feature, written once
+  the logged cluster version brings it, so every node applies it), and from that entry on every such flag
+  is read as set (`SystemCmd::hold_to_current_rules`). Entries before it apply
+  as they did. The API sets every flag as before, so a node on rc.15 applies
+  the entries this release proposes as this release does.
+- **An organization's upgrade run is derived where it applies.** From the same
+  mark, `StartUpgradeRun` takes its apps from the system state and the method
+  its consent names (the organization's apps of the package in its scope, a
+  publisher's instances its starter may upgrade, or the failed apps of the run
+  a retry repeats; `SystemState::upgrade_run_apps`), starts with nothing done,
+  failed or finished, and its id is unique in the cluster. `UpgradeApp { run }`
+  moves each app the run names once, only while it runs the run's package,
+  and never to an older release (`SystemState::run_may_move`); the API judges
+  the same before anything runs on the app's group and notes a refusal as
+  failed (`NOT_IN_RUN`). **Behaviour change**: a run no longer moves an app
+  from a newer release of the package back to the run's version.
+
 ## [1.0.0-rc.18] - 2026-11-12
 
 ### Added
