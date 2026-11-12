@@ -225,10 +225,10 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      # The pinned toolchain only: this job saves no Rust cache. The x86 release
-      # cache was 3.8 GB of the repo's 10 GB, and next to ci-checks' 3.5 GB it got
-      # the cache PR jobs read evicted within minutes. A cold fat-LTO build still
-      # finishes before E2E, so PRs wait no longer; arm64 never restored one anyway.
+      # Restores the release group, which ci-checks' upgrade path saves on master
+      # (the dependencies built without fat LTO, as a PR builds them here); this
+      # job saves nothing. A push's fat-LTO build recompiles what that profile
+      # changes; arm64 and macOS restore nothing (another key).
       - name: Setup Rust CI
         if: needs.prepare.outputs.build == 'true'
         uses: ./.github/actions/setup-rust-ci

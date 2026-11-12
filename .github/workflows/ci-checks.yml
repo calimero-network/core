@@ -431,13 +431,16 @@ jobs:
           persist-credentials: false
 
       # wasm32-wasip2: this tree's kv and the release's compute fixture. The release
-      # group: the same release build of merod and meroctl as e2e's process suite.
+      # group: the same release build of merod and meroctl (without fat LTO) as
+      # e2e's process suite and a PR's Build Binaries. This job saves it, on master
+      # and the release branch only; it was dropped while the repository's cache
+      # was capped at 10 GB, and every release build was then cold.
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
           targets: wasm32-wasip2
           shared-key: release
-          save-if: false
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity' }}
           sccache: true
 
       # This tree's merod is built optimized without fat LTO (as compute-e2e's is):
