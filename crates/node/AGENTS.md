@@ -1179,6 +1179,34 @@ is its command line.
   registered learners. Tests: `a_cluster_is_founded_again_from_its_backups`,
   `a_cluster_that_lost_its_system_majority_is_founded_again_from_a_survivor`,
   `a_cluster_founded_again_keeps_its_people_and_waits_for_its_apps`.
+- **Recovery disk** (`recovery_disk.rs`, `node/recovery_disk.rs`, `api/backup_keys.rs`;
+  holder side `calimero_client::recovery`): with `--recovery-dir`, every
+  `node::recovery_disk::RECOVERY_EVERY` (5 min) each node writes, for every app it holds
+  (leader or not; `Node::write_recovery`), the app's snapshot as portable rows
+  (`calimero_log::read_snapshot_rows`: hidden rows by the key they hide), the code it runs,
+  and per holder its `system::HolderSlice` (the operator's: the whole `SystemState`), each a
+  `.rbak` file sealed to the holder's X25519 key (HPKE; a fresh data key per file, chunked as
+  files are) and signed by the receipt key, its `purpose=receipts` attestation in the header
+  (`recovery_disk::attestation_nonce`). The holder is whoever upgrades the app
+  (`SystemState::backup_holder`: the operator, else the app's org or owner account; a
+  publisher-upgraded package's too). `SetBackupKey` (`Feature::BackupKeys`;
+  `SystemState::may_set_backup_key`, `backup_keys`): `/ops/backup-key` (operator-signed
+  `operator / __set_backup_key / { publicKey }`), `/orgs/{org}/backup-key` and
+  `/auth/backup-key` (passkey, `org:<org>` / `account:<a>`). A subject unchanged since its
+  last file is not written again; `KEEP` (3) per subject. Operator recovery: `merod
+  --bootstrap --recover-from DIR` forms the system group alone and writes no genesis;
+  `POST /ops/recover` (`Node::recover_system`: the `system` and `code` files' keys, the same
+  checks as `refound`) seeds it; `POST /ops/apps/{app}/restore { recovery }` restores each app
+  (`Group::replace_state_rows` in `Node::seed_with`). An org or account: `POST
+  /recover/holder` from the holder's device (its keys), admitted by the operator's
+  signature over `cluster / __recover_holder / system::import_holder_args`;
+  `SystemCmd::ImportHolder` adds the org, accounts (and `credentials`), apps (each in a new
+  group seeded by the receiving node), bundles, releases and the key, refused where any is
+  here. `GET /ops/recovery-files` lists headers and signatures, never keys. Tests:
+  `tests/recovery_disk.rs`, `recovery_disk::tests`, `backup_keys_are_set_by_whoever_upgrades_the_apps`,
+  `an_organizations_slice_is_imported_once_with_the_operators_signature`,
+  `portable_rows_seed_a_group_under_another_clusters_key` (calimero-log). Sealed files
+  (segments) are not on the disk yet.
 - **Fresh system reads**: `Node::sys_fresh` is a read index (the leader names
   its applied index, `internal/system/index`; this replica waits for it). Org
   and team reads use it, and so does an access check before it refuses.

@@ -103,3 +103,29 @@ def _answer(f):
         return f()
     except HttpError as e:
         return {"error": e.body.get("error") if isinstance(e.body, dict) else e.status}
+
+
+@case
+class BackupKeys(DeepCase):
+    name = "backup-keys"
+    area = "Ops"
+    since = "1.0.0-rc.16"
+    seeds = "an organization's and an account's backup key (what the recovery disk seals their apps' files to)"
+    verifies = ("each key as its holder reads it, or the same refusal where governance gives app upgrades "
+                "to the operator; how many apps each covers")
+
+    def populate(self, w):
+        rae = person(w, "rae")
+        org = new_org(rae, "Backup Org")
+        s = {"org": org, "decisions": {
+            "org key": decision(lambda: rae.raw("post", f"orgs/{org}/backup-key", {"publicKey": "ab" * 32})),
+            "own key": decision(lambda: rae.raw("post", "auth/backup-key", {"publicKey": "cd" * 32})),
+        }}
+        s["org_key"] = scrub(rae.get(f"orgs/{org}/backup-key"))
+        s["own_key"] = scrub(rae.get("auth/backup-key"))
+        return s
+
+    def check(self, w, s):
+        rae = person(w, "rae")
+        subset(scrub(rae.get(f"orgs/{s['org']}/backup-key")), s["org_key"], "the organization's backup key")
+        subset(scrub(rae.get("auth/backup-key")), s["own_key"], "the account's backup key")
