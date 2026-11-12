@@ -40,11 +40,35 @@ import kotlinx.serialization.serializer
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
-/** The app type `Item`: ABI version 1 names it without its fields, so it is its JSON. */
+/** The app type `Adjacent`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
+typealias Adjacent = JsonElement
+
+/** The app type `Either`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
+typealias Either = JsonElement
+
+/** The app type `Id`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
+typealias Id = JsonElement
+
+/** The app type `Item`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
 typealias Item = JsonElement
 
-/** The app type `Page<Item>`: ABI version 1 names it without its fields, so it is its JSON. */
+/** The app type `Marker`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
+typealias Marker = JsonElement
+
+/** The app type `Page<Item>`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
 typealias Page_Item = JsonElement
+
+/** The app type `Point`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
+typealias Point = JsonElement
+
+/** The app type `Status`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
+typealias Status = JsonElement
+
+/** The app type `Tagged`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
+typealias Tagged = JsonElement
+
+/** The app type `Tree`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
+typealias Tree = JsonElement
 
 /**
  * The app's methods.
@@ -223,6 +247,36 @@ class KitchenSinkClient private constructor(
             passkey,
             idempotencyKey,
             String.serializer(),
+        )
+
+    /** view `shapes`. */
+    suspend fun shapes(
+        status: Status,
+        tagged: Tagged,
+        adjacent: Adjacent,
+        either: Either,
+        id: Id,
+        point: Point,
+        marker: Marker,
+        tree: Tree,
+        stale: Boolean = false,
+        minIndex: Long = 0,
+    ): Tree =
+        invokeView(
+            "shapes",
+            buildJsonObject {
+                put("status", encode(serializer<Status>(), status))
+                put("tagged", encode(serializer<Tagged>(), tagged))
+                put("adjacent", encode(serializer<Adjacent>(), adjacent))
+                put("either", encode(serializer<Either>(), either))
+                put("id", encode(serializer<Id>(), id))
+                put("point", encode(serializer<Point>(), point))
+                put("marker", encode(serializer<Marker>(), marker))
+                put("tree", encode(serializer<Tree>(), tree))
+            },
+            stale,
+            minIndex,
+            serializer<Tree>(),
         )
 
     /** call `wipe`; [passkey] approves it (`confirm`). */

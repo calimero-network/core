@@ -664,7 +664,7 @@ public struct {class}: Sendable {{"
     for (name, text) in &sw.named {
         let _ = writeln!(
             out,
-            "    /// The app type `{text}`: ABI version 1 names it without its fields, so it is its JSON.\n    public typealias {name} = JSONValue\n"
+            "    /// The app type `{text}`: this client does not read its shape (the ABI's `types`), so it is its JSON.\n    public typealias {name} = JSONValue\n"
         );
     }
     let _ = writeln!(

@@ -202,10 +202,19 @@ left out (Swift and Kotlin send it as `null`). Errors and events are typed:
 `Refusal` and `Event` in Swift and Kotlin. The full table is in
 [App interface](/core/build/app-abi/#types).
 
+Your own types come from the ABI's `types`: a record is an interface (a
+`TypedDict`), an enum a union of its variants as serde writes them (`'Open'`,
+`{ Closed: { at: string } }`, `{ type: 'published'; at: string }`), and a generic
+type stays generic in TypeScript (`Listing<Slot>`) and is instantiated in Python
+(`Listing_Slot`).
+
 <Aside type="caution">
-  ABI version 1 names your own types (a record, a serde struct or enum) without
-  their fields, so the client types them `unknown` (`Any`, MeroKit's `JSONValue`,
-  kotlinx's `JsonElement`): cast, validate or decode the value where you use it.
+  A type is described when it derives `Record` or `AbiType`
+  ([SDK macros](/core/build/sdk-macros/#deriveabitype)). Any other type, and every
+  type of an app built before the SDK wrote `types`, is `unknown` (`Any`): cast or
+  validate the value where you use it, or rebuild the app. The Swift and Kotlin
+  clients type every app type MeroKit's `JSONValue` / kotlinx's `JsonElement` for
+  now: decode it where you use it.
 </Aside>
 
 ## Use any OpenAPI tool

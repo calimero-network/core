@@ -40,16 +40,16 @@ import kotlinx.serialization.serializer
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
-/** The app type `Evidence`: ABI version 1 names it without its fields, so it is its JSON. */
+/** The app type `Evidence`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
 typealias Evidence = JsonElement
 
-/** The app type `Founding`: ABI version 1 names it without its fields, so it is its JSON. */
+/** The app type `Founding`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
 typealias Founding = JsonElement
 
-/** The app type `MessageView`: ABI version 1 names it without its fields, so it is its JSON. */
+/** The app type `MessageView`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
 typealias MessageView = JsonElement
 
-/** The app type `PageView`: ABI version 1 names it without its fields, so it is its JSON. */
+/** The app type `PageView`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
 typealias PageView = JsonElement
 
 /**

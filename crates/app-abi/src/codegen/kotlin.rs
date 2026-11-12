@@ -595,7 +595,7 @@ pub(super) fn module(abi: &AppAbi, class: &str, package: &str) -> String {
     for (name, text) in &kt.named {
         let _ = writeln!(
             out,
-            "/** The app type `{text}`: ABI version 1 names it without its fields, so it is its JSON. */\ntypealias {name} = JsonElement\n"
+            "/** The app type `{text}`: this client does not read its shape (the ABI's `types`), so it is its JSON. */\ntypealias {name} = JsonElement\n"
         );
     }
     let _ = writeln!(

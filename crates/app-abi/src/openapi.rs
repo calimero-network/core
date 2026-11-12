@@ -17,7 +17,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Map, Value};
 
-use crate::abi::{action_failed_fields, AppAbi, Fields, Method};
+use crate::abi::{
+    action_failed_fields, AppAbi, EnumRepr, Field, Fields, Method, Shape, TypeDef, VariantData,
+};
 use crate::ty::{Int, Type};
 
 /// The document's `info`.
@@ -267,6 +269,7 @@ impl Names {
 struct Ctx {
     names: Names,
     schemas: Map<String, Value>,
+    types: BTreeMap<String, TypeDef>,
 }
 
 fn reference(name: &str) -> Value {
@@ -282,7 +285,77 @@ impl Ctx {
         Self {
             names: Names::new(abi),
             schemas: Map::new(),
+            types: abi.types.clone(),
         }
+    }
+
+    /// The JSON Schema of an app type's shape, as serde writes it.
+    fn shape_schema(&mut self, shape: &Shape) -> Value {
+        match shape {
+            Shape::Record(fields) => self.object(fields, None),
+            Shape::Newtype(t) => self.schema(t),
+            Shape::Tuple(items) => self.schema(&Type::Tuple(items.clone())),
+            Shape::Unit => json!({ "type": "null" }),
+            Shape::Enum { repr, variants } => {
+                let one_of: Vec<Value> = variants
+                    .iter()
+                    .map(|v| {
+                        let name = json!({ "const": v.name });
+                        let data = |ctx: &mut Self| match &v.data {
+                            VariantData::Unit => json!({ "type": "null" }),
+                            VariantData::Newtype(t) => ctx.schema(t),
+                            VariantData::Tuple(ts) => ctx.schema(&Type::Tuple(ts.clone())),
+                            VariantData::Record(fs) => ctx.object(fs, None),
+                        };
+                        match (repr, &v.data) {
+                            (EnumRepr::External, VariantData::Unit) => name,
+                            (EnumRepr::External, _) => json!({
+                                "type": "object",
+                                "properties": { v.name.clone(): data(self) },
+                                "required": [v.name],
+                                "additionalProperties": false,
+                            }),
+                            (EnumRepr::Internal { tag }, VariantData::Record(fs)) => {
+                                self.object(fs, Some((tag, &v.name)))
+                            }
+                            (EnumRepr::Internal { tag }, VariantData::Unit) => {
+                                self.object(&[], Some((tag, &v.name)))
+                            }
+                            (EnumRepr::Internal { tag }, _) => json!({
+                                "allOf": [self.object(&[], Some((tag, &v.name))), data(self)],
+                            }),
+                            (EnumRepr::Adjacent { tag, .. }, VariantData::Unit) => {
+                                self.object(&[], Some((tag, &v.name)))
+                            }
+                            (EnumRepr::Adjacent { tag, content }, _) => json!({
+                                "type": "object",
+                                "properties": { tag.clone(): name, content.clone(): data(self) },
+                                "required": [tag, content],
+                            }),
+                            (EnumRepr::Untagged, _) => data(self),
+                        }
+                    })
+                    .collect();
+                json!({ "oneOf": one_of })
+            }
+        }
+    }
+
+    /// An object of `fields`, with a `tag` property naming the variant when given.
+    fn object(&mut self, fields: &[Field], tag: Option<(&String, &String)>) -> Value {
+        let mut props = Map::new();
+        let mut required = Vec::new();
+        if let Some((tag, name)) = tag {
+            let _ = props.insert(tag.clone(), json!({ "const": name }));
+            required.push(tag.clone());
+        }
+        for f in fields {
+            let _ = props.insert(f.name.clone(), self.schema(&f.ty));
+            if !f.optional {
+                required.push(f.name.clone());
+            }
+        }
+        json!({ "type": "object", "properties": props, "required": required })
     }
 
     /// The JSON Schema of `ty` as it travels in JSON (D20).
@@ -336,11 +409,19 @@ impl Ctx {
             }
             Type::Named(text) => {
                 let (name, new) = self.names.named(text);
-                if new {
+                let described = ty.named_parts().and_then(|(entry, args)| {
+                    let def = self.types.get(&entry)?;
+                    (def.params.len() == args.len()).then(|| def.instantiate(&args))
+                });
+                if let (true, Some(shape)) = (new, described) {
+                    let mut schema = self.shape_schema(&shape);
+                    schema["x-calimero-abi-type"] = Value::String(text.clone());
+                    let _ = self.schemas.insert(name.clone(), schema);
+                } else if new {
                     let _ = self.schemas.insert(
                         name.clone(),
                         json!({
-                            "description": format!("The app type `{text}`. ABI version 1 names a type without describing its shape, so any JSON value is accepted here."),
+                            "description": format!("The app type `{text}`. The ABI names it without describing its shape, so any JSON value is accepted here."),
                             "x-calimero-abi-type": text,
                         }),
                     );

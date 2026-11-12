@@ -18,6 +18,7 @@ extern crate self as calimero_sdk;
 #[doc(hidden)]
 pub mod bindings;
 
+pub mod abi;
 pub mod action;
 pub mod app;
 pub mod blob;
@@ -72,6 +73,7 @@ macro_rules! __calimero_compute_only {
     ($($tokens:tt)*) => {};
 }
 
+pub use abi::AbiType;
 pub use action::{ActionCtx, Request, Response};
 pub use blob::{BlobInfo, BlobRef};
 pub use collections::{
@@ -88,14 +90,15 @@ pub use table::{FindOpts, Page, Record, Table};
 #[cfg(target_arch = "wasm32")]
 pub use store::HostStore;
 
-pub use calimero_sdk_macros::Record;
+pub use calimero_sdk_macros::{AbiType, Record};
 
 /// Everything an app module needs: `use calimero_sdk::prelude::*;`.
 pub mod prelude {
     pub use crate::app::{self, AppEvent, AppState};
     pub use crate::{
-        env, guards, ActionCtx, AppError, Audience, BlobRef, Caller, Cell, ContentHash, Counter,
-        FindOpts, Found, FromKey, FromKeyPart, Frozen, KeyPart, Page, PerUser, Record, RichText,
-        SearchMode, SearchOpts, Set, Span, Table, Text, ToKey, ToKeyPart, UnorderedMap, Vector,
+        env, guards, AbiType, ActionCtx, AppError, Audience, BlobRef, Caller, Cell, ContentHash,
+        Counter, FindOpts, Found, FromKey, FromKeyPart, Frozen, KeyPart, Page, PerUser, Record,
+        RichText, SearchMode, SearchOpts, Set, Span, Table, Text, ToKey, ToKeyPart, UnorderedMap,
+        Vector,
     };
 }

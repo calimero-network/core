@@ -297,6 +297,37 @@
         ],
         "type": "object"
       },
+      "Adjacent": {
+        "oneOf": [
+          {
+            "properties": {
+              "c": {
+                "type": "string"
+              },
+              "t": {
+                "const": "Text"
+              }
+            },
+            "required": [
+              "t",
+              "c"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "t": {
+                "const": "Empty"
+              }
+            },
+            "required": [
+              "t"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-calimero-abi-type": "Adjacent"
+      },
       "ApiError": {
         "properties": {
           "details": {},
@@ -655,6 +686,28 @@
           "pair"
         ],
         "type": "object"
+      },
+      "Either": {
+        "oneOf": [
+          {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer",
+            "x-calimero-type": "u32"
+          },
+          {
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-calimero-abi-type": "Either"
       },
       "EventFrame": {
         "oneOf": [
@@ -1154,6 +1207,10 @@
         ],
         "type": "object"
       },
+      "Id": {
+        "type": "string",
+        "x-calimero-abi-type": "Id"
+      },
       "InvalidError": {
         "properties": {
           "detail": {
@@ -1176,7 +1233,43 @@
         "type": "object"
       },
       "Item": {
-        "description": "The app type `Item`. ABI version 1 names a type without describing its shape, so any JSON value is accepted here.",
+        "properties": {
+          "id": {
+            "description": "A u64 as a decimal string (0..=18446744073709551615).",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "type": "string",
+            "x-calimero-type": "u64"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "tags",
+          "status"
+        ],
+        "type": "object",
         "x-calimero-abi-type": "Item"
       },
       "LookupArgs": {
@@ -1247,6 +1340,10 @@
         ],
         "type": "object"
       },
+      "Marker": {
+        "type": "null",
+        "x-calimero-abi-type": "Marker"
+      },
       "NotFoundError": {
         "properties": {
           "id": {
@@ -1262,8 +1359,47 @@
         "type": "object"
       },
       "Page_Item": {
-        "description": "The app type `Page<Item>`. ABI version 1 names a type without describing its shape, so any JSON value is accepted here.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "type": "array"
+          },
+          "next": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next"
+        ],
+        "type": "object",
         "x-calimero-abi-type": "Page<Item>"
+      },
+      "Point": {
+        "items": false,
+        "maxItems": 2,
+        "minItems": 2,
+        "prefixItems": [
+          {
+            "format": "double",
+            "type": "number"
+          },
+          {
+            "format": "double",
+            "type": "number"
+          }
+        ],
+        "type": "array",
+        "x-calimero-abi-type": "Point"
       },
       "Receipt": {
         "description": "The answering node's signature over the app, the index and the result's hash.",
@@ -1361,6 +1497,198 @@
         ],
         "type": "object"
       },
+      "ShapesArgs": {
+        "description": "The arguments of `shapes`, by name.",
+        "properties": {
+          "adjacent": {
+            "$ref": "#/components/schemas/Adjacent"
+          },
+          "either": {
+            "$ref": "#/components/schemas/Either"
+          },
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "marker": {
+            "$ref": "#/components/schemas/Marker"
+          },
+          "point": {
+            "$ref": "#/components/schemas/Point"
+          },
+          "status": {
+            "$ref": "#/components/schemas/Status"
+          },
+          "tagged": {
+            "$ref": "#/components/schemas/Tagged"
+          },
+          "tree": {
+            "$ref": "#/components/schemas/Tree"
+          }
+        },
+        "required": [
+          "status",
+          "tagged",
+          "adjacent",
+          "either",
+          "id",
+          "point",
+          "marker",
+          "tree"
+        ],
+        "type": "object"
+      },
+      "ShapesRequest": {
+        "properties": {
+          "args": {
+            "$ref": "#/components/schemas/ShapesArgs"
+          },
+          "consistency": {
+            "default": "strong",
+            "description": "`strong` reads the leader's latest state; `stale` any replica at least as new as `minIndex`.",
+            "enum": [
+              "strong",
+              "stale"
+            ],
+            "type": "string"
+          },
+          "minIndex": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "args"
+        ],
+        "type": "object"
+      },
+      "ShapesResponse": {
+        "properties": {
+          "index": {
+            "description": "The log index the answer reflects.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "result": {
+            "$ref": "#/components/schemas/Tree"
+          }
+        },
+        "required": [
+          "index",
+          "result",
+          "receipt"
+        ],
+        "type": "object"
+      },
+      "Status": {
+        "oneOf": [
+          {
+            "const": "Open"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "Closed": {
+                "properties": {
+                  "at": {
+                    "description": "A u64 as a decimal string (0..=18446744073709551615).",
+                    "pattern": "^(0|[1-9][0-9]*)$",
+                    "type": "string",
+                    "x-calimero-type": "u64"
+                  }
+                },
+                "required": [
+                  "at"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "Closed"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "Moved": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "Moved"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "Span": {
+                "items": false,
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer",
+                    "x-calimero-type": "u32"
+                  },
+                  {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer",
+                    "x-calimero-type": "u32"
+                  }
+                ],
+                "type": "array"
+              }
+            },
+            "required": [
+              "Span"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-calimero-abi-type": "Status"
+      },
+      "Tagged": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "draft"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "at": {
+                "description": "A u64 as a decimal string (0..=18446744073709551615).",
+                "pattern": "^(0|[1-9][0-9]*)$",
+                "type": "string",
+                "x-calimero-type": "u64"
+              },
+              "type": {
+                "const": "published"
+              }
+            },
+            "required": [
+              "type",
+              "at"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-calimero-abi-type": "Tagged"
+      },
       "Trap": {
         "properties": {
           "details": {
@@ -1388,6 +1716,28 @@
           "details"
         ],
         "type": "object"
+      },
+      "Tree": {
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/Tree"
+            },
+            "type": "array"
+          },
+          "value": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer",
+            "x-calimero-type": "u32"
+          }
+        },
+        "required": [
+          "value",
+          "children"
+        ],
+        "type": "object",
+        "x-calimero-abi-type": "Tree"
       },
       "UnknownError": {
         "properties": {},
@@ -1997,6 +2347,72 @@
         ],
         "x-calimero-method": {
           "confirm": true,
+          "kind": "view",
+          "public": false
+        }
+      }
+    },
+    "/apps/{app}/methods/shapes": {
+      "post": {
+        "description": "A view: runs as `POST /apps/{app}/views` with `method: \"shapes\"`.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "operationId": "shapes",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/app"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShapesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShapesResponse"
+                }
+              }
+            },
+            "description": "The method ran."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "422": {
+            "$ref": "#/components/responses/AppError"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "summary": "view `shapes`",
+        "tags": [
+          "view"
+        ],
+        "x-calimero-method": {
+          "confirm": false,
           "kind": "view",
           "public": false
         }

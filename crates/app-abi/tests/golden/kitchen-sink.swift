@@ -15,11 +15,35 @@ import MeroKit
 /// its own idempotency key, so `confirm` methods, `appEvents` and an `idempotencyKey` throw
 /// `MeroAppBackendUnsupported`. A refusal throws `AppError`; `Refusal(_:)` types it.
 public struct KitchenSinkClient: Sendable {
-    /// The app type `Item`: ABI version 1 names it without its fields, so it is its JSON.
+    /// The app type `Adjacent`: this client does not read its shape (the ABI's `types`), so it is its JSON.
+    public typealias Adjacent = JSONValue
+
+    /// The app type `Either`: this client does not read its shape (the ABI's `types`), so it is its JSON.
+    public typealias Either = JSONValue
+
+    /// The app type `Id`: this client does not read its shape (the ABI's `types`), so it is its JSON.
+    public typealias Id = JSONValue
+
+    /// The app type `Item`: this client does not read its shape (the ABI's `types`), so it is its JSON.
     public typealias Item = JSONValue
 
-    /// The app type `Page<Item>`: ABI version 1 names it without its fields, so it is its JSON.
+    /// The app type `Marker`: this client does not read its shape (the ABI's `types`), so it is its JSON.
+    public typealias Marker = JSONValue
+
+    /// The app type `Page<Item>`: this client does not read its shape (the ABI's `types`), so it is its JSON.
     public typealias Page_Item = JSONValue
+
+    /// The app type `Point`: this client does not read its shape (the ABI's `types`), so it is its JSON.
+    public typealias Point = JSONValue
+
+    /// The app type `Status`: this client does not read its shape (the ABI's `types`), so it is its JSON.
+    public typealias Status = JSONValue
+
+    /// The app type `Tagged`: this client does not read its shape (the ABI's `types`), so it is its JSON.
+    public typealias Tagged = JSONValue
+
+    /// The app type `Tree`: this client does not read its shape (the ABI's `types`), so it is its JSON.
+    public typealias Tree = JSONValue
 
     private enum Transport: Sendable {
         case client(CalimeroClient, String)
@@ -173,6 +197,32 @@ public struct KitchenSinkClient: Sendable {
     ) async throws -> String {
         let args = Args()
         let result = try await invokeConfirmed("secret", args, passkey: passkey, idempotencyKey: idempotencyKey, as: String.self)
+        return result
+    }
+
+    /// view `shapes`.
+    public func shapes(
+        status: Status,
+        tagged: Tagged,
+        adjacent: Adjacent,
+        either: Either,
+        id: Id,
+        point: Point,
+        marker: Marker,
+        tree: Tree,
+        stale: Bool = false,
+        minIndex: Int = 0
+    ) async throws -> Tree {
+        var args = Args()
+        args.add("status", status)
+        args.add("tagged", tagged)
+        args.add("adjacent", adjacent)
+        args.add("either", either)
+        args.add("id", id)
+        args.add("point", point)
+        args.add("marker", marker)
+        args.add("tree", tree)
+        let result = try await invokeView("shapes", args, stale: stale, minIndex: minIndex, as: Tree.self)
         return result
     }
 

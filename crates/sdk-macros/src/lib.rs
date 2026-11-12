@@ -6,6 +6,7 @@
 use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput, Item, ItemImpl, ItemStruct};
 
+mod abi_type;
 mod logic;
 mod payload;
 mod record;
@@ -60,6 +61,14 @@ pub fn event(_args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn derive_record(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     emit(record::expand(&input))
+}
+
+/// A serde struct's or enum's JSON shape for the ABI's `types`, read from its `#[serde(..)]`
+/// attributes: `#[derive(Serialize, Deserialize, AbiType)]`.
+#[proc_macro_derive(AbiType, attributes(serde))]
+pub fn derive_abi_type(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    emit(abi_type::expand(&input))
 }
 
 macro_rules! method_attribute {

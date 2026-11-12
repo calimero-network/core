@@ -15,10 +15,10 @@ import MeroKit
 /// its own idempotency key, so `confirm` methods, `events` and an `idempotencyKey` throw
 /// `MeroAppBackendUnsupported`. A refusal throws `AppError`; `Refusal(_:)` types it.
 public struct RoomsClient: Sendable {
-    /// The app type `Booking`: ABI version 1 names it without its fields, so it is its JSON.
+    /// The app type `Booking`: this client does not read its shape (the ABI's `types`), so it is its JSON.
     public typealias Booking = JSONValue
 
-    /// The app type `SlotView`: ABI version 1 names it without its fields, so it is its JSON.
+    /// The app type `SlotView`: this client does not read its shape (the ABI's `types`), so it is its JSON.
     public typealias SlotView = JSONValue
 
     private enum Transport: Sendable {

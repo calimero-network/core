@@ -12,7 +12,9 @@
 ## What This Crate Does
 
 - `abi::AppAbi::from_json` reads the `calimero:abi` JSON whole, free-form keys included
-  (`params`, `returns`, `errors`, `events`), or the node's `{ bundle, abi }` answer. The node's
+  (`params`, `returns`, `errors`, `events`, and `types`: each app type's `TypeDef` with its
+  `Shape`, which `AppAbi::shape_of` instantiates for `Page<Item>`; an ABI without it, or an
+  entry that does not read, leaves the type unknown), or the node's `{ bundle, abi }` answer. The node's
   own reader, `calimero_app_host::Abi`, keeps only what it enforces; this one is for clients
   and tools and never decides access.
 - `ty::Type::parse` reads ABI type strings, the SDK's spellings (`option<T>`, `list<T>`,

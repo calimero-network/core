@@ -40,10 +40,10 @@ import kotlinx.serialization.serializer
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
-/** The app type `Booking`: ABI version 1 names it without its fields, so it is its JSON. */
+/** The app type `Booking`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
 typealias Booking = JsonElement
 
-/** The app type `SlotView`: ABI version 1 names it without its fields, so it is its JSON. */
+/** The app type `SlotView`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
 typealias SlotView = JsonElement
 
 /**
