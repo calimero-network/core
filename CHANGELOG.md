@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`mero-app-build` ships with each release, and is easier to run from an app's CI**
+  (`calimero-app-build`). The release attaches `mero-app-build_<target>.tar.gz` for
+  Linux x86_64 and aarch64 and macOS aarch64, in `SHA256SUMS` with build provenance,
+  so an app that only runs `codegen` downloads it instead of `cargo install --git`.
+  `mero-app-build --version` (`-V`) prints the release. `codegen --no-openapi` writes
+  the client alone. The library exports the codegen run
+  (`calimero_app_build::codegen::Codegen`), so repository tooling can call it in
+  process.
+- **Generated TypeScript clients export the app's methods as an interface**
+  (`calimero-app-abi`). `KvStoreClient implements KvStoreApi` (`<Name>Api`), so code
+  can take the methods alone and a test can hand it a double of them instead of an
+  `AppTransport`.
+- **The fleet bump moves the apps repository's client generator with the SDK.**
+  `bump-fleet.sh` sets the `mero-app-build` pin in `scripts/install-mero-app-build.sh`
+  to the release (unless the pin runs ahead) and reruns every package's `codegen`
+  with the release's binary, so the bump pull request carries regenerated clients.
+
+### Changed
+
+- **`codegen` names a client given a bare `abi.json` after its crate.** The ABI
+  carries no app name, and `--abi logic/res/abi.json` named the class after the file
+  (`AbiClient`). A file stem that names no app (`abi`, `app`, `component`, `compute`,
+  `manifest`) now takes the package name of the nearest `Cargo.toml` above the file,
+  and with none `codegen` fails asking for `--name`. `--name`, a service or a
+  bundle's package still win.
+
 ### Fixed
 
 - **Entries apply under this release's rules from a mark on.** Commands carry
