@@ -1231,14 +1231,18 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     assert_eq!(status(&e), 403, "{e}");
 
     // It asks the node; a name the log would refuse never gets a page.
-    let ask = |kind: &str, subject: Value| json!({ "kind": kind, "subject": subject, "returnTo": back });
+    let ask =
+        |kind: &str, subject: Value| json!({ "kind": kind, "subject": subject, "returnTo": back });
     let e = in_app
         .post("consent/requests", ask("createOrg", json!({ "name": " " })))
         .await
         .unwrap_err();
     assert_eq!(status(&e), 400, "{e}");
     let made = in_app
-        .post("consent/requests", ask("createOrg", json!({ "name": "calimero" })))
+        .post(
+            "consent/requests",
+            ask("createOrg", json!({ "name": "calimero" })),
+        )
         .await
         .unwrap();
     let id = made["requestId"].as_str().unwrap().to_owned();
@@ -1252,7 +1256,8 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     assert_eq!(result["status"], "pending");
     assert!(result.get("outcome").is_none(), "{result}");
 
-    let mut alice_page = SoftAuthenticator::with_key(&alice_key, "localhost", &origin(&url));
+    // The same passkey (one signature counter) on the node's origin.
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
     let ((code, done), args) = page.approve(&c, &mut alice_page).await;
     assert_eq!(code, 200, "{done}");
     assert_eq!(
@@ -1303,7 +1308,10 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     let made = in_app
         .post(
             "consent/requests",
-            ask("createInvite", json!({ "org": org, "role": "member", "uses": 2 })),
+            ask(
+                "createInvite",
+                json!({ "org": org, "role": "member", "uses": 2 }),
+            ),
         )
         .await
         .unwrap();
@@ -1345,7 +1353,10 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
         .unwrap_err();
     assert_eq!(status(&e), 404, "{e}");
     let made = bob_in_app
-        .post("consent/requests", ask("acceptInvite", json!({ "token": token })))
+        .post(
+            "consent/requests",
+            ask("acceptInvite", json!({ "token": token })),
+        )
         .await
         .unwrap();
     let id = made["requestId"].as_str().unwrap().to_owned();
@@ -1356,10 +1367,10 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     assert_eq!(model["title"], "Join calimero");
     assert!(!model.to_string().contains(&token), "{model}");
     // Alice's passkey is not Bob's: the page refuses it.
-    let mut wrong = SoftAuthenticator::with_key(&alice_key, "localhost", &origin(&url));
+    let mut wrong = SoftAuthenticator::with_key(&alice_page, "localhost", &origin(&url));
     let ((code, refused), _) = page.approve(&c, &mut wrong).await;
     assert_ne!(code, 200, "{refused}");
-    let mut bob_page = SoftAuthenticator::with_key(&bob_key, "localhost", &origin(&url));
+    let mut bob_page = SoftAuthenticator::with_key(&bob_in_app_key, "localhost", &origin(&url));
     let ((code, done), args) = page.approve(&c, &mut bob_page).await;
     assert_eq!(code, 200, "{done}");
     assert_eq!(args["__method"], "__accept_invite", "{args}");

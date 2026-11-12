@@ -109,9 +109,8 @@ use {
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
     ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
     orgs::{
-        AllAppsBody, CapabilitiesBody, InviteBody, MemberBody, MembersQuery, OrgBody,
-        RenameOrgBody, ScopeAppsBody, TeamBody, TeamIdsBody, TeamMemberBody, TeamRowsBody,
-        TeamUpdateBody,
+        AllAppsBody, CapabilitiesBody, MemberBody, MembersQuery, OrgBody, RenameOrgBody,
+        ScopeAppsBody, TeamBody, TeamIdsBody, TeamMemberBody, TeamRowsBody, TeamUpdateBody,
     },
     packages::{InstallBody, PublisherBody},
     recovery::{RecoveryBegin, RecoveryFinish, RecoveryKeyBody, RecoveryStart, RecoveryStartBody},

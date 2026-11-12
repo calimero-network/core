@@ -1722,8 +1722,7 @@ fn team_names(node: &Node, org: &str, account: Option<&str>, teams: &[String]) -
 
 fn create_org_request(subject: CreateOrgSubject) -> Result<(Action, Value), ApiError> {
     let name = subject.name;
-    crate::system::org_name_fits(&name)
-        .map_err(|why| ApiError::bad_request("BAD_REQUEST", why))?;
+    crate::system::org_name_fits(&name).map_err(|why| ApiError::bad_request("BAD_REQUEST", why))?;
     let model = json!({
         "kind": "createOrg",
         "headline": format!("Create the organization {name}"),
@@ -2533,7 +2532,7 @@ mod tests {
         };
         let withdraw = |subject: Value| match parse(subject).unwrap() {
             CreateBody::Release { subject, .. } => subject.withdraw,
-            CreateBody::Upgrade { .. } | CreateBody::Outbound { .. } => unreachable!(),
+            _ => unreachable!("parsed as a release request"),
         };
         assert!(
             !withdraw(json!({ "version": "1.0.0" })),
