@@ -35,11 +35,12 @@ async fn sign_ins_and_approvals_are_listed_with_their_passkey() {
     let added = me["passkeys"][0]["addedAt"].as_u64().unwrap();
 
     let list = laptop.auth().activity_list(None).await.map(wire).unwrap();
+    // `method` and `subject` are optional strings in the route's answer type,
+    // which reads the node's `null` as their absence: a sign-in has neither.
     assert_eq!(
         entries(&list),
         vec![json!({
             "at": added, "passkey": cred, "kind": "signIn", "app": null, "origin": null,
-            "method": null, "subject": null,
         })],
         "{list}"
     );
