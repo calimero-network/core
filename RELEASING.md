@@ -125,8 +125,8 @@ major, and expect an accidental major to cut the whole fleet off silently.
 
 ### Pre-release lines
 
-Some repositories also publish pre-releases (core's `X.Y.Z-rc.N`, the `rc`
-channel of calimero-client-py). Which branch makes which kind of release, and
+Some repositories also publish pre-releases (core's `X.Y.Z-rc.N`).
+Which branch makes which kind of release, and
 how a pre-release line becomes a final, is in the repository section. Promoting
 a line is a human's decision.
 
