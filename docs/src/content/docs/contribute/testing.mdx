@@ -664,7 +664,7 @@ cargo test -p calimero-node --test upgrade_replay
   38 MB CSV of invented people, a job node killed mid-run, then the shared parts
   downloaded through a grant and compared with `mero-compute`'s output (logs are
   the artifact `compute-e2e-logs` on failure);
-- job `clients against merod` (`clients`): mero-js's `test:cloud-v2` and
+- job `clients against merod` (`clients`): mero-js's `test:cluster` and
   calimero-client-py's cluster tests against this tree's `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
   or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.

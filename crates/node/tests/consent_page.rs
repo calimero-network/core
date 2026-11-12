@@ -7,6 +7,14 @@
 //! Builds the component fixtures `apps/v2-fixtures/kv`, `notes-v1` and `notes-v2`
 //! from this checkout (see `harness/cluster.rs`).
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::api::Pending;
 use serde_json::{json, Value};

@@ -3,6 +3,14 @@
 //! collected when nothing refers to them. A guest reads a sealed file only inside a compute run
 //! (`compute_runs.rs`), so these tests read through the provider such a run uses.
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 mod common;
 use common::UploadBytes as _;
 

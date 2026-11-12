@@ -2593,7 +2593,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Export a sealed file's key",
-        "description": "The owner and the organization's members. `recipient` is an X25519 public key (64 hex characters); the file's data key comes back wrapped to it, with the file's `segments` count and `ephemeral` public key. The node never answers plaintext or a key in the clear. 30 a minute per account.\n\n**Who:** signed in (a session or an API key).",
+        "description": "The owner and the organization's members. `recipient` is an X25519 public key (64 hex characters); the file's data key comes back wrapped to it, with the file's `segments` (each one's hash, hex) and `ephemeral` public key. The node never answers plaintext or a key in the clear. 30 a minute per account.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -2666,9 +2666,7 @@
                     "segments": {
                       "type": "array",
                       "items": {
-                        "type": "integer",
-                        "format": "int64",
-                        "minimum": 0
+                        "type": "string"
                       }
                     },
                     "ephemeral": {
@@ -13513,7 +13511,69 @@
                   "type": "object",
                   "properties": {
                     "status": {
-                      "type": "string"
+                      "type": "object",
+                      "properties": {
+                        "group": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "leader": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "is_leader": {
+                          "type": "boolean"
+                        },
+                        "term": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "last_log": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "applied": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "voters": {
+                          "type": "array",
+                          "items": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          }
+                        },
+                        "learners": {
+                          "type": "array",
+                          "items": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          }
+                        }
+                      },
+                      "required": [
+                        "group",
+                        "leader",
+                        "is_leader",
+                        "term",
+                        "last_log",
+                        "applied",
+                        "voters",
+                        "learners"
+                      ]
                     }
                   },
                   "required": [
@@ -22451,9 +22511,9 @@
       "post": {
         "operationId": "pipelines_validate",
         "tags": [
-          "Sign-up and deployments"
+          "Apps"
         ],
-        "x-calimero-group": "deployments",
+        "x-calimero-group": "apps",
         "summary": "Validate a pipeline",
         "description": "Every problem of `source`; with `package` and `version` (both, a release the caller sees) also against that release's methods, modules and the cluster's pools. Writes nothing.\n\n**Who:** signed in (a session or an API key).",
         "security": [

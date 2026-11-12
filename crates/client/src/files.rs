@@ -6,10 +6,11 @@ use std::time::Duration;
 use calimero_sealed::file::{file_id, SegmentReader};
 use calimero_sealed::wrap::{export_keypair, unwrap_export, ExportWrap};
 use eyre::WrapErr;
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
 
-use super::{answer, path_segment, retry_unavailable, Body, Client, Error, Method, Result};
+use super::{retry_unavailable, route, Client, Error, Result};
+use crate::types::UploadCompleteResponse;
 
 /// The largest file sent as one request, and the part size a session is asked for.
 pub const FILE_PART_BYTES: u64 = 16 * 1024 * 1024;
@@ -38,11 +39,16 @@ fn is_transient(e: &Error) -> bool {
 }
 
 /// The `next` an answer names, which cannot be past the last part.
-fn next_of(v: &Value, parts: u64) -> Result<u64> {
-    v["next"]
-        .as_u64()
-        .filter(|n| *n <= parts)
-        .ok_or_else(|| eyre::eyre!("the node answered a bad next: {v}").into())
+fn next_part(next: u64, parts: u64) -> Result<u64> {
+    if next > parts {
+        return Err(eyre::eyre!("the node answered a bad next: {next} of {parts}").into());
+    }
+    Ok(next)
+}
+
+/// The `next` a refusal's `details` name (`409 PART_OUT_OF_ORDER`).
+fn next_in(details: &Value, parts: u64) -> Option<u64> {
+    details["next"].as_u64().filter(|n| *n <= parts)
 }
 
 /// Part `k` of a file of `size` bytes, read from `file`.
@@ -65,8 +71,7 @@ where
 }
 
 /// A 32-byte value an export answer names in hex.
-fn hex32(v: &Value, what: &str) -> eyre::Result<[u8; 32]> {
-    let text = v.as_str().unwrap_or_default();
+fn hex32(text: &str, what: &str) -> eyre::Result<[u8; 32]> {
     hex::decode(text)
         .ok()
         .and_then(|b| <[u8; 32]>::try_from(b).ok())
@@ -90,45 +95,43 @@ impl Client {
     /// check out.
     pub async fn export_file(&self, app: &str, id: &str) -> Result<Vec<u8>> {
         let (secret, public) = export_keypair();
-        let base = format!("apps/{}/files/{}", path_segment(app), path_segment(id));
-        let body = json!({ "recipient": hex::encode(public) });
-        let export = self.post(&format!("{base}/export"), body).await?;
-        let (size, segments) = (export["size"].as_u64(), export["segments"].as_array());
-        let (Some(size), Some(segments)) = (size, segments) else {
-            return Err(eyre::eyre!("the node answered a bad export: {export}").into());
-        };
-        let segments = segments
+        let export = self
+            .apps()
+            .exports_export(app, id, &hex::encode(public))
+            .await?;
+        let segments = export
+            .segments
             .iter()
             .map(|h| hex32(h, "segment hash"))
             .collect::<eyre::Result<Vec<_>>>()?;
-        let named = hex32(&export["id"], "file id")?;
+        let named = hex32(&export.id, "file id")?;
         if !names_requested_file(id, &named, &segments) {
             return Err(
                 eyre::eyre!("the node answered segments that are not the file {id}").into(),
             );
         }
         let wrap = ExportWrap {
-            app_id: export["app"].as_str().unwrap_or_default(),
+            app_id: &export.app,
             file_id: id,
         };
         let data_key = unwrap_export(
             &secret,
-            &hex32(&export["ephemeral"], "ephemeral key")?,
+            &hex32(&export.ephemeral, "ephemeral key")?,
             &wrap,
-            &hex::decode(export["wrapped"].as_str().unwrap_or_default())
+            &hex::decode(&export.wrapped)
                 .map_err(|_| eyre::eyre!("the node answered a bad wrapped key"))?,
         )?;
         let mut reader = SegmentReader::new(&data_key, segments.clone());
         let mut plaintext = Vec::new();
         for k in 0..segments.len() {
-            let segment = self.get_bytes(&format!("{base}/segments/{k}")).await?;
+            let segment = self.apps().exports_segment(app, id, &k.to_string()).await?;
             plaintext.extend(reader.push(&segment)?);
         }
-        plaintext.extend(reader.finish_expecting(size, &hex32(&export["sha256"], "sha256")?)?);
+        plaintext.extend(reader.finish_expecting(export.size, &hex32(&export.sha256, "sha256")?)?);
         Ok(plaintext)
     }
 
-    /// Upload a sealed file of `size` bytes for component app `app`; answers `{ id, size, sha256, index }`.
+    /// Upload a sealed file of `size` bytes for component app `app`; answers `{ blobId, id, size, sha256, index }`.
     /// Up to [`FILE_PART_BYTES`] it is one request, else a session of parts, each resent after a `503`.
     ///
     /// # Errors
@@ -137,27 +140,25 @@ impl Client {
     where
         R: AsyncRead + AsyncSeek + Unpin + Send,
     {
-        let base = format!("apps/{}/files", path_segment(app));
         if size <= FILE_PART_BYTES {
             let body = read_part(&mut file, 0, FILE_PART_BYTES, size).await?;
-            return self.upload_once(&base, body.to_vec()).await;
+            return self.upload_once(app, body.to_vec()).await;
         }
-        match self.upload_session(&base, &mut file, size).await {
+        let done = match self.upload_session(app, &mut file, size).await {
             Err(e) if e.code() == Some("UPLOAD_UNKNOWN") => {
-                self.upload_session(&base, &mut file, size).await
+                self.upload_session(app, &mut file, size).await
             }
             done => done,
-        }
+        }?;
+        route::value(&done)
     }
 
     /// The single request: the node mints a new key for each, so one that may have reached it is
     /// never sent again; only a failed connect is.
-    async fn upload_once(&self, base: &str, body: Vec<u8>) -> Result<Value> {
+    async fn upload_once(&self, app: &str, body: Vec<u8>) -> Result<Value> {
         let mut failures = 0;
         loop {
-            let sent = self
-                .upload(base, "application/octet-stream", body.clone())
-                .await;
+            let sent = self.apps().files_upload(app, body.clone()).await;
             match sent {
                 Err(Error::Transport(e))
                     if failures < MAX_FAILURES
@@ -169,40 +170,48 @@ impl Client {
                     failures += 1;
                     tokio::time::sleep(backoff(failures)).await;
                 }
-                done => return done,
+                done => return route::value(&done?),
             }
         }
     }
 
-    async fn upload_session<R>(&self, base: &str, file: &mut R, size: u64) -> Result<Value>
+    async fn upload_session<R>(
+        &self,
+        app: &str,
+        file: &mut R,
+        size: u64,
+    ) -> Result<UploadCompleteResponse>
     where
         R: AsyncRead + AsyncSeek + Unpin,
     {
-        let begin_path = format!("{base}/uploads");
-        let begin = retry_unavailable(|| self.post(&begin_path, json!({ "size": size }))).await?;
-        let id = begin["uploadId"].as_str().unwrap_or_default();
-        let part_bytes = begin["partBytes"].as_u64().unwrap_or_default();
-        if id.is_empty() || part_bytes == 0 || begin["parts"] != size.div_ceil(part_bytes) {
-            return Err(eyre::eyre!("the node began an upload it cannot take: {begin}").into());
+        let begin = retry_unavailable(|| self.apps().upload_begin(app, size)).await?;
+        let id = begin.upload_id.as_str();
+        let part_bytes = begin.part_bytes;
+        if id.is_empty() || part_bytes == 0 || begin.parts != size.div_ceil(part_bytes) {
+            return Err(eyre::eyre!(
+                "the node began an upload it cannot take: {} parts of {part_bytes} bytes",
+                begin.parts
+            )
+            .into());
         }
-        let url = format!("{base}/uploads/{}", path_segment(id));
-        let done = self.send_parts(&url, file, size, part_bytes).await;
+        let done = self.send_parts(app, id, file, size, part_bytes).await;
         if done
             .as_ref()
             .is_err_and(|e| e.code() != Some("UPLOAD_UNKNOWN"))
         {
-            let _aborted = self.delete(&url).await;
+            let _aborted = self.apps().upload_abort(app, id).await;
         }
         done
     }
 
     async fn send_parts<R>(
         &self,
-        url: &str,
+        app: &str,
+        upload: &str,
         file: &mut R,
         size: u64,
         part_bytes: u64,
-    ) -> Result<Value>
+    ) -> Result<UploadCompleteResponse>
     where
         R: AsyncRead + AsyncSeek + Unpin,
     {
@@ -210,16 +219,19 @@ impl Client {
         let (mut next, mut failures, mut jumps) = (0, 0, 0);
         while next < parts {
             let body = read_part(file, next, part_bytes, size).await?;
-            let sent = self.put_part(&format!("{url}/parts/{next}"), body).await;
+            let sent = self
+                .apps()
+                .upload_part(app, upload, &next.to_string(), body.to_vec())
+                .await;
             let failed = match sent {
                 Ok(v) => {
-                    next = next_of(&v, parts)?;
+                    next = next_part(v.next, parts)?;
                     failures = 0;
                     continue;
                 }
                 Err(e) if e.code() == Some("PART_OUT_OF_ORDER") => {
                     jumps += 1;
-                    let named = e.details().and_then(|d| next_of(d, parts).ok());
+                    let named = e.details().and_then(|d| next_in(d, parts));
                     next = named.filter(|_| jumps <= MAX_JUMPS).ok_or(e)?;
                     continue;
                 }
@@ -232,9 +244,9 @@ impl Client {
             }
             tokio::time::sleep(backoff(failures)).await;
             if failures > PART_RESENDS {
-                match self.get(url).await {
+                match self.apps().upload_status(app, upload).await {
                     Ok(v) => {
-                        let node_next = next_of(&v, parts)?;
+                        let node_next = next_part(v.next, parts)?;
                         if node_next > next {
                             failures = 0;
                         }
@@ -245,22 +257,14 @@ impl Client {
                 }
             }
         }
-        self.complete(url).await
-    }
-
-    async fn put_part(&self, path: &str, body: bytes::Bytes) -> Result<Value> {
-        let payload = Body::Bytes {
-            content_type: "application/octet-stream".into(),
-            bytes: body,
-        };
-        answer(self.send_payload(Method::PUT, path, payload).await?).await
+        self.complete(app, upload).await
     }
 
     /// `complete`, sent again while the node is unavailable: a retried one resumes.
-    async fn complete(&self, url: &str) -> Result<Value> {
+    async fn complete(&self, app: &str, upload: &str) -> Result<UploadCompleteResponse> {
         let mut failures = 0;
         loop {
-            match self.post(&format!("{url}/complete"), json!({})).await {
+            match self.apps().upload_complete(app, upload).await {
                 Err(e) if is_transient(&e) && failures < COMPLETE_RETRIES => {
                     failures += 1;
                     tokio::time::sleep(backoff(failures)).await;
@@ -373,6 +377,7 @@ mod tests {
                 ("POST", [""]) => Outcome::Say(
                     200,
                     json!({
+                        "blobId": "b1",
                         "id": "f1",
                         "size": body.len(),
                         "sha256": hex::encode(Sha256::digest(body)),
@@ -402,7 +407,16 @@ mod tests {
                     Outcome::Say(404, json!({ "error": "UPLOAD_UNKNOWN", "message": "gone" }))
                 }
                 ("PUT", ["uploads", _, "parts", k]) => self.put_part(k.parse().unwrap(), body),
-                ("GET", ["uploads", _]) => Outcome::Say(200, json!({ "next": self.next })),
+                ("GET", ["uploads", _]) => Outcome::Say(
+                    200,
+                    json!({
+                        "uploadId": self.session,
+                        "partBytes": FILE_PART_BYTES,
+                        "parts": self.parts,
+                        "expiresAt": 0,
+                        "next": self.next,
+                    }),
+                ),
                 ("POST", ["uploads", _, "complete"]) => {
                     assert_eq!(self.next, self.parts, "complete before every part");
                     let mut all = Sha256::new();
@@ -411,7 +425,7 @@ mod tests {
                     }
                     Outcome::Say(
                         200,
-                        json!({ "id": "f1", "size": 0, "sha256": hex::encode(all.finalize()), "index": 7 }),
+                        json!({ "blobId": "b1", "id": "f1", "size": 0, "sha256": hex::encode(all.finalize()), "index": 7 }),
                     )
                 }
                 ("DELETE", ["uploads", _]) => {

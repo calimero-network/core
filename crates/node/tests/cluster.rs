@@ -2,6 +2,14 @@
 //! sealed channels, with the kv fixture component (the cluster itself is in
 //! `harness/cluster.rs`, shared with `benches/cluster_throughput.rs`).
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1165,7 +1173,7 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         .unwrap_err();
     assert!(e.to_string().starts_with("404"), "{e}");
     let _ = alice.uninstall_package("com.test.kv", None).await.unwrap();
-    assert_eq!(alice.packages().await.unwrap(), json!([]));
+    assert!(alice.packages().list().await.unwrap().packages.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1217,19 +1225,14 @@ async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
 /// The names of the packages `cl` lists, with the versions it sees of each.
 async fn listed(cl: &Client) -> BTreeMap<String, Vec<String>> {
     cl.packages()
+        .list()
         .await
         .unwrap()
-        .as_array()
-        .unwrap()
-        .iter()
+        .packages
+        .into_iter()
         .map(|p| {
-            let versions = p["versions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v["version"].as_str().unwrap().to_owned())
-                .collect();
-            (p["package"].as_str().unwrap().to_owned(), versions)
+            let versions = p.versions.into_iter().map(|v| v.version).collect();
+            (p.package, versions)
         })
         .collect()
 }

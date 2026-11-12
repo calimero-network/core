@@ -1188,9 +1188,9 @@ fn operations() -> Vec<Op> {
             .ok("{ blobId: string, id: string, size: uint, sha256: string }")
             .errors(&[(404, "NOT_FOUND")]),
         post("/apps/{app}/files/{id}/export", "exports::export", SignedIn, "Export a sealed file's key")
-            .about("The owner and the organization's members. `recipient` is an X25519 public key (64 hex characters); the file's data key comes back wrapped to it, with the file's `segments` count and `ephemeral` public key. The node never answers plaintext or a key in the clear. 30 a minute per account.")
+            .about("The owner and the organization's members. `recipient` is an X25519 public key (64 hex characters); the file's data key comes back wrapped to it, with the file's `segments` (each one's hash, hex) and `ephemeral` public key. The node never answers plaintext or a key in the clear. 30 a minute per account.")
             .json::<super::exports::ExportBody>("{ recipient: string }")
-            .ok("{ app: string, id: string, size: uint, sha256: string, segments: uint[], ephemeral: string, wrapped: string }")
+            .ok("{ app: string, id: string, size: uint, sha256: string, segments: string[], ephemeral: string, wrapped: string }")
             .errors(&[(400, "BAD_RECIPIENT"), (400, "BAD_REQUEST"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (429, "TOO_MANY_EXPORTS")]),
         get("/apps/{app}/files/{id}/segments/{k}", "exports::segment", SignedIn, "One segment of a sealed file")
             .about("Segment `k` (from 0) of the file's ciphertext, raw; the owner and the organization's members.")
@@ -1474,7 +1474,7 @@ fn operations() -> Vec<Op> {
         delete("/ops/nodes/{id}", "ops_remove_node", Ops, "Remove a node")
             .about("One no app keeps a replica on; the system leader (elsewhere `421 NOT_LEADER`); signed over `__remove_node / { id }`.")
             .proof_body()
-            .ok("{ status: string }")
+            .ok("{ status: { group: uint, leader: uint | null, is_leader: bool, term: uint, last_log: uint | null, applied: uint, voters: uint[], learners: uint[] } }")
             .operator()
             .errors(&[(400, "LAST_NODE"), (421, "NOT_LEADER")]),
         get("/ops/nodes/{id}/receipt-key", "account_proof::ops_receipt_key", Ops, "A node's receipt key")
@@ -1686,7 +1686,7 @@ fn tag(path: &str) -> &'static str {
         "health" | "attestation" | "releases" | "publishers" => "Public",
         "auth" => "Accounts",
         "bundles" | "packages" | "package-origins" => "Packages",
-        "apps" => "Apps",
+        "apps" | "pipelines" => "Apps",
         "orgs" | "invites" => "Organizations",
         "consent" => "Consent",
         "ops" => "Ops",

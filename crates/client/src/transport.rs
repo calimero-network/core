@@ -1,14 +1,15 @@
 //! The runtime every route is sent through: the part of the client that is
 //! not a route.
 //!
-//! A route layer ([`crate::Client`]'s methods today, one generated from the
-//! node's OpenAPI document later) knows a method, a path and what the route
-//! takes and answers. Everything else is [`Transport`]: the sealed channel to
-//! a node whose attestation passed the [`Policy`] first, the credential, the
-//! session's refresh on a `401`, the `412 CONFIRM_REQUIRED` step-up
-//! ([`Transport::confirmed`]), error mapping ([`answer`]) and server-sent
-//! events ([`Transport::events`]). `meroctl proxy` forwards plain HTTP through
-//! [`Transport::send`].
+//! A route layer (the one generated from the node's OpenAPI document,
+//! [`crate::routes`]) knows a method, a path and what the route takes and
+//! answers. Everything else is [`Transport`]: the sealed channel to a node
+//! whose attestation passed the [`Policy`] first, the credential, the
+//! session's refresh on a `401`, the two-round approvals (`412
+//! CONFIRM_REQUIRED` with a passkey, `428 OPERATOR_SIGNATURE_REQUIRED` with the
+//! operator's key: [`Transport::approved`]), error mapping ([`answer`]) and
+//! server-sent events ([`Transport::events`]). `meroctl proxy` forwards plain
+//! HTTP through [`Transport::send`].
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -22,6 +23,7 @@ use tokio::sync::RwLock;
 use url::Url;
 
 use crate::attest::{HttpAttestor, Policy};
+use crate::route::OperatorSigner;
 use crate::{Error, Passkey, Result, Session};
 
 /// The path a session is refreshed at; a `401` there is not refreshed again.
@@ -331,27 +333,65 @@ impl Transport {
     /// # Errors
     /// As [`Self::json`].
     pub async fn confirmed(&self, req: Request, passkey: &mut dyn Passkey) -> Result<Value> {
-        let details = match self.json(req.clone()).await {
-            Ok(v) => return Ok(v),
-            Err(e) if e.code() == Some("CONFIRM_REQUIRED") => {
-                e.details().cloned().unwrap_or(Value::Null)
-            }
-            Err(e) => return Err(e),
-        };
-        let challenge =
-            calimero_identity::from_b64url(details["challenge"].as_str().unwrap_or_default())
-                .map_err(|e| eyre::eyre!("{e}"))?;
-        let assertion = passkey.get(&challenge);
+        self.approved(req, Some(passkey), None).await
+    }
+
+    /// [`Self::json`], answering the two-round refusals a route may give
+    /// first: a `412 CONFIRM_REQUIRED` with `passkey`'s assertion over the
+    /// node's challenge (`confirm: { challengeId, assertion }`), and a `428
+    /// OPERATOR_SIGNATURE_REQUIRED` with `operator`'s signature over the
+    /// statement it names (`operatorProof: { nonce, signature }`), each into
+    /// the same JSON body, sent again. Without the one a refusal asks for, the
+    /// refusal is returned. Each is answered once: a challenge is single-use.
+    ///
+    /// # Errors
+    /// As [`Self::json`].
+    pub async fn approved(
+        &self,
+        req: Request,
+        mut passkey: Option<&mut dyn Passkey>,
+        operator: Option<&OperatorSigner<'_>>,
+    ) -> Result<Value> {
         let mut req = req;
-        if let Body::Json(body) = &mut req.body {
-            if let Some(b) = body.as_object_mut() {
-                let _prev = b.insert(
-                    "confirm".into(),
-                    json!({ "challengeId": details["challengeId"], "assertion": assertion }),
-                );
-            }
+        let (mut confirmed, mut signed) = (false, false);
+        loop {
+            let e = match self.json(req.clone()).await {
+                Err(e) => e,
+                done => return done,
+            };
+            let details = e.details().cloned().unwrap_or(Value::Null);
+            let (field, value) = match (e.code(), passkey.as_deref_mut(), operator) {
+                (Some("CONFIRM_REQUIRED"), Some(pk), _) if !confirmed => {
+                    confirmed = true;
+                    let challenge = calimero_identity::from_b64url(
+                        details["challenge"].as_str().unwrap_or_default(),
+                    )
+                    .map_err(|e| eyre::eyre!("{e}"))?;
+                    let assertion = pk.get(&challenge);
+                    (
+                        "confirm",
+                        json!({ "challengeId": details["challengeId"], "assertion": assertion }),
+                    )
+                }
+                (Some("OPERATOR_SIGNATURE_REQUIRED"), _, Some(sign)) if !signed => {
+                    signed = true;
+                    let message = base64::Engine::decode(
+                        &base64::engine::general_purpose::STANDARD,
+                        details["message"].as_str().unwrap_or_default(),
+                    )
+                    .map_err(eyre::Report::from)?;
+                    (
+                        "operatorProof",
+                        json!({ "nonce": details["nonce"], "signature": hex::encode(sign(&message)) }),
+                    )
+                }
+                _ => return Err(e),
+            };
+            let Body::Json(Value::Object(b)) = &mut req.body else {
+                return Err(e);
+            };
+            let _prev = b.insert(field.into(), value);
         }
-        self.json(req).await
     }
 
     /// A server-sent event stream: `(id, event, data)` per frame, `data`

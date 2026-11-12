@@ -2,6 +2,14 @@
 //! the real node's receipt key, wraps keys with the files crypto and checks the signed reports.
 //! The input is a real sealed file of the `files` fixture; the runs are the `compute` fixture's.
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 mod common;
 
 use std::sync::Mutex;
