@@ -51,13 +51,20 @@ to the code on every CI run:
   is optional;
 - a response schema the node answers by serializing a Rust type (an app record,
   an API key, a package release reference, an organization and its teams, an
-  upgrade, `Access`, `Deployer`) names that type, and is held to it the same
-  way: the same field names, a sample read into the type writes back as a value
-  of the schema, and a field is optional exactly when the type may leave it out;
+  upgrade, `Access`, `Deployer`, an attestation and its KMS evidence, an
+  account proof, a registered node, the quotas) names that type, and is held
+  to it the same way: the same field names, a sample read into the type writes
+  back as a value of the schema, and a field is optional exactly when the type
+  may leave it out; one the type only serializes (a Raft group's status, the
+  rollback counter) is held to real values of the type;
 - the committed `openapi.json` is what the registry builds now.
 
 The other response schemas, those a handler builds with `json!`, are written in
-the registry from the handlers' answers and are not checked against them. To
+the registry from the handlers' answers and are not checked against them. A
+value left free-form (`{}` in the schema) is one whose shape is not the API's:
+an app's metadata, `initArgs`, a method's result, an event's data, an app's
+error value, the WebAuthn options a ceremony hands to the browser, an app's ABI
+and its own OpenAPI document. Each says so in its description. To
 change the API, change the handler and its entry, then regenerate:
 
 ```bash
