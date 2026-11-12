@@ -4,10 +4,11 @@
 
 use std::path::PathBuf;
 
+use calimero_client::types::{OrgUpgradeRequest, Team, TeamSetMemberRequest};
 use clap::{Subcommand, ValueEnum};
 use serde_json::{json, Value};
 
-use crate::env::{json_arg, Env};
+use crate::env::{json_arg, to_json, DevPasskey, Env};
 use crate::namespace::{org, Join};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -18,11 +19,11 @@ pub enum TeamRole {
 }
 
 impl TeamRole {
-    fn wire(self) -> &'static str {
+    fn wire(self) -> calimero_client::types::TeamRole {
         match self {
-            Self::Lead => "lead",
-            Self::Member => "member",
-            Self::ReadOnly => "readOnly",
+            Self::Lead => calimero_client::types::TeamRole::Lead,
+            Self::Member => calimero_client::types::TeamRole::Member,
+            Self::ReadOnly => calimero_client::types::TeamRole::ReadOnly,
         }
     }
 }
@@ -158,40 +159,35 @@ pub enum UpgradeCmd {
 }
 
 pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
-    let client = &env.client;
+    let orgs = env.client.orgs();
     Ok(match cmd {
-        GroupCmd::Get { namespace, group } => {
-            client
-                .get(&format!("orgs/{namespace}/teams/{group}"))
-                .await?
-        }
+        GroupCmd::Get { namespace, group } => to_json(&orgs.team_get(&namespace, &group).await?)?,
         GroupCmd::Update {
             namespace,
             group,
             name,
             join,
-        } => {
-            let mut body = json!({});
-            if let Some(n) = name {
-                body["name"] = json!(n);
-            }
-            if let Some(j) = join {
-                body["join"] = json!(j.wire());
-            }
-            client
-                .post(&format!("orgs/{namespace}/teams/{group}"), body)
-                .await?
-        }
+        } => to_json(
+            &orgs
+                .team_update(
+                    &namespace,
+                    &group,
+                    name.as_deref(),
+                    join.map(Join::wire),
+                    None,
+                    None,
+                )
+                .await?,
+        )?,
         GroupCmd::Delete {
             namespace,
             group,
             dev_passkey,
         } => {
-            env.delete_approved(
-                &format!("orgs/{namespace}/teams/{group}"),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs.team_delete(&namespace, &group, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
         }
         GroupCmd::Reparent {
             namespace,
@@ -200,36 +196,31 @@ pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
             top: _,
         } => {
             // `parent: null` moves it to the top.
-            client
-                .post(
-                    &format!("orgs/{namespace}/teams/{group}"),
-                    json!({ "parent": parent }),
-                )
-                .await?
+            to_json(
+                &orgs
+                    .team_update(
+                        &namespace,
+                        &group,
+                        None,
+                        None,
+                        Some(parent.as_deref()),
+                        None,
+                    )
+                    .await?,
+            )?
         }
         GroupCmd::Subgroups { namespace, group } => {
-            let teams = org(env, &namespace).await?["teams"].clone();
-            let below: Vec<Value> = teams
-                .as_object()
-                .map(|t| {
-                    t.values()
-                        .filter(|t| t["parent"].as_str() == Some(group.as_str()))
-                        .cloned()
-                        .collect()
-                })
-                .unwrap_or_default();
+            let below: Vec<Team> = org(env, &namespace)
+                .await?
+                .teams
+                .into_values()
+                .filter(|t| t.parent.as_deref() == Some(group.as_str()))
+                .collect();
             json!({ "subgroups": below })
         }
         GroupCmd::Members(MembersCmd::List { namespace, group }) => {
-            let team = client
-                .get(&format!("orgs/{namespace}/teams/{group}"))
-                .await?;
-            let team = if team.get("team").is_some() {
-                team["team"].clone()
-            } else {
-                team
-            };
-            json!({ "members": team["members"], "readOnly": team["readOnly"] })
+            let team = orgs.team_get(&namespace, &group).await?;
+            json!({ "members": team.members, "readOnly": team.extra.get("readOnly") })
         }
         GroupCmd::Members(MembersCmd::Add {
             namespace,
@@ -239,12 +230,18 @@ pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
             capabilities,
             dev_passkey,
         }) => {
-            env.post_approved(
-                &format!("orgs/{namespace}/teams/{group}/members"),
-                json!({ "account": account, "role": role.wire(), "capabilities": capabilities }),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let body = TeamSetMemberRequest {
+                account,
+                role: Some(role.wire()),
+                capabilities: capabilities.map(u64::from),
+                ..TeamSetMemberRequest::default()
+            };
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs
+                .team_set_member(&namespace, &group, body, pk.get())
+                .await;
+            pk.save()?;
+            to_json(&out?)?
         }
         GroupCmd::Members(MembersCmd::Remove {
             namespace,
@@ -252,49 +249,60 @@ pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
             account,
             dev_passkey,
         }) => {
-            env.delete_approved(
-                &format!("orgs/{namespace}/teams/{group}/members/{account}"),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs
+                .team_remove_member(&namespace, &group, &account, pk.get())
+                .await;
+            pk.save()?;
+            to_json(&out?)?
         }
         GroupCmd::Metadata {
             namespace,
             group,
             metadata,
-        } => {
-            client
-                .post(
-                    &format!("orgs/{namespace}/teams/{group}"),
-                    json!({ "metadata": json_arg(&metadata)? }),
+        } => to_json(
+            &orgs
+                .team_update(
+                    &namespace,
+                    &group,
+                    None,
+                    None,
+                    None,
+                    Some(json_arg(&metadata)?),
                 )
-                .await?
-        }
+                .await?,
+        )?,
         GroupCmd::Settings {
             namespace,
             group,
             capabilities,
             dev_passkey,
         } => {
-            env.post_approved(
-                &format!("orgs/{namespace}/capabilities"),
-                json!({ "team": group, "capabilities": capabilities }),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs
+                .capabilities(
+                    &namespace,
+                    u64::from(capabilities),
+                    None,
+                    Some(&group),
+                    pk.get(),
+                )
+                .await;
+            pk.save()?;
+            to_json(&out?)?
         }
         GroupCmd::Leave {
             namespace,
             group,
             dev_passkey,
         } => {
-            let me = client.me().await?;
-            let account = me["accountId"].as_str().unwrap_or_default();
-            env.delete_approved(
-                &format!("orgs/{namespace}/teams/{group}/members/{account}"),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let account = env.client.auth().me().await?.account_id;
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs
+                .team_remove_member(&namespace, &group, &account, pk.get())
+                .await;
+            pk.save()?;
+            to_json(&out?)?
         }
         GroupCmd::Upgrade(UpgradeCmd::Trigger {
             namespace,
@@ -305,30 +313,31 @@ pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
             migrate,
             dev_passkey,
         }) => {
-            env.post_approved(
-                &format!("orgs/{namespace}/upgrade"),
-                json!({
-                    "package": package, "version": version, "team": group,
-                    "cascade": cascade, "migrate": migrate,
-                }),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let body = OrgUpgradeRequest {
+                package,
+                version,
+                team: group,
+                cascade: Some(cascade),
+                migrate,
+                operator_proof: None,
+            };
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs.upgrade(&namespace, body, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
         }
         GroupCmd::Upgrade(UpgradeCmd::Status { namespace, run }) => {
-            client.upgrade_run(&namespace, &run).await?
+            to_json(&orgs.upgrade_status(&namespace, &run).await?)?
         }
         GroupCmd::Upgrade(UpgradeCmd::Retry {
             namespace,
             run,
             dev_passkey,
         }) => {
-            env.post_approved(
-                &format!("orgs/{namespace}/upgrades/{run}/retry"),
-                json!({}),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = orgs.upgrade_retry(&namespace, &run, pk.get(), None).await;
+            pk.save()?;
+            to_json(&out?)?
         }
     })
 }
