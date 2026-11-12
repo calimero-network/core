@@ -656,11 +656,16 @@ shows its hit rate. `release.yml` never uses sccache: what it builds ships.
 master (a merge into master does not run it again: its PR did, and the nightly
 runs all of it with the long soak; a merge into the release branch does):
 
-- job `scenarios (K/2)` (`scenarios`): `cargo test -p calimero-node --test
-  scenarios` with `SCENARIO_SHARD=K/2`, every app-level and cluster scenario,
+- jobs `build merod and the fixtures` (`build-release`) and `build the
+  scenario runner` (`build-scenarios`) compile once what the jobs below run:
+  release `merod`, `meroctl` and `mero-sign`, `mero-app-build` and
+  `mero-compute`, the kv component and two signed releases of it; and the
+  scenario runner, whose discovery they check against the script's;
+- job `scenarios (K/4)` (`scenarios`): the runner (`cargo test -p
+  calimero-node --test scenarios`) with `SCENARIO_SHARD=K/4`, every app-level and cluster scenario,
   each on its own in-process cluster; the runner builds each app's component
   itself. A `fuzzy_test` runs 10 s, nightly 900 s;
-- job `process suite (merod processes)` (`process-suite`): a release build of
+- job `process suite (merod processes)` (`process-suite`): `build-release`'s
   `merod` and `meroctl` (on a PR without fat LTO, which only the nightly's soak
   numbers need), the kv component and two signed releases of it, then
   `suite.py` (nightly `--nightly`, which also builds the Rooms component). The
@@ -677,8 +682,9 @@ runs all of it with the long soak; a merge into the release branch does):
   38 MB CSV of invented people, a job node killed mid-run, then the shared parts
   downloaded through a grant and compared with `mero-compute`'s output (logs are
   the artifact `compute-e2e-logs` on failure);
-- job `clients against merod` (`clients`): mero-js's `test:cluster` and
-  calimero-client-py's cluster tests against this tree's `merod`. A change that
+- jobs `clients against merod (mero-js)` and `(calimero-client-py)`
+  (`clients`): mero-js's `test:cluster` and calimero-client-py's cluster tests
+  against `build-release`'s `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
   or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
 
