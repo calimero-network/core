@@ -13,7 +13,6 @@ use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use calimero_client::pipeline_events::{PipelineEvent, RunProgress};
-use futures_util::Stream;
 use serde_json::json;
 
 use super::gate;
@@ -117,10 +116,6 @@ impl Watch {
     }
 }
 
-fn frame(e: &PipelineEvent) -> Result<Event, Infallible> {
-    Ok(Event::default().event(e.name()).data(e.data()))
-}
-
 pub(super) async fn events(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -154,13 +149,12 @@ pub(super) async fn events(
     };
     let stream = futures_util::stream::unfold(watch, |mut w| async move {
         let e = w.next().await?;
-        Some((frame(&e), w))
+        Some((
+            Ok::<_, Infallible>(Event::default().event(e.name()).data(e.data())),
+            w,
+        ))
     });
-    Ok(sse(stream).into_response())
-}
-
-fn sse(
-    stream: impl Stream<Item = Result<Event, Infallible>> + Send + 'static,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEP_ALIVE))
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(KEEP_ALIVE))
+        .into_response())
 }

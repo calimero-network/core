@@ -15,9 +15,11 @@ use calimero_pipeline::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{gate, may_handle_files, read_only_in, signed_in, typed_id, ApiResult};
+use super::{gate, may_handle_files, read_only_in, signed_in, typed_id, ApiResult, Principal};
 use crate::app::Status;
-use crate::component::{CostCap, PipelineStartEntry, INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS};
+use crate::component::{
+    parse_hex32, CostCap, PipelineStartEntry, INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS,
+};
 use crate::error::ApiError;
 use crate::node::{Node, PIPELINE_VIEW};
 use crate::packages::pipelines::SELF_MODULE;
@@ -211,6 +213,25 @@ async fn may_run(
     Ok(())
 }
 
+/// The app and caller of a request that starts, estimates, retries or cancels a run: signed in,
+/// and allowed to handle the app's files.
+async fn runner(
+    node: &Node,
+    headers: &HeaderMap,
+    app_id: &str,
+    action: &str,
+) -> Result<(AppRecord, Principal), ApiError> {
+    let app = component_app(node, app_id).await?;
+    let p = gate(node, headers, &app, "*", true).await?;
+    let Some(account) = p.caller.account() else {
+        return Err(ApiError::unauthenticated(&format!(
+            "sign in to {action} a pipeline run"
+        )));
+    };
+    may_run(node, &app, account, p.sys_index).await?;
+    Ok((app, p))
+}
+
 pub(super) async fn component_app(
     node: &Node,
     app_id: &str,
@@ -312,14 +333,7 @@ pub(super) async fn estimate_run(
     Json(body): Json<EstimateBody>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let app = component_app(&node, &app_id).await?;
-    let p = gate(&node, &headers, &app, "*", true).await?;
-    let Some(account) = p.caller.account() else {
-        return Err(ApiError::unauthenticated(
-            "sign in to estimate a pipeline run",
-        ));
-    };
-    may_run(&node, &app, account, p.sys_index).await?;
+    let (app, _) = runner(&node, &headers, &app_id, "estimate").await?;
     let no_pipeline = || {
         ApiError::new(
             404,
@@ -379,12 +393,7 @@ pub(super) async fn start(
     Json(body): Json<StartBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let app_id = node.canonical_app_id(&app_id);
-    let app = component_app(&node, &app_id).await?;
-    let p = gate(&node, &headers, &app, "*", true).await?;
-    let Some(account) = p.caller.account() else {
-        return Err(ApiError::unauthenticated("sign in to start a pipeline run"));
-    };
-    may_run(&node, &app, account, p.sys_index).await?;
+    let (app, p) = runner(&node, &headers, &app_id, "start").await?;
     node.require_upgraded_nodes().await?;
     let no_pipeline = || {
         ApiError::new(
@@ -474,9 +483,7 @@ async fn start_launch(
         max_cost,
     } = launch;
     for id in inputs.values().flatten() {
-        let raw = <[u8; 32]>::try_from(hex::decode(id).unwrap_or_default())
-            .ok()
-            .filter(|raw| hex::encode(raw) == *id)
+        let raw = parse_hex32(id)
             .ok_or_else(|| ApiError::bad_request(BAD_INPUTS, "an input is not a file id"))?;
         if node.file_held_strong(app, &raw).await != Some(true) {
             return Err(expired());
@@ -608,12 +615,7 @@ pub(super) async fn retry(
     Json(body): Json<RetryBody>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let app_id = node.canonical_app_id(&app_id);
-    let app = component_app(&node, &app_id).await?;
-    let p = gate(&node, &headers, &app, "*", true).await?;
-    let Some(account) = p.caller.account() else {
-        return Err(ApiError::unauthenticated("sign in to retry a pipeline run"));
-    };
-    may_run(&node, &app, account, p.sys_index).await?;
+    let (app, p) = runner(&node, &headers, &app_id, "retry").await?;
     node.require_upgraded_nodes().await?;
     let answer = node
         .view(&crate::node::ViewRequest {
@@ -738,14 +740,7 @@ pub(super) async fn cancel(
     Path((app_id, run)): Path<(String, String)>,
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
-    let app = component_app(&node, &app_id).await?;
-    let p = gate(&node, &headers, &app, "*", true).await?;
-    let Some(account) = p.caller.account() else {
-        return Err(ApiError::unauthenticated(
-            "sign in to cancel a pipeline run",
-        ));
-    };
-    may_run(&node, &app, account, p.sys_index).await?;
+    let (app, p) = runner(&node, &headers, &app_id, "cancel").await?;
     let a = node
         .cancel_pipeline_run(&app, &run, p.caller, p.sys_index)
         .await?;

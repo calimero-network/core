@@ -18,11 +18,10 @@ use super::{gate, may_handle_files, ApiResult};
 use crate::component::{PipelineRun, PipelineState, RunInputRef, StepState};
 use crate::error::ApiError;
 use crate::node::{Node, PIPELINE_VIEW};
+use crate::packages::pipelines::SELF_MODULE;
 
 const RECEIPT_VERSION: u32 = 1;
 const RUN_NOT_ENDED: &str = "RUN_NOT_ENDED";
-/// Key of the package's own compute component among a receipt's modules.
-const SELF_MODULE: &str = "self";
 
 /// What the reserved view answers for a receipt: the record and the proof of each run it started.
 #[derive(Serialize, Deserialize)]
