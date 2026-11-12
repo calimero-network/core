@@ -585,19 +585,16 @@ async fn deploy(cl: &Client, name: &str, wasm: Vec<u8>, options: Value) -> (Stri
         .await
         .map(|b| b.hash)
         .unwrap();
-    let mut body = json!({ "name": name, "bundle": bundle });
-    if let (Some(o), Some(b)) = (options.as_object(), body.as_object_mut()) {
-        b.extend(o.clone());
-    }
     let created = cl
-        .transport()
-        .json(Request::new(Method::POST, "apps").json(body))
+        .apps()
+        .create(AppCreateRequest {
+            name: Some(name.to_owned()),
+            bundle: Some(bundle),
+            ..typed(options)
+        })
         .await
         .unwrap();
-    (
-        created["appId"].as_str().unwrap().to_owned(),
-        created["contextId"].as_str().unwrap().to_owned(),
-    )
+    (created.app_id, created.context_id)
 }
 
 /// Poll a strong view until `done` holds (follow-ups run after their entry).
@@ -1460,27 +1457,32 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     assert_eq!(ops_listed, json!([]), "the operator installed none");
 
     // Creating from it answers as for a release the cluster lacks.
-    let named = |package: &str, version: Option<&str>| json!({ "name": "x", "package": package, "version": version });
+    let named = |package: &str, version: Option<&str>| AppCreateRequest {
+        name: Some("x".to_owned()),
+        package: Some(package.to_owned()),
+        version: version.map(str::to_owned),
+        ..AppCreateRequest::default()
+    };
     let hidden = bob
-        .transport()
-        .json(Request::new(Method::POST, "apps").json(named("com.acme.secret", Some("1.0.0"))))
+        .apps()
+        .create(named("com.acme.secret", Some("1.0.0")))
         .await
         .unwrap_err();
     let missing = bob
-        .transport()
-        .json(Request::new(Method::POST, "apps").json(named("com.never.installed", Some("1.0.0"))))
+        .apps()
+        .create(named("com.never.installed", Some("1.0.0")))
         .await
         .unwrap_err();
     assert!(hidden.to_string().starts_with("404"), "{hidden}");
     assert_eq!(hidden.code(), missing.code(), "{hidden} / {missing}");
     let hidden = bob
-        .transport()
-        .json(Request::new(Method::POST, "apps").json(named("com.acme.secret", None)))
+        .apps()
+        .create(named("com.acme.secret", None))
         .await
         .unwrap_err();
     let missing = bob
-        .transport()
-        .json(Request::new(Method::POST, "apps").json(named("com.never.installed", None)))
+        .apps()
+        .create(named("com.never.installed", None))
         .await
         .unwrap_err();
     assert_eq!(hidden.code(), Some("VERSION_REQUIRED"), "{hidden}");
@@ -1503,9 +1505,10 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
 
     // Alice and Amy create apps from it.
     let _ = alice
-        .transport()
-        .json(Request::new(Method::POST, "apps").json(named("com.acme.secret", Some("1.0.0"))))
+        .apps()
+        .create(named("com.acme.secret", Some("1.0.0")))
         .await
+        .map(wire)
         .unwrap();
     let shared = amy
         .apps().create(typed(json!({ "name": "shared", "package": "com.acme.secret", "access": { "kind": "accounts", "accounts": [bob_id] } })))
@@ -1542,9 +1545,10 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
         BTreeMap::from([("com.test.kv".to_owned(), vec!["1.0.0".to_owned()])])
     );
     let _ = bob
-        .transport()
-        .json(Request::new(Method::POST, "apps").json(named("com.test.kv", Some("1.0.0"))))
+        .apps()
+        .create(named("com.test.kv", Some("1.0.0")))
         .await
+        .map(wire)
         .unwrap();
 
     // The operator lists only the releases it installed; those are the
@@ -5811,8 +5815,8 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
     assert_eq!(theirs["apps"], json!([]), "{theirs}");
     // The page size is bounded.
     let e = alice
-        .transport()
-        .json(Request::new(Method::GET, "auth/apps?limit=100000"))
+        .auth()
+        .account_apps(None, Some(100_000))
         .await
         .unwrap_err();
     assert!(e.to_string().starts_with("400"), "{e}");
