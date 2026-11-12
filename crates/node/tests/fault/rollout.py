@@ -99,8 +99,10 @@ class Fleet(Cluster):
             known = sorted({*range(1, self.n + 1), *self.joined, i})
             peers = ",".join(f"{j}={self.url(j)}" for j in known)
             a[a.index("--peers") + 1] = peers
+        # `--apps-domain localhost`: a package's frontend origin is `{label}.localhost`, where a
+        # passkey ceremony opens a session bound to the package (the deep case `app-channels`).
         return a + ["--operator-key", OPERATOR_PUBLIC, "--release-approvals", "operator",
-                    "--tee-release", self.release[i]]
+                    "--tee-release", self.release[i], "--apps-domain", "localhost"]
 
     def running(self):
         return [i for i, p in self.procs.items() if p is not None and p.poll() is None]
