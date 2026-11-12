@@ -244,7 +244,11 @@ With `--apps-domain`, a passkey ceremony run from a package's frontend origin
 opens a session bound to that package. It reaches only
 apps that run a release of that package, can create instances of that package
 only, and is refused credentials, API keys, approvals, upgrades, uninstalls
-and uploads. Its step-up confirmations come from its own origin only.
+and uploads, and organization changes except on its own package's teams (the
+organization's app team for the package and the channels below it: create,
+rename, delete a channel, change its members, move the package's app between
+them; [Which credential may do what](/protocol/identities/#which-credential-may-do-what)).
+Its step-up confirmations come from its own origin only.
 
 A package's manager can also register origins of their own (a developer's
 site): `GET|POST|DELETE /package-origins/{package}`, each change approved with

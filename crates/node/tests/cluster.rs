@@ -3306,8 +3306,10 @@ async fn app_frontends_are_served_and_their_sessions_are_bound() {
 }
 
 /// A session opened on a package's frontend manages nothing of the account:
-/// no organization, team, member or invite, and not even its own package's
-/// apps' lifetime or access. The same person on the cluster's origin can.
+/// no organization, org-wide team, member or invite, and not even its own
+/// package's apps' lifetime or access outside its package's teams (those
+/// are `a_frontend_session_manages_its_own_packages_channels` in
+/// `tests/org_app_teams.rs`). The same person on the cluster's origin can.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_frontend_session_manages_no_organization_and_no_app() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;

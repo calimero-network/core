@@ -434,7 +434,13 @@ async fn team_create(
     Path(org): Path<String>,
     Json(body): Json<TeamBody>,
 ) -> ApiResult {
-    let actor = holder(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    // A package-bound session makes channels under its package's app team.
+    match body.parent.as_deref() {
+        Some(parent) => p.within_team(&node, &org, parent, OwnTeam::AppTeamOrBelow)?,
+        None => p.unbound()?,
+    }
+    let actor = p.account()?;
     let v = node
         .sys_write(&SystemCmd::CreateTeam {
             org,
@@ -468,7 +474,8 @@ async fn team_set_member(
     Path((org, team)): Path<(String, String)>,
     Json(body): Json<TeamMemberBody>,
 ) -> ApiResult {
-    let p = holder(&node, &headers).await?;
+    let p = person(&node, &headers).await?;
+    p.within_team(&node, &org, &team, OwnTeam::AppTeamOrBelow)?;
     let actor = p.account()?;
     let args = json!({
         "team": team, "account": body.account, "lead": body.lead,
@@ -665,7 +672,16 @@ async fn team_update(
     Path((org, team)): Path<(String, String)>,
     Json(body): Json<TeamUpdateBody>,
 ) -> ApiResult {
-    let actor = holder(&node, &headers).await?.account()?;
+    let p = person(&node, &headers).await?;
+    // A package-bound session changes its package's channels, never its app
+    // team (name, mark, openness) and never moves one out of its package.
+    p.within_team(&node, &org, &team, OwnTeam::Below)?;
+    match body.parent.as_ref() {
+        Some(Some(parent)) => p.within_team(&node, &org, parent, OwnTeam::AppTeamOrBelow)?,
+        Some(None) => p.unbound()?,
+        None => {}
+    }
+    let actor = p.account()?;
     let _ok = node
         .sys_write(&SystemCmd::UpdateTeam {
             org,
@@ -691,7 +707,8 @@ async fn team_delete(
     Path((org, team)): Path<(String, String)>,
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let p = holder(&node, &headers).await?;
+    let p = person(&node, &headers).await?;
+    p.within_team(&node, &org, &team, OwnTeam::BelowHoldingOwnApps)?;
     let actor = p.account()?;
     // Only someone who may delete it learns which apps go (as `DeleteTeam`
     // judges it again where it applies).
@@ -813,7 +830,8 @@ async fn team_remove_member(
     Path((org, team, account)): Path<(String, String, String)>,
     body: Option<Json<ConfirmOnlyBody>>,
 ) -> ApiResult {
-    let p = holder(&node, &headers).await?;
+    let p = person(&node, &headers).await?;
+    p.within_team(&node, &org, &team, OwnTeam::AppTeamOrBelow)?;
     let actor = p.account()?;
     let args = json!({ "team": team, "account": account });
     let confirm = body.and_then(|Json(b)| b.confirm);

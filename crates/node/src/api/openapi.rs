@@ -1362,6 +1362,7 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
         post("/apps/{app}/access", "app_access", Session, "Set who may reach an app")
+            .about("A package-bound session: only its own package's app, from one of its package's teams to another.")
             .json::<super::AccessBody>("{ access: #Access }")
             .ok("{}"),
         post("/apps/{app}/transfer", "app_transfer", AccountHolder, "Hand an app to another account")
@@ -1559,18 +1560,18 @@ fn operations() -> Vec<Op> {
             .step_up()
             .errors(&[(400, "BAD_TEAMS"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/orgs/{org}/teams", "team_create", Session, "Create a team")
-            .about("An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only).")
+            .about("An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only). A package-bound session: only its own package's teams (its app team and the teams below it): `parent` one of them.")
             .json::<super::TeamBody>("{ name: string, parent?: string, join: #TeamJoin }")
             .ok("{ teamId: string }"),
         get("/orgs/{org}/teams/{team}", "team_get", SignedIn, "One team")
             .ok("#TeamView")
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/teams/{team}", "team_update", Session, "Update a team")
-            .about("Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team.")
+            .about("Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team, moved only within.")
             .json::<super::TeamUpdateBody>("{ name?: string, join?: #TeamJoin, parent?: string | null, metadata?: any }")
             .ok("{}"),
         delete("/orgs/{org}/teams/{team}", "team_delete", Session, "Delete a team")
-            .about("With the teams and apps below it.")
+            .about("With the teams and apps below it. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{ teams: string[], apps: string[] }")
             .step_up()
@@ -1608,10 +1609,12 @@ fn operations() -> Vec<Op> {
             .ok("#OutboundApproved")
             .step_up(),
         post("/orgs/{org}/teams/{team}/members", "team_set_member", Session, "Add or change a team member")
+            .about("A package-bound session: only its own package's teams (its app team and the teams below it).")
             .json::<super::TeamMemberBody>("{ account: string, lead?: bool, role?: #TeamRole, capabilities?: uint, confirm?: #Confirm }")
             .ok("{}")
             .step_up(),
         delete("/orgs/{org}/teams/{team}/members/{account}", "team_remove_member", Session, "Remove a team member, or leave")
+            .about("A package-bound session: only its own package's teams (its app team and the teams below it).")
             .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
             .ok("{}")
             .step_up(),
