@@ -53,7 +53,11 @@ async fn app_attestation(
             Err(e) => json!({ "node": id, "error": e }),
         });
     }
-    Ok(Json(json!({ "appId": app_id, "replicas": replicas })))
+    // The cluster, said over the caller's attested channel: what each
+    // replica's quote must bind, since the documents came in the clear.
+    Ok(Json(
+        json!({ "appId": app_id, "cluster": node.config.cluster, "replicas": replicas }),
+    ))
 }
 
 /// `422 INIT_FAILED`: app `app_id`'s `init` failed with the app log's `error`.

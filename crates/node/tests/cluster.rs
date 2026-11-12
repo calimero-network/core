@@ -2343,16 +2343,35 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             allow_mock: true,
             ..Policy::default()
         };
+        let cluster = docs["cluster"].as_str().unwrap();
+        let node = docs["replicas"][0]["node"].as_u64().unwrap();
+        let other = docs["replicas"][1]["node"].as_u64().unwrap();
         assert!(
-            calimero_client::attest::verify_receipt_key(&doc, &nonce, &mock)
+            calimero_client::attest::verify_receipt_key(&doc, &nonce, cluster, node, &mock)
                 .await
                 .is_ok()
+        );
+        // One replica's quote does not stand for another's, relabelled or
+        // not, nor for a node of another cluster.
+        let mut relabelled = doc.clone();
+        relabelled.node = other;
+        assert!(
+            calimero_client::attest::verify_receipt_key(&relabelled, &nonce, cluster, other, &mock)
+                .await
+                .is_err(),
+            "{g:?}: replica {node}'s quote verified as replica {other}'s"
+        );
+        assert!(
+            calimero_client::attest::verify_receipt_key(&doc, &nonce, "elsewhere", node, &mock)
+                .await
+                .is_err(),
+            "{g:?}: a quote verified for another cluster"
         );
         let mut forged = g.clone();
         forged.app_upgrades = if op(g.app_upgrades) { owner } else { operator };
         doc.governance = Some(forged);
         assert!(
-            calimero_client::attest::verify_receipt_key(&doc, &nonce, &mock)
+            calimero_client::attest::verify_receipt_key(&doc, &nonce, cluster, node, &mock)
                 .await
                 .is_err(),
             "{g:?}: a forged governance verified"
@@ -3670,20 +3689,23 @@ async fn the_cluster_version_rises_to_what_every_node_supports() {
     }
 
     // At it, the leader writes the release-attribution mark
-    // (`attributeByRelease`) once the cluster holds anything, and every
-    // replica applies it.
+    // (`attributeByRelease`) and the current-rules mark (`currentRules`) once
+    // the cluster holds anything, and every replica applies both.
     let _alice = signed_up(&c, 0, "alice").await;
     let marked = |c: &Cluster| {
-        c.nodes
-            .iter()
-            .flatten()
-            .all(|n| n.node.sys(|s| s.attributes_by_release))
+        c.nodes.iter().flatten().all(|n| {
+            n.node
+                .sys(|s| s.attributes_by_release && s.current_rules_from.is_some())
+        })
     };
     let deadline = tokio::time::Instant::now() + EVENTUALLY_DEADLINE;
     while tokio::time::Instant::now() < deadline && !marked(&c) {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert!(marked(&c), "the release-attribution mark was not written");
+    assert!(
+        marked(&c),
+        "the release-attribution and current-rules marks were not written"
+    );
 
     // A node on this build supports it, so it joins and learns it.
     let new = c.join().await;

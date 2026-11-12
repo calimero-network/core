@@ -99,13 +99,14 @@ use serde_json::{json, Value};
 use url::Url;
 
 use crate::api::{
-    owner_holds, peer_only, person, set_outbound_approval, set_release_approval, signed_in,
-    upgrade_app, ConfirmBody, OutboundApprovalBody, Principal, ReleaseApprovalBody, UpgradeBody,
+    consent, create_invite, create_org, owner_holds, peer_only, person, redeem_invite,
+    set_outbound_approval, set_release_approval, signed_in, upgrade_app, ConfirmBody, InviteBody,
+    OutboundApprovalBody, Principal, ReleaseApprovalBody, UpgradeBody,
 };
 use crate::error::ApiError;
 use crate::node::Node;
 use crate::system::{PackageRef, PackageVersion, ReleaseScope};
-use crate::types::{now_secs, Caller};
+use crate::types::{now_secs, Caller, OrgRole};
 
 mod diff;
 
@@ -117,14 +118,22 @@ pub const CONSENT_REQUEST_TTL: u64 = 10 * 60;
 pub const CONSENT_RESULT_TTL: u64 = 10 * 60;
 /// The most requests one node holds, decided or not.
 pub const MAX_CONSENT_REQUESTS: usize = 1_000;
-/// The most undecided requests one account may hold on one node.
-pub const MAX_OPEN_REQUESTS_PER_ACCOUNT: usize = 8;
 /// The longest `returnTo` accepted.
 pub const MAX_RETURN_TO_BYTES: usize = 2_048;
 /// The most outbound prefixes one request may name.
 pub const MAX_REQUESTED_PREFIXES: usize = 64;
 /// The largest body the request and page routes read.
 pub const MAX_CONSENT_BODY_BYTES: usize = 64 * 1024;
+/// The longest invite token an `acceptInvite` request may name (a token is
+/// `inv_` and 32 base64url characters).
+const MAX_INVITE_TOKEN_BYTES: usize = 128;
+/// The most teams a `createInvite` request may name.
+const MAX_INVITE_TEAMS: usize = 64;
+/// How long an invite lives when a `createInvite` request names no
+/// `ttlSecs`, as `POST /orgs/{org}/invites`.
+const DEFAULT_INVITE_TTL: u64 = 7 * 24 * 3600;
+/// The longest life a `createInvite` request may ask for.
+const MAX_INVITE_TTL: u64 = 90 * 24 * 3600;
 /// The longest mero-tee version a release request may name.
 const MAX_VERSION_BYTES: usize = 64;
 /// How many releases' manifest facts a node keeps.
@@ -185,6 +194,21 @@ pub enum CreateBody {
         subject: OutboundSubject,
         return_to: String,
     },
+    /// Create an organization the account owns.
+    CreateOrg {
+        subject: CreateOrgSubject,
+        return_to: String,
+    },
+    /// Mint an invite to an organization; the app gets its token.
+    CreateInvite {
+        subject: CreateInviteSubject,
+        return_to: String,
+    },
+    /// Join an organization with an invite's token.
+    AcceptInvite {
+        subject: AcceptInviteSubject,
+        return_to: String,
+    },
 }
 
 /// Whose approval: the account's own apps, or an organization's.
@@ -223,6 +247,58 @@ pub struct OutboundSubject {
     prefixes: Option<Vec<String>>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateOrgSubject {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateInviteSubject {
+    org: String,
+    role: OrgRole,
+    #[serde(default)]
+    teams: Vec<String>,
+    /// How long it lives; 7 days when absent.
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+    /// How many people may join with it; 1 when absent.
+    #[serde(default)]
+    uses: Option<u32>,
+    /// Whoever joins also gets every app added later (an admin's).
+    #[serde(default)]
+    all_apps: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcceptInviteSubject {
+    token: String,
+}
+
+/// An invite's token: whoever holds it joins, so it never shows in a log
+/// line or a `Debug` print.
+#[derive(Clone)]
+struct InviteToken(String);
+
+impl std::fmt::Debug for InviteToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InviteToken(<redacted>)")
+    }
+}
+
+/// The terms of an invite a `createInvite` request asks for.
+#[derive(Clone, Debug)]
+struct InviteTerms {
+    org: String,
+    role: OrgRole,
+    teams: Vec<String>,
+    ttl_secs: u64,
+    uses: u32,
+    all_apps: bool,
+}
+
 /// What approving a request does, with the facts it was shown frozen.
 #[derive(Clone, Debug)]
 enum Action {
@@ -247,6 +323,15 @@ enum Action {
         prefixes: Vec<String>,
         /// The `.mpk` of the release whose declarations the page listed.
         latest_mpk: String,
+    },
+    CreateOrg {
+        name: String,
+    },
+    CreateInvite {
+        terms: InviteTerms,
+    },
+    AcceptInvite {
+        token: InviteToken,
     },
 }
 
@@ -300,6 +385,20 @@ struct ConsentRequest {
     return_to: Url,
     expires_at: u64,
     decision: Decision,
+    /// What the approval made, for the app that asked (`/result`): the new
+    /// organization's id, an invite's token, the organization joined.
+    outcome: Option<Outcome>,
+}
+
+/// What an approval made. It may hold an invite's token, so it never shows
+/// in a `Debug` print.
+#[derive(Clone)]
+struct Outcome(Value);
+
+impl std::fmt::Debug for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Outcome(<redacted>)")
+    }
 }
 
 /// A release's signed manifest, read once per `.mpk`.
@@ -325,26 +424,23 @@ impl ConsentRequests {
         self.open.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Keep `req` under a new id, within the node's and the account's bounds.
+    /// Keep `req` under a new id, within the node's bound. It replaces the
+    /// account's undecided request on this node, if any: an account has one
+    /// at a time, so a page can only ever be approving the request its app
+    /// asked for last. A page swapped for another app's request (a forged page
+    /// on the node's host, with a malicious app's request behind it) then has
+    /// nothing to swap in: the other app's request is gone, and an app whose
+    /// own request was replaced finds it gone at `/result` (`404`).
     fn insert(&self, node_id: u64, req: ConsentRequest, now: u64) -> Result<String, ApiError> {
         let mut open = self.open();
-        open.retain(|_, r| r.expires_at > now);
+        open.retain(|_, r| {
+            r.expires_at > now && !(r.account == req.account && r.decision == Decision::Pending)
+        });
         if open.len() >= MAX_CONSENT_REQUESTS {
             return Err(ApiError::new(
                 429,
                 "RATE_LIMITED",
                 "too many consent requests on this node; try again shortly",
-            ));
-        }
-        let mine = open
-            .values()
-            .filter(|r| r.account == req.account && r.decision == Decision::Pending)
-            .count();
-        if mine >= MAX_OPEN_REQUESTS_PER_ACCOUNT {
-            return Err(ApiError::new(
-                429,
-                "RATE_LIMITED",
-                "this account has too many undecided consent requests; decide or let them expire",
             ));
         }
         let id = format!("{node_id}.{}", b64url(&random::<16>()));
@@ -368,6 +464,20 @@ impl ConsentRequests {
         to: Decision,
         now: u64,
     ) -> Result<ConsentRequest, ApiError> {
+        self.decide(id, from, to, None, now)
+    }
+
+    /// [`Self::transition`], keeping what the approval made with the
+    /// decision, under the one lock: `/result` never reads one without the
+    /// other.
+    fn decide(
+        &self,
+        id: &str,
+        from: &Decision,
+        to: Decision,
+        outcome: Option<Value>,
+        now: u64,
+    ) -> Result<ConsentRequest, ApiError> {
         let mut open = self.open();
         open.retain(|_, r| r.expires_at > now);
         let r = open.get_mut(id).ok_or_else(unknown_request)?;
@@ -382,6 +492,9 @@ impl ConsentRequests {
             r.expires_at = r.expires_at.max(now + CONSENT_RESULT_TTL);
         }
         r.decision = to;
+        if outcome.is_some() {
+            r.outcome = outcome.map(Outcome);
+        }
         Ok(r.clone())
     }
 
@@ -696,6 +809,21 @@ pub async fn create(
                 outbound_request(&node, &account, package.as_deref(), &scope, subject).await?;
             (action, model, to)
         }
+        CreateBody::CreateOrg { subject, return_to } => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = create_org_request(subject)?;
+            (action, model, to)
+        }
+        CreateBody::CreateInvite { subject, return_to } => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = create_invite_request(&node, &account, subject)?;
+            (action, model, to)
+        }
+        CreateBody::AcceptInvite { subject, return_to } => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = accept_invite_request(&node, &account, subject)?;
+            (action, model, to)
+        }
     };
     let now = now_secs();
     let expires_at = now + CONSENT_REQUEST_TTL;
@@ -727,6 +855,7 @@ pub async fn create(
             return_to,
             expires_at,
             decision: Decision::Pending,
+            outcome: None,
         },
         now,
     )?;
@@ -1552,16 +1681,236 @@ async fn outbound_request(
     ))
 }
 
+/// An organization's role as a person reads it.
+const fn role_words(role: OrgRole) -> &'static str {
+    match role {
+        OrgRole::Guest => "a guest",
+        OrgRole::Member => "a member",
+        OrgRole::Admin => "an admin",
+        OrgRole::Owner => "an owner",
+    }
+}
+
+/// The names of `teams` in `org`, as the account may see them; an id where
+/// the team is not one it sees.
+fn team_names(node: &Node, org: &str, account: Option<&str>, teams: &[String]) -> Vec<String> {
+    node.sys(|s| {
+        let o = s.orgs.get(org);
+        teams
+            .iter()
+            .map(|t| {
+                o.and_then(|o| {
+                    let seen = account.is_none_or(|a| o.sees_team(a, t));
+                    seen.then(|| o.teams.get(t).map(|team| team.name.clone()))
+                        .flatten()
+                })
+                .unwrap_or_else(|| t.clone())
+            })
+            .collect()
+    })
+}
+
+fn create_org_request(subject: CreateOrgSubject) -> Result<(Action, Value), ApiError> {
+    let name = subject.name;
+    crate::system::org_name_fits(&name).map_err(|why| ApiError::bad_request("BAD_REQUEST", why))?;
+    let model = json!({
+        "kind": "createOrg",
+        "headline": format!("Create the organization {name}"),
+        "title": format!("Create the organization {name}"),
+        "points": [
+            format!("A new organization named {name} is created, and you are its owner."),
+            "The app that sent you here can then make its apps in it and use them. \
+             Adding people, teams or invites still asks you here first.",
+            "Nothing is created until you approve.",
+        ],
+        "attention": [],
+        "org": { "name": name },
+        "before": "Until you approve, no organization is created.",
+        "after": format!(
+            "Once you approve, the organization {name} exists with you as its owner. You can \
+             rename or delete it later."
+        ),
+        "notes": [],
+    });
+    Ok((Action::CreateOrg { name }, model))
+}
+
+fn create_invite_request(
+    node: &Node,
+    account: &str,
+    subject: CreateInviteSubject,
+) -> Result<(Action, Value), ApiError> {
+    let ttl_secs = subject.ttl_secs.unwrap_or(DEFAULT_INVITE_TTL);
+    if ttl_secs == 0 || ttl_secs > MAX_INVITE_TTL {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            &format!("subject.ttlSecs is 1 to {MAX_INVITE_TTL}"),
+        ));
+    }
+    if subject.teams.len() > MAX_INVITE_TEAMS {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            &format!("name at most {MAX_INVITE_TEAMS} teams"),
+        ));
+    }
+    let uses = subject.uses.unwrap_or(1).max(1);
+    let org = subject.org;
+    let (org_name, role) = node
+        .sys(|s| {
+            let o = s.orgs.get(&org)?;
+            Some((o.name.clone(), o.role(account)?))
+        })
+        .ok_or_else(|| ApiError::not_found("no such organization"))?;
+    // The rules `CreateInvite` applies, asked before anything is shown, so
+    // nobody approves an invite the log would refuse.
+    if subject.role > role || subject.role == OrgRole::Owner {
+        return Err(ApiError::forbidden("cannot invite above your own role"));
+    }
+    if subject.all_apps && role < OrgRole::Admin {
+        return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
+    }
+    let teams = team_names(node, &org, Some(account), &subject.teams);
+    let role_text = role_words(subject.role);
+    let joins = if teams.is_empty() {
+        format!("{org_name} as {role_text}")
+    } else {
+        format!("{org_name} as {role_text}, in {}", phrase(&teams))
+    };
+    let expires = plain_date(now_secs() + ttl_secs);
+    let mut points = vec![
+        format!("Anyone who has this invite's link can join {joins}."),
+        if uses == 1 {
+            format!("One person can join with it, until {expires}.")
+        } else {
+            format!("Up to {uses} people can join with it, until {expires}.")
+        },
+        "The app that sent you here receives the link, to share it.".to_owned(),
+    ];
+    if subject.all_apps {
+        points.push(format!(
+            "Whoever joins also gets every app added to {org_name} later."
+        ));
+    }
+    points.push("You can revoke the invite before it is used.".to_owned());
+    let model = json!({
+        "kind": "createInvite",
+        "scope": { "kind": "org", "org": org, "name": org_name },
+        "headline": format!("Invite people to {joins}"),
+        "title": format!("Invite people to {org_name}"),
+        "points": points,
+        "attention": [],
+        "before": "Until you approve, no invite exists and nobody can join with one.",
+        "after": format!("Once you approve, anyone with the link can join {joins}."),
+        "notes": [],
+        "invite": {
+            "org": org,
+            "role": subject.role,
+            "teams": subject.teams,
+            "teamNames": teams,
+            "uses": uses,
+            "ttlSecs": ttl_secs,
+            "allApps": subject.all_apps,
+        },
+    });
+    Ok((
+        Action::CreateInvite {
+            terms: InviteTerms {
+                org,
+                role: subject.role,
+                teams: subject.teams,
+                ttl_secs,
+                uses,
+                all_apps: subject.all_apps,
+            },
+        },
+        model,
+    ))
+}
+
+fn accept_invite_request(
+    node: &Node,
+    account: &str,
+    subject: AcceptInviteSubject,
+) -> Result<(Action, Value), ApiError> {
+    let token = subject.token;
+    if token.is_empty() || token.len() > MAX_INVITE_TOKEN_BYTES {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "subject.token is not an invite token",
+        ));
+    }
+    let key = crate::proof::invite_key(&token);
+    let now = now_secs();
+    let (invite, org_name, current) = node
+        .sys(|s| {
+            let inv = s.invites.get(&key)?;
+            let o = s.orgs.get(&inv.org)?;
+            Some((inv.clone(), o.name.clone(), o.role(account)))
+        })
+        .filter(|(inv, _, _)| inv.expires_at > now && inv.uses_left > 0)
+        .ok_or_else(|| ApiError::not_found("no such invite, or it expired or was used up"))?;
+    let teams = team_names(node, &invite.org, None, &invite.teams);
+    let role_text = role_words(invite.role);
+    let joins = if teams.is_empty() {
+        format!("{org_name} as {role_text}")
+    } else {
+        format!("{org_name} as {role_text}, in {}", phrase(&teams))
+    };
+    let mut points = vec![format!("You join {joins}.")];
+    if let Some(r) = current {
+        points.push(format!(
+            "You are {} of {org_name} already; you keep the higher of the two roles.",
+            role_words(r)
+        ));
+    }
+    points.push(format!(
+        "{org_name}'s admins see you among its members, and you see its apps your role reaches."
+    ));
+    if invite.all_apps {
+        points.push(format!("You also get every app added to {org_name} later."));
+    }
+    points.push("You can leave the organization later.".to_owned());
+    let model = json!({
+        "kind": "acceptInvite",
+        "scope": { "kind": "org", "org": invite.org, "name": org_name },
+        "headline": format!("Join {joins}"),
+        "title": format!("Join {org_name}"),
+        "points": points,
+        "attention": [],
+        "before": format!("Until you approve, you do not join {org_name}."),
+        "after": format!("Once you approve, you are {role_text} of {org_name}."),
+        "notes": [],
+        "invite": {
+            "org": invite.org,
+            "role": invite.role,
+            "teams": invite.teams,
+            "teamNames": teams,
+            "expiresAt": invite.expires_at,
+            "allApps": invite.all_apps,
+        },
+    });
+    Ok((
+        Action::AcceptInvite {
+            token: InviteToken(token),
+        },
+        model,
+    ))
+}
+
 // ---------------------------------------------------------------- results
 
 /// What `/result` answers for a request.
 fn result_json(id: &str, r: &ConsentRequest) -> Value {
-    json!({
+    let mut v = json!({
         "requestId": id,
         "kind": r.model["kind"],
         "status": r.decision.label(),
         "decidedAt": r.decision.at(),
-    })
+    });
+    if let (Some(Outcome(made)), Some(o)) = (&r.outcome, v.as_object_mut()) {
+        let _prev = o.insert("outcome".into(), made.clone());
+    }
+    v
 }
 
 /// `GET /consent/{id}/result`: the decision, for the account that asked.
@@ -1714,6 +2063,10 @@ fn guarded(mut resp: Response) -> Response {
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (header::REFERRER_POLICY, "no-referrer"),
         (header::X_FRAME_OPTIONS, "DENY"),
+        // Never over plain HTTP again once seen over TLS: a downgrade would
+        // hand the page, and what it shows, to the network (browsers ignore
+        // it on an `http` answer, so a development node is unaffected).
+        (header::STRICT_TRANSPORT_SECURITY, "max-age=31536000"),
     ] {
         let _prev = h.insert(k, HeaderValue::from_static(v));
     }
@@ -1785,7 +2138,11 @@ struct ApproveBody {
 /// before the approval is written.
 fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
     match action {
-        Action::Release { .. } => Ok(()),
+        // The routes judge these on fresh state when they run.
+        Action::Release { .. }
+        | Action::CreateOrg { .. }
+        | Action::CreateInvite { .. }
+        | Action::AcceptInvite { .. } => Ok(()),
         Action::Upgrade {
             app,
             from_bundle,
@@ -1856,17 +2213,18 @@ async fn approve(node: &Node, id: &str, body: &[u8]) -> Result<Value, ApiError> 
     }
     let out = act(node, &req, body.confirm, sys_index).await;
     match out {
-        Ok(result) => {
-            let r = node.consent.transition(
+        Ok(Acted { shown, outcome }) => {
+            let r = node.consent.decide(
                 id,
                 &Decision::Deciding,
                 Decision::Approved { at: now_secs() },
+                outcome,
                 now_secs(),
             )?;
             Ok(json!({
                 "status": "approved",
                 "redirect": redirect(&r, id, "approved"),
-                "result": result,
+                "result": shown,
             }))
         }
         Err(e) => {
@@ -1880,6 +2238,22 @@ async fn approve(node: &Node, id: &str, body: &[u8]) -> Result<Value, ApiError> 
     }
 }
 
+/// What an approval answers: what the page shows, and what the app that
+/// asked reads from `/result` (`None`: nothing beyond the decision).
+struct Acted {
+    shown: Value,
+    outcome: Option<Value>,
+}
+
+impl Acted {
+    const fn shown(shown: Value) -> Self {
+        Self {
+            shown,
+            outcome: None,
+        }
+    }
+}
+
 /// Run the request's route as its account, through the consent page.
 /// `sys_index` is the index the approval's round named: the route's own
 /// checks wait for it rather than run another round (`Node::sys_fresh_from`).
@@ -1888,7 +2262,7 @@ async fn act(
     req: &ConsentRequest,
     confirm: Option<ConfirmBody>,
     sys_index: Option<u64>,
-) -> Result<Value, ApiError> {
+) -> Result<Acted, ApiError> {
     let p = Principal {
         caller: Caller::Account {
             account: req.account.clone(),
@@ -1900,7 +2274,67 @@ async fn act(
         consent_page: true,
         sys_index,
     };
+    let account_subject = format!("account:{}", req.account);
     let Json(v) = match &req.action {
+        Action::CreateOrg { name } => {
+            // `POST /orgs` takes no passkey; the page does, so the person
+            // (not the app that sent them) creates it. Nothing is logged
+            // beyond what `POST /orgs` logs.
+            let _consent = consent(
+                node,
+                &p,
+                &account_subject,
+                "__create_org",
+                &json!({ "name": name }),
+                confirm,
+            )
+            .await?;
+            let Json(v) = create_org(node, req.account.clone(), name.clone(), None).await?;
+            return Ok(Acted {
+                shown: v.clone(),
+                outcome: Some(v),
+            });
+        }
+        Action::CreateInvite { terms } => {
+            let Json(v) = create_invite(
+                node,
+                &p,
+                terms.org.clone(),
+                InviteBody {
+                    role: terms.role,
+                    teams: terms.teams.clone(),
+                    ttl_secs: Some(terms.ttl_secs),
+                    uses: Some(terms.uses),
+                    all_apps: terms.all_apps,
+                    confirm,
+                },
+            )
+            .await?;
+            // The token goes to the app that asked, over the sealed
+            // `/result`, never in the page's answer, which travels in the
+            // clear.
+            return Ok(Acted {
+                shown: json!({ "org": terms.org }),
+                outcome: Some(v),
+            });
+        }
+        Action::AcceptInvite { token } => {
+            // `POST /invites/{token}/redeem` takes no passkey; the page does.
+            let _consent = consent(
+                node,
+                &p,
+                &account_subject,
+                "__accept_invite",
+                &json!({ "inviteKey": crate::proof::invite_key(&token.0) }),
+                confirm,
+            )
+            .await?;
+            let Json(v) = redeem_invite(node, req.account.clone(), &token.0).await?;
+            return Ok(Acted {
+                shown: v.clone(),
+                outcome: Some(v),
+            });
+        }
         Action::Release {
             scope,
             version,
@@ -1967,7 +2401,7 @@ async fn act(
             .await?
         }
     };
-    Ok(v)
+    Ok(Acted::shown(v))
 }
 
 /// `POST /consent/{id}/decline`: nothing is approved; the app learns so.
@@ -1998,25 +2432,24 @@ mod tests {
             return_to: Url::parse("https://app.example/back?x=1").unwrap(),
             expires_at,
             decision: Decision::Pending,
+            outcome: None,
         }
     }
 
     #[test]
-    fn requests_expire_are_bounded_per_account_and_decide_once() {
+    fn an_accounts_new_request_replaces_its_undecided_one_and_each_decides_once() {
         let store = ConsentRequests::default();
         let now = 1_000;
+        // One undecided request per account: a new one replaces it.
+        let first = store.insert(7, request("alice", now + 10), now).unwrap();
         let id = store.insert(7, request("alice", now + 10), now).unwrap();
         assert!(is_request_id(&id), "{id}");
         assert!(id.starts_with("7."));
-        // Bounded per account, not across accounts.
-        for _ in 1..MAX_OPEN_REQUESTS_PER_ACCOUNT {
-            let _ = store.insert(7, request("alice", now + 10), now).unwrap();
-        }
-        let e = store
-            .insert(7, request("alice", now + 10), now)
-            .unwrap_err();
-        assert_eq!((e.status, e.code.as_str()), (429, "RATE_LIMITED"));
-        let _ = store.insert(7, request("bob", now + 10), now).unwrap();
+        assert_eq!(store.get(&first, now).unwrap_err().status, 404);
+        // Not across accounts.
+        let bobs = store.insert(7, request("bob", now + 10), now).unwrap();
+        assert!(store.get(&id, now).is_ok());
+        assert!(store.get(&bobs, now).is_ok());
         // Decided once: approve, then neither approve nor decline again.
         let r = store
             .transition(&id, &Decision::Pending, Decision::Deciding, now)
@@ -2091,7 +2524,7 @@ mod tests {
         };
         let withdraw = |subject: Value| match parse(subject).unwrap() {
             CreateBody::Release { subject, .. } => subject.withdraw,
-            CreateBody::Upgrade { .. } | CreateBody::Outbound { .. } => unreachable!(),
+            _ => unreachable!("parsed as a release request"),
         };
         assert!(
             !withdraw(json!({ "version": "1.0.0" })),

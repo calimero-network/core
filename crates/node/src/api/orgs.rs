@@ -107,16 +107,27 @@ async fn org_create(
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
-    crate::system::org_name_fits(&body.name).map_err(malformed)?;
+    create_org(&node, account, body.name, body.recovery_key).await
+}
+
+/// Create an organization `account` owns: `POST /orgs`, and the consent
+/// page's `createOrg` once the person approved it there.
+pub(crate) async fn create_org(
+    node: &Node,
+    account: String,
+    name: String,
+    recovery_key: Option<String>,
+) -> ApiResult {
+    crate::system::org_name_fits(&name).map_err(malformed)?;
     let org_id = typed_id::<16>();
     let v = node
         .sys_write(&SystemCmd::CreateOrg {
             org_id,
-            name: body.name,
+            name,
             actor: account,
             release: Some(node.own_release()),
-            recovery_key: body.recovery_key,
-            at: recovery_now(&node),
+            recovery_key,
+            at: recovery_now(node),
             name_fits: true,
         })
         .await?;
@@ -851,19 +862,19 @@ async fn team_remove_member(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) struct InviteBody {
-    role: OrgRole,
+pub(crate) struct InviteBody {
+    pub(crate) role: OrgRole,
     #[serde(default)]
-    teams: Vec<String>,
+    pub(crate) teams: Vec<String>,
     #[serde(default)]
-    ttl_secs: Option<u64>,
+    pub(crate) ttl_secs: Option<u64>,
     #[serde(default)]
-    uses: Option<u32>,
+    pub(crate) uses: Option<u32>,
     /// Whoever redeems it also gets every app added later (an admin's).
     #[serde(default)]
-    all_apps: bool,
+    pub(crate) all_apps: bool,
     #[serde(default)]
-    confirm: Option<ConfirmBody>,
+    pub(crate) confirm: Option<ConfirmBody>,
 }
 
 /// Mint an invite: the actor's, approved with their passkey over the
@@ -877,6 +888,17 @@ async fn invite_create(
     Json(body): Json<InviteBody>,
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
+    create_invite(&node, &p, org, body).await
+}
+
+/// Mint an invite as `p`: `POST /orgs/{org}/invites`, and the consent page's
+/// `createInvite`, whose principal is the page's for the request's account.
+pub(crate) async fn create_invite(
+    node: &Node,
+    p: &Principal,
+    org: String,
+    body: InviteBody,
+) -> ApiResult {
     let actor = p.account()?;
     if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
@@ -898,8 +920,8 @@ async fn invite_create(
     };
     let args = crate::system::invite_args(&crate::proof::invite_key(&token), &invite);
     let c = consent_minted(
-        &node,
-        &p,
+        node,
+        p,
         &format!("org:{org}"),
         "__create_invite",
         &args,
@@ -952,11 +974,17 @@ async fn invite_redeem(
     Path(token): Path<String>,
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
+    redeem_invite(&node, account, &token).await
+}
+
+/// Redeem invite `token` for `account`: `POST /invites/{token}/redeem`, and
+/// the consent page's `acceptInvite` once the person approved it there.
+pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> ApiResult {
     let now = now_secs();
     let v = node
         .sys_write(&SystemCmd::RedeemInvite {
-            invite_key: crate::proof::invite_key(&token),
-            signature: crate::proof::sign_invite_redeem(&token, &account, now),
+            invite_key: crate::proof::invite_key(token),
+            signature: crate::proof::sign_invite_redeem(token, &account, now),
             account,
             now,
             free_when_unchanged: true,

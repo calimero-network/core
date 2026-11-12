@@ -420,6 +420,22 @@ pub const ISSUER_RETRY_SECS: u64 = 5;
 /// would otherwise hold it for the HTTP client's 30 s.
 pub const ISSUER_ATTEST_WAIT: Duration = Duration::from_secs(5);
 
+/// Whether a peer's receipt-key quote may be the unbound form a release
+/// before [`crate::attest::RECEIPT_KEY_BOUND_SINCE`] makes (it binds no
+/// cluster or node): only while the logged cluster version is below that
+/// release (or not logged yet), so while a node on an earlier release may
+/// still be in the cluster. Once every node runs it, the system leader logs a
+/// cluster version at or above it, no older node is admitted again, and only
+/// bound quotes count. A version that does not parse is not taken as earlier.
+#[must_use]
+pub fn takes_unbound_receipt_key(cluster_version: Option<&str>) -> bool {
+    cluster_version.is_none_or(|v| {
+        semver::Version::parse(v).is_ok_and(|v| {
+            semver::Version::parse(crate::attest::RECEIPT_KEY_BOUND_SINCE).is_ok_and(|s| v < s)
+        })
+    })
+}
+
 /// At most this many issuers are attested at once ([`Node::warm_issuers`]).
 pub const MAX_CONCURRENT_ISSUER_ATTESTS: usize = 8;
 
@@ -1643,16 +1659,29 @@ impl Node {
                 .json()
                 .await
                 .ok()?;
-            let (key, _governance) = crate::attest::verify_receipt_key(
-                &doc,
-                &nonce,
-                &self.config.peer_policy(),
-            )
-            .await
-            .map_err(|e| {
-                warn!(node = id, error = %format!("{e:#}"), "could not attest a session issuer");
-            })
-            .ok()?;
+            // Bound to this cluster and the node asked for: the address
+            // answers in the clear, so another node's quote is refused.
+            let policy = self.config.peer_policy();
+            let bound =
+                crate::attest::verify_receipt_key(&doc, &nonce, &self.config.cluster, id, &policy)
+                    .await;
+            let logged = self.sys(|s| s.cluster_version.clone());
+            let attested = match bound {
+                Ok(attested) => Ok(attested),
+                // A peer still on an earlier release quotes the unbound form,
+                // taken only while the cluster runs that release too.
+                Err(bound) if takes_unbound_receipt_key(logged.as_deref()) => {
+                    crate::attest::verify_unbound_receipt_key(&doc, &nonce, &policy)
+                        .await
+                        .map_err(|unbound| eyre::eyre!("{bound:#}; unbound: {unbound:#}"))
+                }
+                Err(bound) => Err(bound),
+            };
+            let (key, _governance) = attested
+                .map_err(|e| {
+                    warn!(node = id, error = %format!("{e:#}"), "could not attest a session issuer");
+                })
+                .ok()?;
             Some((key, doc.release.version))
         })
         .await
@@ -2147,6 +2176,18 @@ impl Node {
                         .is_ok()
             }) {
                 let _r = self.sys_write(&SystemCmd::AttributeByRelease).await;
+            }
+            // Likewise this release's rules: from here on an entry's flags
+            // naming an earlier rule are read as set (`RequireCurrentRules`).
+            // Only once the logged cluster version brings it (`currentRules`):
+            // below it a node of the release before would skip the mark, and
+            // `sys_write` would refuse it each pass.
+            if self.sys(|s| {
+                s.current_rules_from.is_none()
+                    && (s.governance.is_some() || !s.accounts.is_empty())
+                    && cv::check(s.cluster_version.as_deref(), &[Feature::CurrentRules]).is_ok()
+            }) {
+                let _r = self.sys_write(&SystemCmd::RequireCurrentRules).await;
             }
             self.admit_registered_nodes();
             self.promote_learners();
@@ -3619,5 +3660,23 @@ mod off_workers_tests {
     #[test]
     fn outside_a_runtime_it_runs_in_place() {
         assert_eq!(off_workers(|| 7), 7);
+    }
+}
+
+#[cfg(test)]
+mod unbound_receipt_key_tests {
+    use super::takes_unbound_receipt_key;
+    use crate::attest::RECEIPT_KEY_BOUND_SINCE;
+
+    /// A cluster rolling from the release before takes its nodes' unbound
+    /// quotes; once the cluster version reaches the bound form's release, it
+    /// does not.
+    #[test]
+    fn only_a_cluster_still_on_an_earlier_release_takes_unbound_quotes() {
+        assert!(takes_unbound_receipt_key(Some("1.0.0-rc.18")));
+        assert!(takes_unbound_receipt_key(None));
+        assert!(!takes_unbound_receipt_key(Some(RECEIPT_KEY_BOUND_SINCE)));
+        assert!(!takes_unbound_receipt_key(Some("1.0.0")));
+        assert!(!takes_unbound_receipt_key(Some("garbage")));
     }
 }

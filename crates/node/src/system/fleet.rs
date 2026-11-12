@@ -198,6 +198,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             s.attributes_by_release = true;
             Ok(Value::Null)
         }
+        SystemCmd::RequireCurrentRules => {
+            if s.current_rules_from.is_some() {
+                return Err("the current rules are required already");
+            }
+            s.current_rules_from = Some(index);
+            Ok(Value::Null)
+        }
         SystemCmd::SetClusterVersion { version, nodes } => {
             cluster_version::apply(s, version, &nodes)
         }

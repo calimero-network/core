@@ -177,7 +177,23 @@ is its command line.
   writes (`reconcile`). An entry before it (what an earlier release logged,
   replayed on restart) applies as it did, so replicas never diverge on it
   (`session_commands_logged_before_their_proofs_apply_as_they_did`,
-  `old_datadir.rs`).
+  `old_datadir.rs`). The flags that name an earlier release's rule
+  (`owner_in_org`, `owner_in_team`, `apps_need_consent`, `teams_seen`,
+  `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
+  `member_child_teams`, `revoke_api_keys`, `by_release`, `close_drops_below`,
+  `all_apps_rows`, `name_fits`) work the same way: from
+  `SystemState::current_rules_from` on (the `RequireCurrentRules` the first
+  system leader on this release writes from `reconcile` once the logged
+  cluster version brings `Feature::CurrentRules`), `SystemMachine::run`
+  reads them as set whatever the entry says (`SystemCmd::hold_to_current_rules`),
+  and an organization's upgrade run is derived at apply (Upgrade runs below);
+  before it, an entry applies as it was logged. The API keeps setting every
+  flag, so a replica on the release before applies this release's entries
+  alike. Regressions: `app_commands_after_the_current_rules_mark_apply_under_them`,
+  `team_commands_after_the_current_rules_mark_apply_under_them`.
+  It is independent of `AttributeByRelease` (release attribution, below):
+  `reconcile` writes each mark once, and each gates only its own rule from
+  where it sits in the log.
 - **Cluster version** (`system/cluster_version.rs`, `node/cluster_version.rs`):
   a new command or field ships with a feature gate. Each log entry shape an
   older release cannot apply alike is a `Feature` (`FEATURES`, `Feature::since`,
@@ -300,8 +316,13 @@ is its command line.
   `--app-upgrades`, `--outbound-approvals`. The first leader writes
   `SystemCmd::Genesis` before any account exists (`CreateAccount` waits for it);
   a second genesis is refused, so a restart with other flags changes nothing.
-  Every receipt-key quote binds it (`receipt_key_binding(key, governance)`,
-  `AttestationDoc::governance`), so `verify_app_cluster` proves it. Operator
+  Every receipt-key quote binds it (`receipt_key_binding(key, governance, cluster, node)`,
+  `AttestationDoc::governance`), so `verify_app_cluster` proves it. A node
+  attesting a peer as a session issuer (`Node::attest_issuer`) requires that
+  bound form, and takes a peer's unbound `receipt-key.v2` quote (a release
+  before `RECEIPT_KEY_BOUND_SINCE`) only while the logged cluster version is
+  below that release (`takes_unbound_receipt_key`), so an earlier node's
+  sessions keep working while a cluster rolls onto it. Operator
   side: `POST /ops/releases` (`operator_releases`, which `approved_releases`
   then answers), `POST /ops/apps/{app}/upgrade` (an installed release;
   `UpgradeApp { by_operator }`), `POST /ops/outbound` (`operator_outbound`,
@@ -860,6 +881,14 @@ is its command line.
   the run and on `AppRecord::last_upgrade`. `GET /orgs/{org}/upgrades/{run}`
   follows it; `.../retry` runs the failed apps again as a new run. A release
   missing from the cluster is installed from the registry first (owner runs).
+  From `SystemState::current_rules_from` on, `apply` derives the run's apps
+  from the state and its consent's method (`SystemState::upgrade_run_apps`:
+  `org_run_apps`, `published_run_apps`, or a retry's failed apps), clears its
+  progress and refuses a run id any organization holds; `UpgradeApp { run }`
+  moves an app once, only while it runs the run's package and never to an
+  older release (`SystemState::run_may_move`, which `api::start_run` asks
+  first and notes as failed, `NOT_IN_RUN`). Regression:
+  `an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once`.
 - **Aliases**: `Account::aliases`, `PUT/GET/DELETE /auth/aliases/{alias}`
   and `GET /auth/aliases`; an alias names only an app its account reaches.
 - **Metadata and org lifecycle** (org/member/app metadata, device
@@ -1121,14 +1150,16 @@ is its command line.
   `a_custom_domains_host_names_one_origin`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
-  `POST /consent/requests { kind: release|upgrade|outbound, scope?, subject,
-  returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
+  `POST /consent/requests { kind: release|upgrade|outbound|createOrg|createInvite|acceptInvite,
+  scope?, subject, returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
   `withdraw: true` withdrawing its approval) and gets `{ requestId, url,
   expiresAt, code }` (`consent_page::confirmation_code`, shown on the page
   and by the console); `returnTo` is the package's own frontend origin or one its
   newest signed manifest names (unbound sessions: `config.origins`). The
   request (this node's memory,
-  `CONSENT_REQUEST_TTL`, per-account and per-node bounds, decided once) freezes
+  `CONSENT_REQUEST_TTL`, one undecided request per account and node (a new one
+  replaces it, so a forged page has no other request to swap in), a per-node
+  bound, decided once; page answers carry HSTS) freezes
   a model from node state and verified manifests (an upgrade's capability
   sheet is `consent_page::diff`, its methods, events, timers and state version from the
   `calimero:abi` each component embeds, `component::embedded_abi`; regression:
@@ -1152,6 +1183,19 @@ is its command line.
   `GET /consent/{id}/result` (sealed, same account; forwarded to the holder
   over `internal/consent/result`).
   Package-bound sessions are still refused the approval routes themselves.
+  `createOrg { name }`, `createInvite { org, role, teams?, ttlSecs?, uses?,
+  allApps? }` and `acceptInvite { token }` are how an app's frontend manages
+  organizations (refused `POST /orgs`, invites and redemption): `act` runs
+  `api::create_org`, `api::create_invite` (its own logged
+  `__create_invite` consent) and `api::redeem_invite`, the first and last
+  behind an unlogged step-up over `account:<a>` (`__create_org { name }`,
+  `__accept_invite { inviteKey }`), so the log entries are exactly the API's
+  and no feature gate is needed. What the approval made (`orgId`, the
+  invite's `token`, the `org` joined) is kept with the decision
+  (`ConsentRequests::decide`, `Outcome`, redacted in `Debug` as
+  `InviteToken` is) and answered as `/result`'s `outcome`, never in the
+  page's clear answer. Regression:
+  `an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page`.
   Regressions: `tests/consent_page.rs`.
 - **Presence** (`presence.rs`, the ephemeral awareness channel): in memory on
   every node, never in a log. `POST /apps/{app}/presence { seq, state }` (anyone
