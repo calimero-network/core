@@ -82,7 +82,28 @@ detail.
    (`mero-app-build <crate> --out app.wasm --compute-out compute.wasm`). Pass it
    with `--compute compute.wasm`: the manifest then declares it as `compute`, and
    the `.mpk` carries it as `compute.wasm`. Without it a release cannot run
-   compute, and neither can a raw `.wasm` upload.
+   compute, and neither can a raw `.wasm` upload. `--compute` without `--wasm`
+   packs a package with only a compute component.
+
+   A release may also ship pipelines over its compute methods: `--pipeline
+   daily.yaml` (repeatable) packs each file as `pipelines/<name>`, and the
+   manifest lists it under `pipelines` (at most 16 per package, each at most
+   64 KiB), signed with the rest. The node compiles each file at install and
+   checks it against the package's own compute methods and the cluster's pools:
+   the module is `self` (or left out) or another installed package by its exact
+   name, optionally pinned (`module: com.acme.pdf@0.1.0`; without a version, the
+   newest release the installer sees). That package must ship a compute component;
+   its methods and caps are the ones the step is checked against, a module the
+   installer cannot see or that has none is `UNKNOWN_MODULE`, and the release
+   keeps running the module release it was installed against until the pipeline's
+   own package is released again. The module's package cannot be uninstalled while
+   such a release exists (`409 MODULE_IN_USE`). The step's files, payer and usage
+   stay the calling app's. Every method must be one its module
+   declares, and each step's limits may only lower the method's caps. A problem
+   is `400 BAD_PIPELINE` with `details`, a list of `{file, path, code, message}`
+   for every error. A release with pipelines installs only once every node runs
+   this release (`409 CLUSTER_NOT_UPGRADED`). `meroctl app pipelines PACKAGE`
+   prints what a version registered.
 
 4. **Install with `meroctl`.**
 

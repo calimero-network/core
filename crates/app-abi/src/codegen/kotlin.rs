@@ -2,15 +2,21 @@
 //! `CalimeroClient.apps.method` or a `ContextContractCalling`, the app's events and errors as
 //! sealed interfaces, every value through a kotlinx.serialization serializer that writes the
 //! ABI's JSON form (u64/i64 decimal strings, bytes base64url).
+//!
+//! An app type with a shape in the ABI's `types` is nested in the client: a record a
+//! `data class`, an enum a `sealed interface` of its variants, a generic type a generic one, each
+//! with a hand-written serializer (`Item.serializer()`, `Page.serializer(Item.serializer())`:
+//! no compiler plugin) that follows its serde tagging (external, internal, adjacent, untagged).
+//! A type the ABI does not describe stays its JSON (`JsonElement`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use crate::abi::{AppAbi, Fields};
+use crate::abi::{AppAbi, EnumRepr, Field, Fields, Shape, TypeDef, VariantData};
 use crate::openapi::{all_events, pascal, Names};
 use crate::ty::{Int, Type};
 
-use super::ident::{sanitize, Scope};
+use super::ident::{lower_first, sanitize, Scope};
 
 /// Kotlin's hard keywords: an identifier spelled like one is written in backticks.
 const KEYWORDS: &[&str] = &[
@@ -77,6 +83,7 @@ const RESERVED_TYPES: &[&str] = &[
     "JsonEncoder",
     "JsonNull",
     "JsonObject",
+    "JsonPrimitive",
     "KSerializer",
     "List",
     "ListSerializer",
@@ -84,6 +91,8 @@ const RESERVED_TYPES: &[&str] = &[
     "Map",
     "MapSerializer",
     "MeroAppBackend",
+    "Nothing",
+    "Pair",
     "PasskeyProvider",
     "PrimitiveKind",
     "PrimitiveSerialDescriptor",
@@ -146,6 +155,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
@@ -207,12 +217,19 @@ const WIRE: &str = r#"
     }
 "#;
 
-struct Kt {
+struct Kt<'a> {
+    abi: &'a AppAbi,
     names: Names,
-    /// App types met so far: Kotlin name to ABI text.
+    /// App types the ABI does not describe, met so far: Kotlin name to ABI text.
     named: BTreeMap<String, String>,
+    /// App types it describes, met so far: Kotlin name to entry name and entry.
+    described: BTreeMap<String, (String, &'a TypeDef)>,
+    /// The generic parameters in scope (inside a generic entry's declaration).
+    params: Vec<String>,
     /// The tuple arities used.
     tuples: BTreeSet<usize>,
+    /// The companion's helpers the declarations use.
+    helpers: BTreeSet<&'static str>,
 }
 
 fn int_type(int: Int) -> &'static str {
@@ -228,7 +245,7 @@ fn int_type(int: Int) -> &'static str {
     }
 }
 
-impl Kt {
+impl Kt<'_> {
     fn named(&mut self, text: &str) -> String {
         let (name, _) = self.names.named(text);
         let _ = self.named.insert(name.clone(), text.to_owned());
@@ -264,8 +281,16 @@ impl Kt {
                 format!("Tuple{}<{}>", items.len(), items.join(", "))
             }
             Type::Map(_, value) => format!("Map<String, {}>", self.ty(value)),
-            // ABI version 1 names an app type without its fields: its alias is `JsonElement`.
-            Type::Named(text) => self.named(text),
+            Type::Named(text) if self.params.contains(text) => text.clone(),
+            Type::Named(text) => match self.described(ty) {
+                Some((name, args)) if args.is_empty() => name,
+                Some((name, args)) => {
+                    let args: Vec<String> = args.iter().map(|a| self.ty(a)).collect();
+                    format!("{name}<{}>", args.join(", "))
+                }
+                // A type the ABI names without its shape: its alias is `JsonElement`.
+                None => self.named(text),
+            },
         }
     }
 
@@ -295,9 +320,51 @@ impl Kt {
             Type::Map(_, value) => {
                 format!("MapSerializer(String.serializer(), {})", self.ser(value))
             }
-            Type::Named(text) => format!("serializer<{}>()", self.named(text)),
+            Type::Named(text) if self.params.contains(text) => param_serializer(text),
+            Type::Named(text) => match self.described(ty) {
+                Some((name, args)) => {
+                    let args: Vec<String> = args.iter().map(|a| self.ser(a)).collect();
+                    format!("{name}.serializer({})", args.join(", "))
+                }
+                // Its alias is `JsonElement`. Never `serializer<T>()`: inside a declaration's
+                // companion, `serializer` is the companion's own.
+                None => {
+                    let _ = self.named(text);
+                    "JsonElement.serializer()".to_owned()
+                }
+            },
         }
     }
+
+    /// A described app type's Kotlin name and generic arguments.
+    fn described(&mut self, ty: &Type) -> Option<(String, Vec<Type>)> {
+        let (entry, def, args) = self.abi.shape_of(ty)?;
+        let (name, _) = self.names.named(&entry);
+        let _ = self.described.insert(name.clone(), (entry, def));
+        Some((name, args))
+    }
+}
+
+/// The types a shape names.
+fn shape_types(shape: &Shape) -> Vec<Type> {
+    let data = |d: &VariantData| match d {
+        VariantData::Unit => Vec::new(),
+        VariantData::Newtype(t) => vec![t.clone()],
+        VariantData::Tuple(ts) => ts.clone(),
+        VariantData::Record(fs) => fs.iter().map(|f| f.ty.clone()).collect(),
+    };
+    match shape {
+        Shape::Record(fs) => fs.iter().map(|f| f.ty.clone()).collect(),
+        Shape::Newtype(t) => vec![t.clone()],
+        Shape::Tuple(ts) => ts.clone(),
+        Shape::Unit => Vec::new(),
+        Shape::Enum { variants, .. } => variants.iter().flat_map(|v| data(&v.data)).collect(),
+    }
+}
+
+/// The serializer a generic declaration takes for parameter `param`: `T` → `tSerializer`.
+fn param_serializer(param: &str) -> String {
+    format!("{}Serializer", lower_first(&sanitize(param)))
 }
 
 /// An ABI name as a Kotlin identifier, in backticks when it is a keyword.
@@ -348,7 +415,7 @@ fn variants(entries: &BTreeMap<String, Fields>, scope: &mut Scope) -> Vec<Varian
         .collect()
 }
 
-impl Kt {
+impl Kt<'_> {
     /// A sealed interface's variants, each a data class (or a data object without fields).
     fn variant_classes(
         &mut self,
@@ -399,6 +466,681 @@ impl Kt {
     }
 }
 
+/// How many values a variant carries.
+fn arity(data: &VariantData) -> usize {
+    match data {
+        VariantData::Unit => 0,
+        VariantData::Newtype(_) => 1,
+        VariantData::Tuple(ts) => ts.len(),
+        VariantData::Record(fs) => fs.len(),
+    }
+}
+
+/// A shape's stored values: (property, ABI field). A newtype's is `value`, a tuple's `v0`, ...
+fn properties(data: &VariantData) -> Vec<(String, Field)> {
+    let plain = |name: String, ty: &Type| {
+        (
+            name.clone(),
+            Field {
+                name,
+                ty: ty.clone(),
+                optional: false,
+            },
+        )
+    };
+    match data {
+        VariantData::Unit => Vec::new(),
+        VariantData::Newtype(t) => vec![plain("value".to_owned(), t)],
+        VariantData::Tuple(ts) => ts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| plain(format!("v{i}"), t))
+            .collect(),
+        VariantData::Record(fs) => {
+            let mut scope = Scope::new(&[]);
+            fs.iter()
+                .map(|f| (scope.take(ident(&f.name)), f.clone()))
+                .collect()
+        }
+    }
+}
+
+/// `text` indented by `pad` after its first line.
+fn indent(text: &str, pad: &str) -> String {
+    text.replace('\n', &format!("\n{pad}"))
+}
+
+/// The companion's helpers the shapes' serializers call, each declared when used.
+const HELPERS: &[(&str, &str)] = &[
+    (
+        "attempt",
+        "
+        /** [block]'s value, or `null` when it does not read (an untagged variant that does not fit). */
+        private fun <T> attempt(block: () -> T): T? =
+            try {
+                block()
+            } catch (e: IllegalArgumentException) {
+                null
+            }",
+    ),
+    (
+        "decode",
+        "
+        private fun <T> decode(
+            serializer: KSerializer<T>,
+            data: JsonElement,
+        ): T = json.decodeFromJsonElement(serializer, data)",
+    ),
+    (
+        "external",
+        "
+        /** An externally tagged variant's name and data: `\"Name\"`, or `{ \"Name\": data }`. */
+        private fun external(
+            data: JsonElement,
+            what: String,
+        ): Pair<String, JsonElement> =
+            when {
+                data is JsonPrimitive && data.isString -> data.content to JsonNull
+                data is JsonObject && data.size == 1 -> data.entries.first().let { it.key to it.value }
+                else -> throw SerializationException(\"$what: expected a variant name or an object with one key\")
+            }",
+    ),
+    (
+        "items",
+        "
+        /** [data] as an array of exactly [n] items. */
+        private fun items(
+            data: JsonElement,
+            n: Int,
+            what: String,
+        ): JsonArray {
+            val items = data as? JsonArray ?: throw SerializationException(\"$what: expected an array\")
+            if (items.size != n) throw SerializationException(\"$what: expected $n items, got ${items.size}\")
+            return items
+        }",
+    ),
+    (
+        "obj",
+        "
+        /** [data] as an object. */
+        private fun obj(
+            data: JsonElement,
+            what: String,
+        ): JsonObject = data as? JsonObject ?: throw SerializationException(\"$what: expected an object\")",
+    ),
+    (
+        "tag",
+        "
+        /** The variant name at [key] of a tagged enum's object. */
+        private fun tag(
+            data: JsonElement,
+            key: String,
+            what: String,
+        ): String {
+            val tag = obj(data, what)[key] as? JsonPrimitive
+            if (tag == null || !tag.isString) throw SerializationException(\"$what: no `$key`\")
+            return tag.content
+        }",
+    ),
+    (
+        "tagged",
+        "
+        /** An internally tagged variant: [data]'s fields with the tag [key] = [name] first. */
+        private fun tagged(
+            key: String,
+            name: String,
+            data: JsonElement,
+            what: String,
+        ): JsonObject = JsonObject(mapOf(key to JsonPrimitive(name)) + obj(data, what))",
+    ),
+];
+
+/// One variant of a described enum: its class name, JSON name and data.
+struct Case<'v> {
+    name: String,
+    wire: &'v str,
+    data: &'v VariantData,
+}
+
+impl Kt<'_> {
+    /// A record field's Kotlin type: one the JSON may leave out is nullable.
+    fn field_type(&mut self, f: &Field) -> String {
+        let ty = self.ty(&f.ty);
+        if f.optional && !ty.ends_with('?') {
+            format!("{ty}?")
+        } else {
+            ty
+        }
+    }
+
+    fn field_ser(&mut self, f: &Field) -> String {
+        if f.optional && !f.ty.is_optional() {
+            format!("{}.nullable", self.ser(&f.ty))
+        } else {
+            self.ser(&f.ty)
+        }
+    }
+
+    fn helper(&mut self, name: &'static str) -> &'static str {
+        let _ = self.helpers.insert(name);
+        name
+    }
+
+    /// The statements and expression that build `ctor` from the JSON element `data`. `same`:
+    /// the fields sit beside an internal tag in `data`, already an object. `strict`: a unit
+    /// must be `null` (untagged, unit structs).
+    fn decode_data(
+        &mut self,
+        data: &VariantData,
+        ctor: &str,
+        element: &str,
+        owner: &str,
+        same: bool,
+        strict: bool,
+    ) -> (Vec<String>, String) {
+        let mut lines = Vec::new();
+        if arity(data) == 0 {
+            match data {
+                VariantData::Unit if strict => lines.push(format!(
+                    "if ({element} !is JsonNull) throw SerializationException(\"{owner}: expected null\")"
+                )),
+                VariantData::Record(_) if !same => {
+                    let obj = self.helper("obj");
+                    lines.push(format!("{obj}({element}, \"{owner}\")"));
+                }
+                VariantData::Tuple(_) if !same => {
+                    let items = self.helper("items");
+                    lines.push(format!("{items}({element}, 0, \"{owner}\")"));
+                }
+                _ => {}
+            }
+            return (lines, ctor.to_owned());
+        }
+        let args: Vec<String> = match data {
+            VariantData::Unit => Vec::new(),
+            VariantData::Record(_) => {
+                let source = if same {
+                    element.to_owned()
+                } else {
+                    let obj = self.helper("obj");
+                    lines.push(format!("val fields = {obj}({element}, \"{owner}\")"));
+                    "fields".to_owned()
+                };
+                properties(data)
+                    .iter()
+                    .map(|(prop, f)| {
+                        let ser = self.field_ser(f);
+                        format!(
+                            "{prop} = field({source}, {}, {ser})",
+                            string_literal(&f.name)
+                        )
+                    })
+                    .collect()
+            }
+            VariantData::Tuple(items) => {
+                if same {
+                    return (
+                        Vec::new(),
+                        format!("throw SerializationException(\"{owner}: serde cannot tag a tuple variant internally\")"),
+                    );
+                }
+                let helper = self.helper("items");
+                lines.push(format!(
+                    "val items = {helper}({element}, {}, \"{owner}\")",
+                    items.len()
+                ));
+                let decode = self.helper("decode");
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| format!("{decode}({}, items[{i}])", self.ser(t)))
+                    .collect()
+            }
+            VariantData::Newtype(t) => {
+                let decode = self.helper("decode");
+                vec![format!("{decode}({}, {element})", self.ser(t))]
+            }
+        };
+        if args.len() == 1 {
+            return (lines, format!("{ctor}({})", args[0]));
+        }
+        let args: Vec<String> = args.iter().map(|a| format!("    {a},")).collect();
+        (lines, format!("{ctor}(\n{}\n)", args.join("\n")))
+    }
+
+    /// The JSON element of a shape's data, read from `value`; `tag` puts an internal tag first.
+    fn encode_data(&mut self, data: &VariantData, tag: Option<(&str, &str)>, pad: &str) -> String {
+        let props = properties(data);
+        match data {
+            VariantData::Unit if tag.is_none() => "JsonNull".to_owned(),
+            VariantData::Unit | VariantData::Record(_) => {
+                let mut out = String::from("buildJsonObject {\n");
+                if let Some((key, name)) = tag {
+                    let _ = writeln!(
+                        out,
+                        "{pad}    put({}, JsonPrimitive({}))",
+                        string_literal(key),
+                        string_literal(name)
+                    );
+                }
+                for (prop, f) in &props {
+                    let ser = self.field_ser(f);
+                    let put = format!(
+                        "put({}, encode({ser}, value.{prop}))",
+                        string_literal(&f.name)
+                    );
+                    if f.optional {
+                        let _ = writeln!(out, "{pad}    if (value.{prop} != null) {put}");
+                    } else {
+                        let _ = writeln!(out, "{pad}    {put}");
+                    }
+                }
+                let _ = write!(out, "{pad}}}");
+                out
+            }
+            VariantData::Tuple(_) => {
+                let items: Vec<String> = props
+                    .iter()
+                    .map(|(prop, f)| format!("encode({}, value.{prop})", self.ser(&f.ty)))
+                    .collect();
+                if items.is_empty() {
+                    "JsonArray(emptyList())".to_owned()
+                } else {
+                    format!("JsonArray(listOf({}))", items.join(", "))
+                }
+            }
+            VariantData::Newtype(t) => format!("encode({}, value.value)", self.ser(t)),
+        }
+    }
+
+    /// `val a: A,` lines of a data class's constructor.
+    fn constructor(&mut self, out: &mut String, data: &VariantData, pad: &str, defaults: bool) {
+        for (prop, f) in properties(data) {
+            let ty = self.field_type(&f);
+            let default = if defaults && ty.ends_with('?') {
+                " = null"
+            } else {
+                ""
+            };
+            let _ = writeln!(out, "{pad}    val {prop}: {ty}{default},");
+        }
+    }
+
+    fn has_bytes(&mut self, data: &VariantData) -> bool {
+        properties(data)
+            .iter()
+            .any(|(_, f)| self.field_type(f).starts_with("ByteArray"))
+    }
+
+    /// The companion's `serializer()` and its `Wire`, around `serialize` and `deserialize`
+    /// bodies (each at 16 spaces).
+    fn serializer(
+        &mut self,
+        out: &mut String,
+        name: &str,
+        params: &[String],
+        serialize: &str,
+        deserialize: &str,
+        pad: &str,
+    ) {
+        let ty = if params.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{name}<{}>", params.join(", "))
+        };
+        let generics = if params.is_empty() {
+            String::new()
+        } else {
+            format!("<{}> ", params.join(", "))
+        };
+        let args: Vec<String> = params
+            .iter()
+            .map(|p| format!("{}: KSerializer<{p}>", param_serializer(p)))
+            .collect();
+        let names: Vec<String> = params.iter().map(|p| param_serializer(p)).collect();
+        let _ = writeln!(
+            out,
+            "{pad}/** `{name}`'s JSON form{}. */",
+            if params.is_empty() {
+                String::new()
+            } else {
+                ", each parameter's by its serializer".to_owned()
+            }
+        );
+        if params.is_empty() {
+            let _ = writeln!(out, "{pad}fun serializer(): KSerializer<{ty}> = Wire\n");
+            let _ = writeln!(out, "{pad}private object Wire : KSerializer<{ty}> {{");
+        } else {
+            let _ = writeln!(
+                out,
+                "{pad}fun {generics}serializer({}): KSerializer<{ty}> = Wire({})\n",
+                args.join(", "),
+                names.join(", ")
+            );
+            let _ = writeln!(out, "{pad}private class Wire<{}>(", params.join(", "));
+            for a in &args {
+                let _ = writeln!(out, "{pad}    private val {a},");
+            }
+            let _ = writeln!(out, "{pad}) : KSerializer<{ty}> {{");
+        }
+        let _ = writeln!(
+            out,
+            "{pad}    override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+{pad}    override fun serialize(
+{pad}        encoder: Encoder,
+{pad}        value: {ty},
+{pad}    ) {{
+{pad}        {}
+{pad}    }}
+
+{pad}    override fun deserialize(decoder: Decoder): {ty} {{
+{pad}        {}
+{pad}    }}
+{pad}}}",
+            indent(serialize, &format!("{pad}        ")),
+            indent(deserialize, &format!("{pad}        "))
+        );
+    }
+
+    /// The declaration of a described app type, nested in the client; `taken` are the names
+    /// a variant class must not shadow.
+    fn declaration(&mut self, name: &str, entry: &str, def: &TypeDef, taken: &[String]) -> String {
+        self.params.clone_from(&def.params);
+        let params = def.params.clone();
+        let generics = if params.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", params.join(", "))
+        };
+        let mut out = format!("\n    /** The app type `{entry}`. */\n");
+        match &def.shape {
+            Shape::Enum { repr, variants } => {
+                self.enumeration(&mut out, name, &params, repr, variants, taken);
+            }
+            shape => {
+                let data = match shape {
+                    Shape::Record(fields) => VariantData::Record(fields.clone()),
+                    Shape::Newtype(t) => VariantData::Newtype(t.clone()),
+                    Shape::Tuple(items) => VariantData::Tuple(items.clone()),
+                    _ => VariantData::Unit,
+                };
+                let encoded = self.encode_data(&data, None, "");
+                let serialize = format!(
+                    "(encoder as JsonEncoder).encodeJsonElement(\n    {},\n)",
+                    indent(&encoded, "    ")
+                );
+                let ctor = if arity(&data) == 0 || params.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{name}<{}>", params.join(", "))
+                };
+                let (lines, made) = self.decode_data(&data, &ctor, "data", name, false, true);
+                let mut deserialize =
+                    String::from("val data = (decoder as JsonDecoder).decodeJsonElement()\n");
+                for line in lines {
+                    let _ = writeln!(deserialize, "{line}");
+                }
+                let _ = write!(deserialize, "return {made}");
+                if arity(&data) == 0 {
+                    let _ = writeln!(out, "    data object {name} {{");
+                    self.serializer(&mut out, name, &[], &serialize, &deserialize, "        ");
+                    let _ = writeln!(out, "    }}");
+                } else {
+                    if self.has_bytes(&data) {
+                        let _ = writeln!(out, "    @Suppress(\"ArrayInDataClass\")");
+                    }
+                    let _ = writeln!(out, "    data class {name}{generics}(");
+                    self.constructor(&mut out, &data, "    ", true);
+                    let _ = writeln!(out, "    ) {{\n        companion object {{");
+                    self.serializer(
+                        &mut out,
+                        name,
+                        &params,
+                        &serialize,
+                        &deserialize,
+                        "            ",
+                    );
+                    let _ = writeln!(out, "        }}\n    }}");
+                }
+            }
+        }
+        self.params.clear();
+        out
+    }
+
+    /// A sealed interface of `variants`, with the serializer of serde's tagging `repr`.
+    fn enumeration(
+        &mut self,
+        out: &mut String,
+        name: &str,
+        params: &[String],
+        repr: &EnumRepr,
+        variants: &[crate::abi::Variant],
+        taken: &[String],
+    ) {
+        // A variant class shadows, inside the interface, a type its serializer names; `Pair` is
+        // only the companion's (`external`).
+        let mut reserved: Vec<&str> = taken
+            .iter()
+            .map(String::as_str)
+            .filter(|t| *t != "Pair")
+            .collect();
+        reserved.extend(["Companion", "Wire", name]);
+        reserved.extend(params.iter().map(String::as_str));
+        let mut scope = Scope::new(&reserved);
+        let cases: Vec<Case<'_>> = variants
+            .iter()
+            .map(|v| Case {
+                name: scope.take(sanitize(&pascal(&v.name))),
+                wire: &v.name,
+                data: &v.data,
+            })
+            .collect();
+        let generic = !params.is_empty();
+        let (out_params, own, nothing) = if generic {
+            let outs: Vec<String> = params.iter().map(|p| format!("out {p}")).collect();
+            let nothing: Vec<&str> = params.iter().map(|_| "Nothing").collect();
+            (
+                format!("<{}>", outs.join(", ")),
+                format!("<{}>", params.join(", ")),
+                format!("{name}<{}>", nothing.join(", ")),
+            )
+        } else {
+            (String::new(), String::new(), name.to_owned())
+        };
+        let _ = writeln!(out, "    sealed interface {name}{out_params} {{");
+        for c in &cases {
+            let _ = writeln!(out, "        /** `{}`. */", c.wire);
+            if arity(c.data) == 0 {
+                let _ = writeln!(out, "        data object {} : {nothing}\n", c.name);
+                continue;
+            }
+            if self.has_bytes(c.data) {
+                let _ = writeln!(out, "        @Suppress(\"ArrayInDataClass\")");
+            }
+            let _ = writeln!(out, "        data class {}{own}(", c.name);
+            self.constructor(out, c.data, "        ", false);
+            let _ = writeln!(out, "        ) : {name}{own}\n");
+        }
+
+        // serialize
+        let mut arms = Vec::new();
+        for c in &cases {
+            let pad = "        ";
+            let element = match repr {
+                EnumRepr::External if arity(c.data) == 0 && matches!(c.data, VariantData::Unit) => {
+                    format!("JsonPrimitive({})", string_literal(c.wire))
+                }
+                EnumRepr::External => {
+                    let data = self.encode_data(c.data, None, pad);
+                    format!("JsonObject(mapOf({} to {data}))", string_literal(c.wire))
+                }
+                EnumRepr::Internal { tag } => match c.data {
+                    VariantData::Newtype(t) => {
+                        let tagged = self.helper("tagged");
+                        format!(
+                            "{tagged}({}, {}, encode({}, value.value), \"{name}\")",
+                            string_literal(tag),
+                            string_literal(c.wire),
+                            self.ser(t)
+                        )
+                    }
+                    VariantData::Tuple(_) => format!(
+                        "throw SerializationException(\"{name}: serde cannot tag a tuple variant internally\")"
+                    ),
+                    data => self.encode_data(data, Some((tag, c.wire)), pad),
+                },
+                EnumRepr::Adjacent { tag, content } => {
+                    let mut out = format!(
+                        "buildJsonObject {{\n{pad}    put({}, JsonPrimitive({}))\n",
+                        string_literal(tag),
+                        string_literal(c.wire)
+                    );
+                    if !matches!(c.data, VariantData::Unit) {
+                        let data = self.encode_data(c.data, None, &format!("{pad}    "));
+                        let _ = writeln!(out, "{pad}    put({}, {data})", string_literal(content));
+                    }
+                    let _ = write!(out, "{pad}}}");
+                    out
+                }
+                EnumRepr::Untagged => self.encode_data(c.data, None, pad),
+            };
+            arms.push(format!("    is {} -> {element}", c.name));
+        }
+        let serialize = if cases.is_empty() {
+            format!("throw SerializationException(\"{name} has no variants\")")
+        } else {
+            format!(
+                "(encoder as JsonEncoder).encodeJsonElement(\n    when (value) {{\n{}\n    }},\n)",
+                arms.iter()
+                    .map(|a| format!("    {a}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
+
+        // deserialize
+        let mut d = String::from("val data = (decoder as JsonDecoder).decodeJsonElement()\n");
+        let ctor = |c: &Case<'_>| {
+            if generic && arity(c.data) > 0 {
+                format!("{}{own}", c.name)
+            } else {
+                c.name.clone()
+            }
+        };
+        let arm = |lines: Vec<String>, made: String| {
+            if lines.is_empty() {
+                made
+            } else {
+                let mut block = String::from("{\n");
+                for line in lines {
+                    let _ = writeln!(block, "    {line}");
+                }
+                let _ = write!(block, "    {}\n}}", indent(&made, "    "));
+                block
+            }
+        };
+        match repr {
+            _ if cases.is_empty() => {
+                let _ = write!(
+                    d,
+                    "throw SerializationException(\"{name} has no variants\")"
+                );
+            }
+            EnumRepr::External => {
+                let external = self.helper("external");
+                let all_units = cases.iter().all(|c| matches!(c.data, VariantData::Unit));
+                if all_units {
+                    let _ = writeln!(d, "val name = {external}(data, \"{name}\").first");
+                } else {
+                    let _ = writeln!(d, "val (name, content) = {external}(data, \"{name}\")");
+                }
+                let _ = writeln!(d, "return when (name) {{");
+                for c in &cases {
+                    let (lines, made) =
+                        self.decode_data(c.data, &ctor(c), "content", name, false, false);
+                    let _ = writeln!(
+                        d,
+                        "    {} -> {}",
+                        string_literal(c.wire),
+                        indent(&arm(lines, made), "    ")
+                    );
+                }
+                let _ = write!(
+                    d,
+                    "    else -> throw SerializationException(\"{name}: unknown variant $name\")\n}}"
+                );
+            }
+            EnumRepr::Internal { tag: key } | EnumRepr::Adjacent { tag: key, .. } => {
+                let tag = self.helper("tag");
+                let _ = writeln!(
+                    d,
+                    "val name = {tag}(data, {}, \"{name}\")",
+                    string_literal(key)
+                );
+                let element = if let EnumRepr::Adjacent { content, .. } = repr {
+                    if cases.iter().any(|c| !matches!(c.data, VariantData::Unit)) {
+                        let obj = self.helper("obj");
+                        let _ = writeln!(
+                            d,
+                            "val content = {obj}(data, \"{name}\")[{}] ?: JsonNull",
+                            string_literal(content)
+                        );
+                    }
+                    "content"
+                } else {
+                    "data"
+                };
+                let _ = writeln!(d, "return when (name) {{");
+                for c in &cases {
+                    let same = element == "data" && !matches!(c.data, VariantData::Newtype(_));
+                    let (lines, made) =
+                        self.decode_data(c.data, &ctor(c), element, name, same, false);
+                    let _ = writeln!(
+                        d,
+                        "    {} -> {}",
+                        string_literal(c.wire),
+                        indent(&arm(lines, made), "    ")
+                    );
+                }
+                let _ = write!(
+                    d,
+                    "    else -> throw SerializationException(\"{name}: unknown variant $name\")\n}}"
+                );
+            }
+            EnumRepr::Untagged => {
+                // serde tries the variants in order; the first that reads is the value.
+                let attempt = self.helper("attempt");
+                let mut tries = Vec::new();
+                for c in &cases {
+                    let (lines, made) =
+                        self.decode_data(c.data, &ctor(c), "data", name, false, true);
+                    let mut block = format!("{attempt} {{\n");
+                    for line in lines {
+                        let _ = writeln!(block, "    {line}");
+                    }
+                    let _ = write!(block, "    {}\n}}", indent(&made, "    "));
+                    tries.push(block);
+                }
+                let _ = write!(
+                    d,
+                    "return {}\n    ?: throw SerializationException(\"{name}: no variant fits\")",
+                    tries
+                        .iter()
+                        .map(|t| indent(t, "    "))
+                        .collect::<Vec<_>>()
+                        .join("\n    ?: ")
+                );
+            }
+        }
+
+        let _ = writeln!(out, "        companion object {{");
+        self.serializer(out, name, params, &serialize, &d, "            ");
+        let _ = writeln!(out, "        }}\n    }}");
+    }
+}
+
 pub(super) fn module(abi: &AppAbi, class: &str, package: &str) -> String {
     let mut names = Names::new(abi);
     names.reserve(RESERVED_TYPES.iter().copied());
@@ -408,9 +1150,13 @@ pub(super) fn module(abi: &AppAbi, class: &str, package: &str) -> String {
         .collect();
     names.reserve(tuple_names.iter().map(String::as_str));
     let mut kt = Kt {
+        abi,
         names,
         named: BTreeMap::new(),
+        described: BTreeMap::new(),
+        params: Vec::new(),
         tuples: BTreeSet::new(),
+        helpers: BTreeSet::new(),
     };
 
     let mut members = Scope::new(MEMBERS);
@@ -578,6 +1324,45 @@ pub(super) fn module(abi: &AppAbi, class: &str, package: &str) -> String {
         "                        else -> {unknown_refusal}(error.appCode, error.fields)\n                    }}\n                }} catch (e: IllegalArgumentException) {{\n                    {unknown_refusal}(error.appCode, error.fields)\n                }}\n        }}\n    }}"
     );
 
+    // The described types, and the ones their shapes name, until none is new: first their
+    // names (a variant class must not shadow one), then their declarations.
+    let mut walked: BTreeSet<String> = BTreeSet::new();
+    loop {
+        let pending: Vec<(String, &TypeDef)> = kt
+            .described
+            .iter()
+            .filter(|(name, _)| !walked.contains(*name))
+            .map(|(n, (_, def))| (n.clone(), *def))
+            .collect();
+        if pending.is_empty() {
+            break;
+        }
+        for (name, def) in pending {
+            kt.params.clone_from(&def.params);
+            for ty in shape_types(&def.shape) {
+                let _ = kt.ty(&ty);
+            }
+            kt.params.clear();
+            let _ = walked.insert(name);
+        }
+    }
+    let taken: Vec<String> = RESERVED_TYPES
+        .iter()
+        .map(|t| (*t).to_owned())
+        .chain(kt.described.keys().cloned())
+        .chain(kt.named.keys().cloned())
+        .chain([class.to_owned()])
+        .collect();
+    let described: Vec<(String, (String, &TypeDef))> = kt
+        .described
+        .iter()
+        .map(|(n, d)| (n.clone(), d.clone()))
+        .collect();
+    for (name, (entry, def)) in described {
+        let decl = kt.declaration(&name, &entry, def, &taken);
+        nested.push_str(&decl);
+    }
+
     nested.push_str(WIRE);
     for n in kt.tuples.clone() {
         tuple(&mut nested, n);
@@ -595,7 +1380,7 @@ pub(super) fn module(abi: &AppAbi, class: &str, package: &str) -> String {
     for (name, text) in &kt.named {
         let _ = writeln!(
             out,
-            "/** The app type `{text}`: this client does not read its shape (the ABI's `types`), so it is its JSON. */\ntypealias {name} = JsonElement\n"
+            "/** The app type `{text}`: the ABI names it without its shape, so it is its JSON. */\ntypealias {name} = JsonElement\n"
         );
     }
     let _ = writeln!(
@@ -697,10 +1482,14 @@ class {class} private constructor(
             data: JsonElement,
             name: String,
             serializer: KSerializer<T>,
-        ): T = json.decodeFromJsonElement(serializer, (data as? JsonObject)?.get(name) ?: JsonNull)
-    }}
-}}"
+        ): T = json.decodeFromJsonElement(serializer, (data as? JsonObject)?.get(name) ?: JsonNull)"
     );
+    for (name, helper) in HELPERS {
+        if kt.helpers.contains(name) {
+            let _ = writeln!(out, "{helper}");
+        }
+    }
+    let _ = writeln!(out, "    }}\n}}");
     out
 }
 
@@ -751,13 +1540,18 @@ fn tuple(out: &mut String, n: usize) {
 mod tests {
     use super::*;
 
-    fn kt() -> Kt {
+    fn kt() -> Kt<'static> {
+        let abi: &'static AppAbi = Box::leak(Box::new(
+            AppAbi::from_json(&serde_json::json!({"abiVersion": 1, "methods": {}})).unwrap(),
+        ));
         Kt {
-            names: Names::new(
-                &AppAbi::from_json(&serde_json::json!({"abiVersion": 1, "methods": {}})).unwrap(),
-            ),
+            abi,
+            names: Names::new(abi),
             named: BTreeMap::new(),
+            described: BTreeMap::new(),
+            params: Vec::new(),
             tuples: BTreeSet::new(),
+            helpers: BTreeSet::new(),
         }
     }
 
@@ -800,8 +1594,8 @@ mod tests {
                 "Tuple2<UInt, String>",
                 "Tuple2Serializer(UInt.serializer(), String.serializer())",
             ),
-            ("Item", "Item", "serializer<Item>()"),
-            ("Page<Item>", "Page_Item", "serializer<Page_Item>()"),
+            ("Item", "Item", "JsonElement.serializer()"),
+            ("Page<Item>", "Page_Item", "JsonElement.serializer()"),
             ("unit", "JsonElement", "JsonElement.serializer()"),
         ];
         for (abi, ty, ser) in cases {
@@ -852,5 +1646,37 @@ mod tests {
             let expected = expected.replace("\\n", "\n");
             assert!(out.contains(&expected), "{expected} not in\n{out}");
         }
+    }
+
+    /// A described type is a nested data class or sealed interface with its own serializer
+    /// (generic where the Rust type is); a variant class does not shadow a type it names; a type
+    /// without a shape stays `JsonElement`.
+    #[test]
+    fn described_types_are_nested_types() {
+        let abi = AppAbi::from_json(&serde_json::json!({
+            "abiVersion": 1,
+            "methods": { "get": { "kind": "view", "params": [["page", "Page<Item>"], ["raw", "Raw"]], "returns": "Either" } },
+            "types": {
+                "Item": { "kind": "record", "fields": [["id", "u64"], ["raw", "Raw"]] },
+                "Page": { "kind": "record", "params": ["T"], "fields": [["items", "list<T>"]] },
+                "Either": { "kind": "enum", "untagged": true, "variants": [{ "name": "Item", "type": "Item" }, { "name": "String", "type": "string" }] },
+            },
+        }))
+        .unwrap();
+        let out = module(&abi, "AppClient", "calimero.generated.app");
+        for expected in [
+            "typealias Raw = JsonElement",
+            "    data class Item(\n        val id: ULong,\n        val raw: Raw,\n    ) {",
+            r#"put("raw", encode(JsonElement.serializer(), value.raw))"#,
+            "    data class Page<T>(",
+            "fun <T> serializer(tSerializer: KSerializer<T>): KSerializer<Page<T>> = Wire(tSerializer)",
+            "        data class Item_(\n            val value: Item,\n        ) : Either",
+            "        data class String_(\n            val value: String,\n        ) : Either",
+            r#"put("page", encode(Page.serializer(Item.serializer()), page))"#,
+            "private fun <T> attempt(",
+        ] {
+            assert!(out.contains(expected), "{expected} not in\n{out}");
+        }
+        assert!(!out.contains("private fun external("), "{out}");
     }
 }

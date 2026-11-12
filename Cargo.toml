@@ -39,6 +39,7 @@ members = [
     "./crates/identity",
     "./crates/node",
     "./crates/outbound",
+    "./crates/pipeline",
     "./crates/kms-client",
     "./crates/client",
     "./crates/merod",
@@ -94,6 +95,8 @@ rustc_version = "0.4"
 semver = "1.0.22"
 serde = "1.0.196"
 serde_json = "1.0.113"
+serde_norway = "0.9.42"
+serde_path_to_error = "0.1.20"
 serde_json_canonicalizer = "0.4.1"
 sha2 = "0.11"
 snow = { version = "0.9.6", default-features = false }
@@ -140,6 +143,7 @@ calimero-sdk-macros = { path = "./crates/sdk-macros" }
 calimero-build-utils = { path = "./crates/build-utils" }
 calimero-bundle = { path = "./crates/bundle" }
 calimero-outbound = { path = "./crates/outbound" }
+calimero-pipeline = { path = "./crates/pipeline" }
 calimero-primitives = { path = "./crates/primitives" }
 calimero-log = { path = "./crates/log" }
 calimero-sealed = { path = "./crates/sealed" }

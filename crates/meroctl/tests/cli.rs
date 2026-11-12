@@ -86,6 +86,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         upgrades: None,
         outbound: Vec::new(),
         services: None,
+        pipelines: Vec::new(),
         signature: None,
     };
     let mut manifest = serde_json::to_value(&manifest).unwrap();
@@ -280,6 +281,8 @@ fn scenario(root: &Path, url: &str) {
         alice.run(&["app", "get-latest-version", "com.test.kv"])["latest"],
         "1.1.0"
     );
+    // A release without pipelines registers none; the newest version is the default.
+    assert_eq!(alice.run(&["app", "pipelines", "com.test.kv"]), json!({}));
 
     // Web origins: the first installer manages them, with a passkey per change.
     let site = "https://kv.example.com";
@@ -419,6 +422,53 @@ fn scenario(root: &Path, url: &str) {
     ]);
     assert_eq!(std::fs::read(&out).unwrap(), b"hello blob");
     let _ = alice.run(&["blob", "delete", &blob, "--context", "notes"]);
+
+    // file: upload a sealed file, then download its plaintext through a key made for the call.
+    let sealed = write("sealed.txt", b"hello sealed file");
+    let up = alice.run(&["file", "upload", path(&sealed), "--context", "notes"]);
+    let id = s(up.get("id").unwrap());
+    let back = root.join("sealed.out");
+    let done = alice.run(&["file", "download", "notes", &id, "--out", path(&back)]);
+    assert_eq!(done["size"], json!(17));
+    assert_eq!(std::fs::read(&back).unwrap(), b"hello sealed file");
+    let missing = alice
+        .try_run(&[
+            "file",
+            "download",
+            "notes",
+            &"11".repeat(32),
+            "--out",
+            path(&back),
+        ])
+        .unwrap_err();
+    assert!(missing.contains("NOT_FOUND"), "{missing}");
+
+    // pipeline: a release without pipelines has none to run; its list is empty.
+    let none = alice
+        .try_run(&["pipeline", "run", "notes", "ghost", "--input", "docs=ab"])
+        .unwrap_err();
+    assert!(none.contains("NO_SUCH_PIPELINE"), "{none}");
+    assert_eq!(alice.run(&["pipeline", "runs", "notes"])["runs"], json!([]));
+    let unknown = alice
+        .try_run(&["pipeline", "get", "notes", "nope"])
+        .unwrap_err();
+    assert!(unknown.contains("NOT_FOUND"), "{unknown}");
+    let unbound = alice
+        .try_run(&["pipeline", "cancel", "notes", "nope"])
+        .unwrap_err();
+    assert!(unbound.contains("NOT_FOUND"), "{unbound}");
+    let retry = alice
+        .try_run(&["pipeline", "retry", "notes", "nope", "--limit", "a.fuel=9"])
+        .unwrap_err();
+    assert!(retry.contains("NOT_FOUND"), "{retry}");
+    let bad_limit = alice
+        .try_run(&["pipeline", "retry", "notes", "nope", "--limit", "fuel=9"])
+        .unwrap_err();
+    assert!(bad_limit.contains("STEP.FIELD"), "{bad_limit}");
+    let bad = alice
+        .try_run(&["pipeline", "run", "notes", "ghost", "--input", "docs"])
+        .unwrap_err();
+    assert!(bad.contains("NAME=VALUE"), "{bad}");
 
     // context update: to the next release, approved with the owner's passkey.
     let _ = alice.run(&[
@@ -780,6 +830,18 @@ fn scenario(root: &Path, url: &str) {
     assert!(refused.contains("no operator key"), "{refused}");
     // Pools: none set yet, and only a job node is registered in one.
     assert_eq!(ops(&["pools"])["pools"], serde_json::json!({}));
+    // No price table yet, and a set one is signed: refused here without the operator key.
+    assert_eq!(ops(&["prices"]), serde_json::json!({}));
+    let refused = alice
+        .try_run(&[
+            "--ops-token",
+            "ops-token",
+            "ops",
+            "set-prices",
+            r#"{"version":1,"fuelPerVcpuSecond":1000000000,"vcpuSecond":1,"gibSecond":1,"connectorGib":0,"storageGibMonth":0,"egressGib":0}"#,
+        ])
+        .unwrap_err();
+    assert!(refused.contains("no operator key"), "{refused}");
     let refused = alice
         .try_run(&[
             "--ops-token",

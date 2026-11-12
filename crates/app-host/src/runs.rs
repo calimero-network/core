@@ -7,6 +7,8 @@ use crate::abi::ComputeCaps;
 
 /// Input files one run may name.
 pub const MAX_RUN_INPUTS: usize = 64;
+/// Input files a run a pipeline builds may name: one `collect` over a full fan-out.
+pub const MAX_PIPELINE_RUN_INPUTS: usize = 10_000;
 /// Declared plaintext bytes of all the inputs of one run.
 pub const MAX_RUN_INPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Bytes of a compute run's arguments; they live in the run's record.

@@ -33,18 +33,13 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.serializer
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
-
-/** The app type `Booking`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias Booking = JsonElement
-
-/** The app type `SlotView`: this client does not read its shape (the ABI's `types`), so it is its JSON. */
-typealias SlotView = JsonElement
 
 /**
  * The app's methods.
@@ -122,7 +117,7 @@ class RoomsClient private constructor(
             },
             stale,
             minIndex,
-            ListSerializer(serializer<SlotView>()),
+            ListSerializer(SlotView.serializer()),
         )
 
     /** call `book`. */
@@ -158,7 +153,7 @@ class RoomsClient private constructor(
             },
             stale,
             minIndex,
-            serializer<Booking>(),
+            Booking.serializer(),
         )
 
     /** call `cancel`. */
@@ -201,7 +196,7 @@ class RoomsClient private constructor(
             JsonObject(emptyMap()),
             stale,
             minIndex,
-            ListSerializer(serializer<Booking>()),
+            ListSerializer(Booking.serializer()),
         )
 
     /** The app's events from log index [from], then live, until the collector stops. */
@@ -354,6 +349,102 @@ class RoomsClient private constructor(
         }
     }
 
+    /** The app type `Booking`. */
+    data class Booking(
+        val id: String,
+        val roomId: String,
+        val holder: String,
+        val start: ULong,
+        val end: ULong,
+        val title: String,
+        val checkedIn: Boolean,
+    ) {
+        companion object {
+            /** `Booking`'s JSON form. */
+            fun serializer(): KSerializer<Booking> = Wire
+
+            private object Wire : KSerializer<Booking> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: Booking,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        buildJsonObject {
+                            put("id", encode(String.serializer(), value.id))
+                            put("roomId", encode(String.serializer(), value.roomId))
+                            put("holder", encode(String.serializer(), value.holder))
+                            put("start", encode(U64AsString, value.start))
+                            put("end", encode(U64AsString, value.end))
+                            put("title", encode(String.serializer(), value.title))
+                            put("checkedIn", encode(Boolean.serializer(), value.checkedIn))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): Booking {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val fields = obj(data, "Booking")
+                    return Booking(
+                        id = field(fields, "id", String.serializer()),
+                        roomId = field(fields, "roomId", String.serializer()),
+                        holder = field(fields, "holder", String.serializer()),
+                        start = field(fields, "start", U64AsString),
+                        end = field(fields, "end", U64AsString),
+                        title = field(fields, "title", String.serializer()),
+                        checkedIn = field(fields, "checkedIn", Boolean.serializer()),
+                    )
+                }
+            }
+        }
+    }
+
+    /** The app type `SlotView`. */
+    data class SlotView(
+        val start: ULong,
+        val end: ULong,
+        val bookingId: String,
+        val title: String? = null,
+        val mine: Boolean,
+    ) {
+        companion object {
+            /** `SlotView`'s JSON form. */
+            fun serializer(): KSerializer<SlotView> = Wire
+
+            private object Wire : KSerializer<SlotView> {
+                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
+
+                override fun serialize(
+                    encoder: Encoder,
+                    value: SlotView,
+                ) {
+                    (encoder as JsonEncoder).encodeJsonElement(
+                        buildJsonObject {
+                            put("start", encode(U64AsString, value.start))
+                            put("end", encode(U64AsString, value.end))
+                            put("bookingId", encode(String.serializer(), value.bookingId))
+                            put("title", encode(String.serializer().nullable, value.title))
+                            put("mine", encode(Boolean.serializer(), value.mine))
+                        },
+                    )
+                }
+
+                override fun deserialize(decoder: Decoder): SlotView {
+                    val data = (decoder as JsonDecoder).decodeJsonElement()
+                    val fields = obj(data, "SlotView")
+                    return SlotView(
+                        start = field(fields, "start", U64AsString),
+                        end = field(fields, "end", U64AsString),
+                        bookingId = field(fields, "bookingId", String.serializer()),
+                        title = field(fields, "title", String.serializer().nullable),
+                        mine = field(fields, "mine", Boolean.serializer()),
+                    )
+                }
+            }
+        }
+    }
+
     /** A `u64` as the wire carries it: a decimal string (a number is read too). */
     object U64AsString : KSerializer<ULong> {
         override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("calimero.u64", PrimitiveKind.STRING)
@@ -420,5 +511,11 @@ class RoomsClient private constructor(
             name: String,
             serializer: KSerializer<T>,
         ): T = json.decodeFromJsonElement(serializer, (data as? JsonObject)?.get(name) ?: JsonNull)
+
+        /** [data] as an object. */
+        private fun obj(
+            data: JsonElement,
+            what: String,
+        ): JsonObject = data as? JsonObject ?: throw SerializationException("$what: expected an object")
     }
 }

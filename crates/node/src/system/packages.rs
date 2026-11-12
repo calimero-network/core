@@ -119,6 +119,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if !s.may_deploy(&actor, release.installed_at) {
                 return Err(NOT_A_DEPLOYER);
             }
+            if !s.modules_installed(&release) {
+                return Err("a module the pipelines use is no longer installed");
+            }
             if let Some(p) = s.packages.get(&package) {
                 if p.signer_id != signer_id {
                     return Err("the package is published under another key");
@@ -213,6 +216,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // installed it first does not take it from them.
             if gone.iter().any(|v| s.offered(&package, v)) {
                 return Err("a deployment offers that release; it is uninstalled once no deployment offers it");
+            }
+            if gone.iter().any(|v| s.module_pinned(&package, v)) {
+                return Err(MODULE_IN_USE);
             }
             let hashes: BTreeSet<String> = gone
                 .iter()

@@ -128,6 +128,7 @@ fn package_json(
             "size": v.mpk_size,
             "source": v.source,
             "services": v.services,
+            "components": v.components,
             "metadata": v.metadata,
             "outbound": v.outbound,
             "installedBy": v.installed_by,
@@ -170,6 +171,25 @@ async fn package_get(
     node.sys(|s| package_json(s, s.packages.get(&package)?, &account, frontend))
         .map(Json)
         .ok_or_else(|| ApiError::not_found("no such package"))
+}
+
+/// A release's registered pipelines: name to hash, worst-case fuel and canonical JSON.
+async fn package_pipelines(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((package, version)): Path<(String, String)>,
+) -> ApiResult {
+    let principal = signed_in(&node, &headers).await?;
+    let account = principal.account()?;
+    let frontend = principal.bound_app() == Some(package.as_str());
+    node.sys_fresh_from(principal.sys_index).await;
+    let refs = node
+        .sys(|s| {
+            let v = s.packages.get(&package)?.versions.get(&version)?;
+            (frontend || s.sees_release(v, &account)).then(|| v.pipelines.clone())
+        })
+        .ok_or_else(|| ApiError::not_found("no such package version"))?;
+    Ok(Json(node.release_pipelines(&refs).await?))
 }
 
 async fn package_uninstall(
@@ -388,6 +408,10 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route(
             "/packages/{package}/{version}",
             delete(package_version_uninstall),
+        )
+        .route(
+            "/packages/{package}/{version}/pipelines",
+            get(package_pipelines),
         )
         .route("/orgs/{org}/publishers", post(org_publisher))
         .route("/publishers/{signer}", get(publisher_binding))

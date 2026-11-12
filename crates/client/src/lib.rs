@@ -5,7 +5,7 @@
 //! machines use an API key. Calls, views and events address one app instance.
 
 use calimero_identity::{Assertion, Registration};
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -13,6 +13,8 @@ use serde_json::{json, Value};
 pub mod attest;
 mod files;
 mod generated;
+pub mod pipeline_events;
+pub mod receipt;
 mod route;
 pub mod transport;
 
@@ -659,6 +661,157 @@ impl Client {
             .await
     }
 
+    /// The pipelines a release registers: name to hash, worst-case fuel and canonical JSON.
+    pub async fn package_pipelines(&self, package: &str, version: &str) -> Result<Value> {
+        route::value(&self.packages().pipelines(package, version).await?)
+    }
+
+    /// Every problem of a pipeline source, checked against a release when `body` names one
+    /// (`{ source, package?, version? }`); answers `{ ok, errors, pipeline?, worstCaseFuel?, worstCaseCost? }`.
+    pub async fn validate_pipeline(&self, body: Value) -> Result<Value> {
+        let source: String = body_field(&body, "source")?.unwrap_or_default();
+        let package: Option<String> = body_field(&body, "package")?;
+        let version: Option<String> = body_field(&body, "version")?;
+        let answer = self
+            .apps()
+            .pipelines_validate(&source, package.as_deref(), version.as_deref())
+            .await?;
+        route::value(&answer)
+    }
+
+    /// Runs, fuel and cost a run of pipeline `name` would take for `body`
+    /// (`{ inputs?: { name: [id] } | counts?: { name: n }, params? }`); starts nothing.
+    pub async fn estimate_pipeline(&self, app: &str, name: &str, body: Value) -> Result<Value> {
+        let answer = self
+            .apps()
+            .pipelines_estimate_run(
+                app,
+                name,
+                body_field(&body, "inputs")?,
+                body_field(&body, "counts")?,
+                body_field(&body, "params")?,
+            )
+            .await?;
+        route::value(&answer)
+    }
+
+    /// Starts a run of the pipeline `name` of the release `app` runs: `inputs` binds each declared
+    /// input to file ids, `params` gives its params. Answers `{ run }`.
+    pub async fn start_pipeline_run(
+        &self,
+        app: &str,
+        name: &str,
+        inputs: Value,
+        params: Value,
+    ) -> Result<Value> {
+        self.start_pipeline_run_with(app, name, json!({ "inputs": inputs, "params": params }))
+            .await
+    }
+
+    /// [`Client::start_pipeline_run`] with the whole request body, `maxCost` included.
+    pub async fn start_pipeline_run_with(
+        &self,
+        app: &str,
+        name: &str,
+        body: Value,
+    ) -> Result<Value> {
+        let max_cost: Option<String> = body_field(&body, "maxCost")?;
+        let answer = self
+            .apps()
+            .pipelines_start(
+                app,
+                name,
+                body_field(&body, "inputs")?,
+                body_field(&body, "params")?,
+                max_cost.as_deref(),
+            )
+            .await?;
+        route::value(&answer)
+    }
+
+    /// One pipeline run: its state and each step's status, runs, outputs and reason.
+    pub async fn pipeline_run(&self, app: &str, run: &str) -> Result<Value> {
+        Ok(Value::Object(self.apps().pipelines_get(app, run).await?))
+    }
+
+    /// A pipeline run's progress as typed events (metadata only): `Snapshot`, then `Run` and
+    /// `Step` per change, then `End`, after which the stream closes.
+    pub async fn pipeline_run_events(
+        &self,
+        app: &str,
+        run: &str,
+    ) -> Result<impl Stream<Item = pipeline_events::PipelineEvent>> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "apps/{}/pipeline-runs/{}/events",
+                route::segment(app),
+                route::segment(run)
+            ),
+        );
+        let frames = self.transport.events(req).await?;
+        Ok(frames.filter_map(|(_, name, data)| async move {
+            pipeline_events::PipelineEvent::parse(&name, &data)
+        }))
+    }
+
+    /// The signed receipt of an ended pipeline run; check it with
+    /// [`Client::verify_receipt`].
+    pub async fn pipeline_receipt(&self, app: &str, run: &str) -> Result<receipt::ReceiptAnswer> {
+        // The signature covers the JSON as sent, so it is not read through a typed answer.
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "apps/{}/pipeline-runs/{}/receipt",
+                route::segment(app),
+                route::segment(run)
+            ),
+        );
+        let v = self.transport.json(req).await?;
+        serde_json::from_value(v)
+            .map_err(|e| eyre::eyre!("the receipt is not well formed: {e}").into())
+    }
+
+    /// Checks that the node that answered holds a receipt key attested under this client's
+    /// policy ([`Client::verify_app_cluster`]) and signed `answer` with it, and that the receipt
+    /// is for `app`. Answers the receipt.
+    pub async fn verify_receipt(
+        &self,
+        app: &str,
+        answer: &receipt::ReceiptAnswer,
+    ) -> Result<receipt::PipelineReceipt> {
+        let cluster = self.verify_app_cluster(app).await?;
+        let key = cluster.keys.get(&answer.node).ok_or_else(|| {
+            eyre::eyre!("node {} is not an attested replica of {app}", answer.node)
+        })?;
+        let verified = receipt::verify_pipeline_receipt(answer, key)?;
+        if verified.app != app {
+            return Err(eyre::eyre!("the receipt is for app {}, not {app}", verified.app).into());
+        }
+        Ok(verified)
+    }
+
+    /// The app's recent pipeline runs, newest first.
+    pub async fn pipeline_runs(&self, app: &str) -> Result<Value> {
+        Ok(Value::Object(self.apps().pipelines_list(app, None).await?))
+    }
+
+    /// Starts a new run of an ended pipeline run's pipeline, release, inputs and params; `body` is
+    /// `{ limits?, maxCost? }`.
+    pub async fn retry_pipeline_run(&self, app: &str, run: &str, body: Value) -> Result<Value> {
+        let max_cost: Option<String> = body_field(&body, "maxCost")?;
+        let answer = self
+            .apps()
+            .pipelines_retry(app, run, body_field(&body, "limits")?, max_cost.as_deref())
+            .await?;
+        route::value(&answer)
+    }
+
+    /// Cancels a pipeline run.
+    pub async fn cancel_pipeline_run(&self, app: &str, run: &str) -> Result<Value> {
+        route::value(&self.apps().pipelines_cancel(app, run).await?)
+    }
+
     /// Uninstall one version of a package, or all of it.
     #[deprecated(
         note = "use client.packages().uninstall() or client.packages().version_uninstall()"
@@ -832,9 +985,12 @@ impl Client {
 
     #[deprecated(note = "use client.apps().blob_download()")]
     pub async fn download_blob(&self, app: &str, id: &str) -> Result<Vec<u8>> {
-        let resp = self
-            .send(Method::GET, &format!("apps/{app}/blobs/{id}"), None)
-            .await?;
+        self.get_bytes(&format!("apps/{app}/blobs/{id}")).await
+    }
+
+    /// `GET path` answered as raw bytes.
+    async fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        let resp = self.send(Method::GET, path, None).await?;
         let status = resp.status().as_u16();
         if status >= 400 {
             let v: Value = resp.json().await.unwrap_or(Value::Null);
@@ -1509,6 +1665,15 @@ fn method_path(app: &str, method: &str) -> String {
 
 /// One URL path segment: everything but unreserved characters escaped, so an
 /// id cannot reach another route.
+/// The request body's field `name`, `None` when absent.
+fn body_field<T: serde::de::DeserializeOwned>(body: &Value, name: &str) -> Result<Option<T>> {
+    body.get(name)
+        .filter(|v| !v.is_null())
+        .map(|v| serde_json::from_value(v.clone()))
+        .transpose()
+        .map_err(|e| eyre::eyre!("bad {name}: {e}").into())
+}
+
 fn path_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {

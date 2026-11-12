@@ -324,6 +324,75 @@
               "t"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "c": {
+                "items": false,
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer",
+                    "x-calimero-type": "u32"
+                  },
+                  {
+                    "maximum": 4294967295,
+                    "minimum": 0,
+                    "type": "integer",
+                    "x-calimero-type": "u32"
+                  }
+                ],
+                "type": "array"
+              },
+              "t": {
+                "const": "Pair"
+              }
+            },
+            "required": [
+              "t",
+              "c"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "c": {
+                "properties": {
+                  "at": {
+                    "anyOf": [
+                      {
+                        "description": "A u64 as a decimal string (0..=18446744073709551615).",
+                        "pattern": "^(0|[1-9][0-9]*)$",
+                        "type": "string",
+                        "x-calimero-type": "u64"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "label": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "label",
+                  "at"
+                ],
+                "type": "object"
+              },
+              "t": {
+                "const": "Labeled"
+              }
+            },
+            "required": [
+              "t",
+              "c"
+            ],
+            "type": "object"
           }
         ],
         "x-calimero-abi-type": "Adjacent"
@@ -476,6 +545,37 @@
             "type": "object"
           }
         ]
+      },
+      "Choice_Item": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "one"
+              },
+              "value": {
+                "$ref": "#/components/schemas/Item"
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "zero"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-calimero-abi-type": "Choice<Item>"
       },
       "Confirm": {
         "description": "The passkey's approval of this exact call: the 412's challenge id and the WebAuthn assertion over its challenge.",
@@ -705,6 +805,26 @@
               "name"
             ],
             "type": "object"
+          },
+          {
+            "items": false,
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer",
+                "x-calimero-type": "u32"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          {
+            "type": "null"
           }
         ],
         "x-calimero-abi-type": "Either"
@@ -1146,6 +1266,61 @@
         ],
         "type": "object"
       },
+      "Expr": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "Lit": {
+                "description": "A i64 as a decimal string (-9223372036854775808..=9223372036854775807).",
+                "pattern": "^(0|-?[1-9][0-9]*)$",
+                "type": "string",
+                "x-calimero-type": "i64"
+              }
+            },
+            "required": [
+              "Lit"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "Neg": {
+                "$ref": "#/components/schemas/Expr"
+              }
+            },
+            "required": [
+              "Neg"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "Add": {
+                "items": false,
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "$ref": "#/components/schemas/Expr"
+                  },
+                  {
+                    "$ref": "#/components/schemas/Expr"
+                  }
+                ],
+                "type": "array"
+              }
+            },
+            "required": [
+              "Add"
+            ],
+            "type": "object"
+          }
+        ],
+        "x-calimero-abi-type": "Expr"
+      },
       "ForbiddenError": {
         "properties": {},
         "required": [],
@@ -1503,8 +1678,14 @@
           "adjacent": {
             "$ref": "#/components/schemas/Adjacent"
           },
+          "choice": {
+            "$ref": "#/components/schemas/Choice_Item"
+          },
           "either": {
             "$ref": "#/components/schemas/Either"
+          },
+          "expr": {
+            "$ref": "#/components/schemas/Expr"
           },
           "id": {
             "$ref": "#/components/schemas/Id"
@@ -1533,7 +1714,9 @@
           "id",
           "point",
           "marker",
-          "tree"
+          "tree",
+          "expr",
+          "choice"
         ],
         "type": "object"
       },
@@ -1685,6 +1868,24 @@
               "at"
             ],
             "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "properties": {
+                  "type": {
+                    "const": "wrapped"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "$ref": "#/components/schemas/Item"
+              }
+            ]
           }
         ],
         "x-calimero-abi-type": "Tagged"
@@ -1724,6 +1925,16 @@
               "$ref": "#/components/schemas/Tree"
             },
             "type": "array"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Tree"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "value": {
             "maximum": 4294967295,

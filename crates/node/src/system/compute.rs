@@ -47,12 +47,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             payer,
             fuel,
             memory_mib,
+            pool: named,
         } => {
             let Some(record) = s.apps.get(&app) else {
                 return Ok(acquire_refused(RUN_NO_SUCH_APP, false));
             };
             if s.run_slot(&app, &run).is_none() {
-                let pool = s.pool_for(memory_mib);
+                let pool = match named {
+                    Some(name) => s.named_pool_for(name, memory_mib),
+                    None => s.pool_for(memory_mib),
+                };
                 let refusal = if payer != crate::usage::payer(record) {
                     Some((RUN_NOT_PAYER, true))
                 } else if fuel > calimero_app_host::MAX_COMPUTE_FUEL {

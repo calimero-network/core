@@ -635,6 +635,9 @@ struct HeldBody {
     /// Count bytes an entry stored here and has not committed yet as held (strong reads only).
     #[serde(default)]
     pinned: bool,
+    /// Answer a sealed file's size and seal too (`record`).
+    #[serde(default)]
+    record: bool,
 }
 
 async fn internal_blob_held(
@@ -658,17 +661,27 @@ async fn internal_blob_held(
             m.holds_blob(&raw) || (body.pinned && node.blob_guards.is_pinned(&body.id))
         }
     };
-    let (held, standing) = if body.strong {
-        g.read_strong(|m, _| (asks(m), m.blob_standing(&raw)))
+    let read = |m: &AppMachine| {
+        let record = if body.record {
+            m.file_record(&raw)
+        } else {
+            None
+        };
+        (asks(m), m.blob_standing(&raw), record)
+    };
+    let (held, standing, record) = if body.strong {
+        g.read_strong(|m, _| read(m))
             .await
             .map_err(|e| ApiError::unavailable(&e.to_string()))?
     } else {
-        g.read_local(|m, _| (asks(m), m.blob_standing(&raw)))
+        g.read_local(|m, _| read(m))
     };
     let (published, epoch) = standing.unwrap_or_default();
-    Ok(Json(
-        json!({ "held": held, "published": published, "epoch": epoch }),
-    ))
+    let mut answer = json!({ "held": held, "published": published, "epoch": epoch });
+    if let Some((size, seal)) = record {
+        answer["record"] = json!({ "size": size, "seal": seal });
+    }
+    Ok(Json(answer))
 }
 
 /// Pins ids on this node, the app's leader, for a peer that is about to store their bytes

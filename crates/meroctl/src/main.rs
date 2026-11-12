@@ -36,6 +36,7 @@ mod group;
 mod namespace;
 mod node;
 mod ops;
+mod pipeline;
 mod proxy;
 
 use env::{
@@ -178,6 +179,9 @@ enum Cmd {
     /// A context's sealed files: upload.
     #[command(subcommand)]
     File(file::FileCmd),
+    /// A context's pipeline runs: run, get, cancel, runs.
+    #[command(subcommand)]
+    Pipeline(pipeline::PipelineCmd),
     /// Organizations (v1's namespaces): members, invites, groups, metadata, approvals.
     #[command(subcommand, alias = "ns")]
     Namespace(namespace::NamespaceCmd),
@@ -414,6 +418,7 @@ async fn main() -> eyre::Result<()> {
         }
         Cmd::Blob(cmd) => blob::run(cmd, &env).await?,
         Cmd::File(cmd) => file::run(cmd, &env).await?,
+        Cmd::Pipeline(cmd) => pipeline::run(cmd, &env).await?,
         Cmd::Namespace(cmd) => namespace::run(cmd, &env).await?,
         Cmd::Group(cmd) => group::run(cmd, &env).await?,
         Cmd::Account(cmd) => account::run(cmd, &env).await?,

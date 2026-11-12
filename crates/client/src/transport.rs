@@ -405,12 +405,13 @@ impl Transport {
     ) -> Result<impl Stream<Item = (String, String, Value)>> {
         let resp = self.send(req).await?;
         if !resp.status().is_success() {
-            return Err(Error::Api {
-                status: resp.status().as_u16(),
+            let status = resp.status().as_u16();
+            return Err(answer(resp).await.err().unwrap_or(Error::Api {
+                status,
                 code: "EVENTS".into(),
                 message: "event stream refused".into(),
                 details: Value::Null,
-            });
+            }));
         }
         Ok(Box::pin(sse_frames(resp.bytes_stream())))
     }

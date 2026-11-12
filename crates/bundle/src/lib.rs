@@ -26,6 +26,12 @@ use serde::{Deserialize, Serialize};
 /// signature check.
 pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 
+/// A package declares at most this many pipelines, across all its services.
+pub const MAX_PIPELINES_PER_PACKAGE: usize = 16;
+
+/// A pipeline file is at most this large, the pipeline compiler's own source cap.
+pub const MAX_PIPELINE_BYTES: u64 = 64 * 1024;
+
 /// Represents an artifact within a bundle (WASM, ABI, migration)
 ///
 /// `hash` is what binds the artifact bytes to the manifest signature, so a
@@ -206,6 +212,9 @@ pub struct BundleService {
     /// service declares no compute methods. An older node ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute: Option<BundleArtifact>,
+    /// The service's pipelines: YAML files over its compute methods. An older node ignores them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pipelines: Vec<BundleArtifact>,
 }
 
 /// Who upgrades the instances of a package, as its signed manifest declares
@@ -284,6 +293,10 @@ pub struct BundleManifest {
     /// `services` is non-empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute: Option<BundleArtifact>,
+    /// Single-service pipelines (see [`BundleService::pipelines`]). Ignored when `services`
+    /// is non-empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pipelines: Vec<BundleArtifact>,
 
     /// Named services. When present, each context specifies which service it runs.
     /// If empty/absent, the bundle is single-service and uses `wasm`/`abi` above.
@@ -336,8 +349,10 @@ pub struct BundleManifest {
 pub struct WasmArtifact<'a> {
     /// Service name. `None` for single-service bundles.
     pub name: Option<&'a str>,
-    pub wasm: &'a BundleArtifact,
+    /// The app component; `None` for a single-service bundle that ships only a compute component.
+    pub wasm: Option<&'a BundleArtifact>,
     pub compute: Option<&'a BundleArtifact>,
+    pub pipelines: &'a [BundleArtifact],
 }
 
 impl BundleManifest {
@@ -366,21 +381,18 @@ impl BundleManifest {
                 .iter()
                 .map(|s| WasmArtifact {
                     name: Some(&s.name),
-                    wasm: &s.wasm,
+                    wasm: Some(&s.wasm),
                     compute: s.compute.as_ref(),
+                    pipelines: &s.pipelines,
                 })
                 .collect(),
-            _ => self
-                .wasm
-                .as_ref()
-                .map(|w| {
-                    vec![WasmArtifact {
-                        name: None,
-                        wasm: w,
-                        compute: self.compute.as_ref(),
-                    }]
-                })
-                .unwrap_or_default(),
+            _ if self.wasm.is_some() || self.compute.is_some() => vec![WasmArtifact {
+                name: None,
+                wasm: self.wasm.as_ref(),
+                compute: self.compute.as_ref(),
+                pipelines: &self.pipelines,
+            }],
+            _ => Vec::new(),
         }
     }
 
@@ -391,6 +403,7 @@ impl BundleManifest {
             wasm,
             abi,
             compute,
+            pipelines,
             services,
             frontend,
             version: _,
@@ -419,6 +432,9 @@ impl BundleManifest {
         if let Some(compute) = compute {
             artifacts.push(("compute".to_owned(), compute));
         }
+        for (i, pipeline) in pipelines.iter().enumerate() {
+            artifacts.push((format!("pipelines[{i}]"), pipeline));
+        }
         for (i, service) in services.iter().flatten().enumerate() {
             artifacts.push((format!("services[{i}].wasm"), &service.wasm));
             if let Some(abi) = &service.abi {
@@ -426,6 +442,9 @@ impl BundleManifest {
             }
             if let Some(compute) = &service.compute {
                 artifacts.push((format!("services[{i}].compute"), compute));
+            }
+            for (j, pipeline) in service.pipelines.iter().enumerate() {
+                artifacts.push((format!("services[{i}].pipelines[{j}]"), pipeline));
             }
         }
         for (i, file) in frontend.iter().flat_map(|f| &f.files).enumerate() {
