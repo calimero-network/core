@@ -72,6 +72,7 @@ fn config(dir: &std::path::Path, port: u16) -> Config {
         outbound: None,
         governance: Default::default(),
         apps_domain: None,
+        attestation_verifier_url: None,
         operator_key: None,
     }
 }

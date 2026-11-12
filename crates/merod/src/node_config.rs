@@ -259,7 +259,15 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_APPS_DOMAIN")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub apps_domain: Option<String>,
-    /// A TOML file whose `[outbound]` table replaces the configuration's.
+    /// The independent attestation verifier the consent page links to, so a
+    /// person can check this node's TDX attestation and release on the
+    /// verifier's own origin (`https://verify.calimero.network`): `https`
+    /// (`http` only for localhost), no query or fragment. Unset: no link.
+    #[arg(long, env = "MEROD_ATTESTATION_VERIFIER_URL")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestation_verifier_url: Option<String>,
+    /// A TOML file whose `[outbound]` table replaces the configuration's, and
+    /// whose `attestation-verifier-url`, if any, replaces the configuration's.
     #[arg(long, env = "MEROD_SETTINGS")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<PathBuf>,
@@ -301,6 +309,10 @@ impl NodeArgs {
             ("--app-upgrades", self.app_upgrades.is_some()),
             ("--outbound-approvals", self.outbound_approvals.is_some()),
             ("--apps-domain", self.apps_domain.is_some()),
+            (
+                "--attestation-verifier-url",
+                self.attestation_verifier_url.is_some(),
+            ),
             (
                 "--settings",
                 self.settings.is_some() || self.outbound.is_some(),
@@ -371,6 +383,9 @@ impl NodeArgs {
             deployers: self.deployers.or(base.deployers),
             sign_up: self.sign_up.or(base.sign_up),
             apps_domain: self.apps_domain.or(base.apps_domain),
+            attestation_verifier_url: self
+                .attestation_verifier_url
+                .or(base.attestation_verifier_url),
             settings: self.settings.or(base.settings),
             outbound: self.outbound.or(base.outbound),
         }
@@ -646,6 +661,13 @@ mod tests {
                     ..job.clone()
                 },
             ),
+            (
+                "--attestation-verifier-url",
+                NodeArgs {
+                    attestation_verifier_url: Some("https://verify.example".into()),
+                    ..job.clone()
+                },
+            ),
         ] {
             assert_eq!(args.job_node_conflicts(), Some(flag));
         }
@@ -675,15 +697,33 @@ mod tests {
 node-id = 2
 public-url = "http://n2:2528"
 app-upgrades = "operator"
+attestation-verifier-url = "https://verify.calimero.network"
 
 [outbound]
 "#;
         let parsed: NodeArgs = toml::from_str(text).unwrap();
         assert_eq!(parsed.node_id, Some(2));
         assert_eq!(parsed.app_upgrades, Some(Authority::Operator));
+        assert_eq!(
+            parsed.attestation_verifier_url.as_deref(),
+            Some("https://verify.calimero.network")
+        );
         assert!(parsed.outbound.is_some());
         let again: NodeArgs = toml::from_str(&toml::to_string_pretty(&parsed).unwrap()).unwrap();
         assert_eq!(again.app_upgrades, Some(Authority::Operator));
+        assert_eq!(
+            again.attestation_verifier_url,
+            parsed.attestation_verifier_url
+        );
+        let flag = NodeArgs {
+            attestation_verifier_url: Some("https://other.example".into()),
+            ..NodeArgs::default()
+        };
+        assert_eq!(
+            flag.over(again).attestation_verifier_url.as_deref(),
+            Some("https://other.example"),
+            "a given flag overrides the file"
+        );
         assert!(
             toml::from_str::<NodeArgs>("nodeid = 1").is_err(),
             "a typo is refused"

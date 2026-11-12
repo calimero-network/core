@@ -193,7 +193,12 @@ top to bottom:
    key is the one the running version (or every release of the package) was
    signed with; for a release, built by Calimero's public release process and
    its signature verified by the node, or, on mock attestation, "Test
-   cluster: no hardware checks". Last, the confirmation code, large.
+   cluster: no hardware checks". When the node is configured with an
+   [independent verifier](#the-independent-verifier), every kind gets a
+   line "Check this server's hardware and software on *verifier host* ↗",
+   a link that opens in a new tab, with the host shown as text and the ask
+   to check that the page opens there (on mock attestation it says there is
+   nothing to verify instead of linking). Last, the confirmation code, large.
 6. **Approve with passkey** (*Withdraw approval* for a withdrawal) and
    **Decline**, right after these, with the status line below.
 7. **Technical details**, collapsed: everything below, long values cut to one
@@ -227,10 +232,35 @@ and `notes`, shown under *Technical details*.
 | `requestedBy` | all | `{ "package", "name", "publisher", "returnOrigin" }`: the asking package (a package-bound session's, else `null`), its newest release's display name and author |
 | `rpId` | all | The relying party ID the passkey prompt will name |
 | `code` | all | The [confirmation code](#the-confirmation-code) |
+| `verifier` | all | `{ "url", "host", "release", "mock" }` when the node has `--attestation-verifier-url`, else `null`: the link to the [independent verifier](#the-independent-verifier) for this node (its `--public-url`) and its own mero-tee release, the verifier's host to show beside it, and whether the node runs mock attestation (then the page does not link) |
 
 The author and display name are what the publisher wrote in the signed
 manifest; the node verifies the signature and the key, not that the name is
 true. The page says which key signed.
+
+### The independent verifier
+
+Everything the page says about the node comes from the node. A tampered node
+could serve a page that says anything, including a green "verified": a check
+run on this page, by this page's script, proves nothing. So the page does not
+check the node's attestation itself; it links to a verifier that does, on its
+own origin. Calimero runs one at `https://verify.calimero.network`, and the
+operator names it with `merod --attestation-verifier-url`
+([merod](/operate/merod/#node-flags)). The link has the shape mdma uses for
+each node:
+
+```
+{verifier}/mero-tee?node_url=<the node's public URL, no trailing slash>&release_tag=mero-tee-v<release>
+```
+
+The verifier fetches the node's quote over a fresh nonce and checks it against
+the signed measurements of that mero-tee release. Since the page is the node's,
+it could also link to a fake verifier; that is why it shows the verifier's host
+as text next to the link and asks the person to check that the page opens
+there, as it asks them to check its own address. The link opens in a new tab
+(`target="_blank"`, `rel="noopener noreferrer"`); it is plain navigation, so
+the page's content security policy is unchanged. On mock attestation there is
+no quote to verify, and the page says so instead of linking.
 
 ### The confirmation code
 

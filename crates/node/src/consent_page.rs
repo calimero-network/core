@@ -2118,8 +2118,69 @@ fn model(node: &Node, id: &str) -> Result<Value, ApiError> {
         let _prev = o.insert("decidedAt".into(), json!(r.decision.at()));
         let _prev = o.insert("rpId".into(), json!(node.config.rp_id));
         let _prev = o.insert("code".into(), json!(confirmation_code(id)));
+        let verifier = node.config.attestation_verifier_url.as_deref().map(|base| {
+            verifier_link(
+                base,
+                &node.config.public_url,
+                &node.own_release(),
+                node.config.attestation == crate::attest::Mode::Mock,
+            )
+        });
+        let _prev = o.insert("verifier".into(), verifier.unwrap_or(Value::Null));
     }
     Ok(m)
+}
+
+// ---------------------------------------------------------------- verifier
+
+/// The longest `--attestation-verifier-url` taken.
+pub const MAX_VERIFIER_URL_BYTES: usize = 512;
+
+/// The verifier's base URL as the node keeps it (`--attestation-verifier-url`):
+/// `https` (`http` only for localhost), a host, no credentials, query or
+/// fragment, at most [`MAX_VERIFIER_URL_BYTES`]; answered without a trailing
+/// slash. `merod` refuses to start on anything else.
+pub fn verifier_base(raw: &str) -> Result<String, String> {
+    if raw.len() > MAX_VERIFIER_URL_BYTES {
+        return Err(format!("is longer than {MAX_VERIFIER_URL_BYTES} bytes"));
+    }
+    let u = Url::parse(raw).map_err(|e| format!("is not an absolute URL: {e}"))?;
+    let secure = u.scheme() == "https" || (u.scheme() == "http" && local_host(&u));
+    if !secure {
+        return Err("must be https (http only for localhost)".to_owned());
+    }
+    if u.host_str().is_none_or(str::is_empty) {
+        return Err("has no host".to_owned());
+    }
+    if !u.username().is_empty() || u.password().is_some() {
+        return Err("must not carry credentials".to_owned());
+    }
+    if u.query().is_some() || u.fragment().is_some() {
+        return Err("must not have a query or a fragment".to_owned());
+    }
+    Ok(u.as_str().trim_end_matches('/').to_owned())
+}
+
+/// The page's link to the independent verifier for this node: mdma's shape,
+/// `{base}/mero-tee?node_url=<public URL without trailing slash>&release_tag=mero-tee-v<release>`,
+/// with the verifier's host to show beside it. `mock`: there is nothing to
+/// verify, and the page says so instead of linking.
+fn verifier_link(base: &str, public_url: &str, release: &str, mock: bool) -> Value {
+    let mut url = match Url::parse(&format!("{base}/mero-tee")) {
+        Ok(u) => u,
+        // `base` passed `verifier_base`, so appending a path segment parses.
+        Err(_) => return Value::Null,
+    };
+    let _pairs = url
+        .query_pairs_mut()
+        .append_pair("node_url", public_url.trim_end_matches('/'))
+        .append_pair("release_tag", &format!("mero-tee-v{release}"));
+    let host = match (url.host_str(), url.port()) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        (Some(h), None) => h.to_owned(),
+        (None, _) => String::new(),
+    };
+    json!({ "url": url.as_str(), "host": host, "release": release, "mock": mock })
 }
 
 /// Where the page sends the person back: `returnTo` with the request and
@@ -2498,6 +2559,47 @@ mod tests {
         }
         let e = store.insert(1, request("late", 100), 0).unwrap_err();
         assert_eq!(e.status, 429);
+    }
+
+    #[test]
+    fn the_verifier_link_is_mdmas_shape_on_a_checked_base() {
+        let base = verifier_base("https://verify.calimero.network/").unwrap();
+        assert_eq!(base, "https://verify.calimero.network");
+        assert_eq!(
+            verifier_link(&base, "https://node-1.example:2528/", "2.3.131", false),
+            json!({
+                "url": "https://verify.calimero.network/mero-tee?node_url=https%3A%2F%2Fnode-1.example%3A2528&release_tag=mero-tee-v2.3.131",
+                "host": "verify.calimero.network",
+                "release": "2.3.131",
+                "mock": false,
+            })
+        );
+        // A base with a path keeps it; a local verifier names its port.
+        let local = verifier_base("http://localhost:8080/v/").unwrap();
+        assert_eq!(local, "http://localhost:8080/v");
+        let link = verifier_link(&local, "http://127.0.0.1:2501", "1.0.0", true);
+        assert_eq!(
+            link["url"],
+            "http://localhost:8080/v/mero-tee?node_url=http%3A%2F%2F127.0.0.1%3A2501&release_tag=mero-tee-v1.0.0"
+        );
+        assert_eq!(link["host"], "localhost:8080");
+        assert_eq!(link["mock"], true);
+        for bad in [
+            "",
+            "verify.calimero.network",
+            "http://verify.calimero.network",
+            "ftp://verify.calimero.network",
+            "https://verify.calimero.network/?x=1",
+            "https://verify.calimero.network/?",
+            "https://verify.calimero.network/#top",
+            "https://user:pw@verify.calimero.network",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+        ] {
+            assert!(verifier_base(bad).is_err(), "{bad:?}");
+        }
+        let long = format!("https://v.example/{}", "a".repeat(MAX_VERIFIER_URL_BYTES));
+        assert!(verifier_base(&long).is_err());
     }
 
     #[test]
