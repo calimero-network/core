@@ -22,9 +22,22 @@ generated code only adds the method names and types.
 
 ## Generate a client
 
-Put `mero-app-build` on PATH once (`scripts/install-mero-app-build.sh`), build
-the app, then point `codegen` at the component, the `.mpk` bundle or an ABI JSON
-file (`meroctl context abi` saves an installed app's):
+Put `mero-app-build` on PATH once, build the app, then point `codegen` at the
+component, the `.mpk` bundle or an ABI JSON file (`meroctl context abi` saves an
+installed app's). Every release ships it prebuilt for Linux (x86_64, aarch64) and
+macOS (aarch64), named `mero-app-build_<target>.tar.gz` and listed in the
+release's `SHA256SUMS`, so CI that only runs `codegen` needs no Rust toolchain;
+from a core checkout, `scripts/install-mero-app-build.sh` builds it instead.
+`mero-app-build --version` names the release it came from.
+
+```bash
+V=<release> T=x86_64-unknown-linux-gnu   # the core release, and this machine's target
+curl -fsSLO "https://github.com/calimero-network/core/releases/download/$V/mero-app-build_$T.tar.gz"
+curl -fsSL "https://github.com/calimero-network/core/releases/download/$V/SHA256SUMS" \
+  | grep " mero-app-build_$T.tar.gz\$" | sha256sum -c
+tar -xzf "mero-app-build_$T.tar.gz" -C ~/.local/bin mero-app-build
+```
+
 
 ```bash
 mero-app-build apps/kv-store --out kv-store.wasm
@@ -38,9 +51,14 @@ wrote src/generated/client.ts
 
 `--lang` is `ts`, `python`, `swift`, `kotlin` or `openapi` (the document alone).
 Every language writes `openapi.json` beside the client (`client.ts`, `client.py`,
-`KvStoreClient.swift`, `KvStoreClient.kt`). The client class is named after
-`--name`, else the package of an `.mpk` or the file's name (`kv-store.wasm` gives
-`KvStoreClient`). A Kotlin client goes in `--package` (default
+`KvStoreClient.swift`, `KvStoreClient.kt`) unless `--no-openapi` says not to.
+The ABI carries no app name, so the client class is named after `--name`, else
+the package of an `.mpk`, else the file's name (`kv-store.wasm` gives
+`KvStoreClient`). A file named for what it holds (`abi.json`,
+`app.component.wasm`) names no app: the class is then named after the crate whose
+`Cargo.toml` is nearest above the file (`logic/res/abi.json` beside
+`logic/Cargo.toml`'s `name = "kv-store"`), and with no such crate `codegen` stops
+and asks for `--name`. A Kotlin client goes in `--package` (default
 `calimero.generated.<name>`, here `calimero.generated.kvstore`). A multi-service
 bundle writes one directory per service, each Kotlin client in `<package>.<service>`;
 `--service <name>` picks one.
@@ -90,8 +108,20 @@ const kv = new KvStoreClient(client, appId, {
 
 ### Test without a node
 
-The class takes an `AppTransport`, the part of `CalimeroClient` it uses
-(`apps.call`, `apps.view`, `events`), so a test double implements that alone:
+The class implements `KvStoreApi` (`<Name>Api`), an interface of the app's
+methods alone. Code that takes a `KvStoreApi`, or the `Pick` of it that it calls,
+is handed the class in the app and a double of those methods in a test:
+
+```tsx
+import type { KvStoreApi } from './generated/client';
+
+function Counter({ kv }: { kv: Pick<KvStoreApi, 'len'> }) { /* ... */ }
+
+render(<Counter kv={{ len: async () => '3' }} />);
+```
+
+To test the class itself, give it a double of `AppTransport`, the part of
+`CalimeroClient` it uses (`apps.call`, `apps.view`, `events`):
 
 ```ts
 const kv = new KvStoreClient(

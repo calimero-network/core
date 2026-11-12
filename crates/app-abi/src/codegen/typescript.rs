@@ -324,9 +324,15 @@ const CLASS_HEAD: &str = r"  readonly #client: AppTransport;
   }
 ";
 
+/// The interface of the class's methods: `KvStoreClient` → `KvStoreApi`.
+fn api_name(class: &str) -> String {
+    format!("{}Api", class.strip_suffix("Client").unwrap_or(class))
+}
+
 pub(super) fn module(abi: &AppAbi, class: &str) -> String {
+    let api = api_name(class);
     let mut names = Names::new(abi);
-    names.reserve(OWN_NAMES.iter().copied().chain([class]));
+    names.reserve(OWN_NAMES.iter().copied().chain([class, api.as_str()]));
     let mut ts = Ts {
         abi,
         names,
@@ -392,11 +398,9 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     );
 
     body.push_str(PRELUDE);
-    let _ = writeln!(
-        body,
-        "\n/** The app's methods, over a signed-in `CalimeroClient` (or any {{@link AppTransport}}). */\nexport class {class} {{"
-    );
-    body.push_str(CLASS_HEAD);
+    // The methods alone, so a caller's test double can stand in for the class.
+    let mut iface = String::new();
+    let mut class_body = String::new();
     for (name, m) in abi.client_methods() {
         let ret = ts.ty(&m.returns);
         let method = property(name);
@@ -419,7 +423,11 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
             ("call", "CallOptions")
         };
         let _ = writeln!(
-            body,
+            iface,
+            "  /** {doc}. */\n  {method}({args_param}options?: {options}): Promise<{ret}>;"
+        );
+        let _ = writeln!(
+            class_body,
             "\n  /** {doc}. */\n  async {method}({args_param}options: {options} = {{}}): Promise<{ret}> {{\n    return (await this.#{send}({lit}, {args_value}, options)) as {ret};\n  }}"
         );
     }
@@ -428,6 +436,20 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     } else {
         "events"
     };
+    let _ = writeln!(
+        iface,
+        "  /** The app's events from log index `from`, then live, until `signal` aborts. */\n  {stream}(from?: number, signal?: AbortSignal): AsyncIterable<AppEvent & {{ id: string }}>;"
+    );
+    let _ = writeln!(
+        body,
+        "\n/** The app's methods: what `{class}` implements, for a test double to stand in for it. */\nexport interface {api} {{\n{iface}}}"
+    );
+    let _ = writeln!(
+        body,
+        "\n/** The app's methods, over a signed-in `CalimeroClient` (or any {{@link AppTransport}}). */\nexport class {class} implements {api} {{"
+    );
+    body.push_str(CLASS_HEAD);
+    body.push_str(&class_body);
     let _ = writeln!(
         body,
         "\n  /** The app's events from log index `from`, then live, until `signal` aborts. */\n  async *{stream}(from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & {{ id: string }}> {{\n    for await (const event of this.#client.events(this.#app, from, signal)) {{\n      yield event as AppEvent & {{ id: string }};\n    }}\n  }}\n}}"
