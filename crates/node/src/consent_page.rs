@@ -125,8 +125,6 @@ pub const CONSENT_REQUEST_TTL: u64 = 10 * 60;
 pub const CONSENT_RESULT_TTL: u64 = 10 * 60;
 /// The most requests one node holds, decided or not.
 pub const MAX_CONSENT_REQUESTS: usize = 1_000;
-/// The most undecided requests one account may hold on one node.
-pub const MAX_OPEN_REQUESTS_PER_ACCOUNT: usize = 8;
 /// The longest `returnTo` accepted.
 pub const MAX_RETURN_TO_BYTES: usize = 2_048;
 /// The most outbound prefixes one request may name.
@@ -510,26 +508,23 @@ impl ConsentRequests {
         self.open.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Keep `req` under a new id, within the node's and the account's bounds.
+    /// Keep `req` under a new id, within the node's bound. It replaces the
+    /// account's undecided request on this node, if any: an account has one
+    /// at a time, so a page can only ever be approving the request its app
+    /// asked for last. A page swapped for another app's request (a forged page
+    /// on the node's host, with a malicious app's request behind it) then has
+    /// nothing to swap in: the other app's request is gone, and an app whose
+    /// own request was replaced finds it gone at `/result` (`404`).
     fn insert(&self, node_id: u64, req: ConsentRequest, now: u64) -> Result<String, ApiError> {
         let mut open = self.open();
-        open.retain(|_, r| r.expires_at > now);
+        open.retain(|_, r| {
+            r.expires_at > now && !(r.account == req.account && r.decision == Decision::Pending)
+        });
         if open.len() >= MAX_CONSENT_REQUESTS {
             return Err(ApiError::new(
                 429,
                 "RATE_LIMITED",
                 "too many consent requests on this node; try again shortly",
-            ));
-        }
-        let mine = open
-            .values()
-            .filter(|r| r.account == req.account && r.decision == Decision::Pending)
-            .count();
-        if mine >= MAX_OPEN_REQUESTS_PER_ACCOUNT {
-            return Err(ApiError::new(
-                429,
-                "RATE_LIMITED",
-                "this account has too many undecided consent requests; decide or let them expire",
             ));
         }
         let id = format!("{node_id}.{}", b64url(&random::<16>()));
@@ -1498,12 +1493,7 @@ async fn upgrade_request(
     p.within(node, &app)?;
     // The route's own authority rules, asked before anything is shown: a
     // package its publisher upgrades is not the instance owner's to approve.
-    let (may, unbound) = node.sys(|s| {
-        (
-            s.may_upgrade(&app, account),
-            !s.upgrades_of(&app.bundle).is_owner() && s.publisher_of(&app.bundle).is_none(),
-        )
-    });
+    let (may, unbound) = node.sys(|s| (s.may_upgrade(&app, account), s.upgrades_unbound(&app)));
     if unbound {
         return Err(ApiError::conflict(
             "this app's package is upgraded by its publisher, and no organization has bound its key yet",
@@ -1531,18 +1521,18 @@ async fn upgrade_request(
             p.bound_app() == Some(package.as_str()),
         )
         .await?;
-    if !node.sys(|s| s.upgrade_keeps_authority(&app.bundle, &bundle)) {
-        return Err(ApiError::forbidden(
-            "an app whose owner upgrades it is not moved to a release its publisher upgrades",
-        ));
-    }
-    crate::api::refuse_stalled(node, &app, &bundle, now_secs())?;
     let to_release = PackageRef {
         package: package.clone(),
         version: subject.to_version.clone(),
         service: service.clone(),
         compute: false,
     };
+    if !node.sys(|s| s.upgrade_keeps_authority(s.governing_release(&app), Some(&to_release))) {
+        return Err(ApiError::forbidden(
+            "an app whose owner upgrades it is not moved to a release its publisher upgrades",
+        ));
+    }
+    crate::api::refuse_stalled(node, &app, &bundle, Some(&to_release), now_secs())?;
     node.require_runtime(
         &app.replicas,
         Some(&to_release),
@@ -2190,6 +2180,10 @@ fn guarded(mut resp: Response) -> Response {
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (header::REFERRER_POLICY, "no-referrer"),
         (header::X_FRAME_OPTIONS, "DENY"),
+        // Never over plain HTTP again once seen over TLS: a downgrade would
+        // hand the page, and what it shows, to the network (browsers ignore
+        // it on an `http` answer, so a development node is unaffected).
+        (header::STRICT_TRANSPORT_SECURITY, "max-age=31536000"),
     ] {
         let _prev = h.insert(k, HeaderValue::from_static(v));
     }
@@ -2562,21 +2556,19 @@ mod tests {
     }
 
     #[test]
-    fn requests_expire_are_bounded_per_account_and_decide_once() {
+    fn an_accounts_new_request_replaces_its_undecided_one_and_each_decides_once() {
         let store = ConsentRequests::default();
         let now = 1_000;
+        // One undecided request per account: a new one replaces it.
+        let first = store.insert(7, request("alice", now + 10), now).unwrap();
         let id = store.insert(7, request("alice", now + 10), now).unwrap();
         assert!(is_request_id(&id), "{id}");
         assert!(id.starts_with("7."));
-        // Bounded per account, not across accounts.
-        for _ in 1..MAX_OPEN_REQUESTS_PER_ACCOUNT {
-            let _ = store.insert(7, request("alice", now + 10), now).unwrap();
-        }
-        let e = store
-            .insert(7, request("alice", now + 10), now)
-            .unwrap_err();
-        assert_eq!((e.status, e.code.as_str()), (429, "RATE_LIMITED"));
-        let _ = store.insert(7, request("bob", now + 10), now).unwrap();
+        assert_eq!(store.get(&first, now).unwrap_err().status, 404);
+        // Not across accounts.
+        let bobs = store.insert(7, request("bob", now + 10), now).unwrap();
+        assert!(store.get(&id, now).is_ok());
+        assert!(store.get(&bobs, now).is_ok());
         // Decided once: approve, then neither approve nor decline again.
         let r = store
             .transition(&id, &Decision::Pending, Decision::Deciding, now)

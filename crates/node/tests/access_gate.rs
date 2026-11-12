@@ -16,18 +16,11 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use calimero_client::{Client, Consistency, Policy};
+use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::{Client, Policy};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::node::{CallRequest, NOT_REACHED};
 use calimero_node::types::Caller;
@@ -44,7 +37,7 @@ use tokio::sync::watch;
 )]
 mod harness;
 
-use harness::{cluster_name, free_port, kv_wasm, node_config, ORIGIN};
+use harness::{cluster_name, free_port, kv_wasm, node_config, typed, wire, ORIGIN};
 
 /// Forward `listen` to `upstream`; while `held` is true, bytes towards
 /// `upstream` wait. Answers flow back freely.
@@ -212,14 +205,21 @@ async fn a_grant_is_honoured_by_a_follower_that_has_not_applied_it_yet() {
     let follower = (0..3).find(|i| *i != leader).unwrap();
     let (alice, _a) = signed_up(&c, leader, "alice").await;
     let (bob, _b) = signed_up(&c, follower, "bob").await;
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let created = alice
-        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     // The follower holds the app's record before its appends are held.
@@ -230,9 +230,10 @@ async fn a_grant_is_honoured_by_a_follower_that_has_not_applied_it_yet() {
     // leader: the other follower's ack commits it.
     c.hold[follower].send_replace(true);
     let _ok = alice
-        .post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "accounts", "accounts": [bob_id] } }),
+        .apps()
+        .access(
+            &app,
+            typed(json!({ "kind": "accounts", "accounts": [bob_id] })),
         )
         .await
         .unwrap();
@@ -249,7 +250,14 @@ async fn a_grant_is_honoured_by_a_follower_that_has_not_applied_it_yet() {
     let call = tokio::spawn({
         let app = app.clone();
         async move {
-            bob.view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+            bob.apps()
+                .view(
+                    &app,
+                    "get",
+                    Some(json!({ "key": "k" })),
+                    Some(ViewsRequestConsistency::Strong),
+                    None,
+                )
                 .await
         }
     });
@@ -272,20 +280,28 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
     let follower = (0..3).find(|i| *i != leader).unwrap();
     let (alice, _a) = signed_up(&c, leader, "alice").await;
     let (bob, _b) = signed_up(&c, follower, "bob").await;
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let created = alice
-        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     let _ok = alice
-        .post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "accounts", "accounts": [bob_id] } }),
+        .apps()
+        .access(
+            &app,
+            typed(json!({ "kind": "accounts", "accounts": [bob_id] })),
         )
         .await
         .unwrap();
@@ -302,17 +318,22 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let read = bob
-        .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+        .apps()
+        .view(
+            &app,
+            "get",
+            Some(json!({ "key": "k" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
         .await;
     assert!(read.is_ok(), "granted: {:?}", read.err());
 
     // Hold the follower, revoke Bob through the leader, call through the follower.
     c.hold[follower].send_replace(true);
     let _ok = alice
-        .post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "owner" } }),
-        )
+        .apps()
+        .access(&app, typed(json!({ "kind": "owner" })))
         .await
         .unwrap();
     assert!(
@@ -325,7 +346,14 @@ async fn a_revocation_holds_on_a_follower_that_has_not_applied_it_yet() {
     let call = tokio::spawn({
         let app = app.clone();
         async move {
-            bob.view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+            bob.apps()
+                .view(
+                    &app,
+                    "get",
+                    Some(json!({ "key": "k" })),
+                    Some(ViewsRequestConsistency::Strong),
+                    None,
+                )
                 .await
         }
     });
@@ -344,17 +372,22 @@ async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behi
     let leader = c.system_leader();
     let follower = (0..3).find(|i| *i != leader).unwrap();
     let (alice, _a) = signed_up(&c, leader, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let created = alice
-        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     let _ok = alice
-        .post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "public" } }),
-        )
+        .apps()
+        .access(&app, typed(json!({ "kind": "public" })))
         .await
         .unwrap();
     let follower_node = &c.nodes[follower].node;
@@ -367,17 +400,15 @@ async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behi
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let anonymous = c.client(follower);
-    let shown = anonymous.get(&format!("apps/{app}")).await;
+    let shown = anonymous.apps().get(&app).await.map(wire);
     assert!(shown.is_ok(), "public: {:?}", shown.err());
 
     // Hold the follower, make the app private through the leader, then ask the
     // follower anonymously.
     c.hold[follower].send_replace(true);
     let _ok = alice
-        .post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "owner" } }),
-        )
+        .apps()
+        .access(&app, typed(json!({ "kind": "owner" })))
         .await
         .unwrap();
     assert!(
@@ -386,7 +417,7 @@ async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behi
     );
     let call = tokio::spawn({
         let app = app.clone();
-        async move { anonymous.get(&format!("apps/{app}")).await }
+        async move { anonymous.apps().get(&app).await.map(wire) }
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
     c.hold[follower].send_replace(false);
@@ -406,10 +437,17 @@ async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behi
 async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() {
     let c = ProxiedCluster::start().await;
     let (alice, mut alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let created = alice
-        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     let mut leader = None;
@@ -428,7 +466,12 @@ async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() 
     let leader = leader.expect("the app's group elects a leader");
     let follower = (0..3).find(|i| *i != leader).unwrap();
 
-    let blob = alice.upload_blob(&app, vec![7_u8; 4096]).await.unwrap();
+    let blob = alice
+        .apps()
+        .blob_upload(&app, vec![7_u8; 4096], None)
+        .await
+        .map(wire)
+        .unwrap();
     let id = blob["id"].as_str().unwrap().to_owned();
     let raw: [u8; 32] = hex::decode(&id).unwrap().try_into().unwrap();
     // The follower holds the mark and the bytes before its appends are held.
@@ -445,7 +488,12 @@ async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() 
     let deleter = c.client(leader);
     let _s = deleter.sign_in(&mut alice_pk).await.unwrap();
     assert_eq!(
-        at_follower.download_blob(&app, &id).await.unwrap().len(),
+        at_follower
+            .apps()
+            .blob_download(&app, &id, None)
+            .await
+            .unwrap()
+            .len(),
         4096,
         "served before the delete"
     );
@@ -455,7 +503,7 @@ async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() 
     c.hold[follower].send_replace(true);
     let delete = tokio::spawn({
         let (app, id) = (app.clone(), id.clone());
-        async move { deleter.delete_blob(&app, &id).await }
+        async move { deleter.apps().blob_delete(&app, &id).await.map(wire) }
     });
     let leader_group = c.nodes[leader].node.hosted(&app).unwrap();
     for _ in 0..200 {
@@ -473,7 +521,11 @@ async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() 
         "the follower must still hold the mark"
     );
 
-    let read = at_follower.download_blob(&app, &id).await.map(|b| b.len());
+    let read = at_follower
+        .apps()
+        .blob_download(&app, &id, None)
+        .await
+        .map(|b| b.len());
     c.hold[follower].send_replace(false);
     let _deleted = delete.await.unwrap();
     let err = read.expect_err("a blob deleted before the request must not be served");
@@ -489,10 +541,17 @@ async fn a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind() 
 async fn a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader() {
     let c = ProxiedCluster::start().await;
     let (alice, mut alice_pk) = signed_up(&c, c.system_leader(), "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let created = alice
-        .post("apps", json!({ "name": "kv", "bundle": bundle }))
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .await
+        .map(wire)
         .unwrap();
     let app = created["appId"].as_str().unwrap().to_owned();
     let mut leader = None;
@@ -511,7 +570,12 @@ async fn a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader(
     let leader = leader.expect("the app's group elects a leader");
     let follower = (0..3).find(|i| *i != leader).unwrap();
 
-    let blob = alice.upload_blob(&app, vec![9_u8; 4096]).await.unwrap();
+    let blob = alice
+        .apps()
+        .blob_upload(&app, vec![9_u8; 4096], None)
+        .await
+        .map(wire)
+        .unwrap();
     let id = blob["id"].as_str().unwrap().to_owned();
     let raw: [u8; 32] = hex::decode(&id).unwrap().try_into().unwrap();
     let follower_group = c.nodes[follower].node.hosted(&app).unwrap();
@@ -539,7 +603,7 @@ async fn a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader(
     c.hold[follower].send_replace(true);
     let delete = tokio::spawn({
         let (app, id) = (app.clone(), id.clone());
-        async move { deleter.delete_blob(&app, &id).await }
+        async move { deleter.apps().blob_delete(&app, &id).await.map(wire) }
     });
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
@@ -577,17 +641,19 @@ async fn a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind() 
     let leader = c.system_leader();
     let follower = (0..3).find(|i| *i != leader).unwrap();
     let (alice, mut alice_pk) = signed_up(&c, leader, "alice").await;
-    let alice_id = alice.me().await.unwrap()["accountId"]
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
     let created = alice
-        .post_confirmed(
-            "deployments",
-            json!({ "name": "labs", "owner": { "account": alice_id } }),
-            &mut alice_pk,
+        .deployments()
+        .create(
+            "labs",
+            typed(json!({ "account": alice_id })),
+            Some(&mut alice_pk),
         )
         .await
+        .map(wire)
         .unwrap();
     let id = created["id"].as_str().unwrap().to_owned();
     let follower_node = &c.nodes[follower].node;
@@ -599,20 +665,21 @@ async fn a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind() 
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let anonymous = c.client(follower);
-    let shown = anonymous.get(&format!("deployments/{id}")).await;
+    let shown = anonymous.deployments().get(&id).await.map(wire);
     assert!(shown.is_ok(), "{:?}", shown.err());
 
     // Hold the follower, delete through the leader, then read anonymously
     // on the follower.
     c.hold[follower].send_replace(true);
     let _deleted = alice
-        .delete_confirmed(&format!("deployments/{id}"), &mut alice_pk)
+        .deployments()
+        .delete(&id, Some(&mut alice_pk))
         .await
         .unwrap();
     assert!(here(), "the follower must still hold the deployment");
     let read = tokio::spawn({
         let id = id.clone();
-        async move { anonymous.get(&format!("deployments/{id}")).await }
+        async move { anonymous.deployments().get(&id).await.map(wire) }
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
     c.hold[follower].send_replace(false);
@@ -642,10 +709,27 @@ fn rounds(c: &ProxiedCluster) -> u64 {
 async fn a_call_costs_one_system_read_round() {
     let c = ProxiedCluster::start().await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
-    let app = alice.create_app("kv", &bundle, json!({})).await.unwrap();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
     let _warm = alice
-        .call(&app, "set", json!({ "key": "k", "value": "0" }), None)
+        .apps()
+        .call(
+            &app,
+            "set",
+            Some(json!({ "key": "k", "value": "0" })),
+            None,
+            None,
+        )
         .await
         .unwrap();
     for entry in 0..3 {
@@ -655,10 +739,12 @@ async fn a_call_costs_one_system_read_round() {
         for n in 0..3 {
             let before = rounds(&c);
             let _r = client
+                .apps()
                 .call(
                     &app,
                     "set",
-                    json!({ "key": "k", "value": n.to_string() }),
+                    Some(json!({ "key": "k", "value": n.to_string() })),
+                    None,
                     None,
                 )
                 .await
@@ -666,7 +752,14 @@ async fn a_call_costs_one_system_read_round() {
             let call = rounds(&c) - before;
             let before = rounds(&c);
             let _v = client
-                .view(&app, "get", json!({ "key": "k" }), Consistency::Strong)
+                .apps()
+                .view(
+                    &app,
+                    "get",
+                    Some(json!({ "key": "k" })),
+                    Some(ViewsRequestConsistency::Strong),
+                    None,
+                )
                 .await
                 .unwrap();
             let view = rounds(&c) - before;
@@ -696,16 +789,25 @@ async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
     let sys_leader = c.system_leader();
     let (alice, _a) = signed_up(&c, sys_leader, "alice").await;
     let (bob, _b) = signed_up(&c, sys_leader, "bob").await;
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let bundle = alice.upload_bundle(kv_wasm()).await.unwrap();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
     let mut placed = None;
     for n in 0..4 {
         let app = alice
-            .create_app(&format!("kv{n}"), &bundle, json!({}))
+            .apps()
+            .create(typed(
+                json!({ "name": &format!("kv{n}"), "bundle": &bundle }),
+            ))
             .await
+            .map(|a| a.app_id)
             .unwrap();
         let mut leader = None;
         for _ in 0..100 {
@@ -728,9 +830,10 @@ async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
     }
     let (app, app_leader) = placed.expect("an app led by a node other than the system leader");
     let _ok = alice
-        .post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "accounts", "accounts": [bob_id] } }),
+        .apps()
+        .access(
+            &app,
+            typed(json!({ "kind": "accounts", "accounts": [bob_id] })),
         )
         .await
         .unwrap();
@@ -766,10 +869,8 @@ async fn a_revocation_committed_before_the_round_holds_on_a_leader_behind() {
     // the round a request would make now.
     c.hold[app_leader].send_replace(true);
     let _ok = alice
-        .post(
-            &format!("apps/{app}/access"),
-            json!({ "access": { "kind": "owner" } }),
-        )
+        .apps()
+        .access(&app, typed(json!({ "kind": "owner" })))
         .await
         .unwrap();
     let (index, _caught_up) = c.nodes[sys_leader].node.sys_fresh_index().await;

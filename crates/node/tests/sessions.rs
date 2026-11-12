@@ -4,14 +4,6 @@
 //! sees or ends them: another account's session is `404`, and an API key is
 //! refused the list.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 use std::time::Duration;
 
 use calimero_identity::testing::SoftAuthenticator;
@@ -24,7 +16,7 @@ use serde_json::{json, Value};
 )]
 mod harness;
 
-use harness::{signed_up, Cluster, ORIGIN};
+use harness::{signed_up, typed, wire, Cluster, ORIGIN};
 
 /// The passkey `id` as `/auth/me` lists it.
 fn passkey<'a>(me: &'a Value, id: &str) -> &'a Value {
@@ -58,7 +50,7 @@ fn current(list: &Value) -> Value {
 async fn sign_ins_move_a_passkeys_last_sign_in_and_refreshes_do_not() {
     let c = Cluster::start(3).await;
     let (laptop, mut pk) = signed_up(&c, 0, "alice").await;
-    let me = laptop.me().await.unwrap();
+    let me = laptop.auth().me().await.map(wire).unwrap();
     let cred = me["passkeyId"].as_str().unwrap().to_owned();
     let added = passkey(&me, &cred)["addedAt"].as_u64().expect("addedAt");
     assert_eq!(passkey(&me, &cred)["lastSignInAt"], json!(added), "{me}");
@@ -67,7 +59,7 @@ async fn sign_ins_move_a_passkeys_last_sign_in_and_refreshes_do_not() {
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let phone = c.client(1);
     let _s = phone.sign_in(&mut pk).await.unwrap();
-    let me = phone.me().await.unwrap();
+    let me = phone.auth().me().await.map(wire).unwrap();
     let first = passkey(&me, &cred)["lastSignInAt"].as_u64().unwrap();
     assert!(first > added, "{me}");
     assert_eq!(passkey(&me, &cred)["addedAt"], json!(added));
@@ -76,40 +68,41 @@ async fn sign_ins_move_a_passkeys_last_sign_in_and_refreshes_do_not() {
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let tablet = c.client(2);
     let _s = tablet.sign_in(&mut pk).await.unwrap();
-    let second = passkey(&tablet.me().await.unwrap(), &cred)["lastSignInAt"]
+    let second = passkey(&tablet.auth().me().await.map(wire).unwrap(), &cred)["lastSignInAt"]
         .as_u64()
         .unwrap();
     assert!(second > first);
 
     // A refresh (the harness exchanges every one in the log) is no sign-in,
     // and keeps when its session opened.
-    let opened = current(&laptop.sessions().await.unwrap())["openedAt"].clone();
+    let opened =
+        current(&laptop.auth().sessions_list().await.map(wire).unwrap())["openedAt"].clone();
     assert_eq!(opened, json!(added), "a sign-up opens its session");
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let _s = laptop.refresh().await.unwrap();
     for i in 0..3 {
         let at = c.client(i);
         at.use_session(laptop.session().await.unwrap()).await;
-        let me = at.me().await.unwrap();
+        let me = at.auth().me().await.map(wire).unwrap();
         assert_eq!(
             passkey(&me, &cred)["lastSignInAt"],
             json!(second),
             "node {i}"
         );
     }
-    let after = current(&laptop.sessions().await.unwrap());
+    let after = current(&laptop.auth().sessions_list().await.map(wire).unwrap());
     assert_eq!(after["openedAt"], opened, "{after}");
     assert!(after["lastActiveAt"].as_u64().unwrap() > added, "{after}");
 
     // An added passkey: added now, never signed in, until it signs in.
     let mut key = SoftAuthenticator::new("localhost", ORIGIN);
     let new = laptop.add_passkey(&mut key, &mut pk).await.unwrap();
-    let me = laptop.me().await.unwrap();
+    let me = laptop.auth().me().await.map(wire).unwrap();
     assert!(passkey(&me, &new)["addedAt"].as_u64().unwrap() >= second);
     assert_eq!(passkey(&me, &new)["lastSignInAt"], Value::Null, "{me}");
     let other = c.client(1);
     let _s = other.sign_in(&mut key).await.unwrap();
-    let me = other.me().await.unwrap();
+    let me = other.auth().me().await.map(wire).unwrap();
     assert!(
         passkey(&me, &new)["lastSignInAt"].as_u64().is_some(),
         "{me}"
@@ -117,7 +110,12 @@ async fn sign_ins_move_a_passkeys_last_sign_in_and_refreshes_do_not() {
     assert_eq!(passkey(&me, &cred)["lastSignInAt"], json!(second));
 
     // A removed passkey takes its times with it.
-    let _ok = laptop.remove_passkey(&new, &mut pk).await.unwrap();
+    let _ok = laptop
+        .auth()
+        .passkey_remove(&new, Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
     let removed = c.nodes[0].as_ref().unwrap().node.sys(|s| {
         s.accounts
             .values()
@@ -133,11 +131,11 @@ async fn sign_ins_move_a_passkeys_last_sign_in_and_refreshes_do_not() {
 async fn a_second_session_is_listed_and_ended_on_its_own() {
     let c = Cluster::start(3).await;
     let (laptop, mut pk) = signed_up(&c, 0, "alice").await;
-    let cred = laptop.me().await.unwrap()["passkeyId"].clone();
+    let cred = laptop.auth().me().await.map(wire).unwrap()["passkeyId"].clone();
     let phone = c.client(1);
     let _s = phone.sign_in(&mut pk).await.unwrap();
 
-    let list = laptop.sessions().await.unwrap();
+    let list = laptop.auth().sessions_list().await.map(wire).unwrap();
     assert_eq!(sessions(&list).len(), 2, "{list}");
     let mine = current(&list);
     for s in sessions(&list) {
@@ -147,28 +145,33 @@ async fn a_second_session_is_listed_and_ended_on_its_own() {
         assert!(s["openedAt"].as_u64().is_some(), "{s}");
         assert!(s["lastActiveAt"].as_u64().is_some(), "{s}");
     }
-    let phones = current(&phone.sessions().await.unwrap());
+    let phones = current(&phone.auth().sessions_list().await.map(wire).unwrap());
     assert_ne!(phones["session"], mine["session"]);
 
     // The laptop ends the phone's session, through another node.
     let elsewhere = c.client(2);
     elsewhere.use_session(laptop.session().await.unwrap()).await;
     let _ok = elsewhere
-        .revoke_session(phones["session"].as_str().unwrap())
+        .auth()
+        .session_revoke(phones["session"].as_str().unwrap())
         .await
         .unwrap();
     let e = phone.refresh().await.unwrap_err().to_string();
     assert!(e.starts_with("401"), "{e}");
-    let e = phone.me().await.unwrap_err().to_string();
+    let e = phone.auth().me().await.unwrap_err().to_string();
     assert!(e.starts_with("401"), "{e}");
-    let list = laptop.sessions().await.unwrap();
+    let list = laptop.auth().sessions_list().await.map(wire).unwrap();
     assert_eq!(sessions(&list).len(), 1, "{list}");
     assert_eq!(current(&list)["session"], mine["session"]);
-    assert!(laptop.me().await.is_ok(), "the laptop's own session stays");
+    assert!(
+        laptop.auth().me().await.is_ok(),
+        "the laptop's own session stays"
+    );
 
     // Ended already: there is nothing to end.
     let e = laptop
-        .revoke_session(phones["session"].as_str().unwrap())
+        .auth()
+        .session_revoke(phones["session"].as_str().unwrap())
         .await
         .unwrap_err()
         .to_string();
@@ -176,8 +179,10 @@ async fn a_second_session_is_listed_and_ended_on_its_own() {
 
     // Its own session too, as a sign-out.
     let _ok = laptop
-        .revoke_session(mine["session"].as_str().unwrap())
+        .auth()
+        .session_revoke(mine["session"].as_str().unwrap())
         .await
+        .map(wire)
         .unwrap();
     let e = laptop.refresh().await.unwrap_err().to_string();
     assert!(e.starts_with("401"), "{e}");
@@ -191,34 +196,43 @@ async fn another_accounts_session_is_neither_listed_nor_ended() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
     let (bob, _bob_pk) = signed_up(&c, 1, "bob").await;
-    let bobs = current(&bob.sessions().await.unwrap());
+    let bobs = current(&bob.auth().sessions_list().await.map(wire).unwrap());
 
-    let list = alice.sessions().await.unwrap();
+    let list = alice.auth().sessions_list().await.map(wire).unwrap();
     assert_eq!(sessions(&list).len(), 1, "{list}");
     assert_ne!(current(&list)["session"], bobs["session"]);
     let e = alice
-        .revoke_session(bobs["session"].as_str().unwrap())
+        .auth()
+        .session_revoke(bobs["session"].as_str().unwrap())
         .await
         .unwrap_err()
         .to_string();
     assert!(e.starts_with("404"), "{e}");
     let _s = bob.refresh().await.unwrap();
-    assert!(bob.me().await.is_ok(), "bob's session stays");
+    assert!(bob.auth().me().await.is_ok(), "bob's session stays");
 
     // An API key is the account's, but not its holder's session.
     let (_id, key) = alice
-        .create_api_key(json!({ "label": "ci" }), &mut alice_pk)
+        .auth()
+        .apikey_create(typed(json!({ "label": "ci" })), Some(&mut alice_pk))
         .await
+        .map(|k| (k.key_id, k.key))
         .unwrap();
     let machine = c.client(2);
     machine.use_api_key(&key).await;
-    let e = machine.sessions().await.unwrap_err().to_string();
-    assert!(e.starts_with("403"), "{e}");
     let e = machine
-        .revoke_session(current(&list)["session"].as_str().unwrap())
+        .auth()
+        .sessions_list()
         .await
         .unwrap_err()
         .to_string();
     assert!(e.starts_with("403"), "{e}");
-    assert!(alice.me().await.is_ok());
+    let e = machine
+        .auth()
+        .session_revoke(current(&list)["session"].as_str().unwrap())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(e.starts_with("403"), "{e}");
+    assert!(alice.auth().me().await.is_ok());
 }

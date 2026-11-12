@@ -191,6 +191,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             s.session_proofs_from = Some(index);
             Ok(Value::Null)
         }
+        SystemCmd::AttributeByRelease => {
+            if s.attributes_by_release {
+                return Err("apps are judged by their release already");
+            }
+            s.attributes_by_release = true;
+            Ok(Value::Null)
+        }
         SystemCmd::SetClusterVersion { version, nodes } => {
             cluster_version::apply(s, version, &nodes)
         }

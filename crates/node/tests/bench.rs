@@ -7,14 +7,6 @@
 //! fresh instance, spin) invoke the node's own engine on the leader's applied state with
 //! the node's own directory, because the API does not return an outcome's usage.
 
-// Tracking: these tests call the route methods `calimero-client` wrote by hand,
-// deprecated for its generated layer (`client.<group>().<method>()`); they move
-// over, and the hand-written methods go, in a follow-up.
-#![allow(
-    deprecated,
-    reason = "the hand-written route methods, until these tests use the generated ones"
-)]
-
 mod common;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,10 +18,11 @@ use calimero_app_host::{
     Budget, Caller, Engine, HostCore, Invocation, InvocationKind, Outcome, Prepared, Status,
     TrapKind,
 };
-use calimero_client::{Client, Consistency};
+use calimero_client::types::ViewsRequestConsistency;
+use calimero_client::Client;
 use calimero_node::component::SysDirectory;
 use calimero_node::Running;
-use common::{signed_up, Cluster};
+use common::{signed_up, typed, wire, Cluster};
 use serde_json::{json, Value};
 
 const SLOT_MS: u64 = 900_000;
@@ -80,7 +73,7 @@ fn invoke(
 }
 
 async fn account_id(c: &Client) -> String {
-    c.me().await.unwrap()["accountId"]
+    c.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned()
@@ -100,23 +93,34 @@ async fn g1_measurements() {
         clients.push(Arc::new(cl));
     }
     let owner_id = account_id(&owner).await;
-    let org = owner.post("orgs", json!({ "name": "Acme" })).await.unwrap()["orgId"]
+    let org = owner.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
     let rooms = common::rooms();
     println!("MEASURE rooms component size: {} bytes", rooms.len());
-    let bundle = owner.upload_bundle(rooms.clone()).await.unwrap();
-    let app = owner
-        .create_app("rooms", &bundle, json!({ "org": org }))
+    let bundle = owner
+        .packages()
+        .bundle_put(rooms.clone())
         .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = owner
+        .apps()
+        .create(typed(
+            json!({ "name": "rooms", "bundle": &bundle, "org": org }),
+        ))
+        .await
+        .map(|a| a.app_id)
         .unwrap();
     for room in ["r1", "r2", "lat", "bulk"] {
         let _r = owner
+            .apps()
             .call(
                 &app,
                 "addRoom",
-                json!({ "id": room, "name": room, "capacity": 8 }),
+                Some(json!({ "id": room, "name": room, "capacity": 8 })),
+                None,
                 None,
             )
             .await
@@ -167,7 +171,14 @@ async fn g1_measurements() {
                 json!({ "roomId": room, "start": start.to_string(), "slotCount": 1, "title": "t" });
             let t = Instant::now();
             let _r = cl
-                .call(&app, "book", args, Some(&format!("lat-{label}-{k}")))
+                .apps()
+                .call(
+                    &app,
+                    "book",
+                    Some(args),
+                    Some(&format!("lat-{label}-{k}")),
+                    None,
+                )
                 .await
                 .unwrap();
             d.push(t.elapsed());
@@ -177,16 +188,23 @@ async fn g1_measurements() {
 
     // 2b. view latency on the leader, to separate the leadership check (a strong view
     // confirms leadership like a call does) from the append and commit.
-    for (label, consistency) in [
-        ("strong", Consistency::Strong),
-        ("stale", Consistency::Stale { min_index: 0 }),
+    for (label, consistency, min_index) in [
+        ("strong", ViewsRequestConsistency::Strong, None),
+        ("stale", ViewsRequestConsistency::Stale, Some(0)),
     ] {
         let cl = &clients[leader];
         let mut d = Vec::new();
         for _ in 0..1_000 {
             let t = Instant::now();
             let _r = cl
-                .view(&app, "booking", json!({ "id": "none" }), consistency)
+                .apps()
+                .view(
+                    &app,
+                    "booking",
+                    Some(json!({ "id": "none" })),
+                    Some(consistency.clone()),
+                    min_index,
+                )
                 .await;
             d.push(t.elapsed());
         }
@@ -216,7 +234,7 @@ async fn g1_measurements() {
                         let k = next.fetch_add(1, Ordering::Relaxed);
                         let start = far + 10_000 * SLOT_MS + k * SLOT_MS;
                         let args = json!({ "roomId": "bulk", "start": start.to_string(), "slotCount": 1, "title": "t" });
-                        match cl.call(&app, "book", args, Some(&format!("w-{k}"))).await {
+                        match cl.apps().call(&app, "book", Some(args), Some(&format!("w-{k}")), None).await {
                             Ok(_) => ok.fetch_add(1, Ordering::Relaxed),
                             Err(_) => failed.fetch_add(1, Ordering::Relaxed),
                         };
@@ -240,8 +258,18 @@ async fn g1_measurements() {
 
     // 4. fresh instance: the kv fixture's `len` view (no reads but one counter).
     let kv = common::component("kv");
-    let kv_bundle = owner.upload_bundle(kv.clone()).await.unwrap();
-    let kv_app = owner.create_app("kv", &kv_bundle, json!({})).await.unwrap();
+    let kv_bundle = owner
+        .packages()
+        .bundle_put(kv.clone())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let kv_app = owner
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": &kv_bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
     let kv_leader = c.app_leader(&kv_app).expect("kv leader");
     let kr = c.nodes[kv_leader].as_ref().unwrap();
     let kv_prepared = kr.node.prepared_for(&kv_bundle).await.unwrap();
@@ -290,7 +318,8 @@ async fn g1_measurements() {
         );
     }
     let r = owner
-        .call(&kv_app, "spin", json!({}), Some("spin-api"))
+        .apps()
+        .call(&kv_app, "spin", Some(json!({})), Some("spin-api"), None)
         .await;
     println!("MEASURE spin through the API: {r:?}");
 
