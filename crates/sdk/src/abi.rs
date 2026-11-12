@@ -233,6 +233,7 @@ mod tests {
             crate::__private::Probe::<A>::DEF,
             crate::__private::Probe::<B>::DEF,
         ];
+        #[allow(clippy::large_const_arrays, reason = "evaluated at compile time only")]
         const JSON: TypesJson = types_json(&[ROOTS, &[]]);
         assert_eq!(
             JSON.as_str(),
@@ -244,6 +245,7 @@ mod tests {
     fn no_shape_writes_nothing() {
         use crate::__private::NoShape as _;
         const ROOTS: &[Option<&TypeDef>] = &[crate::__private::Probe::<Plain>::DEF];
+        #[allow(clippy::large_const_arrays, reason = "evaluated at compile time only")]
         const JSON: TypesJson = types_json(&[ROOTS]);
         assert_eq!(JSON.as_str(), "");
     }

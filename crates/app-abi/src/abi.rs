@@ -276,7 +276,7 @@ impl AppAbi {
     pub fn shape_of(&self, ty: &Type) -> Option<(String, &TypeDef, Vec<Type>)> {
         let (name, args) = ty.named_parts()?;
         let def = self.types.get(&name)?;
-        (def.params.len() == args.len()).then(|| (name, def, args))
+        (def.params.len() == args.len()).then_some((name, def, args))
     }
 
     /// The methods clients call, by name.

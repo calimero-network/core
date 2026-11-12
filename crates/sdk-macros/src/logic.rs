@@ -612,6 +612,8 @@ fn abi_parts(state: &Type, methods: &[&Method], world: &str) -> Vec<TokenStream>
     let roots = probe_slice(&probes);
     let types = quote! {
         {
+            // Only `TYPES.as_str()` reaches the binary, as the ABI's bytes.
+            #[allow(clippy::large_const_arrays, reason = "evaluated at compile time only")]
             const TYPES: #sdk::__private::TypesJson = #sdk::__private::types_json(&[
                 #roots,
                 __CALIMERO_ABI_ERROR_TYPES,
