@@ -218,7 +218,11 @@ fn redact(mut v: Value, paths: &[&str]) -> Value {
 /// The app's package-bound session still cannot approve directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
-    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.apps_domain = Some("localhost".into());
+        cfg.attestation_verifier_url = Some("https://verify.calimero.network".into());
+    })
+    .await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
     let (v1, v1_hash) = release(
@@ -401,6 +405,19 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         "expiresAt": "<redacted>",
         "approver": { "account": "<redacted>" },
         "code": "<redacted>",
+        // The independent verifier, for this node and its release (mdma's
+        // link); a test cluster's mock attestation has nothing to verify,
+        // which the page says instead of linking.
+        "verifier": {
+            "url": format!(
+                "https://verify.calimero.network/mero-tee?node_url={}&release_tag=mero-tee-vtest",
+                url::form_urlencoded::byte_serialize(c.urls[1].trim_end_matches('/').as_bytes())
+                    .collect::<String>()
+            ),
+            "host": "verify.calimero.network",
+            "release": "test",
+            "mock": true,
+        },
         "requestedBy": {
             "package": PACKAGE, "name": "Notes", "publisher": "Example", "returnOrigin": app_origin,
         },
@@ -772,6 +789,11 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
     let page = Page::new(made["url"].as_str().unwrap());
     let model = page.model().await;
     assert_eq!(model["kind"], "release");
+    assert_eq!(
+        model["verifier"],
+        Value::Null,
+        "no verifier configured, no link"
+    );
     assert!(
         model["before"].as_str().unwrap().starts_with(
             "Until you approve, nodes running mero-tee 2.0.0 receive none of the data"
@@ -1610,7 +1632,11 @@ struct Server {
 
 impl Server {
     async fn start() -> Self {
-        let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+        let c = Cluster::start_with(3, |cfg| {
+            cfg.apps_domain = Some("localhost".into());
+            cfg.attestation_verifier_url = Some("https://verify.calimero.network".into());
+        })
+        .await;
         let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
         let (bob, bob_key) = signed_up(&c, 2, "bob").await;
         let (carol, carol_key) = signed_up(&c, 2, "carol").await;
@@ -1751,6 +1777,12 @@ async fn an_apps_frontend_moderates_its_server_on_the_page() {
     )
     .await;
     assert_eq!(model["title"], "Make Bobby an admin of guild", "{model}");
+    // The organization kinds carry the verifier link like every kind.
+    assert_eq!(
+        model["verifier"]["host"], "verify.calimero.network",
+        "{model}"
+    );
+    assert_eq!(model["verifier"]["mock"], true, "{model}");
     assert_eq!(
         args,
         json!({ "account": bob, "role": "admin", "__method": "__set_org_role" })

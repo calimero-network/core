@@ -313,6 +313,18 @@ fn read_settings(path: &Path) -> eyre::Result<calimero_outbound::OutboundSetting
     Ok(settings.outbound)
 }
 
+/// The verifier's base URL, refused unless `consent_page::verifier_base`
+/// takes it.
+fn attestation_verifier_url(args: &NodeArgs) -> eyre::Result<Option<String>> {
+    args.attestation_verifier_url
+        .as_deref()
+        .map(|raw| {
+            calimero_node::consent_page::verifier_base(raw)
+                .map_err(|e| eyre::eyre!("--attestation-verifier-url {raw:?} {e}"))
+        })
+        .transpose()
+}
+
 fn need_node(home: Option<&PathBuf>, what: &str) -> eyre::Result<PathBuf> {
     home.cloned()
         .ok_or_else(|| eyre::eyre!("{what} needs the node: --node NAME"))
@@ -499,6 +511,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     let cluster = args.cluster.clone().unwrap_or_else(|| "dev".to_owned());
     let peers = parse_peers(&args)?;
     let peer_measurements = peer_measurements(&args, dev)?;
+    let attestation_verifier_url = attestation_verifier_url(&args)?;
     let (storage_key, (kms_keys, rollback)) = storage_key(&args, dev, &cluster, node_id).await?;
     let outbound = match (&args.settings, &args.outbound) {
         (Some(path), _) => Some(read_settings(path)?),
@@ -554,6 +567,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
             .transpose()?
             .flatten(),
         apps_domain,
+        attestation_verifier_url,
         governance: Governance {
             releases: authority(args.release_approvals),
             app_upgrades: authority(args.app_upgrades),

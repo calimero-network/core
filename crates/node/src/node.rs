@@ -161,6 +161,11 @@ pub struct Config {
     /// The domain app frontends are served under (`--apps-domain`): a
     /// package's at `{label}.{apps_domain}` (`app_host`). `None`: not served.
     pub apps_domain: Option<String>,
+    /// The independent attestation verifier's base URL
+    /// (`--attestation-verifier-url`, checked by `consent_page::verifier_base`):
+    /// the consent page links there to check this node's TDX attestation and
+    /// release on the verifier's own origin. `None`: no link.
+    pub attestation_verifier_url: Option<String>,
     /// Who decides releases, app upgrades and outbound hosts
     /// (`--release-approvals`, `--app-upgrades`, `--outbound-approvals`).
     /// Written to the system state at genesis by the first leader; after that

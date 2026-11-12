@@ -141,6 +141,7 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         outbound: None,
         governance: Default::default(),
         apps_domain: None,
+        attestation_verifier_url: None,
         operator_key: Some(operator_public()),
     }
 }

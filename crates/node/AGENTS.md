@@ -1216,6 +1216,16 @@ is its command line.
   The route's non-empty answer is the `outcome` (`renameOrg`, `deleteOrg`).
   Regressions: `an_apps_frontend_moderates_its_server_on_the_page`,
   `an_apps_frontend_changes_and_deletes_its_server_on_the_page`.
+  With `Config::attestation_verifier_url` (`merod --attestation-verifier-url`,
+  checked by `consent_page::verifier_base`) `model()` adds `verifier { url,
+  host, release, mock }` for every kind (`null` without it): mdma's link
+  `{base}/mero-tee?node_url=<public_url>&release_tag=mero-tee-v<own_release>`
+  (`verifier_link`). The page links to it (new tab, host shown as text, "check
+  it opens there") and runs no check itself: a tampered node could fake any
+  in-page verdict, so the check runs on the verifier's own origin. On mock
+  attestation it says there is nothing to verify. Regressions:
+  `the_verifier_link_is_mdmas_shape_on_a_checked_base`,
+  `an_app_asks_and_the_person_approves_on_the_nodes_page`.
   Regressions: `tests/consent_page.rs`.
 - **Presence** (`presence.rs`, the ephemeral awareness channel): in memory on
   every node, never in a log. `POST /apps/{app}/presence { seq, state }` (anyone

@@ -181,6 +181,40 @@ fn init_config_run_and_inspect_a_node() {
         assert!(stderr.contains(flag) && stderr.contains(value), "{stderr}");
     }
 
+    // A verifier the consent page could not link to safely is refused at
+    // start, naming the flag.
+    for bad in [
+        "http://verify.calimero.network",
+        "https://verify.calimero.network/?node=1",
+        "https://verify.calimero.network/#x",
+    ] {
+        let refused = merod(home.path())
+            .args(["--node", "n1", "run", "--attestation-verifier-url", bad])
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            stderr.contains("--attestation-verifier-url") && stderr.contains(bad),
+            "{stderr}"
+        );
+    }
+    // A valid one is kept in the file and the node starts with it.
+    let changed = ok(merod(home.path())
+        .args([
+            "--node",
+            "n1",
+            "config",
+            "--attestation-verifier-url",
+            "https://verify.calimero.network",
+        ])
+        .output()
+        .unwrap());
+    assert!(
+        changed.contains("attestation-verifier-url = \"https://verify.calimero.network\""),
+        "{changed}"
+    );
+
     // `run` starts the node from the file.
     let child = merod(home.path())
         .args(["--node", "n1", "run"])

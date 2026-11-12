@@ -98,6 +98,7 @@ fn config(dir: &Path, port: u16, release: &str) -> Config {
         outbound: None,
         governance: Default::default(),
         apps_domain: None,
+        attestation_verifier_url: None,
         operator_key: None,
     }
 }
