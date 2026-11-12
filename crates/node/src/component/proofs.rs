@@ -4,7 +4,7 @@
 use calimero_client::receipt::{FileRef, ProofUsage, StepRunProof};
 use calimero_log::StateTx;
 
-use super::pipelines::{reason_code, PipelineRun};
+use super::pipelines::{reason_code, run_id, PipelineRun};
 use super::runs::{FinalEntry, FinalOutcome, RunRecord};
 use super::{parse_hex32, put_json};
 use crate::app::{rows, AppMachine};
@@ -74,8 +74,10 @@ impl AppMachine {
 
     /// Drops the proofs of every run `pipeline` started, with its record.
     pub(super) fn drop_step_proofs(tx: &mut StateTx<'_>, pipeline: &PipelineRun) {
-        for run in pipeline.steps.values().flat_map(|s| &s.runs) {
-            tx.delete_hidden(rows::CPROOF, run.as_bytes());
+        for (name, step) in &pipeline.steps {
+            for index in 0..step.started as usize {
+                tx.delete_hidden(rows::CPROOF, run_id(&pipeline.id, name, index).as_bytes());
+            }
         }
     }
 }
