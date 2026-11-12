@@ -305,6 +305,20 @@
   complete conflicts, `UNSUPPORTED_BUNDLE`/`BAD_BUNDLE`/`COMPUTE_ABI_MISMATCH`
   on package installs). Rust: `apps().attestation(app, nonce)` takes only the
   nonce.
+- **`meroctl` calls the client's generated route methods** (#4982): each
+  command calls its route's method (`client.orgs().invite_create(..)`,
+  `client.apps().call(..)`, ...) instead of hand-written paths, and prints the
+  typed answer as JSON, keeping fields the types do not name (`extra`), so the
+  values are as before. What can differ: key order, where the document's
+  order differs from the handler's; optional fields meroctl sent as `null`
+  are left out (the node reads both the same), except `group reparent --top`
+  (`parent: null`) and `context presence publish` with no state (`state:
+  null`, a retract); ids in paths are percent-encoded. `--dev-passkey`
+  becomes the method's `passkey` and `--operator-key-file` its `operator`
+  signer (a `428` without the key still says to pass it); `meroctl raw` sends
+  any route through the transport. `ops set-pools` and `ops set-quotas` read
+  their JSON into the generated request types, so a malformed one is refused
+  before it is sent.
 - **SDK releases follow what an API change does to their callers** (#4974,
   #4983). A push to master that changes `docs/public/openapi.json` notifies
   each SDK (`openapi-sync.yml`), and the SDKs regenerate through one reusable
