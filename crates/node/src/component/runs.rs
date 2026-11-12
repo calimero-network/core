@@ -17,7 +17,7 @@ use calimero_log::{Bytes, GroupState, StateTx};
 use serde::{Deserialize, Serialize};
 
 use super::blobs::{BlobRecord, Blobs};
-use super::{host_answer, parse_hex32, Applied, FileMark, Outcome};
+use super::{get_json, host_answer, parse_hex32, put_json, Applied, FileMark, Outcome};
 use crate::app::{rows, AppMachine};
 use crate::job_wire::{hash_bytes, verify_report, FailReason, Report, ReportStatus, ReportUsage};
 use crate::types::Caller;
@@ -476,18 +476,6 @@ impl AppMachine {
         }
     }
 
-    pub(super) fn read_run(tx: &StateTx<'_>, run: &str) -> Option<RunRecord> {
-        let raw = tx.get_hidden(rows::CRUN, run.as_bytes())?;
-        serde_json::from_slice(&raw).ok()
-    }
-
-    pub(super) fn write_run(tx: &mut StateTx<'_>, record: &RunRecord) {
-        match serde_json::to_vec(record) {
-            Ok(row) => tx.put_hidden(rows::CRUN, record.run.as_bytes(), &row),
-            Err(e) => tx.fail(e),
-        }
-    }
-
     /// Records the runs a call started and flags the ones it cancelled. A start past the active
     /// cap, or of an id that has a record, is dropped.
     pub(super) fn apply_run_changes(
@@ -499,8 +487,8 @@ impl AppMachine {
     ) {
         for start in &outcome.compute_starts {
             let head = &mut self.state.component.head;
-            let known =
-                head.active_runs.contains(&start.run) || Self::read_run(tx, &start.run).is_some();
+            let known = head.active_runs.contains(&start.run)
+                || get_json::<RunRecord>(tx, rows::CRUN, &start.run).is_some();
             if known || head.active_runs.len() >= host::MAX_ACTIVE_RUNS {
                 continue;
             }
@@ -531,7 +519,7 @@ impl AppMachine {
                 cache_key: None,
                 pool: None,
             };
-            Self::write_run(tx, &record);
+            put_json(tx, rows::CRUN, &record.run, &record);
             let _new = self
                 .state
                 .component
@@ -544,9 +532,9 @@ impl AppMachine {
             if !self.state.component.head.active_runs.contains(run) {
                 continue;
             }
-            if let Some(mut record) = Self::read_run(tx, run) {
+            if let Some(mut record) = get_json::<RunRecord>(tx, rows::CRUN, run) {
                 record.cancel_requested = true;
-                Self::write_run(tx, &record);
+                put_json(tx, rows::CRUN, &record.run, &record);
             }
         }
     }
@@ -559,7 +547,7 @@ impl AppMachine {
         entry: &AttemptEntry,
     ) -> Applied {
         let no_op = |reason| host_answer(index, false, reason);
-        let Some(mut record) = Self::read_run(tx, &entry.run) else {
+        let Some(mut record) = get_json::<RunRecord>(tx, rows::CRUN, &entry.run) else {
             return no_op(NOT_ACTIVE);
         };
         if !record.state.is_active() {
@@ -585,7 +573,7 @@ impl AppMachine {
             assignment_digest: entry.assignment_digest.clone(),
             ts_ms: entry.ts_ms,
         });
-        Self::write_run(tx, &record);
+        put_json(tx, rows::CRUN, &record.run, &record);
         host_answer(index, true, "")
     }
 
@@ -597,7 +585,7 @@ impl AppMachine {
         index: u64,
         entry: &FinalEntry,
     ) -> Applied {
-        let Some(mut record) = Self::read_run(tx, &entry.run) else {
+        let Some(mut record) = get_json::<RunRecord>(tx, rows::CRUN, &entry.run) else {
             return host_answer(index, false, NOT_ACTIVE);
         };
         if let Err(reason) = self.check_final(&record, entry) {
@@ -621,7 +609,7 @@ impl AppMachine {
                 .map(|r| r.message.clone())
                 .unwrap_or_default(),
         });
-        Self::write_run(tx, &record);
+        put_json(tx, rows::CRUN, &record.run, &record);
         self.finish_run(tx, &entry.run);
         self.pin_inputs(tx, &record.inputs, -1, entry.ts_ms);
         // Registered before the result method's diff, so a `BlobRef` it stores is counted.

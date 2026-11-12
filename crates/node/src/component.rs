@@ -1708,6 +1708,23 @@ pub(crate) fn parse_hex32(id: &str) -> Option<[u8; 32]> {
     (hex::encode(raw) == id).then_some(raw)
 }
 
+/// A hidden row of `family` read as JSON; none when absent or unreadable.
+pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
+    tx: &StateTx<'_>,
+    family: u8,
+    key: &str,
+) -> Option<T> {
+    serde_json::from_slice(&tx.get_hidden(family, key.as_bytes())?).ok()
+}
+
+/// Writes `value` as the JSON hidden row `key` of `family`.
+pub(crate) fn put_json<T: Serialize>(tx: &mut StateTx<'_>, family: u8, key: &str, value: &T) {
+    match serde_json::to_vec(value) {
+        Ok(row) => tx.put_hidden(family, key.as_bytes(), &row),
+        Err(e) => tx.fail(e),
+    }
+}
+
 /// The answer to a host command (an upload, a delete, a collection): `Ok`, or an
 /// `AppError` with `why`.
 pub(crate) fn host_answer(index: u64, ok: bool, why: &str) -> Applied {

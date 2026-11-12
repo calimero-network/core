@@ -1017,7 +1017,7 @@ steps:
             steps: pipeline
                 .steps
                 .keys()
-                .map(|k| (k.clone(), StepState::pending()))
+                .map(|k| (k.clone(), StepState::default()))
                 .collect(),
             end_ts_ms: None,
             cost: None,

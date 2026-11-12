@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::runs::RunInputRef;
+use super::{get_json, put_json};
 use crate::app::{rows, AppMachine};
 
 /// Entries per app; past it the oldest go.
@@ -83,17 +84,6 @@ impl AppMachine {
             .map(|f| f.sha256)
     }
 
-    pub(super) fn read_cache(tx: &StateTx<'_>, key: &str) -> Option<CacheEntry> {
-        serde_json::from_slice(&tx.get_hidden(rows::CCACHE, key.as_bytes())?).ok()
-    }
-
-    fn write_cache(tx: &mut StateTx<'_>, key: &str, entry: &CacheEntry) {
-        match serde_json::to_vec(entry) {
-            Ok(row) => tx.put_hidden(rows::CCACHE, key.as_bytes(), &row),
-            Err(e) => tx.fail(e),
-        }
-    }
-
     /// Makes `key` the newest entry, stamped `ts_ms`.
     pub(super) fn touch_cache(
         &mut self,
@@ -103,7 +93,7 @@ impl AppMachine {
         ts_ms: u64,
     ) {
         entry.ts_ms = entry.ts_ms.max(ts_ms);
-        Self::write_cache(tx, key, &entry);
+        put_json(tx, rows::CCACHE, key, &entry);
         let order = &mut self.state.component.head.step_cache;
         order.retain(|k| k != key);
         order.push_back(key.to_owned());
@@ -118,7 +108,7 @@ impl AppMachine {
         entry: CacheEntry,
         ts_ms: u64,
     ) {
-        if let Some(old) = Self::read_cache(tx, key) {
+        if let Some(old) = get_json::<CacheEntry>(tx, rows::CCACHE, key) {
             self.touch_cache(tx, key, old, ts_ms);
             return;
         }
@@ -135,7 +125,7 @@ impl AppMachine {
     /// Removes the entry under `key`, releasing its holds.
     fn cache_drop(&mut self, tx: &mut StateTx<'_>, key: &str, ts_ms: u64) {
         self.state.component.head.step_cache.retain(|k| k != key);
-        if let Some(entry) = Self::read_cache(tx, key) {
+        if let Some(entry) = get_json::<CacheEntry>(tx, rows::CCACHE, key) {
             self.pin_files(tx, entry.outputs.iter().map(|o| &o.id), -1, ts_ms);
             tx.delete_hidden(rows::CCACHE, key.as_bytes());
         }
@@ -147,7 +137,7 @@ impl AppMachine {
             let Some(oldest) = self.state.component.head.step_cache.front().cloned() else {
                 return;
             };
-            let due = Self::read_cache(tx, &oldest)
+            let due = get_json::<CacheEntry>(tx, rows::CCACHE, &oldest)
                 .is_none_or(|e| e.ts_ms.saturating_add(CACHE_TTL_MS) <= now_ms);
             if !due {
                 return;

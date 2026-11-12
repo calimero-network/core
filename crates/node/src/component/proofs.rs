@@ -4,9 +4,9 @@
 use calimero_client::receipt::{FileRef, ProofUsage, StepRunProof};
 use calimero_log::StateTx;
 
-use super::parse_hex32;
 use super::pipelines::{reason_code, PipelineRun};
 use super::runs::{FinalEntry, FinalOutcome, RunRecord};
+use super::{parse_hex32, put_json};
 use crate::app::{rows, AppMachine};
 use crate::job_wire::report_message;
 
@@ -69,10 +69,7 @@ impl AppMachine {
                 fuel: entry.usage.fuel.to_string(),
             },
         };
-        match serde_json::to_vec(&proof) {
-            Ok(row) => tx.put_hidden(rows::CPROOF, record.run.as_bytes(), &row),
-            Err(e) => tx.fail(e),
-        }
+        put_json(tx, rows::CPROOF, &record.run, &proof);
     }
 
     /// Drops the proofs of every run `pipeline` started, with its record.

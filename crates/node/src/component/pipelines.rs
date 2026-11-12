@@ -20,7 +20,7 @@ use super::runs::{
     FailedReason, FinalOutcome, PipelineLink, RunCaps, RunInputRef, RunRecord, RunState,
 };
 use super::step_cache::{CacheEntry, CachedRun, MAX_CACHED_PER_DECISION};
-use super::{host_answer, parse_hex32, Applied, FileMark};
+use super::{get_json, host_answer, parse_hex32, put_json, Applied, FileMark};
 use crate::app::{rows, AppMachine};
 use crate::types::Caller;
 
@@ -32,8 +32,6 @@ pub const FINISHED_PIPELINE_RUNS_KEPT: usize = 64;
 pub const MAX_STEP_RESULT_BYTES: usize = 64 * 1024;
 /// The most results a step keeps in all; past it a reference to `<step>.results` fails.
 pub const MAX_STEP_RESULTS_BYTES: usize = 1024 * 1024;
-/// Steps per pipeline run: the compiler's bound.
-pub const MAX_PIPELINE_STEPS: usize = 64;
 /// Compute runs one step may have in all, at one item each.
 pub const MAX_STEP_TOTAL_RUNS: usize = calimero_pipeline::MAX_ITEMS as usize;
 /// Compute runs one step decision may start.
@@ -70,9 +68,10 @@ pub enum PipelineState {
 }
 
 /// Where a step is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StepStatus {
+    #[default]
     Pending,
     Running,
     Succeeded,
@@ -96,8 +95,8 @@ impl StepStatus {
     }
 }
 
-/// One step of a pipeline run.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One step of a pipeline run; the default is a step that has not started.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepState {
     pub status: StepStatus,
@@ -138,27 +137,6 @@ fn is_zero(n: &u64) -> bool {
 }
 
 impl StepState {
-    /// A step that has not started.
-    #[must_use]
-    pub fn pending() -> Self {
-        Self {
-            status: StepStatus::Pending,
-            runs: Vec::new(),
-            run_outputs: BTreeMap::new(),
-            run_results: BTreeMap::new(),
-            results_too_large: false,
-            reason: None,
-            fan: FanOut::default(),
-            finished: 0,
-            failed_items: 0,
-            cached_runs: BTreeSet::new(),
-            cached_keys: BTreeMap::new(),
-            cost: 0,
-            run_cost: 0,
-            capped: false,
-        }
-    }
-
     /// Whether the step finished with every one of its runs answered from the cache.
     #[must_use]
     pub fn is_cached(&self) -> bool {
@@ -322,6 +300,18 @@ impl PipelineRun {
         let Some(cap) = &self.cost else { return false };
         let new: u128 = runs.iter().map(|r| u128::from(cap.unit(r.caps))).sum();
         self.committed_cost() + new > u128::from(cap.max_cost)
+    }
+
+    /// Whether a wave of `runs` may start: not while the run is cancelled or stopping (`stopped`
+    /// is the refusal then) and not past the cost cap.
+    fn admits(&self, runs: &[StepRun], stopped: &'static str) -> Result<(), &'static str> {
+        if self.cancel_requested || self.stopping {
+            return Err(stopped);
+        }
+        if self.over_cap(runs) {
+            return Err(COST_CAP);
+        }
+        Ok(())
     }
 
     /// Holds back the worst case of `step`'s runs, once started.
@@ -488,18 +478,6 @@ impl AppMachine {
         all
     }
 
-    fn read_pipeline(tx: &StateTx<'_>, run: &str) -> Option<PipelineRun> {
-        let raw = tx.get_hidden(rows::CPIPE, run.as_bytes())?;
-        serde_json::from_slice(&raw).ok()
-    }
-
-    fn write_pipeline(tx: &mut StateTx<'_>, record: &PipelineRun) {
-        match serde_json::to_vec(record) {
-            Ok(row) => tx.put_hidden(rows::CPIPE, record.id.as_bytes(), &row),
-            Err(e) => tx.fail(e),
-        }
-    }
-
     /// The marks of `ids` as the app's sealed files hold them; none when one is not held.
     pub(super) fn file_refs<'a>(
         &self,
@@ -546,14 +524,14 @@ impl AppMachine {
         let head = &self.state.component.head;
         let well_formed = name_fits(&entry.id)
             && !entry.steps.is_empty()
-            && entry.steps.len() <= MAX_PIPELINE_STEPS
+            && entry.steps.len() <= calimero_pipeline::MAX_STEPS
             && entry.steps.iter().all(|s| name_fits(s))
             && entry.retry_of.as_deref().is_none_or(name_fits)
             && entry.limits.keys().all(|s| entry.steps.contains(s));
         if !well_formed {
             return no_op(BAD_START);
         }
-        if let Some(known) = Self::read_pipeline(tx, &entry.id) {
+        if let Some(known) = get_json::<PipelineRun>(tx, rows::CPIPE, &entry.id) {
             // A start the leader re-proposed after losing its answer is the same run: say so.
             return if same_start(&known, entry) {
                 host_answer(index, true, "")
@@ -592,7 +570,7 @@ impl AppMachine {
             steps: entry
                 .steps
                 .iter()
-                .map(|s| (s.clone(), StepState::pending()))
+                .map(|s| (s.clone(), StepState::default()))
                 .collect(),
             end_ts_ms: None,
             cost: entry.cost,
@@ -600,7 +578,7 @@ impl AppMachine {
             retry_of: entry.retry_of.clone(),
             limits: entry.limits.clone(),
         };
-        Self::write_pipeline(tx, &record);
+        put_json(tx, rows::CPIPE, &record.id, &record);
         let _new = self
             .state
             .component
@@ -623,7 +601,7 @@ impl AppMachine {
         entry: &StepDecisionEntry,
     ) -> Applied {
         let no_op = |why| host_answer(index, false, why);
-        let Some(mut pipeline) = Self::read_pipeline(tx, &entry.run) else {
+        let Some(mut pipeline) = get_json::<PipelineRun>(tx, rows::CPIPE, &entry.run) else {
             return no_op(NOT_RUNNING);
         };
         if pipeline.state != PipelineState::Running {
@@ -648,11 +626,8 @@ impl AppMachine {
         let mut capped = false;
         let (status, reason) = match &entry.decision {
             StepVerdict::Start { runs, fan, cached } => {
-                if pipeline.cancel_requested || pipeline.stopping {
-                    return no_op(CANCELLING);
-                }
-                if pipeline.over_cap(runs) {
-                    return no_op(COST_CAP);
+                if let Err(why) = pipeline.admits(runs, CANCELLING) {
+                    return no_op(why);
                 }
                 let started =
                     if fan.well_formed() && runs.len() + cached.len() <= fan.total as usize {
@@ -674,9 +649,7 @@ impl AppMachine {
                             step.runs = wave.ids;
                             step.fan = *fan;
                         }
-                        hit_any = !wave.hits.is_empty();
-                        pipeline.reserve(&entry.step, runs);
-                        self.record_hits(tx, &mut pipeline, &entry.step, wave.hits, ts_ms);
+                        hit_any = self.land(tx, &mut pipeline, &entry.step, runs, wave.hits, ts_ms);
                         (StepStatus::Running, None)
                     }
                     Err(Refusal::NoRoom) => return no_op(NO_ROOM),
@@ -685,20 +658,15 @@ impl AppMachine {
                 }
             }
             StepVerdict::More { runs, cached } => {
-                if pipeline.cancel_requested || pipeline.stopping {
-                    return no_op(STEP_STOPPING);
-                }
-                if pipeline.over_cap(runs) {
-                    return no_op(COST_CAP);
+                if let Err(why) = pipeline.admits(runs, STEP_STOPPING) {
+                    return no_op(why);
                 }
                 match self.start_more_runs(tx, &pipeline, &entry.step, (runs, cached), ts_ms) {
                     Ok(wave) => {
                         if let Some(step) = pipeline.steps.get_mut(&entry.step) {
                             step.runs.extend(wave.ids);
                         }
-                        hit_any = !wave.hits.is_empty();
-                        pipeline.reserve(&entry.step, runs);
-                        self.record_hits(tx, &mut pipeline, &entry.step, wave.hits, ts_ms);
+                        hit_any = self.land(tx, &mut pipeline, &entry.step, runs, wave.hits, ts_ms);
                         (StepStatus::Running, None)
                     }
                     Err(Refusal::NoRoom) => return no_op(NO_ROOM),
@@ -744,7 +712,7 @@ impl AppMachine {
             self.settle_step(tx, &mut pipeline, &entry.step);
         }
         self.settle_after_change(tx, &mut pipeline, ts_ms);
-        Self::write_pipeline(tx, &pipeline);
+        put_json(tx, rows::CPIPE, &pipeline.id, &pipeline);
         host_answer(index, true, "")
     }
 
@@ -792,7 +760,7 @@ impl AppMachine {
         let mut kept = slots.len();
         for (n, slot) in slots.iter().enumerate() {
             let Slot::Hit(index, c) = slot else { continue };
-            let held = Self::read_cache(tx, &c.key)
+            let held = get_json::<CacheEntry>(tx, rows::CCACHE, &c.key)
                 .filter(|e| self.file_refs(e.outputs.iter().map(|o| &o.id)).is_some());
             let Some(entry) = held else {
                 kept = n;
@@ -819,6 +787,22 @@ impl AppMachine {
             .map(|i| run_id(&pipeline.id, step, i))
             .collect();
         Ok(Wave { ids, hits })
+    }
+
+    /// Reserves the cost of a started wave and takes its cache hits; whether it had any.
+    fn land(
+        &mut self,
+        tx: &mut StateTx<'_>,
+        pipeline: &mut PipelineRun,
+        step: &str,
+        runs: &[StepRun],
+        hits: Vec<(u32, String, CacheEntry)>,
+        ts_ms: u64,
+    ) -> bool {
+        let any = !hits.is_empty();
+        pipeline.reserve(step, runs);
+        self.record_hits(tx, pipeline, step, hits, ts_ms);
+        any
     }
 
     /// Takes the cache hits of a wave into the step as finished runs.
@@ -877,10 +861,10 @@ impl AppMachine {
         if head.active_runs.len() + runs.len() > host::MAX_ACTIVE_RUNS {
             return Err(Refusal::NoRoom);
         }
-        if runs
-            .iter()
-            .any(|(_, r)| head.active_runs.contains(&r.run) || Self::read_run(tx, &r.run).is_some())
-        {
+        if runs.iter().any(|(_, r)| {
+            head.active_runs.contains(&r.run)
+                || get_json::<RunRecord>(tx, rows::CRUN, &r.run).is_some()
+        }) {
             return Err(Refusal::Failed("RUN_EXISTS"));
         }
         let mut records = Vec::new();
@@ -925,7 +909,7 @@ impl AppMachine {
                 cache_key: r.cache_key.clone(),
                 pool: r.pool.clone(),
             };
-            Self::write_run(tx, &record);
+            put_json(tx, rows::CRUN, &record.run, &record);
             let _new = self.state.component.head.active_runs.insert(r.run.clone());
             self.pin_inputs(tx, &inputs, 1, ts_ms);
         }
@@ -938,10 +922,10 @@ impl AppMachine {
             if !self.state.component.head.active_runs.contains(run) {
                 continue;
             }
-            match Self::read_run(tx, run) {
+            match get_json::<RunRecord>(tx, rows::CRUN, run) {
                 Some(mut record) if !record.cancel_requested => {
                     record.cancel_requested = true;
-                    Self::write_run(tx, &record);
+                    put_json(tx, rows::CRUN, &record.run, &record);
                 }
                 _ => {}
             }
@@ -962,7 +946,7 @@ impl AppMachine {
         index: u64,
         entry: &PipelineCancelEntry,
     ) -> Applied {
-        let Some(mut pipeline) = Self::read_pipeline(tx, &entry.run) else {
+        let Some(mut pipeline) = get_json::<PipelineRun>(tx, rows::CPIPE, &entry.run) else {
             return host_answer(index, false, NOT_RUNNING);
         };
         if pipeline.cancel_requested {
@@ -975,9 +959,9 @@ impl AppMachine {
         c.head.last_ts_ms = c.head.last_ts_ms.max(entry.ts_ms);
         pipeline.cancel_requested = true;
         self.flag_cancel(tx, pipeline.steps.values().flat_map(|s| &s.runs));
-        self.settle_running_steps(tx, &mut pipeline, entry.ts_ms);
+        self.settle_running_steps(tx, &mut pipeline);
         self.settle_pipeline(tx, &mut pipeline, entry.ts_ms);
-        Self::write_pipeline(tx, &pipeline);
+        put_json(tx, rows::CPIPE, &pipeline.id, &pipeline);
         host_answer(index, true, "")
     }
 
@@ -1014,7 +998,7 @@ impl AppMachine {
                 self.cache_put(tx, key, entry, ts_ms);
             }
         }
-        let Some(mut pipeline) = Self::read_pipeline(tx, &link.run) else {
+        let Some(mut pipeline) = get_json::<PipelineRun>(tx, rows::CPIPE, &link.run) else {
             return;
         };
         let spent = pipeline.cost.map_or(0, |cap| {
@@ -1040,7 +1024,7 @@ impl AppMachine {
         step.cost = step.cost.saturating_add(spent);
         if step.status != StepStatus::Running {
             if pipeline.cost.is_some() {
-                Self::write_pipeline(tx, &pipeline);
+                put_json(tx, rows::CPIPE, &pipeline.id, &pipeline);
             }
             return;
         }
@@ -1060,7 +1044,7 @@ impl AppMachine {
         }
         self.settle_step(tx, &mut pipeline, &link.step);
         self.settle_after_change(tx, &mut pipeline, ts_ms);
-        Self::write_pipeline(tx, &pipeline);
+        put_json(tx, rows::CPIPE, &pipeline.id, &pipeline);
     }
 
     /// How many items of `step` may fail: none once the run is being stopped.
@@ -1114,7 +1098,7 @@ impl AppMachine {
 
     /// [`Self::settle_step`] for every running step: a step between waves has no run left to
     /// settle it when the run is cancelled.
-    fn settle_running_steps(&mut self, tx: &mut StateTx<'_>, pipeline: &mut PipelineRun, _ts: u64) {
+    fn settle_running_steps(&mut self, tx: &mut StateTx<'_>, pipeline: &mut PipelineRun) {
         let running: Vec<String> = pipeline
             .steps
             .iter()
@@ -1146,7 +1130,7 @@ impl AppMachine {
                 }
             }
             self.flag_cancel(tx, pipeline.steps.values().flat_map(|s| &s.runs));
-            self.settle_running_steps(tx, pipeline, ts_ms);
+            self.settle_running_steps(tx, pipeline);
         }
         self.settle_pipeline(tx, pipeline, ts_ms);
     }
@@ -1179,7 +1163,7 @@ impl AppMachine {
             let Some(old) = self.state.component.head.finished_pipelines.pop_front() else {
                 break;
             };
-            if let Some(dropped) = Self::read_pipeline(tx, &old) {
+            if let Some(dropped) = get_json::<PipelineRun>(tx, rows::CPIPE, &old) {
                 Self::drop_step_proofs(tx, &dropped);
                 let outputs = dropped
                     .steps
