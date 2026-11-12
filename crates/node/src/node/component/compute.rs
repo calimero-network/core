@@ -7,6 +7,7 @@
 
 mod finish;
 mod job_io;
+mod pipelines;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
@@ -50,6 +51,8 @@ const NO_CAPACITY_WARN_AFTER: Duration = Duration::from_secs(60);
 const WALL_FALLBACK_FACTOR: u32 = 10;
 /// The reserved view that answers a run's record: the node's own, never an app's method.
 pub const RUN_VIEW: &str = "__run";
+/// The reserved view that answers a pipeline run's record, or a page of them.
+pub const PIPELINE_VIEW: &str = "__pipeline_run";
 /// How many runs a list answers when the caller names no limit.
 const DEFAULT_RUNS_PAGE: usize = 20;
 /// The most runs a list page holds.
@@ -277,6 +280,8 @@ pub(in crate::node) struct ComputeState {
     assigning: tokio::sync::Mutex<()>,
     /// Runs being delivered to each job node and not yet counted in its load.
     reserved: Mutex<HashMap<NodeId, usize>>,
+    /// What the pipeline loop is driving and has looked up.
+    pipelines: pipelines::PipelineCaches,
 }
 
 fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -904,12 +909,19 @@ impl Drive<'_> {
         else {
             return Acquired::Waiting;
         };
+        // An older node would drop `pool` when it applies the command, so a named pool waits for
+        // every node to run this release; until then the run is placed by its memory.
+        let pool = match &self.rec.pool {
+            Some(_) if !self.node.nodes_behind_release().await.is_empty() => None,
+            named => named.clone(),
+        };
         let cmd = SystemCmd::AcquireRun {
             app: app_id.clone(),
             run: run.clone(),
             payer,
             fuel: self.rec.caps.fuel,
             memory_mib: self.rec.caps.memory_mib,
+            pool,
         };
         let answer = match self.node.sys_write(&cmd).await {
             Ok(answer) => serde_json::from_value::<AcquireAnswer>(answer),
@@ -1335,7 +1347,12 @@ impl Drive<'_> {
         let Some(bundle) = self.g.read_local(|m, _| m.component_bundle()) else {
             return Landed::Retry;
         };
-        let Ok(prepared) = node.prepared_for(&bundle).await else {
+        // A pipeline step's run has no result method, so nothing needs the app component.
+        let prepared = if rec.result_method.is_empty() {
+            None
+        } else if let Ok(prepared) = node.prepared_for(&bundle).await {
+            Some(prepared)
+        } else {
             return Landed::Retry;
         };
         let meter = node.meter(app_id, &bundle);
@@ -1362,15 +1379,16 @@ impl Drive<'_> {
                 let (id_term, id_seq) =
                     node.next_id(self.g.id(), leadership.term, &m.state.component.head);
                 *built = Some((id_term, id_seq));
-                let has_result = prepared
-                    .abi
-                    .methods
-                    .get(&current.result_method)
-                    .is_some_and(|x| x.compute_result);
-                let ran = if has_result {
+                let result_prepared = prepared.as_ref().filter(|p| {
+                    p.abi
+                        .methods
+                        .get(&current.result_method)
+                        .is_some_and(|x| x.compute_result)
+                });
+                let ran = if let Some(prepared) = result_prepared {
                     node.run_logged(
                         &meter,
-                        &prepared,
+                        prepared,
                         app_id,
                         (m.view(), m.blob_view_with_outputs(&plan.outputs, ts_ms)),
                         applied,
@@ -1392,6 +1410,12 @@ impl Drive<'_> {
                             ..RunExtras::default()
                         },
                     )
+                } else if current.result_method.is_empty() {
+                    Ran {
+                        outcome: Outcome::default(),
+                        blobs: Vec::new(),
+                        _pending: None,
+                    }
                 } else {
                     Ran {
                         outcome: Outcome::trap(
@@ -1477,6 +1501,9 @@ impl Drive<'_> {
         if !ended {
             node.discard(app_id, persisted);
             return Landed::Refused;
+        }
+        if rec.pipeline.is_some() {
+            node.kick_runs();
         }
         Landed::Committed
     }

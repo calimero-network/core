@@ -30,6 +30,7 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 ## Packages
 
 - [bundle](bundle/AGENTS.md) (`calimero-bundle`) - the `.mpk` manifest, JCS canonicalization, Ed25519 signatures.
+- [pipeline](pipeline/AGENTS.md) (`calimero-pipeline`) - the pipeline YAML language: compile, canonical JSON, apply-time checks, worst-case fuel.
 - [app-downloader](app-downloader/AGENTS.md) (`calimero-app-downloader`) - fetching signed releases from a package registry.
 
 ## The app engine (`calimero:app` components on wasmtime)

@@ -21,7 +21,7 @@ use calimero_node::files::{
     file_id, noise_seed, run_token, unwrap_key, wrap_for_job, FileOpener, JobWrap, WrapKind,
     SEGMENT_BYTES,
 };
-use calimero_node::job_node::{MAX_RUN_INPUTS, TOKEN_HEADER};
+use calimero_node::job_node::{MAX_PIPELINE_RUN_INPUTS, TOKEN_HEADER};
 use calimero_node::job_wire::{
     assignment_digest, sign_assignment, sign_bundle, verify_report, Assignment, FailReason, Report,
     ReportStatus, RunBudget, RunInput, BUNDLE_SIGNATURE_HEADER,
@@ -1022,7 +1022,7 @@ async fn a_job_node_takes_work_only_from_its_cluster_leader_with_its_runs_token_
         resign(&mut a);
         a
     };
-    let too_many = many(MAX_RUN_INPUTS + 1, 1);
+    let too_many = many(MAX_PIPELINE_RUN_INPUTS + 1, 1);
     assert_eq!(
         code(job_a.post(&too_many).await),
         (413, "TOO_MANY_INPUTS".into())
@@ -1032,7 +1032,10 @@ async fn a_job_node_takes_work_only_from_its_cluster_leader_with_its_runs_token_
         code(job_a.post(&too_big).await),
         (413, "INPUT_TOO_LARGE".into())
     );
-    let too_much = many(MAX_RUN_INPUTS, calimero_app_host::MAX_FILE_BYTES);
+    let too_much = many(
+        calimero_app_host::MAX_RUN_INPUTS,
+        calimero_app_host::MAX_FILE_BYTES,
+    );
     assert_eq!(
         code(job_a.post(&too_much).await),
         (413, "INPUTS_TOO_LARGE".into())

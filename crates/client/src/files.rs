@@ -3,6 +3,8 @@
 use std::io::SeekFrom;
 use std::time::Duration;
 
+use calimero_sealed::file::{file_id, SegmentReader};
+use calimero_sealed::wrap::{export_keypair, unwrap_export, ExportWrap};
 use eyre::WrapErr;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt};
@@ -68,7 +70,67 @@ where
     Ok(buf.into())
 }
 
+/// A 32-byte value an export answer names in hex.
+fn hex32(text: &str, what: &str) -> eyre::Result<[u8; 32]> {
+    hex::decode(text)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        .ok_or_else(|| eyre::eyre!("the node answered a bad {what}"))
+}
+
+/// Whether `segments` is the segment list of the file the caller asked for: it hashes to the id
+/// the node named, which must be the requested one, so a node cannot hand over another file.
+fn names_requested_file(requested: &str, named: &[u8; 32], segments: &[[u8; 32]]) -> bool {
+    !segments.is_empty() && file_id(segments) == *named && hex::encode(named) == requested
+}
+
 impl Client {
+    /// The plaintext of sealed file `id` (64 hex characters) of component app `app`.
+    /// The node answers only ciphertext and the file's data key wrapped to a key made here for
+    /// this call; every segment, the segment list, the size and the plaintext hash are checked
+    /// before any byte is returned.
+    ///
+    /// # Errors
+    /// The node's refusal (`403`, `404`, `429 TOO_MANY_EXPORTS`, ...), or an answer that does not
+    /// check out.
+    pub async fn export_file(&self, app: &str, id: &str) -> Result<Vec<u8>> {
+        let (secret, public) = export_keypair();
+        let export = self
+            .apps()
+            .exports_export(app, id, &hex::encode(public))
+            .await?;
+        let segments = export
+            .segments
+            .iter()
+            .map(|h| hex32(h, "segment hash"))
+            .collect::<eyre::Result<Vec<_>>>()?;
+        let named = hex32(&export.id, "file id")?;
+        if !names_requested_file(id, &named, &segments) {
+            return Err(
+                eyre::eyre!("the node answered segments that are not the file {id}").into(),
+            );
+        }
+        let wrap = ExportWrap {
+            app_id: &export.app,
+            file_id: id,
+        };
+        let data_key = unwrap_export(
+            &secret,
+            &hex32(&export.ephemeral, "ephemeral key")?,
+            &wrap,
+            &hex::decode(&export.wrapped)
+                .map_err(|_| eyre::eyre!("the node answered a bad wrapped key"))?,
+        )?;
+        let mut reader = SegmentReader::new(&data_key, segments.clone());
+        let mut plaintext = Vec::new();
+        for k in 0..segments.len() {
+            let segment = self.apps().exports_segment(app, id, &k.to_string()).await?;
+            plaintext.extend(reader.push(&segment)?);
+        }
+        plaintext.extend(reader.finish_expecting(export.size, &hex32(&export.sha256, "sha256")?)?);
+        Ok(plaintext)
+    }
+
     /// Upload a sealed file of `size` bytes for component app `app`; answers `{ blobId, id, size, sha256, index }`.
     /// Up to [`FILE_PART_BYTES`] it is one request, else a session of parts, each resent after a `503`.
     ///
@@ -235,6 +297,7 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::Notify;
 
+    use super::names_requested_file;
     use super::FILE_PART_BYTES;
     use crate::{Client, Error, Policy};
 
@@ -805,5 +868,29 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, Error::Api { status: 503, .. }), "{err:?}");
         assert_eq!(mock.log(), ["POST files"]);
+    }
+
+    /// The client trusts no list the node answers: it must hash to the id the caller asked for.
+    #[test]
+    fn only_the_requested_files_segment_list_is_accepted() {
+        let segments = [[1u8; 32], [2u8; 32]];
+        let id = calimero_sealed::file::file_id(&segments);
+        let requested = hex::encode(id);
+        assert!(names_requested_file(&requested, &id, &segments));
+        let other = [[3u8; 32]];
+        let other_id = calimero_sealed::file::file_id(&other);
+        assert!(
+            !names_requested_file(&requested, &other_id, &other),
+            "another file"
+        );
+        assert!(
+            !names_requested_file(&requested, &id, &segments[..1]),
+            "a list that is not the id's"
+        );
+        assert!(
+            !names_requested_file(&hex::encode(other_id), &id, &segments),
+            "an id not asked for"
+        );
+        assert!(!names_requested_file(&requested, &id, &[]), "no segments");
     }
 }

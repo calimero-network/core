@@ -278,6 +278,10 @@ every feature gated it stays at zero.
 | `renameOrg` | `RenameOrg`, renaming an organization; an earlier release cannot read it | 1.0.0-rc.16 |
 | `teamMembersBatch` | `SetTeamMembers` and `RemoveTeamMembers`, a member's rows in several teams at once; an earlier release cannot read them | 1.0.0-rc.16 |
 | `appTeamChildTeams` | `ScopeApps` naming one app team's `childTeams`; an earlier `ScopeApp` refuses unknown fields | 1.0.0-rc.16 |
+| `priceTable` | `SetPriceTable`, the operator's compute prices; an earlier release cannot read it | 1.0.0-rc.19 |
+| `computeOnly` | `InstallPackage` or `CreateApp` of a release with only a compute component; an earlier release ignores `components` and treats it as an app | 1.0.0-rc.19 |
+| `pipelines` | `InstallPackage` of a release that registers pipelines; an earlier release drops them | 1.0.0-rc.19 |
+| `namedPool` | `AcquireRun` naming a pool; an earlier release ignores `pool` and places the run by memory | 1.0.0-rc.19 |
 | `clusterVersion` | `SetClusterVersion` | 1.0.0-rc.16 |
 
 The rc.15 features were added before the gate: on a cluster whose every node
