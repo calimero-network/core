@@ -4,11 +4,57 @@
 
 import type { ConfirmCallback, NodeEvent } from '@calimero-network/mero-js';
 
-/** The app type `Item`: ABI version 1 names it without its shape. */
-export type Item = unknown;
+/** The app type `Adjacent`. */
+export type Adjacent =
+  | { t: 'Text'; c: string }
+  | { t: 'Empty' };
 
-/** The app type `Page<Item>`: ABI version 1 names it without its shape. */
-export type Page_Item = unknown;
+/** The app type `Either`. */
+export type Either =
+  | number
+  | { name: string };
+
+/** The app type `Id`. */
+export type Id = string;
+
+/** The app type `Item`. */
+export interface Item {
+  id: string;
+  title: string;
+  tags: string[];
+  note?: string | null;
+  status: Status;
+}
+
+/** The app type `Marker`. */
+export type Marker = null;
+
+/** The app type `Page`. */
+export interface Page<T> {
+  items: T[];
+  next: string | null;
+}
+
+/** The app type `Point`. */
+export type Point = [number, number];
+
+/** The app type `Status`. */
+export type Status =
+  | 'Open'
+  | { Closed: { at: string } }
+  | { Moved: string }
+  | { Span: [number, number] };
+
+/** The app type `Tagged`. */
+export type Tagged =
+  | { type: 'draft' }
+  | { type: 'published'; at: string };
+
+/** The app type `Tree`. */
+export interface Tree {
+  value: number;
+  children: Tree[];
+}
 
 /** The arguments of `everything`. */
 export interface EverythingArgs {
@@ -35,7 +81,7 @@ export interface EverythingArgs {
   byId: Record<string, string>;
   unique: string[];
   item: Item;
-  page: Page_Item;
+  page: Page<Item>;
   nested?: Array<Item | null> | null;
 }
 
@@ -47,6 +93,18 @@ export interface FromPeerArgs {
 /** The arguments of `lookup`. */
 export interface LookupArgs {
   id: string;
+}
+
+/** The arguments of `shapes`. */
+export interface ShapesArgs {
+  status: Status;
+  tagged: Tagged;
+  adjacent: Adjacent;
+  either: Either;
+  id: Id;
+  point: Point;
+  marker: Marker;
+  tree: Tree;
 }
 
 /** The arguments of `wipe`. */
@@ -195,6 +253,11 @@ export class KitchenSinkClient {
   /** view `secret`; a passkey approves it (`options.confirm`, else the client's own). */
   async secret(options: CallOptions = {}): Promise<string> {
     return (await this.#call('secret', {}, options)) as string;
+  }
+
+  /** view `shapes`. */
+  async shapes(args: ShapesArgs, options: ViewOptions = {}): Promise<Tree> {
+    return (await this.#view('shapes', args, options)) as Tree;
   }
 
   /** call `wipe`; a passkey approves it (`options.confirm`, else the client's own). */

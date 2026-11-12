@@ -1023,7 +1023,7 @@
         ]
       },
       "Evidence": {
-        "description": "The app type `Evidence`. ABI version 1 names a type without describing its shape, so any JSON value is accepted here.",
+        "description": "The app type `Evidence`. The ABI names it without describing its shape, so any JSON value is accepted here.",
         "x-calimero-abi-type": "Evidence"
       },
       "EvidenceArgs": {
@@ -1281,7 +1281,7 @@
         "type": "object"
       },
       "Founding": {
-        "description": "The app type `Founding`. ABI version 1 names a type without describing its shape, so any JSON value is accepted here.",
+        "description": "The app type `Founding`. The ABI names it without describing its shape, so any JSON value is accepted here.",
         "x-calimero-abi-type": "Founding"
       },
       "FoundingArgs": {
@@ -1407,7 +1407,7 @@
         "type": "object"
       },
       "MessageView": {
-        "description": "The app type `MessageView`. ABI version 1 names a type without describing its shape, so any JSON value is accepted here.",
+        "description": "The app type `MessageView`. The ABI names it without describing its shape, so any JSON value is accepted here.",
         "x-calimero-abi-type": "MessageView"
       },
       "ModeratorsArgs": {
@@ -1560,7 +1560,7 @@
         "type": "object"
       },
       "PageView": {
-        "description": "The app type `PageView`. ABI version 1 names a type without describing its shape, so any JSON value is accepted here.",
+        "description": "The app type `PageView`. The ABI names it without describing its shape, so any JSON value is accepted here.",
         "x-calimero-abi-type": "PageView"
       },
       "PostMessageArgs": {

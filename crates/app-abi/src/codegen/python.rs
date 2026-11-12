@@ -1,11 +1,12 @@
-//! The Python client: `TypedDict`s for errors and events, and a class whose methods send
+//! The Python client: `TypedDict`s for errors, events and the app's records (from the ABI's
+//! `types`; a generic type instantiated per use, an enum a `Union`), and a class whose methods send
 //! calimero-client-py's `client.apps.call` and `client.apps.view` (answering JSON:
 //! `client.json`), with keyword arguments in snake_case.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use crate::abi::{AppAbi, Fields};
+use crate::abi::{AppAbi, EnumRepr, Field, Fields, Shape, VariantData};
 use crate::openapi::{all_events, error_name, event_name, Names};
 use crate::ty::Type;
 
@@ -55,12 +56,166 @@ const CLASS_HEAD: &str = r#"    def __init__(self, client: Client, app: str) -> 
         return answer["result"]
 "#;
 
-struct Py {
+struct Py<'a> {
+    abi: &'a AppAbi,
     names: Names,
     named: BTreeMap<String, String>,
+    /// Described app types met so far: name to (ABI text, shape with arguments put in).
+    described: BTreeMap<String, (String, Shape)>,
+    /// Declarations of helper types an enum's variants need, by name.
+    helpers: BTreeMap<String, String>,
+    /// Inside a declaration, evaluated when the module loads: app types are written as
+    /// strings (forward references), so the order of declarations does not matter.
+    quoted: bool,
 }
 
-impl Py {
+fn is_py_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !KEYWORDS.contains(&s)
+}
+
+impl Py<'_> {
+    /// The reference to app type `name`, quoted inside declarations.
+    fn reference(&self, name: String) -> String {
+        if self.quoted {
+            format!("{name:?}")
+        } else {
+            name
+        }
+    }
+
+    /// A `TypedDict` of `fields` (with a `tag` naming the variant when given), declared under
+    /// `name`: the class form when every key is an identifier, else the functional one.
+    fn typed_dict_decl(
+        &mut self,
+        name: &str,
+        doc: &str,
+        fields: &[Field],
+        tag: Option<(&str, &str)>,
+    ) -> String {
+        let mut entries: Vec<(String, String)> = Vec::new();
+        if let Some((tag, variant)) = tag {
+            entries.push((tag.to_owned(), format!("Literal[{variant:?}]")));
+        }
+        for f in fields {
+            let ty = self.ty(&f.ty);
+            entries.push((f.name.clone(), ty));
+        }
+        if !entries.is_empty() && entries.iter().all(|(k, _)| is_py_ident(k)) {
+            let mut out = format!("class {name}(TypedDict):\n    \"\"\"{doc}\"\"\"\n\n");
+            for (k, t) in &entries {
+                let _ = writeln!(out, "    {k}: {t}");
+            }
+            return out;
+        }
+        let entries: Vec<String> = entries.iter().map(|(k, t)| format!("{k:?}: {t}")).collect();
+        format!(
+            "{name} = TypedDict({name:?}, {{{}}})\n\"\"\"{doc}\"\"\"\n",
+            entries.join(", ")
+        )
+    }
+
+    /// A helper `TypedDict` for one variant, declared once; its quoted name.
+    fn helper(
+        &mut self,
+        owner: &str,
+        variant: &str,
+        fields: &[Field],
+        tag: Option<(&str, &str)>,
+        inner: bool,
+    ) -> String {
+        let suffix = if inner { "Fields" } else { "" };
+        let (name, _) = self.names.named(&format!("{owner}_{variant}{suffix}"));
+        if !self.helpers.contains_key(&name) {
+            let doc = if inner {
+                format!("The fields of the variant `{variant}` of `{owner}`.")
+            } else {
+                format!("The variant `{variant}` of `{owner}`.")
+            };
+            let decl = self.typed_dict_decl(&name, &doc, fields, tag);
+            let _ = self.helpers.insert(name.clone(), decl);
+        }
+        format!("{name:?}")
+    }
+
+    fn declaration(&mut self, name: &str, text: &str, shape: &Shape) -> String {
+        self.quoted = true;
+        let doc = format!("The app type `{text}`.");
+        let out = match shape {
+            Shape::Record(fields) => self.typed_dict_decl(name, &doc, fields, None),
+            Shape::Newtype(t) => {
+                let ty = self.ty(t);
+                format!("{name} = {ty}\n\"\"\"{doc}\"\"\"\n")
+            }
+            Shape::Tuple(_) => format!("{name} = List[Any]\n\"\"\"{doc} A JSON array.\"\"\"\n"),
+            Shape::Unit => format!("{name} = Literal[None]\n\"\"\"{doc}\"\"\"\n"),
+            Shape::Enum { repr, variants } => {
+                let mut arms = Vec::new();
+                for v in variants {
+                    let data = |py: &mut Self| match &v.data {
+                        VariantData::Unit => "None".to_owned(),
+                        VariantData::Newtype(t) => py.ty(t),
+                        VariantData::Tuple(_) => "List[Any]".to_owned(),
+                        VariantData::Record(fs) => py.helper(name, &v.name, fs, None, true),
+                    };
+                    arms.push(match (repr, &v.data) {
+                        (EnumRepr::External, VariantData::Unit) => format!("Literal[{:?}]", v.name),
+                        (EnumRepr::External, _) => {
+                            let t = data(self);
+                            self.helper_raw(name, &v.name, &[(v.name.clone(), t)])
+                        }
+                        (EnumRepr::Internal { tag }, VariantData::Record(fs)) => {
+                            self.helper(name, &v.name, fs, Some((tag, &v.name)), false)
+                        }
+                        (EnumRepr::Internal { tag }, VariantData::Unit)
+                        | (EnumRepr::Adjacent { tag, .. }, VariantData::Unit) => {
+                            self.helper(name, &v.name, &[], Some((tag, &v.name)), false)
+                        }
+                        (EnumRepr::Internal { .. }, _) => "Dict[str, Any]".to_owned(),
+                        (EnumRepr::Adjacent { tag, content }, _) => {
+                            let t = data(self);
+                            self.helper_raw(
+                                name,
+                                &v.name,
+                                &[
+                                    (tag.clone(), format!("Literal[{:?}]", v.name)),
+                                    (content.clone(), t),
+                                ],
+                            )
+                        }
+                        (EnumRepr::Untagged, _) => data(self),
+                    });
+                }
+                let ty = match arms.as_slice() {
+                    [] => "Any".to_owned(),
+                    [one] => one.clone(),
+                    _ => format!("Union[{}]", arms.join(", ")),
+                };
+                format!("{name} = {ty}\n\"\"\"{doc}\"\"\"\n")
+            }
+        };
+        self.quoted = false;
+        out
+    }
+
+    /// A helper `TypedDict` of ready-made entries (key, Python type), declared once.
+    fn helper_raw(&mut self, owner: &str, variant: &str, entries: &[(String, String)]) -> String {
+        let (name, _) = self.names.named(&format!("{owner}_{variant}"));
+        if !self.helpers.contains_key(&name) {
+            let entries: Vec<String> = entries.iter().map(|(k, t)| format!("{k:?}: {t}")).collect();
+            let decl = format!(
+                "{name} = TypedDict({name:?}, {{{}}})\n\"\"\"The variant `{variant}` of `{owner}`.\"\"\"\n",
+                entries.join(", ")
+            );
+            let _ = self.helpers.insert(name.clone(), decl);
+        }
+        format!("{name:?}")
+    }
+
     fn ty(&mut self, ty: &Type) -> String {
         match ty {
             Type::Unit => "None".into(),
@@ -77,9 +232,25 @@ impl Py {
             Type::Tuple(_) => "List[Any]".into(),
             Type::Map(_, value) => format!("Dict[str, {}]", self.ty(value)),
             Type::Named(text) => {
+                if let Some((entry, def, args)) = self.abi.shape_of(ty) {
+                    // A generic type is declared once per instantiation (`Page_Booking`).
+                    let key = if args.is_empty() {
+                        entry
+                    } else {
+                        let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+                        format!("{entry}<{}>", args.join(","))
+                    };
+                    let (name, new) = self.names.named(&key);
+                    if new {
+                        let _ = self
+                            .described
+                            .insert(name.clone(), (key, def.instantiate(&args)));
+                    }
+                    return self.reference(name);
+                }
                 let (name, _) = self.names.named(text);
                 let _ = self.named.insert(name.clone(), text.clone());
-                name
+                self.reference(name)
             }
         }
     }
@@ -127,8 +298,12 @@ fn literal(s: &str) -> String {
 
 pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     let mut py = Py {
+        abi,
         names: Names::new(abi),
         named: BTreeMap::new(),
+        described: BTreeMap::new(),
+        helpers: BTreeMap::new(),
+        quoted: false,
     };
     let mut body = String::new();
 
@@ -245,13 +420,34 @@ pub(super) fn module(abi: &AppAbi, class: &str) -> String {
     let _ = writeln!(out, "from __future__ import annotations\n");
     let _ = writeln!(
         out,
-        "from typing import Any, Dict, List, Literal, Optional, TypedDict, cast\n"
+        "from typing import Any, Dict, List, Literal, Optional, TypedDict, Union, cast\n"
     );
     let _ = writeln!(out, "from calimero import Client, SoftPasskey\n");
+    // The described types, and the ones their shapes name, until none is new.
+    let mut declared: BTreeMap<String, String> = BTreeMap::new();
+    loop {
+        let pending: Vec<(String, (String, Shape))> = py
+            .described
+            .iter()
+            .filter(|(name, _)| !declared.contains_key(*name))
+            .map(|(n, d)| (n.clone(), d.clone()))
+            .collect();
+        if pending.is_empty() {
+            break;
+        }
+        for (name, (text, shape)) in pending {
+            let decl = py.declaration(&name, &text, &shape);
+            let _ = declared.insert(name, decl);
+        }
+    }
+    declared.append(&mut py.helpers);
+    for decl in declared.values() {
+        let _ = writeln!(out, "{decl}");
+    }
     for (name, text) in &py.named {
         let _ = writeln!(
             out,
-            "{name} = Any\n\"\"\"The app type `{text}`: ABI version 1 names it without its shape.\"\"\"\n"
+            "{name} = Any\n\"\"\"The app type `{text}`: the ABI names it without its shape.\"\"\"\n"
         );
     }
     out.push_str(&body);

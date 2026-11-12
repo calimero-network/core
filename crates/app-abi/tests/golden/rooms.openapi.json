@@ -617,7 +617,7 @@
         "type": "object"
       },
       "Booking": {
-        "description": "The app type `Booking`. ABI version 1 names a type without describing its shape, so any JSON value is accepted here.",
+        "description": "The app type `Booking`. The ABI names it without describing its shape, so any JSON value is accepted here.",
         "x-calimero-abi-type": "Booking"
       },
       "BookingArgs": {
@@ -1122,7 +1122,7 @@
         "type": "object"
       },
       "SlotView": {
-        "description": "The app type `SlotView`. ABI version 1 names a type without describing its shape, so any JSON value is accepted here.",
+        "description": "The app type `SlotView`. The ABI names it without describing its shape, so any JSON value is accepted here.",
         "x-calimero-abi-type": "SlotView"
       },
       "SlotsTakenEvent": {

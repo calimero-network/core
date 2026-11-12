@@ -9,6 +9,7 @@ import { CalimeroClient, passkeyConfirm } from '@calimero-network/mero-js';
 import type { NodeEvent, PasskeyProvider } from '@calimero-network/mero-js';
 
 import { KitchenSinkClient } from '../golden/kitchen-sink.ts';
+import type { Adjacent, Either, Item, Page, Status, Tagged, Tree } from '../golden/kitchen-sink.ts';
 import { KvStoreClient } from '../golden/kv-store.ts';
 import type { AppTransport, AppEvent } from '../golden/kv-store.ts';
 import { RoomsClient } from '../golden/rooms.ts';
@@ -27,6 +28,21 @@ export function withARealClient(client: CalimeroClient, passkey: PasskeyProvider
     sink.wipe({ reason: null }),
   ];
 }
+
+// The app types are what serde writes: records with D20 fields, each enum representation,
+// generics instantiated where used.
+export const shapes = {
+  status: ['Open', { Closed: { at: '1' } }, { Moved: 'x' }, { Span: [1, 2] }] satisfies Status[],
+  tagged: [{ type: 'draft' }, { type: 'published', at: '3' }] satisfies Tagged[],
+  adjacent: [{ t: 'Text', c: 'hi' }, { t: 'Empty' }] satisfies Adjacent[],
+  either: [7, { name: 'n' }] satisfies Either[],
+  page: { items: [{ id: '1', title: 't', tags: [], status: 'Open' }], next: null } satisfies Page<Item>,
+  tree: { value: 1, children: [{ value: 2, children: [] }] } satisfies Tree,
+  // @ts-expect-error a u64 field is a decimal string
+  number: { id: 1, title: 't', tags: [], status: 'Open' } satisfies Item,
+  // @ts-expect-error an externally tagged variant with data is an object
+  bare: 'Closed' satisfies Status,
+};
 
 type Sent = { kind: 'call' | 'view'; args: Record<string, unknown>; options: Record<string, unknown> | undefined };
 

@@ -4,16 +4,16 @@
 
 import type { ConfirmCallback, NodeEvent } from '@calimero-network/mero-js';
 
-/** The app type `Evidence`: ABI version 1 names it without its shape. */
+/** The app type `Evidence`: the ABI names it without its shape. */
 export type Evidence = unknown;
 
-/** The app type `Founding`: ABI version 1 names it without its shape. */
+/** The app type `Founding`: the ABI names it without its shape. */
 export type Founding = unknown;
 
-/** The app type `MessageView`: ABI version 1 names it without its shape. */
+/** The app type `MessageView`: the ABI names it without its shape. */
 export type MessageView = unknown;
 
-/** The app type `PageView`: ABI version 1 names it without its shape. */
+/** The app type `PageView`: the ABI names it without its shape. */
 export type PageView = unknown;
 
 /** The arguments of `addModerator`. */

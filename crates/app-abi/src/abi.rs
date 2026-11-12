@@ -2,8 +2,13 @@
 //! result, the state section, errors and events.
 //!
 //! The node's own reader (`calimero_app_host::Abi`) keeps only what it enforces; this one
-//! keeps the free-form keys too (`params`, `returns`, `errors`, `events`), which describe the
-//! app to clients. Unknown keys are ignored, like the node does (Ruling 14).
+//! keeps the free-form keys too (`params`, `returns`, `errors`, `events`, `types`), which
+//! describe the app to clients. Unknown keys are ignored, like the node does (Ruling 14).
+//!
+//! `types` (written by the SDK since `calimero-sdk` describes `#[derive(Record)]` and
+//! `#[derive(AbiType)]` types; see `calimero_sdk::abi`) holds each app type's shape: a
+//! [`TypeDef`]. An ABI without it, or a type it does not list, leaves the type unknown, as
+//! before; an entry this reader cannot read is left out the same way.
 
 use std::collections::BTreeMap;
 
@@ -106,6 +111,115 @@ pub struct State {
 /// An error's or event's fields: camelCase name to type.
 pub type Fields = BTreeMap<String, Type>;
 
+/// A field of a record or of a struct variant, in declaration order (the order serde writes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Field {
+    /// Its JSON name.
+    pub name: String,
+    pub ty: Type,
+    /// The JSON may leave it out (`skip_serializing_if`); an `option` field is otherwise
+    /// always written, `null` for none.
+    pub optional: bool,
+}
+
+/// How an enum's variant is told apart in JSON (serde's representations).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EnumRepr {
+    /// `"Unit"`, `{"Name": data}`: serde's default.
+    External,
+    /// `{"<tag>": "Name", ..fields}`.
+    Internal { tag: String },
+    /// `{"<tag>": "Name", "<content>": data}`.
+    Adjacent { tag: String, content: String },
+    /// The data alone.
+    Untagged,
+}
+
+/// What a variant carries.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VariantData {
+    Unit,
+    /// One unnamed field: its value.
+    Newtype(Type),
+    /// Several unnamed fields: a JSON array.
+    Tuple(Vec<Type>),
+    /// Named fields: an object.
+    Record(Vec<Field>),
+}
+
+/// An enum's variant, by its JSON name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Variant {
+    pub name: String,
+    pub data: VariantData,
+}
+
+/// An app type's JSON shape.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shape {
+    /// A struct with named fields: an object.
+    Record(Vec<Field>),
+    /// A newtype struct (or `transparent`): the inner value.
+    Newtype(Type),
+    /// A tuple struct: a JSON array.
+    Tuple(Vec<Type>),
+    /// A unit struct: `null`.
+    Unit,
+    Enum {
+        repr: EnumRepr,
+        variants: Vec<Variant>,
+    },
+}
+
+/// An entry of the ABI's `types`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeDef {
+    /// A generic type's parameters (`["T"]`), which its shape names as [`Type::Named`].
+    pub params: Vec<String>,
+    pub shape: Shape,
+}
+
+impl TypeDef {
+    /// The shape with the parameters replaced by `args` (`Page<Booking>`).
+    #[must_use]
+    pub fn instantiate(&self, args: &[Type]) -> Shape {
+        if self.params.is_empty() {
+            return self.shape.clone();
+        }
+        let sub = |t: &Type| t.substitute(&self.params, args);
+        let fields = |fs: &[Field]| {
+            fs.iter()
+                .map(|f| Field {
+                    ty: sub(&f.ty),
+                    ..f.clone()
+                })
+                .collect()
+        };
+        let data = |d: &VariantData| match d {
+            VariantData::Unit => VariantData::Unit,
+            VariantData::Newtype(t) => VariantData::Newtype(sub(t)),
+            VariantData::Tuple(ts) => VariantData::Tuple(ts.iter().map(sub).collect()),
+            VariantData::Record(fs) => VariantData::Record(fields(fs)),
+        };
+        match &self.shape {
+            Shape::Record(fs) => Shape::Record(fields(fs)),
+            Shape::Newtype(t) => Shape::Newtype(sub(t)),
+            Shape::Tuple(ts) => Shape::Tuple(ts.iter().map(sub).collect()),
+            Shape::Unit => Shape::Unit,
+            Shape::Enum { repr, variants } => Shape::Enum {
+                repr: repr.clone(),
+                variants: variants
+                    .iter()
+                    .map(|v| Variant {
+                        name: v.name.clone(),
+                        data: data(&v.data),
+                    })
+                    .collect(),
+            },
+        }
+    }
+}
+
 /// An app's ABI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppAbi {
@@ -115,6 +229,8 @@ pub struct AppAbi {
     pub state: State,
     pub errors: BTreeMap<String, Fields>,
     pub events: BTreeMap<String, Fields>,
+    /// App types' shapes by name (`Booking`, `Page`); empty in an ABI written before them.
+    pub types: BTreeMap<String, TypeDef>,
 }
 
 impl AppAbi {
@@ -150,7 +266,17 @@ impl AppAbi {
             },
             errors: payloads(top.get("errors"), "errors")?,
             events: payloads(top.get("events"), "events")?,
+            types: types(top.get("types")),
         })
+    }
+
+    /// The shape of app type `ty` (a [`Type::Named`]) with its generic arguments put in, and
+    /// its entry name; `None` when the ABI does not describe it.
+    #[must_use]
+    pub fn shape_of(&self, ty: &Type) -> Option<(String, &TypeDef, Vec<Type>)> {
+        let (name, args) = ty.named_parts()?;
+        let def = self.types.get(&name)?;
+        (def.params.len() == args.len()).then(|| (name, def, args))
     }
 
     /// The methods clients call, by name.
@@ -277,6 +403,98 @@ fn payloads(json: Option<&Value>, what: &str) -> EyreResult<BTreeMap<String, Fie
         .collect()
 }
 
+/// The `types` section; an entry that does not read is left out (its type stays unknown).
+fn types(json: Option<&Value>) -> BTreeMap<String, TypeDef> {
+    let Some(Value::Object(entries)) = json else {
+        return BTreeMap::new();
+    };
+    entries
+        .iter()
+        .filter_map(|(name, entry)| Some((name.clone(), type_def(entry)?)))
+        .collect()
+}
+
+fn type_text(v: &Value) -> Option<Type> {
+    v.as_str().map(Type::parse)
+}
+
+fn shape_fields(v: &Value) -> Option<Vec<Field>> {
+    v.as_array()?
+        .iter()
+        .map(|f| match f.as_array()?.as_slice() {
+            [Value::String(name), ty] => Some(Field {
+                name: name.clone(),
+                ty: type_text(ty)?,
+                optional: false,
+            }),
+            [Value::String(name), ty, Value::Object(flags)] => Some(Field {
+                name: name.clone(),
+                ty: type_text(ty)?,
+                optional: flags.get("optional").and_then(Value::as_bool) == Some(true),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn type_list(v: &Value) -> Option<Vec<Type>> {
+    v.as_array()?.iter().map(type_text).collect()
+}
+
+fn type_def(entry: &Value) -> Option<TypeDef> {
+    let e = entry.as_object()?;
+    let params = match e.get("params") {
+        None => Vec::new(),
+        Some(p) => p
+            .as_array()?
+            .iter()
+            .map(|p| p.as_str().map(str::to_owned))
+            .collect::<Option<_>>()?,
+    };
+    let shape = match e.get("kind")?.as_str()? {
+        "record" => Shape::Record(shape_fields(e.get("fields")?)?),
+        "newtype" => Shape::Newtype(type_text(e.get("type")?)?),
+        "tuple" => Shape::Tuple(type_list(e.get("items")?)?),
+        "unit" => Shape::Unit,
+        "enum" => {
+            let text = |k: &str| e.get(k).and_then(Value::as_str).map(str::to_owned);
+            let repr = if e.get("untagged").and_then(Value::as_bool) == Some(true) {
+                EnumRepr::Untagged
+            } else {
+                match (text("tag"), text("content")) {
+                    (Some(tag), Some(content)) => EnumRepr::Adjacent { tag, content },
+                    (Some(tag), None) => EnumRepr::Internal { tag },
+                    _ => EnumRepr::External,
+                }
+            };
+            let variants = e
+                .get("variants")?
+                .as_array()?
+                .iter()
+                .map(|v| {
+                    let v = v.as_object()?;
+                    let data = if let Some(fields) = v.get("fields") {
+                        VariantData::Record(shape_fields(fields)?)
+                    } else if let Some(items) = v.get("items") {
+                        VariantData::Tuple(type_list(items)?)
+                    } else if let Some(ty) = v.get("type") {
+                        VariantData::Newtype(type_text(ty)?)
+                    } else {
+                        VariantData::Unit
+                    };
+                    Some(Variant {
+                        name: v.get("name")?.as_str()?.to_owned(),
+                        data,
+                    })
+                })
+                .collect::<Option<_>>()?;
+            Shape::Enum { repr, variants }
+        }
+        _ => return None,
+    };
+    Some(TypeDef { params, shape })
+}
+
 fn flag(fields: &Map<String, Value>, key: &str, name: &str) -> EyreResult<bool> {
     match fields.get(key) {
         None | Some(Value::Null) => Ok(false),
@@ -326,6 +544,47 @@ mod tests {
         let names: Vec<_> = abi.client_methods().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["a", "f"]);
         assert!(!abi.methods["f"].runs_as_view());
+    }
+
+    #[test]
+    fn types_are_read_and_an_unreadable_entry_is_left_out() {
+        let abi = AppAbi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": { "page": { "kind": "view", "returns": "Page<Item>" } },
+            "types": {
+                "Item": { "kind": "record", "fields": [["id", "u64"], ["note", "option<string>", { "optional": true }]] },
+                "Page": { "kind": "record", "params": ["T"], "fields": [["items", "list<T>"]] },
+                "Status": {
+                    "kind": "enum", "tag": "type",
+                    "variants": [{ "name": "open" }, { "name": "at", "fields": [["t", "u32"]] }],
+                },
+                "Broken": { "kind": "record", "fields": "nope" },
+                "Future": { "kind": "intersection" },
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            abi.types.keys().collect::<Vec<_>>(),
+            ["Item", "Page", "Status"]
+        );
+        let (name, def, args) = abi.shape_of(&abi.methods["page"].returns).unwrap();
+        assert_eq!(name, "Page");
+        assert_eq!(
+            def.instantiate(&args),
+            Shape::Record(vec![Field {
+                name: "items".to_owned(),
+                ty: Type::List(Box::new(Type::Named("Item".to_owned()))),
+                optional: false,
+            }])
+        );
+        assert!(matches!(
+            &abi.types["Status"].shape,
+            Shape::Enum { repr: EnumRepr::Internal { tag }, variants } if tag == "type" && variants.len() == 2
+        ));
+        assert!(abi.types["Item"].shape != Shape::Unit);
+        // An ABI without `types` reads as before.
+        let old = AppAbi::from_json(&json!({ "abiVersion": 1, "methods": {} })).unwrap();
+        assert!(old.types.is_empty());
     }
 
     #[test]

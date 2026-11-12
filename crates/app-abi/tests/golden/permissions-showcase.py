@@ -7,21 +7,21 @@ client's retries. u64 and i64 are decimal strings and bytes base64url, as on the
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, TypedDict, cast
+from typing import Any, Dict, List, Literal, Optional, TypedDict, Union, cast
 
 from calimero import Client, SoftPasskey
 
 Evidence = Any
-"""The app type `Evidence`: ABI version 1 names it without its shape."""
+"""The app type `Evidence`: the ABI names it without its shape."""
 
 Founding = Any
-"""The app type `Founding`: ABI version 1 names it without its shape."""
+"""The app type `Founding`: the ABI names it without its shape."""
 
 MessageView = Any
-"""The app type `MessageView`: ABI version 1 names it without its shape."""
+"""The app type `MessageView`: the ABI names it without its shape."""
 
 PageView = Any
-"""The app type `PageView`: ABI version 1 names it without its shape."""
+"""The app type `PageView`: the ABI names it without its shape."""
 
 AlreadyWrittenError = TypedDict("AlreadyWrittenError", {"key": str})
 BadHashError = TypedDict("BadHashError", {"hash": str})

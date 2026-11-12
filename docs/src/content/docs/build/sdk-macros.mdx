@@ -34,6 +34,7 @@ use calimero_sdk::prelude::*;
 | `#[app::error]` | enum | The app's errors: variant name = error code. |
 | `#[app::event]` | enum | The app's events: variant name = event name. |
 | `#[derive(Record)]` + `#[table(..)]` | struct | A table row: key, unique constraints, indexes, counts, search. |
+| `#[derive(AbiType)]` | serde struct or enum | Its JSON shape in the ABI's `types`, so typed clients get its fields. |
 | `app::bail!(err)` | expression | Return early with an app error. |
 
 ## A complete app
@@ -192,6 +193,43 @@ A table row. The derive writes the serde impls itself, so do not also derive
 
 Index, count and unique names are used in camelCase (`by_room` → `"byRoom"`).
 `u64`/`i64` fields are CBOR integers when stored and decimal strings in JSON.
+A record's fields are listed in the ABI's `types` too, so a
+[typed client](/core/build/guides/typed-clients/) types it as an interface.
+
+## `#[derive(AbiType)]`
+
+A record describes itself in the ABI. A plain serde type a method takes or
+answers (a view of several records, a status enum, a generic page) does so when
+it also derives `AbiType`:
+
+```rust
+#[derive(serde::Serialize, serde::Deserialize, AbiType)]
+#[serde(rename_all = "camelCase")]
+pub struct Listing<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+    #[serde(with = "calimero_sdk::json::u64_str")]
+    pub total: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, AbiType)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum Slot {
+    Free,
+    Held { booking: Booking },
+}
+```
+
+It reads the serde attributes that change the JSON (`rename`, `rename_all`,
+`rename_all_fields`, `tag`, `content`, `untagged`, `transparent`, `skip`,
+`skip_serializing_if`) and refuses what it cannot describe: `flatten`, `into`,
+`from`, `try_from`, `remote`, and a `with` other than the SDK's D20 helpers. A
+`u64`, `i64` or `Vec<u8>` field must name its D20 helper (`json::u64_str`,
+`i64_str`, `bytes_b64url`, or their `opt_` forms): plain serde writes a number
+that loses precision, or an array, where the ABI says a string. A type without
+either derive stays in the ABI by name only, and clients type it `unknown`.
+Two mutually recursive described types do not compile (a type that contains
+itself does); describe one of them by hand (`impl AbiType`) or not at all.
 
 ## The SDK's name
 

@@ -107,9 +107,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "calimero-app-abi"
+version = "0.0.0"
+dependencies = [
+ "calimero-bundle",
+ "eyre",
+ "flate2",
+ "serde_json",
+ "tar",
+ "wasmparser 0.263.0",
+]
+
+[[package]]
 name = "calimero-app-build"
 version = "0.0.0"
 dependencies = [
+ "calimero-app-abi",
  "eyre",
  "serde_json",
  "sha2 0.11.1",

@@ -14,7 +14,8 @@ use syn::{
 };
 
 use crate::types::{
-    abi_type, camel, canonical, check_wire, generic_arg, is_unit, valid_rate, wire, Wire,
+    abi_type, camel, canonical, check_wire, generic_arg, is_unit, probe_slice, probes, valid_rate,
+    wire, Wire,
 };
 
 /// The world the app component's ABI names.
@@ -595,6 +596,30 @@ fn abi_parts(state: &Type, methods: &[&Method], world: &str) -> Vec<TokenStream>
         canonical(&Value::Object(abi_methods))
     );
     let tail = format!(",\"world\":\"{world}\"}}");
+    // Every app type the methods take or answer, then (through their shapes) the types
+    // those refer to; with the errors' and events' fields, as `types`.
+    let probes: Vec<TokenStream> = methods
+        .iter()
+        .flat_map(|m| {
+            m.params
+                .iter()
+                .map(|(_, ty)| ty)
+                .chain([&m.ok])
+                .flat_map(|ty| probes(ty, &[], &[]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let roots = probe_slice(&probes);
+    let types = quote! {
+        {
+            const TYPES: #sdk::__private::TypesJson = #sdk::__private::types_json(&[
+                #roots,
+                __CALIMERO_ABI_ERROR_TYPES,
+                __CALIMERO_ABI_EVENT_TYPES,
+            ]);
+            TYPES.as_str()
+        }
+    };
     vec![
         quote!(#head),
         quote!(__CALIMERO_ABI_ERRORS),
@@ -602,6 +627,7 @@ fn abi_parts(state: &Type, methods: &[&Method], world: &str) -> Vec<TokenStream>
         quote!(__CALIMERO_ABI_EVENTS),
         quote!(#methods_json),
         quote!(<#state as #sdk::app::AppState>::ABI),
+        types,
         quote!(#tail),
     ]
 }
