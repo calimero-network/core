@@ -4,21 +4,24 @@
 //! verified first ([`attest`]). People sign in with a passkey ([`Passkey`]);
 //! machines use an API key. Calls, views and events address one app instance.
 
-use std::sync::Arc;
-
 use calimero_identity::{Assertion, Registration};
-use calimero_sealed::client::{SealedRefusal, SealedTransport};
-use futures_util::{Stream, StreamExt};
+use futures_util::Stream;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::sync::RwLock;
-use url::Url;
 
 pub mod attest;
 mod files;
+mod generated;
+mod route;
+pub mod transport;
 
 pub use attest::{AttestationDoc, HttpAttestor, Measurements, Policy};
+pub use generated::{routes, types};
+pub use route::OperatorSigner;
+use transport::{answer, api_error};
+pub use transport::{Body, Credential, Request, Transport};
+use types::AppAttestationResponseReplicasItem;
 
 /// An error from a node, or from getting to one.
 #[derive(Debug, thiserror::Error)]
@@ -39,45 +42,6 @@ pub enum Error {
     /// The node could not be reached, attested or understood.
     #[error(transparent)]
     Transport(#[from] eyre::Report),
-}
-
-/// The path a session is refreshed at; a `401` there is not refreshed again.
-const REFRESH_PATH: &str = "auth/refresh";
-
-/// What a request carries, kept so it can be sent again after a refresh.
-enum Payload {
-    Empty,
-    Json(Value),
-    Bytes {
-        content_type: std::borrow::Cow<'static, str>,
-        bytes: bytes::Bytes,
-    },
-}
-
-/// The error a node's answer `status` with body `v` stands for.
-fn api_error(status: u16, v: &Value) -> Error {
-    let code = v["error"].as_str().unwrap_or("ERROR").to_owned();
-    let message = v["message"].as_str().unwrap_or_default().to_owned();
-    let details = v.get("details").cloned().unwrap_or(Value::Null);
-    if status == 421 && code == "WRONG_NODE" {
-        return Error::WrongNode { message, details };
-    }
-    Error::Api {
-        status,
-        code,
-        message,
-        details,
-    }
-}
-
-/// `resp`'s JSON body, or the error its status stands for.
-async fn answer(resp: reqwest::Response) -> Result<Value> {
-    let status = resp.status().as_u16();
-    let v: Value = resp.json().await.unwrap_or(Value::Null);
-    if status >= 400 {
-        return Err(api_error(status, &v));
-    }
-    Ok(v)
 }
 
 /// How often [`Client::call`] sends a call again while the node is unavailable,
@@ -116,23 +80,6 @@ where
         }
     }
     attempt().await
-}
-
-/// What a request sealed and sent became: a refusal of its envelope as too
-/// large (`413`) is the answer a caller acts on, the same `TOO_LARGE` the node
-/// gives a body past its own limits, so it is an [`Error::Api`]. It comes back
-/// in the clear, as every refusal of an envelope does: the node refuses it
-/// before the request can be opened, so there is no request to seal it to.
-fn sealed_error(e: eyre::Report) -> Error {
-    match e.downcast_ref::<SealedRefusal>() {
-        Some(refusal) if refusal.status == 413 => Error::Api {
-            status: 413,
-            code: "TOO_LARGE".to_owned(),
-            message: refusal.message.clone(),
-            details: Value::Null,
-        },
-        _ => Error::Transport(e),
-    }
 }
 
 impl Error {
@@ -245,47 +192,30 @@ pub struct AttestedCluster {
     pub governance: attest::Governance,
 }
 
-/// A connection to one node of a cluster.
+/// A connection to one node of a cluster: the generated route methods
+/// ([`routes`], `client.orgs()`, `client.apps()`, ...) and the hand-written
+/// flows over them (passkey ceremonies, cluster verification, file uploads,
+/// event streams), all sent through one [`Transport`].
 pub struct Client {
-    base: Url,
-    http: reqwest::Client,
+    transport: Transport,
     policy: Policy,
-    sealed: Arc<SealedTransport>,
-    auth: RwLock<Option<String>>,
-    session: RwLock<Option<Session>>,
-    /// One refresh at a time: requests that got a `401` together refresh once
-    /// (a refresh token presented twice ends the session).
-    refreshing: tokio::sync::Mutex<()>,
 }
 
 impl Client {
     /// Connect to the node at `base`, trusting it only once `policy` accepts its attestation.
     pub fn connect(base: &str, policy: Policy) -> eyre::Result<Self> {
-        let base: Url = if base.ends_with('/') {
-            base.parse()?
-        } else {
-            format!("{base}/").parse()?
-        };
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()?;
-        let sealed = Arc::new(SealedTransport::attested(
-            base.clone(),
-            http.clone(),
-            Arc::new(HttpAttestor {
-                policy: policy.clone(),
-                seen_release: Arc::default(),
-            }),
-        ));
         Ok(Self {
-            base,
-            http,
+            transport: Transport::connect(base, policy.clone())?,
             policy,
-            sealed,
-            auth: RwLock::new(None),
-            session: RwLock::new(None),
-            refreshing: tokio::sync::Mutex::new(()),
         })
+    }
+
+    /// The runtime every route of this client is sent through: the generated
+    /// route layer and a raw [`Request`] (`client.transport().json(..)`) share
+    /// this client's credential.
+    #[must_use]
+    pub fn transport(&self) -> &Transport {
+        &self.transport
     }
 
     /// Verify every replica of `app`: each one's quote over a fresh nonce,
@@ -296,19 +226,18 @@ impl Client {
     /// app to new code.
     pub async fn verify_app_cluster(&self, app: &str) -> Result<AttestedCluster> {
         let nonce: [u8; 32] = calimero_identity::random::<32>();
-        let v = self
-            .get(&format!(
-                "apps/{}/attestation?nonce={}",
-                path_segment(app),
-                hex::encode(nonce)
-            ))
-            .await?;
+        let answer = self.apps().attestation(app, &hex::encode(nonce)).await?;
         let mut keys = std::collections::BTreeMap::new();
         let mut governance: Option<attest::Governance> = None;
-        for r in v["replicas"].as_array().cloned().unwrap_or_default() {
-            let node = r["node"].as_u64().unwrap_or_default();
-            let doc: attest::AttestationDoc = serde_json::from_value(r["attestation"].clone())
-                .map_err(|e| eyre::eyre!("replica {node} gave no attestation: {e}"))?;
+        for r in answer.replicas {
+            let (node, doc) = match r {
+                AppAttestationResponseReplicasItem::Attestation { node, attestation } => {
+                    (node, attestation)
+                }
+                AppAttestationResponseReplicasItem::Error { node, error } => {
+                    return Err(eyre::eyre!("replica {node} gave no attestation: {error}").into());
+                }
+            };
             if doc.node != node {
                 return Err(eyre::eyre!("replica {node} answered as node {}", doc.node).into());
             }
@@ -328,144 +257,16 @@ impl Client {
 
     /// Use an API key for every request.
     pub async fn use_api_key(&self, key: &str) {
-        *self.auth.write().await = Some(key.to_owned());
+        self.transport.use_api_key(key).await;
     }
 
     /// Use a session token for every request.
     pub async fn use_session(&self, session: Session) {
-        *self.auth.write().await = Some(session.session_token.clone());
-        *self.session.write().await = Some(session);
+        self.transport.use_session(session).await;
     }
 
     pub async fn session(&self) -> Option<Session> {
-        self.session.read().await.clone()
-    }
-
-    async fn send(
-        &self,
-        method: Method,
-        path: &str,
-        body: Option<Value>,
-    ) -> Result<reqwest::Response> {
-        self.send_payload(method, path, body.map_or(Payload::Empty, Payload::Json))
-            .await
-    }
-
-    /// Send a request with this client's credential. A `401` to a session this
-    /// client can refresh (it holds the refresh token) is refreshed once, on
-    /// this node, and the request sent once more: the node that issued the
-    /// session may be gone, or have been removed, and a refresh works on any
-    /// node. Any other answer, or a refresh that fails, is returned as it is.
-    async fn send_payload(
-        &self,
-        method: Method,
-        path: &str,
-        payload: Payload,
-    ) -> Result<reqwest::Response> {
-        let token = self.auth.read().await.clone();
-        let resp = self
-            .send_once(method.clone(), path, &payload, token.as_deref())
-            .await?;
-        if resp.status().as_u16() != 401 || path == REFRESH_PATH {
-            return Ok(resp);
-        }
-        let Some(sent) = token else { return Ok(resp) };
-        match self.refreshed_after(&sent).await {
-            Some(fresh) => self.send_once(method, path, &payload, Some(&fresh)).await,
-            None => Ok(resp),
-        }
-    }
-
-    /// The session token to send again after `sent` was answered `401`: one a
-    /// concurrent request already refreshed into, else a refresh's. `None` when
-    /// `sent` is not a session this client can refresh (an API key, a session
-    /// without its refresh token) or the refresh fails.
-    async fn refreshed_after(&self, sent: &str) -> Option<String> {
-        let _one = self.refreshing.lock().await;
-        let session = self.session.read().await.clone()?;
-        if session.session_token != sent {
-            let current = self.auth.read().await.clone()?;
-            return (current != sent && current == session.session_token).then_some(current);
-        }
-        if session.refresh_token.is_empty() {
-            return None;
-        }
-        self.refresh().await.ok().map(|s| s.session_token)
-    }
-
-    async fn send_once(
-        &self,
-        method: Method,
-        path: &str,
-        payload: &Payload,
-        token: Option<&str>,
-    ) -> Result<reqwest::Response> {
-        let url = self.base.join(path).map_err(eyre::Report::from)?;
-        let mut req = self.http.request(method, url);
-        if let Some(token) = token {
-            req = req.bearer_auth(token);
-        }
-        req = match payload {
-            Payload::Empty => req,
-            Payload::Json(b) => req.json(b),
-            Payload::Bytes {
-                content_type,
-                bytes,
-            } => req
-                .header("content-type", &**content_type)
-                .body(bytes.clone()),
-        };
-        let req = req.build().map_err(eyre::Report::from)?;
-        self.execute(req).await
-    }
-
-    async fn execute(&self, req: reqwest::Request) -> Result<reqwest::Response> {
-        self.sealed.execute(req).await.map_err(sealed_error)
-    }
-
-    async fn json(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
-        answer(self.send(method, path, body).await?).await
-    }
-
-    pub async fn post(&self, path: &str, body: Value) -> Result<Value> {
-        self.json(Method::POST, path, Some(body)).await
-    }
-
-    pub async fn put(&self, path: &str, body: Value) -> Result<Value> {
-        self.json(Method::PUT, path, Some(body)).await
-    }
-
-    pub async fn get(&self, path: &str) -> Result<Value> {
-        self.json(Method::GET, path, None).await
-    }
-
-    /// `GET path` answered as text (`/ops/metrics`).
-    pub async fn get_text(&self, path: &str) -> Result<String> {
-        let resp = self.send(Method::GET, path, None).await?;
-        let status = resp.status().as_u16();
-        let text = resp.text().await.map_err(eyre::Report::from)?;
-        if status >= 400 {
-            return Err(Error::Api {
-                status,
-                code: "ERROR".into(),
-                message: text,
-                details: Value::Null,
-            });
-        }
-        Ok(text)
-    }
-
-    pub async fn delete(&self, path: &str) -> Result<Value> {
-        self.json(Method::DELETE, path, None).await
-    }
-
-    /// DELETE `path` with a JSON body: a proof the caller made itself
-    /// (`{confirm}`, `{operatorProof}`).
-    ///
-    /// # Errors
-    /// As [`Self::delete`].
-    pub async fn delete_with_body(&self, path: &str, body: Value) -> Result<Value> {
-        self.json(Method::DELETE, path, Some(body)).await
+        self.transport.session().await
     }
 
     // ------------------------------------------------------------ identity
@@ -482,7 +283,7 @@ impl Client {
     /// bound to that package.
     ///
     /// # Errors
-    /// As [`Self::post`]; `403 ORIGIN_NOT_REGISTERED` for an origin the
+    /// As [`Self::sign_up`]; `403 ORIGIN_NOT_REGISTERED` for an origin the
     /// cluster does not know.
     pub async fn sign_up_at(
         &self,
@@ -517,25 +318,15 @@ impl Client {
         origin: Option<&str>,
         invite: Option<&str>,
     ) -> Result<Session> {
-        let mut body = json!({ "name": name, "invite": invite });
-        if let (Some(b), Some(o)) = (body.as_object_mut(), origin) {
-            let _prev = b.insert("origin".into(), json!(o));
-        }
-        let begin = self.post("auth/passkey/register/begin", body).await?;
-        let registration = passkey.create(&begin["options"]);
-        let s: Session = serde_json::from_value(
-            self.post_confirmed(
-                "auth/passkey/register/finish",
-                json!({
-                    "challengeId": begin["challengeId"],
-                    "registration": registration,
-                    "invite": invite,
-                }),
-                passkey,
-            )
-            .await?,
-        )
-        .map_err(eyre::Report::from)?;
+        let begin = self
+            .auth()
+            .register_begin(Some(name), origin, invite)
+            .await?;
+        let registration = passkey.create(&begin.options);
+        let s = self
+            .auth()
+            .register_finish(&begin.challenge_id, registration, invite, Some(passkey))
+            .await?;
         self.use_session(s.clone()).await;
         Ok(s)
     }
@@ -548,29 +339,13 @@ impl Client {
         new: &mut dyn Passkey,
         approver: &mut dyn Passkey,
     ) -> Result<String> {
-        let begin = self.post("auth/passkeys/add/begin", json!({})).await?;
-        let registration = new.create(&begin["options"]);
+        let begin = self.auth().passkey_add_begin().await?;
+        let registration = new.create(&begin.options);
         let done = self
-            .post_confirmed(
-                "auth/passkeys/add/finish",
-                json!({ "challengeId": begin["challengeId"], "registration": registration }),
-                approver,
-            )
+            .auth()
+            .passkey_add_finish(&begin.challenge_id, registration, Some(approver))
             .await?;
-        Ok(done["credentialId"].as_str().unwrap_or_default().to_owned())
-    }
-
-    /// Remove one of the account's passkeys, approved with a passkey it has.
-    pub async fn remove_passkey(
-        &self,
-        credential: &str,
-        passkey: &mut dyn Passkey,
-    ) -> Result<Value> {
-        self.delete_confirmed(
-            &format!("auth/passkeys/{}", path_segment(credential)),
-            passkey,
-        )
-        .await
+        Ok(done.credential_id)
     }
 
     /// Sign in with an existing passkey.
@@ -587,21 +362,15 @@ impl Client {
         passkey: &mut dyn Passkey,
         origin: Option<&str>,
     ) -> Result<Session> {
-        let body = origin.map_or_else(|| json!({}), |o| json!({ "origin": o }));
-        let begin = self.post("auth/passkey/login/begin", body).await?;
-        let challenge = calimero_identity::from_b64url(
-            begin["options"]["challenge"].as_str().unwrap_or_default(),
-        )
-        .map_err(|e| eyre::eyre!("{e}"))?;
+        let begin = self.auth().login_begin(origin).await?;
+        let challenge =
+            calimero_identity::from_b64url(begin.options["challenge"].as_str().unwrap_or_default())
+                .map_err(|e| eyre::eyre!("{e}"))?;
         let assertion = passkey.get(&challenge);
-        let s: Session = serde_json::from_value(
-            self.post(
-                "auth/passkey/login/finish",
-                json!({ "challengeId": begin["challengeId"], "assertion": assertion }),
-            )
-            .await?,
-        )
-        .map_err(eyre::Report::from)?;
+        let s = self
+            .auth()
+            .login_finish(&begin.challenge_id, assertion)
+            .await?;
         self.use_session(s.clone()).await;
         Ok(s)
     }
@@ -609,26 +378,159 @@ impl Client {
     /// Swap the refresh token for a new session, on this node (any node of
     /// the cluster takes it).
     pub async fn refresh(&self) -> Result<Session> {
-        let current = self
-            .session()
-            .await
-            .ok_or_else(|| eyre::eyre!("no session"))?;
-        let token = self.auth.read().await.clone();
-        let body = Payload::Json(json!({ "refreshToken": current.refresh_token }));
-        let resp = self
-            .send_once(Method::POST, REFRESH_PATH, &body, token.as_deref())
-            .await?;
-        let s: Session = serde_json::from_value(answer(resp).await?).map_err(eyre::Report::from)?;
-        self.use_session(s.clone()).await;
-        Ok(s)
+        self.transport.refresh().await
     }
 
+    /// Start handing `org` to the signed-in account `account` with the
+    /// recovery `seed`, which signs here and is never sent. Answers
+    /// `{ startedAt, readyAt }`.
+    pub async fn start_recovery(&self, org: &str, account: &str, seed: &[u8; 32]) -> Result<Value> {
+        use calimero_identity::recovery::sign_recovery;
+        let nonce = calimero_identity::b64url(&calimero_identity::random::<16>());
+        let signature = sign_recovery(seed, org, account, &nonce);
+        let started = self.orgs().recovery_start(org, &nonce, &signature).await?;
+        route::value(&started)
+    }
+
+    // ------------------------------------------------------------ streams
+
+    /// Committed events from `from`, then live. Each item is `(id, kind, data)`.
+    pub async fn events(
+        &self,
+        app: &str,
+        from: u64,
+    ) -> Result<impl Stream<Item = (String, String, Value)>> {
+        let req = Request::new(Method::GET, format!("apps/{}/events", path_segment(app)))
+            .query("from", from.to_string());
+        self.transport.events(req).await
+    }
+
+    /// Presence as a stream: `("", "snapshot", [...])` first, then
+    /// `("", "presence", { account, device, state })` per change.
+    pub async fn presence_stream(
+        &self,
+        app: &str,
+    ) -> Result<impl Stream<Item = (String, String, Value)>> {
+        let req = Request::new(
+            Method::GET,
+            format!("apps/{}/presence/stream", path_segment(app)),
+        );
+        self.transport.events(req).await
+    }
+}
+
+/// The route methods written by hand before the generated layer
+/// ([`routes`]): each points at its replacement, and goes once nothing
+/// calls it (`crates/node/tests`, `crates/merod/tests`).
+#[allow(deprecated, reason = "the deprecated methods call one another")]
+impl Client {
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<reqwest::Response> {
+        self.send_payload(method, path, body.map_or(Body::Empty, Body::Json))
+            .await
+    }
+
+    /// Send a request with this client's credential ([`Transport::send`]).
+    async fn send_payload(
+        &self,
+        method: Method,
+        path: &str,
+        payload: Body,
+    ) -> Result<reqwest::Response> {
+        self.transport
+            .send(Request::new(method, path).body(payload))
+            .await
+    }
+
+    async fn json(&self, method: Method, path: &str, body: Option<Value>) -> Result<Value> {
+        answer(self.send(method, path, body).await?).await
+    }
+
+    #[deprecated(
+        note = "use a route's generated method (client.<group>().<method>()), or client.transport().json(Request) for a raw route"
+    )]
+    pub async fn post(&self, path: &str, body: Value) -> Result<Value> {
+        self.json(Method::POST, path, Some(body)).await
+    }
+
+    #[deprecated(
+        note = "use a route's generated method (client.<group>().<method>()), or client.transport().json(Request) for a raw route"
+    )]
+    pub async fn put(&self, path: &str, body: Value) -> Result<Value> {
+        self.json(Method::PUT, path, Some(body)).await
+    }
+
+    #[deprecated(
+        note = "use a route's generated method (client.<group>().<method>()), or client.transport().json(Request) for a raw route"
+    )]
+    pub async fn get(&self, path: &str) -> Result<Value> {
+        self.json(Method::GET, path, None).await
+    }
+
+    /// `GET path` answered as text (`/ops/metrics`).
+    #[deprecated(
+        note = "use client.ops().metrics(), or client.transport().send(Request) for a raw route"
+    )]
+    pub async fn get_text(&self, path: &str) -> Result<String> {
+        let resp = self.send(Method::GET, path, None).await?;
+        let status = resp.status().as_u16();
+        let text = resp.text().await.map_err(eyre::Report::from)?;
+        if status >= 400 {
+            return Err(Error::Api {
+                status,
+                code: "ERROR".into(),
+                message: text,
+                details: Value::Null,
+            });
+        }
+        Ok(text)
+    }
+
+    #[deprecated(
+        note = "use a route's generated method (client.<group>().<method>()), or client.transport().json(Request) for a raw route"
+    )]
+    pub async fn delete(&self, path: &str) -> Result<Value> {
+        self.json(Method::DELETE, path, None).await
+    }
+
+    /// DELETE `path` with a JSON body: a proof the caller made itself
+    /// (`{confirm}`, `{operatorProof}`).
+    ///
+    /// # Errors
+    /// As [`Self::delete`].
+    #[deprecated(
+        note = "use a route's generated method (client.<group>().<method>()), or client.transport().json(Request) for a raw route"
+    )]
+    pub async fn delete_with_body(&self, path: &str, body: Value) -> Result<Value> {
+        self.json(Method::DELETE, path, Some(body)).await
+    }
+
+    /// Remove one of the account's passkeys, approved with a passkey it has.
+    #[deprecated(note = "use client.auth().passkey_remove()")]
+    pub async fn remove_passkey(
+        &self,
+        credential: &str,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.delete_confirmed(
+            &format!("auth/passkeys/{}", path_segment(credential)),
+            passkey,
+        )
+        .await
+    }
+
+    #[deprecated(note = "use client.auth().me()")]
     pub async fn me(&self) -> Result<Value> {
         self.get("auth/me").await
     }
 
     /// Create an API key, approved with the account's passkey; returns
     /// `(key_id, key)`. The key is shown once.
+    #[deprecated(note = "use client.auth().apikey_create()")]
     pub async fn create_api_key(
         &self,
         options: Value,
@@ -645,6 +547,7 @@ impl Client {
 
     /// Revoke one of the account's API keys, approved with its passkey
     /// (`412 CONFIRM_REQUIRED`).
+    #[deprecated(note = "use client.auth().apikey_revoke()")]
     pub async fn revoke_api_key(&self, key_id: &str, passkey: &mut dyn Passkey) -> Result<Value> {
         self.delete_confirmed(&format!("auth/apikeys/{}", path_segment(key_id)), passkey)
             .await
@@ -656,6 +559,7 @@ impl Client {
     ///
     /// # Errors
     /// As [`Self::delete`].
+    #[deprecated(note = "use client.apps().upload_part()")]
     pub async fn put_bytes(&self, path: &str, bytes: Vec<u8>) -> Result<Value> {
         self.send_bytes(Method::PUT, path, bytes).await
     }
@@ -664,12 +568,13 @@ impl Client {
     ///
     /// # Errors
     /// As [`Self::delete`].
+    #[deprecated(note = "use client.apps().files_upload()")]
     pub async fn post_bytes(&self, path: &str, bytes: Vec<u8>) -> Result<Value> {
         self.send_bytes(Method::POST, path, bytes).await
     }
 
     async fn send_bytes(&self, method: Method, path: &str, bytes: Vec<u8>) -> Result<Value> {
-        let payload = Payload::Bytes {
+        let payload = Body::Bytes {
             content_type: "application/octet-stream".into(),
             bytes: bytes.into(),
         };
@@ -683,7 +588,7 @@ impl Client {
         content_type: impl Into<std::borrow::Cow<'static, str>>,
         bytes: Vec<u8>,
     ) -> Result<Value> {
-        let payload = Payload::Bytes {
+        let payload = Body::Bytes {
             content_type: content_type.into(),
             bytes: bytes.into(),
         };
@@ -691,24 +596,28 @@ impl Client {
     }
 
     /// Upload a raw WASM bundle (development nodes only); returns its hash.
+    #[deprecated(note = "use client.packages().bundle_put()")]
     pub async fn upload_bundle(&self, wasm: Vec<u8>) -> Result<String> {
         let v = self.upload("bundles", "application/wasm", wasm).await?;
         Ok(v["hash"].as_str().unwrap_or_default().to_owned())
     }
 
     /// Install a signed `.mpk` package file.
+    #[deprecated(note = "use client.packages().upload()")]
     pub async fn upload_package(&self, mpk: Vec<u8>) -> Result<Value> {
         self.upload("packages", "application/octet-stream", mpk)
             .await
     }
 
     /// The operator installs a signed `.mpk` (Ops API, the ops token as the key).
+    #[deprecated(note = "use client.ops().package_upload()")]
     pub async fn ops_upload_package(&self, mpk: Vec<u8>) -> Result<Value> {
         self.upload("ops/packages", "application/octet-stream", mpk)
             .await
     }
 
     /// The operator installs `package@version` from the node's registry.
+    #[deprecated(note = "use client.ops().package_install()")]
     pub async fn ops_install_package(&self, package: &str, version: &str) -> Result<Value> {
         self.post(
             "ops/packages/install",
@@ -718,6 +627,9 @@ impl Client {
     }
 
     /// The operator uninstalls one version of a package it installed, or all of it.
+    #[deprecated(
+        note = "use client.ops().package_uninstall() or client.ops().package_version_uninstall()"
+    )]
     pub async fn ops_uninstall_package(
         &self,
         package: &str,
@@ -731,6 +643,7 @@ impl Client {
     }
 
     /// Install `package@version` from the node's registry.
+    #[deprecated(note = "use client.packages().install()")]
     pub async fn install_package(&self, package: &str, version: &str) -> Result<Value> {
         self.post(
             "packages/install",
@@ -739,18 +652,17 @@ impl Client {
         .await
     }
 
-    /// Installed packages and their versions.
-    pub async fn packages(&self) -> Result<Value> {
-        Ok(self.get("packages").await?["packages"].clone())
-    }
-
     /// One installed package and its versions.
+    #[deprecated(note = "use client.packages().get()")]
     pub async fn package(&self, package: &str) -> Result<Value> {
         self.get(&format!("packages/{}", path_segment(package)))
             .await
     }
 
     /// Uninstall one version of a package, or all of it.
+    #[deprecated(
+        note = "use client.packages().uninstall() or client.packages().version_uninstall()"
+    )]
     pub async fn uninstall_package(&self, package: &str, version: Option<&str>) -> Result<Value> {
         match version {
             Some(v) => {
@@ -769,12 +681,14 @@ impl Client {
     }
 
     /// Delete an app instance.
+    #[deprecated(note = "use client.apps().delete()")]
     pub async fn delete_app(&self, app: &str) -> Result<Value> {
         self.delete(&format!("apps/{}", path_segment(app))).await
     }
 
     /// Upload a blob for app `app`; answers `{ blobId, id, size }` (`blobId`
     /// base58, as apps print it; `id` hex).
+    #[deprecated(note = "use client.apps().blob_upload()")]
     pub async fn upload_blob(&self, app: &str, bytes: Vec<u8>) -> Result<Value> {
         self.upload(
             &format!("apps/{app}/blobs"),
@@ -786,6 +700,7 @@ impl Client {
 
     /// Upload a blob with its content type; a component app records it (R8) and serves
     /// downloads with it.
+    #[deprecated(note = "use client.apps().blob_upload()")]
     pub async fn upload_blob_as(&self, app: &str, mime: &str, bytes: Vec<u8>) -> Result<Value> {
         self.upload(&format!("apps/{app}/blobs"), mime.to_owned(), bytes)
             .await
@@ -793,6 +708,7 @@ impl Client {
 
     /// Download a component app's blob with a grant one of its runs handed out
     /// (`blobs.grant`); no session needed.
+    #[deprecated(note = "use client.apps().blob_download()")]
     pub async fn download_blob_granted(&self, app: &str, id: &str, grant: &str) -> Result<Vec<u8>> {
         let resp = self
             .send(
@@ -815,11 +731,13 @@ impl Client {
     }
 
     /// The app's blobs: `{ blobs: [{ blobId, id, size }] }`.
+    #[deprecated(note = "use client.apps().blob_list()")]
     pub async fn list_blobs(&self, app: &str) -> Result<Value> {
         self.get(&format!("apps/{}/blobs", path_segment(app))).await
     }
 
     /// One blob's id and size.
+    #[deprecated(note = "use client.apps().blob_info()")]
     pub async fn blob_info(&self, app: &str, id: &str) -> Result<Value> {
         self.get(&format!(
             "apps/{}/blobs/{}/info",
@@ -830,6 +748,7 @@ impl Client {
     }
 
     /// Delete one of the app's blobs (its owner's or an org admin's).
+    #[deprecated(note = "use client.apps().blob_delete()")]
     pub async fn delete_blob(&self, app: &str, id: &str) -> Result<Value> {
         self.delete(&format!(
             "apps/{}/blobs/{}",
@@ -841,6 +760,7 @@ impl Client {
 
     /// Revoke the grants made so far for one of the app's published blobs (its owner's or an
     /// org admin's).
+    #[deprecated(note = "use client.apps().blob_revoke()")]
     pub async fn revoke_blob(&self, app: &str, id: &str) -> Result<Value> {
         self.post(
             &format!(
@@ -855,34 +775,62 @@ impl Client {
 
     /// A component app's xcalls: `{ pending, deadLetters: [{ seq, app, method, reason,
     /// atMs }] }` (its owner or an org admin).
+    #[deprecated(note = "use client.apps().xcalls()")]
     pub async fn app_xcalls(&self, app: &str) -> Result<Value> {
         self.get(&format!("apps/{}/xcalls", path_segment(app)))
             .await
     }
 
     /// What the app's storage holds: `{ keys, bytes, blobs, blobBytes }`.
+    #[deprecated(note = "use client.apps().storage()")]
     pub async fn app_storage(&self, app: &str) -> Result<Value> {
         self.get(&format!("apps/{}/storage", path_segment(app)))
             .await
     }
 
     /// The ABI the app's bundle embeds: `{ bundle, abi }`.
+    #[deprecated(note = "use client.apps().abi()")]
     pub async fn app_abi(&self, app: &str) -> Result<Value> {
         self.get(&format!("apps/{}/abi", path_segment(app))).await
     }
 
+    /// The app's OpenAPI 3.1 document, generated from the ABI its bundle embeds: one
+    /// operation per method (`POST /apps/{app}/methods/{method}`) and its event stream.
+    ///
+    /// # Errors
+    /// As [`Self::get`]; the access is `app_abi`'s.
+    #[deprecated(note = "use client.apps().openapi()")]
+    pub async fn app_openapi(&self, app: &str) -> Result<Value> {
+        self.get(&format!("apps/{}/openapi.json", path_segment(app)))
+            .await
+    }
+
+    /// Run `method` by its own route, `POST /apps/{app}/methods/{method}`, which the node
+    /// answers as `/intents` (a call) or `/views` (a view). `body` is theirs without
+    /// `method`: `{ args, idempotencyKey?, confirm? }` or `{ args, consistency?, minIndex? }`.
+    ///
+    /// # Errors
+    /// As [`Self::post`].
+    #[deprecated(note = "use client.apps().method()")]
+    pub async fn call_method(&self, app: &str, method: &str, body: Value) -> Result<Value> {
+        self.post(&method_path(app, method), body).await
+    }
+
     /// What this account uses, with the cluster's quotas, and what its apps ran
     /// as a developer today (`developerFuelToday`, `developerWritesToday`).
+    #[deprecated(note = "use client.auth().usage()")]
     pub async fn usage(&self) -> Result<Value> {
         self.get("auth/usage").await
     }
 
     /// What the app's runs used (its owner and org admins only): `{ today, days }`,
     /// each day `{ date, runs, fuel, wallMs, writes, bytesWritten, events }`.
+    #[deprecated(note = "use client.apps().usage()")]
     pub async fn app_usage(&self, app: &str) -> Result<Value> {
         self.get(&format!("apps/{}/usage", path_segment(app))).await
     }
 
+    #[deprecated(note = "use client.apps().blob_download()")]
     pub async fn download_blob(&self, app: &str, id: &str) -> Result<Vec<u8>> {
         let resp = self
             .send(Method::GET, &format!("apps/{app}/blobs/{id}"), None)
@@ -898,6 +846,7 @@ impl Client {
     /// Create an app instance from a package release (the newest without
     /// `version`; a package with several services names one), installed from
     /// the registry first if the cluster lacks it. `options` as [`Self::create_app`].
+    #[deprecated(note = "use client.apps().create()")]
     pub async fn create_app_from_package(
         &self,
         name: &str,
@@ -923,6 +872,7 @@ impl Client {
     }
 
     /// Create an app instance from a bundle; `options` may set `org`, `access`, `confirmMethods`.
+    #[deprecated(note = "use client.apps().create()")]
     pub async fn create_app(&self, name: &str, bundle: &str, options: Value) -> Result<String> {
         let mut body = json!({ "name": name, "bundle": bundle });
         if let (Some(b), Some(o)) = (body.as_object_mut(), options.as_object()) {
@@ -937,6 +887,9 @@ impl Client {
     /// POST `body` to `path`; when the node answers 412 CONFIRM_REQUIRED, sign
     /// its challenge with `passkey` and send it again with the approval. What
     /// an owner approves this way: confirm methods, upgrades, release approvals.
+    #[deprecated(
+        note = "use a step-up route's generated method with its passkey, or client.transport().confirmed(Request, passkey) for a raw route"
+    )]
     pub async fn post_confirmed(
         &self,
         path: &str,
@@ -950,6 +903,7 @@ impl Client {
     ///
     /// # Errors
     /// As [`Self::get`].
+    #[deprecated(note = "use client.packages().origins_list()")]
     pub async fn package_origins(&self, package: &str) -> Result<Value> {
         self.get(&package_origins_path(package)).await
     }
@@ -960,6 +914,7 @@ impl Client {
     ///
     /// # Errors
     /// As [`Self::post_confirmed`].
+    #[deprecated(note = "use client.packages().origins_add()")]
     pub async fn add_package_origin(
         &self,
         package: &str,
@@ -980,6 +935,7 @@ impl Client {
     ///
     /// # Errors
     /// As [`Self::post_confirmed`].
+    #[deprecated(note = "use client.packages().origins_remove()")]
     pub async fn remove_package_origin(
         &self,
         package: &str,
@@ -996,17 +952,20 @@ impl Client {
     }
 
     /// End every session of this account, on every device.
+    #[deprecated(note = "use client.auth().logout_all()")]
     pub async fn sign_out_everywhere(&self) -> Result<Value> {
         self.post("auth/logout-all", json!({})).await
     }
 
     /// This account's live sessions (`GET /auth/sessions`): `{ sessions:
     /// [{ session, passkey, app, origin, openedAt, lastActiveAt, current }] }`.
+    #[deprecated(note = "use client.auth().sessions_list()")]
     pub async fn sessions(&self) -> Result<Value> {
         self.get("auth/sessions").await
     }
 
     /// End one of this account's sessions (`DELETE /auth/sessions/{id}`).
+    #[deprecated(note = "use client.auth().session_revoke()")]
     pub async fn revoke_session(&self, session: &str) -> Result<Value> {
         self.delete(&format!("auth/sessions/{}", path_segment(session)))
             .await
@@ -1017,6 +976,7 @@ impl Client {
     /// `kind` being `signIn` (with the `app` and `origin` the session is
     /// bound to) or `approval` (with the `method` and `subject` the passkey
     /// approved). `after`: only entries after that time (Unix seconds).
+    #[deprecated(note = "use client.auth().activity_list()")]
     pub async fn activity(&self, after: Option<u64>) -> Result<Value> {
         match after {
             Some(t) => self.get(&format!("auth/activity?after={t}")).await,
@@ -1026,60 +986,67 @@ impl Client {
 
     /// DELETE `path`, answering a `412 CONFIRM_REQUIRED` as
     /// [`Self::post_confirmed`] does.
+    #[deprecated(
+        note = "use a step-up route's generated method with its passkey, or client.transport().confirmed(Request, passkey) for a raw route"
+    )]
     pub async fn delete_confirmed(&self, path: &str, passkey: &mut dyn Passkey) -> Result<Value> {
         self.confirmed(Method::DELETE, path, json!({}), passkey)
             .await
+    }
+
+    /// DELETE `path` with a JSON `body`, answering a `412 CONFIRM_REQUIRED`
+    /// as [`Self::post_confirmed`] does (`confirm` goes into `body`).
+    #[deprecated(
+        note = "use a step-up route's generated method with its passkey, or client.transport().confirmed(Request, passkey) for a raw route"
+    )]
+    pub async fn delete_confirmed_with(
+        &self,
+        path: &str,
+        body: Value,
+        passkey: &mut dyn Passkey,
+    ) -> Result<Value> {
+        self.confirmed(Method::DELETE, path, body, passkey).await
     }
 
     /// POST an operator decision (Ops API): when the node answers `428
     /// OPERATOR_SIGNATURE_REQUIRED`, sign the bytes it names (`message`,
     /// base64) with `sign` (the operator's Ed25519 key) and send it again
     /// with `operatorProof: { nonce, signature }`.
+    #[deprecated(
+        note = "use an operator route's generated method with its operator signer, or client.transport().approved(Request, None, Some(sign)) for a raw route"
+    )]
     pub async fn post_operator_signed(
         &self,
         path: &str,
         body: Value,
         sign: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
     ) -> Result<Value> {
-        self.operator_signed(Method::POST, path, body, sign).await
+        self.transport
+            .approved(
+                Request::new(Method::POST, path).json(body),
+                None,
+                Some(sign),
+            )
+            .await
     }
 
     /// DELETE an operator decision, signed as [`Self::post_operator_signed`]
     /// (the proof goes in a JSON body).
+    #[deprecated(
+        note = "use an operator route's generated method with its operator signer, or client.transport().approved(Request, None, Some(sign)) for a raw route"
+    )]
     pub async fn delete_operator_signed(
         &self,
         path: &str,
         sign: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
     ) -> Result<Value> {
-        self.operator_signed(Method::DELETE, path, json!({}), sign)
+        self.transport
+            .approved(
+                Request::new(Method::DELETE, path).json(json!({})),
+                None,
+                Some(sign),
+            )
             .await
-    }
-
-    async fn operator_signed(
-        &self,
-        method: Method,
-        path: &str,
-        mut body: Value,
-        sign: &(dyn Fn(&[u8]) -> Vec<u8> + Sync),
-    ) -> Result<Value> {
-        let details = match self.json(method.clone(), path, Some(body.clone())).await {
-            Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => {
-                e.details().cloned().unwrap_or(Value::Null)
-            }
-            other => return other,
-        };
-        let message = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            details["message"].as_str().unwrap_or_default(),
-        )
-        .map_err(eyre::Report::from)?;
-        if let Some(b) = body.as_object_mut() {
-            let _prev = b.insert(
-                "operatorProof".into(),
-                json!({ "nonce": details["nonce"], "signature": hex::encode(sign(&message)) }),
-            );
-        }
-        self.json(method, path, Some(body)).await
     }
 
     /// `method` on `path`, answering a `412 CONFIRM_REQUIRED` with a passkey
@@ -1091,31 +1058,16 @@ impl Client {
         body: Value,
         passkey: &mut dyn Passkey,
     ) -> Result<Value> {
-        let details = match self.json(method.clone(), path, Some(body.clone())).await {
-            Ok(v) => return Ok(v),
-            Err(e) if e.code() == Some("CONFIRM_REQUIRED") => {
-                e.details().cloned().unwrap_or(Value::Null)
-            }
-            Err(e) => return Err(e),
-        };
-        let challenge =
-            calimero_identity::from_b64url(details["challenge"].as_str().unwrap_or_default())
-                .map_err(|e| eyre::eyre!("{e}"))?;
-        let assertion = passkey.get(&challenge);
-        let mut body = body;
-        if let Some(b) = body.as_object_mut() {
-            let _prev = b.insert(
-                "confirm".into(),
-                json!({ "challengeId": details["challengeId"], "assertion": assertion }),
-            );
-        }
-        self.json(method, path, Some(body)).await
+        self.transport
+            .confirmed(Request::new(method, path).json(body), passkey)
+            .await
     }
 
     /// Upgrade every app of `org` that runs `body.package` to
     /// `body.version` (optionally only `team`, with `cascade` its subtree):
     /// the org owner's, approved with their passkey. Answers the run, which
     /// [`Self::upgrade_run`] follows.
+    #[deprecated(note = "use client.orgs().upgrade()")]
     pub async fn upgrade_org(
         &self,
         org: &str,
@@ -1131,6 +1083,7 @@ impl Client {
     }
 
     /// An organization-wide upgrade run: its apps, done and failed.
+    #[deprecated(note = "use client.orgs().upgrade_status()")]
     pub async fn upgrade_run(&self, org: &str, run: &str) -> Result<Value> {
         self.get(&format!(
             "orgs/{}/upgrades/{}",
@@ -1141,6 +1094,7 @@ impl Client {
     }
 
     /// Run the failed apps of an upgrade run again, as a new run.
+    #[deprecated(note = "use client.orgs().upgrade_retry()")]
     pub async fn retry_upgrade_run(
         &self,
         org: &str,
@@ -1160,6 +1114,7 @@ impl Client {
     }
 
     /// Name an app for this account.
+    #[deprecated(note = "use client.auth().alias_set()")]
     pub async fn set_alias(&self, alias: &str, app: &str) -> Result<Value> {
         self.json(
             Method::PUT,
@@ -1170,16 +1125,19 @@ impl Client {
     }
 
     /// The app an alias names: `{ alias, appId }`.
+    #[deprecated(note = "use client.auth().alias_get()")]
     pub async fn alias(&self, alias: &str) -> Result<Value> {
         self.get(&format!("auth/aliases/{}", path_segment(alias)))
             .await
     }
 
     /// Every alias of this account: `{ aliases: { alias: appId } }`.
+    #[deprecated(note = "use client.auth().alias_list()")]
     pub async fn aliases(&self) -> Result<Value> {
         self.get("auth/aliases").await
     }
 
+    #[deprecated(note = "use client.auth().alias_delete()")]
     pub async fn delete_alias(&self, alias: &str) -> Result<Value> {
         self.delete(&format!("auth/aliases/{}", path_segment(alias)))
             .await
@@ -1187,6 +1145,7 @@ impl Client {
 
     /// Delete an organization with its teams, invites and apps: the owner's,
     /// approved with their passkey.
+    #[deprecated(note = "use client.orgs().delete()")]
     pub async fn delete_org(&self, org: &str, passkey: &mut dyn Passkey) -> Result<Value> {
         self.confirmed(
             Method::DELETE,
@@ -1200,6 +1159,7 @@ impl Client {
     /// Set or rotate (`Some`, a [`calimero_identity::recovery::recovery_public`])
     /// or remove (`None`) an organization's recovery key: the owner's,
     /// approved with their passkey. A recovery under way is cancelled.
+    #[deprecated(note = "use client.orgs().recovery_set()")]
     pub async fn set_recovery_key(
         &self,
         org: &str,
@@ -1214,21 +1174,8 @@ impl Client {
         .await
     }
 
-    /// Start handing `org` to the signed-in account `account` with the
-    /// recovery `seed`, which signs here and is never sent. Answers
-    /// `{ startedAt, readyAt }`.
-    pub async fn start_recovery(&self, org: &str, account: &str, seed: &[u8; 32]) -> Result<Value> {
-        use calimero_identity::recovery::sign_recovery;
-        let nonce = calimero_identity::b64url(&calimero_identity::random::<16>());
-        let signature = sign_recovery(seed, org, account, &nonce);
-        self.post(
-            &format!("orgs/{}/recovery/start", path_segment(org)),
-            json!({ "nonce": nonce, "signature": signature }),
-        )
-        .await
-    }
-
     /// Cancel the recovery under way: the owner's, approved with their passkey.
+    #[deprecated(note = "use client.orgs().recovery_cancel()")]
     pub async fn cancel_recovery(&self, org: &str, passkey: &mut dyn Passkey) -> Result<Value> {
         self.post_confirmed(
             &format!("orgs/{}/recovery/cancel", path_segment(org)),
@@ -1240,6 +1187,7 @@ impl Client {
 
     /// Finish a recovery this account started, once its delay passed,
     /// approved with this account's passkey: it becomes the owner.
+    #[deprecated(note = "use client.orgs().recovery_finish()")]
     pub async fn finish_recovery(&self, org: &str, passkey: &mut dyn Passkey) -> Result<Value> {
         self.post_confirmed(
             &format!("orgs/{}/recovery/finish", path_segment(org)),
@@ -1251,6 +1199,7 @@ impl Client {
 
     /// Hand an app to another account (an org app only to one of the org's
     /// members): the owner's, approved with their passkey.
+    #[deprecated(note = "use client.apps().transfer()")]
     pub async fn transfer_app(
         &self,
         app: &str,
@@ -1269,6 +1218,7 @@ impl Client {
     /// is: whoever manages it now, as an admin of the target, approved with
     /// their passkey. `bring_members` brings the people of its organization
     /// who reach it along.
+    #[deprecated(note = "use client.apps().app_move()")]
     pub async fn move_app(
         &self,
         app: &str,
@@ -1286,6 +1236,7 @@ impl Client {
 
     /// Set an organization's metadata (an admin's, or a holder of
     /// `MANAGE_METADATA`).
+    #[deprecated(note = "use client.orgs().metadata()")]
     pub async fn set_org_metadata(&self, org: &str, metadata: Value) -> Result<Value> {
         self.post(
             &format!("orgs/{}/metadata", path_segment(org)),
@@ -1298,6 +1249,7 @@ impl Client {
     /// (`GET /orgs/{org}/members?detail=security`): `{ orgId, members: [{
     /// account, name, role, teams, passkeys, recoveryCode, lastActiveDay,
     /// sessions }] }`, `passkeys` being `1`, `2` or `"3+"`.
+    #[deprecated(note = "use client.orgs().members()")]
     pub async fn org_members_security(&self, org: &str) -> Result<Value> {
         self.get(&format!(
             "orgs/{}/members?detail=security",
@@ -1307,6 +1259,7 @@ impl Client {
     }
 
     /// Set a member's metadata (theirs, or an admin's); `null` clears it.
+    #[deprecated(note = "use client.orgs().member_metadata()")]
     pub async fn set_member_metadata(
         &self,
         org: &str,
@@ -1325,6 +1278,7 @@ impl Client {
     }
 
     /// Set an app instance's metadata (its owner's, or an org admin's).
+    #[deprecated(note = "use client.apps().metadata()")]
     pub async fn set_app_metadata(&self, app: &str, metadata: Value) -> Result<Value> {
         self.post(
             &format!("apps/{}/metadata", path_segment(app)),
@@ -1334,6 +1288,7 @@ impl Client {
     }
 
     /// Name one of this account's passkeys; `""` clears the name.
+    #[deprecated(note = "use client.auth().passkey_label()")]
     pub async fn label_passkey(&self, credential: &str, label: &str) -> Result<Value> {
         self.post(
             &format!("auth/passkeys/{}", path_segment(credential)),
@@ -1344,6 +1299,7 @@ impl Client {
 
     /// Upgrade an app (`body`: `{ version }`, `{ bundle }`, optional
     /// `migrate`), approved with the owner's passkey.
+    #[deprecated(note = "use client.apps().upgrade()")]
     pub async fn upgrade_app(
         &self,
         app: &str,
@@ -1361,6 +1317,9 @@ impl Client {
     /// Approve a mero-tee release for an organization's apps (`org`), or for
     /// the account's own apps outside one (`None`). Until then, nodes on that
     /// release get none of those apps' data.
+    #[deprecated(
+        note = "use client.orgs().release_approval() or client.auth().account_release_approval()"
+    )]
     pub async fn approve_release(
         &self,
         org: Option<&str>,
@@ -1379,6 +1338,9 @@ impl Client {
     /// organization's apps (`org`) or the account's own (`None`): `prefixes`
     /// `None` approves every prefix its latest release declares; `replace`
     /// sets exactly `prefixes` (how one is revoked).
+    #[deprecated(
+        note = "use client.orgs().outbound_approval() or client.auth().account_outbound_approval()"
+    )]
     pub async fn approve_outbound(
         &self,
         org: Option<&str>,
@@ -1404,6 +1366,7 @@ impl Client {
     /// else a new short-lived one), and while the node answers `503` or cannot be reached
     /// it is sent again with that same key (D70): a call that did commit is
     /// answered from its record, never run twice.
+    #[deprecated(note = "use client.apps().call()")]
     pub async fn call(
         &self,
         app: &str,
@@ -1420,6 +1383,7 @@ impl Client {
 
     /// Call a `confirm` method: the node asks for a passkey assertion over the
     /// exact call, which `passkey` provides.
+    #[deprecated(note = "use client.apps().call()")]
     pub async fn call_confirmed(
         &self,
         app: &str,
@@ -1458,6 +1422,7 @@ impl Client {
     }
 
     /// Run a read-only method.
+    #[deprecated(note = "use client.apps().view()")]
     pub async fn view(
         &self,
         app: &str,
@@ -1477,18 +1442,10 @@ impl Client {
         Ok(serde_json::from_value(v).map_err(eyre::Report::from)?)
     }
 
-    /// Committed events from `from`, then live. Each item is `(id, kind, data)`.
-    pub async fn events(
-        &self,
-        app: &str,
-        from: u64,
-    ) -> Result<impl Stream<Item = (String, String, Value)>> {
-        self.sse(&format!("apps/{app}/events?from={from}")).await
-    }
-
     /// Publish this device's presence in `app` (hex-encoded by the client;
     /// `None` retracts). Send the same `seq` and state again as a heartbeat
     /// (entries not refreshed within 7 s are gone).
+    #[deprecated(note = "use client.apps().presence_publish()")]
     pub async fn publish_presence(
         &self,
         app: &str,
@@ -1503,75 +1460,24 @@ impl Client {
     }
 
     /// Who is present in `app`: `{ present: [{ account, device, state }] }`.
+    #[deprecated(note = "use client.apps().presence_get()")]
     pub async fn presence(&self, app: &str) -> Result<Value> {
         self.get(&format!("apps/{}/presence", path_segment(app)))
             .await
     }
 
-    /// Presence as a stream: `("", "snapshot", [...])` first, then
-    /// `("", "presence", { account, device, state })` per change.
-    pub async fn presence_stream(
-        &self,
-        app: &str,
-    ) -> Result<impl Stream<Item = (String, String, Value)>> {
-        self.sse(&format!("apps/{}/presence/stream", path_segment(app)))
-            .await
-    }
-
-    /// A server-sent event stream: `(id, event, data)` per frame.
-    async fn sse(&self, path: &str) -> Result<impl Stream<Item = (String, String, Value)>> {
-        let resp = self.send(Method::GET, path, None).await?;
-        if !resp.status().is_success() {
-            return Err(Error::Api {
-                status: resp.status().as_u16(),
-                code: "EVENTS".into(),
-                message: "event stream refused".into(),
-                details: Value::Null,
-            });
-        }
-        let bytes = resp.bytes_stream();
-        let stream = futures_util::stream::unfold(
-            (bytes, String::new()),
-            |(mut bytes, mut buf)| async move {
-                loop {
-                    if let Some(pos) = buf.find("\n\n") {
-                        let frame: String = buf.drain(..pos + 2).collect();
-                        let (mut id, mut kind, mut data) =
-                            (String::new(), String::new(), String::new());
-                        for line in frame.lines() {
-                            if let Some(v) = line.strip_prefix("id:") {
-                                id = v.trim().to_owned();
-                            } else if let Some(v) = line.strip_prefix("event:") {
-                                kind = v.trim().to_owned();
-                            } else if let Some(v) = line.strip_prefix("data:") {
-                                data.push_str(v.trim());
-                            }
-                        }
-                        if kind.is_empty() && data.is_empty() {
-                            continue;
-                        }
-                        let value = serde_json::from_str(&data).unwrap_or(Value::String(data));
-                        return Some(((id, kind, value), (bytes, buf)));
-                    }
-                    match bytes.next().await {
-                        Some(Ok(chunk)) => buf.push_str(&String::from_utf8_lossy(&chunk)),
-                        _ => return None,
-                    }
-                }
-            },
-        );
-        Ok(Box::pin(stream))
-    }
-
     /// The node's attestation, unverified (for display).
+    #[deprecated(note = "use client.public().attestation()")]
     pub async fn attestation(&self) -> Result<AttestationDoc> {
         let nonce = hex::encode([7_u8; 32]);
         let url = self
-            .base
+            .transport
+            .base()
             .join(&format!("attestation?nonce={nonce}"))
             .map_err(eyre::Report::from)?;
         let doc = self
-            .http
+            .transport
+            .http()
             .get(url)
             .send()
             .await
@@ -1583,8 +1489,6 @@ impl Client {
     }
 }
 
-/// One URL path segment: everything but unreserved characters escaped, so an
-/// id cannot reach another route.
 /// The route of `package`'s registered origins (`package-origins/{package}`,
 /// the package percent-encoded): for a caller that sends the change without a
 /// passkey and lets the node answer `412 CONFIRM_REQUIRED`.
@@ -1593,6 +1497,18 @@ pub fn package_origins_path(package: &str) -> String {
     format!("package-origins/{}", path_segment(package))
 }
 
+/// `apps/{app}/methods/{method}`.
+#[must_use]
+fn method_path(app: &str, method: &str) -> String {
+    format!(
+        "apps/{}/methods/{}",
+        path_segment(app),
+        path_segment(method)
+    )
+}
+
+/// One URL path segment: everything but unreserved characters escaped, so an
+/// id cannot reach another route.
 fn path_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {

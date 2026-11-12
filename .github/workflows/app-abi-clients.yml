@@ -1,0 +1,80 @@
+name: App ABI clients
+
+# The typed clients `mero-app-build codegen` writes, run against the published clients they
+# call: the golden TypeScript (crates/app-abi/tests/golden/*.ts) type-checked with mero-js and
+# run against a test double, the golden Python imported with calimero-client-py, each call
+# bound to the real client's signature, and checked by mypy. The golden test pins the text;
+# this pins that it still calls an API that exists.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "crates/app-abi/**"
+      - ".github/workflows/app-abi-clients.yml"
+      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
+      - "!**/*.md"
+      - "!**/*.mdx"
+  push:
+    branches:
+      - master
+      - release-v2-parity
+    paths:
+      - "crates/app-abi/**"
+      - ".github/workflows/app-abi-clients.yml"
+      - "!**/*.md"
+      - "!**/*.mdx"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  typescript:
+    name: TypeScript clients against mero-js
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: crates/app-abi/tests/ts
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          # A push to master would save a cache every pull request then restores.
+          package-manager-cache: false
+
+      - name: Type-check and run the golden clients
+        run: |
+          npm ci --no-audit --no-fund
+          npm run check
+
+  python:
+    name: Python clients against calimero-client-py
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: crates/app-abi/tests/py
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Import, call and type-check the golden clients
+        run: |
+          pip install -r requirements.txt
+          python smoke.py
+          mypy --strict --follow-untyped-imports ../golden/*.py

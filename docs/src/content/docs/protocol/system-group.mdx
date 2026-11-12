@@ -6,7 +6,8 @@ sidebar:
 ---
 
 The **system group** is Raft group `1`, hosted by every node of the cluster
-(`crates/node/src/system.rs`). Its state machine holds everything that is
+(`crates/node/src/system.rs`; each area's commands in `system/<area>.rs`). Its
+state machine holds everything that is
 not one app's own data:
 
 | Field of `SystemState` | What it is |
@@ -69,7 +70,7 @@ So `apply` first runs `system::authorize`:
 
 | Command | Must carry |
 | --- | --- |
-| `SetReleaseApproval`, `TransferApp`, `DeleteOrg`, `UpgradeApp` (an owner's), `SetOutboundApproval` (an org's or account's), `StartUpgradeRun` (an account's), `BindPublisher`, `AddPasskey`, `RemovePasskey`, `CreateApiKey`, `SetOrgRole`, `RemoveOrgMember`, `SetTeamMember`, `RemoveTeamMember`, `SetCapabilities`, `SetDefaultCapabilities`, `CreateInvite` | The actor's passkey **consent**: `{ subject, method, args, nonce, assertion }`, where the assertion signs `confirm_challenge(subject, method, args, nonce)` with user verification, under a passkey the actor's account holds in the state |
+| `SetReleaseApproval`, `TransferApp`, `DeleteOrg`, `UpgradeApp` (an owner's), `SetOutboundApproval` (an org's or account's), `StartUpgradeRun` (an account's), `BindPublisher`, `AddPasskey`, `RemovePasskey`, `CreateApiKey`, `SetOrgRole`, `RemoveOrgMember`, `SetTeamMember`, `RemoveTeamMember`, `SetTeamMembers`, `RemoveTeamMembers`, `SetCapabilities`, `SetDefaultCapabilities`, `CreateInvite` | The actor's passkey **consent**: `{ subject, method, args, nonce, assertion }`, where the assertion signs `confirm_challenge(subject, method, args, nonce)` with user verification, under a passkey the actor's account holds in the state |
 | `SetOperatorRelease`, `UpgradeApp { by_operator }`, `SetOutboundApproval` (cluster scope), `StartUpgradeRun` (the operator's), `SetReleaseDeadline`, `RegisterNode`, `RemoveNode`, `SetQuotas`, `SetReplicas` | The **operator's signature** (Ed25519, under `operator_key`) over `"calimero.operator.v1\0" ‖ cluster ‖ 0 ‖ subject ‖ 0 ‖ method ‖ 0 ‖ args ‖ 0 ‖ nonce ‖ 0` ([Operator](/protocol/operator/)) |
 | `RedeemInvite` | A signature by the invite's own key, derived from the token (`seed = SHA-256("calimero.invite.v1\0" ‖ token)`), over `"calimero.invite-redeem.v1\0" ‖ invite key (hex) ‖ 0 ‖ account ‖ 0 ‖ now`: the log keeps only the public key, so only a node the redeemer gave the token to can redeem it |
 | `Genesis` | Nothing: the first leader writes it once, before any account, with the configured peers (`nodes`); every later node is registered by the operator |
@@ -152,6 +153,13 @@ state every receipt key attests.
 The same leader registers the configured `--peers` as nodes. Genesis also
 records the operator's verify key (`--operator-key`) when one is configured.
 
+A cluster founded again from its backups (`--restore-from`) writes no
+genesis: its founder forms the system group alone and seeds it with the
+newest system backup, refused unless the governance and operator key it is
+configured with are the backup's; the state then names `--peers` as the
+fleet and every app waits for its own restore
+([Found a cluster again](/operate/runbooks/#found-a-cluster-again-from-its-backups)).
+
 ## Job nodes in the directory
 
 `POST /ops/nodes` takes an optional `role`: `replica` (the default) or `job`.
@@ -170,7 +178,8 @@ kick, and every 500 ms). On the system leader it also:
 - writes `Genesis` if nothing has;
 - registers configured peers that are not yet in `nodes`;
 - adds every registered replica node that is not in the system group as a **learner**
-  ([Replication](/protocol/replication/#joining-nodes)), once it attests its transport key as a cluster node (a job node registered as a replica never does, so it is never admitted);
+  ([Replication](/protocol/replication/#joining-nodes)), once it attests its transport key as a cluster node (a job node registered as a replica never does, so it is never admitted) and supports the logged cluster version;
+- raises the [cluster version](/protocol/upgrades/#the-cluster-version) once every registered node supports a newer one (`SetClusterVersion`);
 - promotes caught-up learners to voters while there are fewer than three.
 
 On every node it starts the app groups this node is a replica of, stops the
@@ -232,8 +241,10 @@ deliveries, actions) carry no index and run a round of their own.
 
 ## Writes
 
-`Node::sys_write` appends through the system leader: locally if this node
-leads, else by posting the command to the leader's `internal/system` route over
+`Node::sys_write` appends through the system leader, after refusing a
+command that uses a feature above the [cluster
+version](/protocol/upgrades/#the-cluster-version) (`409 FEATURE_NOT_ACTIVE`):
+locally if this node leads, else by posting the command to the leader's `internal/system` route over
 the [peer sealed channel](/protocol/networking/#between-nodes). It retries
 until its 10-second deadline (`SYSTEM_WRITE_TIMEOUT`) to ride out an election,
 then answers `503 UNAVAILABLE` naming the group's leader, voters and the nodes

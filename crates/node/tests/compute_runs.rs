@@ -2,6 +2,14 @@
 //! on a lost job node, cancel, caps, the result method, usage and the queue. The app is the
 //! `compute` fixture (`apps/v2-fixtures/compute`).
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 mod common;
 use common::UploadBytes as _;
 
@@ -1650,6 +1658,86 @@ async fn a_failed_runs_message_is_shown_in_both_views_only_to_those_who_list_fil
     let listed = bob.get(&list).await.unwrap();
     assert!(listed["runs"][0]["final"]["message"].is_null(), "{listed}");
     assert!(listed["runs"][0]["progress"].is_null(), "{listed}");
+}
+
+impl Rig {
+    /// Starts job node `id` in `pool` and registers it.
+    async fn join_pool(&self, id: u64, pool: &str) -> JobNode {
+        let job = self.c.start_job_node(id, |_| {}).await;
+        let ops = self.c.client(0);
+        ops.use_api_key("ops-secret").await;
+        let node = json!({ "id": id, "addr": job.url, "role": "job", "pool": pool });
+        let _ = common::ops_signed(&ops, "ops/nodes", node).await.unwrap();
+        let leader = self.leader();
+        self.until("the leader applied the job node", || {
+            leader.sys(|s| s.job_nodes().any(|n| n.id == id))
+        })
+        .await;
+        job
+    }
+
+    /// The `queue` of the run in `view` (the single-run or the list view) once it shows one in
+    /// `state`.
+    async fn queue_in(&self, who: &Client, run: &str, state: &str) -> Value {
+        let started = Instant::now();
+        loop {
+            let shown = who
+                .get(&format!("apps/{}/runs/{run}", self.app))
+                .await
+                .unwrap();
+            if shown["queue"]["state"] == state {
+                return shown["queue"].clone();
+            }
+            assert!(started.elapsed() < WAIT, "no queue in {state}: {shown}");
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_queued_run_says_why_it_waits_and_proceeds_once_its_pool_has_a_job_node() {
+    let rig = Rig::start_with(&[], json!({ "access": { "kind": "public" } })).await;
+    let ops = rig.c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let pools = json!({ "pools": {
+        "small": { "runsPerNode": 2, "maxMemoryMib": 512 },
+        "big": { "runsPerNode": 2, "maxMemoryMib": 4096 },
+    } });
+    let _ = common::ops_signed(&ops, "ops/pools", pools).await.unwrap();
+    // The run fits "small", and only "big" has a job node.
+    let _big = rig.join_pool(JOB_A, "big").await;
+    let run = rig.begin("startDigest", json!({ "inputs": [] })).await;
+
+    let queue = rig.queue_in(&rig.alice, &run, "waiting").await;
+    assert_eq!(
+        queue,
+        json!({ "state": "waiting", "pool": "small", "capacity": 0, "reason": "NO_CAPACITY" })
+    );
+    let listed = rig
+        .alice
+        .get(&format!("apps/{}/runs", rig.app))
+        .await
+        .unwrap();
+    assert_eq!(listed["runs"][0]["queue"], queue);
+
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let seen = bob
+        .get(&format!("apps/{}/runs/{run}", rig.app))
+        .await
+        .unwrap();
+    assert!(seen["queue"].is_null(), "{seen}");
+    let listed = bob.get(&format!("apps/{}/runs", rig.app)).await.unwrap();
+    assert!(listed["runs"][0]["queue"].is_null(), "{listed}");
+
+    let _small = rig.join_pool(JOB_B, "small").await;
+    let _ = rig.outcome(&run).await;
+    let ended = rig
+        .alice
+        .get(&format!("apps/{}/runs/{run}", rig.app))
+        .await
+        .unwrap();
+    assert_eq!(ended["state"], "done", "{ended}");
+    assert!(ended["queue"].is_null(), "{ended}");
 }
 
 impl Rig {

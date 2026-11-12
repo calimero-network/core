@@ -9,6 +9,13 @@
 //! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
 //! (see `harness/cluster.rs`).
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
 #![allow(
     clippy::result_large_err,
     reason = "the helpers pass on calimero_client::Error as the client returns it"
@@ -1185,6 +1192,124 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
     assert_eq!(app_team(&alice, &org, CHAT).await["join"], "everyone");
 }
 
+/// A standing "every app added later" grant (`allApps`): an admin's invite
+/// carries it, and an admin sets it on a member later, with a passkey. Each
+/// app team made from then on gives them a row, so in an organization that
+/// keeps its apps apart a new app's team holds them though nobody named
+/// them; an app team already there does not. A member below admin neither
+/// mints such an invite nor sets the grant, and removal from the
+/// organization ends it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_all_apps_member_gets_every_app_added_later() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    let (dave, mut d) = signed_up(&c, 0, "dave").await;
+    for p in [CHAT, NOTES, BLOCKS] {
+        let _ok = alice.upload_package(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    for p in [&carol, &dave] {
+        join(
+            p,
+            &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+        )
+        .await;
+    }
+    let (carol_id, dave_id) = (id(&carol).await, id(&dave).await);
+    // Chat is kept apart before Bob joins: Alice alone in it.
+    let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
+    let closed =
+        |package: &str| json!({ "apps": [{ "package": package, "join": "invite", "keep": [] }] });
+    let _ok = scope(&alice, &mut a, &org, closed(CHAT)).await.unwrap();
+
+    // Dave may invite, but not for every app: that is an admin's.
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "account": dave_id, "capabilities": INVITE_MEMBERS | 1 << 2 }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let all_apps_invite = |role: &str| json!({ "role": role, "allApps": true });
+    let err = dave
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            all_apps_invite("member"),
+            &mut d,
+        )
+        .await
+        .unwrap_err();
+    refused(&err, "every app");
+    let token = alice
+        .post_confirmed(
+            &format!("orgs/{org}/invites"),
+            all_apps_invite("member"),
+            &mut a,
+        )
+        .await
+        .unwrap()["token"]
+        .clone();
+    let listed = invites_of(&alice, &org).await;
+    assert!(listed.iter().any(|i| i["allApps"] == true), "{listed:?}");
+    join(&bob, &s(&token)).await;
+    let bob_id = id(&bob).await;
+    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["allApps"], json!([bob_id]), "{o}");
+    // Chat was there before: Bob is not in it.
+    assert!(!reaches(&bob, &org).await.contains(&chat));
+
+    // Notes is added later and kept apart, naming nobody: Bob has it.
+    let notes = instance(&alice, &org, NOTES, Value::Null).await.unwrap();
+    let _ok = scope(&alice, &mut a, &org, closed(NOTES)).await.unwrap();
+    assert!(reaches(&bob, &org).await.contains(&notes));
+    for p in [&carol, &dave] {
+        assert!(!reaches(p, &org).await.contains(&notes));
+    }
+
+    // An admin sets it on Carol later; a member below admin cannot.
+    let path = format!("orgs/{org}/all-apps");
+    let err = dave
+        .post_confirmed(
+            &path,
+            json!({ "account": dave_id, "allApps": true }),
+            &mut d,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("FORBIDDEN"), "{err}");
+    let err = alice
+        .post(&path, json!({ "account": carol_id, "allApps": true }))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Some("CONFIRM_REQUIRED"), "{err}");
+    let _ok = alice
+        .post_confirmed(
+            &path,
+            json!({ "account": carol_id, "allApps": true }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let blocks = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
+    let _ok = scope(&alice, &mut a, &org, closed(BLOCKS)).await.unwrap();
+    for p in [&bob, &carol] {
+        assert!(reaches(p, &org).await.contains(&blocks));
+    }
+    assert!(!reaches(&dave, &org).await.contains(&blocks));
+    assert!(!reaches(&carol, &org).await.contains(&notes));
+
+    // Removed from the organization, Bob's grant goes with him.
+    let _ok = alice
+        .delete_confirmed(&format!("orgs/{org}/members/{bob_id}"), &mut a)
+        .await
+        .unwrap();
+    let o = alice.get(&format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["allApps"], json!([carol_id]), "{o}");
+}
+
 /// Closing an open app team with the plain team update (`POST
 /// /orgs/{org}/teams/{team} { join: invite }`) takes, from whoever loses it
 /// (in it by inheritance alone), their rows in the private channels below it,
@@ -1276,4 +1401,158 @@ async fn closing_an_app_team_takes_the_channels_of_whoever_loses_it() {
     let r = reaches(&bob, &org).await;
     assert!(r.contains(&chat) && r.contains(&private), "{r:?}");
     writes(&bob, &private).await.unwrap();
+}
+
+/// An app team whose default lacks `CREATE_CHILD_TEAM` (one made before it
+/// was the default, or one an admin turned it off for) gets it back when an
+/// admin names `childTeams: true` for its package, in one step that changes
+/// nothing else: its members then make private channels below it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_admin_lets_an_app_teams_members_make_channels() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    for p in [CHAT, BLOCKS] {
+        let _ok = alice.upload_package(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    join(
+        &bob,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    for p in [CHAT, BLOCKS] {
+        let _app = instance(&alice, &org, p, Value::Null).await.unwrap();
+    }
+    let _done = scope(&alice, &mut a, &org, json!({ "shared": false }))
+        .await
+        .unwrap();
+    let chat_team = s(&app_team(&alice, &org, CHAT).await["teamId"]);
+    // Chat's default without it, as an app team made before it had.
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/capabilities"),
+            json!({ "team": chat_team, "capabilities": INVITE_MEMBERS }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let teams = format!("orgs/{org}/teams");
+    let channel = json!({ "name": "design", "join": "invite", "parent": chat_team });
+    refused(
+        &bob.post(&teams, channel.clone()).await.unwrap_err(),
+        "not allowed to create this team",
+    );
+    // Only an admin turns it on.
+    let on = json!({ "apps": [{ "package": CHAT, "instances": [], "childTeams": true }] });
+    let _err = scope(&bob, &mut b, &org, on.clone()).await.unwrap_err();
+
+    let done = scope(&alice, &mut a, &org, on).await.unwrap();
+    assert_eq!(done["mode"], "standalone", "{done}");
+    let t = app_team(&alice, &org, CHAT).await;
+    assert_eq!(
+        t["defaultCapabilities"],
+        INVITE_MEMBERS | CREATE_CHILD_TEAM,
+        "{t}"
+    );
+    assert_eq!(app_team(&alice, &org, BLOCKS).await["join"], "everyone");
+    let _private = s(&bob.post(&teams, channel).await.unwrap()["teamId"]);
+}
+
+/// Calimero Home's "give all apps": an admin gives one member rows in every
+/// app team at once, with one passkey approval (`POST
+/// /orgs/{org}/members/{account}/teams`), and takes them out of several the
+/// same way (`DELETE`, the private channels below included). Each team is
+/// judged as its own team-member change would be: a batch naming one team
+/// the caller may not change is refused whole, and nothing changes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_admin_gives_a_member_every_app_in_one_step() {
+    let c = Cluster::start(3).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, mut b) = signed_up(&c, 1, "bob").await;
+    let (carol, _c) = signed_up(&c, 2, "carol").await;
+    for p in [CHAT, BLOCKS, NOTES] {
+        let _ok = alice.upload_package(release(p)).await.unwrap();
+    }
+    let org = new_org(&alice).await;
+    join(
+        &bob,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let apps = [
+        instance(&alice, &org, CHAT, Value::Null).await.unwrap(),
+        instance(&alice, &org, BLOCKS, Value::Null).await.unwrap(),
+        instance(&alice, &org, NOTES, Value::Null).await.unwrap(),
+    ];
+    // Three restricted app teams: Carol, who joins after, is in none.
+    let _done = scope(&alice, &mut a, &org, json!({ "shared": true }))
+        .await
+        .unwrap();
+    join(
+        &carol,
+        &invite(&alice, &mut a, &org, "member", &[]).await.unwrap(),
+    )
+    .await;
+    let carol_id = id(&carol).await;
+    let mut teams = Vec::new();
+    for p in [CHAT, BLOCKS, NOTES] {
+        teams.push(s(&app_team(&alice, &org, p).await["teamId"]));
+    }
+    assert!(reaches(&carol, &org).await.is_empty());
+    let rows = |teams: &[String]| json!({ "teams": teams.iter().map(|t| json!({ "team": t })).collect::<Vec<_>>() });
+    let path = format!("orgs/{org}/members/{carol_id}/teams");
+
+    // Bob leads none of them: refused, nothing set.
+    let err = bob
+        .post_confirmed(&path, rows(&teams), &mut b)
+        .await
+        .unwrap_err();
+    refused(&err, "not allowed to manage this team");
+    assert!(reaches(&carol, &org).await.is_empty());
+    // A batch naming one team twice, or none, is refused before a passkey.
+    for body in [rows(&[teams[0].clone(), teams[0].clone()]), rows(&[])] {
+        let err = alice.post(&path, body).await.unwrap_err();
+        assert_eq!(err.code(), Some("BAD_TEAMS"), "{err}");
+    }
+
+    // Bob leads Chat now: a batch of Chat and Blocks is still refused whole.
+    let bob_id = id(&bob).await;
+    let _ok = alice
+        .post_confirmed(
+            &format!("orgs/{org}/teams/{}/members", teams[0]),
+            json!({ "account": bob_id, "role": "lead" }),
+            &mut a,
+        )
+        .await
+        .unwrap();
+    let err = bob
+        .post_confirmed(&path, rows(&teams[..2]), &mut b)
+        .await
+        .unwrap_err();
+    refused(&err, "not allowed to manage this team");
+    assert!(reaches(&carol, &org).await.is_empty());
+
+    // Alice gives Carol all three with one approval.
+    let _ok = alice
+        .post_confirmed(&path, rows(&teams), &mut a)
+        .await
+        .unwrap();
+    let mut r = reaches(&carol, &org).await;
+    r.sort();
+    let mut want = apps.to_vec();
+    want.sort();
+    assert_eq!(r, want);
+    for app in &apps {
+        writes(&carol, app).await.unwrap();
+    }
+
+    // Out of Chat and Notes with one approval; Blocks stays.
+    let _ok = alice
+        .delete_confirmed_with(&path, json!({ "teams": [teams[0], teams[2]] }), &mut a)
+        .await
+        .unwrap();
+    assert_eq!(reaches(&carol, &org).await, vec![apps[1].clone()]);
+    let err = writes(&carol, &apps[0]).await.unwrap_err();
+    assert_eq!(err.code(), Some("NOT_FOUND"), "{err}");
 }

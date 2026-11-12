@@ -75,8 +75,10 @@ pub async fn ops_signed(
     path: &str,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, calimero_client::Error> {
+    let req = calimero_client::Request::new(reqwest::Method::POST, path).json(body);
     client
-        .post_operator_signed(path, body, &operator_sign)
+        .transport()
+        .approved(req, None, Some(&operator_sign))
         .await
 }
 
@@ -89,7 +91,12 @@ pub async fn ops_signed_delete(
     client: &Client,
     path: &str,
 ) -> Result<serde_json::Value, calimero_client::Error> {
-    client.delete_operator_signed(path, &operator_sign).await
+    let req =
+        calimero_client::Request::new(reqwest::Method::DELETE, path).json(serde_json::json!({}));
+    client
+        .transport()
+        .approved(req, None, Some(&operator_sign))
+        .await
 }
 
 /// The operator key's signature over `message`.
@@ -174,6 +181,7 @@ impl Cluster {
                     metrics_listen: None,
                     replicas: 3,
                     backup_dir: Some(dir.path().join("backups")),
+                    restore_from: None,
                     raft: calimero_log::Config {
                         heartbeat_ms: 100,
                         election_min_ms: 500,
@@ -387,6 +395,18 @@ pub fn mpk_with(
     compute: Option<&[u8]>,
     key: &ed25519_dalek::SigningKey,
 ) -> Vec<u8> {
+    mpk_needing(package, version, wasm, compute, "0.1.0", key)
+}
+
+/// [`mpk_with`], whose manifest declares `min_runtime` as its `minRuntimeVersion`.
+pub fn mpk_needing(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    compute: Option<&[u8]>,
+    min_runtime: &str,
+    key: &ed25519_dalek::SigningKey,
+) -> Vec<u8> {
     use sha2::Digest;
     let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
         path: path.to_owned(),
@@ -400,7 +420,7 @@ pub fn mpk_with(
         signer_id: Some(calimero_bundle::derive_signer_id_did_key(
             key.verifying_key().as_bytes(),
         )),
-        min_runtime_version: "0.1.0".to_owned(),
+        min_runtime_version: min_runtime.to_owned(),
         metadata: None,
         handlers: None,
         build_info: None,

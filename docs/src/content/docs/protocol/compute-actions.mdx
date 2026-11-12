@@ -210,6 +210,8 @@ It gains nothing a leader does not hold already: it has the cluster key and the 
 The signed report protects against a job node and against a replica applying a job outcome nobody signed, not against the leader.
 
 `GET /apps/{app}/runs/{run}` answers, for anyone who can reach the app, the run's method, state, `cancelRequested`, `startTsMs`, attempts with their nodes, input and output ids, usage and reason, its `caps` (`fuel`, `memoryMib`, `wallSecs`), and `progress` while it runs.
+To those who may list the app's files it also shows, while the run is queued, `queue: { state, pool, capacity, reason? }`: `state` is `unplaced` (the queue has no slot for it yet), `waiting` or `granted` (a place is held and no job node has taken it), and a waiting run's `reason` is `NO_CAPACITY` (no job node in its pool), `POOL_FULL`, `PAYER_AT_RUN_QUOTA` or `PAYER_AT_FUEL_QUOTA`.
+The leader also logs one warning per run that has waited `NO_CAPACITY` for a minute of healthy time.
 Plaintext sizes and SHA-256 hashes of inputs and outputs are shown only to callers who may list the app's files; others get ids.
 It never returns arguments or keys.
 `GET /apps/{app}/runs?limit=<n>&before=<cursor>` answers `{ runs, next }` with the same objects, newest start first (ties by run id, descending), `limit` 1 to 100 (default 20) and `next` an opaque cursor for `before`, `null` on the last page.

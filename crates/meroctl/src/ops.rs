@@ -4,23 +4,38 @@
 //! operator (`merod --release-approvals/--app-upgrades/--outbound-approvals
 //! operator`) are made here; the node refuses the others.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use calimero_client::Client;
+use calimero_client::types::{
+    OpsOrgUpgradeRequest, OpsPoolsSetRequestPoolsValue, OpsQuotasSetRequest,
+    OpsRegisterNodeRequestRole, OpsUpgradeRequest,
+};
+use calimero_client::OperatorSigner;
 use clap::{Subcommand, ValueEnum};
+use ed25519_dalek::{Signer, SigningKey};
+use eyre::WrapErr;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use crate::env::{json_arg, read_file, Env};
+use crate::env::{json_arg, read_file, to_json, Env};
 
 /// What a registered node is for (`POST /ops/nodes`).
-#[derive(Clone, Copy, Debug, ValueEnum, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum NodeRole {
     /// Holds apps and the cluster key.
     Replica,
     /// Only runs compute: never a member, replica or key holder.
     Job,
+}
+
+impl NodeRole {
+    fn wire(self) -> OpsRegisterNodeRequestRole {
+        match self {
+            Self::Replica => OpsRegisterNodeRequestRole::Replica,
+            Self::Job => OpsRegisterNodeRequestRole::Job,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -60,8 +75,23 @@ pub enum OpsCmd {
         #[arg(long, value_delimiter = ',')]
         replicas: Vec<u64>,
     },
-    /// Write encrypted snapshots of the contexts this node leads.
-    Backup,
+    /// Write encrypted snapshots of the contexts this node leads, and of the
+    /// system group when it leads it.
+    Backup {
+        /// Every group this node holds, leader or not: what a node of a
+        /// cluster that lost its majority still has (disaster recovery).
+        #[arg(long)]
+        all: bool,
+    },
+    /// Restore a context from a sealed backup in this node's `--backup-dir`
+    /// (`{backup-dir}/{context}/{name}`); this node seeds it and becomes its
+    /// first replica. Everything the context wrote after the backup is lost.
+    Restore {
+        context: String,
+        /// The backup's file name; the newest one when left out.
+        #[arg(long)]
+        backup: Option<String>,
+    },
     /// The compute pools and the runs each takes at once.
     Pools,
     /// Set the compute pools, JSON `{ name: { runsPerNode, maxMemoryMib } }`.
@@ -146,14 +176,22 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
         .ok_or_else(|| eyre::eyre!("ops commands need --ops-token"))?;
     let client = &env.client;
     client.use_api_key(token).await;
+    let ops = client.ops();
+    let key = operator_key(env)?;
+    let sign = |message: &[u8]| {
+        key.as_ref()
+            .map(|k| k.sign(message).to_bytes().to_vec())
+            .unwrap_or_default()
+    };
+    let operator: Option<&OperatorSigner<'_>> = key.is_some().then_some(&sign);
     Ok(match cmd {
-        OpsCmd::Status => client.get("ops/status").await?,
-        OpsCmd::Cluster => client.get("ops/cluster").await?,
+        OpsCmd::Status => to_json(&ops.status().await?)?,
+        OpsCmd::Cluster => to_json(&ops.cluster().await?)?,
         OpsCmd::Metrics => {
-            print!("{}", client.get_text("ops/metrics").await?);
+            print!("{}", ops.metrics().await?);
             return Ok(Value::Null);
         }
-        OpsCmd::Placement => client.get("ops/placement").await?,
+        OpsCmd::Placement => to_json(&ops.placement().await?)?,
         OpsCmd::AddNode {
             id,
             addr,
@@ -161,96 +199,92 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             role,
             pool,
         } => {
-            let mut body = json!({ "id": id, "addr": addr, "zone": zone, "role": role });
-            if !pool.is_empty() {
-                body["pool"] = json!(pool);
-            }
-            decide_at(env, client, Some(body), "ops/nodes").await?
+            let pool = (!pool.is_empty()).then_some(pool.as_str());
+            decided(
+                ops.register_node(id, &addr, Some(&zone), pool, Some(role.wire()), operator)
+                    .await,
+            )?
         }
         OpsCmd::RemoveNode { id } => {
             // Node removal runs on the system leader.
-            let path = format!("ops/nodes/{id}");
-            match decide_at(env, client, None, &path).await {
+            let id = id.to_string();
+            match ops.remove_node(&id, operator).await {
                 Err(e) => match leader_of(&e) {
                     Some(leader) => {
                         let at = env.at(&leader)?;
                         at.use_api_key(token).await;
-                        decide_at(env, &at, None, &path).await?
+                        decided(at.ops().remove_node(&id, operator).await)?
                     }
-                    None => return Err(e),
+                    None => decided::<()>(Err(e))?,
                 },
-                Ok(v) => v,
+                Ok(v) => to_json(&v)?,
             }
         }
         OpsCmd::Move { context, replicas } => {
-            let path = format!("ops/apps/{context}/replicas");
-            let body = json!({ "replicas": replicas });
-            match decide_at(env, client, Some(body.clone()), &path).await {
+            match ops.set_replicas(&context, replicas.clone(), operator).await {
                 // Replica moves run on the context's leader.
                 Err(e) => match leader_of(&e) {
                     Some(leader) => {
                         let at = env.at(&leader)?;
                         at.use_api_key(token).await;
-                        decide_at(env, &at, Some(body), &path).await?
+                        decided(at.ops().set_replicas(&context, replicas, operator).await)?
                     }
-                    None => return Err(e),
+                    None => decided::<()>(Err(e))?,
                 },
-                Ok(v) => v,
+                Ok(v) => to_json(&v)?,
             }
         }
-        OpsCmd::Backup => client.post("ops/backup", json!({})).await?,
-        OpsCmd::Pools => client.get("ops/pools").await?,
-        OpsCmd::SetPools { pools } => {
-            let body = json!({ "pools": json_arg(&pools)? });
-            decide_at(env, client, Some(body), "ops/pools").await?
+        OpsCmd::Backup { all } => to_json(&ops.backup(all.then_some(true)).await?)?,
+        OpsCmd::Restore { context, backup } => {
+            decided(ops.restore(&context, backup.as_deref(), operator).await)?
         }
-        OpsCmd::Quotas => client.get("ops/quotas").await?,
+        OpsCmd::Pools => to_json(&ops.pools_get().await?)?,
+        OpsCmd::SetPools { pools } => {
+            let pools: BTreeMap<String, OpsPoolsSetRequestPoolsValue> =
+                serde_json::from_value(json_arg(&pools)?)?;
+            decided(ops.pools_set(pools, operator).await)?
+        }
+        OpsCmd::Quotas => to_json(&ops.quotas_get().await?)?,
         OpsCmd::SetQuotas { quotas } => {
-            decide_at(env, client, Some(json_arg(&quotas)?), "ops/quotas").await?
+            // The body is closed: a key it does not list is refused here,
+            // named, rather than dropped and the rest sent.
+            let quotas: OpsQuotasSetRequest =
+                serde_json::from_value(json_arg(&quotas)?).wrap_err("not a quota change")?;
+            decided(ops.quotas_set(quotas, operator).await)?
         }
         OpsCmd::Release { version, withdraw } => {
-            decide(
-                env,
-                "ops/releases",
-                json!({ "version": version, "approved": !withdraw }),
-            )
-            .await?
+            decided(ops.release(&version, Some(!withdraw), operator).await)?
         }
         OpsCmd::Outbound {
             package,
             prefixes,
             replace,
-        } => {
-            let prefixes = if prefixes.is_empty() {
-                json!("manifest")
-            } else {
-                json!(prefixes)
-            };
-            decide(
-                env,
-                "ops/outbound",
-                json!({ "package": package, "prefixes": prefixes, "replace": replace }),
+        } => decided(
+            ops.outbound(
+                &package,
+                Some(crate::namespace::prefixes(&prefixes)),
+                Some(replace),
+                operator,
             )
-            .await?
-        }
-        OpsCmd::Packages => client.get("ops/packages").await?,
+            .await,
+        )?,
+        OpsCmd::Packages => to_json(&ops.package_list().await?)?,
         OpsCmd::Install {
             coords,
             version,
             path,
         } => match (path, coords) {
-            (Some(path), _) => client.ops_upload_package(read_file(&path)?).await?,
+            (Some(path), _) => to_json(&ops.package_upload(read_file(&path)?).await?)?,
             (None, Some(coords)) => {
                 let (package, version) = crate::app::split_coords(&coords, version)?;
-                client.ops_install_package(&package, &version).await?
+                to_json(&ops.package_install(&package, &version).await?)?
             }
             (None, None) => unreachable!("clap requires one"),
         },
-        OpsCmd::Uninstall { package, version } => {
-            client
-                .ops_uninstall_package(&package, version.as_deref())
-                .await?
-        }
+        OpsCmd::Uninstall { package, version } => match version {
+            Some(v) => to_json(&ops.package_version_uninstall(&package, &v).await?)?,
+            None => to_json(&ops.package_uninstall(&package).await?)?,
+        },
         OpsCmd::Upgrade {
             context,
             version,
@@ -259,15 +293,14 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             bundle,
             migrate,
         } => {
-            decide(
-                env,
-                &format!("ops/apps/{context}/upgrade"),
-                json!({
-                    "bundle": bundle, "package": package, "version": version,
-                    "service": service, "migrate": migrate,
-                }),
-            )
-            .await?
+            let body = OpsUpgradeRequest {
+                bundle,
+                package,
+                version,
+                service,
+                migrate,
+            };
+            decided(ops.upgrade(&context, body, operator).await)?
         }
         OpsCmd::UpgradeNamespace {
             namespace,
@@ -277,61 +310,45 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             cascade,
             migrate,
         } => {
-            decide(
-                env,
-                &format!("ops/orgs/{namespace}/upgrade"),
-                json!({
-                    "package": package, "version": version, "team": group,
-                    "cascade": cascade, "migrate": migrate,
-                }),
-            )
-            .await?
+            let body = OpsOrgUpgradeRequest {
+                package,
+                version,
+                team: group,
+                cascade: Some(cascade),
+                migrate,
+                confirm: None,
+            };
+            decided(ops.org_upgrade(&namespace, body, operator).await)?
         }
     })
 }
 
-/// Send an operator decision: when the node asks for the operator's
-/// signature (`428 OPERATOR_SIGNATURE_REQUIRED`, naming the bytes to sign),
-/// sign them with `--operator-key-file` and send it again with the proof.
-async fn decide(env: &Env, path: &str, body: Value) -> eyre::Result<Value> {
-    decide_at(env, &env.client, Some(body), path).await
-}
-
-/// [`decide`] through `client` (another node of the cluster, for a decision
-/// that runs on a leader): a POST of `body`, or a DELETE without one.
-async fn decide_at(
-    env: &Env,
-    client: &Client,
-    body: Option<Value>,
-    path: &str,
-) -> eyre::Result<Value> {
-    use ed25519_dalek::Signer;
+/// The operator's key, from `--operator-key-file` (32-byte seed, hex): it
+/// signs the decisions the node asks the operator to sign (`428
+/// OPERATOR_SIGNATURE_REQUIRED`, naming the bytes).
+fn operator_key(env: &Env) -> eyre::Result<Option<SigningKey>> {
     let Some(file) = env.operator_key_file.as_ref() else {
-        let out = match body {
-            Some(body) => client.post(path, body).await,
-            None => client.delete(path).await,
-        };
-        return match out {
-            Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => Err(eyre::eyre!(
-                "{e}: pass --operator-key-file (the operator's Ed25519 key)"
-            )),
-            other => Ok(other?),
-        };
+        return Ok(None);
     };
     let seed: [u8; 32] = hex::decode(std::fs::read_to_string(file)?.trim())?
         .try_into()
         .map_err(|_| eyre::eyre!("{}: not a 32-byte hex key", file.display()))?;
-    let key = ed25519_dalek::SigningKey::from_bytes(&seed);
-    let sign = |message: &[u8]| key.sign(message).to_bytes().to_vec();
-    Ok(match body {
-        Some(body) => client.post_operator_signed(path, body, &sign).await?,
-        None => client.delete_operator_signed(path, &sign).await?,
-    })
+    Ok(Some(SigningKey::from_bytes(&seed)))
+}
+
+/// An operator decision's answer; asked for the operator's signature without
+/// a key to give it, says how to give one.
+fn decided<T: Serialize>(out: Result<T, calimero_client::Error>) -> eyre::Result<Value> {
+    match out {
+        Err(e) if e.code() == Some("OPERATOR_SIGNATURE_REQUIRED") => Err(eyre::eyre!(
+            "{e}: pass --operator-key-file (the operator's Ed25519 key)"
+        )),
+        other => to_json(&other?),
+    }
 }
 
 /// The leader a `421 NOT_LEADER` names, if `e` is one.
-fn leader_of(e: &eyre::Report) -> Option<String> {
-    let e = e.downcast_ref::<calimero_client::Error>()?;
+fn leader_of(e: &calimero_client::Error) -> Option<String> {
     if e.code() != Some("NOT_LEADER") {
         return None;
     }

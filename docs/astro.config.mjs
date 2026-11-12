@@ -102,7 +102,7 @@ export default defineConfig({
             { label: 'Overview', slug: 'build' },
             {
               label: 'Get started',
-              items: ['build/quickstart', 'build/tutorial'],
+              items: ['build/quickstart', 'build/tutorial', 'build/ship-v2'],
             },
             {
               label: 'How-to guides',
@@ -116,6 +116,7 @@ export default defineConfig({
                 'build/guides/outbound',
                 'build/guides/compute-actions',
                 'build/guides/access-control',
+                'build/guides/typed-clients',
                 'build/packaging-signing',
                 'build/examples',
                 'build/testing',
@@ -155,6 +156,7 @@ export default defineConfig({
                 'operate/observability',
                 'operate/troubleshooting',
                 'operate/runbooks',
+                'operate/plain-http',
               ],
             },
             {
@@ -164,7 +166,9 @@ export default defineConfig({
                 'operate/meroctl',
                 'operate/config',
                 { label: 'Node API', slug: 'operate/admin-api' },
+                { label: 'Node API (OpenAPI)', slug: 'operate/api-reference' },
                 { label: 'Authentication', slug: 'operate/auth' },
+                'operate/compatibility',
               ],
             },
           ],

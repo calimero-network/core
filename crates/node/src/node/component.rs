@@ -31,6 +31,8 @@ pub(super) use self::files::Probes;
 pub(crate) use self::files::{valid_uploader, Uploaded};
 pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PENDING_FILE_BYTES, MAX_PUSH_BYTES};
 pub(crate) use self::uploads::{UploadOp, Uploads};
+#[cfg(test)]
+pub(crate) use self::{files::files_unavailable, uploads::refusal as upload_refusal};
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -302,6 +304,7 @@ fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
         | ComponentCmd::BlobsCollected { .. }
         | ComponentCmd::File { .. }
         | ComponentCmd::Barrier
+        | ComponentCmd::Restored { .. }
         | ComponentCmd::XcallDone { .. }
         | ComponentCmd::ActionEnd { .. } => {}
     }
@@ -1026,7 +1029,17 @@ impl Node {
     ///
     /// A poisoned lock is recovered, not answered with a fixed pair (which every later
     /// run would share): the map holds plain counters, each changed by one assignment.
-    fn next_id(&self, group: GroupId, term: u64, logged: (u64, u64)) -> (u64, u64) {
+    ///
+    /// The id's term is the Raft term plus the head's `id_term_base`, which a
+    /// restore into a new group sets past every term the restored state carries.
+    fn next_id(
+        &self,
+        group: GroupId,
+        term: u64,
+        head: &crate::component::ComponentHead,
+    ) -> (u64, u64) {
+        let term = term.saturating_add(head.id_term_base);
+        let logged = head.last_id;
         let mut ids = self
             .id_seqs
             .lock()
@@ -1090,7 +1103,7 @@ impl Node {
                 }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
-                    self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
+                    self.next_id(g.id(), leadership.term, &m.state.component.head);
                 let ran = match &prepared {
                     Ok(prepared) => self.run_logged(
                         &meter,
@@ -1281,7 +1294,7 @@ impl Node {
                 let previous_ms = m.state.component.head.timers.get(timer).copied();
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
-                    self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
+                    self.next_id(g.id(), leadership.term, &m.state.component.head);
                 let ran = self.run_logged(
                     &meter,
                     prepared,
@@ -1495,7 +1508,7 @@ impl Node {
                 }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
-                    self.next_id(g.id(), leadership.term, m.state.component.head.last_id);
+                    self.next_id(g.id(), leadership.term, &m.state.component.head);
                 let starts_action = prepared
                     .abi
                     .methods
@@ -1867,6 +1880,7 @@ impl Node {
             return Err(args_too_large());
         }
         let app = self.app(&req.app_id).await?;
+        self.refuse_while_restoring(&app).await?;
         if !came_keyed {
             self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
                 .await?;

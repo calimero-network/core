@@ -9,3 +9,15 @@ error[E0428]: the name `__CALIMERO_ABI_ERRORS` is defined multiple times
   |
   = note: `__CALIMERO_ABI_ERRORS` must be defined only once in the value namespace of this module
   = note: this error originates in the attribute macro `app::error` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0428]: the name `__CALIMERO_ABI_ERROR_TYPES` is defined multiple times
+ --> tests/ui/second_error.rs:8:1
+  |
+3 | #[app::error]
+  | ------------- previous definition of the value `__CALIMERO_ABI_ERROR_TYPES` here
+...
+8 | #[app::error]
+  | ^^^^^^^^^^^^^ `__CALIMERO_ABI_ERROR_TYPES` redefined here
+  |
+  = note: `__CALIMERO_ABI_ERROR_TYPES` must be defined only once in the value namespace of this module
+  = note: this error originates in the attribute macro `app::error` (in Nightly builds, run with -Z macro-backtrace for more info)

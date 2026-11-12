@@ -55,6 +55,19 @@ What it does:
 
 It does not create or modify any bundle archive.
 
+#### Check the ABI against the last release
+
+```bash
+mero-sign sign <MANIFEST_PATH> --key <KEY_FILE> --previous <LAST_RELEASE.mpk>
+```
+
+`--previous` (an `.mpk`, a component `.wasm` or an ABI JSON) compares the ABI of every
+component the manifest names (read beside it) with the last release's, as
+`mero-app-build abi-diff` does, and prints the changes. A change that breaks the app's
+callers is a warning; a state field removed or changed in kind while the state version
+stayed the same is refused, and nothing is signed. `scripts/pack-component.py --previous`
+passes it on.
+
 ### `generate-key` - create an Ed25519 keypair
 
 ```bash

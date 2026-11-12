@@ -165,6 +165,13 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_BACKUP_DIR")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_dir: Option<PathBuf>,
+    /// Found the cluster again from the backups in this directory (with
+    /// `--bootstrap`, on an empty data directory): its cluster key from the
+    /// copy this release's mero-kms opens, its system state from the newest
+    /// system backup. Every node of the cluster backed up must be stopped.
+    #[arg(long, env = "MEROD_RESTORE_FROM")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restore_from: Option<PathBuf>,
     /// A file holding the storage key material (development only).
     #[arg(long, env = "MEROD_STORAGE_KEY_FILE", conflicts_with_all = ["storage_key", "kms_url"])]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,6 +290,7 @@ impl NodeArgs {
             ("--metrics-listen", self.metrics_listen.is_some()),
             ("--replicas", self.replicas.is_some()),
             ("--backup-dir", self.backup_dir.is_some()),
+            ("--restore-from", self.restore_from.is_some()),
             ("--registry-url", self.registry_url.is_some()),
             (
                 "--allow-unsigned-bundles",
@@ -368,6 +376,7 @@ impl NodeArgs {
             metrics_listen: self.metrics_listen.or(base.metrics_listen),
             replicas: self.replicas.or(base.replicas),
             backup_dir: self.backup_dir.or(base.backup_dir),
+            restore_from: self.restore_from.or(base.restore_from),
             storage_key_file: self.storage_key_file.or(base.storage_key_file),
             kms_url: self.kms_url.or(base.kms_url),
             kms_identity: self.kms_identity.or(base.kms_identity),

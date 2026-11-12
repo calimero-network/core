@@ -1,0 +1,14 @@
+# The core release every cluster must be able to roll forward from: ci-checks.yml's
+# `Upgrade path` job starts a cluster on this release's published merod, writes data,
+# rolls it onto the PR's merod as mdma rolls a Calimero Cloud cluster, and reads it back
+# (crates/node/tests/fault/upgrade_path.py; docs: contribute/testing, "Upgrade path").
+#
+# Keep it at the latest published release: once a release's GitHub assets are up,
+# set this to its tag (at the latest in the next release PR; CONTRIBUTING.md,
+# "Cutting a release"). The job warns when a newer release exists.
+#
+# A change that cannot keep old data readable and ships no migration is a hard
+# cutover: replace the version line with `hard-cutover: <PR> <why>` in that PR, mark
+# it in CHANGELOG.md, and add it to mdma's release_compat CUTOVERS. The job then
+# reports the cutover instead of running, until the next release puts a version back.
+1.0.0-rc.18

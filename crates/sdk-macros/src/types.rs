@@ -269,6 +269,108 @@ pub fn canonical(value: &Value) -> String {
     }
 }
 
+/// The type names serde and the ABI read without a shape of their own: they are spelled out
+/// in the ABI type (`option<..>`, `list<..>`) or are primitives.
+const SPELLED: &[&str] = &[
+    "Option", "Vec", "VecDeque", "Box", "Rc", "Arc", "Cow", "BTreeMap", "HashMap", "IndexMap",
+    "BTreeSet", "HashSet", "IndexSet", "String", "str", "bool", "char", "u8", "u16", "u32", "u64",
+    "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32", "f64",
+];
+
+/// `ty` with every one of `params` (a generic type's parameters) replaced by `()`, so a
+/// shape's dependency on `Wrapper<T>` names the concrete `Wrapper<()>`: the definition is
+/// the same for every argument.
+fn concrete(ty: &Type, params: &[syn::Ident]) -> Type {
+    let mut ty = ty.clone();
+    fn walk(ty: &mut Type, params: &[syn::Ident]) {
+        match ty {
+            Type::Path(p) if p.qself.is_none() => {
+                if p.path.get_ident().is_some_and(|i| params.contains(i)) {
+                    *ty = syn::parse_quote!(());
+                    return;
+                }
+                for seg in &mut p.path.segments {
+                    if let PathArguments::AngleBracketed(args) = &mut seg.arguments {
+                        for arg in &mut args.args {
+                            if let GenericArgument::Type(t) = arg {
+                                walk(t, params);
+                            }
+                        }
+                    }
+                }
+            }
+            Type::Reference(r) => walk(&mut r.elem, params),
+            Type::Paren(p) => walk(&mut p.elem, params),
+            Type::Group(g) => walk(&mut g.elem, params),
+            Type::Array(a) => walk(&mut a.elem, params),
+            Type::Slice(s) => walk(&mut s.elem, params),
+            Type::Tuple(t) => t.elems.iter_mut().for_each(|e| walk(e, params)),
+            _ => {}
+        }
+    }
+    walk(&mut ty, params);
+    ty
+}
+
+/// The `__private::Probe::<T>::DEF` of every app type inside `ty`, for the ABI's `types`:
+/// the type itself and its generic arguments, through references, tuples and arrays.
+/// `skip` names what has no entry here: the generic parameters of the type being described,
+/// its own name (a recursive field) and `Self`.
+pub fn probes(
+    ty: &Type,
+    skip: &[syn::Ident],
+    params: &[syn::Ident],
+) -> Vec<proc_macro2::TokenStream> {
+    let sdk = crate::sdk::path();
+    let mut out = Vec::new();
+    fn walk(
+        ty: &Type,
+        skip: &[syn::Ident],
+        params: &[syn::Ident],
+        sdk: &proc_macro2::TokenStream,
+        out: &mut Vec<proc_macro2::TokenStream>,
+    ) {
+        match ty {
+            Type::Path(p) if p.qself.is_none() => {
+                let Some(last) = p.path.segments.last() else {
+                    return;
+                };
+                let single = p.path.get_ident();
+                if single.is_some_and(|i| i == "Self" || skip.contains(i) || params.contains(i)) {
+                    return;
+                }
+                if !SPELLED.contains(&last.ident.to_string().as_str()) {
+                    let concrete = concrete(ty, params);
+                    out.push(quote::quote! { #sdk::__private::Probe::<#concrete>::DEF });
+                }
+                for t in inner_types(ty) {
+                    walk(t, skip, params, sdk, out);
+                }
+            }
+            Type::Path(_) => {}
+            other => {
+                for t in inner_types(other) {
+                    walk(t, skip, params, sdk, out);
+                }
+            }
+        }
+    }
+    walk(ty, skip, params, &sdk, &mut out);
+    out
+}
+
+/// `probes` as one constant slice expression, with the fallback `NoShape` in scope.
+pub fn probe_slice(probes: &[proc_macro2::TokenStream]) -> proc_macro2::TokenStream {
+    let sdk = crate::sdk::path();
+    quote::quote! {
+        {
+            #[allow(unused_imports)]
+            use #sdk::__private::NoShape as _;
+            &[#(#probes),*]
+        }
+    }
+}
+
 fn compact(ty: &Type) -> String {
     ty.to_token_stream().to_string().replace(' ', "")
 }

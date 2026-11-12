@@ -13,6 +13,7 @@ publish = true
 name = "mero_sign"
 
 [dependencies]
+calimero-app-abi.workspace = true
 calimero-bundle.workspace = true
 calimero-utils-fs.workspace = true
 clap = { workspace = true, features = ["derive"] }

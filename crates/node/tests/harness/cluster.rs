@@ -67,8 +67,10 @@ pub async fn ops_signed(
     path: &str,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, calimero_client::Error> {
+    let req = calimero_client::Request::new(reqwest::Method::POST, path).json(body);
     client
-        .post_operator_signed(path, body, &operator_sign)
+        .transport()
+        .approved(req, None, Some(&operator_sign))
         .await
 }
 
@@ -113,6 +115,7 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         metrics_listen: None,
         replicas: 3,
         backup_dir: Some(dir.join("backups")),
+        restore_from: None,
         raft: calimero_log::Config {
             heartbeat_ms: 100,
             election_min_ms: 500,

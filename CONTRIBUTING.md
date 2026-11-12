@@ -48,6 +48,30 @@ general guidelines:
 The shared release version of the public crates is `version` under
 `[workspace.metadata.workspaces]` in the root `Cargo.toml`.
 
+## Cutting a release
+
+[RELEASING.md](RELEASING.md) has the whole flow, what a release publishes,
+and the rules for titles and breaking changes shared by every repository.
+
+A release PR (`chore(release): cut X`) sets that version and adds a dated
+`CHANGELOG.md` section for the changes since the last release; merging it to
+master publishes the release (`release.yml`: the tag, the binaries, the image).
+It also keeps the [upgrade path](docs/src/content/docs/contribute/testing.mdx#upgrade-path)
+pointed at the latest published release:
+
+- **The pin.** `.github/upgrade-from` names the release every PR is rolled
+  forward from. Once a release's GitHub assets are published (`merod`,
+  `meroctl` and `mero-sign` tarballs, `SHA256SUMS`, `kv-store-test-fixture.mpk`),
+  set the pin to its tag in a follow-up PR (`chore(release): upgrade path from X`),
+  and at the latest in the next release PR, so cutting X+1 pins X if nothing did.
+  The `Upgrade path` job warns while a newer version is tagged.
+- **Hard cutovers.** A change the upgrade path cannot pass without wiping
+  clusters is listed in the release's CHANGELOG section as a hard cutover
+  ("no interop with earlier nodes ...; existing clusters are recreated"), and
+  mdma's `release_compat` CUTOVERS gets the release. Its PR set the pin to
+  `hard-cutover: ...`; the release PR after it sets the pin back to a version
+  once the cutover release is published.
+
 ## Git hooks
 
 The repository ships a pre-commit hook that runs `cargo fmt --check` whenever a

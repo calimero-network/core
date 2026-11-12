@@ -8,12 +8,21 @@
 //! of its teams (`group`); an identity is an account with passkeys
 //! (`account`). The operator's commands (`ops`) take `--ops-token`.
 
+// Tracking: the commands move onto the generated route layer
+// (`client.<group>().<method>()`) in the pull request stacked on this one,
+// which removes this allow.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until the commands use the generated ones"
+)]
+
 use std::path::PathBuf;
 
-use calimero_client::Consistency;
+use calimero_client::types::ViewsRequestConsistency;
 use calimero_identity::testing::SoftAuthenticator;
 use clap::{Parser, Subcommand};
 use eyre::bail;
+use reqwest::Method;
 use serde_json::{json, Value};
 
 mod account;
@@ -27,8 +36,11 @@ mod group;
 mod namespace;
 mod node;
 mod ops;
+mod proxy;
 
-use env::{json_arg, load_dev_passkey, save_passkey, write_private, Env, Home, Trust};
+use env::{
+    json_arg, load_dev_passkey, save_passkey, to_json, write_private, DevPasskey, Env, Home, Trust,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -42,7 +54,8 @@ use env::{json_arg, load_dev_passkey, save_passkey, write_private, Env, Home, Tr
         meroctl --node local app install --path ./kv-store.mpk\n  \
         meroctl --node local context create --package com.example.kv --name notes\n  \
         meroctl --node local call --context notes set --args '{\"key\":\"a\",\"value\":\"1\"}'\n  \
-        meroctl --node local --ops-token $TOKEN ops status"
+        meroctl --node local --ops-token $TOKEN ops status\n  \
+        meroctl --node local proxy --listen 127.0.0.1:2580"
 )]
 struct Cli {
     /// Directory for meroctl's saved nodes and sessions.
@@ -51,8 +64,9 @@ struct Cli {
     /// The node's URL (any node of the cluster).
     #[arg(long, value_name = "URL", env = "CALIMERO_API")]
     api: Option<String>,
-    /// A node saved with `meroctl node add` (default: the one `node use` chose).
-    #[arg(long, value_name = "ALIAS", conflicts_with = "api")]
+    /// A node saved with `meroctl node add` (default: the one `node use` chose),
+    /// or a node's URL (`http://` or `https://`, as `--api`).
+    #[arg(long, value_name = "ALIAS|URL", conflicts_with = "api")]
     node: Option<String>,
     /// Trust mock quotes (development clusters such as `merod local`). A flag
     /// only, never read from the environment, so it cannot linger into a
@@ -183,6 +197,11 @@ enum Cmd {
     /// packages, upgrades, quotas, backups, metrics.
     #[command(subcommand)]
     Ops(ops::OpsCmd),
+    /// Serve the node's API as plain HTTP on loopback: every request is sent
+    /// through the attested, sealed channel with your session (or the
+    /// request's own `Authorization`); `GET /openapi.json` is the API's
+    /// document. For curl, scripts and OpenAPI clients.
+    Proxy(proxy::ProxyArgs),
     /// Any API route: METHOD is get, post, put or delete; BODY is JSON.
     Raw {
         method: String,
@@ -264,6 +283,9 @@ async fn main() -> eyre::Result<()> {
 
     let (url, saved_mock) = match (&cli.api, &cli.node) {
         (Some(url), _) => (url.clone(), false),
+        (None, Some(url)) if url.starts_with("http://") || url.starts_with("https://") => {
+            (url.clone(), false)
+        }
         (None, name) => {
             let nodes = home.nodes();
             let name = name.clone().or(nodes.default.clone()).ok_or_else(|| {
@@ -285,6 +307,9 @@ async fn main() -> eyre::Result<()> {
         let doc =
             calimero_client::attest::release::fetch_release_attestation(&base, &nonce).await?;
         return print(&verified_release(&doc, &nonce, &trust).await?);
+    }
+    if let Cmd::Proxy(args) = cli.cmd {
+        return proxy::run(args, home, url, trust.policy(), cli.api_key.clone()).await;
     }
     let mut env = Env::connect(home, url, trust, cli.api_key.clone(), cli.ops_token.clone())?;
     env.operator_key_file.clone_from(&cli.operator_key_file);
@@ -318,7 +343,7 @@ async fn main() -> eyre::Result<()> {
         Cmd::Logout { all } => {
             if *all {
                 env.authenticate().await?;
-                let _ = env.client.sign_out_everywhere().await?;
+                let _ = env.client.auth().logout_all().await?;
             }
             env.home.save_session(&env.url, None)?;
             return Ok(());
@@ -328,8 +353,17 @@ async fn main() -> eyre::Result<()> {
 
     env.authenticate().await?;
     let out: Value = match cli.cmd {
-        Cmd::Whoami => env.client.me().await?,
-        Cmd::Attest { context: None } => serde_json::to_value(env.client.attestation().await?)?,
+        Cmd::Whoami => to_json(&env.client.auth().me().await?)?,
+        Cmd::Attest { context: None } => {
+            // For display: the channel attested the node already, under the policy.
+            let nonce = hex::encode([7_u8; 32]);
+            to_json(
+                &env.client
+                    .public()
+                    .attestation(&nonce, None, None, None)
+                    .await?,
+            )?
+        }
         Cmd::Attest {
             context: Some(context),
         } => {
@@ -355,27 +389,27 @@ async fn main() -> eyre::Result<()> {
             dev_passkey,
         } => {
             let app = env.app(&context).await?;
-            let args = json_arg(&args)?;
+            let args = Some(json_arg(&args)?);
             if view {
-                let consistency = match min_index {
-                    Some(min_index) => Consistency::Stale { min_index },
-                    None => Consistency::Strong,
+                let (consistency, min_index) = match min_index {
+                    Some(i) => (ViewsRequestConsistency::Stale, Some(i)),
+                    None => (ViewsRequestConsistency::Strong, None),
                 };
-                serde_json::to_value(env.client.view(&app, &method, args, consistency).await?)?
-            } else if let Some(file) = dev_passkey {
-                let mut pk = load_dev_passkey(&file)?;
-                let out = env
-                    .client
-                    .call_confirmed(&app, &method, args, &mut pk)
-                    .await;
-                save_passkey(&file, &pk)?;
-                serde_json::to_value(out?)?
-            } else {
-                serde_json::to_value(
-                    env.client
-                        .call(&app, &method, args, idempotency_key.as_deref())
+                to_json(
+                    &env.client
+                        .apps()
+                        .view(&app, &method, args, Some(consistency), min_index)
                         .await?,
                 )?
+            } else {
+                let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+                let out = env
+                    .client
+                    .apps()
+                    .call(&app, &method, args, idempotency_key.as_deref(), pk.get())
+                    .await;
+                pk.save()?;
+                to_json(&out?)?
             }
         }
         Cmd::Blob(cmd) => blob::run(cmd, &env).await?,
@@ -384,7 +418,7 @@ async fn main() -> eyre::Result<()> {
         Cmd::Group(cmd) => group::run(cmd, &env).await?,
         Cmd::Account(cmd) => account::run(cmd, &env).await?,
         Cmd::Dev(cmd) => return dev::run(cmd, &env).await,
-        Cmd::Network(NetworkCmd::Status) => env.client.get("health").await?,
+        Cmd::Network(NetworkCmd::Status) => to_json(&env.client.public().health().await?)?,
         Cmd::Raw {
             method,
             path,
@@ -393,21 +427,21 @@ async fn main() -> eyre::Result<()> {
         } => {
             let path = path.trim_start_matches('/');
             let body = body.as_deref().map(json_arg).transpose()?;
+            let dev_passkey = dev_passkey.as_deref();
             match method.to_ascii_lowercase().as_str() {
-                "get" => env.client.get(path).await?,
-                "delete" => env.delete_approved(path, dev_passkey.as_deref()).await?,
+                "get" => env.raw(Method::GET, path, None, None).await?,
+                // A passkey's `confirm` goes into a JSON body: an empty one when none is given.
+                "delete" => {
+                    let body = body.or_else(|| dev_passkey.map(|_| json!({})));
+                    env.raw(Method::DELETE, path, body, dev_passkey).await?
+                }
                 "post" => {
-                    env.post_approved(
-                        path,
-                        body.unwrap_or_else(|| json!({})),
-                        dev_passkey.as_deref(),
-                    )
-                    .await?
+                    let body = body.unwrap_or_else(|| json!({}));
+                    env.raw(Method::POST, path, Some(body), dev_passkey).await?
                 }
                 "put" => {
-                    env.client
-                        .put(path, body.unwrap_or_else(|| json!({})))
-                        .await?
+                    let body = body.unwrap_or_else(|| json!({}));
+                    env.raw(Method::PUT, path, Some(body), None).await?
                 }
                 other => bail!("unknown method {other}: use get, post, put or delete"),
             }
@@ -416,6 +450,7 @@ async fn main() -> eyre::Result<()> {
         | Cmd::Ops(_)
         | Cmd::Login { .. }
         | Cmd::Logout { .. }
+        | Cmd::Proxy(_)
         | Cmd::AttestRelease { .. } => {
             unreachable!("handled above")
         }

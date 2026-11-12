@@ -169,6 +169,49 @@ pub struct AppRecord {
     /// writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<crate::system::PackageRef>,
+    /// A restore from a backup under way (`SystemCmd::RestoreApp`): the app's
+    /// new group is being seeded, and calls wait for it. Left out when `None`,
+    /// so a record writes as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<PendingRestore>,
+}
+
+/// The backup a restore takes an app's state from (`crate::backup`): the
+/// snapshot file's name, its SHA-256 and the app log's index it was taken at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RestoreSource {
+    pub name: String,
+    pub sha256: String,
+    pub index: u64,
+}
+
+/// A restore under way: `seed` (the first of the app's replicas) holds the
+/// backup and seeds the app's new group from it, then adds the other replicas.
+/// Without a seed, the app waits for one: the cluster was founded again from
+/// its system backup (`node::restore`), and no node hosts the app until the
+/// operator restores it from its own backup.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingRestore {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RestoreSource>,
+}
+
+impl PendingRestore {
+    /// What an app of a cluster founded again from its system backup waits in.
+    pub const AWAITING_BACKUP: Self = Self {
+        seed: None,
+        source: None,
+    };
+
+    /// Whether the app waits for a backup: no node hosts it meanwhile.
+    #[must_use]
+    pub const fn awaits_backup(&self) -> bool {
+        self.seed.is_none()
+    }
 }
 
 /// Which executor runs an app's code.
@@ -608,6 +651,14 @@ pub struct Org {
     /// set one, as every organization written before this field was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<OrgRecovery>,
+    /// Members who get every app added to the organization from now on: each
+    /// app team made after (`ScopeApps`, `MoveApp`, a team marked as one)
+    /// gives them a plain row, whoever else it names. Set by an admin's
+    /// invite ([`Invite::all_apps`]) or later by an admin
+    /// (`SystemCmd::SetAllApps`); gone with their membership. Left out when
+    /// empty, so an organization from before writes as it did.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub all_apps: std::collections::BTreeSet<AccountId>,
 }
 
 /// An organization's recovery key: whoever holds its seed can hand the
@@ -816,6 +867,17 @@ impl Org {
         self.role(account) == Some(OrgRole::Guest) && self.mode() != OrgMode::Legacy
     }
 
+    /// The members who get every app added from now on ([`Org::all_apps`]),
+    /// as long as they are members.
+    #[must_use]
+    pub fn all_apps_members(&self) -> Vec<AccountId> {
+        self.all_apps
+            .iter()
+            .filter(|a| self.members.contains_key(*a))
+            .cloned()
+            .collect()
+    }
+
     /// The app team of `package` here, if it has one.
     #[must_use]
     pub fn app_team(&self, package: &str) -> Option<&Team> {
@@ -945,6 +1007,11 @@ pub struct Invite {
     /// out in invites from before.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub created_at: u64,
+    /// Whoever redeems it also gets every app added to the organization
+    /// later ([`Org::all_apps`]): an admin's to mint. Left out when false, so
+    /// an invite from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all_apps: bool,
 }
 
 #[allow(

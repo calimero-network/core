@@ -22,6 +22,7 @@ use openraft::error::{CheckIsLeaderError, ClientWriteError, InitializeError, Raf
 use openraft::{BasicNode, ServerState};
 use tokio::sync::{watch, Mutex};
 
+pub mod format;
 mod legacy;
 pub mod machine;
 #[cfg(test)]
@@ -33,8 +34,9 @@ pub mod testing;
 pub mod tuning;
 pub mod types;
 
+pub use format::{NewerStore, STORE_FORMAT};
 pub use legacy::MigrationReport;
-pub use machine::{read_snapshot_file, Applied, Machine, Shared};
+pub use machine::{read_snapshot_file, Applied, Machine, Shared, SNAPSHOT_FORMAT};
 pub use network::{BoxFuture, RpcRequest, RpcResponse, Transport};
 use store::{Db, LogStore};
 pub use store::{GroupState, StateTx};
@@ -550,6 +552,89 @@ impl<M: Machine> Group<M> {
     pub const fn node_id(&self) -> NodeId {
         self.node
     }
+
+    /// Replace this group's state with a backup: the snapshot file `path`
+    /// this cluster wrote for group `from` as snapshot `snapshot_id`
+    /// ([`machine::replace_state`]). Refused unless this node is the group's
+    /// only voter and leads it, since every other replica would keep the state
+    /// before: the caller then appends an entry, builds a snapshot
+    /// ([`Self::snapshot_through`]) and purges the log up to it
+    /// ([`Self::purge_log_through`]), so a replica added afterwards can only
+    /// catch up from that snapshot. Answers how many rows it wrote.
+    pub fn replace_state(
+        &self,
+        from: GroupId,
+        snapshot_id: &str,
+        path: &Path,
+    ) -> eyre::Result<u64> {
+        self.sole_leader()?;
+        machine::replace_state(&self.state, &self.shared, from, snapshot_id, path)
+    }
+
+    /// [`Self::replace_state`] for an in-memory machine: its whole state is
+    /// `data` (what [`Machine::snapshot`] answers) from now on, until a
+    /// snapshot ([`Self::snapshot_through`]) checkpoints it; a restart before
+    /// that replays the log from the checkpoint before. Refused unless this
+    /// node is the group's only voter and leads it.
+    pub fn replace_machine_data(&self, data: &[u8]) -> eyre::Result<()> {
+        self.sole_leader()?;
+        machine::replace_machine_data(&self.shared, data)
+    }
+
+    fn sole_leader(&self) -> eyre::Result<()> {
+        let status = self.status();
+        if !status.is_leader || status.voters != [self.node] || !status.learners.is_empty() {
+            eyre::bail!(
+                "group {}: a state is replaced only by its sole member, as its leader",
+                self.id
+            );
+        }
+        Ok(())
+    }
+
+    /// Build a snapshot and wait, up to `timeout`, until the one this node
+    /// serves covers `index`.
+    pub async fn snapshot_through(&self, index: u64, timeout: Duration) -> eyre::Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let served = machine::current_snapshot_file(&self.state.db, self.id)?;
+            if served.is_some_and(|(at, _, _)| at >= index) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                eyre::bail!(
+                    "group {}: no snapshot through {index} within {timeout:?}",
+                    self.id
+                );
+            }
+            self.snapshot_now().await?;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Purge this node's log through `index` (which a snapshot must cover)
+    /// and wait, up to `timeout`, until it is gone.
+    pub async fn purge_log_through(&self, index: u64, timeout: Duration) -> eyre::Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let purged = self.raft.metrics().borrow().purged.map_or(0, |l| l.index);
+            if purged >= index {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                eyre::bail!(
+                    "group {}: the log was not purged through {index} within {timeout:?}",
+                    self.id
+                );
+            }
+            self.raft
+                .trigger()
+                .purge_log(index)
+                .await
+                .map_err(|e| eyre::eyre!("{e}"))?;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
 }
 
 impl<M: Machine> RpcTarget for Group<M> {
@@ -605,8 +690,11 @@ pub struct Engine {
 impl Engine {
     /// Open the node's database under `dir`, sealed under `key`.
     ///
-    /// A directory still holding the previous format (`log.redb`) is migrated
-    /// first; the old file is kept beside, renamed `log.redb.migrated`.
+    /// The store's format is settled first ([`format`]): a store a later
+    /// release wrote is refused ([`NewerStore`]), an older one is brought to
+    /// [`STORE_FORMAT`]. A directory still holding the redb format before the
+    /// store (`log.redb`) is then migrated into it; the old file is kept beside,
+    /// renamed `log.redb.migrated`.
     pub fn open(
         node: NodeId,
         dir: &Path,
@@ -617,6 +705,19 @@ impl Engine {
         let legacy_path = dir.join(legacy::FILE);
         let migrate = legacy_path.exists();
         let db = Db::open(dir, key)?;
+        let settled = format::settle(&db).map_err(|e| {
+            e.wrap_err(format!(
+                "the node store at {}",
+                store::store_path(dir).display()
+            ))
+        })?;
+        if let format::Settled::Migrated { from } = settled {
+            tracing::info!(
+                from,
+                to = STORE_FORMAT,
+                "brought the store to the current format"
+            );
+        }
         if migrate {
             let report = legacy::Legacy::open(&legacy_path, key)?.migrate_into(&db)?;
             std::fs::rename(&legacy_path, dir.join(format!("{}.migrated", legacy::FILE)))?;

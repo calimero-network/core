@@ -4,11 +4,12 @@
 
 use std::path::PathBuf;
 
+use calimero_client::types::{ApikeyCreateRequest, ApikeyCreateRequestUpgrades};
 use calimero_identity::testing::SoftAuthenticator;
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::env::{load_dev_passkey, save_passkey, write_private, Env};
+use crate::env::{load_dev_passkey, save_passkey, to_json, write_private, DevPasskey, Env};
 
 #[derive(Debug, Subcommand)]
 pub enum AccountCmd {
@@ -138,13 +139,13 @@ pub enum ApiKeyCmd {
 }
 
 pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
-    let client = &env.client;
+    let auth = env.client.auth();
     Ok(match cmd {
-        AccountCmd::Show => client.me().await?,
-        AccountCmd::Usage => client.usage().await?,
+        AccountCmd::Show => to_json(&auth.me().await?)?,
+        AccountCmd::Usage => to_json(&auth.usage().await?)?,
         AccountCmd::Device(DeviceCmd::List) => {
-            let me = client.me().await?;
-            json!({ "devices": me["passkeys"], "current": me["passkeyId"] })
+            let me = auth.me().await?;
+            json!({ "devices": me.passkeys, "current": me.passkey_id })
         }
         AccountCmd::Device(DeviceCmd::Add {
             dev_passkey,
@@ -159,30 +160,29 @@ pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
             }
             let mut pk = SoftAuthenticator::new("localhost", &origin);
             let mut approver = load_dev_passkey(&approve_with)?;
-            let id = client.add_passkey(&mut pk, &mut approver).await;
+            let id = env.client.add_passkey(&mut pk, &mut approver).await;
             save_passkey(&approve_with, &approver)?;
             let id = id?;
             write_private(&dev_passkey, &pk.to_json())?;
             json!({ "credential": id, "passkey": dev_passkey })
         }
         AccountCmd::Device(DeviceCmd::Label { credential, label }) => {
-            client.label_passkey(&credential, &label).await?
+            to_json(&auth.passkey_label(&credential, &label).await?)?
         }
         AccountCmd::Device(DeviceCmd::Revoke {
             credential,
             dev_passkey,
         }) => {
-            env.delete_approved(
-                &format!("auth/passkeys/{credential}"),
-                dev_passkey.as_deref(),
-            )
-            .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = auth.passkey_remove(&credential, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
         }
-        AccountCmd::Session(SessionCmd::List) => client.sessions().await?,
+        AccountCmd::Session(SessionCmd::List) => to_json(&auth.sessions_list().await?)?,
         AccountCmd::Session(SessionCmd::Revoke { session }) => {
-            client.revoke_session(&session).await?
+            to_json(&auth.session_revoke(&session).await?)?
         }
-        AccountCmd::Activity { after } => client.activity(after).await?,
+        AccountCmd::Activity { after } => to_json(&auth.activity_list(after).await?)?,
         AccountCmd::ApiKey(ApiKeyCmd::Create {
             label,
             contexts,
@@ -196,25 +196,36 @@ pub async fn run(cmd: AccountCmd, env: &Env) -> eyre::Result<Value> {
             for c in &contexts {
                 apps.push(env.app(c).await?);
             }
-            let apps = (!apps.is_empty()).then_some(apps);
-            let mut body = json!({
-                "label": label, "apps": apps, "readOnly": read_only, "ttlSecs": ttl_secs,
-            });
-            if let Some(context) = upgrades {
-                body["upgrades"] = json!({ "app": env.app(&context).await?, "package": package });
-            }
-            let v = env
-                .post_approved("auth/apikeys", body, dev_passkey.as_deref())
-                .await?;
-            json!({ "keyId": v["keyId"], "key": v["key"] })
+            let upgrades = match upgrades {
+                Some(context) => Some(ApikeyCreateRequestUpgrades {
+                    app: env.app(&context).await?,
+                    package,
+                }),
+                None => None,
+            };
+            let body = ApikeyCreateRequest {
+                label: Some(label),
+                apps: (!apps.is_empty()).then_some(apps),
+                read_only: Some(read_only),
+                ttl_secs,
+                upgrades,
+                ..ApikeyCreateRequest::default()
+            };
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = auth.apikey_create(body, pk.get()).await;
+            pk.save()?;
+            let v = out?;
+            json!({ "keyId": v.key_id, "key": v.key })
         }
-        AccountCmd::ApiKey(ApiKeyCmd::List) => client.get("auth/apikeys").await?,
+        AccountCmd::ApiKey(ApiKeyCmd::List) => to_json(&auth.apikey_list().await?)?,
         AccountCmd::ApiKey(ApiKeyCmd::Revoke {
             key_id,
             dev_passkey,
         }) => {
-            env.delete_approved(&format!("auth/apikeys/{key_id}"), dev_passkey.as_deref())
-                .await?
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = auth.apikey_revoke(&key_id, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
         }
         AccountCmd::ApproveRelease {
             version,
