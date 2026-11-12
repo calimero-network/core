@@ -298,36 +298,31 @@ async fn local(args: LocalArgs) -> eyre::Result<()> {
     Ok(())
 }
 
-/// What `--settings` holds: the `[outbound]` table, and the verifier the
-/// consent page links to. Each replaces the configuration's.
+/// The `[outbound]` table of the configuration (or of `--settings`).
 #[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+#[serde(default, deny_unknown_fields)]
 struct Settings {
     outbound: calimero_outbound::OutboundSettings,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    attestation_verifier_url: Option<String>,
 }
 
-fn read_settings(path: &Path) -> eyre::Result<Settings> {
+fn read_settings(path: &Path) -> eyre::Result<calimero_outbound::OutboundSettings> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| eyre::eyre!("reading {}: {e}", path.display()))?;
-    toml::from_str(&text).map_err(|e| eyre::eyre!("{}: {e}", path.display()))
+    let settings: Settings =
+        toml::from_str(&text).map_err(|e| eyre::eyre!("{}: {e}", path.display()))?;
+    Ok(settings.outbound)
 }
 
-/// The verifier's base URL, from `--settings` if it names one, else the
-/// configuration; refused unless `consent_page::verifier_base` takes it.
-fn attestation_verifier_url(
-    args: &NodeArgs,
-    settings: Option<&Settings>,
-) -> eyre::Result<Option<String>> {
-    let raw = settings
-        .and_then(|s| s.attestation_verifier_url.as_deref())
-        .or(args.attestation_verifier_url.as_deref());
-    raw.map(|raw| {
-        calimero_node::consent_page::verifier_base(raw)
-            .map_err(|e| eyre::eyre!("--attestation-verifier-url {raw:?} {e}"))
-    })
-    .transpose()
+/// The verifier's base URL, refused unless `consent_page::verifier_base`
+/// takes it.
+fn attestation_verifier_url(args: &NodeArgs) -> eyre::Result<Option<String>> {
+    args.attestation_verifier_url
+        .as_deref()
+        .map(|raw| {
+            calimero_node::consent_page::verifier_base(raw)
+                .map_err(|e| eyre::eyre!("--attestation-verifier-url {raw:?} {e}"))
+        })
+        .transpose()
 }
 
 fn need_node(home: Option<&PathBuf>, what: &str) -> eyre::Result<PathBuf> {
@@ -516,12 +511,11 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     let cluster = args.cluster.clone().unwrap_or_else(|| "dev".to_owned());
     let peers = parse_peers(&args)?;
     let peer_measurements = peer_measurements(&args, dev)?;
-    let settings = args.settings.as_deref().map(read_settings).transpose()?;
-    let attestation_verifier_url = attestation_verifier_url(&args, settings.as_ref())?;
+    let attestation_verifier_url = attestation_verifier_url(&args)?;
     let (storage_key, (kms_keys, rollback)) = storage_key(&args, dev, &cluster, node_id).await?;
-    let outbound = match settings {
-        Some(s) => Some(s.outbound),
-        None => args.outbound.clone(),
+    let outbound = match (&args.settings, &args.outbound) {
+        (Some(path), _) => Some(read_settings(path)?),
+        (None, o) => o.clone(),
     };
     let rp_id = args.rp_id.clone().unwrap_or_else(|| "localhost".to_owned());
     let origins = if args.origins.is_empty() {

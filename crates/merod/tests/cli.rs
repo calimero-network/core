@@ -182,7 +182,7 @@ fn init_config_run_and_inspect_a_node() {
     }
 
     // A verifier the consent page could not link to safely is refused at
-    // start, from a flag or from `--settings`.
+    // start, naming the flag.
     for bad in [
         "http://verify.calimero.network",
         "https://verify.calimero.network/?node=1",
@@ -199,21 +199,6 @@ fn init_config_run_and_inspect_a_node() {
             "{stderr}"
         );
     }
-    let settings = home.path().join("settings.toml");
-    std::fs::write(
-        &settings,
-        "attestation-verifier-url = \"ftp://verify.calimero.network\"\n[outbound]\n",
-    )
-    .unwrap();
-    let refused = merod(home.path())
-        .args(["--node", "n1", "run", "--settings"])
-        .arg(&settings)
-        .output()
-        .unwrap();
-    assert!(!refused.status.success());
-    let stderr = String::from_utf8_lossy(&refused.stderr);
-    assert!(stderr.contains("ftp://verify.calimero.network"), "{stderr}");
-
     // A valid one is kept in the file and the node starts with it.
     let changed = ok(merod(home.path())
         .args([

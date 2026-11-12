@@ -70,7 +70,7 @@ mode `0600`.
 | `outbound-approvals` | `"owner"` \| `"operator"` | `"owner"` | [Governance](/operate/security/#governance) |
 | `apps-domain` | string | none | [Networking](/operate/networking/#app-frontends) |
 | `attestation-verifier-url` | string | none | The independent verifier the [consent page](/protocol/consent-page/#what-the-page-shows) links to (`https://verify.calimero.network`); [merod](/operate/merod/#node-flags) |
-| `settings` | path | none | A file whose `[outbound]` table, and `attestation-verifier-url` if it names one, replace this one's. |
+| `settings` | path | none | A file whose `[outbound]` table replaces this one's. |
 | `[outbound]` | table | none (no outbound HTTPS) | [Outbound](#outbound) |
 
 ## Example

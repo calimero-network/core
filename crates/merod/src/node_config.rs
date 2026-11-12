@@ -265,8 +265,7 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_ATTESTATION_VERIFIER_URL")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attestation_verifier_url: Option<String>,
-    /// A TOML file whose `[outbound]` table replaces the configuration's, and
-    /// whose `attestation-verifier-url`, if any, replaces the configuration's.
+    /// A TOML file whose `[outbound]` table replaces the configuration's.
     #[arg(long, env = "MEROD_SETTINGS")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<PathBuf>,
