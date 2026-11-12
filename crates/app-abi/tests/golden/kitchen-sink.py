@@ -7,15 +7,89 @@ client's retries. u64 and i64 are decimal strings and bytes base64url, as on the
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, TypedDict, cast
+from typing import Any, Dict, List, Literal, Optional, TypedDict, Union, cast
 
 from calimero import Client, SoftPasskey
 
-Item = Any
-"""The app type `Item`: ABI version 1 names it without its shape."""
+Adjacent = Union["Adjacent_Text", "Adjacent_Empty"]
+"""The app type `Adjacent`."""
 
-Page_Item = Any
-"""The app type `Page<Item>`: ABI version 1 names it without its shape."""
+class Adjacent_Empty(TypedDict):
+    """The variant `Empty` of `Adjacent`."""
+
+    t: Literal["Empty"]
+
+Adjacent_Text = TypedDict("Adjacent_Text", {"t": Literal["Text"], "c": str})
+"""The variant `Text` of `Adjacent`."""
+
+Either = Union[int, "Either_NamedFields"]
+"""The app type `Either`."""
+
+class Either_NamedFields(TypedDict):
+    """The fields of the variant `Named` of `Either`."""
+
+    name: str
+
+Id = str
+"""The app type `Id`."""
+
+class Item(TypedDict):
+    """The app type `Item`."""
+
+    id: str
+    title: str
+    tags: List[str]
+    note: Optional[str]
+    status: "Status"
+
+Marker = Literal[None]
+"""The app type `Marker`."""
+
+class Page_Item(TypedDict):
+    """The app type `Page<Item>`."""
+
+    items: List["Item"]
+    next: Optional[str]
+
+Point = List[Any]
+"""The app type `Point`. A JSON array."""
+
+Status = Union[Literal["Open"], "Status_Closed", "Status_Moved", "Status_Span"]
+"""The app type `Status`."""
+
+Status_Closed = TypedDict("Status_Closed", {"Closed": "Status_ClosedFields"})
+"""The variant `Closed` of `Status`."""
+
+class Status_ClosedFields(TypedDict):
+    """The fields of the variant `Closed` of `Status`."""
+
+    at: str
+
+Status_Moved = TypedDict("Status_Moved", {"Moved": str})
+"""The variant `Moved` of `Status`."""
+
+Status_Span = TypedDict("Status_Span", {"Span": List[Any]})
+"""The variant `Span` of `Status`."""
+
+Tagged = Union["Tagged_draft", "Tagged_published"]
+"""The app type `Tagged`."""
+
+class Tagged_draft(TypedDict):
+    """The variant `draft` of `Tagged`."""
+
+    type: Literal["draft"]
+
+class Tagged_published(TypedDict):
+    """The variant `published` of `Tagged`."""
+
+    type: Literal["published"]
+    at: str
+
+class Tree(TypedDict):
+    """The app type `Tree`."""
+
+    value: int
+    children: List["Tree"]
 
 ForbiddenError = TypedDict("ForbiddenError", {})
 InvalidError = TypedDict("InvalidError", {"detail": Optional[str], "field": str})
@@ -82,6 +156,11 @@ class KitchenSinkClient:
         """view `secret`; `passkey` approves it (confirm), else the client's own."""
         args: Dict[str, Any] = {}
         return cast(str, self._call("secret", args, idempotency_key, passkey))
+
+    def shapes(self, status: Status, tagged: Tagged, adjacent: Adjacent, either: Either, id: Id, point: Point, marker: Marker, tree: Tree, *, consistency: Optional[Literal["strong", "stale"]] = None, min_index: Optional[int] = None) -> Tree:
+        """view `shapes`."""
+        args: Dict[str, Any] = {"status": status, "tagged": tagged, "adjacent": adjacent, "either": either, "id": id, "point": point, "marker": marker, "tree": tree}
+        return cast(Tree, self._view("shapes", args, consistency, min_index))
 
     def wipe(self, reason: Optional[str] = None, *, passkey: Optional[SoftPasskey] = None, idempotency_key: Optional[str] = None) -> None:
         """call `wipe`; `passkey` approves it (confirm), else the client's own."""

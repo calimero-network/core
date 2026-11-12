@@ -7,7 +7,7 @@ client's retries. u64 and i64 are decimal strings and bytes base64url, as on the
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, TypedDict, cast
+from typing import Any, Dict, List, Literal, Optional, TypedDict, Union, cast
 
 from calimero import Client, SoftPasskey
 

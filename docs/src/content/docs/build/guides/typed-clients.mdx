@@ -127,10 +127,17 @@ view `consistency=` and `min_index=`.
 wire; `option<T>` is `T | null` (`Optional[T]`) and an optional argument may be
 left out. The full table is in [App interface](/core/build/app-abi/#types).
 
+Your own types come from the ABI's `types`: a record is an interface (a
+`TypedDict`), an enum a union of its variants as serde writes them (`'Open'`,
+`{ Closed: { at: string } }`, `{ type: 'published'; at: string }`), and a generic
+type stays generic in TypeScript (`Listing<Slot>`) and is instantiated in Python
+(`Listing_Slot`).
+
 <Aside type="caution">
-  ABI version 1 names your own types (a record, a serde struct or enum) without
-  their fields, so the client types them `unknown` (`Any`): cast or validate the
-  value where you use it.
+  A type is described when it derives `Record` or `AbiType`
+  ([SDK macros](/core/build/sdk-macros/#deriveabitype)). Any other type, and every
+  type of an app built before the SDK wrote `types`, is `unknown` (`Any`): cast or
+  validate the value where you use it, or rebuild the app.
 </Aside>
 
 ## Use any OpenAPI tool

@@ -46,7 +46,18 @@ clients read it to learn the methods, arguments and results.
     }
   },
   "errors": { "NotFound": {}, "Taken": { "start": "u64" }, "Invalid": { "0": "string" } },
-  "events": { "Booked": { "id": "string", "roomId": "string", "start": "u64" } }
+  "events": { "Booked": { "id": "string", "roomId": "string", "start": "u64" } },
+  "types": {
+    "Booking": {
+      "kind": "record",
+      "fields": [["id", "string"], ["roomId", "string"], ["start", "u64"], ["title", "string"]]
+    },
+    "Listing": { "kind": "record", "params": ["T"], "fields": [["items", "list<T>"], ["nextCursor", "option<string>"]] },
+    "Slot": {
+      "kind": "enum", "tag": "state",
+      "variants": [{ "name": "free" }, { "name": "held", "fields": [["booking", "Booking"]] }]
+    }
+  }
 }
 ```
 
@@ -58,6 +69,17 @@ clients read it to learn the methods, arguments and results.
 - **`state`**: each field's kind, the search fields of each table, and the
   `#[app::state(version = N)]`.
 - **`errors`** and **`events`**: each code or name with its fields.
+- **`types`**: the JSON shape of each app type the methods, errors and events
+  name, and of the types those name, by the Rust type's name: every
+  `#[derive(Record)]` and every `#[derive(AbiType)]` serde type
+  ([SDK macros](/core/build/sdk-macros/#deriveabitype)). `kind` is `record`
+  (`fields` as ordered `[name, type]`, with `{ "optional": true }` third when the
+  JSON may leave the field out), `newtype` (`type`), `tuple` (`items`), `unit`, or
+  `enum` (`variants`, each `{ name }`, `{ name, type }`, `{ name, items }` or
+  `{ name, fields }`, told apart as serde does: by the variant's name as the key,
+  by `tag`, by `tag` and `content`, or `untagged`). A generic type lists its
+  `params`, which its fields name (`Listing<Slot>` puts `Slot` for `T`). The key
+  is absent when no type has a shape, and a type it does not list is unknown.
 - **Types**: Rust integer, float and bool names, `string`, `bytes`,
   `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type's name.
   `u64`, `i64` and `bytes` are strings on the wire.
@@ -71,8 +93,9 @@ The host reads `abiVersion` (and refuses one it does not support), the method
 kinds, and the flags: a view never runs as a write, `confirm` needs a fresh
 passkey assertion, `public` admits callers who are not signed in, `allowSystem`,
 `allowApps` and `allowAction` admit the node, other apps and the app's own
-actions. Free-form keys (`params`, `returns`, `errors`, `events`) describe the
-app to clients; nodes ignore them. A field the host enforces is added only with
+actions. Free-form keys (`params`, `returns`, `errors`, `events`, `types`) describe the
+app to clients; nodes ignore them, so `types` came without an `abiVersion` bump: a
+node of an earlier release installs an app that carries it. A field the host enforces is added only with
 an `abiVersion` bump.
 
 ## Read it
@@ -141,13 +164,15 @@ The JSON form of every ABI type, as the SDK's macros write and read it (D20):
 | `tuple<A, B>` | array `[a, b]` | `array` with `prefixItems` |
 | `BTreeMap<K, V>`, `HashMap<K, V>` | object, keys as strings | `object` with `additionalProperties: V` (integer keys get a `propertyNames` pattern) |
 | `Box<T>`, `Rc<T>`, `Arc<T>`, `&T` | as `T` | as `T` |
-| any other name (a record, a serde struct or enum, `Page<Item>`) | the type's serde form | a component named after it (`Page_Item`) that accepts any JSON |
+| any other name (a record, a serde struct or enum, `Page<Item>`) | the type's serde form | a component named after it (`Page_Item`): its shape from `types`, else any JSON |
 
 A `u64`, `i64` or `Vec<u8>` nested inside another type is a compile error
 (Ruling 27), so the string forms above hold wherever these types appear.
-ABI version 1 names an app's own types without describing their fields: they
-are open schemas (`x-calimero-abi-type` keeps the Rust name), and a typed client
-types them `unknown` / `Any`.
+An app type with a shape in `types` is a component with that shape: an object
+with its fields, a `oneOf` per enum, a generic type instantiated per use
+(`Listing_Slot`). One without (a type with neither derive, or any type in an ABI
+built before `types`) is an open schema (`x-calimero-abi-type` keeps the Rust
+name) and a typed client types it `unknown` / `Any`.
 
 ## Check a new version against the last
 

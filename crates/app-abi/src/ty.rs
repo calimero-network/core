@@ -4,8 +4,9 @@
 //! `#[app::logic]` writes the SDK's own names for the types it converts (`string`, `bytes`,
 //! `option<..>`, `list<..>`, `tuple<..>`, `unit`) and any other type as its Rust spelling with
 //! the spaces taken out (`BTreeMap<String,String>`, `[u8;32]`, `Page<Booking>`). Both spellings
-//! are read here; a Rust type the SDK does not describe further (a record, a serde struct or
-//! enum, an alias) is [`Type::Named`].
+//! are read here; an app type (a record, a serde struct or enum, an alias) is [`Type::Named`],
+//! whose shape, when the ABI carries one, is in [`crate::abi::AppAbi::types`]
+//! ([`Type::named_parts`] splits `Page<Booking>` into the entry's name and its arguments).
 
 use std::fmt;
 
@@ -118,7 +119,8 @@ pub enum Type {
     Array(Box<Type>, u64),
     /// `BTreeMap`/`HashMap`: a JSON object; serde writes the keys as strings.
     Map(Box<Type>, Box<Type>),
-    /// An app type the ABI names but does not describe (version 1 has no type section).
+    /// An app type, by its ABI text (`Booking`, `Page<Booking>`, `crate::types::Room`). Its shape
+    /// is in the ABI's `types` when the SDK described it, else unknown.
     Named(String),
 }
 
@@ -132,6 +134,68 @@ impl Type {
         match p.ty() {
             Some(ty) if p.at == p.tokens.len() => ty,
             _ => Self::Named(text.replace(' ', "")),
+        }
+    }
+
+    /// An app type's entry name and generic arguments: `Page<Booking>` is `("Page",
+    /// [Booking])`, `crate::types::Room` is `("Room", [])`. `None` for any other type.
+    #[must_use]
+    pub fn named_parts(&self) -> Option<(String, Vec<Type>)> {
+        let Self::Named(text) = self else {
+            return None;
+        };
+        let tokens = tokenize(text);
+        let mut p = Parser { tokens, at: 0 };
+        let Some(Token::Word(path)) = p.peek().cloned() else {
+            return None;
+        };
+        p.at += 1;
+        let name = path.rsplit("::").next().unwrap_or(&path).to_owned();
+        let mut args = Vec::new();
+        if p.eat('<') {
+            loop {
+                args.push(p.ty_at(1)?);
+                if p.eat('>') {
+                    break;
+                }
+                if !p.eat(',') {
+                    return None;
+                }
+            }
+        }
+        (p.at == p.tokens.len()).then_some((name, args))
+    }
+
+    /// `self` with each of `params` (a generic entry's parameters, read as [`Type::Named`])
+    /// replaced by the argument at its position.
+    #[must_use]
+    pub fn substitute(&self, params: &[String], args: &[Type]) -> Self {
+        let sub = |t: &Self| Box::new(t.substitute(params, args));
+        match self {
+            Self::Named(n) => params
+                .iter()
+                .position(|p| p == n)
+                .and_then(|i| args.get(i).cloned())
+                .unwrap_or_else(|| {
+                    // `Wrapper<T>` inside a generic entry: substitute in its arguments.
+                    match self.named_parts() {
+                        Some((name, inner)) if !inner.is_empty() => {
+                            let inner: Vec<String> = inner
+                                .iter()
+                                .map(|t| t.substitute(params, args).to_string())
+                                .collect();
+                            Self::Named(format!("{name}<{}>", inner.join(",")))
+                        }
+                        _ => self.clone(),
+                    }
+                }),
+            Self::Option(t) => Self::Option(sub(t)),
+            Self::List(t) => Self::List(sub(t)),
+            Self::Set(t) => Self::Set(sub(t)),
+            Self::Array(t, n) => Self::Array(sub(t), *n),
+            Self::Map(k, v) => Self::Map(sub(k), sub(v)),
+            Self::Tuple(ts) => Self::Tuple(ts.iter().map(|t| t.substitute(params, args)).collect()),
+            other => other.clone(),
         }
     }
 
@@ -421,6 +485,35 @@ mod tests {
         assert_eq!(Type::parse("fn(u8)"), named("fn(u8)"));
         let deep = format!("{}u8{}", "list<".repeat(40), ">".repeat(40));
         assert!(matches!(Type::parse(&deep), Type::Named(_)));
+    }
+
+    #[test]
+    fn named_types_split_into_their_entry_and_arguments() {
+        assert_eq!(
+            Type::parse("Page<Booking>").named_parts(),
+            Some(("Page".to_owned(), vec![named("Booking")]))
+        );
+        assert_eq!(
+            Type::parse("crate::types::Room").named_parts(),
+            Some(("Room".to_owned(), vec![]))
+        );
+        assert_eq!(
+            Type::parse("Either<u8,Vec<String>>").named_parts(),
+            Some((
+                "Either".to_owned(),
+                vec![Type::Int(Int::U8), Type::List(Box::new(Type::String))]
+            ))
+        );
+        assert_eq!(Type::String.named_parts(), None);
+        let params = ["T".to_owned()];
+        assert_eq!(
+            Type::parse("list<T>").substitute(&params, &[named("Item")]),
+            Type::List(Box::new(named("Item")))
+        );
+        assert_eq!(
+            Type::parse("Wrap<T>").substitute(&params, &[Type::String]),
+            named("Wrap<string>")
+        );
     }
 
     #[test]
