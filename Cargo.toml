@@ -1,12 +1,12 @@
 [workspace.package]
-version = "0.0.0" # managed by cargo-workspaces; see docs/RELEASE.md
+version = "0.0.0" # managed by cargo-workspaces; see RELEASING.md
 authors = ["Calimero Limited <info@calimero.network>"]
 edition = "2021"
 repository = "https://github.com/calimero-network/core"
 license = "MIT OR Apache-2.0"
 description = "Core Calimero infrastructure and tools"
 
-# Update workspace metadata (see docs/RELEASE.md for versioning and release)
+# Update workspace metadata (see RELEASING.md, "How a release is cut", for versioning and release)
 [workspace.metadata.workspaces]
 # Shared version of all public crates; bump this when cutting a release.
 version = "1.0.0-rc.15"
