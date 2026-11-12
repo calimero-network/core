@@ -101,7 +101,7 @@ jobs:
   rust:
     name: Rust
     if: ${{ !cancelled() }}
-    needs: [scope, rust-quick, rust-lint, rust-test-build, rust-test, rust-doctests, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, previous-release, upgrade-path]
+    needs: [scope, rust-quick, rust-lint, rust-test, rust-doctests, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, previous-release, upgrade-path]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -109,7 +109,7 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           # job -> the `scope` output that decides whether it runs
-          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test-build":"rust","rust-test":"rust","rust-doctests":"rust","rust-apps":"rust","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","previous-release":"rust","upgrade-path":"upgrade_path"}'
+          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test":"rust","rust-doctests":"rust","rust-apps":"rust","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","previous-release":"rust","upgrade-path":"upgrade_path"}'
         run: |
           jq -e --argjson gates "$GATES" '
             .scope.outputs as $scope
@@ -198,14 +198,20 @@ jobs:
         if: ${{ !cancelled() }}
         run: sccache --show-stats || true
 
-  # Compiles every workspace test once into a nextest archive; `rust-test`'s shards
-  # run it. The only job that saves `ci-checks`; the others restore it read-only.
-  rust-test-build:
-    name: Rust tests (build)
+  # The workspace tests in four shards. Each compiles the tests itself (rust-cache
+  # and sccache keep that short): a nextest archive of them was 8 GB, and
+  # downloading it took longer than building. Shard 1 saves `ci-checks` on
+  # master, the only job that does; the others restore it read-only.
+  rust-test:
+    name: Rust tests (${{ matrix.shard }}/4)
     needs: [scope, rust-quick]
     if: needs.scope.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -217,7 +223,7 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: ci-checks
-          save-if: ${{ github.ref == 'refs/heads/master' }}
+          save-if: ${{ github.ref == 'refs/heads/master' && matrix.shard == 1 }}
           sccache: true
 
       - name: Install cargo-nextest
@@ -225,72 +231,15 @@ jobs:
         with:
           tool: cargo-nextest@0.9.146,cargo-expand@1.0.127
 
-      - name: Build the workspace tests
-        run: cargo nextest archive --workspace --archive-file target/nextest-archive.tar.zst
-
-      - name: Upload the tests
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: nextest-archive
-          path: target/nextest-archive.tar.zst
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
-      - name: sccache stats
-        if: ${{ !cancelled() }}
-        run: sccache --show-stats || true
-
-  # The archive's tests in three shards, unpacked where they were built (the
-  # checkout's target dir), so paths compiled into them hold. Tests build app
-  # components on first use (crates/node/tests/common), through sccache; the
-  # rust-cache restore would only unpack what the archive already holds.
-  rust-test:
-    name: Rust tests (${{ matrix.shard }}/3)
-    needs: [scope, rust-test-build]
-    if: needs.scope.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          shared-key: ci-checks
-          rust-cache: false
-          sccache: true
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        with:
-          tool: cargo-nextest@0.9.146
-
-      - name: Download the tests
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: nextest-archive
-          path: target
-
       # PARTITION is unset in a local run (scripts/check-like-ci.py), which then runs them all.
       - name: Cargo test
         env:
-          PARTITION: count:${{ matrix.shard }}/3
+          PARTITION: count:${{ matrix.shard }}/4
         run: |
           FIRST_HOST=$(hostname -I | awk '{print $1}')
           export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
           echo "$TEST_HOSTS"
-          cargo nextest run --archive-file target/nextest-archive.tar.zst \
-            --workspace-remap . --extract-to . --extract-overwrite \
-            ${PARTITION:+--partition "$PARTITION"} --no-fail-fast
+          cargo nextest run --workspace ${PARTITION:+--partition "$PARTITION"} --no-fail-fast
 
       - name: sccache stats
         if: ${{ !cancelled() }}
