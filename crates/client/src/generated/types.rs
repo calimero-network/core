@@ -5,8 +5,10 @@
 //! Components keep their names; a type written inline in the document is
 //! named after where it is (`{Operation}Request`, `{Operation}Response`, then
 //! each property). A struct that answers carry keeps the fields this client
-//! does not name in `extra`; a string enum keeps a value it does not know in
-//! `Other`. A property that may be absent or `null` is `Option<Option<T>>`.
+//! does not name in `extra`; one only requests carry that the document closes
+//! (`additionalProperties: false`) refuses such a field when read, as the node
+//! would. A string enum keeps a value it does not know in `Other`. A property
+//! that may be absent or `null` is `Option<Option<T>>`.
 
 use std::collections::BTreeMap;
 
@@ -2146,6 +2148,7 @@ pub struct SignUpInvite {
 
 /// What an operator decision that names nothing in its body may carry: none at first, the operator's proof after the `428`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProofOnly {
     #[serde(rename = "operatorProof")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2161,6 +2164,7 @@ pub struct ConfirmOnly {
 
 /// The limits `POST /ops/quotas` changes, each optional: without `org`, the cluster's (those `GET /ops/quotas` answers, `maxFuelPerDeveloperPerDay` a decimal string); with `org`, one payer's (`maxConcurrentRuns`, `computeFuel` a decimal string, `maxFileBytes`; `null` clears one). `orgs` is ignored. Any other property is refused `400 UNKNOWN_QUOTA`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuotaChanges {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org: Option<String>,
@@ -2542,6 +2546,7 @@ impl<'de> Deserialize<'de> for AppMethodRequestConsistency {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppMethodRequest {
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     #[serde(
@@ -4057,6 +4062,7 @@ pub struct OpsPoolsSetRequestPoolsValue {
 
 /// The limits `POST /ops/quotas` changes, each optional: without `org`, the cluster's (those `GET /ops/quotas` answers, `maxFuelPerDeveloperPerDay` a decimal string); with `org`, one payer's (`maxConcurrentRuns`, `computeFuel` a decimal string, `maxFileBytes`; `null` clears one). `orgs` is ignored. Any other property is refused `400 UNKNOWN_QUOTA`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpsQuotasSetRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org: Option<String>,

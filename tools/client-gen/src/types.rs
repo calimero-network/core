@@ -109,6 +109,8 @@ enum Def {
         fields: Vec<Field>,
         /// Other fields may come: kept in `extra`.
         open: bool,
+        /// `additionalProperties: false`: the node refuses any other property.
+        closed: bool,
     },
     /// A string enum, open to values this client does not know.
     Enum(Vec<String>),
@@ -138,6 +140,9 @@ pub struct Types<'d> {
     names: BTreeSet<String>,
     /// Types answers reach: their structs keep fields this client does not name.
     answered: BTreeSet<String>,
+    /// Types a refusal's `details` reach (`x-calimero-error-details`): read
+    /// from the node, so never closed to fields it adds.
+    refused: BTreeSet<String>,
 }
 
 /// A schema's `description`, as doc-comment paragraphs: lines joined, list
@@ -188,6 +193,7 @@ impl<'d> Types<'d> {
             defs: Vec::new(),
             names: BTreeSet::new(),
             answered: BTreeSet::new(),
+            refused: BTreeSet::new(),
         };
         let components = doc["components"]["schemas"]
             .as_object()
@@ -204,6 +210,15 @@ impl<'d> Types<'d> {
                 Ty::Named(n) if n == *name => {}
                 ty => types.add(name, description(schema), Def::Alias(ty))?,
             }
+        }
+        let details = doc["x-calimero-error-details"].as_object();
+        for r in details.into_iter().flat_map(|m| m.values()) {
+            let Some(r) = r["$ref"].as_str() else {
+                bail!("x-calimero-error-details: a schema other than a $ref");
+            };
+            let ty = Ty::Named(ref_name(r).to_owned());
+            let refused = std::mem::take(&mut types.refused);
+            types.refused = types.reach(&ty, refused);
         }
         Ok(types)
     }
@@ -235,20 +250,27 @@ impl<'d> Types<'d> {
 
     /// Mark `ty` (and every type it reaches) as part of an answer.
     pub fn answer(&mut self, ty: &Ty) {
+        let answered = std::mem::take(&mut self.answered);
+        self.answered = self.reach(ty, answered);
+    }
+
+    /// `set` with `ty` and every type it reaches added.
+    fn reach(&self, ty: &Ty, mut set: BTreeSet<String>) -> BTreeSet<String> {
         match ty {
-            Ty::Vec(t) | Ty::Map(t) | Ty::Nullable(t) => self.answer(t),
+            Ty::Vec(t) | Ty::Map(t) | Ty::Nullable(t) => self.reach(t, set),
             Ty::Named(n) => {
-                if !self.answered.insert(n.clone()) {
-                    return;
+                if !set.insert(n.clone()) {
+                    return set;
                 }
-                let Some(def) = self.defs.iter().find(|d| d.name == *n).cloned() else {
-                    return;
+                let Some(def) = self.defs.iter().find(|d| d.name == *n) else {
+                    return set;
                 };
                 for t in reached(&def.def) {
-                    self.answer(&t);
+                    set = self.reach(&t, set);
                 }
+                set
             }
-            _ => {}
+            _ => set,
         }
     }
 
@@ -306,6 +328,7 @@ impl<'d> Types<'d> {
             }
             Some("object") | None if schema.get("properties").is_some() => {
                 let fields = self.fields(schema, name)?;
+                let closed = schema.get("additionalProperties") == Some(&Value::Bool(false));
                 let open = match schema.get("additionalProperties") {
                     Some(Value::Bool(false)) => false,
                     Some(_) => true,
@@ -313,7 +336,15 @@ impl<'d> Types<'d> {
                         .as_str()
                         .is_some_and(|d| d.contains(OTHER_PROPERTIES)),
                 };
-                self.add(name, doc, Def::Struct { fields, open })?;
+                self.add(
+                    name,
+                    doc,
+                    Def::Struct {
+                        fields,
+                        open,
+                        closed,
+                    },
+                )?;
                 Ty::Named(name.to_owned())
             }
             Some("object") => match schema.get("additionalProperties") {
@@ -532,8 +563,10 @@ impl<'d> Types<'d> {
              //! Components keep their names; a type written inline in the document is\n\
              //! named after where it is (`{Operation}Request`, `{Operation}Response`, then\n\
              //! each property). A struct that answers carry keeps the fields this client\n\
-             //! does not name in `extra`; a string enum keeps a value it does not know in\n\
-             //! `Other`. A property that may be absent or `null` is `Option<Option<T>>`.\n\n",
+             //! does not name in `extra`; one only requests carry that the document closes\n\
+             //! (`additionalProperties: false`) refuses such a field when read, as the node\n\
+             //! would. A string enum keeps a value it does not know in `Other`. A property\n\
+             //! that may be absent or `null` is `Option<Option<T>>`.\n\n",
         );
         if uses_word(&body, "BTreeMap") {
             out.push_str("use std::collections::BTreeMap;\n\n");
@@ -565,10 +598,21 @@ impl<'d> Types<'d> {
             doc_comment(out, "", doc);
         }
         match &d.def {
-            Def::Struct { fields, open } => {
+            Def::Struct {
+                fields,
+                open,
+                closed,
+            } => {
                 let extra = *open || self.answered.contains(name);
                 let default = self.has_default(&Ty::Named(name.clone()), &mut BTreeSet::new());
                 let _ = writeln!(out, "{}", self.derives(name, default));
+                // A closed object only ever sent (no answer or refusal reads
+                // it) refuses a property it does not list before it is sent,
+                // as the node would; what the node sends stays open to fields
+                // it adds later.
+                if *closed && !extra && !self.refused.contains(name) {
+                    out.push_str("#[serde(deny_unknown_fields)]\n");
+                }
                 let _ = writeln!(out, "pub struct {name} {{");
                 for f in fields {
                     emit_field(out, "    ", "pub ", f);
@@ -738,4 +782,59 @@ fn emit_enum(out: &mut String, name: &str, values: &[String]) {
         out,
         "            other => Self::Other(other.to_owned()),\n        }})\n    }}\n}}\n"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{Ty, Types};
+
+    /// The emitted definition of `name`, from its derive to its closing brace.
+    fn def_of<'a>(code: &'a str, name: &str) -> &'a str {
+        let end = code
+            .find(&format!("pub struct {name} {{"))
+            .expect("the struct is emitted");
+        let start = code[..end].rfind("#[derive").expect("a derive");
+        let close = code[end..].find("\n}\n").expect("a closing brace");
+        &code[start..end + close]
+    }
+
+    /// `additionalProperties: false` closes a body that is only sent; what the
+    /// node sends (an answer, a refusal's `details`) stays open to fields it adds.
+    #[test]
+    fn only_what_is_sent_refuses_unknown_fields() {
+        let closed = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": { "a": { "type": "string" } }
+        });
+        let doc = json!({
+            "x-calimero-error-details": {
+                "SOME_CODE": { "$ref": "#/components/schemas/Detail" }
+            },
+            "components": { "schemas": {
+                "Sent": closed,
+                "Answer": closed,
+                "Detail": closed,
+                "Unsaid": {
+                    "type": "object",
+                    "properties": { "a": { "type": "string" } }
+                }
+            } }
+        });
+        let mut types = Types::new(&doc).expect("the types");
+        types.answer(&Ty::Named("Answer".into()));
+        let code = types.emit();
+        assert!(
+            def_of(&code, "Sent").contains("#[serde(deny_unknown_fields)]"),
+            "{code}"
+        );
+        for open in ["Answer", "Detail", "Unsaid"] {
+            assert!(
+                !def_of(&code, open).contains("deny_unknown_fields"),
+                "{open}: {code}"
+            );
+        }
+    }
 }

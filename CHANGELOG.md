@@ -2,7 +2,13 @@
 
 ## [Unreleased]
 
-## [1.0.0-rc.16] - 2026-11-12
+## [1.0.0-rc.17] - 2026-11-12
+
+1.0.0-rc.16 was tagged but never published: its build failed on meroctl
+(#4982 merged before #4984's client regeneration). 1.0.0-rc.17 ships the same
+changes plus that fix. Its GitHub Release holds only `kv-store-test-fixture.mpk`;
+no binaries, crates, `merod` image or fleet bump exist for it, so nothing can
+run or upgrade from it, and the upgrade path stays pinned to 1.0.0-rc.15.
 
 ### Added
 
@@ -108,10 +114,11 @@
   release skips `SetClusterVersion`, which is logged only once every node
   supports it. **Rollout**: remove the old nodes (`DELETE /ops/nodes/{id}`)
   to finish one; a registered node that does not answer holds the version
-  back. **With this release**: the rc.16 features above turn on once every
-  registered node runs 1.0.0-rc.16 and the system leader logs that version;
-  until then they answer `409 FEATURE_NOT_ACTIVE`, and from then on no rc.15
-  node joins the system group.
+  back. **With this release**: the rc.16 features above (gated at
+  1.0.0-rc.16, which was never published) turn on once every registered node
+  runs 1.0.0-rc.17 and the system leader logs that version; until then they
+  answer `409 FEATURE_NOT_ACTIVE`, and from then on no rc.15 node joins the
+  system group.
 - **A release's runtime requirement holds across the cluster** (#4919). A
   release's `minRuntimeVersion` was checked only on the node that installed it,
   so in a cluster moving to a new release an app could be placed on, moved to,
@@ -332,6 +339,11 @@
 
 ### Fixed
 
+- **meroctl builds against the regenerated client** (#4994). #4982 moved meroctl
+  onto the generated route methods from a head older than #4984, whose
+  regenerated `blob_upload` no longer takes a content type, so master (and the
+  1.0.0-rc.16 release build) failed to compile `meroctl`. `meroctl blob upload`
+  sends the same request as before (`application/octet-stream`).
 - **`GET /ops/quotas` and `GET /ops/pools` read caught-up state** (#4962). Each read
   the node's own system replica as it stood, so an operator who set a quota
   through the leader and read it back through a follower could see the old
