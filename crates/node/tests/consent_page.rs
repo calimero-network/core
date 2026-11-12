@@ -1251,6 +1251,10 @@ async fn a_publisher_upgraded_package_is_not_upgraded_on_the_owners_page() {
 }
 
 /// `POST path` with `body` over the client's sealed transport, as JSON.
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error, passed through for the test to read its status"
+)]
 async fn post(
     c: &calimero_client::Client,
     path: &str,
@@ -1262,6 +1266,10 @@ async fn post(
 }
 
 /// `GET path` over the client's sealed transport, as JSON.
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error, passed through for the test to read its status"
+)]
 async fn get(c: &calimero_client::Client, path: &str) -> Result<Value, calimero_client::Error> {
     c.transport().json(Request::new(Method::GET, path)).await
 }
@@ -1277,7 +1285,7 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
     let (bob, bob_key) = signed_up(&c, 2, "bob").await;
-    let bob_id = bob.me().await.unwrap()["accountId"]
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -1350,7 +1358,7 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     assert_eq!(result["status"], "approved", "{result}");
     assert_eq!(result["kind"], "createOrg");
     let org = result["outcome"]["orgId"].as_str().unwrap().to_owned();
-    let alice_id = alice.me().await.unwrap()["accountId"]
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
