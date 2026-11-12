@@ -344,7 +344,6 @@ run or upgrade from it, and the upgrade path stays pinned to 1.0.0-rc.15.
   regenerated `blob_upload` no longer takes a content type, so master (and the
   1.0.0-rc.16 release build) failed to compile `meroctl`. `meroctl blob upload`
   sends the same request as before (`application/octet-stream`).
-
 - **`GET /ops/quotas` and `GET /ops/pools` read caught-up state** (#4962). Each read
   the node's own system replica as it stood, so an operator who set a quota
   through the leader and read it back through a follower could see the old
