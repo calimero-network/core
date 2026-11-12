@@ -3,7 +3,7 @@
 ## Package Identity
 
 - **Crate**: `calimero-sdk-macros` (`publish = false`, prototype; proc-macro); re-exported by `calimero-sdk` as `calimero_sdk::app::*` and `calimero_sdk::Record`. Apps never depend on it directly.
-- **Entry**: `src/lib.rs`; `state.rs` (`#[app::state]`), `logic.rs` (`#[app::logic]`, the dispatcher and the ABI), `payload.rs` (`#[app::error]`, `#[app::event]`), `record.rs` (`#[derive(Record)]` + `#[table]`), `types.rs` (camelCase, ABI type names, 64-bit integer detection)
+- **Entry**: `src/lib.rs`; `state.rs` (`#[app::state]`), `logic.rs` (`#[app::logic]`, the dispatcher and the ABI), `payload.rs` (`#[app::error]`, `#[app::event]`), `record.rs` (`#[derive(Record)]` + `#[table]`), `abi_type.rs` (`#[derive(AbiType)]`), `types.rs` (camelCase, ABI type names, 64-bit integer detection, the `types` probes)
 - **Spec**: `docs/specs/app-runtime-v0.14.md` SDK reference ("Defining an app", "Errors", "Numbers across languages", "Actions, timers and migrations"), section 4 host rules, D13, D20, D48, D51
 
 ## What This Crate Does
@@ -20,6 +20,10 @@
 Every object's keys are written in sorted order (`types::canonical`, never `serde_json::Map` order), so the bytes do not depend on serde_json's `preserve_order`, which the core workspace unifies in through dcap-qvl; the unit tests turn that feature on to prove it.
 
 `{"abiVersion":1,"world":"calimero:app@0.5.1","state":{"fields":{field:kind},"search":{field:[textField,..]},"version":N},"methods":{name:{"kind":"init|call|view|timer|action|compute","params":[[name,type]],"returns":type|null,"confirm","public","allowSystem"[,"every"][,"rate"][,"allowApps"][,"allowAction"][,"compute":{"fuel"[,"memoryMib"][,"wallSecs"],"result"}][,"computeResult":true]}},"errors":{code:{field:type}},"events":{name:{field:type}}}`. `every` appears on timers only and `compute` on compute methods only (the host refuses them elsewhere); a compute method has kind `compute`, so a host that does not know it refuses the bundle instead of serving it as a call. Types: Rust integer/float/bool names, `string`, `bytes`, `option<T>`, `list<T>`, `tuple<..>`, `unit`, else the Rust type name.
+
+## The `types` section
+
+`#[derive(Record)]` and `#[derive(AbiType)]` implement `calimero_sdk::abi::AbiType`: a `TypeDef` whose `shape` is the type's JSON shape (canonical JSON, the format in `crates/sdk/src/abi.rs`) and whose `deps` name the types its fields refer to. `#[app::logic]` (method params and results) and `#[app::error]` / `#[app::event]` (`__CALIMERO_ABI_ERROR_TYPES` / `_EVENT_TYPES`, shadowing `abi_defaults` like the ABI strings) name every app type through `__private::Probe::<T>::DEF`: `Some` when `T: AbiType` (an inherent constant), else `None` (the `NoShape` trait's), so a type without a derive is left out rather than refused. `abi::types_json` walks the graph at compile time, keeps each name once, sorts by name and writes `,"types":{..}` before `world`, or nothing when no type has a shape (an app without one keeps its ABI bytes). It is a free-form key (D51): no `abiVersion` bump. Limits: a type's own name and generic parameters are skipped as dependencies (self-recursion compiles); two mutually recursive described types are a const-evaluation cycle. `AbiType` reads serde's attributes and refuses what it cannot describe, and a `u64`/`i64`/`Vec<u8>` field without its D20 `with` (Ruling 27's rule, for plain serde).
 
 ## Rules
 

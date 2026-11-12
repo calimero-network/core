@@ -32,6 +32,14 @@
 //! Builds the kv component `apps/v2-fixtures/kv` (see `tests/harness/cluster.rs`).
 //! Not a criterion bench: one run is a few seconds of load per row, reported once.
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 use std::collections::HashMap;
 use std::io::{Read as _, Write as _};
 use std::net::{Shutdown, TcpListener, TcpStream};

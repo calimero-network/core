@@ -27,7 +27,7 @@ beside it) has its commands and detail. The same index, for agents, is
 | `crates/log` | `calimero-log` | Multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration. |
 | `crates/sealed` | `calimero-sealed` | The sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js. |
 | `crates/identity` | `calimero-identity` | WebAuthn passkeys, session tokens, API keys, confirm challenges; `testing`: a software authenticator. |
-| `crates/client` | `calimero-client` | The Rust client: attestation check (shared with peers), sealed requests, sign-in, calls and views. |
+| `crates/client` | `calimero-client` | The Rust client: attestation check (shared with peers), sealed requests, sign-in, and a route layer generated from the node's OpenAPI document (`client.<group>().<method>()`). |
 | `crates/kms-client` | `calimero-kms-client` | The mero-kms client: release-policy check, key release, `kms disk-key`. |
 | `crates/outbound` | `calimero-outbound` | The gated outbound HTTPS client and secrets a run may use. |
 | `crates/search` | `calimero-search` | Per-app full-text search (tantivy), built in memory from apps' search exports. |
@@ -58,7 +58,8 @@ changing these.
 | `crates/app-engine-wasmtime` | `calimero-app-engine-wasmtime` | The wasmtime engine for components: fuel, epochs, limits and a checked cache. |
 | `crates/sdk` (+ `sdk-macros`) | `calimero-sdk`, `calimero-sdk-macros` | The Rust app SDK for `calimero:app`: app attributes, encoding, tables, collections, env and the embedded ABI. |
 | `crates/app-sdk` | `calimero-app-sdk` | The SDK's old name: re-exports `calimero-sdk`, kept until no app depends on it. |
-| `crates/app-build` | `calimero-app-build` | Builds Rust guests into `calimero:app` components (`mero-app-build`). |
+| `crates/app-build` | `calimero-app-build` | Builds Rust guests into `calimero:app` components (`mero-app-build`); `codegen` and `abi-diff`. |
+| `crates/app-abi` | `calimero-app-abi` | An app's ABI for clients: the OpenAPI document the node serves, typed TS/Python clients, breaking-change checks. |
 
 ## Shared types
 
@@ -80,3 +81,4 @@ changing these.
 | --- | --- | --- |
 | `tools/mero-sign` | `mero-sign` | Sign bundle manifests. |
 | `tools/mero-compute` | `mero-compute` | Run one compute method of a compute component alone, with a job node's engine and caps. |
+| `tools/client-gen` | `calimero-client-gen` | Generate `calimero-client`'s route layer from `docs/public/openapi.json`; its test fails while the checked-in code is stale. |

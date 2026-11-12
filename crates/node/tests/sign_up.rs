@@ -10,6 +10,14 @@
 //! made under says which cluster, and a sign-in with one this cluster does
 //! not hold says so (`401 PASSKEY_UNKNOWN_HERE`).
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 use calimero_client::{Client, Passkey};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::system::{SignUp, SystemCmd};

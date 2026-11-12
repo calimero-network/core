@@ -67,8 +67,10 @@ pub async fn ops_signed(
     path: &str,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, calimero_client::Error> {
+    let req = calimero_client::Request::new(reqwest::Method::POST, path).json(body);
     client
-        .post_operator_signed(path, body, &operator_sign)
+        .transport()
+        .approved(req, None, Some(&operator_sign))
         .await
 }
 

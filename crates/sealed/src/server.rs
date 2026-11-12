@@ -140,9 +140,14 @@ const MAX_HEAD_LEN: usize = MAX_FRAME_DATA; // an inner request's head, as large
 /// make the node do and how fast they can churn the session table. It is
 /// node-wide because the node cannot tell clients apart: behind a proxy every
 /// connection comes from the proxy. Per-client limits belong where client
-/// addresses are known.
+/// addresses are known. It covers anonymous (NK) handshakes only.
 const HANDSHAKES_PER_SECOND: f64 = 100.0;
 const HANDSHAKE_BURST: f64 = 200.0;
+/// The same for identified (IK) handshakes, the ones peers open, in a bucket of
+/// their own: a flood of anonymous handshakes never keeps a peer from opening
+/// its session.
+const IDENTIFIED_HANDSHAKES_PER_SECOND: f64 = 50.0;
+const IDENTIFIED_HANDSHAKE_BURST: f64 = 100.0;
 /// How often expired sessions are swept, which bounds how long their keys
 /// outlive them.
 const EXPIRY_SWEEP: Duration = Duration::from_secs(30);
@@ -212,6 +217,7 @@ pub struct SealedTransport {
     public: [u8; 32],
     sessions: Mutex<Sessions>,
     handshakes: Mutex<HandshakeLimit>,
+    identified_handshakes: Mutex<HandshakeLimit>,
     /// Bytes of [`MAX_SEALED_IN_FLIGHT`] not held by a request.
     in_flight: Arc<Semaphore>,
     /// Where the envelope is served: the root, and the path prefix if any.
@@ -251,7 +257,16 @@ impl SealedTransport {
             secret,
             public,
             sessions: Mutex::default(),
-            handshakes: Mutex::new(HandshakeLimit::full(Instant::now())),
+            handshakes: Mutex::new(HandshakeLimit::full(
+                HANDSHAKES_PER_SECOND,
+                HANDSHAKE_BURST,
+                Instant::now(),
+            )),
+            identified_handshakes: Mutex::new(HandshakeLimit::full(
+                IDENTIFIED_HANDSHAKES_PER_SECOND,
+                IDENTIFIED_HANDSHAKE_BURST,
+                Instant::now(),
+            )),
             in_flight: Arc::new(Semaphore::new(MAX_SEALED_IN_FLIGHT)),
             mounts: vec![String::new()],
             unsealed_allowed,
@@ -355,14 +370,18 @@ enum Endpoint {
 
 /// A token bucket over handshakes.
 struct HandshakeLimit {
+    per_second: f64,
+    burst: f64,
     tokens: f64,
     refilled: Instant,
 }
 
 impl HandshakeLimit {
-    const fn full(now: Instant) -> Self {
+    const fn full(per_second: f64, burst: f64, now: Instant) -> Self {
         Self {
-            tokens: HANDSHAKE_BURST,
+            per_second,
+            burst,
+            tokens: burst,
             refilled: now,
         }
     }
@@ -370,8 +389,8 @@ impl HandshakeLimit {
     fn admit(&mut self, now: Instant) -> bool {
         let elapsed = now.saturating_duration_since(self.refilled).as_secs_f64();
         self.tokens = elapsed
-            .mul_add(HANDSHAKES_PER_SECOND, self.tokens)
-            .min(HANDSHAKE_BURST);
+            .mul_add(self.per_second, self.tokens)
+            .min(self.burst);
         self.refilled = now;
         if self.tokens < 1.0 {
             return false;
@@ -449,8 +468,19 @@ pub async fn intercept(
 }
 
 async fn handshake(transport: &SealedTransport, request: Request) -> Result<Response, Refusal> {
-    let admitted = transport
-        .handshakes
+    // At most a handshake's length is read before the limit: the version
+    // byte names the bucket it draws on.
+    let body = to_bytes(request.into_body(), IDENTIFIED_HANDSHAKE_LEN)
+        .await
+        .map_err(|_| malformed())?;
+    let (&[version], rest) = body.split_first_chunk::<1>().ok_or_else(malformed)?;
+    let identified = version == IDENTIFIED_VERSION;
+    let limit = if identified {
+        &transport.identified_handshakes
+    } else {
+        &transport.handshakes
+    };
+    let admitted = limit
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .admit(Instant::now());
@@ -461,11 +491,6 @@ async fn handshake(transport: &SealedTransport, request: Request) -> Result<Resp
             message: "too many sealed sessions are being opened; retry shortly",
         });
     }
-    let body = to_bytes(request.into_body(), IDENTIFIED_HANDSHAKE_LEN)
-        .await
-        .map_err(|_| malformed())?;
-    let (&[version], rest) = body.split_first_chunk::<1>().ok_or_else(malformed)?;
-    let identified = version == IDENTIFIED_VERSION;
     if !identified {
         check_version(version)?;
     }

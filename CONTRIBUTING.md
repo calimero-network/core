@@ -50,6 +50,9 @@ The shared release version of the public crates is `version` under
 
 ## Cutting a release
 
+[RELEASING.md](RELEASING.md) has the whole flow, what a release publishes,
+and the rules for titles and breaking changes shared by every repository.
+
 A release PR (`chore(release): cut X`) sets that version and adds a dated
 `CHANGELOG.md` section for the changes since the last release; merging it to
 master publishes the release (`release.yml`: the tag, the binaries, the image).

@@ -8,6 +8,8 @@
     "  npm   — declares @calimero-network/* packages in some package.json",
     "  tee   — links no SDK either; builds the confidential-VM image the hosted",
     "          fleet runs, which BUNDLES a merod named in mero-tee/versions.json",
+    "  openapi — vendors docs/public/openapi.json and generates its client from",
+    "          it; openapi-sync.yml asks it to re-sync when master's copy changes",
     "",
     "mero-tee was missing from this list until rc.39 and nothing noticed: it sat",
     "on merod 0.11.0-rc.35 across four releases — 37 commits, including every",
@@ -72,7 +74,11 @@
     { "repo": "mero-tag", "surfaces": ["cargo"] },
     { "repo": "app-registry", "surfaces": ["npm"] },
     { "repo": "calimero-studio", "surfaces": ["cargo"] },
-    { "repo": "mero-tee", "surfaces": ["tee"] }
+    { "repo": "mero-tee", "surfaces": ["tee"] },
+    { "repo": "mero-js", "surfaces": ["openapi"] },
+    { "repo": "calimero-client-py", "surfaces": ["openapi"] },
+    { "repo": "swift-sdk", "surfaces": ["openapi"] },
+    { "repo": "kotlin-sdk", "surfaces": ["openapi"] }
   ],
 
   "_retired_note": [

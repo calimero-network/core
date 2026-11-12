@@ -2,7 +2,11 @@
 
 The command line for Calimero nodes (`merod`): one command tree over the
 node's API, through `calimero-client` (every request attested and
-sealed; the node's quote is judged before anything is sent).
+sealed; the node's quote is judged before anything is sent). Each command
+calls the client's generated route methods (`client.orgs().invite_create(..)`,
+from the node's OpenAPI document; `crates/client/AGENTS.md`) and prints the
+typed answer serialized back to JSON; `raw` and `proxy` send any route through
+`Transport`.
 
 | v1 | here | API |
 | --- | --- | --- |
@@ -31,9 +35,14 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   an id (`Env::app`).
 - What an owner approves (`context update`, `context transfer`, `namespace delete`, approvals,
   `group upgrade trigger/retry`, `app origins add/remove`) takes `--dev-passkey FILE` on a development
-  cluster (`Env::post_approved`, `delete_approved`); without it the request is
-  sent as is and the node answers `412 CONFIRM_REQUIRED`: on a real cluster
-  the owner approves in the console.
+  cluster: `DevPasskey` loads it, gives it to the generated method as its
+  `passkey` (the routes the document marks `x-calimero-step-up`) and saves it
+  after; without it the request is sent as is and the node answers `412
+  CONFIRM_REQUIRED`: on a real cluster the owner approves in the console. `raw`
+  does the same for any route (`Env::raw`, `Transport::confirmed`).
+- An `ops` decision the document marks `x-calimero-operator` is signed with
+  `--operator-key-file` (the generated method's `operator`); without the key
+  the node's `428 OPERATOR_SIGNATURE_REQUIRED` comes back with a hint to pass it.
 - `proxy` (`proxy.rs`) holds the user's credential for every local caller, so
   it binds to loopback (`--allow-remote` lifts that and the `Host` check, with
   a warning), refuses a non-loopback `Host` (DNS rebinding) and any request a
@@ -41,8 +50,13 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   before serving, passes a request's own `Authorization` through unrefreshed,
   and logs method, path and status only (never a header, query or body). Test:
   `the_proxy_serves_the_api_as_plain_http` in `tests/cli.rs`.
-- Output is JSON; commands that stream (watch, presence stream, metrics,
-  downloads) write their own and answer `null`, which is not printed.
+- Output is JSON: the generated method's typed answer serialized back
+  (`env::to_json`); a field the client's types do not name is kept (`extra`),
+  so nothing the node sent is dropped. JSON a command takes for a closed body
+  (`ops set-quotas`) is refused on a key the body does not name, before it is
+  sent. Test: `a_misspelled_quota_is_refused_before_it_is_sent`. Commands that stream (watch, presence
+  stream, metrics, downloads) write their own and answer `null`, which is not
+  printed.
 
 ```bash
 cargo test -p meroctl        # every command group against an in-process 3-node cluster (builds apps/v2-fixtures/kv)

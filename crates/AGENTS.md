@@ -17,7 +17,7 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 - [log](log/AGENTS.md) (`calimero-log`) - multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration.
 - [sealed](sealed/AGENTS.md) (`calimero-sealed`) - the sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js.
 - [identity](identity/AGENTS.md) (`calimero-identity`) - WebAuthn passkeys, session tokens, API keys, confirm challenges.
-- [client](client/AGENTS.md) (`calimero-client`) - the Rust client; `attest::verify` is the one quote check clients and peers share.
+- [client](client/AGENTS.md) (`calimero-client`) - the Rust client; `attest::verify` is the one quote check clients and peers share; its route layer is generated from the node's OpenAPI document (`tools/client-gen`).
 - [kms-client](kms-client/AGENTS.md) (`calimero-kms-client`) - the mero-kms client: release policy, key release, `kms disk-key`.
 - [outbound](outbound/AGENTS.md) (`calimero-outbound`) - the gated outbound HTTPS client and secrets for runs.
 - [search](search/AGENTS.md) (`calimero-search`) - per-app full-text search (tantivy), derived in memory.
@@ -40,7 +40,8 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 - [sdk](sdk/AGENTS.md) (`calimero-sdk`) - the Rust app SDK runtime for components.
 - [app-sdk](app-sdk/AGENTS.md) (`calimero-app-sdk`) - the SDK's old name: a re-export of `calimero-sdk`, kept while apps move over.
 - [sdk-macros](sdk-macros/AGENTS.md) (`calimero-sdk-macros`) - the `app` attributes.
-- [app-build](app-build/AGENTS.md) (`calimero-app-build`) - Rust guest to `calimero:app` component; `mero-app-build <crate-dir> --out <file>`.
+- [app-build](app-build/AGENTS.md) (`calimero-app-build`) - Rust guest to `calimero:app` component; `mero-app-build <crate-dir> --out <file>`, `codegen`, `abi-diff`.
+- [app-abi](app-abi/AGENTS.md) (`calimero-app-abi`) - an app's ABI for clients: its OpenAPI document, typed TS/Python clients, breaking-change checks.
 
 SDK 0.12 (the 0.x `calimero-sdk`, `calimero-storage`, `calimero-runtime` on wasmer, and
 its `wasm-abi/1` schema, `calimero-wasm-abi`) is gone, and its crate name now belongs to

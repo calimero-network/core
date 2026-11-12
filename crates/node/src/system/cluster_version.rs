@@ -128,8 +128,8 @@ impl Feature {
             | Self::RestoreApp
             | Self::RenameOrg
             | Self::TeamMembersBatch
-            | Self::AppTeamChildTeams
-            | Self::CurrentRules => "1.0.0-rc.16",
+            | Self::AppTeamChildTeams => "1.0.0-rc.16",
+            Self::CurrentRules => "1.0.0-rc.19",
         }
     }
 }
@@ -470,6 +470,8 @@ mod tests {
     const RC14: &str = "1.0.0-rc.14";
     const RC15: &str = "1.0.0-rc.15";
     const RC16: &str = "1.0.0-rc.16";
+    /// The release the newest features first ship in.
+    const NEWEST: &str = "1.0.0-rc.19";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -722,7 +724,7 @@ mod tests {
     /// the leader raises the cluster version and the features work.
     #[test]
     fn a_feature_is_never_proposed_while_an_older_node_holds_the_log() {
-        let mut nodes = cluster(&[RC16, RC16, RC14]);
+        let mut nodes = cluster(&[NEWEST, NEWEST, RC14]);
         for feature in FEATURES {
             let cmd = uses(feature);
             let needs = cmd.features();
@@ -747,9 +749,9 @@ mod tests {
         assert!(propose(&mut nodes, &plain).is_ok());
         assert!(same_state(&nodes));
 
-        // The rc.14 node is replaced by one on rc.16 (mdma adds the new
-        // node, then removes the old one).
-        nodes[2].release = RC16;
+        // The rc.14 node is replaced by one on the newest release (mdma
+        // adds the new node, then removes the old one).
+        nodes[2].release = NEWEST;
         let raise = uses(Feature::ClusterVersion);
         propose(&mut nodes, &raise).unwrap();
         assert!(nodes

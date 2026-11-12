@@ -1,0 +1,162 @@
+name: OpenAPI sync
+
+# Tells every SDK that generates its client from docs/public/openapi.json that
+# master's document changed. Each SDK's own openapi-sync.yml (a caller of
+# sdk-openapi-sync.yml here) then re-vendors the document at this commit,
+# regenerates, and opens or refreshes one pull request, so its own CI judges the
+# change. The SDKs are the `openapi` surface in .github/fleet.json.
+#
+# The notice also carries what this commit did to the API against its parent
+# (scripts/openapi-classify.py: `client_payload.bump` is breaking, additive,
+# other or none, `client_payload.summary` the counts). That is for whoever
+# reads the event; the SDK titles its pull request from its own diff, the
+# document it vendors now against the new one, which can span several commits.
+#
+# Uses a GitHub App token, as fleet-bump.yml does: a repository_dispatch needs
+# write access to the target repository, which GITHUB_TOKEN never has.
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - docs/public/openapi.json
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Comma-separated subset of the openapi repos in fleet.json (blank = all)"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "List the repositories and the commit, but send nothing"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# Never cancel: a later push carries a later commit, and each SDK syncs to the
+# commit it is sent, so an earlier notice that still lands does no harm.
+concurrency:
+  group: openapi-sync-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Decide which repositories to notify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      targets: ${{ steps.pick.outputs.targets }}
+      bump: ${{ steps.classify.outputs.bump || 'unknown' }}
+      summary: ${{ steps.classify.outputs.summary || 'not classified' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The parent too, to classify the change against.
+          fetch-depth: 2
+          persist-credentials: false
+
+      # Informational: a failure here still sends the notice, as `unknown`.
+      - name: Classify the change against the parent
+        id: classify
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          OASDIFF=$(scripts/install-oasdiff.sh)
+          export OASDIFF
+          git show HEAD^:docs/public/openapi.json > "$RUNNER_TEMP/parent.json" 2>/dev/null || : > "$RUNNER_TEMP/parent.json"
+          python3 scripts/openapi-classify.py "$RUNNER_TEMP/parent.json" docs/public/openapi.json \
+            --markdown "$RUNNER_TEMP/api.md" > "$RUNNER_TEMP/class.json"
+          bump=$(jq -r .class "$RUNNER_TEMP/class.json")
+          summary=$(jq -r .summary "$RUNNER_TEMP/class.json")
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+          echo "summary=$summary" >> "$GITHUB_OUTPUT"
+          {
+            echo "## API change: $bump ($summary)"
+            echo
+            cat "$RUNNER_TEMP/api.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Select the targets
+        id: pick
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+          targets=$(jq -c --arg only "${ONLY:-}" '
+            [ .consumers[] | select(.surfaces | index("openapi")) | .repo ]
+            | if $only == "" then .
+              else
+                ( $only | split(",") | map(sub("^ +";"") | sub(" +$";"")) ) as $want
+                | map(select(. as $r | $want | index($r)))
+              end
+          ' .github/fleet.json)
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Selected: $targets"
+          if [ "$targets" = "[]" ]; then
+            echo "::warning::No targets selected — check the 'only' filter against .github/fleet.json"
+          fi
+
+  notify:
+    name: ${{ matrix.repo }}
+    needs: plan
+    if: needs.plan.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      # One repository failing must not stop the others from being told.
+      fail-fast: false
+      matrix:
+        repo: ${{ fromJSON(needs.plan.outputs.targets) }}
+    steps:
+      - name: Describe the notice
+        env:
+          REPO: ${{ matrix.repo }}
+          SHA: ${{ github.sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          BUMP: ${{ needs.plan.outputs.bump }}
+          SUMMARY: ${{ needs.plan.outputs.summary }}
+        run: |
+          {
+            echo "### ${REPO}"
+            echo
+            echo "core commit \`${SHA}\`, API change ${BUMP} (${SUMMARY})$([ "${DRY_RUN}" = "true" ] && echo ' (dry run: nothing sent)')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Scoped to the single repository this matrix leg notifies.
+      - name: Mint a token for ${{ matrix.repo }}
+        if: inputs.dry_run != true
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ACTIONS_APP_ID }}
+          private-key: ${{ secrets.ACTIONS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.repo }}
+          # A repository_dispatch needs contents write and nothing else.
+          permission-contents: write
+
+      # The SDK's openapi-sync.yml listens for `core-openapi` and syncs to
+      # `client_payload.commit`; with nothing new there it opens no pull request.
+      # `bump` and `summary` are informational (see the top of this file).
+      - name: Send core-openapi
+        if: inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository_owner }}/${{ matrix.repo }}
+          SHA: ${{ github.sha }}
+          BUMP: ${{ needs.plan.outputs.bump }}
+          SUMMARY: ${{ needs.plan.outputs.summary }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/${REPO}/dispatches" \
+            -f event_type=core-openapi \
+            -f "client_payload[commit]=${SHA}" \
+            -f "client_payload[repository]=${GITHUB_REPOSITORY}" \
+            -f "client_payload[bump]=${BUMP}" \
+            -f "client_payload[summary]=${SUMMARY}"
+          echo "::notice::${REPO}: sent core-openapi for ${SHA} (${BUMP}: ${SUMMARY})"

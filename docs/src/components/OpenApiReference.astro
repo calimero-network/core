@@ -1,0 +1,145 @@
+---
+// The node API reference, rendered at build time from public/openapi.json: the OpenAPI 3.1
+// document crates/node/src/api/openapi.rs generates and its tests keep current. One section
+// per tag, one entry per operation: who may call it, its parameters, body, answer and the
+// error codes it lists. Schemas are shown in a compact TypeScript-like notation.
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const doc = JSON.parse(readFileSync(join(process.cwd(), 'public', 'openapi.json'), 'utf8'));
+const schemas = doc.components.schemas;
+
+/** `text` with `code` spans and **bold**, HTML-escaped. */
+function inline(text = '') {
+  const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return esc
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+}
+
+/** A schema as a type expression; components by name. */
+function show(s, depth = 0) {
+  if (!s || Object.keys(s).length === 0) return 'any';
+  if (s.$ref) return s.$ref.split('/').pop();
+  if (s.const !== undefined) return JSON.stringify(s.const);
+  if (s.enum) return s.enum.map((v) => JSON.stringify(v)).join(' | ');
+  if (s.anyOf) return s.anyOf.map((a) => show(a, depth)).join(' | ');
+  if (s.oneOf) return s.oneOf.map((a) => show(a, depth)).join(' | ');
+  // OpenAPI 3.1's nullable: `type: [T, "null"]`.
+  if (Array.isArray(s.type)) {
+    return s.type.map((t) => (t === 'null' ? 'null' : show({ ...s, type: t }, depth))).join(' | ');
+  }
+  if (s.allOf) return s.allOf.map((a) => show(a, depth)).join(' & ');
+  if (s.type === 'array') {
+    const item = show(s.items, depth);
+    return /[ |]/.test(item) && !item.startsWith('{') ? `(${item})[]` : `${item}[]`;
+  }
+  if (s.type === 'object') {
+    const props = Object.entries(s.properties ?? {});
+    const required = new Set(s.required ?? []);
+    const pad = '  '.repeat(depth + 1);
+    const lines = props.map(([k, v]) => `${pad}${k}${required.has(k) ? '' : '?'}: ${show(v, depth + 1)}`);
+    if (s.additionalProperties && s.additionalProperties !== false) {
+      lines.push(`${pad}[key: string]: ${show(s.additionalProperties, depth + 1)}`);
+    }
+    if (lines.length === 0) return '{}';
+    return `{\n${lines.join(',\n')}\n${'  '.repeat(depth)}}`;
+  }
+  if (s.type === 'string' && s.pattern) return 'string /* decimal */';
+  return s.type ?? 'any';
+}
+
+const methodOrder = ['get', 'post', 'put', 'delete'];
+const byTag = new Map(doc.tags.map((t) => [t.name, { ...t, ops: [] }]));
+for (const [path, item] of Object.entries(doc.paths)) {
+  for (const method of methodOrder) {
+    const op = item[method];
+    if (op) byTag.get(op.tags[0]).ops.push({ path, method, ...op });
+  }
+}
+const slug = (op) => op.operationId.replace(/_/g, '-');
+const bodyOf = (op) => {
+  const content = op.requestBody?.content ?? {};
+  const [media, { schema } = {}] = Object.entries(content)[0] ?? [];
+  return media ? { media, schema, required: op.requestBody.required, description: op.requestBody.description } : null;
+};
+const okOf = (op) => {
+  const r = op.responses['200'];
+  const [media, { schema } = {}] = Object.entries(r.content ?? {})[0] ?? [];
+  return { media, schema, description: r.description };
+};
+const errorsOf = (op) =>
+  Object.entries(op.responses)
+    .filter(([status]) => status !== '200')
+    .map(([status, r]) => ({ status, description: r.description }));
+---
+
+<p>
+  {doc.info.title}, OpenAPI {doc.openapi}: <a href={`${import.meta.env.BASE_URL.replace(/\/?$/, '/')}openapi.json`}>openapi.json</a>
+  ({Object.keys(doc.paths).length} paths). Shared schemas are listed <a href="#schemas">at the end</a>.
+</p>
+
+{[...byTag.values()].map((tag) => (
+  <section>
+    <h2 id={tag.name.toLowerCase().replace(/[^a-z]+/g, '-')}>{tag.name}</h2>
+    <p set:html={inline(tag.description)} />
+    {tag.ops.map((op) => {
+      const body = bodyOf(op);
+      const ok = okOf(op);
+      return (
+        <div class="api-op">
+          <h3 id={slug(op)}><code>{op.method.toUpperCase()} {op.path}</code></h3>
+          <p><strong>{op.summary}.</strong>{op['x-calimero-sealed'] ? ' Sealed.' : ' In the clear.'}</p>
+          <p set:html={inline(op.description)} />
+          {(op.parameters ?? []).length > 0 && (
+            <table>
+              <thead><tr><th>Parameter</th><th>In</th><th>Type</th></tr></thead>
+              <tbody>
+                {op.parameters.map((p) => (
+                  <tr><td><code>{p.name}{p.required ? '' : '?'}</code></td><td>{p.in}</td><td><code>{show(p.schema)}</code></td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {body && (
+            <>
+              <p>Body ({body.media}{body.required ? '' : ', optional'}){body.description ? ': ' : ''}<span set:html={inline(body.description ?? '')} /></p>
+              {body.media === 'application/json' && <pre><code>{show(body.schema)}</code></pre>}
+            </>
+          )}
+          <p>Answer ({ok.media}){ok.media === 'application/json' ? '' : ': '}<span set:html={ok.media === 'application/json' ? '' : inline(ok.description)} /></p>
+          {ok.media === 'application/json' && <pre><code>{show(ok.schema)}</code></pre>}
+          {errorsOf(op).length > 0 && (
+            <table>
+              <thead><tr><th>Status</th><th>Codes</th></tr></thead>
+              <tbody>
+                {errorsOf(op).map((e) => (
+                  <tr><td>{e.status}</td><td set:html={inline(e.description)} /></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      );
+    })}
+  </section>
+))}
+
+<h2 id="schemas">Schemas</h2>
+{Object.entries(schemas).map(([name, s]) => (
+  <div class="api-op">
+    <h3 id={`schema-${name.toLowerCase()}`}><code>{name}</code></h3>
+    <p set:html={inline(s.description)} />
+    <pre><code>{show({ ...s, description: undefined })}</code></pre>
+  </div>
+))}
+
+<style>
+  .api-op {
+    border-top: 1px solid var(--sl-color-gray-6);
+    padding-top: 0.5rem;
+  }
+  .api-op pre {
+    white-space: pre-wrap;
+  }
+</style>

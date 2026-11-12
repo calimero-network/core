@@ -405,7 +405,10 @@ jobs:
             esac
             version=${image##*:}
           else
-            version=$(gh api "repos/$REPO/releases?per_page=20" --jq '[.[] | select(.draft | not)][0].tag_name')
+            # The newest release that published merod: a tagged release whose build
+            # failed (1.0.0-rc.16) has no binaries and no image to pull.
+            version=$(gh api "repos/$REPO/releases?per_page=20" \
+              --jq '[.[] | select(.draft | not) | select(any(.assets[]; .name | startswith("merod_")))][0].tag_name')
             image="ghcr.io/${OWNER,,}/merod:$version"
           fi
           docker pull --platform linux/amd64 "$image"
@@ -708,13 +711,16 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
+          # No package-manager cache: this workflow also publishes, and a cache
+          # restored here could be poisoned by another branch (zizmor cache-poisoning).
+          package-manager-cache: false
 
       - name: mero-js cluster tests
         working-directory: _mero-js
         run: |
           npm install -g pnpm
           pnpm install --frozen-lockfile
-          pnpm test:cloud-v2
+          pnpm test:cluster
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: ${{ !cancelled() }}

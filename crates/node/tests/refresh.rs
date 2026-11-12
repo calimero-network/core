@@ -7,6 +7,14 @@
 //! token presented again after it was exchanged revokes its session.
 //! (`tests/cluster.rs` runs the harness's zero: every refresh exchanges.)
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 use std::time::Duration;
 
 use calimero_client::{Client, Passkey, Session};

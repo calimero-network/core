@@ -2,145 +2,6 @@
 
 ## [Unreleased]
 
-### Added
-
-- **A release's runtime requirement holds across the cluster** (#4919). A
-  release's `minRuntimeVersion` was checked only on the node that installed it,
-  so in a cluster moving to a new release an app could be placed on, moved to,
-  or upgraded while on a node whose runtime is too old to run it. Now an
-  upgrade with a replica on such a node is refused `409 RUNTIME_TOO_OLD`
-  (`details: { minRuntimeVersion, nodes: [{ node, runtime }] }`, before the
-  passkey step-up and in every upgrade path, organization runs and publisher
-  runs included, where it is recorded as the app's failed upgrade);
-  placement leaves such nodes out of a new app's replicas (`409` when none is
-  left); and `POST /ops/apps/{app}/replicas` refuses one the app is not on yet.
-  Each node names its runtime over the sealed channel (`POST
-  /internal/runtime`); a node on an earlier release answers `404` and is
-  judged older than the asker. Releases keep their requirement
-  (`PackageVersion::min_runtime_version`, serde default: a release recorded
-  before, or by an older node, is read from its `.mpk` where it decides).
-- **The reports name the newest release an app can reach** (#4919). Each app
-  in `GET /auth/apps` and `GET /orgs/{org}/apps` carries `latestReachable`
-  (the newest newer release the upgrade would take, over every visible
-  release, not only the 16 `availableVersions` lists) and, when the newest is
-  not it, `latestBlocked: { version, reason, message, minRuntimeVersion?,
-  nodes? }` (`runtime` or `authority`). Upgrades are code only, so an app
-  several releases behind reaches the newest in one upgrade; `upgrades.mdx`
-  no longer describes the migration planner removed with SDK 0.12.
-
-- **Stored formats say their version** (#4926). The store
-  keeps its format in a sealed node row (`format`, `calimero_log::STORE_FORMAT` = 1):
-  a store a later release wrote is refused at start ("the store is in format N,
-  which a later release wrote"), an older one is brought forward through registered
-  steps, the marker written after each. A store without the row (every release up
-  to 1.0.0-rc.15) is format 0, whose rows are format 1's: it opens as before and is
-  marked. A snapshot or backup file of a later format is refused by its first line
-  (`CALIMERO-SNAPSHOT-<n>`, `SNAPSHOT_FORMAT` = 1), not by its frames; a component
-  app's log entry may start `{"v":N,` (`ENTRY_FORMAT` = 1; no entry so far carries
-  it), and one of a later format applies as a no-op that names it. Nothing written
-  so far changes: the snapshot and entry bytes are those of rc.15.
-
-- **Compatibility, written down and checked** (#4927). The policy and
-  matrix of what each release keeps for the releases, apps, clients and data before
-  it, with the numbers proposed for the owner: `docs/.../operate/compatibility.mdx`.
-  ci-checks' required `Rust` check gains `Compatibility` (no route or JSON field of
-  the API removed unless `crates/node/api-deprecations.toml` deprecated it 3
-  releases before or declares a cutover; no WIT change without its version; no ABI
-  version dropped) and `Apps of the previous release` (the last release's signed
-  kv bundle installed, run and upgraded on this tree's node). A route the file
-  deprecates answers with the `Deprecation` header (RFC 9745) and a `Link` to the
-  policy. The PR template's Compatibility block (`Door: one-way|two-way`) is
-  checked: a one-way door names its `Reader:` or declares its `Hard cutover:`.
-
-- **An admin turns on private channels for an app team made before #4906.**
-  #4906 gives only new app teams `CREATE_CHILD_TEAM` in their default, and
-  nothing changes an existing team's capabilities on replay. `POST
-  /orgs/{org}/app-teams` now takes, per package, `childTeams`: `true` adds
-  `CREATE_CHILD_TEAM` to the app team's default and to every row there that
-  sets its own capabilities, `false` takes it out of both. Like `join`, naming
-  it leaves an absent `shared` meaning "no other team", so `{ apps: [{
-  package, instances: [], childTeams: true }] }` changes nothing else; one
-  passkey covers every package named. `ScopeApp` carries `child_teams`
-  (absent in entries an earlier release logged, which replay as they did).
-
-- **One account in several teams with one approval.** Calimero Home's "give
-  all apps" made one `POST /orgs/{org}/teams/{team}/members`, and one passkey
-  step-up, per app team. `POST /orgs/{org}/members/{account}/teams { teams:
-  [{ team, role?, capabilities? }], confirm? }` sets the account's row in up
-  to 64 teams in one log entry (`SystemCmd::SetTeamMembers`, consent
-  `org:<org> / __set_team_members { account, teams }`), and `DELETE` on the
-  same path with `{ teams: [team] }` takes them out, or leaves them, the
-  teams below included (`SystemCmd::RemoveTeamMembers`, `__remove_team_members
-  { account, teams }`). Each team is judged as the single-team route judges
-  it, and the entry applies all or nothing. A node on an earlier release
-  answers the routes `404`.
-
-- **Rename an organization**: `POST /orgs/{org}/name { name, confirm? }`
-  (`SystemCmd::RenameOrg`, a passkey step-up over `org:<org> / __rename_org
-  / { name }`), by its owner or an admin; `403` below admin, `404` outside.
-  Before, an organization kept the name it was created with, and Calimero
-  Home could only show a `displayName` from its metadata. Every reader of the
-  name (`GET /orgs/{org}`, `/auth/me`'s `orgs`, an invite redeemed after)
-  answers the new one. An organization's name is now one line of 1 to 64
-  characters without surrounding spaces, at creation (`POST /orgs` answers
-  `400` otherwise) and on a rename; `CreateOrg` carries `name_fits`, which
-  the API always sets, so an entry an earlier release logged replays taking
-  any name, and names already given stay until renamed.
-
-- **Restore an app from its sealed backup**: `POST /ops/apps/{app}/restore {
-  backup? }` (`meroctl ops restore <app> [--backup NAME]`), the operator's
-  signed decision (`<app> / __restore_app / { backup, sha256 }`), sent to a
-  node that holds the backup in its `--backup-dir`. The app moves to a new
-  group that node seeds from the backup (`SystemCmd::RestoreApp`), the other
-  replicas copy it from a snapshot, and `FinishRestore` ends it; meanwhile
-  the app's calls and views answer `409 APP_RESTORING`. What the app wrote
-  after the backup is gone, and it runs the bundle the backup's state ran.
-  Every backup now has a sealed manifest beside it (`….snap.manifest`: app,
-  group, index, SHA-256, backup format 1, the `merod` and mero-tee release
-  that wrote it), bound to the app and file name under a key derived from
-  K_c, so a backup restores only on its own cluster and app; a newer
-  backup format (`UNKNOWN_BACKUP_FORMAT`) or a newer `merod`
-  (`BACKUP_FROM_NEWER_RELEASE`) is refused, and a backup from before
-  manifests (format 0) restores into the group it was taken from. Stored
-  format: `AppRecord.restore` and the `componentRestored` entry and
-  `ComponentHead.idTermBase` are new and left out when unset, so state from
-  before reads and writes as it did; the route answers `409 UPGRADE_PENDING`
-  until every node runs this release. Runbook: operate/runbooks "Restore an
-  app", with backup schedule and RPO/RTO guidance.
-- **Found a cluster again from its backups, and recover from a lost system
-  majority**: backups now cover the system group (its leader writes
-  `{backup-dir}/system/`: accounts, organizations, teams, packages, the app
-  directory, governance), the code it names (`code/{hash}`, sealed under K_c)
-  and the cluster key K_c wrapped under each release's K_r
-  (`cluster-key/{release}`). `merod run --bootstrap --restore-from DIR`, on an
-  empty data directory, founds the cluster again under its own K_c, taken from
-  the copy its own K_r opens (a refusal names the releases that kept one): it
-  forms the system group alone, seeds it with the newest system backup with
-  the fleet replaced by `--peers` (`system::refound`), and the other nodes
-  join as learners; every app then waits for its own backup (`409
-  APP_RESTORING`) until `ops restore`. It refuses while a node of the old
-  cluster still answers at an address the new fleet does not reuse, or when
-  the governance or operator key differ from the backup's. `POST
-  /ops/backup?all=true` (`meroctl ops backup --all`) backs up every group a
-  node holds, leader or not: what the survivors of a lost system majority
-  found the cluster again from. Runbooks: "Found a cluster again from its
-  backups", "Disaster recovery: the system group lost its majority".
-
-- **Every app added later, for a member**: an organization member may hold a
-  standing grant (`Org::all_apps`, `allApps` on `GET /orgs/{org}`): each app
-  team made from then on (by `ScopeApps`, by a move into the organization,
-  or a team marked as one) gives them a plain row, so in an organization
-  that keeps its apps apart a new app reaches them though nobody named them.
-  Before, a new app's team held only those named. The owner or an admin gives
-  it on an invite (`POST /orgs/{org}/invites { allApps: true }`, named in the
-  consent) or later (`POST /orgs/{org}/all-apps { account, allApps }`,
-  `SystemCmd::SetAllApps`, a passkey step-up over `__set_all_apps`); it ends
-  with the membership. Apps already there are untouched. `ScopeApps`,
-  `MoveApp` and `UpdateTeam` carry `all_apps_rows`, which the API always
-  sets, so entries an earlier release logged replay as they did; the new
-  fields are left out when empty, so state and invites from before read and
-  write as they did.
-
 ### Fixed
 
 - **Entries apply under this release's rules from a mark on.** Commands carry
@@ -167,63 +28,139 @@
   the same before anything runs on the app's group and notes a refusal as
   failed (`NOT_IN_RUN`). **Behaviour change**: a run no longer moves an app
   from a newer release of the package back to the run's version.
-- **`GET /ops/quotas` and `GET /ops/pools` read caught-up state**. Each read
-  the node's own system replica as it stood, so an operator who set a quota
-  through the leader and read it back through a follower could see the old
-  value. Both now catch up first (a read index), as other reads do.
 
-- **Scoping two packages that ship one component** (`POST /orgs/{org}/app-teams`,
-  `ScopeApps`). An instance's package was taken from its component's bundle
-  record, which names the first package installed with that WASM, so two
-  packages shipping a byte-identical component put both packages' instances
-  in the first one's app team and left the second's empty. `ScopeApps` now
-  takes the package the instance's release names (`AppRecord::release`; the
-  bundle's for a record without one). It carries `by_release` (serde default
-  false), so entries an earlier release logged replay as they did.
-
-- **Dead letters survive an app's move to new replicas.** A replica catching up
-  from the log applies many entries in one batch, and `componentXcallDone` read
-  the outbox row from the group's committed state, not the batch's, so a new
-  replica that applied an xcall's send and its dead-lettering together wrote no
-  dead letter: after `POST /ops/apps/{app}/replicas` the new replicas listed
-  `deadLetters: []`. `componentActionEnd` (an action started and ended in one
-  batch stayed pending, its retries uncounted, its `ActionFailed` event never
-  sent) and the first answer remembered under a node command's key had the same
-  hole. Apply now reads those rows through the batch. No stored format changes;
-  replaying a log now gives what its leader applied. A replica that applied such
-  a batch before keeps what it wrote: replace it (move the app's replicas, as a
-  rollout does) to rebuild it from the log.
-- **`GET /apps/{app}/xcalls` from a node without a replica** answered `503 "ask
-  a node that hosts the app"`; it now asks a replica (`internal/xcalls`), as
-  the other app routes do.
-- **A DM moved with its people into a closed app team keeps them.** Since
-  #4905, an `accounts` instance (a DM, a private channel) of a
-  package with an app team in its organization is reached only by those in
-  that team. `MoveApp` with `bringMembers` added the source's people to the
-  target but gave them no row on the target's app team of the package, so
-  where that team is closed they lost the DM they were brought for. Such a
-  move now gives the people it brings, and the instance's owner, a plain row
-  on that team (never more than member; an open team needs none, and the
-  owner must still be a member of the target). `MoveApp` carries
-  `accounts_in_app_team`, which the API always sets; an entry an earlier
-  release logged replays giving no such rows.
-
-### Security
-
-- **Closing a team takes the channel rows of whoever loses it.** An open
-  team closed with the plain team update (`POST /orgs/{org}/teams/{team}
-  { join: invite }`) dropped everyone in it by inheritance alone but left
-  their rows in the restricted teams below it, so they kept reaching the
-  private channels' apps under an app team they no longer had. Those rows now
-  go, as a removal from the team and `ScopeApps`' close take them; nobody is
-  barred, so opening the team again lets them back into it (not into the
-  channels). `UpdateTeam` carries `close_drops_below`, which the API always
-  sets; an entry an earlier release logged replays keeping the rows.
+## [1.0.0-rc.18] - 2026-11-12
 
 ### Added
 
-- **A cluster version gates new log entries during a rollout**. Old and new
-  nodes replicate one system log through a rolling upgrade, and a node skips
+- **Swift and Kotlin typed clients from an app's ABI** (#4993, `calimero-app-abi`).
+  `mero-app-build codegen --lang swift|kotlin` writes `<Name>Client.swift` over
+  swift-sdk 2.0's MeroKit and `<Name>Client.kt` over kotlin-sdk 2.0's mero-core
+  (`--package`, default `calimero.generated.<name>`; a multi-service bundle gets
+  a directory and a package per service). Each is built on the SDK's
+  `CalimeroClient` and the app's id (every method: idempotency keys, stale views,
+  `confirm` step-ups, the event stream) or on its `ContextContractCalling`
+  (`MeroAppBackend.contract.bound(app)`, or a test double: calls and views), with
+  the ABI's JSON forms (u64/i64 as decimal strings, bytes base64url) behind
+  `UInt64`/`ULong`, `Int64`/`Long` and `Data`/`ByteArray`, and the app's events
+  and errors as typed enums and sealed interfaces (`Event`, `Refusal`). The
+  `App ABI native clients` workflow compiles the golden clients against both SDKs with
+  warnings as errors. These two clients do not read the ABI's `types` yet: an
+  app's records and enums are `JSONValue` / `JsonElement`.
+- **The ABI carries an app's record and enum shapes** (#4997). `#[derive(Record)]`
+  types and a new `#[derive(AbiType)]` for serde structs and enums (following
+  their renames, the four enum tagging styles, `transparent` and skips) are
+  written to a sorted `types` key in the app's ABI. A shape the macro cannot
+  describe (`flatten`, `into`/`from`, a u64/i64/bytes field without its helper)
+  is a compile error. `abiVersion` stays 1: nodes ignore the new key, and an app
+  with no described types builds a byte-identical ABI. `mero-app-build codegen`
+  uses the shapes for OpenAPI components, TypeScript interfaces and unions, and
+  Python `TypedDict`s (generic types keep their parameters); an ABI without
+  `types` still reads, with those types as `unknown`. `abi-diff` does not yet
+  compare shapes.
+
+### Fixed
+
+- **Generated TypeScript and Python clients call the current SDK API** (#4992).
+  `mero-app-build codegen --lang ts|python` wrote clients over mero-js's and
+  calimero-client-py's removed wrappers (`client.call`, `client.view`), which no
+  longer compiled. They now call `client.apps.call` / `client.apps.view`
+  (mero-js 32 and later, `confirm` step-ups through `options.confirm`) and
+  `client.json.apps.call` / `view` (calimero-client-py 1.0). The TypeScript class
+  takes a narrow `AppTransport` and an `after` hook that runs after every request.
+  The `App ABI clients` workflow type-checks the generated clients and runs them
+  against both published SDKs.
+- **meroctl refuses an unknown field in a closed request body** (#4995).
+  `meroctl ops set-quotas '{"maxAppsPerAcount": 5}'` dropped the misspelled key
+  and sent an empty change. The generated Rust client now refuses unknown fields
+  in request bodies the document closes (`additionalProperties: false`), so the
+  command fails naming the key before anything is sent. Answers and refusal
+  details still accept fields a newer node adds.
+
+## [1.0.0-rc.17] - 2026-11-12
+
+1.0.0-rc.16 was tagged but never published: its build failed on meroctl
+(#4982 merged before #4984's client regeneration). 1.0.0-rc.17 ships the same
+changes plus that fix. Its GitHub Release holds only `kv-store-test-fixture.mpk`;
+no binaries, crates, `merod` image or fleet bump exist for it, so nothing can
+run or upgrade from it, and the upgrade path stays pinned to 1.0.0-rc.15.
+
+## [1.0.0-rc.16] - 2026-11-12
+
+### Added
+
+- **An OpenAPI 3.1 document of the node API** (#4937, #4979):
+  `docs/public/openapi.json` describes every route the node serves outside
+  `/internal/` (public, account, app, organization and ops): security schemes,
+  path and query parameters, request bodies (`additionalProperties: false`
+  where the node refuses unknown fields), answers, and per-status errors
+  narrowed to the codes each route raises, with `x-calimero-*` extensions for
+  who may call it, the passkey step-up (`412 CONFIRM_REQUIRED`), the
+  operator's signature (`428 OPERATOR_SIGNATURE_REQUIRED`), sealing and retry
+  safety. It is built from a registry beside the router, and `cargo test -p
+  calimero-node --lib openapi` fails while a route, a handler's extractor, a
+  request type or a raised code disagrees with it, or while the committed file
+  is stale (`UPDATE_OPENAPI=1` rewrites it); since #4979 it also checks nested
+  request shapes, which found `childTeams` missing from `POST
+  /orgs/{org}/app-teams`. The docs render it as "Node API (OpenAPI)"
+  (`operate/api-reference`). Requests are still sealed, so a generic client
+  needs a sealing transport (`meroctl proxy`, `calimero-client`, mero-js,
+  calimero-client-py). mero-js, calimero-client-py, swift-sdk and kotlin-sdk
+  generate their route layers from it. No route, request or answer changes.
+- **`calimero-client`'s routes are generated from the OpenAPI document**
+  (#4980): one async method per operation on its group's accessor
+  (`client.public()`, `auth()`, `orgs()`, `apps()`, `packages()`,
+  `consent()`, `deployments()`, `ops()`), named as the other SDKs name them
+  (`client.orgs().invite_create(org, body, passkey)`, `apps().call`,
+  `apps().view`), with typed requests and answers
+  (`crates/client/src/generated/`, written by the new `tools/client-gen` and
+  held to the document by a test). A step-up route takes `passkey:
+  Option<&mut dyn Passkey>` and an operator route `operator:
+  Option<&OperatorSigner>`, both answered by the new `Transport::approved`;
+  retry-safe routes resend on `503`. **Deprecated**: 77 hand-written `Client`
+  methods, each naming its replacement (`#[deprecated(note = "use
+  client.<group>().<method>()")]`); they keep working until a later release
+  removes them. **BREAKING** (Rust callers): `Client::packages()`, which
+  answered the installed packages as JSON, is gone because the name is now the
+  group's accessor; call `client.packages().list()`. A route change now
+  regenerates the document and then the client (`cargo run -p
+  calimero-client-gen`) in the same pull request.
+- **`meroctl proxy`: the node API as plain HTTP on localhost** (#4932):
+  `meroctl [--node ALIAS|URL] proxy [--listen 127.0.0.1:2580]
+  [--allow-remote] [--openapi FILE]` attests the node with the usual trust
+  flags before taking a request, then forwards every request through the
+  sealed channel and streams the answer back (SSE stays SSE), so curl or a
+  generated OpenAPI client can call the node. A `412` comes back as is: the
+  caller signs and resends; the proxy approves nothing itself. A request's own
+  `Authorization` passes through untouched; without one the proxy uses
+  `--api-key` or the session `meroctl login` saved (refreshed on a `401`).
+  It listens on loopback only unless `--allow-remote`, refuses a non-loopback
+  `Host` (`403 HOST_REFUSED`) and any browser request (`Origin`, or
+  `Sec-Fetch-Site` other than `none`: `403 BROWSER_REFUSED`), caps a body at
+  64 MiB, and logs only method, path and status. `GET /openapi.json` serves
+  `--openapi FILE`. `meroctl --node` also takes a URL. `calimero-client`'s
+  attested, sealed transport is split from its routes (`Client::transport()`,
+  `Transport::{send, json, confirmed, events}`), with no change to `Client`'s
+  methods.
+- **Every app has an OpenAPI document, typed clients and a breaking-change check**
+  (#4933, `calimero-app-abi`). `GET /apps/{app}/openapi.json` (the access of
+  `GET /apps/{app}/abi`) answers the ABI of the bundle the app runs as OpenAPI
+  3.1: one `POST /apps/{app}/methods/{name}` per method a client calls, typed
+  from its params and result, its errors as `422 APP_ERROR`, the `412
+  CONFIRM_REQUIRED` step-up of `confirm` methods, and the event stream. That
+  route is new too: it runs as `/apps/{app}/views` for a view the ABI declares
+  (without `confirm`) and as `/apps/{app}/intents` otherwise, with the same gate,
+  step-up and limits; its body is theirs without `method` (unknown fields are
+  refused). `/intents` and `/views` are unchanged. `calimero-client` gains
+  `app_openapi` and `call_method`. `mero-app-build codegen --abi <wasm|mpk|json>
+  --lang ts|python|openapi` writes the document and a thin typed client over
+  mero-js or calimero-client-py; `mero-app-build abi-diff <old> <new>` lists
+  what changed and exits 1 on a change that breaks callers; `mero-sign sign
+  --previous <last release>` (and `pack-component.py --previous`) prints the
+  same before signing and refuses a state field removed or changed in kind
+  without a state version bump. The type mapping: [App interface](docs/src/content/docs/build/app-abi.mdx#types).
+- **A cluster version gates new log entries during a rollout** (#4924,
+  #4969). Old and new nodes replicate one system log through a rolling upgrade, and a node skips
   an entry it cannot decode, so a command (or field) only the new release
   knows changed the new nodes' state alone: the old nodes kept serving reads
   and judging access from the state before it, and with an old system leader
@@ -240,7 +177,7 @@
   `ScopeApps` naming one app team's `join`/`keep`, `SetOrgQuotas` and
   `SetPools` (rc.15); on a cluster whose nodes all run rc.15 or newer they
   work as before. Closing a team (`UpdateTeam` with `join: invite`, which
-  now takes the rows below it, see above) is gated to rc.16, as is a move that gives a DM's people
+  now takes the rows below it, see Security) is gated to rc.16, as is a move that gives a DM's people
   app-team rows (`MoveApp.accounts_in_app_team`) and scoping that judges an
   instance by its release (`ScopeApps.by_release`), and giving a member every app
   added later (`SetAllApps`, or an invite with `allApps`), restoring an app
@@ -254,7 +191,343 @@
   release skips `SetClusterVersion`, which is logged only once every node
   supports it. **Rollout**: remove the old nodes (`DELETE /ops/nodes/{id}`)
   to finish one; a registered node that does not answer holds the version
-  back.
+  back. **With this release**: the rc.16 features above (gated at
+  1.0.0-rc.16, which was never published) turn on once every registered node
+  runs 1.0.0-rc.17 and the system leader logs that version; until then they
+  answer `409 FEATURE_NOT_ACTIVE`, and from then on no rc.15 node joins the
+  system group.
+- **A release's runtime requirement holds across the cluster** (#4919). A
+  release's `minRuntimeVersion` was checked only on the node that installed it,
+  so in a cluster moving to a new release an app could be placed on, moved to,
+  or upgraded while on a node whose runtime is too old to run it. Now an
+  upgrade with a replica on such a node is refused `409 RUNTIME_TOO_OLD`
+  (`details: { minRuntimeVersion, nodes: [{ node, runtime }] }`, before the
+  passkey step-up and in every upgrade path, organization runs and publisher
+  runs included, where it is recorded as the app's failed upgrade);
+  placement leaves such nodes out of a new app's replicas (`409` when none is
+  left); and `POST /ops/apps/{app}/replicas` refuses one the app is not on yet.
+  Each node names its runtime over the sealed channel (`POST
+  /internal/runtime`); a node on an earlier release answers `404` and is
+  judged older than the asker. Releases keep their requirement
+  (`PackageVersion::min_runtime_version`, serde default: a release recorded
+  before, or by an older node, is read from its `.mpk` where it decides).
+- **The reports name the newest release an app can reach** (#4919). Each app
+  in `GET /auth/apps` and `GET /orgs/{org}/apps` carries `latestReachable`
+  (the newest newer release the upgrade would take, over every visible
+  release, not only the 16 `availableVersions` lists) and, when the newest is
+  not it, `latestBlocked: { version, reason, message, minRuntimeVersion?,
+  nodes? }` (`runtime` or `authority`). Upgrades are code only, so an app
+  several releases behind reaches the newest in one upgrade; `upgrades.mdx`
+  no longer describes the migration planner removed with SDK 0.12.
+- **Stored formats say their version** (#4926). The store
+  keeps its format in a sealed node row (`format`, `calimero_log::STORE_FORMAT` = 1):
+  a store a later release wrote is refused at start ("the store is in format N,
+  which a later release wrote"), an older one is brought forward through registered
+  steps, the marker written after each. A store without the row (every release up
+  to 1.0.0-rc.15) is format 0, whose rows are format 1's: it opens as before and is
+  marked. A snapshot or backup file of a later format is refused by its first line
+  (`CALIMERO-SNAPSHOT-<n>`, `SNAPSHOT_FORMAT` = 1), not by its frames; a component
+  app's log entry may start `{"v":N,` (`ENTRY_FORMAT` = 1; no entry so far carries
+  it), and one of a later format applies as a no-op that names it. Nothing written
+  so far changes: the snapshot and entry bytes are those of rc.15.
+- **Compatibility, written down and checked** (#4927). The policy and
+  matrix of what each release keeps for the releases, apps, clients and data before
+  it, with the numbers proposed for the owner: `docs/.../operate/compatibility.mdx`.
+  ci-checks' required `Rust` check gains `Compatibility` (no route or JSON field of
+  the API removed unless `crates/node/api-deprecations.toml` deprecated it 3
+  releases before or declares a cutover; no WIT change without its version; no ABI
+  version dropped) and `Apps of the previous release` (the last release's signed
+  kv bundle installed, run and upgraded on this tree's node). A route the file
+  deprecates answers with the `Deprecation` header (RFC 9745) and a `Link` to the
+  policy. The PR template's Compatibility block (`Door: one-way|two-way`) is
+  checked: a one-way door names its `Reader:` or declares its `Hard cutover:`.
+  Every pull request also runs `Upgrade path` (#4915, #4918): a cluster
+  started on the published release `.github/upgrade-from` names is written
+  to, rolled onto the pull request's `merod` as mdma rolls a Calimero Cloud
+  cluster, and read back, with a deep case for each feature area.
+- **Restore an app from its sealed backup** (#4928): `POST /ops/apps/{app}/restore {
+  backup? }` (`meroctl ops restore <app> [--backup NAME]`), the operator's
+  signed decision (`<app> / __restore_app / { backup, sha256 }`), sent to a
+  node that holds the backup in its `--backup-dir`. The app moves to a new
+  group that node seeds from the backup (`SystemCmd::RestoreApp`), the other
+  replicas copy it from a snapshot, and `FinishRestore` ends it; meanwhile
+  the app's calls and views answer `409 APP_RESTORING`. What the app wrote
+  after the backup is gone, and it runs the bundle the backup's state ran.
+  Every backup now has a sealed manifest beside it (`….snap.manifest`: app,
+  group, index, SHA-256, backup format 1, the `merod` and mero-tee release
+  that wrote it), bound to the app and file name under a key derived from
+  K_c, so a backup restores only on its own cluster and app; a newer
+  backup format (`UNKNOWN_BACKUP_FORMAT`) or a newer `merod`
+  (`BACKUP_FROM_NEWER_RELEASE`) is refused, and a backup from before
+  manifests (format 0) restores into the group it was taken from. Stored
+  format: `AppRecord.restore` and the `componentRestored` entry and
+  `ComponentHead.idTermBase` are new and left out when unset, so state from
+  before reads and writes as it did; the route answers `409 UPGRADE_PENDING`
+  until every node runs this release. Runbook: operate/runbooks "Restore an
+  app", with backup schedule and RPO/RTO guidance.
+- **Found a cluster again from its backups, and recover from a lost system
+  majority** (#4929): backups now cover the system group (its leader writes
+  `{backup-dir}/system/`: accounts, organizations, teams, packages, the app
+  directory, governance), the code it names (`code/{hash}`, sealed under K_c)
+  and the cluster key K_c wrapped under each release's K_r
+  (`cluster-key/{release}`). `merod run --bootstrap --restore-from DIR`, on an
+  empty data directory, founds the cluster again under its own K_c, taken from
+  the copy its own K_r opens (a refusal names the releases that kept one): it
+  forms the system group alone, seeds it with the newest system backup with
+  the fleet replaced by `--peers` (`system::refound`), and the other nodes
+  join as learners; every app then waits for its own backup (`409
+  APP_RESTORING`) until `ops restore`. It refuses while a node of the old
+  cluster still answers at an address the new fleet does not reuse, or when
+  the governance or operator key differ from the backup's. `POST
+  /ops/backup?all=true` (`meroctl ops backup --all`) backs up every group a
+  node holds, leader or not: what the survivors of a lost system majority
+  found the cluster again from. Runbooks: "Found a cluster again from its
+  backups", "Disaster recovery: the system group lost its majority".
+- **Test an app's upgrade against the state a shipped release wrote**
+  (#4925, `calimero-sdk`'s harness). An upgrade switches an app's code and
+  keeps its state, so each release must read what the releases still in use
+  stored. `TestApp::upgrade(component)` switches the code as `UpgradeApp`
+  does; `run_migration(from, to, org, now_ms, path)` runs a scenario whose one
+  `{ "op": "upgrade" }` step moves from a shipped release's component to this
+  build, so the steps before it write with the old code and the steps after it
+  read with the new; `release_component(mpk, service)` (feature `releases`)
+  takes the component from a signed `.mpk` after the checks a node makes at
+  install. `apps/kv-store` keeps `releases/0.1.0.mpk` and
+  `migrations/0.1.0.json` as the example, and `build/ship-v2` is a new
+  tutorial for shipping a second version.
+- **An admin turns on private channels for an app team made before #4906**
+  (#4917). #4906 gives only new app teams `CREATE_CHILD_TEAM` in their default, and
+  nothing changes an existing team's capabilities on replay. `POST
+  /orgs/{org}/app-teams` now takes, per package, `childTeams`: `true` adds
+  `CREATE_CHILD_TEAM` to the app team's default and to every row there that
+  sets its own capabilities, `false` takes it out of both. Like `join`, naming
+  it leaves an absent `shared` meaning "no other team", so `{ apps: [{
+  package, instances: [], childTeams: true }] }` changes nothing else; one
+  passkey covers every package named. `ScopeApp` carries `child_teams`
+  (absent in entries an earlier release logged, which replay as they did).
+- **One account in several teams with one approval** (#4916). Calimero
+  Home's "give all apps" made one `POST /orgs/{org}/teams/{team}/members`, and one passkey
+  step-up, per app team. `POST /orgs/{org}/members/{account}/teams { teams:
+  [{ team, role?, capabilities? }], confirm? }` sets the account's row in up
+  to 64 teams in one log entry (`SystemCmd::SetTeamMembers`, consent
+  `org:<org> / __set_team_members { account, teams }`), and `DELETE` on the
+  same path with `{ teams: [team] }` takes them out, or leaves them, the
+  teams below included (`SystemCmd::RemoveTeamMembers`, `__remove_team_members
+  { account, teams }`). Each team is judged as the single-team route judges
+  it, and the entry applies all or nothing. A node on an earlier release
+  answers the routes `404`.
+- **Rename an organization** (#4913): `POST /orgs/{org}/name { name, confirm? }`
+  (`SystemCmd::RenameOrg`, a passkey step-up over `org:<org> / __rename_org
+  / { name }`), by its owner or an admin; `403` below admin, `404` outside.
+  Before, an organization kept the name it was created with, and Calimero
+  Home could only show a `displayName` from its metadata. Every reader of the
+  name (`GET /orgs/{org}`, `/auth/me`'s `orgs`, an invite redeemed after)
+  answers the new one. An organization's name is now one line of 1 to 64
+  characters without surrounding spaces, at creation (`POST /orgs` answers
+  `400` otherwise) and on a rename; `CreateOrg` carries `name_fits`, which
+  the API always sets, so an entry an earlier release logged replays taking
+  any name, and names already given stay until renamed.
+- **Every app added later, for a member** (#4914): an organization member may hold a
+  standing grant (`Org::all_apps`, `allApps` on `GET /orgs/{org}`): each app
+  team made from then on (by `ScopeApps`, by a move into the organization,
+  or a team marked as one) gives them a plain row, so in an organization
+  that keeps its apps apart a new app reaches them though nobody named them.
+  Before, a new app's team held only those named. The owner or an admin gives
+  it on an invite (`POST /orgs/{org}/invites { allApps: true }`, named in the
+  consent) or later (`POST /orgs/{org}/all-apps { account, allApps }`,
+  `SystemCmd::SetAllApps`, a passkey step-up over `__set_all_apps`); it ends
+  with the membership. Apps already there are untouched. `ScopeApps`,
+  `MoveApp` and `UpdateTeam` carry `all_apps_rows`, which the API always
+  sets, so entries an earlier release logged replay as they did; the new
+  fields are left out when empty, so state and invites from before read and
+  write as they did.
+- **An orchestrator attestation purpose** (#4964): `GET
+  /attestation?purpose=orchestrator&nonce=<hex>` (a replica only; a job node
+  answers `404`) binds, in one quote, the node's transport key to the
+  cluster's identity key (report data `nonce || SHA-256(domain ||
+  transport_key || cluster_identity)`, domain
+  `calimero.tee-attest.orchestrator.v1`; the document gains
+  `clusterIdentity`). `calimero_client::attest::verify_orchestrator(doc,
+  nonce, cluster_identity, policy)` answers the transport key, refusing a
+  wrong nonce, an unapproved release, an unbound key, another cluster or a
+  quote of another purpose. For the pipeline orchestrator's callers; other
+  purposes answer as before.
+- **A queued compute run says why it waits** (#4963): `GET
+  /apps/{app}/runs/{run}` and the runs page give a queued run, to those who
+  may list the app's files, `queue: { state: unplaced | waiting | granted,
+  pool, capacity, reason? }`, where `reason` is the first of `NO_CAPACITY`,
+  `POOL_FULL`, `PAYER_AT_RUN_QUOTA` and `PAYER_AT_FUEL_QUOTA` that applies.
+  Before, an empty pool looked like a busy one until the run ended
+  `notGranted`. The leader also logs one warning per run after a minute
+  waiting on `NO_CAPACITY`, naming the pool. Read side only: no new log
+  entries.
+
+### Changed
+
+- **The OpenAPI document types what it left free-form** (#4984, with #4986).
+  For SDKs generated from it (mero-js, calimero-client-py, swift-sdk,
+  kotlin-sdk, `calimero-client`), each change below changes generated types,
+  though nothing the node sends does: every error code that carries `details`
+  has a component (`ConfirmRequired`, `OperatorSignatureRequired`,
+  `NotLeader`, `FeatureNotActive`, `RuntimeTooOld`, `UpgradePending`,
+  `AppError`, `Trap`, ...; the sealed channel's own `503 busy` is
+  `SealedRefusal`), named per response in `x-calimero-details` and at the root
+  in `x-calimero-error-details`, while `Error.details` itself stays one
+  schema; `POST /ops/quotas` takes a closed `QuotaChanges` (every limit,
+  optional, `additionalProperties: false`), matching the node, which already
+  refused any other key with `400 UNKNOWN_QUOTA`; `GET
+  /apps/{app}/attestation` lists only `nonce`, the one query field the node
+  reads (it still accepts the others); and every answer that was `any` or a
+  bare `Written` is typed from its handler (`Run`, `GroupStatus`,
+  `QuotaSettings`, `AccountProof`, `Uninstalled`, `ApprovedReleases`, ...;
+  `Written` is gone). Answers the document had wrong are corrected: `POST
+  /orgs/{org}/publishers` answers `{ generation }`, not `{ signer, approval
+  }`; `DELETE /ops/nodes/{id}` and an ops restore answer `status` as a Raft
+  status object, not a string; app transfer answers `null`. The blob upload
+  body lists `application/octet-stream` first. Codes raised below the router
+  are now listed (`503 TIMEOUT` on calls and views, the upload part and
+  complete conflicts, `UNSUPPORTED_BUNDLE`/`BAD_BUNDLE`/`COMPUTE_ABI_MISMATCH`
+  on package installs). Rust: `apps().attestation(app, nonce)` takes only the
+  nonce.
+- **`meroctl` calls the client's generated route methods** (#4982): each
+  command calls its route's method (`client.orgs().invite_create(..)`,
+  `client.apps().call(..)`, ...) instead of hand-written paths, and prints the
+  typed answer as JSON, keeping fields the types do not name (`extra`), so the
+  values are as before. What can differ: key order, where the document's
+  order differs from the handler's; optional fields meroctl sent as `null`
+  are left out (the node reads both the same), except `group reparent --top`
+  (`parent: null`) and `context presence publish` with no state (`state:
+  null`, a retract); ids in paths are percent-encoded. `--dev-passkey`
+  becomes the method's `passkey` and `--operator-key-file` its `operator`
+  signer (a `428` without the key still says to pass it); `meroctl raw` sends
+  any route through the transport. `ops set-pools` and `ops set-quotas` read
+  their JSON into the generated request types, so a malformed one is refused
+  before it is sent.
+- **SDK releases follow what an API change does to their callers** (#4974,
+  #4983). A push to master that changes `docs/public/openapi.json` notifies
+  each SDK (`openapi-sync.yml`), and the SDKs regenerate through one reusable
+  workflow in core (`sdk-openapi-sync.yml`), which classifies the change with
+  oasdiff and the `x-calimero-*` extensions (`scripts/openapi-classify.py`) and
+  titles the sync by it: `feat(api)!:` with a `BREAKING-CHANGE:` footer (a
+  major) when a generated caller must change, `feat(api):` (a minor) when it
+  only adds, `chore(api):` (a patch) otherwise. Before, every sync was a
+  `chore` patch, removals included. A core pull request that touches the
+  document sees each SDK's resulting bump in its `openapi-impact.yml` summary.
+
+### Fixed
+
+- **meroctl builds against the regenerated client** (#4994). #4982 moved meroctl
+  onto the generated route methods from a head older than #4984, whose
+  regenerated `blob_upload` no longer takes a content type, so master (and the
+  1.0.0-rc.16 release build) failed to compile `meroctl`. `meroctl blob upload`
+  sends the same request as before (`application/octet-stream`).
+- **`GET /ops/quotas` and `GET /ops/pools` read caught-up state** (#4962). Each read
+  the node's own system replica as it stood, so an operator who set a quota
+  through the leader and read it back through a follower could see the old
+  value. Both now catch up first (a read index), as other reads do.
+- **Scoping two packages that ship one component** (#4931, `POST /orgs/{org}/app-teams`,
+  `ScopeApps`). An instance's package was taken from its component's bundle
+  record, which names the first package installed with that WASM, so two
+  packages shipping a byte-identical component put both packages' instances
+  in the first one's app team and left the second's empty. `ScopeApps` now
+  takes the package the instance's release names (`AppRecord::release`; the
+  bundle's for a record without one). It carries `by_release` (serde default
+  false), so entries an earlier release logged replay as they did.
+- **Dead letters survive an app's move to new replicas** (#4930). A replica catching up
+  from the log applies many entries in one batch, and `componentXcallDone` read
+  the outbox row from the group's committed state, not the batch's, so a new
+  replica that applied an xcall's send and its dead-lettering together wrote no
+  dead letter: after `POST /ops/apps/{app}/replicas` the new replicas listed
+  `deadLetters: []`. `componentActionEnd` (an action started and ended in one
+  batch stayed pending, its retries uncounted, its `ActionFailed` event never
+  sent) and the first answer remembered under a node command's key had the same
+  hole. Apply now reads those rows through the batch. No stored format changes;
+  replaying a log now gives what its leader applied. A replica that applied such
+  a batch before keeps what it wrote: replace it (move the app's replicas, as a
+  rollout does) to rebuild it from the log.
+- **`GET /apps/{app}/xcalls` from a node without a replica** (#4930) answered `503 "ask
+  a node that hosts the app"`; it now asks a replica (`internal/xcalls`), as
+  the other app routes do.
+- **A DM moved with its people into a closed app team keeps them** (#4912).
+  Since #4905, an `accounts` instance (a DM, a private channel) of a
+  package with an app team in its organization is reached only by those in
+  that team. `MoveApp` with `bringMembers` added the source's people to the
+  target but gave them no row on the target's app team of the package, so
+  where that team is closed they lost the DM they were brought for. Such a
+  move now gives the people it brings, and the instance's owner, a plain row
+  on that team (never more than member; an open team needs none, and the
+  owner must still be a member of the target). `MoveApp` carries
+  `accounts_in_app_team`, which the API always sets; an entry an earlier
+  release logged replays giving no such rows.
+- **A strong read waits out the election a move off the leader starts**
+  (#4944). Right after `POST /ops/apps/{app}/replicas` took an app's leader
+  off (as a rollout does), the new voters named the removed node as leader
+  until they elected one (1.2 to 2.4 s), so every strong read (`GET
+  /apps/{app}/files/{id}`, the leader-answered blob checks, strong views)
+  answered `503 no replica answered`. A voter that knows no leading voter now
+  waits up to `ELECTION_WAIT` (4 s) for one, so the read answers once the
+  election ends, also when an older node forwards it.
+- **`mero-app-build` packages the built crate's own component** (#4965). It
+  took the first `.wasm` cargo reported, which is a dependency's when the
+  crate depends on another `cdylib` app crate; it now takes the artifact of
+  the crate's own `Cargo.toml`, and refuses by name a crate that builds none.
+
+### Security
+
+- **A package-bound session manages no organization and no app** (#4934). A
+  session opened on an app's frontend is bound to that package, but the
+  organization, team, member, capability and invite routes, `DELETE
+  /apps/{app}` and `POST /apps/{app}/access` accepted it as a person. They now
+  refuse it (`403`), as the credential, approval and upgrade routes did, and
+  a step-up from such a session is refused unless its subject is one of its own
+  package's apps. **Behaviour change**: a frontend that called these routes
+  with its own session now gets `403`.
+- **Unauthenticated work has its own budgets** (#4941), so it cannot use up
+  what signed-in users and peers need. Anonymous passkey ceremonies (sign-in,
+  sign-up, recovery finish) and those of an account (step-up, add passkey,
+  recovery start) have separate pools (`MAX_PENDING_CHALLENGES` = 10,000;
+  `MAX_CHALLENGES_PER_ACCOUNT` = 64 within `MAX_ACCOUNT_CHALLENGES` =
+  10,000), so a full anonymous pool no longer blocks a step-up; one account
+  gets `429` past 64 open step-ups or passkey additions. The sealed channel
+  gives identified (IK) handshakes their own token bucket (50/s, burst 100)
+  and keeps anonymous and identified sessions apart (`MAX_IDENTIFIED_SESSIONS`
+  = 4,096), each evicting only its own; the wire format is unchanged. App
+  frontends remember releases without one (`CACHED_ABSENT_FRONTENDS` =
+  4,096) and load at most one per release and `FRONTEND_LOADS` = 4 at a time
+  node-wide.
+- **A node measures its own profile and bounds its peer trust settings**
+  (#4938). On TDX, `merod run` first reads its own registers and matches them
+  to the signed release `MERO_TEE_VERSION` names; it refuses to start unless
+  they match `MERO_TEE_PROFILE`, naming the profile they do match, so a debug
+  profile is allowed only when measured. `--peer-min-release` below the
+  built-in floor is refused at start. After genesis the cluster key goes only
+  to a node's address in the directory (else the system group's membership),
+  not to an address only `--peers` names. **Behaviour change**: a TDX node
+  whose `MERO_TEE_PROFILE` does not match its image, or that cannot fetch its
+  signed release at start, does not start; register a node (`POST
+  /ops/nodes`) before it can receive the cluster key.
+- **Publisher bindings are checked against this cluster and end with their
+  organization** (#4936). `BindPublisher` now checks, where it applies, that
+  the binding names this cluster (`--cluster`), not only in the API that
+  proposed it. Deleting an organization moves its publisher bindings to
+  `SystemState::unbound_publishers`, keeping each key's generation so its
+  earlier signatures stay spent; before, an organization made again with the
+  same id took the old bindings back. Stored format: the new map is left out
+  when empty.
+- **Closing a team takes the channel rows of whoever loses it** (#4911). An
+  open team closed with the plain team update (`POST /orgs/{org}/teams/{team}
+  { join: invite }`) dropped everyone in it by inheritance alone but left
+  their rows in the restricted teams below it, so they kept reaching the
+  private channels' apps under an app team they no longer had. Those rows now
+  go, as a removal from the team and `ScopeApps`' close take them; nobody is
+  barred, so opening the team again lets them back into it (not into the
+  channels). `UpdateTeam` carries `close_drops_below`, which the API always
+  sets; an entry an earlier release logged replays keeping the rows.
+
+### Dependencies
+
+- `flate2` 1.1.11 (#4947), `sigstore` 0.15.0 (#4948), the `merod` image's
+  Debian base (#4945) and the GitHub Actions used by CI (#4946).
 
 ## [1.0.0-rc.15] - 2026-11-10
 

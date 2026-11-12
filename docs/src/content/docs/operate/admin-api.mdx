@@ -9,9 +9,17 @@ sidebar:
 import { Aside } from '@astrojs/starlight/components';
 
 A `merod` node serves one HTTP API on its `--listen` address. The route table is
-`router` in `crates/node/src/api.rs`; this page lists every route in it.
+`router` in `crates/node/src/api.rs` with the area routers it merges
+(`crates/node/src/api/<area>.rs`); this page lists every route in it.
 Calls, reads, events (server-sent events) and administration are all routes of
 this one API.
+
+Each route's request and response schemas and error codes are in the
+[Node API reference (OpenAPI)](/core/operate/api-reference/), rendered from
+[`openapi.json`](/core/openapi.json), an OpenAPI 3.1 document generated from the
+code and checked against the router on every CI run. Its requests are sealed
+like every other client's, so a tool built from it needs a sealing client
+underneath (see [Transport](#transport)).
 
 ## Transport
 
@@ -161,18 +169,20 @@ the release fetches and verifies it again.
 | `POST /apps` | installer | `{ name, package?, version?, service?, bundle?, org?, access?, confirmMethods?, initArgs?, metadata? }` | `context create` |
 | `GET /apps[?package=P]` | signed in or anyone | Apps the caller reaches | `context list` |
 | `GET /apps/{app}` | signed in or anyone | One app | `context get` |
-| `DELETE /apps/{app}` | session | Delete (owner or org admin) | `context delete` |
+| `DELETE /apps/{app}` | account holder | Delete (owner or org admin) | `context delete` |
 | `POST /apps/{app}/intents` | app access | `{ method, args, idempotencyKey?, confirm? }`: a call. A confirm method answers `412` first. | `call` |
 | `POST /apps/{app}/views` | app access | `{ method, args, consistency?: "stale", minIndex? }`: a read | `call --view` |
+| `POST /apps/{app}/methods/{method}` | app access | The body of `/intents` or `/views` without `method`: runs as `/views` for a view the ABI declares (without `confirm`), else as `/intents`, with the same gate, step-up and limits | |
 | `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones | `context watch` |
 | `POST /apps/{app}/upgrade` | account holder | `{ bundle? \| package?, version?, service?, migrate?, confirm? }`; where the owner holds app upgrades | `context update` |
 | `POST /apps/{app}/transfer` | account holder | `{ to, confirm? }`: hand the app to another account (the owner, or for an organization's app its owner while a member, and in the app's team for an app on a team, or an organization admin, with a passkey step-up; an organization's app only to a member) | `context transfer` |
 | `POST /apps/{app}/move` | account holder | `{ toOrg, bringMembers?, confirm? }`: move the app to another organization, its data where it is (whoever manages it now, as an admin or the owner of `toOrg`, with a passkey step-up). Its files, runs and quotas go to the target; `org` or app-team access becomes the target's app team of its package (made when missing, closed when every app team of the target is; `org` access in a legacy target). `bringMembers` adds the source's members who reach it, capped at `member`. Answers `{ appId, from, org, access, created, added, revokedInvites }`; a node without the route answers `404` | `context move` |
-| `POST /apps/{app}/access` | session | `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` | `context access` |
+| `POST /apps/{app}/access` | account holder | `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` | `context access` |
 | `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `context metadata` |
 | `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one) | `context storage` |
 | `GET /apps/{app}/usage` | owner or org admin | A component's runs per UTC day: `today` and the 30 `days` before it, each `{ date, runs, fuel, wallMs, writes, bytesWritten, events }`, figures as decimal strings; `wallMs` is information only | |
 | `GET /apps/{app}/abi` | app access | The bundle's embedded ABI | `context abi` |
+| `GET /apps/{app}/openapi.json` | app access | The ABI as an OpenAPI 3.1 document ([App interface](/core/build/app-abi/#as-openapi)) | |
 | `GET /apps/{app}/runs/{run}` | app access | A compute run's record without its arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (with plaintext sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` (percent, step) as the app's leader last polled it | - |
 | `GET /apps/{app}/attestation` | app access | Every replica's receipt-key attestation | `attest --context` |
 | `GET/POST /apps/{app}/presence` | app access | Who is present; publish `{ seq, state }` | `context presence list/publish` |
@@ -197,34 +207,34 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /orgs` | session | `{ name, recoveryKey? }` (a recovery key's public half); `name` is 1 to 64 characters on one line, without surrounding spaces (`400` otherwise) | `namespace create` |
+| `POST /orgs` | account holder | `{ name, recoveryKey? }` (a recovery key's public half); `name` is 1 to 64 characters on one line, without surrounding spaces (`400` otherwise) | `namespace create` |
 | `GET /orgs/{org}` | signed in | Members, teams (filtered to those the caller reaches or manages), metadata | `namespace get`, `groups`, `members list`, `metadata get` |
 | `GET /orgs/{org}/members?detail=security` | account holder, owner or admin | Each member's lockout risk: `{ orgId, members: [{ account, name, role, teams, passkeys, recoveryCode, lastActiveDay, sessions }] }`, `passkeys` `1`, `2` or `"3+"`, `lastActiveDay` a UTC day (`YYYY-MM-DD`, `null`: unknown). `403` below admin, `404` outside the organization ([Members' security](/protocol/organizations/#members-security)) | `namespace members list --security` |
 | `DELETE /orgs/{org}` | account holder | Delete with teams, invites and apps (owner; `412` first) | `namespace delete` |
-| `POST /orgs/{org}/name` | session | `{ name, confirm? }`: rename the organization (owner or admin; `412` first), the name as `POST /orgs` takes it → `{ orgId, name }`. `403` below admin, `404` outside the organization ([Organizations](/protocol/organizations/#organizations)) | - |
+| `POST /orgs/{org}/name` | account holder | `{ name, confirm? }`: rename the organization (owner or admin; `412` first), the name as `POST /orgs` takes it → `{ orgId, name }`. `403` below admin, `404` outside the organization ([Organizations](/protocol/organizations/#organizations)) | - |
 | `POST /orgs/{org}/metadata` | signed in | `{ metadata }` | `namespace metadata set` |
 | `GET /orgs/{org}/usage` | org admin | What today's runs of the apps the org is the developer of used: `apps`, `developerFuelToday`, `developerWritesToday` (decimal strings), the quotas (D78); a member gets `403` | |
-| `POST /orgs/{org}/members` | session | `{ account, role, confirm? }`; `owner` moves ownership. `412` first | `namespace members add` |
-| `DELETE /orgs/{org}/members/{account}` | session | Remove a member, or leave. `412` first; the retry's JSON body is `{ confirm }` | `namespace members remove`, `namespace leave` |
+| `POST /orgs/{org}/members` | account holder | `{ account, role, confirm? }`; `owner` moves ownership. `412` first | `namespace members add` |
+| `DELETE /orgs/{org}/members/{account}` | account holder | Remove a member, or leave. `412` first; the retry's JSON body is `{ confirm }` | `namespace members remove`, `namespace leave` |
 | `POST /orgs/{org}/members/{account}/metadata` | signed in | `{ metadata }` | `namespace member-metadata` |
-| `POST /orgs/{org}/members/{account}/teams` | session | `{ teams: [{ team, role?, capabilities? }], confirm? }`: the account's row in each team (1 to 64, each once), each judged as `POST /orgs/{org}/teams/{team}/members`; all or nothing. `400 BAD_TEAMS`; `412` first | |
-| `DELETE /orgs/{org}/members/{account}/teams` | session | `{ teams: [team], confirm? }`: out of each team (or leave them), the teams below included, each judged as `DELETE /orgs/{org}/teams/{team}/members/{account}`; all or nothing. `400 BAD_TEAMS`; `412` first | |
-| `POST /orgs/{org}/capabilities` | session | `{ account?, team?, capabilities, confirm? }`. `412` first | `namespace capabilities`, `group settings` |
-| `POST /orgs/{org}/all-apps` | session | `{ account, allApps, confirm? }`: give a member every app added to the organization from now on, or stop it (owner or admin; `412` first). `403` below admin, `404` outside the organization ([Every app added later](/protocol/organizations/#every-app-added-later)) | - |
-| `POST /orgs/{org}/invites` | session | `{ role, teams, ttlSecs?, uses?, allApps?, confirm? }` → a token. `412` first; `allApps: true` (owner or admin, `403` below) also gives whoever redeems it every app added later | `namespace invite` |
-| `POST /invites/{token}/redeem` | session | Join (no passkey prompt: the node signs with the token's key) | `namespace join` |
+| `POST /orgs/{org}/members/{account}/teams` | account holder | `{ teams: [{ team, role?, capabilities? }], confirm? }`: the account's row in each team (1 to 64, each once), each judged as `POST /orgs/{org}/teams/{team}/members`; all or nothing. `400 BAD_TEAMS`; `412` first | |
+| `DELETE /orgs/{org}/members/{account}/teams` | account holder | `{ teams: [team], confirm? }`: out of each team (or leave them), the teams below included, each judged as `DELETE /orgs/{org}/teams/{team}/members/{account}`; all or nothing. `400 BAD_TEAMS`; `412` first | |
+| `POST /orgs/{org}/capabilities` | account holder | `{ account?, team?, capabilities, confirm? }`. `412` first | `namespace capabilities`, `group settings` |
+| `POST /orgs/{org}/all-apps` | account holder | `{ account, allApps, confirm? }`: give a member every app added to the organization from now on, or stop it (owner or admin; `412` first). `403` below admin, `404` outside the organization ([Every app added later](/protocol/organizations/#every-app-added-later)) | - |
+| `POST /orgs/{org}/invites` | account holder | `{ role, teams, ttlSecs?, uses?, allApps?, confirm? }` → a token. `412` first; `allApps: true` (owner or admin, `403` below) also gives whoever redeems it every app added later | `namespace invite` |
+| `POST /invites/{token}/redeem` | account holder | Join (no passkey prompt: the node signs with the token's key) | `namespace join` |
 | `POST /orgs/{org}/recovery` | account holder | `{ publicKey, confirm? }`: set, rotate or (`null`) remove the recovery key (owner; `412` first); cancels a recovery under way | - |
 | `POST /orgs/{org}/recovery/start` | account holder | `{ nonce, signature }`: the seed's signature handing the org to the caller → `{ startedAt, readyAt }`. `403 WRONG_RECOVERY_KEY`, `409 RECOVERY_PENDING` | - |
 | `POST /orgs/{org}/recovery/cancel` | account holder | Cancel the recovery under way (owner; `412` first) | - |
 | `POST /orgs/{org}/recovery/finish` | account holder | Become the owner once `readyAt` passed (the account that started it; `412` first; `409 RECOVERY_NOT_READY` before) | - |
-| `POST /orgs/{org}/teams` | session | `{ name, parent?, join: everyone \| invite }`: an admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who writes `parent` and holds `CREATE_CHILD_TEAM` there (a restricted team only) | `namespace create-group` |
+| `POST /orgs/{org}/teams` | account holder | `{ name, parent?, join: everyone \| invite }`: an admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who writes `parent` and holds `CREATE_CHILD_TEAM` there (a restricted team only) | `namespace create-group` |
 | `GET /orgs/{org}/teams/{team}` | signed in | One team | `group get`, `group members list` |
-| `POST /orgs/{org}/teams/{team}` | session | `{ name?, join?, parent?, metadata? }` | `group update`, `reparent`, `metadata` |
-| `DELETE /orgs/{org}/teams/{team}` | session | Delete with the teams and apps below | `group delete` |
-| `POST /orgs/{org}/teams/{team}/members` | session | `{ account, role?, capabilities?, confirm? }`. `412` first | `group members add` |
-| `DELETE /orgs/{org}/teams/{team}/members/{account}` | session | Remove, or leave. `412` first; the retry's JSON body is `{ confirm }` | `group members remove`, `group leave` |
+| `POST /orgs/{org}/teams/{team}` | account holder | `{ name?, join?, parent?, metadata? }` | `group update`, `reparent`, `metadata` |
+| `DELETE /orgs/{org}/teams/{team}` | account holder | Delete with the teams and apps below | `group delete` |
+| `POST /orgs/{org}/teams/{team}/members` | account holder | `{ account, role?, capabilities?, confirm? }`. `412` first | `group members add` |
+| `DELETE /orgs/{org}/teams/{team}/members/{account}` | account holder | Remove, or leave. `412` first; the retry's JSON body is `{ confirm }` | `group members remove`, `group leave` |
 | `GET /orgs/{org}/app-teams` | signed in (a member) | `{ mode, appTeams }`: each app team's package, id, name, `join`, member count, default capabilities, and whether the caller is in it or manages it (a guest: only their own) | |
-| `POST /orgs/{org}/app-teams` | session | `{ apps?: [{ package, name?, instances?, join?, keep?, childTeams? }], shared?, confirm? }` (owner or admin): give apps app teams, or open or close one (`join`), keeping everyone or the accounts in `keep`; `childTeams` lets that team's members make private channels below it (`CREATE_CHILD_TEAM`), or no longer. `412` first | |
+| `POST /orgs/{org}/app-teams` | account holder | `{ apps?: [{ package, name?, instances?, join?, keep?, childTeams? }], shared?, confirm? }` (owner or admin): give apps app teams, or open or close one (`join`), keeping everyone or the accounts in `keep`; `childTeams` lets that team's members make private channels below it (`CREATE_CHILD_TEAM`), or no longer. `412` first | |
 | `GET /orgs/{org}/apps[?after=ID&limit=N]` | signed in (a member) | As `GET /auth/apps`, for the organization's apps the caller reaches or manages; `404` to a non-member | |
 | `POST /orgs/{org}/releases` | account holder | `{ version, approved, confirm? }` (owner) | `namespace approve-release` |
 | `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `namespace outbound` |

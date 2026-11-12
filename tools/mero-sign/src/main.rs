@@ -33,6 +33,11 @@ enum Commands {
         /// Sign with the well-known development key (cannot be published to registry)
         #[arg(long, conflicts_with = "key")]
         dev: bool,
+
+        /// The previous release (.mpk, component .wasm or ABI JSON): warn about ABI changes
+        /// that break callers, and refuse a state change without a state version bump
+        #[arg(long)]
+        previous: Option<PathBuf>,
     },
 
     /// Generate a new Ed25519 keypair
@@ -58,7 +63,22 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Sign { manifest, key, dev } => {
+        Commands::Sign {
+            manifest,
+            key,
+            dev,
+            previous,
+        } => {
+            if let Some(previous) = previous {
+                let check = mero_sign::check_abi(&manifest, &previous)?;
+                eprintln!("ABI changes since {}:", previous.display());
+                eprint!("{}", check.report);
+                if check.breaking {
+                    eprintln!(
+                        "\u{26a0}  This release breaks existing callers of the app (see `breaking` above)."
+                    );
+                }
+            }
             let signing_key = if dev {
                 mero_sign::dev_signing_key()
             } else if let Some(key_path) = key {

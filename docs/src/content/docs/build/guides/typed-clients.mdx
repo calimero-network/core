@@ -1,0 +1,256 @@
+---
+title: Typed clients for your app
+description: Generate your app's OpenAPI document and a typed TypeScript, Python, Swift or Kotlin client from its ABI with mero-app-build codegen, and check a new version for breaking changes before you publish it.
+sidebar:
+  order: 10
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Task:** call your app's methods from a frontend or a script with types checked
+by the compiler, and find out before publishing whether a new version breaks
+the clients already out there.
+
+Every app embeds its [ABI](/core/build/app-abi/): its methods, their parameters
+and results, its errors and events. `mero-app-build codegen` turns it into an
+OpenAPI 3.1 document and a thin typed client over the client you already use:
+mero-js's `CalimeroClient` (its `client.apps.call` and `client.apps.view`),
+calimero-client-py's `Client` (the same, answering JSON), or the `CalimeroClient`
+and `ContextContractCalling` of swift-sdk (MeroKit) and kotlin-sdk (mero-core). They keep doing the
+work (the attested, sealed channel, sessions, passkey step-ups, retries); the
+generated code only adds the method names and types.
+
+## Generate a client
+
+Put `mero-app-build` on PATH once (`scripts/install-mero-app-build.sh`), build
+the app, then point `codegen` at the component, the `.mpk` bundle or an ABI JSON
+file (`meroctl context abi` saves an installed app's):
+
+```bash
+mero-app-build apps/kv-store --out kv-store.wasm
+mero-app-build codegen --abi kv-store.wasm --lang ts -o src/generated
+```
+
+```
+wrote src/generated/openapi.json
+wrote src/generated/client.ts
+```
+
+`--lang` is `ts`, `python`, `swift`, `kotlin` or `openapi` (the document alone).
+Every language writes `openapi.json` beside the client (`client.ts`, `client.py`,
+`KvStoreClient.swift`, `KvStoreClient.kt`). The client class is named after
+`--name`, else the package of an `.mpk` or the file's name (`kv-store.wasm` gives
+`KvStoreClient`). A Kotlin client goes in `--package` (default
+`calimero.generated.<name>`, here `calimero.generated.kvstore`). A multi-service
+bundle writes one directory per service, each Kotlin client in `<package>.<service>`;
+`--service <name>` picks one.
+
+## Use it from TypeScript
+
+```ts
+import { CalimeroClient, passkeyConfirm } from '@calimero-network/mero-js';
+import { KvStoreClient } from './generated/client';
+
+const client = /* a signed-in CalimeroClient */;
+const kv = new KvStoreClient(client, appId);
+
+await kv.set({ key: 'greeting', value: 'hello' });
+const value: string | null = await kv.get({ key: 'greeting' });
+const count: string = await kv.len(); // u64: a decimal string
+
+for await (const event of kv.events()) {
+  if (event.kind === 'Inserted') console.log(event.data.key, event.data.value);
+}
+```
+
+A call takes `{ idempotencyKey, confirm, signal }` as its last argument, a view
+`{ consistency, minIndex, signal }` (`consistency: 'stale'` reads the replica that
+answers). A `confirm` method's `412 CONFIRM_REQUIRED` step-up is answered by the
+call's `confirm`, else by the `confirm` the `CalimeroClient` was built with
+(here `rooms` is `apps/rooms`' generated client):
+
+```ts
+await rooms.adminRelease({ id, reason }, { confirm: passkeyConfirm(passkey) });
+```
+
+An `option<..>` argument may be left out or be `null`: the SDK reads both as
+`None`. In an error's or an event's fields it is always there, `null` for none.
+
+### Keep a refreshed session
+
+mero-js refreshes an expired session on its own, and has no event that says it
+did. A page that stores the session passes `after`, which runs after every call
+and view, refused ones included:
+
+```ts
+const kv = new KvStoreClient(client, appId, {
+  after: () => saveSession(client.session),
+});
+```
+
+### Test without a node
+
+The class takes an `AppTransport`, the part of `CalimeroClient` it uses
+(`apps.call`, `apps.view`, `events`), so a test double implements that alone:
+
+```ts
+const kv = new KvStoreClient(
+  {
+    apps: {
+      call: async () => ({ result: null }),
+      view: async ({ method }) => ({ result: method === 'len' ? '0' : null }),
+    },
+    async *events() {},
+  },
+  'app-1',
+);
+```
+
+## Use it from Python
+
+```python
+from calimero import Client
+from generated.client import KvStoreClient
+
+kv = KvStoreClient(client, app_id)  # a signed-in calimero Client
+kv.set("greeting", "hello")
+assert kv.get("greeting") == "hello"
+assert kv.len(consistency="stale") == "1"
+rooms.admin_release("b-1", "late", passkey=passkey)  # apps/rooms' confirm method
+```
+
+Arguments are keyword arguments in snake_case (`room_id=`); errors and events
+are `TypedDict`s (`NotFoundError`, `InsertedEvent`). A call also takes
+`idempotency_key=`, a `confirm` method `passkey=` (else the client's own), and a
+view `consistency=` and `min_index=`.
+
+## Use it from Swift
+
+The client is a `Sendable` struct over swift-sdk 2.0's MeroKit (`import MeroKit`):
+
+```swift
+import MeroKit
+
+// Every method: idempotency keys, stale views, `confirm` step-ups, events.
+let kv = KvStoreClient(client: calimeroClient, app: appId)
+// Or the contract an app already holds (MeroAppSession's backend, a test double):
+let kv = KvStoreClient(backend: session.backend!, app: appId)
+
+try await kv.set(key: "greeting", value: "hello")
+let value: String? = try await kv.get(key: "greeting")
+let count: UInt64 = try await kv.len()  // u64: a decimal string on the wire
+
+for try await frame in kv.events() {
+    if case .inserted(let key, let value) = frame.event { print(key, value) }
+}
+
+do {
+    try await kv.remove(key: "missing")
+} catch let error as AppError {
+    if case .notFound = KvStoreClient.Refusal(error) { /* ... */ }
+}
+```
+
+A call takes `idempotencyKey:` last, a view `stale:` and `minIndex:`, a `confirm`
+method `passkey:`. Over a `ContextContractCalling` (`init(contract:)`,
+`init(backend:app:)`) a view is `query` and a call `execute`; `confirm` methods,
+`events()` and an `idempotencyKey` need `init(client:app:)` and throw
+`MeroAppBackendUnsupported` otherwise. Decode `MeroAppBackend.events` with
+`KvStoreClient.Event(kind:data:)`. Put each client in a module of its own (one
+target per service).
+
+## Use it from Kotlin
+
+The client class is over kotlin-sdk 2.0's mero-core, with kotlinx.serialization
+and kotlinx.coroutines on the classpath (no serialization plugin needed):
+
+```kotlin
+val kv = KvStoreClient(calimeroClient, appId)        // every method
+val kv = KvStoreClient(backend, appId)               // MeroAppBackend's contract
+
+kv.set(key = "greeting", value = "hello")
+val value: String? = kv.get(key = "greeting")
+val count: ULong = kv.len()
+
+kv.events().collect { frame ->
+    when (val event = frame.event) {
+        is KvStoreClient.Event.Inserted -> println("${event.key} ${event.value}")
+        else -> {}
+    }
+}
+
+try {
+    kv.remove(key = "missing")
+} catch (e: AppError) {
+    if (KvStoreClient.Refusal.from(e) is KvStoreClient.Refusal.NotFound) { /* ... */ }
+}
+```
+
+The trailing parameters and the two ways to build it are Swift's:
+`(client, app)` runs every method; `(contract)` and `(backend, app)` run calls and
+views and throw `UnsupportedOperationException` for the rest. Decode
+`MeroAppBackend.events` with `KvStoreClient.Event.decode(kind, data)`.
+
+## How the types come out
+
+In TypeScript and Python `u64` and `i64` are decimal strings and `bytes` base64url
+strings, as on the wire; Swift and Kotlin take and give `UInt64`/`ULong`,
+`Int64`/`Long` and `Data`/`ByteArray` and write the wire forms themselves.
+`option<T>` is `T | null` (`Optional[T]`, `T?`) and an optional argument may be
+left out (Swift and Kotlin send it as `null`). Errors and events are typed:
+`NotFoundError` / `InsertedEvent` in TypeScript and Python, the cases of
+`Refusal` and `Event` in Swift and Kotlin. The full table is in
+[App interface](/core/build/app-abi/#types).
+
+Your own types come from the ABI's `types`: a record is an interface (a
+`TypedDict`), an enum a union of its variants as serde writes them (`'Open'`,
+`{ Closed: { at: string } }`, `{ type: 'published'; at: string }`), and a generic
+type stays generic in TypeScript (`Listing<Slot>`) and is instantiated in Python
+(`Listing_Slot`).
+
+<Aside type="caution">
+  A type is described when it derives `Record` or `AbiType`
+  ([SDK macros](/core/build/sdk-macros/#deriveabitype)). Any other type, and every
+  type of an app built before the SDK wrote `types`, is `unknown` (`Any`): cast or
+  validate the value where you use it, or rebuild the app. The Swift and Kotlin
+  clients type every app type MeroKit's `JSONValue` / kotlinx's `JsonElement` for
+  now: decode it where you use it.
+</Aside>
+
+## Use any OpenAPI tool
+
+`openapi.json` is a standard OpenAPI 3.1 document: each method is
+`POST /apps/{app}/methods/{name}`, and its body is `{ args, idempotencyKey? }` for a
+call or `{ args, consistency?, minIndex? }` for a view. A running node serves the
+same document for an installed app at `GET /apps/{app}/openapi.json`. Generators
+and validators read it as they read any other; give the generated code mero-js
+or calimero-client-py as its transport, since the node answers only inside the
+sealed channel.
+
+## Check a new version before publishing
+
+Compare the new build with the last release:
+
+```bash
+mero-app-build abi-diff dist/kv-store-1.0.0.mpk kv-store.wasm
+```
+
+```
+breaking   method get: result changed: option<string> -> string
+compatible method count: added (view)
+```
+
+It exits `1` when a change breaks existing callers, so it can gate CI. The rules
+are in [App interface](/core/build/app-abi/#check-a-new-version-against-the-last).
+Signing runs the same check when you name the last release:
+
+```bash
+mero-sign sign manifest.json --key release.key --previous dist/kv-store-1.0.0.mpk
+python3 -I scripts/pack-component.py --wasm kv-store.wasm --package com.example.kv-store \
+  --app-version 1.1.0 --previous dist/kv-store-1.0.0.mpk --out dist/kv-store-1.1.0.mpk
+```
+
+Breaking changes are printed as a warning. A state field removed or changed in
+kind while the state version stayed the same is refused: bump
+`#[app::state(version = N)]` and migrate the data
+([Upgrades & state](/core/build/migrations/)).

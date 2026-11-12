@@ -335,6 +335,7 @@ name = "sample-guest"
 version = "0.0.0"
 dependencies = [
  "calimero-sdk",
+ "serde",
 ]
 
 [[package]]

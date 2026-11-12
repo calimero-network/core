@@ -70,6 +70,17 @@ pub struct Service {
 /// The refusal when a compute component's methods or caps differ from the main ABI's.
 pub const COMPUTE_ABI_MISMATCH: &str = "COMPUTE_ABI_MISMATCH";
 
+/// `e` naming the release's `service` it refused, and whether it was that service's
+/// compute component.
+#[must_use]
+pub fn of_service(e: ApiError, service: &str, compute: bool) -> ApiError {
+    let mut details = serde_json::json!({ "service": service });
+    if compute {
+        details["compute"] = serde_json::json!(true);
+    }
+    e.with_details(details)
+}
+
 /// Verify a `.mpk`: signature, digests, runtime version, and that it has WASM.
 pub fn verify(mpk: Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiError> {
     if mpk.len() > MAX_MPK_BYTES {
@@ -272,8 +283,7 @@ impl Node {
             // module (an SDK 0.12 service) is `400 UNSUPPORTED_BUNDLE`, a component
             // must pass the engine's prepare.
             if crate::types::Executor::of(&bytes) != crate::types::Executor::Component {
-                return Err(ApiError::unsupported_bundle()
-                    .with_details(serde_json::json!({ "service": service })));
+                return Err(of_service(ApiError::unsupported_bundle(), &service, false));
             }
             let main = {
                 use calimero_app_host::Engine as _;
@@ -288,15 +298,19 @@ impl Node {
                     self.compute_engine()
                         .prepare(&job_hash, &job)
                         .map_err(|e| {
-                            ApiError::bad_request(crate::node::BAD_BUNDLE, &e.to_string())
-                                .with_details(
-                                    serde_json::json!({ "service": service, "compute": true }),
-                                )
+                            of_service(
+                                ApiError::bad_request(crate::node::BAD_BUNDLE, &e.to_string()),
+                                &service,
+                                true,
+                            )
                         })?
                 };
                 compute_abi_agrees(&main.abi, &prepared.abi).map_err(|why| {
-                    ApiError::bad_request(COMPUTE_ABI_MISMATCH, &why)
-                        .with_details(serde_json::json!({ "service": service }))
+                    of_service(
+                        ApiError::bad_request(COMPUTE_ABI_MISMATCH, &why),
+                        &service,
+                        false,
+                    )
                 })?;
                 let _prev = compute.insert(service.clone(), job_hash.clone());
                 let _prev = part_sizes.insert(job_hash.clone(), job.len() as u64);

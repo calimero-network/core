@@ -12,6 +12,7 @@ A confidential cloud for collaborative apps. Apps are written in Rust or JavaScr
 - **Glossary**: when a term is unclear, read the [glossary](docs/src/content/docs/protocol/glossary.mdx); `meroctl`'s names map to these: namespace = organization, group = team, context = app instance, application = signed package (see [meroctl](docs/src/content/docs/operate/meroctl.mdx)).
 - **Nodes**: before running `merod` by hand, read [Run local nodes](docs/src/content/docs/contribute/development.mdx#run-local-nodes); every flag is in the [merod reference](docs/src/content/docs/operate/merod.mdx).
 - **Tests**: before writing a test or scenario file, reading node logs, or debugging a CI failure, read [Testing strategy](docs/src/content/docs/contribute/testing.mdx).
+- **Releasing**: before committing, titling a pull request, or releasing, read [RELEASING.md](RELEASING.md): the PR title is the release commit, and the same rules hold in every repository that ships releases.
 - **Issues**: before filing an engineering issue, fill in the [`technical_issue`](.github/ISSUE_TEMPLATE/technical_issue.md) template.
 
 ## Testing

@@ -5,6 +5,14 @@
 //! Builds the component `apps/kv-store-with-shared-storage` from this checkout
 //! (cached under `$CARGO_TARGET_DIR/app-components`).
 
+// Tracking: these tests call the route methods `calimero-client` wrote by hand,
+// deprecated for its generated layer (`client.<group>().<method>()`); they move
+// over, and the hand-written methods go, in a follow-up.
+#![allow(
+    deprecated,
+    reason = "the hand-written route methods, until these tests use the generated ones"
+)]
+
 use calimero_client::{Client, Consistency};
 use serde_json::{json, Value};
 
