@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use serde_json::{json, Value};
 
-use crate::env::{read_file, Env};
+use crate::env::{read_file, to_json, Env};
 
 #[derive(Debug, Subcommand)]
 pub enum BlobCmd {
@@ -49,20 +49,27 @@ pub enum BlobCmd {
 }
 
 pub async fn run(cmd: BlobCmd, env: &Env) -> eyre::Result<Value> {
-    let client = &env.client;
+    let apps = env.client.apps();
     Ok(match cmd {
-        BlobCmd::List { context } => client.list_blobs(&env.app(&context).await?).await?,
-        BlobCmd::Upload { file, context } => {
-            client
-                .upload_blob(&env.app(&context).await?, read_file(&file)?)
-                .await?
-        }
+        BlobCmd::List { context } => to_json(&apps.blob_list(&env.app(&context).await?).await?)?,
+        BlobCmd::Upload { file, context } => to_json(
+            &apps
+                .blob_upload(
+                    &env.app(&context).await?,
+                    "application/octet-stream",
+                    read_file(&file)?,
+                    None,
+                )
+                .await?,
+        )?,
         BlobCmd::Download {
             id,
             context,
             output,
         } => {
-            let bytes = client.download_blob(&env.app(&context).await?, &id).await?;
+            let bytes = apps
+                .blob_download(&env.app(&context).await?, &id, None)
+                .await?;
             match output {
                 Some(path) => {
                     std::fs::write(&path, &bytes)?;
@@ -74,12 +81,14 @@ pub async fn run(cmd: BlobCmd, env: &Env) -> eyre::Result<Value> {
                 }
             }
         }
-        BlobCmd::Info { id, context } => client.blob_info(&env.app(&context).await?, &id).await?,
+        BlobCmd::Info { id, context } => {
+            to_json(&apps.blob_info(&env.app(&context).await?, &id).await?)?
+        }
         BlobCmd::Delete { id, context } => {
-            client.delete_blob(&env.app(&context).await?, &id).await?
+            to_json(&apps.blob_delete(&env.app(&context).await?, &id).await?)?
         }
         BlobCmd::Revoke { id, context } => {
-            client.revoke_blob(&env.app(&context).await?, &id).await?
+            to_json(&apps.blob_revoke(&env.app(&context).await?, &id).await?)?
         }
     })
 }
