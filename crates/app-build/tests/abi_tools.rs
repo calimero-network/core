@@ -166,3 +166,160 @@ fn abi_diff_exits_non_zero_on_a_breaking_change() {
     assert_eq!(report["breaking"], true);
     assert_eq!(report["changes"][0]["message"], "kind call -> view");
 }
+
+#[test]
+fn abi_diff_compares_record_and_enum_shapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../app-abi/tests/fixtures/kitchen-sink.abi.json");
+    let old: Value = serde_json::from_slice(&fs::read(fixture).unwrap()).unwrap();
+    let write = |name: &str, v: &Value| {
+        let p = dir.path().join(name);
+        fs::write(&p, serde_json::to_vec(v).unwrap()).unwrap();
+        p
+    };
+    let old_path = write("old.json", &old);
+    let run = |new: &Value| {
+        bin()
+            .arg("abi-diff")
+            .arg(&old_path)
+            .arg(write("new.json", new))
+            .output()
+            .unwrap()
+    };
+
+    // `Item` is a parameter of `everything`: a field callers may leave out is compatible.
+    let mut optional = old.clone();
+    optional["types"]["Item"]["fields"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!(["rank", "option<u32>"]));
+    let out = run(&optional);
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout)
+        .contains("compatible type Item: optional field `rank` added (option<u32>)"));
+
+    // `Status` sits inside `Item`, which `lookup` returns: a new variant breaks readers.
+    let mut variant = old;
+    variant["types"]["Status"]["variants"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "name": "Archived" }));
+    let out = run(&variant);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout)
+        .contains("breaking   type Status: variant `Archived` added: a client that decodes"));
+}
+
+#[test]
+fn version_prints_the_release() {
+    for flag in ["--version", "-V"] {
+        let out = bin().arg(flag).output().unwrap();
+        assert!(out.status.success(), "{flag}: {out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let version = text
+            .strip_prefix("mero-app-build ")
+            .unwrap_or_default()
+            .trim();
+        // The release (`[workspace.metadata.workspaces].version`), not the `0.0.0` placeholder.
+        assert!(!version.is_empty() && version != "0.0.0", "{flag}: {text}");
+    }
+}
+
+/// `<root>/logic/Cargo.toml` naming the crate `kv-store`, and its ABI at `logic/res/abi.json`.
+fn crate_with_abi(root: &Path, manifest: &str) -> PathBuf {
+    let res = root.join("logic/res");
+    fs::create_dir_all(&res).unwrap();
+    fs::write(root.join("logic/Cargo.toml"), manifest).unwrap();
+    let abi = res.join("abi.json");
+    let _ = fs::copy(kv_fixture(), &abi).unwrap();
+    abi
+}
+
+#[test]
+fn codegen_names_a_bare_abi_json_after_its_crate() {
+    let dir = tempfile::tempdir().unwrap();
+    let abi = crate_with_abi(
+        dir.path(),
+        "[package]\nname = \"kv-store\"\nversion = \"0.0.1\"\n",
+    );
+    let out = dir.path().join("out");
+    let status = bin()
+        .args(["codegen", "--abi"])
+        .arg(&abi)
+        .args(["--lang", "ts", "-o"])
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let text = fs::read_to_string(out.join("client.ts")).unwrap();
+    assert!(text.contains("export class KvStoreClient<"), "{text}");
+    assert!(!text.contains("AbiClient"), "{text}");
+}
+
+#[test]
+fn codegen_asks_for_a_name_when_a_bare_abi_json_has_no_crate() {
+    let dir = tempfile::tempdir().unwrap();
+    let abi = crate_with_abi(dir.path(), "[workspace]\nmembers = []\n");
+    let out = bin()
+        .args(["codegen", "--abi"])
+        .arg(&abi)
+        .args(["--lang", "ts", "-o"])
+        .arg(dir.path().join("out"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--name"), "{stderr}");
+    assert!(!dir.path().join("out/client.ts").exists());
+
+    let named = bin()
+        .args(["codegen", "--abi"])
+        .arg(&abi)
+        .args(["--lang", "ts", "--name", "kv-store", "-o"])
+        .arg(dir.path().join("out"))
+        .status()
+        .unwrap();
+    assert!(named.success());
+}
+
+#[test]
+fn codegen_no_openapi_writes_the_client_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out");
+    let status = bin()
+        .args(["codegen", "--abi"])
+        .arg(kv_fixture())
+        .args(["--lang", "ts", "--no-openapi", "-o"])
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let files: Vec<_> = fs::read_dir(&out)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(files, ["client.ts"]);
+
+    let nothing = bin()
+        .args(["codegen", "--abi"])
+        .arg(kv_fixture())
+        .args(["--lang", "openapi", "--no-openapi", "-o"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(!nothing.status.success());
+}
+
+#[test]
+fn codegen_runs_in_process() {
+    use calimero_app_build::codegen::{Codegen, Lang};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut job = Codegen::new(kv_fixture(), Lang::TypeScript, dir.path().join("out"));
+    job.openapi = false;
+    let written = job.run().unwrap();
+    assert_eq!(written, [dir.path().join("out/client.ts")]);
+    let text = fs::read_to_string(&written[0]).unwrap();
+    assert!(text.contains("export class KvStoreClient<"), "{text}");
+}

@@ -197,47 +197,189 @@ export interface ClientOptions {
   after?: () => void | Promise<void>;
 }
 
+/** A call's whole answer (`raw`): its result, the log index it committed at, its events. */
+export interface CallAnswer<T> {
+  result: T;
+  /** The log index the call committed at. */
+  index: number;
+  /** The app's events the call emitted, in order. */
+  events: AppEvent[];
+}
+
+/** A view's whole answer (`raw`): its result and the log index of the state it read. */
+export interface ViewAnswer<T> {
+  result: T;
+  index: number;
+}
+
 /**
- * What the class uses of mero-js's `CalimeroClient` (`client.apps.call`, `client.apps.view`,
- * `client.events`): a test double implements this alone.
+ * What calls and views use of mero-js's `CalimeroClient` (`client.apps.call`,
+ * `client.apps.view`): `Pick<CalimeroClient, 'apps'>` or a test double of the two. A double
+ * that leaves out `index` or `events` answers `raw` with index 0 and no events.
  */
-export interface AppTransport {
+export interface AppCallTransport {
   apps: {
     call(
       args: { app: string; method: string; args?: unknown; idempotencyKey?: string },
       options?: { confirm?: ConfirmCallback; signal?: AbortSignal },
-    ): Promise<{ result: unknown }>;
+    ): Promise<{ result: unknown; index?: number; events?: { kind: string; data: unknown }[] }>;
     view(
       args: { app: string; method: string; args?: unknown; consistency?: 'strong' | 'stale'; minIndex?: number },
       options?: { signal?: AbortSignal },
-    ): Promise<{ result: unknown }>;
+    ): Promise<{ result: unknown; index?: number }>;
   };
+}
+
+/**
+ * What the class uses of mero-js's `CalimeroClient`: calls and views, and the event stream
+ * (`client.events`) its `events()` reads. A test double implements this alone.
+ */
+export interface AppTransport extends AppCallTransport {
   events(app: string, from?: number, signal?: AbortSignal): AsyncIterable<NodeEvent>;
 }
 
-/** The app's methods, over a signed-in `CalimeroClient` (or any {@link AppTransport}). */
-export class PermissionsShowcaseClient {
-  readonly #client: AppTransport;
+/** The app's methods: what `PermissionsShowcaseClient` implements, for a test double to stand in for it. */
+export interface PermissionsShowcaseApi {
+  /** call `addModerator`. */
+  addModerator(args: AddModeratorArgs, options?: CallOptions): Promise<null>;
+  /** call `addRevision`. */
+  addRevision(args: AddRevisionArgs, options?: CallOptions): Promise<null>;
+  /** call `announce`. */
+  announce(args: AnnounceArgs, options?: CallOptions): Promise<null>;
+  /** view `announcements`. */
+  announcements(options?: ViewOptions): Promise<MessageView[]>;
+  /** view `channel`. */
+  channel(args: ChannelArgs, options?: ViewOptions): Promise<MessageView[]>;
+  /** call `createPage`. */
+  createPage(args: CreatePageArgs, options?: CallOptions): Promise<null>;
+  /** call `deletePage`. */
+  deletePage(args: DeletePageArgs, options?: CallOptions): Promise<boolean>;
+  /** view `evidence`. */
+  evidence(args: EvidenceArgs, options?: ViewOptions): Promise<Evidence | null>;
+  /** view `evidenceOfKind`. */
+  evidenceOfKind(args: EvidenceOfKindArgs, options?: ViewOptions): Promise<Evidence[]>;
+  /** call `fileEvidence`. */
+  fileEvidence(args: FileEvidenceArgs, options?: CallOptions): Promise<string>;
+  /** view `founder`. */
+  founder(options?: ViewOptions): Promise<string | null>;
+  /** view `founding`. */
+  founding(options?: ViewOptions): Promise<Founding>;
+  /** view `me`. */
+  me(options?: ViewOptions): Promise<string>;
+  /** view `moderators`. */
+  moderators(options?: ViewOptions): Promise<string[]>;
+  /** view `page`. */
+  page(args: PageArgs, options?: ViewOptions): Promise<PageView | null>;
+  /** call `postMessage`. */
+  postMessage(args: PostMessageArgs, options?: CallOptions): Promise<string>;
+  /** view `quorum`. */
+  quorum(options?: ViewOptions): Promise<string>;
+  /** call `removeAnnouncement`. */
+  removeAnnouncement(args: RemoveAnnouncementArgs, options?: CallOptions): Promise<boolean>;
+  /** call `renamePage`. */
+  renamePage(args: RenamePageArgs, options?: CallOptions): Promise<null>;
+  /** The app's events from log index `from`, then live, until `signal` aborts. */
+  events(from?: number, signal?: AbortSignal): AsyncIterable<AppEvent & { id: string }>;
+}
+
+/**
+ * The app's methods answering whole: `PermissionsShowcaseClient`'s `raw`, for code that reads a call's log
+ * index or events.
+ */
+export interface PermissionsShowcaseRawApi {
+  /** call `addModerator`. */
+  addModerator(args: AddModeratorArgs, options?: CallOptions): Promise<CallAnswer<null>>;
+  /** call `addRevision`. */
+  addRevision(args: AddRevisionArgs, options?: CallOptions): Promise<CallAnswer<null>>;
+  /** call `announce`. */
+  announce(args: AnnounceArgs, options?: CallOptions): Promise<CallAnswer<null>>;
+  /** view `announcements`. */
+  announcements(options?: ViewOptions): Promise<ViewAnswer<MessageView[]>>;
+  /** view `channel`. */
+  channel(args: ChannelArgs, options?: ViewOptions): Promise<ViewAnswer<MessageView[]>>;
+  /** call `createPage`. */
+  createPage(args: CreatePageArgs, options?: CallOptions): Promise<CallAnswer<null>>;
+  /** call `deletePage`. */
+  deletePage(args: DeletePageArgs, options?: CallOptions): Promise<CallAnswer<boolean>>;
+  /** view `evidence`. */
+  evidence(args: EvidenceArgs, options?: ViewOptions): Promise<ViewAnswer<Evidence | null>>;
+  /** view `evidenceOfKind`. */
+  evidenceOfKind(args: EvidenceOfKindArgs, options?: ViewOptions): Promise<ViewAnswer<Evidence[]>>;
+  /** call `fileEvidence`. */
+  fileEvidence(args: FileEvidenceArgs, options?: CallOptions): Promise<CallAnswer<string>>;
+  /** view `founder`. */
+  founder(options?: ViewOptions): Promise<ViewAnswer<string | null>>;
+  /** view `founding`. */
+  founding(options?: ViewOptions): Promise<ViewAnswer<Founding>>;
+  /** view `me`. */
+  me(options?: ViewOptions): Promise<ViewAnswer<string>>;
+  /** view `moderators`. */
+  moderators(options?: ViewOptions): Promise<ViewAnswer<string[]>>;
+  /** view `page`. */
+  page(args: PageArgs, options?: ViewOptions): Promise<ViewAnswer<PageView | null>>;
+  /** call `postMessage`. */
+  postMessage(args: PostMessageArgs, options?: CallOptions): Promise<CallAnswer<string>>;
+  /** view `quorum`. */
+  quorum(options?: ViewOptions): Promise<ViewAnswer<string>>;
+  /** call `removeAnnouncement`. */
+  removeAnnouncement(args: RemoveAnnouncementArgs, options?: CallOptions): Promise<CallAnswer<boolean>>;
+  /** call `renamePage`. */
+  renamePage(args: RenamePageArgs, options?: CallOptions): Promise<CallAnswer<null>>;
+}
+
+/**
+ * The app's methods, over a signed-in `CalimeroClient`, `Pick<CalimeroClient, 'apps'>` or any
+ * {@link AppCallTransport}; `events()` needs an {@link AppTransport}.
+ */
+export class PermissionsShowcaseClient<T extends AppCallTransport = AppTransport> implements PermissionsShowcaseApi {
+  readonly #client: T;
   readonly #app: string;
   readonly #after: ClientOptions['after'];
+  /**
+   * The same methods answering whole: `{ result, index, events }` for a call, `{ result, index }`
+   * for a view.
+   */
+  readonly raw: PermissionsShowcaseRawApi;
 
-  constructor(client: AppTransport, app: string, options: ClientOptions = {}) {
+  constructor(client: T, app: string, options: ClientOptions = {}) {
     this.#client = client;
     this.#app = app;
     this.#after = options.after;
+    this.raw = {
+      addModerator: (args, options = {}) => this.#call<null>('addModerator', args, options),
+      addRevision: (args, options = {}) => this.#call<null>('addRevision', args, options),
+      announce: (args, options = {}) => this.#call<null>('announce', args, options),
+      announcements: (options = {}) => this.#view<MessageView[]>('announcements', {}, options),
+      channel: (args, options = {}) => this.#view<MessageView[]>('channel', args, options),
+      createPage: (args, options = {}) => this.#call<null>('createPage', args, options),
+      deletePage: (args, options = {}) => this.#call<boolean>('deletePage', args, options),
+      evidence: (args, options = {}) => this.#view<Evidence | null>('evidence', args, options),
+      evidenceOfKind: (args, options = {}) => this.#view<Evidence[]>('evidenceOfKind', args, options),
+      fileEvidence: (args, options = {}) => this.#call<string>('fileEvidence', args, options),
+      founder: (options = {}) => this.#view<string | null>('founder', {}, options),
+      founding: (options = {}) => this.#view<Founding>('founding', {}, options),
+      me: (options = {}) => this.#view<string>('me', {}, options),
+      moderators: (options = {}) => this.#view<string[]>('moderators', {}, options),
+      page: (args, options = {}) => this.#view<PageView | null>('page', args, options),
+      postMessage: (args, options = {}) => this.#call<string>('postMessage', args, options),
+      quorum: (options = {}) => this.#view<string>('quorum', {}, options),
+      removeAnnouncement: (args, options = {}) => this.#call<boolean>('removeAnnouncement', args, options),
+      renamePage: (args, options = {}) => this.#call<null>('renamePage', args, options),
+    };
   }
 
-  async #call(method: string, args: object, options: CallOptions): Promise<unknown> {
+  async #call<R>(method: string, args: object, options: CallOptions): Promise<CallAnswer<R>> {
     const { idempotencyKey, ...rest } = options;
     const request = { app: this.#app, method, args, ...(idempotencyKey === undefined ? {} : { idempotencyKey }) };
     try {
-      return (await this.#client.apps.call(request, rest)).result;
+      const { result, index = 0, events = [] } = await this.#client.apps.call(request, rest);
+      return { result: result as R, index, events: events as AppEvent[] };
     } finally {
       await this.#after?.();
     }
   }
 
-  async #view(method: string, args: object, options: ViewOptions): Promise<unknown> {
+  async #view<R>(method: string, args: object, options: ViewOptions): Promise<ViewAnswer<R>> {
     const { consistency, minIndex, signal } = options;
     const request = {
       app: this.#app,
@@ -247,7 +389,8 @@ export class PermissionsShowcaseClient {
       ...(minIndex === undefined ? {} : { minIndex }),
     };
     try {
-      return (await this.#client.apps.view(request, signal === undefined ? {} : { signal })).result;
+      const { result, index = 0 } = await this.#client.apps.view(request, signal === undefined ? {} : { signal });
+      return { result: result as R, index };
     } finally {
       await this.#after?.();
     }
@@ -255,101 +398,101 @@ export class PermissionsShowcaseClient {
 
   /** call `addModerator`. */
   async addModerator(args: AddModeratorArgs, options: CallOptions = {}): Promise<null> {
-    return (await this.#call('addModerator', args, options)) as null;
+    return (await this.#call<null>('addModerator', args, options)).result;
   }
 
   /** call `addRevision`. */
   async addRevision(args: AddRevisionArgs, options: CallOptions = {}): Promise<null> {
-    return (await this.#call('addRevision', args, options)) as null;
+    return (await this.#call<null>('addRevision', args, options)).result;
   }
 
   /** call `announce`. */
   async announce(args: AnnounceArgs, options: CallOptions = {}): Promise<null> {
-    return (await this.#call('announce', args, options)) as null;
+    return (await this.#call<null>('announce', args, options)).result;
   }
 
   /** view `announcements`. */
   async announcements(options: ViewOptions = {}): Promise<MessageView[]> {
-    return (await this.#view('announcements', {}, options)) as MessageView[];
+    return (await this.#view<MessageView[]>('announcements', {}, options)).result;
   }
 
   /** view `channel`. */
   async channel(args: ChannelArgs, options: ViewOptions = {}): Promise<MessageView[]> {
-    return (await this.#view('channel', args, options)) as MessageView[];
+    return (await this.#view<MessageView[]>('channel', args, options)).result;
   }
 
   /** call `createPage`. */
   async createPage(args: CreatePageArgs, options: CallOptions = {}): Promise<null> {
-    return (await this.#call('createPage', args, options)) as null;
+    return (await this.#call<null>('createPage', args, options)).result;
   }
 
   /** call `deletePage`. */
   async deletePage(args: DeletePageArgs, options: CallOptions = {}): Promise<boolean> {
-    return (await this.#call('deletePage', args, options)) as boolean;
+    return (await this.#call<boolean>('deletePage', args, options)).result;
   }
 
   /** view `evidence`. */
   async evidence(args: EvidenceArgs, options: ViewOptions = {}): Promise<Evidence | null> {
-    return (await this.#view('evidence', args, options)) as Evidence | null;
+    return (await this.#view<Evidence | null>('evidence', args, options)).result;
   }
 
   /** view `evidenceOfKind`. */
   async evidenceOfKind(args: EvidenceOfKindArgs, options: ViewOptions = {}): Promise<Evidence[]> {
-    return (await this.#view('evidenceOfKind', args, options)) as Evidence[];
+    return (await this.#view<Evidence[]>('evidenceOfKind', args, options)).result;
   }
 
   /** call `fileEvidence`. */
   async fileEvidence(args: FileEvidenceArgs, options: CallOptions = {}): Promise<string> {
-    return (await this.#call('fileEvidence', args, options)) as string;
+    return (await this.#call<string>('fileEvidence', args, options)).result;
   }
 
   /** view `founder`. */
   async founder(options: ViewOptions = {}): Promise<string | null> {
-    return (await this.#view('founder', {}, options)) as string | null;
+    return (await this.#view<string | null>('founder', {}, options)).result;
   }
 
   /** view `founding`. */
   async founding(options: ViewOptions = {}): Promise<Founding> {
-    return (await this.#view('founding', {}, options)) as Founding;
+    return (await this.#view<Founding>('founding', {}, options)).result;
   }
 
   /** view `me`. */
   async me(options: ViewOptions = {}): Promise<string> {
-    return (await this.#view('me', {}, options)) as string;
+    return (await this.#view<string>('me', {}, options)).result;
   }
 
   /** view `moderators`. */
   async moderators(options: ViewOptions = {}): Promise<string[]> {
-    return (await this.#view('moderators', {}, options)) as string[];
+    return (await this.#view<string[]>('moderators', {}, options)).result;
   }
 
   /** view `page`. */
   async page(args: PageArgs, options: ViewOptions = {}): Promise<PageView | null> {
-    return (await this.#view('page', args, options)) as PageView | null;
+    return (await this.#view<PageView | null>('page', args, options)).result;
   }
 
   /** call `postMessage`. */
   async postMessage(args: PostMessageArgs, options: CallOptions = {}): Promise<string> {
-    return (await this.#call('postMessage', args, options)) as string;
+    return (await this.#call<string>('postMessage', args, options)).result;
   }
 
   /** view `quorum`. */
   async quorum(options: ViewOptions = {}): Promise<string> {
-    return (await this.#view('quorum', {}, options)) as string;
+    return (await this.#view<string>('quorum', {}, options)).result;
   }
 
   /** call `removeAnnouncement`. */
   async removeAnnouncement(args: RemoveAnnouncementArgs, options: CallOptions = {}): Promise<boolean> {
-    return (await this.#call('removeAnnouncement', args, options)) as boolean;
+    return (await this.#call<boolean>('removeAnnouncement', args, options)).result;
   }
 
   /** call `renamePage`. */
   async renamePage(args: RenamePageArgs, options: CallOptions = {}): Promise<null> {
-    return (await this.#call('renamePage', args, options)) as null;
+    return (await this.#call<null>('renamePage', args, options)).result;
   }
 
   /** The app's events from log index `from`, then live, until `signal` aborts. */
-  async *events(from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & { id: string }> {
+  async *events(this: PermissionsShowcaseClient<AppTransport>, from = 0, signal?: AbortSignal): AsyncGenerator<AppEvent & { id: string }> {
     for await (const event of this.#client.events(this.#app, from, signal)) {
       yield event as AppEvent & { id: string };
     }

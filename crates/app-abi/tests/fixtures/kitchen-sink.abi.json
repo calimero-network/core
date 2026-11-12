@@ -7,7 +7,7 @@
     "version": 2
   },
   "methods": {
-    "init": { "kind": "init", "params": [], "returns": null, "confirm": false, "public": false, "allowSystem": false },
+    "init": { "kind": "init", "params": [["owner", "string"], ["limit", "u64"], ["note", "option<string>"], ["first", "option<Item>"]], "returns": null, "confirm": false, "public": false, "allowSystem": false },
     "everything": {
       "kind": "call",
       "params": [
@@ -39,7 +39,8 @@
       "kind": "view",
       "params": [
         ["status", "Status"], ["tagged", "Tagged"], ["adjacent", "Adjacent"], ["either", "Either"],
-        ["id", "Id"], ["point", "Point"], ["marker", "Marker"], ["tree", "Tree"]
+        ["id", "Id"], ["point", "Point"], ["marker", "Marker"], ["tree", "Tree"],
+        ["expr", "Expr"], ["choice", "Choice<Item>"]
       ],
       "returns": "Tree",
       "confirm": false, "public": false, "allowSystem": false
@@ -48,8 +49,25 @@
   "errors": { "NotFound": { "id": "u64" }, "Forbidden": {}, "Invalid": { "field": "string", "detail": "option<string>" }, "Rejected": { "0": "string" }, "Unknown": {} },
   "events": { "Created": { "id": "u64", "item": "Item" }, "Wiped": {}, "Default": { "blob": "bytes", "at": "option<u64>", "pair": "tuple<u32, string>", "delta": "i64" } },
   "types": {
-    "Adjacent": { "kind": "enum", "tag": "t", "content": "c", "variants": [{ "name": "Text", "type": "string" }, { "name": "Empty" }] },
-    "Either": { "kind": "enum", "untagged": true, "variants": [{ "name": "Num", "type": "u32" }, { "name": "Named", "fields": [["name", "string"]] }] },
+    "Adjacent": {
+      "kind": "enum", "tag": "t", "content": "c",
+      "variants": [
+        { "name": "Text", "type": "string" }, { "name": "Empty" }, { "name": "Pair", "items": ["u32", "u32"] },
+        { "name": "Labeled", "fields": [["label", "string"], ["at", "option<u64>"]] }
+      ]
+    },
+    "Choice": { "kind": "enum", "params": ["T"], "tag": "kind", "variants": [{ "name": "one", "fields": [["value", "T"]] }, { "name": "zero" }] },
+    "Either": {
+      "kind": "enum", "untagged": true,
+      "variants": [
+        { "name": "Num", "type": "u32" }, { "name": "Named", "fields": [["name", "string"]] },
+        { "name": "Pair", "items": ["u32", "string"] }, { "name": "Blank" }
+      ]
+    },
+    "Expr": {
+      "kind": "enum",
+      "variants": [{ "name": "Lit", "type": "i64" }, { "name": "Neg", "type": "Expr" }, { "name": "Add", "items": ["Expr", "Expr"] }]
+    },
     "Id": { "kind": "newtype", "type": "string" },
     "Item": {
       "kind": "record",
@@ -62,7 +80,10 @@
       "kind": "enum",
       "variants": [{ "name": "Open" }, { "name": "Closed", "fields": [["at", "u64"]] }, { "name": "Moved", "type": "string" }, { "name": "Span", "items": ["u32", "u32"] }]
     },
-    "Tagged": { "kind": "enum", "tag": "type", "variants": [{ "name": "draft" }, { "name": "published", "fields": [["at", "u64"]] }] },
-    "Tree": { "kind": "record", "fields": [["value", "u32"], ["children", "list<Tree>"]] }
+    "Tagged": {
+      "kind": "enum", "tag": "type",
+      "variants": [{ "name": "draft" }, { "name": "published", "fields": [["at", "u64"]] }, { "name": "wrapped", "type": "Item" }]
+    },
+    "Tree": { "kind": "record", "fields": [["value", "u32"], ["children", "list<Tree>"], ["parent", "option<Tree>", { "optional": true }]] }
   }
 }

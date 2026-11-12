@@ -15,11 +15,110 @@ import MeroKit
 /// its own idempotency key, so `confirm` methods, `events` and an `idempotencyKey` throw
 /// `MeroAppBackendUnsupported`. A refusal throws `AppError`; `Refusal(_:)` types it.
 public struct RoomsClient: Sendable {
-    /// The app type `Booking`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias Booking = JSONValue
 
-    /// The app type `SlotView`: this client does not read its shape (the ABI's `types`), so it is its JSON.
-    public typealias SlotView = JSONValue
+    /// The app type `Booking`.
+    public struct Booking: Codable, Sendable, Equatable {
+        public var id: String
+        public var roomId: String
+        public var holder: String
+        public var start: UInt64
+        public var end: UInt64
+        public var title: String
+        public var checkedIn: Bool
+
+        public init(
+            id: String,
+            roomId: String,
+            holder: String,
+            start: UInt64,
+            end: UInt64,
+            title: String,
+            checkedIn: Bool
+        ) {
+            self.id = id
+            self.roomId = roomId
+            self.holder = holder
+            self.start = start
+            self.end = end
+            self.title = title
+            self.checkedIn = checkedIn
+        }
+
+        public init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: Key.self)
+            let v0 = try fields.decode(String.self, forKey: Key("id"))
+            let v1 = try fields.decode(String.self, forKey: Key("roomId"))
+            let v2 = try fields.decode(String.self, forKey: Key("holder"))
+            let v3 = try fields.decode(DecimalString<UInt64>.self, forKey: Key("start")).value
+            let v4 = try fields.decode(DecimalString<UInt64>.self, forKey: Key("end")).value
+            let v5 = try fields.decode(String.self, forKey: Key("title"))
+            let v6 = try fields.decode(Bool.self, forKey: Key("checkedIn"))
+            self.id = v0
+            self.roomId = v1
+            self.holder = v2
+            self.start = v3
+            self.end = v4
+            self.title = v5
+            self.checkedIn = v6
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var fields = encoder.container(keyedBy: Key.self)
+            try fields.encode(self.id, forKey: Key("id"))
+            try fields.encode(self.roomId, forKey: Key("roomId"))
+            try fields.encode(self.holder, forKey: Key("holder"))
+            try fields.encode(DecimalString(self.start), forKey: Key("start"))
+            try fields.encode(DecimalString(self.end), forKey: Key("end"))
+            try fields.encode(self.title, forKey: Key("title"))
+            try fields.encode(self.checkedIn, forKey: Key("checkedIn"))
+        }
+    }
+
+    /// The app type `SlotView`.
+    public struct SlotView: Codable, Sendable, Equatable {
+        public var start: UInt64
+        public var end: UInt64
+        public var bookingId: String
+        public var title: String?
+        public var mine: Bool
+
+        public init(
+            start: UInt64,
+            end: UInt64,
+            bookingId: String,
+            title: String? = nil,
+            mine: Bool
+        ) {
+            self.start = start
+            self.end = end
+            self.bookingId = bookingId
+            self.title = title
+            self.mine = mine
+        }
+
+        public init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: Key.self)
+            let v0 = try fields.decode(DecimalString<UInt64>.self, forKey: Key("start")).value
+            let v1 = try fields.decode(DecimalString<UInt64>.self, forKey: Key("end")).value
+            let v2 = try fields.decode(String.self, forKey: Key("bookingId"))
+            let v3 = try fields.decodeIfPresent(String.self, forKey: Key("title"))
+            let v4 = try fields.decode(Bool.self, forKey: Key("mine"))
+            self.start = v0
+            self.end = v1
+            self.bookingId = v2
+            self.title = v3
+            self.mine = v4
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var fields = encoder.container(keyedBy: Key.self)
+            try fields.encode(DecimalString(self.start), forKey: Key("start"))
+            try fields.encode(DecimalString(self.end), forKey: Key("end"))
+            try fields.encode(self.bookingId, forKey: Key("bookingId"))
+            try fields.encode(self.title, forKey: Key("title"))
+            try fields.encode(self.mine, forKey: Key("mine"))
+        }
+    }
 
     private enum Transport: Sendable {
         case client(CalimeroClient, String)

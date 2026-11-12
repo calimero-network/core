@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Literal, Optional, TypedDict, Union, cast
 
 from calimero import Client, SoftPasskey
 
-Adjacent = Union["Adjacent_Text", "Adjacent_Empty"]
+Adjacent = Union["Adjacent_Text", "Adjacent_Empty", "Adjacent_Pair", "Adjacent_Labeled"]
 """The app type `Adjacent`."""
 
 class Adjacent_Empty(TypedDict):
@@ -19,16 +19,54 @@ class Adjacent_Empty(TypedDict):
 
     t: Literal["Empty"]
 
+Adjacent_Labeled = TypedDict("Adjacent_Labeled", {"t": Literal["Labeled"], "c": "Adjacent_LabeledFields"})
+"""The variant `Labeled` of `Adjacent`."""
+
+class Adjacent_LabeledFields(TypedDict):
+    """The fields of the variant `Labeled` of `Adjacent`."""
+
+    label: str
+    at: Optional[str]
+
+Adjacent_Pair = TypedDict("Adjacent_Pair", {"t": Literal["Pair"], "c": List[Any]})
+"""The variant `Pair` of `Adjacent`."""
+
 Adjacent_Text = TypedDict("Adjacent_Text", {"t": Literal["Text"], "c": str})
 """The variant `Text` of `Adjacent`."""
 
-Either = Union[int, "Either_NamedFields"]
+Choice_Item = Union["Choice_Item_one", "Choice_Item_zero"]
+"""The app type `Choice<Item>`."""
+
+class Choice_Item_one(TypedDict):
+    """The variant `one` of `Choice_Item`."""
+
+    kind: Literal["one"]
+    value: "Item"
+
+class Choice_Item_zero(TypedDict):
+    """The variant `zero` of `Choice_Item`."""
+
+    kind: Literal["zero"]
+
+Either = Union[int, "Either_NamedFields", List[Any], None]
 """The app type `Either`."""
 
 class Either_NamedFields(TypedDict):
     """The fields of the variant `Named` of `Either`."""
 
     name: str
+
+Expr = Union["Expr_Lit", "Expr_Neg", "Expr_Add"]
+"""The app type `Expr`."""
+
+Expr_Add = TypedDict("Expr_Add", {"Add": List[Any]})
+"""The variant `Add` of `Expr`."""
+
+Expr_Lit = TypedDict("Expr_Lit", {"Lit": str})
+"""The variant `Lit` of `Expr`."""
+
+Expr_Neg = TypedDict("Expr_Neg", {"Neg": "Expr"})
+"""The variant `Neg` of `Expr`."""
 
 Id = str
 """The app type `Id`."""
@@ -71,7 +109,7 @@ Status_Moved = TypedDict("Status_Moved", {"Moved": str})
 Status_Span = TypedDict("Status_Span", {"Span": List[Any]})
 """The variant `Span` of `Status`."""
 
-Tagged = Union["Tagged_draft", "Tagged_published"]
+Tagged = Union["Tagged_draft", "Tagged_published", Dict[str, Any]]
 """The app type `Tagged`."""
 
 class Tagged_draft(TypedDict):
@@ -90,6 +128,7 @@ class Tree(TypedDict):
 
     value: int
     children: List["Tree"]
+    parent: Optional["Tree"]
 
 ForbiddenError = TypedDict("ForbiddenError", {})
 InvalidError = TypedDict("InvalidError", {"detail": Optional[str], "field": str})
@@ -175,9 +214,9 @@ class KitchenSinkClient:
         args: Dict[str, Any] = {}
         return cast(str, self._call("secret", args, idempotency_key, passkey))
 
-    def shapes(self, status: Status, tagged: Tagged, adjacent: Adjacent, either: Either, id: Id, point: Point, marker: Marker, tree: Tree, *, consistency: Optional[Literal["strong", "stale"]] = None, min_index: Optional[int] = None) -> Tree:
+    def shapes(self, status: Status, tagged: Tagged, adjacent: Adjacent, either: Either, id: Id, point: Point, marker: Marker, tree: Tree, expr: Expr, choice: Choice_Item, *, consistency: Optional[Literal["strong", "stale"]] = None, min_index: Optional[int] = None) -> Tree:
         """view `shapes`."""
-        args: Dict[str, Any] = {"status": status, "tagged": tagged, "adjacent": adjacent, "either": either, "id": id, "point": point, "marker": marker, "tree": tree}
+        args: Dict[str, Any] = {"status": status, "tagged": tagged, "adjacent": adjacent, "either": either, "id": id, "point": point, "marker": marker, "tree": tree, "expr": expr, "choice": choice}
         return cast(Tree, self._view("shapes", args, consistency, min_index))
 
     def wipe(self, reason: Optional[str] = None, *, passkey: Optional[SoftPasskey] = None, idempotency_key: Optional[str] = None) -> None:
