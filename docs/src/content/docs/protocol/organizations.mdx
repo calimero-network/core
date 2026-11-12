@@ -24,7 +24,7 @@ any access but `team` needs `MANAGE_APPLICATION` organization-wide:
 
 | Rule | Who reaches the app |
 | --- | --- |
-| `owner` (default outside an organization) | The owner only |
+| `owner` | The owner only |
 | `accounts { accounts }` | The owner and these accounts; for an instance of a package with an app team in its organization, only those of them in that app team |
 | `org` (default inside an organization) | Every member of the app's organization; a guest only while the organization has no app team |
 | `team { team }` | The team's members (direct rows, and inheritance into an open team), its owner included: an owner not in the team does not reach it |
@@ -62,7 +62,7 @@ or deleting it, upgrading it or making an upgrade key for it, uploading files
 to it or deleting its blobs. The organization's admins (and its owner) still
 transfer it to a member or delete it, so an organization cleans up an app whose
 owner left; `POST /apps/{app}/transfer` is open to them too, with their own
-passkey. A personal app (no organization) stays its owner's alone. Likewise, an app on
+passkey. Likewise, an app on
 a team is managed by its owner only while they are in that team: out of it,
 they keep their name on it and none of the powers above, and the
 organization's admins (or whoever manages the team's apps) transfer it. The
@@ -91,6 +91,36 @@ of `/auth/me` and an invite redeemed after the rename all answer the new
 one. A name is checked where the command applies: a `CreateOrg` an earlier
 release logged (without `name_fits`) replays taking any name, and an
 organization keeps the name it has until renamed.
+
+### Personal organizations
+
+Every app is in an organization, and every account has one of its own from
+sign-up: its **personal organization**, made in the same entry as the account
+(`CreateAccount { personalOrg }`, named `Personal`), approving the release the
+account signed up through. An instance created without naming an
+organization (`POST /apps` with no `org`, from a console, a script or an app's
+own page) goes there, so a person who only wants to use an app never sets one
+up. It is an organization like any other: its owner may rename it, invite
+people and make teams. What sets it apart (`Org::personal`, `personal: true`
+in `GET /orgs/{org}`, in the `orgs` of `/auth/me` and in report scopes):
+
+- An account owns exactly one (the log refuses a second, `PERSONAL_ORG_EXISTS`), and it does not
+  count against `maxOrgsPerAccount`.
+- Its release and outbound approvals are the account's own: approved with
+  `POST /orgs/{org}/releases` and `/orgs/{org}/outbound` like any
+  organization's (a consent request with no scope is the personal
+  organization's).
+- An instance there shared with listed accounts (`accounts` access) reaches
+  them without making them members; anywhere else an organization's app
+  reaches only its members (or anyone, `public`).
+- An instance there handed to someone outside it (`POST /apps/{app}/transfer`)
+  goes to the new owner's personal organization (`team` access becoming
+  `org`).
+- A deployment's report (`GET /deployments/{id}/orgs`) counts its instances in
+  `outsideOrgs` and never names it.
+
+Apps outside any organization were removed in a hard cutover (1.0.0-rc.20):
+data holding one is not read.
 
 Members have one role each, ordered `guest < member < admin < owner`:
 
@@ -314,7 +344,7 @@ group, replicas and state. Calimero Home's "Merge organizations" moves every
 app of one organization into another this way.
 
 - **Who**: whoever manages the app where it is now (its owner while a member,
-  or an admin there; a personal app's owner), as an admin or the owner of the
+  or an admin there), as an admin or the owner of the
   target. Judged on the state of the moment, so a member removed from the
   source, or an admin of the target demoted, is refused.
 - **Payer**: its file bytes, compute runs and quotas go to the target. A move
@@ -349,7 +379,7 @@ app of one organization into another this way.
   instance moves to, or, for an `accounts` instance (a DM, a private
   channel), its package's app team there when that team is closed, so they
   keep reaching it (an open one needs no row). Someone already in the target
-  keeps their role. A personal app brings nobody. An app team made in the
+  keeps their role. An app team made in the
   target gives its members who hold [every app added later](#every-app-added-later)
   a row too. A `MoveApp` an earlier release logged (without
   `accounts_in_app_team`) replays giving an `accounts` instance's people no

@@ -312,11 +312,12 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// Where owners upgrade apps, an account's personal apps open with the
-/// account's own key: the operator holds none. On a new cluster, the
-/// account's device opens its files and sends their keys; the operator
-/// admits the import with its signature; the account, its passkey and its
-/// app come back, and it signs in with the passkey it had.
+/// Where owners upgrade apps, an account's own apps (its personal
+/// organization's, made at sign-up) open with that organization's key, which
+/// the account sets: the operator holds none. On a new cluster, the account's
+/// device opens its files and sends their keys; the operator admits the import
+/// with its signature; the organization, the account, its passkey and its app
+/// come back, and it signs in with the passkey it had.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
     let mut old = Cluster::start(3).await;
@@ -327,7 +328,8 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
         .as_str()
         .unwrap()
         .to_owned();
-    let holder = BackupHolder::Account(account.clone());
+    let mine = alice.personal_org().await.unwrap();
+    let holder = BackupHolder::Org(mine.clone());
     // A sealed file of the app: its segments go to the disk beside the app's
     // file, and its data key comes back wrapped under the new cluster's key.
     let plain: Vec<u8> = (0..5_000_u32).map(|i| (i % 251) as u8).collect();
@@ -339,12 +341,12 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
 
     let (secret, public) = disk::new_keypair();
     let set = alice
-        .auth()
-        .account_set_backup_key(&hex::encode(public), Some(&mut pk))
+        .orgs()
+        .set_backup_key(&mine, &hex::encode(public), Some(&mut pk))
         .await
         .map(wire)
         .unwrap();
-    assert_eq!(set["holder"], json!({ "kind": "account", "id": account }));
+    assert_eq!(set["holder"], json!({ "kind": "org", "id": mine }));
     assert_eq!(set["apps"], 1);
     // Here the owner upgrades apps: the operator holds no key.
     let e = ops(&old.urls[0])
@@ -366,7 +368,7 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
     }
     assert!(
         written >= 4,
-        "the account's slice, its app, code and a segment: {written}"
+        "the organization's slice, its app, code and a segment: {written}"
     );
     let disk_copy = tempfile::tempdir().unwrap();
     copy_dir(
@@ -444,7 +446,7 @@ async fn an_accounts_apps_come_back_with_its_own_key_on_a_new_cluster() {
     let got = get(&cl, &kv, "a").await.unwrap();
     assert_eq!(got, json!("1"));
     put(&cl, &kv, "after", "1").await;
-    // The account's files keep going to the key they were sealed to.
-    let key = cl.auth().account_backup_key().await.map(wire).unwrap();
+    // The organization's files keep going to the key they were sealed to.
+    let key = cl.orgs().backup_key(&mine).await.map(wire).unwrap();
     assert_eq!(key["key"]["publicKey"], hex::encode(public));
 }

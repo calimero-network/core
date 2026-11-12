@@ -268,7 +268,7 @@ fn teams_of(o: &Org, account: &str) -> Vec<String> {
 fn member_apps(s: &SystemState, org: &str, account: &str) -> Vec<String> {
     s.apps
         .values()
-        .filter(|a| a.org.as_deref() == Some(org) && a.access != Access::Public)
+        .filter(|a| a.org == org && a.access != Access::Public)
         .filter(|a| s.may_reach(a, Some(account)))
         .map(|a| a.name.clone())
         .collect()
@@ -368,11 +368,7 @@ fn holds(s: &SystemState, org: &str, o: &Org) -> Holds {
         members: o.members.len(),
         teams: o.teams.len(),
         invites: s.invites.values().filter(|i| i.org == org).count(),
-        apps: s
-            .apps
-            .values()
-            .filter(|a| a.org.as_deref() == Some(org))
-            .count(),
+        apps: s.apps.values().filter(|a| a.org == org).count(),
     }
 }
 
@@ -437,7 +433,7 @@ fn leave(s: &SystemState, account: &str, sub: OrgSubject) -> Result<(OrgAction, 
     let owned = s
         .apps
         .values()
-        .filter(|a| a.org.as_deref() == Some(org.as_str()) && a.owner == account)
+        .filter(|a| a.org == org && a.owner == account)
         .count();
     let mut points = vec![format!(
         "You leave {name}: you are no longer {} of it.",
@@ -944,7 +940,7 @@ fn delete(s: &SystemState, actor: &str, sub: OrgSubject) -> Result<(OrgAction, V
     let apps: Vec<String> = s
         .apps
         .values()
-        .filter(|a| a.org.as_deref() == Some(org.as_str()))
+        .filter(|a| a.org == org)
         .map(|a| a.name.clone())
         .collect();
     let gone = format!(

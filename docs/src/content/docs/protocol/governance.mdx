@@ -28,9 +28,9 @@ shared or dedicated:
 
 | Decision | `owner` side: who holds it | Who acts | Where |
 | --- | --- | --- | --- |
-| Release (node image) approvals | The app's **publisher**: the organization its package's signing key is bound to ([Publishers](#publishers)). For a package whose key is not bound yet, or a raw bundle (development only), the app's owning organization, or its owner account outside one | Members of that organization holding `APPROVE_RELEASES` (its owner and admins hold it); for an account, the account | `POST /orgs/{org}/releases`, `POST /auth/releases` |
+| Release (node image) approvals | The app's **publisher**: the organization its package's signing key is bound to ([Publishers](#publishers)). For a package whose key is not bound yet, or a raw bundle (development only), the app's owning organization | Members of that organization holding `APPROVE_RELEASES` (its owner and admins hold it) | `POST /orgs/{org}/releases` |
 | App upgrades | Per app, as its package's signed manifest declares (`upgrades`): **`owner`** (the default): the instance's owner, or its organization's `MANAGE_APPLICATION` holders; **`publisher`**: the publisher organization's `MANAGE_APPLICATION` holders, for every instance | The holder, with a passkey step-up over the exact upgrade | `POST /apps/{app}/upgrade`, `POST /orgs/{org}/upgrade` (owner side), `POST /orgs/{org}/packages/{package}/upgrade` (publisher side) |
-| Outbound approvals | The app's owning organization or account, per publisher key | `MANAGE_APPLICATION` holders organization-wide; the account | `POST /orgs/{org}/outbound`, `POST /auth/outbound` |
+| Outbound approvals | The app's owning organization, per publisher key | `MANAGE_APPLICATION` holders organization-wide | `POST /orgs/{org}/outbound` |
 | Who publishes a package | The holder of the package's pinned signing key, whatever governance says | A member holding `APPROVE_RELEASES` in the organization, sending the key's signature | `POST /orgs/{org}/publishers` |
 | Release deadlines | Always the operator ([below](#release-deadlines)) | The operator | `POST /ops/releases/{version}/deadline` |
 
@@ -104,8 +104,7 @@ which releases may receive it:
   organization its package's key is bound to), covering every instance of
   every package it publishes, its customers' included. An app whose package's
   key is not bound yet, or that runs a raw bundle, is judged by its owning
-  organization's set, or its owner account's outside one
-  (`SystemState::approved_for_release`). The package is that of the release
+  organization's set (`SystemState::approved_for_release`). The package is that of the release
   the instance runs (`AppRecord::release`), never merely of whichever release
   first shipped the same WASM. The release of the node an organization
   was created through, or an account signed up through, is approved from the
@@ -113,8 +112,8 @@ which releases may receive it:
 - **Changing it.** `POST /orgs/{org}/releases` `{ version, approved }` by a
   member holding `APPROVE_RELEASES` there (the owner and admins hold it; a
   member when granted organization-wide, [Capabilities](/protocol/organizations/#capabilities)),
-  or `/auth/releases` by the account for its own set, each with a passkey
-  step-up; or `POST /ops/releases` by the operator. The last approved release
+  (the account's own apps' are its personal organization's), each with a
+  passkey step-up; or `POST /ops/releases` by the operator. The last approved release
   cannot be withdrawn. `GET /orgs/{org}` lists who may approve
   (`releaseApprovers`). An app or console asks for either through the node's
   [consent page](/protocol/consent-page/) (`kind: "release"`, with
@@ -207,8 +206,7 @@ app's package says who upgrades it, in its signed manifest
   app's owner may upgrade it, and so may, for an organization's app, whoever
   holds `MANAGE_APPLICATION` on its team or across the organization: its
   owner, an admin, the team's leads, or a member granted the capability
-  ([Organizations](/protocol/organizations/#capabilities)). A personal app
-  stays its owner's alone.
+  ([Organizations](/protocol/organizations/#capabilities)).
 - **`publisher`**: the publisher organization's `MANAGE_APPLICATION` holders
   (organization-wide) upgrade every instance, whoever owns it, alone or all at
   once (`POST /orgs/{org}/packages/{package}/upgrade { version, migrate? }`).
@@ -230,7 +228,7 @@ prefix is usable only once it is approved for the app's **publisher** (the
 package's pinned signer): for an organization, by whoever holds
 `MANAGE_APPLICATION` across it (`POST /orgs/{org}/outbound`; a grant on one
 team is not enough, since the approval covers every app of the organization),
-or by the account (`/auth/outbound`), with a passkey
+(the account's own apps' on its personal organization), with a passkey
 step-up, or by the operator (`POST /ops/outbound`). The approval records both
 the prefixes approved and every prefix the approver was shown, so a prefix a
 later release adds reads as *awaiting approval* rather than approved. The
@@ -366,8 +364,8 @@ runs it). Records from before deployments are not moved into one.
   which of the deployment's apps and the releases they run, and when the
   first was created, and `memberCount` and `activeMembers30d` (members whose
   last sign-in or session exchange is within 30 days). Never who the members
-  are, teams, instance names or app data; instances outside an organization
-  are only counted. Another deployment's
+  are, teams, instance names or app data; instances in a personal
+  organization are only counted (`outsideOrgs`). Another deployment's
   customers never appear, even on the same release.
 
 Frontends open at a deployment's release with `/d/{deployment}/`, or on the

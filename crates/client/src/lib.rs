@@ -351,6 +351,20 @@ impl Client {
         Ok(s)
     }
 
+    /// The caller's personal organization (`personal` in `/auth/me`), made with
+    /// the account at sign-up: where its instances go unless they name
+    /// another, and whose approvals are the account's own.
+    pub async fn personal_org(&self) -> Result<String> {
+        let me = self.auth().me().await?;
+        me.orgs
+            .iter()
+            .find(|o| o.personal == Some(true))
+            .map(|o| o.org_id.clone())
+            .ok_or_else(|| {
+                Error::Transport(eyre::eyre!("the account has no personal organization"))
+            })
+    }
+
     /// Swap the refresh token for a new session, on this node (any node of
     /// the cluster takes it).
     pub async fn refresh(&self) -> Result<Session> {

@@ -24,7 +24,7 @@ fn machine() -> SystemMachine {
     ] {
         let app = serde_json::from_value(json!({
             "appId": id, "name": id, "group": 2, "bundle": "b", "owner": "alice",
-            "org": org, "replicas": [1], "createdAt": 0
+            "org": org.unwrap_or("p-alice"), "replicas": [1], "createdAt": 0
         }))
         .unwrap();
         let _prev = m.state.apps.insert(id.into(), app);
@@ -58,7 +58,7 @@ fn acquire(app: &str, run: &str, fuel: u64) -> SystemCmd {
     } else if app.starts_with('b') {
         "y"
     } else {
-        "account:alice"
+        "p-alice"
     };
     SystemCmd::AcquireRun {
         app: app.into(),
@@ -434,6 +434,14 @@ fn deleting_an_org_releases_the_runs_of_all_its_apps() {
 #[test]
 fn a_transferred_personal_apps_runs_are_billed_to_the_new_owner() {
     let mut m = machine();
+    let _prev = m.state.orgs.insert(
+        "p-alice".into(),
+        serde_json::from_value(json!({
+            "orgId": "p-alice", "name": "Personal", "members": { "alice": "owner" },
+            "teams": {}, "personal": true,
+        }))
+        .unwrap(),
+    );
     m.run(SystemCmd::Genesis {
         governance: calimero_client::attest::Governance::default(),
         release: Some("2.0.0".into()),
@@ -451,6 +459,10 @@ fn a_transferred_personal_apps_runs_are_billed_to_the_new_owner() {
         invite: None,
         refresh: None,
         consent: serde_json::Value::Null,
+        personal_org: Some(crate::system::PersonalOrgSeed {
+            org_id: "p-bob".into(),
+            release: None,
+        }),
     })
     .unwrap();
     m.run(acquire("p", "r1", 1)).unwrap();
@@ -463,7 +475,9 @@ fn a_transferred_personal_apps_runs_are_billed_to_the_new_owner() {
         owner_in_team: true,
     })
     .unwrap();
-    assert_eq!(m.state.run_slot("p", "r1").unwrap().payer, "account:bob");
+    // It went to bob's personal organization, which pays its runs now.
+    assert_eq!(m.state.apps["p"].org, "p-bob");
+    assert_eq!(m.state.run_slot("p", "r1").unwrap().payer, "p-bob");
 }
 
 #[test]

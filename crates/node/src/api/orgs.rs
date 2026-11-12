@@ -107,7 +107,7 @@ async fn org_create(
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
-    create_org(&node, account, body.name, body.recovery_key).await
+    create_org(&node, account, body.name, body.recovery_key, false).await
 }
 
 /// Create an organization `account` owns: `POST /orgs`, and the consent
@@ -117,6 +117,7 @@ pub(crate) async fn create_org(
     account: String,
     name: String,
     recovery_key: Option<String>,
+    personal: bool,
 ) -> ApiResult {
     crate::system::org_name_fits(&name).map_err(malformed)?;
     let org_id = typed_id::<16>();
@@ -129,6 +130,7 @@ pub(crate) async fn create_org(
             recovery_key,
             at: recovery_now(node),
             name_fits: true,
+            personal,
         })
         .await?;
     Ok(Json(v))
@@ -186,7 +188,7 @@ async fn org_get(
                 .filter(|(_, b)| b.org == org)
                 .map(|(k, _)| k.clone())
                 .collect::<Vec<_>>(),
-            s.stalled_for(Some(&org), "", now_secs()),
+            s.stalled_for(&org, now_secs()),
         )
     });
     if let Some(obj) = v.as_object_mut() {
@@ -712,8 +714,7 @@ fn team_view(
         .apps
         .values()
         .filter(|a| {
-            a.org.as_deref() == Some(o.org_id.as_str())
-                && matches!(&a.access, Access::Team { team: t } if t == team)
+            a.org == o.org_id && matches!(&a.access, Access::Team { team: t } if t == team)
         })
         .map(|a| json!({ "appId": a.app_id, "name": a.name, "contextId": hex::encode(sha256(a.app_id.as_bytes())) }))
         .collect();

@@ -309,8 +309,8 @@ that key's private half.
 1. Make the key pair on a machine that is not a node, and keep the private
    half offline: `meroctl ops recovery-keygen --out operator-backup.key`.
 2. Register the public half: `meroctl --operator-key-file op.key ops backup-key
-   --public-key HEX` (owners: `POST /orgs/{org}/backup-key` or
-   `/auth/backup-key`, with a passkey). Until a key is set, nothing is written
+   --public-key HEX` (owners: `POST /orgs/{org}/backup-key`, with a passkey;
+   an account's own apps are its personal organization's). Until a key is set, nothing is written
    for that holder's apps and the node logs how many apps are not covered.
 3. After every node and every mero-kms is lost, attach a surviving recovery disk
    (or a copy of it) to a new node and found the cluster on it, with the same

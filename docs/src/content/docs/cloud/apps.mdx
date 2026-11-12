@@ -52,7 +52,7 @@ of one a node's data still holds; such an app can still be listed and deleted.
 - **Search.** A table names its text fields (`#[table(search = [..])]`); views
   query the app's own index, kept up to date from the log before the view runs.
 - **Xcalls.** A call can send a call into another app of the same organization
-  (or the same owner's personal apps), delivered in order after its entry
+  delivered in order after its entry
   commits, or call or view one synchronously; the target's ABI says which apps
   may reach which method ([Xcalls](/protocol/xcall/)).
 - **Timers and actions.** `#[app::every]` methods fire once per slot on the
@@ -68,7 +68,7 @@ of one a node's data still holds; such an app can still be listed and deleted.
   allows, once that prefix was approved for the publisher by whoever the
   cluster's deployment gave outbound approvals (its governance, which
   `verify_app_cluster` reports). By the owner: `POST /orgs/{org}/outbound`
-  (or `/auth/outbound` for your own apps) `{ package, prefixes: "manifest" |
+  (your own apps': your personal organization's) `{ package, prefixes: "manifest" |
   [...], replace }`, with a passkey assertion (`approve_outbound` in the Rust
   client). By the operator: `POST /ops/outbound`. Until then
   the request is refused with `NotApproved` (or `AwaitingApproval` for a prefix

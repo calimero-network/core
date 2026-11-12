@@ -797,9 +797,10 @@ async fn a_job_node_on_a_retired_release_is_not_attested() {
     let c = Cluster::start_with(3, |cfg| cfg.tee_release = Some("1.0.0".into())).await;
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let app = create(&alice, "kv").await;
+    let mine = alice.personal_org().await.unwrap();
     let _ok = alice
-        .auth()
-        .account_release_approval("2.0.0", None, Some(&mut pk))
+        .orgs()
+        .release_approval(&mine, "2.0.0", None, Some(&mut pk))
         .await
         .unwrap();
     let node = &c.nodes[0].as_ref().unwrap().node;

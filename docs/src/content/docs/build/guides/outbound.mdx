@@ -21,7 +21,7 @@ turned them on, for its hosts or for any host an app declares.
 | --- | --- |
 | `[outbound] enabled = true`, and the request's host is in `hosts` (or `hosts` holds `"*"`: any host an installed app declares) | The cluster's operator |
 | The request's URL is under a prefix in the app's signed release manifest (`outbound`): the same host, and the prefix's path or one below it at a `/`, with any query string | The app's publisher |
-| A prefix covering the URL is approved for the app's publisher | The organization's owner (or the account, for an app outside an organization); the operator where the cluster was deployed with `--outbound-approvals operator` |
+| A prefix covering the URL is approved for the app's publisher | The organization's owner (the account itself, for its personal organization); the operator where the cluster was deployed with `--outbound-approvals operator` |
 | The run is a call that writes: not a view, an `init`, a migration, or a call by a read-only member | The node |
 | One request per run; `GET`, `POST`, `PUT`, `PATCH` or `DELETE`; `https` on port 443 to a DNS name that resolves only to public addresses; no fragment; no redirect followed; no proxy | The node |
 | Request body ≤ 64 KiB, URL ≤ 2 KiB, ≤ 8 headers of ≤ 1 KiB, response body ≤ 1 MiB (a longer one is refused, not cut), 10 s for the whole request | The node (`calimero_primitives::outbound`) |
@@ -116,8 +116,8 @@ asks for nothing.
 - **Per publisher.** The approval is keyed by the package's pinned signer, so
   a release signed by someone else starts with nothing approved.
 - **Per organization.** It holds for every app of the package in the
-  organization. An app outside any organization uses its owner's own approval
-  (`POST /auth/outbound`, same body).
+  organization; an app its owner made without naming one is in their personal
+  organization, approved the same way.
 - **Releases only add.** A prefix a later release declares that the owner was
   never shown answers `AwaitingApproval` until approved; the rest keep working.
 - **Revoke by setting the list.** `"replace": true` sets the publisher's list
@@ -129,7 +129,7 @@ asks for nothing.
   The owner's route then answers that the operator holds them.
 
 With `meroctl`: `namespace outbound <org> --package <pkg> [--prefix <p>]… [--replace]`,
-and `account outbound --package <pkg> …` for apps outside an organization.
+and `account outbound --package <pkg> …` for the account's personal organization.
 
 ## The operator's side
 
