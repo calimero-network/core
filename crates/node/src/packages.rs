@@ -389,7 +389,7 @@ impl Node {
             let _prev = wasm_by_hash.insert(hash, bytes);
         }
         let pools = self.pool_ceilings();
-        let modules = self.resolve_modules(&service_pipelines, actor).await;
+        let modules = self.resolve_modules(&service_pipelines.0, actor).await;
         let mut pipeline_refs = BTreeMap::new();
         for (compiled, record) in pipelines::register(&service_pipelines, &pools, &modules)? {
             let _prev = wasm_by_hash.insert(compiled.hash, compiled.canonical);

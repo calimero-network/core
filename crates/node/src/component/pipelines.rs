@@ -302,18 +302,6 @@ impl PipelineRun {
         self.committed_cost() + new > u128::from(cap.max_cost)
     }
 
-    /// Whether a wave of `runs` may start: not while the run is cancelled or stopping (`stopped`
-    /// is the refusal then) and not past the cost cap.
-    fn admits(&self, runs: &[StepRun], stopped: &'static str) -> Result<(), &'static str> {
-        if self.cancel_requested || self.stopping {
-            return Err(stopped);
-        }
-        if self.over_cap(runs) {
-            return Err(COST_CAP);
-        }
-        Ok(())
-    }
-
     /// Holds back the worst case of `step`'s runs, once started.
     fn reserve(&mut self, step: &str, runs: &[StepRun]) {
         let Some(cap) = self.cost else { return };
@@ -626,8 +614,11 @@ impl AppMachine {
         let mut capped = false;
         let (status, reason) = match &entry.decision {
             StepVerdict::Start { runs, fan, cached } => {
-                if let Err(why) = pipeline.admits(runs, CANCELLING) {
-                    return no_op(why);
+                if pipeline.cancel_requested || pipeline.stopping {
+                    return no_op(CANCELLING);
+                }
+                if pipeline.over_cap(runs) {
+                    return no_op(COST_CAP);
                 }
                 let started =
                     if fan.well_formed() && runs.len() + cached.len() <= fan.total as usize {
@@ -649,7 +640,9 @@ impl AppMachine {
                             step.runs = wave.ids;
                             step.fan = *fan;
                         }
-                        hit_any = self.land(tx, &mut pipeline, &entry.step, runs, wave.hits, ts_ms);
+                        hit_any = !wave.hits.is_empty();
+                        pipeline.reserve(&entry.step, runs);
+                        self.record_hits(tx, &mut pipeline, &entry.step, wave.hits, ts_ms);
                         (StepStatus::Running, None)
                     }
                     Err(Refusal::NoRoom) => return no_op(NO_ROOM),
@@ -658,15 +651,20 @@ impl AppMachine {
                 }
             }
             StepVerdict::More { runs, cached } => {
-                if let Err(why) = pipeline.admits(runs, STEP_STOPPING) {
-                    return no_op(why);
+                if pipeline.cancel_requested || pipeline.stopping {
+                    return no_op(STEP_STOPPING);
+                }
+                if pipeline.over_cap(runs) {
+                    return no_op(COST_CAP);
                 }
                 match self.start_more_runs(tx, &pipeline, &entry.step, (runs, cached), ts_ms) {
                     Ok(wave) => {
                         if let Some(step) = pipeline.steps.get_mut(&entry.step) {
                             step.runs.extend(wave.ids);
                         }
-                        hit_any = self.land(tx, &mut pipeline, &entry.step, runs, wave.hits, ts_ms);
+                        hit_any = !wave.hits.is_empty();
+                        pipeline.reserve(&entry.step, runs);
+                        self.record_hits(tx, &mut pipeline, &entry.step, wave.hits, ts_ms);
                         (StepStatus::Running, None)
                     }
                     Err(Refusal::NoRoom) => return no_op(NO_ROOM),
@@ -787,22 +785,6 @@ impl AppMachine {
             .map(|i| run_id(&pipeline.id, step, i))
             .collect();
         Ok(Wave { ids, hits })
-    }
-
-    /// Reserves the cost of a started wave and takes its cache hits; whether it had any.
-    fn land(
-        &mut self,
-        tx: &mut StateTx<'_>,
-        pipeline: &mut PipelineRun,
-        step: &str,
-        runs: &[StepRun],
-        hits: Vec<(u32, String, CacheEntry)>,
-        ts_ms: u64,
-    ) -> bool {
-        let any = !hits.is_empty();
-        pipeline.reserve(step, runs);
-        self.record_hits(tx, pipeline, step, hits, ts_ms);
-        any
     }
 
     /// Takes the cache hits of a wave into the step as finished runs.

@@ -213,8 +213,7 @@ async fn may_run(
     Ok(())
 }
 
-/// The app and caller of a request that starts, estimates, retries or cancels a run: signed in,
-/// and allowed to handle the app's files.
+/// The app and caller of a request that runs pipelines: signed in and allowed to handle files.
 async fn runner(
     node: &Node,
     headers: &HeaderMap,
@@ -469,47 +468,35 @@ async fn start_launch(
     sys_index: Option<u64>,
     launch: Launch,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let Launch {
-        name,
-        version,
-        hash,
-        compute_bundle,
-        modules,
-        pipeline,
-        inputs,
-        params,
-        limits,
-        retry_of,
-        max_cost,
-    } = launch;
-    for id in inputs.values().flatten() {
+    for id in launch.inputs.values().flatten() {
         let raw = parse_hex32(id)
             .ok_or_else(|| ApiError::bad_request(BAD_INPUTS, "an input is not a file id"))?;
         if node.file_held_strong(app, &raw).await != Some(true) {
             return Err(expired());
         }
     }
-    let priced = with_limits(&pipeline, &limits);
-    let methods = module_methods(node, &compute_bundle, &modules).await?;
-    let cost = cost_cap(node, &priced, &methods, max_cost.as_deref()).await?;
+    let priced = with_limits(&launch.pipeline, &launch.limits);
+    let methods = module_methods(node, &launch.compute_bundle, &launch.modules).await?;
+    let cost = cost_cap(node, &priced, &methods, launch.max_cost.as_deref()).await?;
     let run = typed_id::<12>();
+    let retry_of = launch.retry_of.clone();
     let entry = PipelineStartEntry {
         id: run.clone(),
-        pipeline: name,
-        version,
-        hash,
-        compute_bundle,
-        modules,
+        pipeline: launch.name,
+        version: launch.version,
+        hash: launch.hash,
+        compute_bundle: launch.compute_bundle,
+        modules: launch.modules,
         owner: app.owner.clone(),
-        steps: pipeline.steps.keys().cloned().collect(),
-        inputs,
-        params,
+        steps: launch.pipeline.steps.keys().cloned().collect(),
+        inputs: launch.inputs,
+        params: launch.params,
         caller: caller.clone(),
         payer: crate::usage::payer(app),
-        fail_fast: pipeline.fail_fast,
+        fail_fast: launch.pipeline.fail_fast,
         cost,
-        retry_of: retry_of.clone(),
-        limits,
+        retry_of: launch.retry_of,
+        limits: launch.limits,
         ts_ms: 0,
     };
     let a = node

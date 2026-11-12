@@ -762,7 +762,7 @@ async fn a_pipeline_on_another_module_is_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn pipelines_are_refused_when_malformed_duplicated_or_without_a_compute_component() {
+async fn pipelines_are_refused_when_malformed_duplicated_or_without_one_compute_service() {
     let (_c, owner, _pk) = compute_cluster().await;
     let broken =
         "apiVersion: compute.calimero.network/v1\nkind: Pipeline\nname: Bad Name\nsteps: {}\n";
@@ -796,24 +796,16 @@ async fn pipelines_are_refused_when_malformed_duplicated_or_without_a_compute_co
         .await
         .unwrap_err();
     assert_eq!(bad_pipeline(&e)[0]["code"], "NO_COMPUTE");
-}
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn pipelines_are_refused_on_a_named_service() {
-    let (_c, owner, _pk) = compute_cluster().await;
-    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
-    let both = common::components("compute");
-    let e = owner
-        .upload_package(mpk_named_service(
-            "com.test.job",
-            "1.0.0",
-            &both.app,
-            both.compute.as_ref().unwrap(),
-            &[("pipelines/p1.yaml", PIPELINE)],
-            &key,
-        ))
-        .await
-        .unwrap_err();
+    let named = mpk_named_service(
+        "com.test.job",
+        "1.0.0",
+        &both.app,
+        both.compute.as_ref().unwrap(),
+        &[("pipelines/p1.yaml", PIPELINE)],
+        &key,
+    );
+    let e = owner.upload_package(named).await.unwrap_err();
     assert_eq!(e.code(), Some("PIPELINES_NEED_ONE_SERVICE"), "{e}");
 }
 

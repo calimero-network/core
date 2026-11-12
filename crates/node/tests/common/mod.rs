@@ -425,7 +425,8 @@ pub fn mpk_parts(
     mpk_build(
         package,
         version,
-        (wasm, compute),
+        wasm,
+        compute,
         min_runtime,
         &[],
         false,
@@ -443,13 +444,7 @@ pub fn mpk_with_pipelines(
     key: &ed25519_dalek::SigningKey,
 ) -> Vec<u8> {
     mpk_build(
-        package,
-        version,
-        (wasm, compute),
-        "0.1.0",
-        pipelines,
-        false,
-        key,
+        package, version, wasm, compute, "0.1.0", pipelines, false, key,
     )
 }
 
@@ -462,21 +457,18 @@ pub fn mpk_named_service(
     pipelines: &[(&str, &str)],
     key: &ed25519_dalek::SigningKey,
 ) -> Vec<u8> {
+    let (wasm, compute) = (Some(wasm), Some(compute));
     mpk_build(
-        package,
-        version,
-        (Some(wasm), Some(compute)),
-        "0.1.0",
-        pipelines,
-        true,
-        key,
+        package, version, wasm, compute, "0.1.0", pipelines, true, key,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mpk_build(
     package: &str,
     version: &str,
-    (wasm, compute): (Option<&[u8]>, Option<&[u8]>),
+    wasm: Option<&[u8]>,
+    compute: Option<&[u8]>,
     min_runtime: &str,
     pipelines: &[(&str, &str)],
     named_service: bool,

@@ -239,11 +239,9 @@ impl Node {
             }
         };
         let methods = self.caps_of_component(hash).await?;
-        let own_files = (
-            vec![(String::new(), source.to_vec())],
-            Some((*methods).clone()),
-        );
-        let available = self.resolve_modules(&own_files, actor).await;
+        let available = self
+            .resolve_modules(&[(String::new(), source.to_vec())], actor)
+            .await;
         let env = env_for(&methods, &self.pool_ceilings(), &available);
         if let Err(errs) = check(&pipeline, &env) {
             return Ok(failed(&errs));
@@ -261,7 +259,7 @@ impl Node {
     /// A reference that resolves to none is left out, so `check` answers `UNKNOWN_MODULE`.
     pub async fn resolve_modules(
         &self,
-        (files, _): &ServicePipelines,
+        files: &[(String, Vec<u8>)],
         actor: &str,
     ) -> BTreeMap<String, Module> {
         let refs: BTreeSet<String> = files
