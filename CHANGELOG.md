@@ -34,6 +34,17 @@
 
 ### Changed
 
+- **Swift and Kotlin clients use the ABI's record and enum shapes** (`calimero-app-abi`).
+  `mero-app-build codegen --lang swift|kotlin` now makes each type the ABI's `types`
+  describes a nested type instead of `JSONValue` / `JsonElement`: a record a
+  `Codable, Sendable, Equatable` struct / a `data class`, an enum an `enum` / a
+  `sealed interface` coded exactly as serde tags it (external, internal, adjacent,
+  untagged), a generic type a generic one, with the D20 forms kept (u64/i64 decimal
+  strings, bytes base64url, an unset option sent as `null`). A type that holds itself
+  works (Swift `indirect` / `@Indirect`). Kotlin's serializers are written out
+  (`Item.serializer()`), so still no serialization plugin. A type without a shape stays
+  `JSONValue` / `JsonElement`. The `App ABI native clients` workflow now builds against
+  swift-sdk 4.1.0 and kotlin-sdk 4.0.0 and runs round-trip tests of every shape.
 - **`codegen` names a client given a bare `abi.json` after its crate.** The ABI
   carries no app name, and `--abi logic/res/abi.json` named the class after the file
   (`AbiClient`). A file stem that names no app (`abi`, `app`, `component`, `compute`,

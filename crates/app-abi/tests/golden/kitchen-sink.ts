@@ -7,12 +7,27 @@ import type { ConfirmCallback, NodeEvent } from '@calimero-network/mero-js';
 /** The app type `Adjacent`. */
 export type Adjacent =
   | { t: 'Text'; c: string }
-  | { t: 'Empty' };
+  | { t: 'Empty' }
+  | { t: 'Pair'; c: [number, number] }
+  | { t: 'Labeled'; c: { label: string; at: string | null } };
+
+/** The app type `Choice`. */
+export type Choice<T> =
+  | { kind: 'one'; value: T }
+  | { kind: 'zero' };
 
 /** The app type `Either`. */
 export type Either =
   | number
-  | { name: string };
+  | { name: string }
+  | [number, string]
+  | null;
+
+/** The app type `Expr`. */
+export type Expr =
+  | { Lit: string }
+  | { Neg: Expr }
+  | { Add: [Expr, Expr] };
 
 /** The app type `Id`. */
 export type Id = string;
@@ -48,12 +63,14 @@ export type Status =
 /** The app type `Tagged`. */
 export type Tagged =
   | { type: 'draft' }
-  | { type: 'published'; at: string };
+  | { type: 'published'; at: string }
+  | ({ type: 'wrapped' } & Item);
 
 /** The app type `Tree`. */
 export interface Tree {
   value: number;
   children: Tree[];
+  parent?: Tree | null;
 }
 
 /** The arguments of `blobOf`. */
@@ -122,6 +139,8 @@ export interface ShapesArgs {
   point: Point;
   marker: Marker;
   tree: Tree;
+  expr: Expr;
+  choice: Choice<Item>;
 }
 
 /** The arguments of `wipe`. */
