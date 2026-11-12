@@ -71,12 +71,39 @@ That stays true. Instead, the app asks the **node** to ask the person.
                   "ttlSecs": 604800?, "uses": 1?, "allApps": false? },
      "returnTo": "…" }
    { "kind": "acceptInvite", "subject": { "token": "inv_…" }, "returnTo": "…" }
+   { "kind": "leaveOrg", "subject": { "org": "<orgId>" }, "returnTo": "…" }
+   { "kind": "removeMember", "subject": { "org": "<orgId>", "account": "<accountId>" },
+     "returnTo": "…" }
+   { "kind": "setMemberRole",
+     "subject": { "org": "<orgId>", "account": "<accountId>", "role": "admin" },
+     "returnTo": "…" }
+   { "kind": "setMemberTeams",
+     "subject": { "org": "<orgId>", "account": "<accountId>",
+                  "teams": [{ "team": "<teamId>", "role": "member"?, "capabilities": 3? }] },
+     "returnTo": "…" }
+   { "kind": "removeMemberTeams",
+     "subject": { "org": "<orgId>", "account": "<accountId>", "teams": ["<teamId>"] },
+     "returnTo": "…" }
+   { "kind": "revokeInvite", "subject": { "org": "<orgId>", "inviteKey": "<key>" },
+     "returnTo": "…" }
+   { "kind": "renameOrg", "subject": { "org": "<orgId>", "name": "Acme Labs" },
+     "returnTo": "…" }
+   { "kind": "deleteOrg", "subject": { "org": "<orgId>" }, "returnTo": "…" }
+   { "kind": "setCapabilities",
+     "subject": { "org": "<orgId>", "account": "<accountId>"?, "team": "<teamId>"?,
+                  "capabilities": 3 },
+     "returnTo": "…" }
+   { "kind": "setAllApps",
+     "subject": { "org": "<orgId>", "account": "<accountId>", "allApps": true },
+     "returnTo": "…" }
    ```
 
-   The last three are how an app's frontend manages organizations at all: a
-   package-bound session is refused `POST /orgs`, `POST /orgs/{org}/invites`
-   and `POST /invites/{token}/redeem` (`403`), so an app that creates
-   workspaces, invites people or lets them join asks here
+   The organization kinds (`createOrg` onwards) are how an app's frontend
+   manages organizations at all: a package-bound session is refused every
+   organization route (`POST /orgs`, members, teams, invites, redemption,
+   capabilities, renaming, deleting; `403`), so an app that creates
+   workspaces, invites people, moderates them or changes a workspace's
+   settings asks here
    ([Organizations and invites](#organizations-and-invites)).
 
    A release request approves by default; `"withdraw": true` asks to withdraw
@@ -121,8 +148,8 @@ That stays true. Instead, the app asks the **node** to ask the person.
    lost, the app asks `GET /consent/{id}/result` (sealed, the same account;
    any node answers, asking the node that holds the request):
    `{ "requestId", "kind", "status": "pending|approved|declined", "decidedAt" }`,
-   plus `outcome` once a `createOrg`, `createInvite` or `acceptInvite`
-   request is approved (below).
+   plus `outcome` once an organization request whose route answers something
+   is approved (below).
 
 ### Organizations and invites
 
@@ -146,9 +173,44 @@ when the approval is written.
 What the approval made reaches only the account and app that asked, through
 the sealed `/result`, as `outcome`: `{ "orgId" }` for `createOrg`,
 `{ "token" }` for `createInvite` (the page's own answer, which travels in the
-clear, never carries it) and `{ "org" }` for `acceptInvite`. The request is
+clear, never carries it), `{ "org" }` for `acceptInvite`, `{ "orgId", "name" }`
+for `renameOrg` and `{ "apps" }` (the apps deleted) for `deleteOrg`; the other
+kinds' routes answer nothing, and neither does `outcome`. The request is
 held in memory and never logged, so an invite token in an `acceptInvite`
 request, or minted by a `createInvite` one, leaves with it.
+
+#### Moderation and settings
+
+The other organization kinds run the API's own route as the person, with the
+route's own logged consent, so the log entry is exactly the API's and no
+feature gate is new:
+
+| Kind | Route it runs | Who may ask (judged at request time, again at apply) |
+| --- | --- | --- |
+| `leaveOrg` | `DELETE /orgs/{org}/members/{self}` | any member but the owner (`409`: ownership moves first) |
+| `removeMember` | `DELETE /orgs/{org}/members/{account}` | an admin; never the owner (`403`), never oneself (`400`, that is `leaveOrg`) |
+| `setMemberRole` | `POST /orgs/{org}/members` | an admin; the owner for ownership (`403`); a current member only (`404`), and a change (`409`) |
+| `setMemberTeams` | `POST /orgs/{org}/members/{account}/teams` | each row as `SetTeamMember` judges it: a team's lead, or `MANAGE_MEMBERS` there below lead (`403`); 1 to 64 teams (`400`) |
+| `removeMemberTeams` | `DELETE /orgs/{org}/members/{account}/teams` | the member themself, or whoever manages each team (`403`) |
+| `revokeInvite` | `DELETE /orgs/{org}/invites/{key}` | whoever sees the invite (`SystemState::sees_invite`; else `404`) |
+| `renameOrg` | `POST /orgs/{org}/name` | the owner or an admin (`403`); a name that fits (`400`) |
+| `deleteOrg` | `DELETE /orgs/{org}` | the owner (`403`); not while it owns a deployment (`409`) |
+| `setCapabilities` | `POST /orgs/{org}/capabilities` | with `team`: its managers or `MANAGE_MEMBERS` there; without: an admin (`403`); a team the asker sees, a member with a row there (`404`) |
+| `setAllApps` | `POST /orgs/{org}/all-apps` | an admin (`403`); a member (`404`), and a change (`409`) |
+
+Outside the organization every kind answers `404`, and ids longer than
+`MAX_SUBJECT_ID_BYTES` (128) are `400`. The page names people by the name
+the approver sees them by (their self-set name in the organization, else
+their account's name; "you" for the approver) and teams by their names, and
+says what each change takes: the teams and apps a member who leaves or is
+removed loses, the capabilities gained and lost, and for `deleteOrg` the
+counts of members, teams, invites and apps under `attention` (`deletes`).
+Handing ownership over is flagged `transfersOwnership`, and granting
+`MANAGE_MEMBERS`, `MANAGE_APPLICATION` or `APPROVE_RELEASES`
+`grantsManagement`. Where a fact the page showed could change while it is
+open (a member's role, the organization's name, what a deletion takes, the
+capabilities held, the all-apps grant), `/approve` answers
+`409 CONSENT_STALE` if it did.
 
 ### Where the app may be sent back
 
@@ -263,6 +325,18 @@ text only.
 | Release | `{ version, policyDigest }`: `policyDigest` is SHA-256 of the release's Sigstore-verified measurements as the node reads them when it writes the approval, so a release re-published under the same tag with other measurements is another approval. A node that cannot fetch them refuses (`503`); on mock attestation, where no node checks measurements, the digest is over none (`{ "profiles": {}, "version" }`) |
 | Upgrade | `{ bundle, migrate, manifest }`: the target WASM's hash and the target release's signed-manifest hash (`VerifiedBundle::manifest_hash`: SHA-256 of the canonical manifest, every artifact digest included; `null` only for a raw development bundle, which has no manifest) |
 | Outbound | `{ package, prefixes, replace }`, with the prefixes listed on the page, never `"manifest"` |
+| `createOrg` | `account:<a> / __create_org / { name }` (not logged; the log records `CreateOrg` as `POST /orgs` writes it) |
+| `createInvite` | `org:<org> / __create_invite / system::invite_args` (logged, as the route's) |
+| `acceptInvite` | `account:<a> / __accept_invite / { inviteKey }` (not logged; the log records `RedeemInvite`) |
+| `leaveOrg`, `removeMember` | `org:<org> / __remove_member / { account }` (oneself for `leaveOrg`) |
+| `setMemberRole` | `org:<org> / __set_org_role / { account, role }` |
+| `setMemberTeams` | `org:<org> / __set_team_members / { account, teams }` |
+| `removeMemberTeams` | `org:<org> / __remove_team_members / { account, teams }` |
+| `revokeInvite` | `org:<org> / __revoke_invite / { inviteKey }` |
+| `renameOrg` | `org:<org> / __rename_org / { name }` |
+| `deleteOrg` | `org:<org> / __delete_org / { org }` |
+| `setCapabilities` | a member's: `org:<org> / __set_capabilities / { team, account, capabilities }`; a default: `__set_default_capabilities / { capabilities }` or `{ team, capabilities }` |
+| `setAllApps` | `org:<org> / __set_all_apps / { account, allApps }` |
 
 Before asking for the passkey and again before writing, the page checks that
 what it showed still holds: the app still runs the bundle it ran, the target
