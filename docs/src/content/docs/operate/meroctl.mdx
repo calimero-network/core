@@ -284,8 +284,8 @@ The signed-in account.
 | `account api-key create [--label L] [--context C]... [--read-only] [--ttl-secs N]` | `POST /auth/apikeys` | Create an API key (needs a passkey session). `--label` defaults to `meroctl`; `--context` limits it to those contexts. The key is printed once. |
 | `account api-key list` (`ls`) | `GET /auth/apikeys` | Its API keys. |
 | `account api-key revoke KEY_ID [--dev-passkey FILE]` | `DELETE /auth/apikeys/{key}` | Revoke one, approved with a passkey. |
-| `account approve-release VERSION [--dev-passkey FILE]` | `POST /auth/releases` | Approve a mero-tee release to hold the account's own contexts. |
-| `account outbound --package P [--prefix URL]... [--replace] [--dev-passkey FILE]` | `POST /auth/outbound` | Approve outbound prefixes for the account's own contexts. |
+| `account approve-release VERSION [--dev-passkey FILE]` | `POST /orgs/{org}/releases` | Approve a mero-tee release to hold the account's own contexts (its personal organization's). |
+| `account outbound --package P [--prefix URL]... [--replace] [--dev-passkey FILE]` | `POST /orgs/{org}/outbound` | Approve outbound prefixes for the account's own contexts (its personal organization's). |
 
 ## dev
 

@@ -472,7 +472,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             // The previous owner's apps in the organization reach their
             // owner whatever the membership: they move with it.
             for app in s.apps.values_mut() {
-                if app.org.as_deref() == Some(org.as_str()) && previous.contains(&app.owner) {
+                if app.org == org && previous.contains(&app.owner) {
                     app.owner.clone_from(&actor);
                 }
             }
@@ -558,8 +558,6 @@ fn import_holder(
             name: a.name.clone(),
             created_at: a.created_at,
             passkeys: a.passkeys.clone(),
-            approved_releases: BTreeSet::new(),
-            outbound_approvals: BTreeMap::new(),
             passkey_labels: BTreeMap::new(),
             aliases: BTreeMap::new(),
             passkey_times: BTreeMap::new(),

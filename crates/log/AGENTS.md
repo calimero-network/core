@@ -65,7 +65,7 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   A snapshot file's first line is `CALIMERO-SNAPSHOT-<SNAPSHOT_FORMAT>`; a later format is
   refused by it, not by its frames. A change to any row's shape raises `STORE_FORMAT` (and
   `SNAPSHOT_FORMAT`, since snapshots carry rows) and appends its step. Tests:
-  `format::tests`, `machine::snapshot_format`, the node's `old_datadir.rs`.
+  `format::tests`, `machine::snapshot_format`.
 - Migration (`legacy.rs`): a data dir holding the previous redb file (`log.redb`) is
   migrated on `Engine::open` (entries, vote, commit and purge marks, blobs; the old
   whole-state snapshot is imported by the group's machine via `Machine::import`) and

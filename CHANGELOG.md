@@ -4,6 +4,29 @@
 
 ### Added
 
+- **Every app is in an organization, and every account has a personal one from
+  sign-up** (`calimero-node`). **Hard cutover**: apps outside any organization are
+  gone; a data directory or log holding one is not read, so clusters are recreated
+  (mdma refuses to roll across it), and nothing of before is replayed.
+  A sign-up makes the account's personal organization in the same entry
+  (`CreateAccount { personalOrg }`, named `Personal`), approving the release it signed
+  up through; `POST /apps` with no `org` creates the instance there. A personal
+  organization is an ordinary organization its owner can rename and invite people
+  into; an account owns exactly one, it does not count
+  against `maxOrgsPerAccount`, an instance there shared with listed accounts reaches
+  them without making them members, an instance there handed to someone outside it
+  goes to their personal organization, and a deployment's report counts it in
+  `outsideOrgs` without naming it. `personal: true` marks it in `GET /orgs/{org}`,
+  `/auth/me` and report scopes. Removed with the apps outside an organization: the
+  account's own release and outbound approvals (`POST /auth/releases`,
+  `POST /auth/outbound`, `approvedReleases` and `outboundApprovals` in `/auth/me`; a
+  personal organization's are approved on `/orgs/{org}/releases` and
+  `/orgs/{org}/outbound`), the `account:{id}` payer of usage and quotas (it is the
+  organization), the `account` approval scope (a consent request with no scope is
+  the personal organization's), and an xcall between one owner's personal apps.
+  `GET /auth/apps` now lists the apps the account owns in any organization.
+  **Operators:** recreate clusters on this release. **Clients:** approve on the
+  personal organization; an app's billing label is its organization.
 - **An app's frontend creates organizations, invites people and lets them join
   through the node's consent page** (#5014). Since #4934 a session opened on an
   app's frontend is refused `POST /orgs`, invites and redemption, so an app like

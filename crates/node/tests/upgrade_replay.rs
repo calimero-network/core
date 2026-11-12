@@ -184,11 +184,14 @@ fn fixtures() -> Vec<PathBuf> {
         .filter(|p| p.join("expected.json").exists())
         .collect();
     dirs.sort();
-    assert!(
-        !dirs.is_empty(),
-        "no replay fixture under {}",
-        root.display()
-    );
+    // None right after a hard cutover, which drops the releases before it
+    // (`fixtures/upgrade/README.md`), until the next release records one.
+    if dirs.is_empty() {
+        eprintln!(
+            "no replay fixture under {} since the last hard cutover",
+            root.display()
+        );
+    }
     dirs
 }
 

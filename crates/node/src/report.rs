@@ -61,10 +61,9 @@ pub fn actor_kind(s: &SystemState, app: &AppRecord, by: &str) -> ActorKind {
     if by == OPERATOR {
         return ActorKind::Operator;
     }
-    let org_owner = app
-        .org
-        .as_ref()
-        .and_then(|o| s.orgs.get(o))
+    let org_owner = s
+        .orgs
+        .get(&app.org)
         .is_some_and(|o| o.role(by) == Some(OrgRole::Owner));
     if by == app.owner || org_owner {
         ActorKind::Owner
@@ -303,11 +302,13 @@ fn last_upgrade_json(
     v
 }
 
-/// The scope whose approvals cover `app`: its organization, or its account.
-fn scope_json(app: &AppRecord) -> Value {
-    match &app.org {
-        Some(org) => json!({ "kind": "org", "org": org }),
-        None => json!({ "kind": "account" }),
+/// The scope whose approvals cover `app`: its organization (`personal` when it
+/// is its owner's personal organization, left out otherwise).
+fn scope_json(s: &SystemState, app: &AppRecord) -> Value {
+    if s.orgs.get(&app.org).is_some_and(|o| o.personal) {
+        json!({ "kind": "org", "org": app.org, "personal": true })
+    } else {
+        json!({ "kind": "org", "org": app.org })
     }
 }
 
@@ -367,7 +368,7 @@ pub fn app_json(
     let mut v = json!({
         "app": app.app_id,
         "group": app.group,
-        "scope": scope_json(app),
+        "scope": scope_json(s, app),
         "bundle": app.bundle,
         "package": current.as_ref().map(|r| json!({ "package": r.package, "version": r.version })),
         "publisher": current
@@ -453,7 +454,9 @@ mod tests {
     fn app(owner: &str, org: Option<&str>) -> AppRecord {
         serde_json::from_value(json!({
             "appId": "a", "name": "n", "group": 2, "bundle": "b", "owner": owner,
-            "org": org, "replicas": [1], "createdAt": 0,
+            // Without one named, its owner's personal organization.
+            "org": org.map_or_else(|| format!("p-{owner}"), str::to_owned),
+            "replicas": [1], "createdAt": 0,
         }))
         .unwrap()
     }

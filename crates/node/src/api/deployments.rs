@@ -605,10 +605,13 @@ async fn deployment_orgs(
             .values()
             .filter(|a| a.deployment.as_deref() == Some(id.as_str()))
         {
-            let Some(org) = a.org.as_deref() else {
+            // A personal organization is one person's: its instances are
+            // only counted (`outsideOrgs`), never named.
+            let org = a.org.as_str();
+            if s.orgs.get(org).is_some_and(|o| o.personal) {
                 outside += 1;
                 continue;
-            };
+            }
             let entry = orgs.entry(org).or_insert(Customer {
                 instances: 0,
                 apps: std::collections::BTreeSet::new(),

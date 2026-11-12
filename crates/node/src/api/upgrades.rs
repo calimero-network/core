@@ -296,7 +296,7 @@ async fn run_upgrade(
                 "an app keeps the components it was made with: its package cannot gain or lose its app component in an upgrade",
             ));
         }
-        s.stalled_for_release(to, a.org.as_deref(), &a.owner, begun)
+        s.stalled_for_release(to, &a.org, begun)
             .map(|stall| crate::node::stalled(&stall))
     });
     // Every replica's node must run the runtime the target needs, or the
@@ -411,7 +411,7 @@ pub(crate) fn refuse_stalled(
 ) -> Result<(), ApiError> {
     match node.sys(|s| {
         let to = s.governing(release, bundle, now);
-        s.stalled_for_release(to, app.org.as_deref(), &app.owner, now)
+        s.stalled_for_release(to, &app.org, now)
     }) {
         Some(stall) => Err(crate::node::stalled(&stall)),
         None => Ok(()),

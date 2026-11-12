@@ -43,7 +43,6 @@ pub(crate) async fn set_release_approval(
     let account = p.account()?;
     let subject = match &scope {
         crate::system::ReleaseScope::Org { org } => format!("org:{org}"),
-        crate::system::ReleaseScope::Account => format!("account:{account}"),
         crate::system::ReleaseScope::Cluster => "cluster".to_owned(),
     };
     owner_holds(node, |g| g.releases, "release approvals")?;
@@ -114,15 +113,6 @@ async fn org_release_approval(
     .await
 }
 
-async fn account_release_approval(
-    State(node): State<Arc<Node>>,
-    headers: HeaderMap,
-    Json(body): Json<ReleaseApprovalBody>,
-) -> ApiResult {
-    let p = holder(&node, &headers).await?;
-    set_release_approval(&node, &p, crate::system::ReleaseScope::Account, body, None).await
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OutboundApprovalBody {
@@ -161,7 +151,6 @@ pub(crate) async fn set_outbound_approval(
     }
     let subject = match &scope {
         crate::system::ReleaseScope::Org { org } => format!("org:{org}"),
-        crate::system::ReleaseScope::Account => format!("account:{account}"),
         crate::system::ReleaseScope::Cluster => "cluster".to_owned(),
     };
     owner_holds(node, |g| g.outbound, "outbound approvals")?;
@@ -199,15 +188,6 @@ async fn org_outbound_approval(
 ) -> ApiResult {
     let p = holder(&node, &headers).await?;
     set_outbound_approval(&node, &p, crate::system::ReleaseScope::Org { org }, body).await
-}
-
-async fn account_outbound_approval(
-    State(node): State<Arc<Node>>,
-    headers: HeaderMap,
-    Json(body): Json<OutboundApprovalBody>,
-) -> ApiResult {
-    let p = holder(&node, &headers).await?;
-    set_outbound_approval(&node, &p, crate::system::ReleaseScope::Account, body).await
 }
 
 #[derive(Deserialize)]
@@ -374,8 +354,6 @@ async fn ops_outbound(
 /// This area's routes, merged into [`super::router`].
 pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
-        .route("/auth/releases", post(account_release_approval))
-        .route("/auth/outbound", post(account_outbound_approval))
         .route("/orgs/{org}/releases", post(org_release_approval))
         .route("/orgs/{org}/outbound", post(org_outbound_approval))
         .route("/ops/releases", post(ops_release))

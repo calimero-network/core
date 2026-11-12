@@ -1468,9 +1468,21 @@ impl Fixture {
         sent.map_err(Box::new)
     }
 
+    /// Who the app's files are charged to: alice's personal organization, where
+    /// the app went as it named none, asked of the first node that answers (a
+    /// test may stop one, or delete the app).
+    async fn payer(&self) -> String {
+        for c in &self.clients {
+            if let Ok(org) = c.personal_org().await {
+                return org;
+            }
+        }
+        panic!("no node answers");
+    }
+
     /// Alice's file bytes, as `/auth/usage` shows them.
     async fn charged(&self) -> u64 {
-        let payer = format!("account:{}", self.account().await);
+        let payer = self.payer().await;
         used(
             &self.clients[0].auth().usage().await.map(wire).unwrap(),
             &payer,
@@ -2487,8 +2499,7 @@ async fn a_complete_retried_after_a_leader_change_replays_its_answer() {
     f.c.stop(leader).await;
     let _new = f.until_leader_is_not(leader).await;
     assert_eq!(f.complete(via, &upload).await.unwrap(), done);
-    let me = f.clients[via].auth().me().await.map(wire).unwrap();
-    let payer = format!("account:{}", me["accountId"].as_str().unwrap());
+    let payer = f.payer().await;
     let mut charged = 0;
     for _ in 0..100 {
         charged = used(

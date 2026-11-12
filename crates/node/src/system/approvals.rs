@@ -156,13 +156,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     let o = s.orgs.get_mut(org).ok_or("no such organization")?;
                     &mut o.approved_releases
                 }
-                ReleaseScope::Account => {
-                    &mut s
-                        .accounts
-                        .get_mut(&actor)
-                        .ok_or("unknown account")?
-                        .approved_releases
-                }
             };
             if approved {
                 let _new = set.insert(version);
@@ -209,13 +202,6 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     }
                     let o = s.orgs.get_mut(org).ok_or("no such organization")?;
                     &mut o.outbound_approvals
-                }
-                ReleaseScope::Account => {
-                    &mut s
-                        .accounts
-                        .get_mut(&actor)
-                        .ok_or("unknown account")?
-                        .outbound_approvals
                 }
             };
             let existing = approvals.get(&signer).map(|a| calimero_outbound::Approval {

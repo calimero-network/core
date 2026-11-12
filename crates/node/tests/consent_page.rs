@@ -271,11 +271,15 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
     let _s = in_app.sign_in(&mut in_app_passkey).await.unwrap();
 
     // It may not approve anything itself: the routes refuse it, ceremony or not.
+    let mine = alice.personal_org().await.unwrap();
     for (path, body) in [
         (format!("apps/{app}/upgrade"), json!({ "version": "2.0.0" })),
-        ("auth/releases".to_owned(), json!({ "version": "9.9.9" })),
         (
-            "auth/outbound".to_owned(),
+            format!("orgs/{mine}/releases"),
+            json!({ "version": "9.9.9" }),
+        ),
+        (
+            format!("orgs/{mine}/outbound"),
             json!({ "package": PACKAGE, "prefixes": ["https://metrics.example/"] }),
         ),
     ] {
@@ -396,6 +400,8 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         model["code"],
         json!(calimero_node::consent_page::confirmation_code(&id))
     );
+    let home = alice.get(&format!("apps/{app}")).await.unwrap()["org"].clone();
+    assert!(home.is_string(), "{home}");
     let expected = json!({
         "kind": "upgrade",
         "status": "pending",
@@ -421,7 +427,8 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
         "requestedBy": {
             "package": PACKAGE, "name": "Notes", "publisher": "Example", "returnOrigin": app_origin,
         },
-        "scope": { "kind": "app", "app": "<redacted>", "name": "notes", "org": null },
+        // Made without naming an organization: in alice's personal one.
+        "scope": { "kind": "app", "app": "<redacted>", "name": "notes", "org": home },
         "headline": "Upgrade Notes from 1.0.0 to 2.0.0",
         "title": "Update notes to version 2.0.0",
         "points": [
@@ -825,7 +832,8 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
         args,
         json!({ "version": "2.0.0", "policyDigest": digest, "__method": "__approve_release" })
     );
-    let me = alice.auth().me().await.map(wire).unwrap();
+    let mine = alice.personal_org().await.unwrap();
+    let me = alice.orgs().get(&mine).await.map(wire).unwrap();
     assert!(
         me["approvedReleases"]
             .as_array()
@@ -948,8 +956,10 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
             "returnTo": back,
         })
     };
+    // A request with no organization (`account`) is her personal one's.
+    let mine = alice.personal_org().await.unwrap();
     let approved = || async {
-        alice.auth().me().await.map(wire).unwrap()["approvedReleases"]
+        alice.orgs().get(&mine).await.map(wire).unwrap()["approvedReleases"]
             .as_array()
             .unwrap()
             .clone()

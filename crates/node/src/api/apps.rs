@@ -141,6 +141,43 @@ async fn offered_bundle(
     })
 }
 
+/// The organization an instance that names none goes to: `owner`'s personal
+/// organization ([`crate::types::Org::personal`]), made now if they have none.
+async fn personal_org(node: &Node, owner: &str) -> Result<String, ApiError> {
+    let find = || node.sys(|s| s.personal_org_of(owner).cloned());
+    if let Some(org) = find() {
+        return Ok(org);
+    }
+    let _caught_up = node.sys_fresh().await;
+    if let Some(org) = find() {
+        return Ok(org);
+    }
+    let org_id = typed_id::<16>();
+    let made = node
+        .sys_write(&SystemCmd::CreateOrg {
+            org_id: org_id.clone(),
+            name: crate::system::PERSONAL_ORG_NAME.to_owned(),
+            actor: owner.to_owned(),
+            release: Some(node.own_release()),
+            recovery_key: None,
+            at: recovery_now(node),
+            name_fits: true,
+            personal: true,
+        })
+        .await;
+    match made {
+        Ok(_) => Ok(org_id),
+        // Another request of the same account made it first: use that one.
+        Err(e) if e.code == crate::node::PERSONAL_ORG_EXISTS => {
+            let _caught_up = node.sys_fresh().await;
+            find().ok_or_else(|| {
+                ApiError::unavailable("the personal organization is not readable yet")
+            })
+        }
+        Err(e) => Err(e),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CreateAppBody {
@@ -246,11 +283,17 @@ async fn app_create(
         return Err(crate::node::args_too_large());
     }
     let confirm_methods: Vec<String> = Vec::new();
+    // Every instance is in an organization: one that names none goes to its
+    // owner's personal organization, made the first time.
+    let org = match body.org {
+        Some(org) => org,
+        None => personal_org(&node, &owner).await?,
+    };
     // Past a release deadline the app's approver has not met, no new app;
     // `CreateApp` asks again at the same time.
     if let Some(stall) = node.sys(|s| {
         let governing = s.governing(release.as_ref(), &bundle, now);
-        s.stalled_for_release(governing, body.org.as_deref(), &owner, now)
+        s.stalled_for_release(governing, &org, now)
     }) {
         return Err(crate::node::stalled(&stall));
     }
@@ -259,8 +302,7 @@ async fn app_create(
     // release approvals) may hold the app.
     let approved = node.sys(|s| {
         let governing = s.governing(release.as_ref(), &bundle, now);
-        s.approved_for_release(governing, body.org.as_deref(), &owner)
-            .cloned()
+        s.approved_for_release(governing, &org).cloned()
     });
     // Nor a node whose runtime is older than the release needs.
     let min_runtime = node.min_runtime_of(release.as_ref(), &bundle).await;
@@ -286,11 +328,7 @@ async fn app_create(
     let app_id = typed_id::<16>();
     let has_compute = compute_bundle.is_some();
     let components = node.sys(|s| s.components_of(release.as_ref()));
-    let access = body.access.unwrap_or(if body.org.is_some() {
-        Access::Org
-    } else {
-        Access::Owner
-    });
+    let access = body.access.unwrap_or(Access::Org);
     let out = node
         .sys_write(&SystemCmd::CreateApp {
             app: Box::new(crate::types::AppRecord {
@@ -299,7 +337,7 @@ async fn app_create(
                 group: 0,
                 bundle,
                 owner,
-                org: body.org,
+                org,
                 access,
                 confirm_methods,
                 executor,
@@ -492,7 +530,7 @@ async fn app_access(
     // A package-bound session moves its package's app between its package's
     // teams only (a channel made private, or back to the app team).
     match (&app.org, &app.access, &body.access) {
-        (Some(org), Access::Team { team: from }, Access::Team { team: to }) => {
+        (org, Access::Team { team: from }, Access::Team { team: to }) => {
             p.within_team(&node, org, from, OwnTeam::AppTeamOrBelow)?;
             p.within_team(&node, org, to, OwnTeam::AppTeamOrBelow)?;
         }
@@ -545,6 +583,16 @@ async fn app_transfer(
         body.confirm,
     )
     .await?;
+    // An app in a personal organization handed to someone outside it goes to
+    // theirs: make it first if they have none.
+    let leaves_personal = node.sys(|s| {
+        s.orgs.get(&app.org).is_some_and(|o| {
+            o.personal && o.role(&body.to).is_none() && s.accounts.contains_key(&body.to)
+        })
+    });
+    if leaves_personal {
+        let _theirs = personal_org(&node, &body.to).await?;
+    }
     Ok(Json(
         node.sys_write(&SystemCmd::TransferApp {
             app_id,

@@ -2925,17 +2925,12 @@ impl calimero_app_host::HttpHost for NodeHttp {
     }
 }
 
-/// Whether an xcall from `source` may reach `target`: both in one organization, or both
-/// personal apps of one owner.
+/// Whether an xcall from `source` may reach `target`: both in one organization.
 fn same_boundary(s: &crate::system::SystemState, source: &str, target: &str) -> bool {
     let (Some(a), Some(b)) = (s.apps.get(source), s.apps.get(target)) else {
         return false;
     };
-    match (&a.org, &b.org) {
-        (Some(x), Some(y)) => x == y,
-        (None, None) => a.owner == b.owner,
-        _ => false,
-    }
+    a.org == b.org
 }
 
 /// A component's answer in the shape the node's own commands (`init`, upgrades)

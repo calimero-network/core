@@ -27,8 +27,9 @@ is its command line.
   deletable, and every call, view, upgrade, intent, xcall list and ABI read on it answers
   `410 UNSUPPORTED_ENGINE` (`ApiError::unsupported_engine`, `app::WASMER_GONE`). A wasmer
   entry in an app's log applies as a deterministic no-op (`AppMachine::unsupported`:
-  `last_index` moves, nothing else). Tests: `old_datadir.rs` (a directory `a09547b2b`
-  wrote), `a_core_module_bundle_is_refused_as_an_sdk_0_12_app`,
+  `last_index` moves, nothing else). Tests (`old_datadir.rs`, a directory `a09547b2b`
+  wrote, went with the 1.0.0-rc.20 hard cutover, which reads no earlier data):
+  `a_core_module_bundle_is_refused_as_an_sdk_0_12_app`,
   `an_sdk_0_12_apps_entries_apply_as_no_ops`, `a_malformed_entry_applies_as_a_no_op`,
   `a_wasmer_entry_never_applies_to_a_component_app`.
 - **Entry format** (`component::ENTRY_FORMAT`, `entry_format`): a component entry that
@@ -176,8 +177,7 @@ is its command line.
   before, the `RequireSessionProofs` its first system leader on this release
   writes (`reconcile`). An entry before it (what an earlier release logged,
   replayed on restart) applies as it did, so replicas never diverge on it
-  (`session_commands_logged_before_their_proofs_apply_as_they_did`,
-  `old_datadir.rs`). The flags that name an earlier release's rule
+  (`session_commands_logged_before_their_proofs_apply_as_they_did`). The flags that name an earlier release's rule
   (`owner_in_org`, `owner_in_team`, `apps_need_consent`, `teams_seen`,
   `free_when_unchanged`, `subtree`, `accounts_in_app_team`,
   `member_child_teams`, `revoke_api_keys`, `by_release`, `close_drops_below`,
@@ -438,8 +438,8 @@ is its command line.
     set, or its owner account's. Acted on by members holding
     `caps::APPROVE_RELEASES` (bit 10; owner and admins hold it, a member when
     granted org-wide; `SystemState::approves_releases`, 403 at the API and
-    refused at apply), or by the account for its own set
-    (`POST /orgs/{org}/releases`, `/auth/releases`, logged as consent). Enforced
+    refused at apply; the account's own apps' are its personal organization's)
+    (`POST /orgs/{org}/releases`, logged as consent). Enforced
     by the replicas that hold the data: `Node::may_send` refuses Raft
     entries/snapshots to a peer whose attested release
     (`HttpAttestor::seen_release`) is not approved, `Node::place` skips such
@@ -494,9 +494,8 @@ is its command line.
   component's actions (`NodeHttp`, "Component executor"), for
   a bundle that is a signed release declaring prefixes; identity = (package,
   pinned signer), approval = `Org/Account::outbound_approvals[signer]`, set by
-  the account, or for an org whoever holds `MANAGE_APPLICATION` org-wide, with
-  `SetOutboundApproval` (`POST /orgs/{org}/outbound`,
-  `/auth/outbound`, passkey consent; `merge_approval` at apply). The request is
+  whoever holds `MANAGE_APPLICATION` org-wide in the app's organization, with
+  `SetOutboundApproval` (`POST /orgs/{org}/outbound`, passkey consent; `merge_approval` at apply). The request is
   made inside the propose lock, on its own thread (`run_blocking`); a leader-race
   re-run sends it again. A component's calls, timers and deliveries get the same gate
   (D76, "Component executor").
@@ -631,7 +630,7 @@ is its command line.
   A payer's limits (`SystemState::payer_quotas`: runs, fuel, file bytes) are its override in `SystemState::org_quotas` where it has one (`POST /ops/quotas` with `org`: a field set to `null` clears it; operator-signed `cluster / __set_org_quotas / { payer, quotas }`, refused `409 UPGRADE_PENDING` while a node is behind; all fields cleared removes the entry), else the cluster's.
   `grant_runs`, the `AcquireRun` fuel refusal, the refused marking and the file-bytes charges read them; lowering an override never revokes a granted run, new grants wait.
   Free places go to the payers in turn: the one served longest ago (`run_served`, a count of grants, kept only for payers that still have runs), then the one whose oldest waiting run has the smallest `seq`; and a payer at `maxConcurrentRunsPerOrg` (4) or over `computeFuelPerOrg` (10 x `MAX_COMPUTE_FUEL`), or its override, is passed over for the pass.
-  `RegisterNode`, `RemoveNode`, `SetQuotas`, `SetPools`, `TransferApp` (a personal app's payer moves) and `remove_app` (`DeleteApp`, `DeleteOrg`, `DeleteTeam`) re-run it, and a granted run is never taken back.
+  `RegisterNode`, `RemoveNode`, `SetQuotas`, `SetPools`, `TransferApp` (an app leaving a personal organization moves its payer) and `remove_app` (`DeleteApp`, `DeleteOrg`, `DeleteTeam`) re-run it, and a granted run is never taken back.
   `AcquireRun` answers `{ state: granted | queued | refused, code, retryable }`.
   Retryable codes are `NOT_PAYER` and `APP_QUEUE_FULL`; permanent ones are `NO_SUCH_APP`, `FUEL_OVER_RUN_MAX`, `FUEL_OVER_QUOTA`, `RUN_NO_POOL` and `RELEASED`.
   It refuses a run id released before (`released_runs`, the last 256 per app), past `MAX_ACTIVE_RUNS` runs queued for the app, and a run whose fuel alone exceeds `computeFuelPerOrg`.
@@ -742,6 +741,26 @@ is its command line.
   Tests: `component/tests/pipelines.rs` (apply), `compute/pipelines.rs` (`plan` keys and hits), `pipeline_runs.rs` (`rerunning_with_one_changed_param_runs_only_the_steps_it_reaches`, `a_step_with_cache_false_always_runs`, `a_fan_out_reuses_its_cached_items`, `starting_with_an_expired_output_answers_output_expired`).
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas. `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`). `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs`, `tests/move_app.rs`.
+- **Every app is in an organization** (`AppRecord::org`, required; hard
+  cutover in 1.0.0-rc.20: a record or entry without one is not read, so
+  clusters are recreated). **Personal organizations** (`Org::personal`,
+  `SystemState::personal_org_of`; docs: protocol organizations "Personal
+  organizations"): a sign-up makes the account's in the same entry
+  (`CreateAccount { personal_org: PersonalOrgSeed }`, `orgs::new_org`, named
+  `PERSONAL_ORG_NAME`, approving the sign-up node's release), and `POST /apps`
+  with no `org` creates the instance there (`api::apps::personal_org`, which
+  makes one with `CreateOrg { personal: true }` for an account that lacks it).
+  `CreateOrg { personal }` refuses a second one (`409 PERSONAL_ORG_EXISTS`) and
+  skips `maxOrgsPerAccount`. `may_reach` lets an `Accounts` instance there reach
+  its listed accounts without membership. `TransferApp` of an app there to a
+  non-member moves it to the new owner's personal organization
+  (`NO_PERSONAL_ORG` without one; `app_transfer` makes it first).
+  `deployment_orgs` counts it in `outsideOrgs`, unnamed. There are no account
+  approvals (`ReleaseScope` is `Org` or `Cluster`); a consent request with no
+  scope is the personal organization's; `release_may_serve_account` reads the
+  account's organizations. Regressions:
+  `system::tests::an_account_has_one_personal_organization_outside_its_quota`,
+  `move_app::an_instance_naming_no_organization_goes_to_its_owners_personal_one`.
 - **An org app's owner, while a member** (`SystemState::owner_acts`): an organization's app gives its owner the owner's powers (access, metadata, transfer, delete, upgrade, upgrade keys, files, blob deletes, usage) only while they are a member (`member` or above) of its organization; its admins keep transfer and delete (`manages_app`). Judged at apply; `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` carry `owner_in_org`, which the API always sets; absent in an entry an earlier release logged, which replays judging ownership alone. Regressions: `an_owner_removed_from_the_organization_no_longer_manages_its_app`, `a_member_owner_and_a_personal_owner_still_manage_their_apps`, `system::tests` (`an_org_apps_owner_manages_it_only_while_a_member`, `an_org_admin_transfers_or_deletes_an_app_whose_owner_left`, `app_commands_logged_before_the_membership_rule_replay_as_they_did`).
 - **An app on a team, its owner while in the team** (`SystemState::owner_acts`, `may_reach`): an app with `team` access is reached and managed by its owner only while they are in that team (`Org::in_team`), so an owner kicked from, leaving, or closed out of an app's team (or a private channel) loses the channels they created there; admins transfer them. The six owner commands above and `ScopeApps` (which finds who reaches an instance) carry `owner_in_team`, which the API always sets; absent, an entry replays judging the owner without the team (`OwnerRule`). Regressions: `an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it`, `system::tests::an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
@@ -768,8 +787,8 @@ is its command line.
   at plain-HTTP `GET /metrics` for a scraper, nothing else (`api::plain_metrics`).
 - **Usage metering** (`usage.rs`, `Node::usage`; billed from `/metrics`):
   `calimero_app_{calls_total{kind},wasm_cpu_seconds_total,wasm_memory_byte_seconds_total,outbound_requests_total,state_bytes,blob_bytes}`,
-  labelled `app`, `org` (the payer, whose quotas it counts against: org id,
-  or `account:{owner}` for a personal app; `usage::payer`) and `developer`
+  labelled `app`, `org` (the payer, whose quotas it counts against: its org
+  id; `usage::payer`) and `developer`
   (who Calimero Cloud bills: for an instance of a deployment the deployment's
   owner, in the same form, else the payer; `usage::developer`,
   `usage::Billed::of`). Both are functions of the app, so they add no series
@@ -982,8 +1001,7 @@ is its command line.
   Both are `holder` (unbound passkey session), as `/auth/logout-all`.
   Regressions: `tests/sessions.rs`,
   `passkey_and_session_times_come_from_their_entries`,
-  `accounts_and_sessions_from_before_the_times_read_and_write_as_they_did`,
-  `tests/old_datadir.rs`.
+  `accounts_and_sessions_from_before_the_times_read_and_write_as_they_did`.
 - **Members' security** (owner and admins): `GET /orgs/{org}/members?detail=security`
   (`api::org_members`, `holder`, `SystemState::is_org_admin`, filtered by
   `Org::sees_member`) answers per member the passkey count capped at
@@ -1006,8 +1024,7 @@ is its command line.
   sign-in's consent, or an earlier release's) records nothing, so a replayed
   old log adds nothing. `GET /auth/activity` (`api::activity_list`) is
   `holder`. Regressions: `tests/activity.rs`,
-  `activity_records_sign_ins_and_step_ups_from_their_times`,
-  `tests/old_datadir.rs`.
+  `activity_records_sign_ins_and_step_ups_from_their_times`.
 - **Passkeys are per cluster** (`api/passkeys.rs`; docs: protocol identities
   "Passkeys are each cluster's own"): clusters share an rp-id, so a
   registration's `user.name`/`displayName` is `passkey_user_name` (person ·
@@ -1470,7 +1487,7 @@ is its command line.
   `SystemState::app_file_bytes` holds them per app, and `payer_file_bytes` is its sum per payer (`usage::payer`), kept in step by `set_app_file_bytes`.
   `SystemCmd::ChargeFileBytes { app_id, delta }` refuses a charge past the quota and floors a release at 0.
   `DeleteApp`, `DeleteOrg` and `DeleteTeam` free an app's files through `remove_app`.
-  `TransferApp` of a personal app is refused when the new owner's quota would not hold its files.
+  `TransferApp` of an app leaving a personal organization (to the new owner's) is refused when that organization's quota would not hold its files.
   The exception is `maxFuelPerDeveloperPerDay` (Q20, D76, D78; `"0"`, the default,
   is no limit; a decimal string in JSON, a number refused, `system::decimal_u64`). It
   is charged to the app's developer, `usage::developer` (#4839), the same identity
@@ -1632,8 +1649,7 @@ API and system group:
   (`componentUpgrade`) and a named `migrate` is refused `MigrationsNotSupported`.
 - **Identity a component sees** (`component::SysDirectory`): its org, owner, the
   caller's role and teams there; `orgs-of` answers only the app's own organization
-  (D75, spec v0.26): for an account, at most the app's org with its role, and nothing
-  for a personal app. Test: `a_component_sees_no_organization_but_its_own`.
+  (D75, spec v0.26): for an account, at most the app's org with its role. Test: `a_component_sees_no_organization_but_its_own`.
 - **Per-executor endpoints** (`the_abi_storage_and_blob_routes_answer_for_a_component`):
   `/apps/{app}/abi` answers the ABI the component embeds (`calimero:abi`);
   `/apps/{app}/storage` counts its keys, bytes and blobs (see "Files" for the file routes). The host refuses event
@@ -1643,8 +1659,7 @@ API and system group:
   at most `MAX_OUTBOX`). The source leader's timer poll (`Node::deliver_xcalls`, at most
   `DELIVER_BATCH` a round) delivers the head through `call_component` with
   `CallRequest::xcall = XcallFrom { source, seq }`, `Caller::App`, a `node:xcall-…` key;
-  the target checks the boundary again (`same_boundary`: one org, or one owner's
-  personal apps), its watermark (`XcallHead::seen`, D25: answered as delivered without
+  the target checks the boundary again (`same_boundary`: one org), its watermark (`XcallHead::seen`, D25: answered as delivered without
   running), the ABI (`allowApps`, `"*"` = any; `abi_check`), runs `kind = xcall-deliver`
   and records `CallEntry::xcall`, whose apply moves the watermark whatever the status.
   The source then logs `componentXcallDone { seq, dead }`. Timeouts and `5xx` are retried

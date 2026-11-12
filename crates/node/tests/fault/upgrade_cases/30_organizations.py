@@ -261,3 +261,48 @@ class RecoveryKey(DeepCase):
         self._start(w, s, "rob")
         s["recovery"] = rhea.get(f"orgs/{s['org']}").get("recovery")
         self.check(w, s)
+
+
+def personal_org(p):
+    """`p`'s personal organization, as `/auth/me` marks it, or None."""
+    mine = [o["orgId"] for o in p.get("auth/me").get("orgs", []) if o.get("personal")]
+    check(len(mine) <= 1, f"more than one personal organization: {mine}")
+    return mine[0] if mine else None
+
+
+@case
+class PersonalOrg(DeepCase):
+    name = "personal-org"
+    area = "Organizations"
+    since = "1.0.0-rc.20"
+    seeds = "instances created without naming an organization, which go to the personal organization made at sign-up"
+    verifies = ("both instances in the one personal organization, marked personal, with their data; another "
+                "instance made without one joins the same organization")
+
+    def populate(self, w):
+        yan, zed = people(w, "yan", "zed")
+        del zed  # an outsider
+        first = yan.deploy(kv_wasm(w), "yan-1")
+        second = yan.deploy(kv_wasm(w), "yan-2")
+        org = personal_org(yan)
+        check(org, f"no personal organization after an instance named none: {yan.get('auth/me')}")
+        for app in (first, second):
+            yan.call(app, "set", {"key": "k", "value": app})
+        return {"org": org, "apps": [first, second]}
+
+    def check(self, w, s):
+        yan, zed = people(w, "yan", "zed")
+        eq(personal_org(yan), s["org"], "the personal organization")
+        eq(yan.get(f"orgs/{s['org']}").get("personal"), True, "the organization is personal")
+        for app in s["apps"]:
+            eq(yan.get(f"apps/{app}").get("org"), s["org"], "the instance's organization")
+            eq(yan.result(app, "get", {"key": "k"}), app, "the instance's data")
+        refused(("FORBIDDEN", "NOT_FOUND"), lambda: zed.view(s["apps"][0], "get", {"key": "k"}),
+                "an outsider reads the instance")
+
+    def exercise(self, w, s):
+        yan = person(w, "yan")
+        app = yan.deploy(kv_wasm(w), f"yan-{len(s['apps']) + 1}")
+        yan.call(app, "set", {"key": "k", "value": app})
+        s["apps"].append(app)
+        self.check(w, s)

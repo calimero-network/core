@@ -141,8 +141,11 @@ pub struct AppRecord {
     pub group: u64,
     pub bundle: String,
     pub owner: AccountId,
-    #[serde(default)]
-    pub org: Option<OrgId>,
+    /// The organization the app belongs to. Every app has one: an app made
+    /// without naming one is in its owner's personal organization
+    /// ([`Org::personal`]). Apps outside any organization were removed in a
+    /// hard cutover (1.0.0-rc.20).
+    pub org: OrgId,
     #[serde(default)]
     pub access: Access,
     /// Methods that needed a fresh passkey assertion (`#[app::confirm]`), as an
@@ -342,14 +345,6 @@ pub struct Account {
     pub name: String,
     pub created_at: u64,
     pub passkeys: Vec<Credential>,
-    /// mero-tee releases approved to hold the apps this account owns outside
-    /// an organization (as [`Org::approved_releases`]).
-    #[serde(default)]
-    pub approved_releases: std::collections::BTreeSet<String>,
-    /// Outbound URL prefixes approved for the apps this account owns outside
-    /// an organization (as [`Org::outbound_approvals`]).
-    #[serde(default)]
-    pub outbound_approvals: std::collections::BTreeMap<String, OutboundApproval>,
     /// A name for each of the account's passkeys (its devices), by credential
     /// id: a device label.
     #[serde(default)]
@@ -692,6 +687,15 @@ pub struct Org {
     /// empty, so an organization from before writes as it did.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub all_apps: std::collections::BTreeSet<AccountId>,
+    /// Made for one account to hold its instances (`CreateOrg { personal }`):
+    /// an instance created without naming an organization goes to its
+    /// owner's personal organization, made the first time. An account owns
+    /// at most one, and it does not count against `maxOrgsPerAccount`. It is
+    /// an organization like any other otherwise (its owner may invite
+    /// people). Left out when false, so an organization from before writes
+    /// as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub personal: bool,
 }
 
 /// An organization's recovery key: whoever holds its seed can hand the

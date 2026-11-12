@@ -20,3 +20,18 @@
 #   route = "...", field = "...", wit = "0.6.0" or abi = 2   # what it removes
 #   pr    = 4999                                              # the PR that removes it
 #   why   = "..."                                             # what breaks, and for whom
+
+[[cutover]]
+route = "POST /auth/releases"
+pr = 5015
+why = "every app is in an organization, so an account holds no release approvals of its own: clients approve on its personal organization (POST /orgs/{org}/releases)"
+
+[[cutover]]
+route = "POST /auth/outbound"
+pr = 5015
+why = "every app is in an organization, so an account holds no outbound approvals of its own: clients approve on its personal organization (POST /orgs/{org}/outbound)"
+
+[[cutover]]
+field = "outboundApprovals"
+pr = 5015
+why = "/auth/me no longer answers the account's own outbound approvals: they are its personal organization's (GET /orgs/{org})"
