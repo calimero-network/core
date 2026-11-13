@@ -48,6 +48,13 @@ impl Compute {
         digest_inputs()
     }
 
+    /// [`Compute::digest`] with a 10 s wall cap: the tests that wait for a run's ceiling (wall cap,
+    /// grace and outage credit) wait that much less.
+    #[app::compute(fuel = 20_000_000_000, memory_mib = 256, wall_secs = 10, result = "on_done")]
+    pub fn digest_brief() -> app::Result<Vec<String>> {
+        digest_inputs()
+    }
+
     /// [`Compute::digest`] whose result method keeps no output.
     #[app::compute(fuel = 20_000_000_000, memory_mib = 256, wall_secs = 60, result = "on_drop")]
     pub fn digest_unkept() -> app::Result<Vec<String>> {
@@ -149,6 +156,11 @@ impl Compute {
     /// Starts a `digest` run over `inputs`; the same inputs while it is active answer its id.
     pub fn start_digest(&mut self, inputs: Vec<BlobRef>) -> app::Result<RunId> {
         compute::start("digest", &(), &inputs)
+    }
+
+    /// Starts a `digestBrief` run over `inputs`.
+    pub fn start_digest_brief(&mut self, inputs: Vec<BlobRef>) -> app::Result<RunId> {
+        compute::start("digestBrief", &(), &inputs)
     }
 
     /// Starts a `digestUnkept` run over `inputs`.

@@ -24,6 +24,7 @@ const TARGET: &str = "wasm32-wasip2";
 const COMPUTE_CFG: &str = "calimero_compute"; // selects the compute world in the SDK and macros
 const COMPUTE_TARGET_SUBDIR: &str = "compute"; // inside the target dir, so the two builds never invalidate each other
 const TARGET_LOCK: &str = ".calimero-app-build.lock"; // inside the target dir
+const SHARED_TARGET: &str = "shared"; // the cache's one cargo target dir, under `<cache>/target`
 const HEADER_LEN: usize = 8;
 const SECTION_CUSTOM: u8 = 0;
 const SECTION_MODULE: u8 = 1;
@@ -48,6 +49,19 @@ pub struct Built {
     pub component: Vec<u8>,
     pub abi: Option<Value>,
     pub imports: Vec<String>,
+}
+
+impl Built {
+    /// A component as [`build_component`] answers it, read back from its bytes (a cached one).
+    pub fn from_component(component: Vec<u8>) -> EyreResult<Self> {
+        let abi = abi_of(&component)?;
+        let imports = imports_of(&component)?;
+        Ok(Self {
+            component,
+            abi,
+            imports,
+        })
+    }
 }
 
 /// An app's components: the one replicas run and, when it declares compute methods, the one
@@ -168,7 +182,7 @@ pub struct CachedApp {
 /// Builds `crate_dir` like [`build_component`], reusing a result cached under `cache_dir`.
 ///
 /// The component is `cache_dir/<crate dir name>-<key>.wasm` (key: see [`cache_key`]); cargo's
-/// own target directory is `cache_dir/target/<crate dir name>`. Use [`build_components_cached`]
+/// own target directory is `cache_dir/target/shared`, one for every crate built through the cache. Use [`build_components_cached`]
 /// to get the compute component too.
 pub fn build_component_cached(
     crate_dir: &Path,
@@ -200,11 +214,15 @@ pub fn build_components_cached(
     if let Some(hit) = read(&cache_key(crate_dir, also_hash)?) {
         return Ok(hit);
     }
-    // A miss builds under an exclusive lock per (crate, target dir), held across
+    // A miss builds under an exclusive lock per crate, held across
     // processes (nextest runs each test in its own): the first builds and writes the
     // cache, the others wait, find it, and reuse it. The key is computed again under
     // the lock, since the first build may have changed what it hashes.
-    let target_dir = cache_dir.join("target").join(name);
+    // One cargo target dir for every crate the cache builds: the guests share most of their
+    // dependencies (the SDK, wit-bindgen, serde), which then compile once instead of once per
+    // crate. `build` locks it, so builds of different crates take turns, each still using
+    // every core.
+    let target_dir = cache_dir.join("target").join(SHARED_TARGET);
     std::fs::create_dir_all(&target_dir)?;
     let lock = lock_exclusive(&cache_dir.join("target").join(format!("{name}.build.lock")))?;
     let key = cache_key(crate_dir, also_hash)?;
@@ -228,6 +246,27 @@ pub fn build_components_cached(
     Ok(CachedApp {
         app: built.app.component,
         compute: built.compute.map(|c| c.component),
+    })
+}
+
+/// The guest crate at `crate_dir` (a path in this repository) built through the repository's
+/// one component cache, `target/app-components`, for tests.
+///
+/// Every test binary that builds a guest goes through it (the node's cluster tests, the
+/// engine's, the SDK's, mero-compute's), so a guest is compiled once per tree, by whichever
+/// test process gets there first, rather than once per test binary into its own target dir,
+/// and every other process reads the result instead of running cargo again. The key hashes
+/// the crate and the SDK, its macros, its old name and the WIT (`calimero:app`), which are
+/// every path a guest here reaches outside its own directory; see [`cache_key`].
+pub fn build_in_repo_cache(crate_dir: &Path) -> EyreResult<BuiltApp> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let crates = root.join("crates");
+    let also = ["sdk", "sdk-macros", "app-sdk", "app-wit"].map(|c| crates.join(c));
+    let also: Vec<&Path> = also.iter().map(PathBuf::as_path).collect();
+    let cached = build_components_cached(crate_dir, &also, &root.join("target/app-components"))?;
+    Ok(BuiltApp {
+        app: Built::from_component(cached.app)?,
+        compute: cached.compute.map(Built::from_component).transpose()?,
     })
 }
 

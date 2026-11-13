@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use calimero_app_build::build_component;
+use calimero_app_build::build_in_repo_cache;
 use calimero_sdk::testing::{run_scenario, Failure, Org, TestApp};
 use calimero_sdk::BlobRef;
 use serde_json::{json, Value};
@@ -20,13 +20,20 @@ fn app_code(r: Result<Value, Failure>) -> String {
 
 const T0: u64 = 1_700_000_000_000;
 
+/// `name` in the test binary's scratch dir (`CARGO_TARGET_TMPDIR`), made if it is missing.
+fn tmp_file(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(&dir).expect("the scratch dir");
+    dir.join(name)
+}
+
 fn component() -> &'static [u8] {
     static BUILT: OnceLock<Vec<u8>> = OnceLock::new();
     BUILT.get_or_init(|| {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/sample");
-        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("harness-guests");
-        build_component(&dir, &target)
+        build_in_repo_cache(&dir)
             .unwrap_or_else(|e| panic!("build sample: {e}"))
+            .app
             .component
     })
 }
@@ -233,7 +240,7 @@ fn export_state_is_stable_across_runs() {
 #[test]
 fn scenario_file_runs() {
     let mut t = app();
-    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scenario.json");
+    let path = tmp_file("scenario.json");
     let steps = json!([
         { "as": "bob", "op": "call", "method": "bump", "args": {}, "expect": { "ok": "1" } },
         { "as": "@anonymous", "op": "view", "method": "roomCount", "args": { "roomId": "x" }, "expect": { "refused": "UNAUTHENTICATED" } },
@@ -247,7 +254,7 @@ fn scenario_file_runs() {
 #[test]
 fn scenario_variables_carry_minted_ids() {
     let mut t = app();
-    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scenario-vars.json");
+    let path = tmp_file("scenario-vars.json");
     let steps = json!([
         { "as": "bob", "op": "call", "method": "book", "save": "id",
           "args": { "roomId": "r1", "start": "10", "title": "t" } },
@@ -268,7 +275,7 @@ fn scenario_variables_carry_minted_ids() {
 #[test]
 fn scenario_dollar_strings_are_variables_only_when_exactly_a_name() {
     let mut t = app();
-    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scenario-dollar.json");
+    let path = tmp_file("scenario-dollar.json");
     let steps = json!([
         { "as": "bob", "op": "call", "method": "book", "save": "id",
           "args": { "roomId": "r1", "start": "10", "title": "$5 lunch" } },
@@ -288,7 +295,7 @@ fn scenario_dollar_strings_are_variables_only_when_exactly_a_name() {
 #[test]
 fn scenario_save_on_a_step_without_a_result_is_an_error() {
     let mut t = app();
-    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scenario-save.json");
+    let path = tmp_file("scenario-save.json");
     for step in [
         json!({ "op": "tick", "method": "tickInfo", "save": "x" }),
         json!({ "op": "advance", "args": 5, "save": "x" }),
@@ -493,7 +500,7 @@ fn the_platform_refuses_before_the_app_with_the_nodes_codes() {
 fn scenario_expectations() {
     let run = |steps: Value| {
         let mut t = app();
-        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scenario2.json");
+        let path = tmp_file("scenario2.json");
         std::fs::write(&path, steps.to_string()).unwrap();
         run_scenario(&mut t, &path)
     };
