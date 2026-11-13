@@ -125,7 +125,6 @@ jobs:
           targets: wasm32-wasip2
           shared-key: release
           save-if: false
-          sccache: true
 
       - name: Install mero-app-build and mero-compute
         env:
@@ -171,14 +170,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - name: sccache stats
-        if: ${{ !cancelled() }}
-        run: |
-          sccache --show-stats || true
-          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
-            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
-            head -n 30 "$SCCACHE_ERROR_LOG"
-          fi
 
   # The scenario runner (crates/node/tests/scenarios.rs), compiled once; the
   # shards run the binary. ci-checks' required `scope` job checks discovery with
@@ -200,7 +191,6 @@ jobs:
           targets: wasm32-wasip2
           shared-key: ci-checks
           save-if: false
-          sccache: true
 
       - name: Build the runner
         run: |
@@ -225,19 +215,11 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      - name: sccache stats
-        if: ${{ !cancelled() }}
-        run: |
-          sccache --show-stats || true
-          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
-            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
-            head -n 30 "$SCCACHE_ERROR_LOG"
-          fi
 
   # Every scenario, app-level and cluster, in four shards (SCENARIO_SHARD), each
   # on an in-process 3-node cluster (crates/node/tests/harness/scenario.rs); no
   # merod process. Run as cargo would, from the package's directory. The runner
-  # builds each app component it installs (target/app-components), through sccache.
+  # builds each app component it installs (target/app-components).
   scenarios:
     name: scenarios (${{ matrix.shard }}/4)
     needs: build-scenarios
@@ -261,7 +243,6 @@ jobs:
           targets: wasm32-wasip2
           shared-key: ci-checks
           rust-cache: false
-          sccache: true
 
       - name: Download the runner
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -278,14 +259,6 @@ jobs:
           chmod +x ../../target/scenario-runner/scenarios
           ../../target/scenario-runner/scenarios --test-threads 2
 
-      - name: sccache stats
-        if: ${{ !cancelled() }}
-        run: |
-          sccache --show-stats || true
-          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
-            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
-            head -n 30 "$SCCACHE_ERROR_LOG"
-          fi
 
   # Process-level tests on real `merod run --dev` processes, one per node: a crash,
   # a frozen node and a restart; a frozen leader under a 10 s budget; organizations
@@ -365,7 +338,6 @@ jobs:
           targets: wasm32-wasip2
           shared-key: release
           save-if: false
-          sccache: true
 
       - name: Install mero-app-build
         run: scripts/install-mero-app-build.sh
@@ -456,7 +428,6 @@ jobs:
           targets: wasm32-wasip2
           shared-key: ci-checks
           rust-cache: false
-          sccache: true
 
       # merod, meroctl and mero-sign optimized like the product (sealing 47 MiB files in a
       # debug build misses the push deadline); mero-app-build builds the fixtures and
@@ -619,7 +590,6 @@ jobs:
           targets: wasm32-unknown-unknown
           shared-key: release
           save-if: false
-          sccache: true
 
       - name: Setup cargo mero
         if: hashFiles('.github/actions/setup-cargo-mero/action.yml') != ''
@@ -665,7 +635,6 @@ jobs:
           targets: wasm32-unknown-unknown,wasm32-wasip2
           shared-key: release
           save-if: false
-          sccache: true
 
       - name: Setup cargo mero
         if: hashFiles('.github/actions/setup-cargo-mero/action.yml') != ''
@@ -703,7 +672,6 @@ jobs:
           targets: wasm32-unknown-unknown,wasm32-wasip2
           shared-key: release
           save-if: false
-          sccache: true
 
       - name: Setup cargo mero
         if: hashFiles('.github/actions/setup-cargo-mero/action.yml') != ''
@@ -834,7 +802,6 @@ jobs:
         with:
           shared-key: ci-checks
           rust-cache: false
-          sccache: true
 
       # KV_STORE_WASM is the kv component (apps/v2-fixtures/kv: set, get, len,
       # and `clear`, a confirm method it declares itself).

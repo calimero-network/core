@@ -103,7 +103,7 @@ jobs:
   rust:
     name: Rust
     if: ${{ !cancelled() }}
-    needs: [scope, rust-quick, rust-lint, rust-test, rust-doctests, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, previous-release, upgrade-path]
+    needs: [scope, rust-quick, rust-lint, rust-test, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, upgrade-path]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -111,7 +111,7 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
           # job -> the `scope` output that decides whether it runs
-          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test":"rust","rust-doctests":"rust","rust-apps":"rust","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","previous-release":"rust","upgrade-path":"upgrade_path"}'
+          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test":"rust","rust-apps":"rust","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","upgrade-path":"upgrade_path"}'
         run: |
           jq -e --argjson gates "$GATES" '
             .scope.outputs as $scope
@@ -185,7 +185,6 @@ jobs:
           components: clippy
           shared-key: ci-checks
           save-if: false
-          sccache: true
 
       - name: Cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -196,19 +195,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
 
-      - name: sccache stats
-        if: ${{ !cancelled() }}
-        run: |
-          sccache --show-stats || true
-          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
-            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
-            head -n 30 "$SCCACHE_ERROR_LOG"
-          fi
-
-  # The workspace tests in four shards. Each compiles the tests itself (rust-cache
-  # and sccache keep that short): a nextest archive of them was 8 GB, and
-  # downloading it took longer than building. Shard 1 saves `ci-checks` on
-  # master, the only job that does; the others restore it read-only.
+  # The workspace tests in four shards. Each compiles the tests itself: rust-cache
+  # restores the dependencies and the workspace's own crates as master last built
+  # them, so a shard rebuilds only what the change reaches (setup-rust-ci's
+  # `workspace-crates`). A nextest archive built once was 8 GB, slower to download
+  # than to build. Shard 1 saves `ci-checks` on master, the only job that does; it
+  # also runs the doctests, and shard 2 the previous release's app.
   rust-test:
     name: Rust tests (${{ matrix.shard }}/4)
     needs: [scope, rust-quick]
@@ -231,7 +223,6 @@ jobs:
         with:
           shared-key: ci-checks
           save-if: ${{ github.ref == 'refs/heads/master' && matrix.shard == 1 }}
-          sccache: true
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
@@ -251,46 +242,28 @@ jobs:
           echo "$TEST_HOSTS"
           cargo nextest run --workspace ${PARTITION:+--partition "$PARTITION"} --no-fail-fast
 
-      - name: sccache stats
-        if: ${{ !cancelled() }}
-        run: |
-          sccache --show-stats || true
-          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
-            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
-            head -n 30 "$SCCACHE_ERROR_LOG"
-          fi
-
-  rust-doctests:
-    name: Rust doctests
-    needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          shared-key: ci-checks
-          save-if: false
-          sccache: true
-
+      # The doctests, in the shard that already built the libraries they link.
       - name: Cargo doctests
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         run: cargo test --workspace --doc
 
-      - name: sccache stats
-        if: ${{ !cancelled() }}
+      # An app built and signed by the last published release (its SDK, WIT and
+      # mero-sign: the release's kv-store-test-fixture.mpk) installs, runs and
+      # upgrades on this tree's node: crates/node/tests/previous-release/kv-store.json
+      # on the in-process cluster, with the scenario runner this shard already built.
+      - name: Fetch the previous release's kv bundle
+        if: ${{ !cancelled() && matrix.shard == 2 }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/fetch-release-app.py --out target/previous-release
+
+      - name: Apps of the previous release, on this tree's node
+        if: ${{ !cancelled() && matrix.shard == 2 }}
         run: |
-          sccache --show-stats || true
-          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
-            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
-            head -n 30 "$SCCACHE_ERROR_LOG"
-          fi
+          export PREVIOUS_RELEASE_DIR="$PWD/target/previous-release"
+          SCENARIO_FILES=crates/node/tests/previous-release/kv-store.json \
+            cargo test -p calimero-node --test scenarios -- --test-threads 1
+
 
   # Apps on the component SDK are workspaces of their own, so the workspace tests
   # never reach their harness tests. Each is found by its calimero-sdk dependency
@@ -318,7 +291,6 @@ jobs:
         with:
           shared-key: ci-checks
           rust-cache: false
-          sccache: true
 
       # SHARD is unset in a local run (scripts/check-like-ci.py), which then takes every app.
       # The same crates as the guests they ship: their tests, clippy on the host (tests
@@ -342,14 +314,6 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: sccache stats
-        if: ${{ !cancelled() }}
-        run: |
-          sccache --show-stats || true
-          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
-            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
-            head -n 30 "$SCCACHE_ERROR_LOG"
-          fi
 
   # The compute tools a developer tests a compute method with, end to end.
   rust-compute-tools:
@@ -370,7 +334,6 @@ jobs:
         with:
           shared-key: ci-checks
           rust-cache: false
-          sccache: true
 
       - name: Install mero-app-build and mero-compute
         run: |
@@ -425,7 +388,6 @@ jobs:
         with:
           shared-key: ci-checks
           save-if: false
-          sccache: true
 
       # mock-attestation is default-off so it never reaches a release binary; the workspace tests skip it.
       - name: Cargo test (mock-attestation)
@@ -459,42 +421,6 @@ jobs:
           # In CI the checkout is the merge commit; locally, the merge base with origin/master.
           if [ -n "${GITHUB_ACTIONS:-}" ]; then base="HEAD^1"; fi
           python3 scripts/check-api-compat.py ${base:+--base "$base"}
-
-  # An app built and signed by the last published release (its SDK, WIT and mero-sign:
-  # the release's kv-store-test-fixture.mpk) installs, runs and upgrades on this tree's
-  # node: crates/node/tests/previous-release/kv-store.json on the in-process cluster.
-  previous-release:
-    name: Apps of the previous release
-    needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
-      # wasm32-wasip2: this tree's kv, which the scenario upgrades the release's app to.
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          targets: wasm32-wasip2
-          shared-key: ci-checks
-          save-if: false
-          sccache: true
-
-      - name: Fetch the previous release's kv bundle
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 -I scripts/fetch-release-app.py --out target/previous-release
-
-      - name: Run it on this tree's node
-        run: |
-          export PREVIOUS_RELEASE_DIR="$PWD/target/previous-release"
-          SCENARIO_FILES=crates/node/tests/previous-release/kv-store.json \
-            cargo test -p calimero-node --test scenarios -- --test-threads 1
 
   rust-supply-chain:
     name: Rust supply chain
@@ -561,7 +487,6 @@ jobs:
           targets: wasm32-wasip2
           shared-key: release
           save-if: ${{ github.ref == 'refs/heads/master' }}
-          sccache: true
 
       # This tree's merod is built optimized without fat LTO (as compute-e2e's is):
       # the upgrade path tests what the node reads and writes, not how it links,

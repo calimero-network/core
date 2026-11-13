@@ -28,19 +28,20 @@ inputs:
   rust-cache:
     description: >
       Restore (and maybe save) the rust-cache group. A job that only runs what
-      another job compiled (a nextest archive) skips the restore, which unpacks
-      gigabytes, and leans on sccache for what it still compiles.
+      another job compiled, or builds something the cache does not hold, skips
+      the restore, which unpacks gigabytes.
     required: false
     default: "true"
-  sccache:
+  workspace-crates:
     description: >
-      Compile through sccache, backed by the Actions cache. rust-cache keeps the
-      dependencies but never the workspace's own crates, so without it every job
-      compiles every workspace crate again; with it, a crate whose inputs did not
-      change is a cache hit. Never in a job that publishes: its cache can be
-      written by a PR's run.
+      Keep the workspace's own compiled crates in the cache too, not only the
+      dependencies. After the restore, every tracked file's mtime is set to an
+      old fixed date and the files that differ from the commit the cache was built
+      from are touched, so cargo rebuilds exactly the crates a change reaches
+      (it decides by mtime). No recorded commit, or one it cannot fetch, touches
+      every file: a full build, never a stale one.
     required: false
-    default: "false"
+    default: "true"
 
 outputs:
   channel:
@@ -132,29 +133,26 @@ runs:
         shared-key: ${{ inputs.shared-key }}-${{ steps.toolchain.outputs.channel }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
         save-if: ${{ inputs.save-if }}
+        cache-workspace-crates: ${{ inputs.workspace-crates }}
 
-    # After the cache step, so neither variable enters rust-cache's environment
-    # hash (scripts/check-rust-cache-groups.py).
-    - name: Install sccache
-      if: inputs.sccache == 'true'
-      uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      with:
-        version: v0.19.0
-
-    - name: Compile through sccache
-      if: inputs.sccache == 'true'
+    # See `workspace-crates`. .ci-cache-commit names the commit a target dir was built
+    # from; the job that saves the cache builds this checkout, so it records HEAD.
+    - name: Mark what changed since the cached build
+      if: runner.os == 'Linux' && inputs.rust-cache == 'true' && inputs.workspace-crates == 'true'
       shell: bash
       run: |
-        {
-          echo "SCCACHE_GHA_ENABLED=true"
-          echo "RUSTC_WRAPPER=sccache"
-          # sccache checks it can write by writing one fixed entry at start. The
-          # Actions cache never overwrites an entry, so once that entry exists the
-          # check fails and sccache runs read-only for the whole job (every miss a
-          # "cache write error"). Each compile writes a key of its own; skip it.
-          echo "SCCACHE_SKIP_CACHE_CHECK=true"
-          # The server's warnings (a cache write the backend refused, and why); a job's
-          # `sccache stats` step prints them.
-          echo "SCCACHE_LOG=warn"
-          echo "SCCACHE_ERROR_LOG=$RUNNER_TEMP/sccache.log"
-        } >> "$GITHUB_ENV"
+        set -uo pipefail
+        marker="$GITHUB_WORKSPACE/target/.ci-cache-commit"
+        base=$(cat "$marker" 2>/dev/null || true)
+        git ls-files -z | xargs -0 touch -c -h -d '2000-01-01T00:00:00Z'
+        if [ -n "$base" ] && { git cat-file -e "$base^{commit}" 2>/dev/null \
+             || git fetch -q --no-tags --depth=1 origin "$base"; } \
+           && changed=$(git diff --name-only "$base" HEAD); then
+          printf '%s\n' "$changed" | grep -v '^$' | while IFS= read -r f; do touch -c -h -- "$f"; done
+          echo "cache built from $base; $(printf '%s\n' "$changed" | grep -c . || true) files changed since"
+        else
+          git ls-files -z | xargs -0 touch -c -h
+          echo "no cache commit to compare with${base:+ ($base unreachable)}: every file counts as changed"
+        fi
+        mkdir -p "$GITHUB_WORKSPACE/target"
+        git rev-parse HEAD > "$marker"

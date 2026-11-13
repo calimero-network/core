@@ -626,11 +626,13 @@ change needs; the required `Rust` check waits on every job after it, and
 same steps locally.
 
 Every job runs on a standard GitHub-hosted runner (4 cores). The Rust jobs of
-`ci-checks.yml` and `e2e.yml` restore their rust-cache group (the dependencies)
-and compile through sccache, backed by the Actions cache, so a workspace crate
-whose inputs did not change is not compiled again; a job's `sccache stats` step
-shows its hit rate and any warning the cache backend gave. `release.yml` never uses
-sccache: what it builds ships. CI builds carry no debuginfo
+`ci-checks.yml` and `e2e.yml` restore their rust-cache group: the dependencies
+and the workspace's own crates as master last built them. setup-rust-ci then sets
+every tracked file's mtime to an old date and touches the files that differ from
+the commit that build was made from (`target/.ci-cache-commit`), so cargo
+rebuilds only the crates a change reaches; with no such commit, every file counts
+as changed. (sccache on the Actions cache was tried and dropped: with this many
+parallel jobs its writes hit the cache API's rate limit.) CI builds carry no debuginfo
 (`CARGO_PROFILE_DEV_DEBUG=0`): the cache restores faster and the test binaries
 link faster, and a failing test still names its file and line. The workspace
 tests run eight at a time per 4-core shard, since the slowest of them wait on
@@ -684,7 +686,8 @@ failed run, every node's log and data.
 `Rust quick checks` (format, naming, the scripts' tests; no build), so a
 formatting error fails a PR in about a minute. `Rust tests (K/4)` compile the
 workspace's tests and run a quarter of them each (a nextest archive built once
-was 8 GB, slower to download than to build); `Rust doctests`, `mero-compute end to end` and
+was 8 GB, slower to download than to build); shard 1 also runs the doctests and
+shard 2 the previous release's app (below); `mero-compute end to end` and
 `Rust feature-gated tests` run beside them. `Rust standalone apps (K/3)` runs
 each component app's own `cargo test` (its `tests/harness.rs` and its app-level
 scenarios on `TestApp`), then clippy with `-D warnings` on the host and on
@@ -773,8 +776,8 @@ wire format also needs its own migration test, as `calimero-log`'s
 path when it stores a kind of data none of its cases writes. What else tests
 across releases, and what a change that breaks one declares, is in
 [Compatibility](/operate/compatibility/): ci-checks' `Compatibility` job (no
-route, field, WIT or ABI version dropped) and `Apps of the previous release`
-(the last release's kv bundle on this tree's node).
+route, field, WIT or ABI version dropped) and `Rust tests (2/4)`'s
+previous-release step (the last release's kv bundle on this tree's node).
 
 Nor do they run two releases in one cluster, so they cannot catch an entry an
 older node skips. **A new command or field ships with a feature gate**
