@@ -581,7 +581,6 @@ a case is never skipped.
 | Blobs and files | Revoking a published blob's grants (`/blobs/{id}/revoke`) | - | - | no: not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow |
 | Pipelines | Live pipeline events (`meroctl cloud compute pipeline watch`) | - | - | no: the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal is covered, the stream itself by the cluster tests |
 | Ops | Restoring a backup onto the new release | - | - | no: `POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, not a rollout |
-
 {/* upgrade-matrix:end */}
 
 ### Replaying a release's data directory

@@ -89,7 +89,7 @@ NOT_COVERED = [
      "served-frontend path above"),
     ("Blobs and files", "Revoking a published blob's grants (`/blobs/{id}/revoke`)",
      "not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow"),
-    ("Pipelines", "Live pipeline events (`meroctl pipeline watch`)",
+    ("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
      "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
      "is covered, the stream itself by the cluster tests"),
     ("Ops", "Restoring a backup onto the new release",
