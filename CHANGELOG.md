@@ -23,6 +23,16 @@
   (`crates/node/api-deprecations.toml`). Clients use `/sealed/handshake` and
   `/sealed`.
 
+### Fixed
+
+- **`meroctl app build`, `app pack DIR` and `local dev` build where cargo would**:
+  given a relative crate path (`meroctl app build apps/kv-store/logic` from a
+  repository's root), 1.0.0-rc.24 handed cargo the target dir relative to the
+  crate it runs in, so the build landed in `apps/kv-store/logic/apps/kv-store/logic/target`.
+  The target dir is now resolved against the caller's directory, and is
+  `CARGO_TARGET_DIR` when set, else `DIR/target`. `local dev` keeps the component
+  it uploads in that target dir rather than beside the sources.
+
 ## [1.0.0-rc.24] - 2026-11-13
 
 ### Added

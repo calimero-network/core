@@ -22,6 +22,14 @@ use crate::commons::send_api;
 
 /// The default component file names, as `mero-app-build` wrote them.
 pub const APP_FILE: &str = "app.component.wasm";
+
+/// Where an app's crate builds: `CARGO_TARGET_DIR` when set (as cargo does),
+/// else `<dir>/target`.
+pub fn target_dir(dir: &Path) -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| dir.join("target"), PathBuf::from)
+}
 const COMPUTE_FILE: &str = "compute.component.wasm";
 const WASM_MAGIC: &[u8] = b"\0asm\x0d\0\x01\0"; // a component; a core module is an SDK 0.12 app
 const DEFAULT_MIN_RUNTIME: &str = "0.1.0";
@@ -56,7 +64,7 @@ pub struct BuildArgs {
     /// `compute.component.wasm` beside `--out`).
     #[arg(long)]
     pub compute_out: Option<PathBuf>,
-    /// Cargo's target directory (default: `<dir>/target`).
+    /// Cargo's target directory (default: `CARGO_TARGET_DIR`, else `<dir>/target`).
     #[arg(long)]
     pub target_dir: Option<PathBuf>,
 }
@@ -219,7 +227,7 @@ pub fn new(a: &NewArgs) -> eyre::Result<Value> {
 /// `app build`: the app component (and the compute component when there is one).
 pub fn build(a: &BuildArgs) -> eyre::Result<Value> {
     let out = a.out.clone().unwrap_or_else(|| a.dir.join(APP_FILE));
-    let target = a.target_dir.clone().unwrap_or_else(|| a.dir.join("target"));
+    let target = a.target_dir.clone().unwrap_or_else(|| target_dir(&a.dir));
     let built = calimero_app_build::build_components(&a.dir, &target)?;
     write_file(&out, &built.app.component)?;
     let mut answer = json!({ "app": out });
@@ -562,7 +570,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     );
     if let (Some(dir), None, None) = (&a.dir, &wasm, &compute) {
         eprintln!("building {}", dir.display());
-        let built = calimero_app_build::build_components(dir, &dir.join("target"))?;
+        let built = calimero_app_build::build_components(dir, &target_dir(dir))?;
         wasm = Some(built.app.component);
         compute = built.compute.map(|c| c.component);
     }
