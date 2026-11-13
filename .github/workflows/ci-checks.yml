@@ -41,6 +41,7 @@ jobs:
     outputs:
       rust: ${{ steps.decide.outputs.rust }}
       upgrade_path: ${{ steps.decide.outputs.upgrade_path }}
+      standalone_apps: ${{ steps.decide.outputs.standalone_apps }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -112,7 +113,7 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
           # job -> the `scope` output that decides whether it runs
-          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test":"rust","rust-apps":"rust","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","upgrade-path":"upgrade_path"}'
+          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","upgrade-path":"upgrade_path"}'
         run: |
           # A push to master runs only the jobs that save caches (the merge queue ran
           # the rest on this tree), so there a gated job may be skipped.
@@ -170,10 +171,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/tests/pack-component-test.py
 
+  # Clippy builds in check mode, which the test build's cache does not hold, so lint
+  # keeps a group of its own, saved by a push to master (the one push job that lints).
   rust-lint:
     name: Rust lint
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
+    if: needs.scope.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -187,8 +190,8 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           components: clippy
-          shared-key: ci-checks
-          save-if: false
+          shared-key: ci-lint
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -308,10 +311,12 @@ jobs:
   # never reach their harness tests. Each is found by its calimero-sdk dependency
   # (or calimero-app-sdk, the SDK's old name, while apps move over) and taken by
   # one of three shards, every third in sorted order.
+  # Only when the change reaches an app: apps/ or the SDK crates they build against
+  # (scripts/ci-scope.py, `standalone_apps`). A push to master runs it to save its cache.
   rust-apps:
     name: Rust standalone apps (${{ matrix.shard }}/3)
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
+    if: needs.scope.outputs.standalone_apps == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -330,6 +335,20 @@ jobs:
         with:
           shared-key: ci-checks
           rust-cache: false
+
+      # The apps build in a target dir of their own, which rust-cache does not keep: each
+      # shard caches it with the registry, saved from master. Cargo rebuilds the apps and
+      # the SDK they reach by path (fresh checkout times) and reuses every dependency.
+      - name: Restore the apps' builds
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/standalone-apps
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: standalone-apps-v1-${{ matrix.shard }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/**/Cargo.lock') }}
+          restore-keys: standalone-apps-v1-${{ matrix.shard }}-
 
       # SHARD is unset in a local run (scripts/check-like-ci.py), which then takes every app.
       # The same crates as the guests they ship: their tests, clippy on the host (tests
@@ -355,6 +374,18 @@ jobs:
 
 
   # The compute tools a developer tests a compute method with, end to end.
+
+      - name: Save the apps' builds
+        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/standalone-apps
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: standalone-apps-v1-${{ matrix.shard }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/**/Cargo.lock') }}
+
   rust-compute-tools:
     name: mero-compute end to end
     needs: [scope, rust-quick]
