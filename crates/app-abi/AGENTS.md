@@ -3,8 +3,8 @@
 ## Package Identity
 
 - **Crate**: `calimero-app-abi` (`publish = false`), a library
-- **Used by**: `calimero-node` (`GET /apps/{app}/openapi.json`), `mero-app-build`
-  (`codegen`, `abi-diff`), `mero-sign` (`sign --previous`)
+- **Used by**: `calimero-node` (`GET /apps/{app}/openapi.json`), `meroctl`
+  (`app codegen`, `app abi diff|show`, `app sign|pack --previous`, through `calimero-app-build` and `mero-sign`)
 - **Docs**: [App interface](../../docs/src/content/docs/build/app-abi.mdx) (the format, the OpenAPI
   mapping and its type table, the breaking-change rules),
   [Typed clients for your app](../../docs/src/content/docs/build/guides/typed-clients.mdx)

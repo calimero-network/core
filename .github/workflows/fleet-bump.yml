@@ -128,11 +128,12 @@ jobs:
         if: matrix.surface == 'cargo'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
-      # A repository that pins mero-app-build commits the clients it generates;
-      # the bump reruns every package's `codegen` with the release's binary
-      # (bump-fleet.sh, "the client generator"), through the repository's pnpm.
+      # A repository that pins the client generator (meroctl, or mero-app-build
+      # before it) commits the clients it generates; the bump reruns every
+      # package's `codegen` with the release's binary (bump-fleet.sh, "the client
+      # generator"), through the repository's pnpm.
       - name: Set up pnpm
-        if: matrix.surface == 'cargo' && hashFiles('consumer/scripts/install-mero-app-build.sh') != ''
+        if: matrix.surface == 'cargo' && hashFiles('consumer/scripts/install-meroctl.sh', 'consumer/scripts/install-mero-app-build.sh') != ''
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: consumer/package.json
@@ -295,7 +296,8 @@ jobs:
           - the cargo-mero pin in \`.github/actions/install-cargo-mero\` and in the
             per-app dev scripts and Makefiles. Nothing checks those, and they had
             drifted up to four releases behind by the time this was automated
-          - the \`mero-app-build\` pin in \`scripts/install-mero-app-build.sh\`
+          - the client generator's pin (\`scripts/install-meroctl.sh\`, or
+            \`scripts/install-mero-app-build.sh\` before meroctl)
             (unless it runs ahead), and every committed client its \`codegen\`
             writes, regenerated with \`$VERSION\`'s generator. When they could not
             be regenerated, the list of pins left unmoved below says so

@@ -20,7 +20,7 @@ node API's OpenAPI document.
 Sign in as you would for any `meroctl` command, then start it for that node:
 
 ```bash
-meroctl node add local http://127.0.0.1:2501/ --allow-mock   # merod local
+meroctl local up                                              # merod local, saved as node local
 meroctl login --dev-passkey ./dev-passkey.json
 meroctl proxy                                                 # http://127.0.0.1:2580
 ```

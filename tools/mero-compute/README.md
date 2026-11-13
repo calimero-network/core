@@ -1,5 +1,8 @@
 # mero-compute
 
+> **Deprecated:** use `meroctl local compute run` (same flags). This binary is kept for
+> one release.
+
 Runs one compute method of a compute component on its own, the way a job node would.
 
 ## About
@@ -9,7 +12,7 @@ It uses the method's declared fuel and memory caps, the fixed clock and the seed
 Inputs are plain files and outputs are written as plain files, so no cluster, app or sealed file is needed.
 
 It does not build anything.
-`mero-app-build` writes the compute component, and the [compute actions guide](../../docs/src/content/docs/build/guides/compute-actions.mdx) shows where it fits.
+`meroctl app build` writes the compute component, and the [compute actions guide](../../docs/src/content/docs/build/guides/compute-actions.mdx) shows where it fits.
 
 ## Installation
 

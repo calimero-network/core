@@ -111,7 +111,7 @@ its own organization.
    calimero-publisher-binding/v1\n{cluster}\n{org}\n{signerId}\n{generation}
    ```
 
-   `mero-sign` signs manifests only; any Ed25519 signer over these exact bytes
+   `meroctl app sign` signs manifests only; any Ed25519 signer over these exact bytes
    will do. `publicKey` is the key's 32 bytes and `signature` its 64, both
    base64url; the key must derive the `did:key` it claims. The cluster name and
    the signer id are at most 128 bytes each.

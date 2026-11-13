@@ -39,8 +39,9 @@ other scope.
 
 ## 2. Upgrade from CI
 
-Publish the new release to the cluster's registry (signed with
-`mero-sign` under the package's key), then:
+Publish the new release to the cluster's registry (packed and signed
+under the package's key with `meroctl app pack --key`, sent with
+`meroctl app publish`), then:
 
 ```bash
 export CALIMERO_API_KEY=cal_…

@@ -303,10 +303,10 @@ confirmations (`orgs-and-keys`); signed packages from a registry on loopback
 
 ```bash
 cargo build --release -p merod -p meroctl
-scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
-mero-app-build apps/v2-fixtures/kv --out target/app-components/kv.wasm
+export PATH=$PWD/target/release:$PATH
+meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
 for v in 1.0.0 1.1.0; do
-  python3 -I scripts/pack-component.py --wasm target/app-components/kv.wasm \
+  meroctl app pack --wasm target/app-components/kv.wasm \
     --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
 done
 python3 -I crates/node/tests/fault/suite.py --list
@@ -362,7 +362,7 @@ gates; latency gates nothing.
 `scripts/pipeline-e2e.py` proves a pipeline end to end on a real cluster in one command.
 It packs the compute fixture and its `fanout.yaml` into a package signed with `--key` (or a generated key), installs it and creates the compute-only app.
 It then uploads three sealed files, runs the fan-out and collect pipeline, and waits for it to end within `--timeout`.
-It checks the run succeeded, the `each` outputs byte for byte, the `all` output's size, `meroctl pipeline receipt --verify`, and that a re-run is answered from the step cache with the same bytes.
+It checks the run succeeded, the `each` outputs byte for byte, the `all` output's size, `meroctl cloud compute pipeline receipt --verify`, and that a re-run is answered from the step cache with the same bytes.
 Each step prints `PASS` or `FAIL`, and the exit code is 1 if any failed.
 
 ```bash
@@ -579,9 +579,8 @@ a case is never skipped.
 | Deployments | Deployer grants and deployments (`/deployers`, `/deployments`, `/ops/deployers`) | - | - | no: not seeded yet: a grant is an operator-signed or passkey-approved decision these cases do not make yet; the cluster tests (`deployers.rs`, `deployments.rs`) cover them on one build |
 | Packages | Registered web origins of a package (`/package-origins`) | - | - | no: not seeded yet: an origin is added with its manager's passkey approval and is read only by the served-frontend path above |
 | Blobs and files | Revoking a published blob's grants (`/blobs/{id}/revoke`) | - | - | no: not seeded yet: a grant is a URL the app's `share` view mints, which these cases do not follow |
-| Pipelines | Live pipeline events (`meroctl pipeline watch`) | - | - | no: the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal is covered, the stream itself by the cluster tests |
+| Pipelines | Live pipeline events (`meroctl cloud compute pipeline watch`) | - | - | no: the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal is covered, the stream itself by the cluster tests |
 | Ops | Restoring a backup onto the new release | - | - | no: `POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, not a rollout |
-
 {/* upgrade-matrix:end */}
 
 ### Replaying a release's data directory

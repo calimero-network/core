@@ -8,6 +8,5 @@ init pattern. Methods: `set`, `get`, `getResult` (`NotFound {key}`),
 
 ```bash
 cargo test --manifest-path apps/kv-store-init/Cargo.toml   # harness tests + scenarios/*.json
-scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
-mero-app-build apps/kv-store-init --out kv_store_init.wasm
+meroctl app build apps/kv-store-init --out kv_store_init.wasm
 ```

@@ -1,6 +1,6 @@
 ---
 title: Typed clients for your app
-description: Generate your app's OpenAPI document and a typed TypeScript, Python, Swift or Kotlin client from its ABI with mero-app-build codegen, and check a new version for breaking changes before you publish it.
+description: Generate your app's OpenAPI document and a typed TypeScript, Python, Swift or Kotlin client from its ABI with meroctl app codegen, and check a new version for breaking changes before you publish it.
 sidebar:
   order: 10
 ---
@@ -12,7 +12,7 @@ by the compiler, and find out before publishing whether a new version breaks
 the clients already out there.
 
 Every app embeds its [ABI](/build/app-abi/): its methods, their parameters
-and results, its errors and events. `mero-app-build codegen` turns it into an
+and results, its errors and events. `meroctl app codegen` turns it into an
 OpenAPI 3.1 document and a thin typed client over the client you already use:
 mero-js's `CalimeroClient` (its `client.apps.call` and `client.apps.view`),
 calimero-client-py's `Client` (the same, answering JSON), or the `CalimeroClient`
@@ -22,26 +22,25 @@ generated code only adds the method names and types.
 
 ## Generate a client
 
-Put `mero-app-build` on PATH once, build the app, then point `codegen` at the
+Put `meroctl` on PATH once, build the app, then point `codegen` at the
 component, the `.mpk` bundle or an ABI JSON file (`meroctl context abi` saves an
-installed app's). Every release ships it prebuilt for Linux (x86_64, aarch64) and
-macOS (aarch64), named `mero-app-build_<target>.tar.gz` and listed in the
-release's `SHA256SUMS`, so CI that only runs `codegen` needs no Rust toolchain;
-from a core checkout, `scripts/install-mero-app-build.sh` builds it instead.
-`mero-app-build --version` names the release it came from.
+installed app's). Every release ships `meroctl` prebuilt for Linux (x86_64,
+aarch64) and macOS (aarch64), named `meroctl_<target>.tar.gz` and listed in the
+release's `SHA256SUMS`, so CI that only runs `codegen` needs no Rust toolchain.
+`meroctl --version` names the release it came from.
 
 ```bash
 V=<release> T=x86_64-unknown-linux-gnu   # the core release, and this machine's target
-curl -fsSLO "https://github.com/calimero-network/core/releases/download/$V/mero-app-build_$T.tar.gz"
+curl -fsSLO "https://github.com/calimero-network/core/releases/download/$V/meroctl_$T.tar.gz"
 curl -fsSL "https://github.com/calimero-network/core/releases/download/$V/SHA256SUMS" \
-  | grep " mero-app-build_$T.tar.gz\$" | sha256sum -c
-tar -xzf "mero-app-build_$T.tar.gz" -C ~/.local/bin mero-app-build
+  | grep " meroctl_$T.tar.gz\$" | sha256sum -c
+tar -xzf "meroctl_$T.tar.gz" -C ~/.local/bin meroctl
 ```
 
 
 ```bash
-mero-app-build apps/kv-store --out kv-store.wasm
-mero-app-build codegen --abi kv-store.wasm --lang ts -o src/generated
+meroctl app build apps/kv-store --out kv-store.wasm
+meroctl app codegen --abi kv-store.wasm --lang ts -o src/generated
 ```
 
 ```
@@ -63,8 +62,7 @@ and asks for `--name`. A Kotlin client goes in `--package` (default
 bundle writes one directory per service, each Kotlin client in `<package>.<service>`;
 `--service <name>` picks one. Pass `--kotlin-serialization-plugin` when the Kotlin
 module that compiles the client applies the kotlinx.serialization compiler plugin
-(below). `mero-app-build --version` prints the release and the source it was built
-from (`1.0.0-rc.19 (1.0.0-rc.19-11-g3da5b6edb, 3da5b6edb)`); `--help` prints the usage.
+(below). `meroctl app codegen --help` prints the usage.
 
 ## Use it from TypeScript
 
@@ -363,7 +361,7 @@ sealed channel.
 Compare the new build with the last release:
 
 ```bash
-mero-app-build abi-diff dist/kv-store-1.0.0.mpk kv-store.wasm
+meroctl app abi diff dist/kv-store-1.0.0.mpk kv-store.wasm
 ```
 
 ```
@@ -373,11 +371,11 @@ compatible method count: added (view)
 
 It exits `1` when a change breaks existing callers, so it can gate CI. The rules
 are in [App interface](/build/app-abi/#check-a-new-version-against-the-last).
-Signing runs the same check when you name the last release:
+`meroctl app abi show <file>` prints either ABI whole. Signing runs the same check when you name the last release:
 
 ```bash
-mero-sign sign manifest.json --key release.key --previous dist/kv-store-1.0.0.mpk
-python3 -I scripts/pack-component.py --wasm kv-store.wasm --package com.example.kv-store \
+meroctl app sign manifest.json --key release.key --previous dist/kv-store-1.0.0.mpk
+meroctl app pack --wasm kv-store.wasm --package com.example.kv-store \
   --app-version 1.1.0 --previous dist/kv-store-1.0.0.mpk --out dist/kv-store-1.1.0.mpk
 ```
 

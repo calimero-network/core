@@ -41,7 +41,7 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 - [sdk](sdk/AGENTS.md) (`calimero-sdk`) - the Rust app SDK runtime for components.
 - [app-sdk](app-sdk/AGENTS.md) (`calimero-app-sdk`) - the SDK's old name: a re-export of `calimero-sdk`, kept while apps move over.
 - [sdk-macros](sdk-macros/AGENTS.md) (`calimero-sdk-macros`) - the `app` attributes.
-- [app-build](app-build/AGENTS.md) (`calimero-app-build`) - Rust guest to `calimero:app` component; `mero-app-build <crate-dir> --out <file>`, `codegen`, `abi-diff`.
+- [app-build](app-build/AGENTS.md) (`calimero-app-build`) - Rust guest to `calimero:app` component; behind `meroctl app build <crate-dir> --out <file>`, `meroctl app codegen` and `meroctl app abi diff`.
 - [app-abi](app-abi/AGENTS.md) (`calimero-app-abi`) - an app's ABI for clients: its OpenAPI document, typed TS/Python clients, breaking-change checks.
 
 SDK 0.12 (the 0.x `calimero-sdk`, `calimero-storage`, `calimero-runtime` on wasmer, and

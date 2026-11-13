@@ -14,22 +14,39 @@ path = "src/main.rs"
 
 [dependencies]
 axum.workspace = true
+base64.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 dirs.workspace = true
 ed25519-dalek.workspace = true
 eyre.workspace = true
 futures-util.workspace = true
+flate2.workspace = true
 hex.workspace = true
-reqwest.workspace = true
+mero-compute = { workspace = true, optional = true }
+mero-sign.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "signal", "time"] }
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["fs", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
+toml.workspace = true
 url.workspace = true
 zeroize.workspace = true
 
+calimero-app-abi.workspace = true
+calimero-app-build.workspace = true
+calimero-bundle = { workspace = true, features = ["html"] }
 calimero-client = { workspace = true, features = ["testing"] }
 calimero-identity = { workspace = true, features = ["testing"] }
 calimero-utils-fs.workspace = true
+
+[features]
+default = ["compute"]
+# `meroctl local compute run`: the job node's wasmtime engine, the largest dependency.
+compute = ["dep:mero-compute"]
 
 [build-dependencies]
 calimero-build-utils.workspace = true
@@ -37,11 +54,4 @@ calimero-build-utils.workspace = true
 [dev-dependencies]
 ed25519-dalek.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
-flate2.workspace = true
-sha2.workspace = true
-tar.workspace = true
-tempfile.workspace = true
-
-calimero-app-build.workspace = true
-calimero-bundle.workspace = true
 calimero-node.workspace = true

@@ -16,21 +16,21 @@ on wasmer, were removed with that engine).
 ```bash
 rustup target add wasm32-wasip2                       # once (rust-toolchain.toml lists it)
 cargo test --manifest-path apps/<app>/Cargo.toml      # harness tests + app-level scenarios
-scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
-mero-app-build apps/<app> --out <app>.wasm
-python3 -I scripts/pack-component.py --wasm <app>.wasm --package <id> --app-version 1.0.0 \
+cargo install --locked --path crates/meroctl          # once: puts meroctl on PATH
+meroctl app build apps/<app> --out <app>.wasm
+meroctl app pack --wasm <app>.wasm --package <id> --app-version 1.0.0 \
   --out dist/<id>-1.0.0.mpk                           # a signed single-service .mpk (dev key)
+meroctl app inspect dist/<id>-1.0.0.mpk               # verify it as a node does
 ```
 
 ## Testing a compute method locally
 
 A compute method (`#[app::compute]`) is tested alone, with no app component, cluster or job node.
-Put `mero-app-build` and `mero-compute` on PATH once with `scripts/install-mero-app-build.sh` and `scripts/install-mero-compute.sh`.
-`mero-app-build` writes the compute component as `compute.component.wasm` beside `--out`.
+`meroctl app build` writes the compute component as `compute.component.wasm` beside `--out`.
 
 ```bash
-mero-app-build apps/<app> --out <app>.wasm
-mero-compute run compute.component.wasm --method <name> [--args <json or @file>] [--input <file>]... --out <dir> [--seed <hex>] [--twice]
+meroctl app build apps/<app> --out <app>.wasm
+meroctl local compute run compute.component.wasm --method <name> [--args <json or @file>] [--input <file>]... --out <dir> [--seed <hex>] [--twice]
 ```
 
 It runs on the job node's engine and run setup with the method's caps from the compute ABI, a fixed clock and seeded randomness.
@@ -58,7 +58,7 @@ It prints progress as the run reports it, then the result, each output and the u
 | `custom-key-store`       | Custom key type | A `ToKeyPart` newtype key (`Slug` over a `String`, normalized), and why a struct without it does not compile |
 | `team-metrics`           | Team metrics with badges | Per-team counts and a bitmask as a plain record |
 | `rooms`                  | Room booking | The node's Rooms tests (`crates/node/tests/rooms.rs`) and the fault test |
-| `compute-redact`         | CSV redaction | `#[app::compute]` runs: a preview then one run per part, a queue of at most 4 active runs, the compute component (`mero-app-build --compute-out`) that may import only the compute world; the policy is set by an admin and copied into each job; `share` publishes a done job's outputs (`compute::publish`) and `link` grants a download (`blobs.grant`) |
+| `compute-redact`         | CSV redaction | `#[app::compute]` runs: a preview then one run per part, a queue of at most 4 active runs, the compute component (`meroctl app build --compute-out`) that may import only the compute world; the policy is set by an admin and copied into each job; `share` publishes a done job's outputs (`compute::publish`) and `link` grants a download (`blobs.grant`) |
 | `v2-fixtures/kv`         | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls, actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
 | `v2-fixtures/compute` | The compute fixture | Compute methods that stream files, report progress and break each cap; `crates/node/tests/job_runs.rs` and `tools/mero-compute/tests` |
 | `v2-fixtures/notes-v1`, `notes-v2` | Two releases of one app | The consent page's upgrade diff (`an_upgrades_page_names_what_the_components_abis_change` in `crates/node/tests/consent_page.rs`) |

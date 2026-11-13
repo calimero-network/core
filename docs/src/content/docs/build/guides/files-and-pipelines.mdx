@@ -199,7 +199,7 @@ use std::io::{BufRead, BufReader, Write};
 `submit` starts `countWords` over one file, and `on_counted` stores the output's
 `BlobRef`, which is what keeps it.
 The rules (caps, determinism, result methods, publishing an output, the
-`mero-app-build --compute-out` build and the `mero-compute` test runner) are in
+`meroctl app build --compute-out` build and the `meroctl local compute run` test runner) are in
 [Compute actions](/build/guides/compute-actions/).
 In a compute run, files are bounded by `MAX_FILE_BYTES` (2 GiB each) and 2 GiB
 written in all, 16 open at once, and 1,000 new files.
@@ -263,8 +263,8 @@ A source is at most 64 KiB, with at most 64 steps, 64 inputs, 64 params and
 ### Check it before you pack
 
 ```bash
-meroctl pipeline validate pipelines/wordcount.yaml                          # structure only
-meroctl pipeline validate pipelines/wordcount.yaml --package com.example.docs --version 1.0.0
+meroctl cloud compute pipeline validate pipelines/wordcount.yaml                          # structure only
+meroctl cloud compute pipeline validate pipelines/wordcount.yaml --package com.example.docs --version 1.0.0
 ```
 
 `POST /pipelines/validate` lists every problem with its `path` and stable
@@ -276,8 +276,8 @@ caps the release would give it, and answers `worstCaseFuel` (and
 ### Pack it into the release
 
 ```bash
-mero-app-build apps/doc-index --out app.wasm --compute-out compute.wasm
-python3 -I scripts/pack-component.py --wasm app.wasm --compute compute.wasm \
+meroctl app build apps/doc-index --out app.wasm --compute-out compute.wasm
+meroctl app pack --wasm app.wasm --compute compute.wasm \
   --pipeline pipelines/wordcount.yaml \
   --package com.example.docs --app-version 1.0.0 --key my-signing-key.json \
   --out dist/com.example.docs-1.0.0.mpk
@@ -321,12 +321,12 @@ each pipeline's hash, worst-case fuel, pinned modules and canonical JSON.
 
 ```bash
 meroctl file upload ./a.txt -c docs                    # one id per file
-meroctl pipeline estimate docs wordcount --input docs=<id1>,<id2>,<id3>
-meroctl pipeline run docs wordcount --input docs=<id1>,<id2>,<id3> \
+meroctl cloud compute pipeline estimate docs wordcount --input docs=<id1>,<id2>,<id3>
+meroctl cloud compute pipeline run docs wordcount --input docs=<id1>,<id2>,<id3> \
   --param min-len=4 --max-cost 5000000 --wait
-meroctl pipeline watch docs <run>                      # snapshot, run and step events, then end
-meroctl pipeline receipt docs <run> --verify
-meroctl pipeline download docs <run> --out ./counts    # every output as STEP-INDEX.bin
+meroctl cloud compute pipeline watch docs <run>                      # snapshot, run and step events, then end
+meroctl cloud compute pipeline receipt docs <run> --verify
+meroctl cloud compute pipeline download docs <run> --out ./counts    # every output as STEP-INDEX.bin
 ```
 
 From mero-js the routes are generated methods of `client.apps`:
@@ -358,7 +358,7 @@ What happens to the run:
   Download the outputs you need, or have a call keep them.
 - A step run whose method, arguments and input contents match an earlier
   successful run in the app is answered from the **step cache**, at no cost.
-  `meroctl pipeline retry docs <run> --limit count.fuel=80000000000` starts a
+  `meroctl cloud compute pipeline retry docs <run> --limit count.fuel=80000000000` starts a
   new run where only the failed items run again.
 - `maxCost` caps what the run may owe under the operator's price table: no step
   run starts that could take it past the cap, and the step that hits it fails

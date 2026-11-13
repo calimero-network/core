@@ -131,7 +131,7 @@ A second round, reflecting the built-out site: depth, completeness, polish. Item
 - [ ] R4. Patterns & recipes: pagination, secondary indexes, per-user counters, soft-delete.
 - [ ] R6. Multi-service app bundles (manifest, `service_name`, when to split).
 - [ ] R7. Frontend integration (events over SSE, optimistic UI, reading state).
-- [ ] R8. Local dev loop guide (`meroctl dev start --watch`, debugging an app); the commands are in `operate/meroctl`.
+- [ ] R8. Local dev loop guide (`meroctl local dev`, debugging an app); the commands are in `operate/meroctl`.
 - [ ] R9. "Coming from a traditional DB" pitfalls page.
 - [ ] R10. A real chat-app tutorial with a frontend (beyond kv-store).
 

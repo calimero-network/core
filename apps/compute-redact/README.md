@@ -48,7 +48,7 @@ Every part reads the file from its start and skips to its rows.
 
 ```bash
 cargo test --manifest-path apps/compute-redact/Cargo.toml
-mero-app-build apps/compute-redact --out app.wasm --compute-out compute.wasm
+meroctl app build apps/compute-redact --out app.wasm --compute-out compute.wasm
 ```
 
 `tests/harness.rs` runs the real component for the roles.
@@ -56,9 +56,9 @@ The harness runs no compute, so the queue and the runs' outcomes are tested in `
 
 ## Test the compute component alone
 
-`mero-compute run` runs `redact` on a file with the job node's engine and caps, twice, and fails if the outputs differ (CI runs exactly this):
+`meroctl local compute run` runs `redact` on a file with the job node's engine and caps, twice, and fails if the outputs differ (CI runs the same check):
 
 ```bash
-mero-app-build apps/compute-redact --out app.wasm --compute-out compute.wasm
-mero-compute run compute.wasm --method redact --args @apps/compute-redact/example/redact.json --input apps/compute-redact/example/people.csv --out out --twice
+meroctl app build apps/compute-redact --out app.wasm --compute-out compute.wasm
+meroctl local compute run compute.wasm --method redact --args @apps/compute-redact/example/redact.json --input apps/compute-redact/example/people.csv --out out --twice
 ```

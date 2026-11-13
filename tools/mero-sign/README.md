@@ -1,5 +1,8 @@
 # mero-sign
 
+> **Deprecated:** use `meroctl app sign` and `meroctl app signer` (and `meroctl app pack`,
+> which signs as it packs). This binary is kept for one release.
+
 Ed25519 signing for Calimero application bundle manifests.
 
 ## About

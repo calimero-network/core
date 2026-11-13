@@ -262,8 +262,8 @@ The entry node gathers the documents but cannot forge them: each quote binds
 the caller's fresh nonce and is verified against Intel's collateral.
 
 ```sh
-meroctl attest                 # this node's transport attestation, verified
-meroctl attest -c my-kv        # every replica of the app, verified, and the governance they attest
+meroctl attest node            # this node's transport attestation, verified
+meroctl attest app my-kv       # every replica of the app, verified, and the governance they attest
 ```
 
 A person who does not run a client can check a node on an independent site:
@@ -309,7 +309,7 @@ as every client (mock only with `allowMock`, DCAP, the measurement policy, a
 `Release` policy reading the release the claim names, the TCB status), checks
 the nonce and the report data, and refuses an envelope whose copy of the
 registers, or whose claimed profile, is not what the verified quote shows.
-`meroctl attest-release` prints its verdict. A verifier that is not Rust
+`meroctl attest release` prints its verdict. A verifier that is not Rust
 gives `calimero-tee-verify` the quote, its nonce and the second half above as
 `app_hash_hex`, and checks the reported registers against the release's
 signed `published-mrtds.json` itself.

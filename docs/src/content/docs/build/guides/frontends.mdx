@@ -73,16 +73,16 @@ so the publisher's signature covers them; the archive carries them under
 }
 ```
 
-`scripts/pack-component.py --frontend <dir>` writes it: every file under the
+`meroctl app pack --frontend <dir>` writes it: every file under the
 build directory goes into the archive as `frontend/<path>` with its SHA-256 and
 size, and `--frontend-entry` (default `index.html`) names the page served at
-`/`. The script refuses, before signing, what the node would refuse at install
+`/`. `pack` refuses, before signing, what the node would refuse at install
 (the rules below), so a bad build fails on your machine, not on the cluster.
 
 ```bash
 npm run build                                    # writes dist/ with base './'
-mero-app-build apps/notes --out app.wasm
-python3 -I scripts/pack-component.py --wasm app.wasm --frontend dist \
+meroctl app build apps/notes --out app.wasm
+meroctl app pack --wasm app.wasm --frontend dist \
   --package com.example.notes --app-version 1.0.0 --key my-signing-key.json \
   --out dist-mpk/com.example.notes-1.0.0.mpk
 meroctl app install --path dist-mpk/com.example.notes-1.0.0.mpk   # a development cluster
@@ -98,6 +98,19 @@ or whose bytes do not match the manifest (`FRONTEND_SIZE_MISMATCH`,
 
 A release that changes only the frontend is a release like any other: an
 instance moves to it with an upgrade ([Ship a new version](/build/ship-v2/)).
+
+## Develop it locally
+
+`meroctl local dev [DIR]` runs the loop on a development cluster, for an app laid
+out as `meroctl app new` makes one (the crate in `DIR/logic`, the frontend in
+`DIR/app`). It starts the cluster if it is not running, builds the crate,
+uploads it, writes `DIR/app/.env.development.local`, runs the frontend on
+`http://localhost:5173`, and rebuilds and uploads on every save:
+
+```bash
+meroctl app new my-app      # from calimero-network/apps' kv-store
+meroctl local dev my-app
+```
 
 ## Where it is served
 

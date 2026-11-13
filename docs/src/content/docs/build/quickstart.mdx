@@ -16,8 +16,8 @@ a checkout of [core](https://github.com/calimero-network/core); the
 <BuildAppPipeline />
 
 <Aside type="note">
-  The commands are `apps/kv-store/`, `crates/app-build` (`mero-app-build`),
-  `crates/merod` and the CLI definitions in `crates/meroctl/src`. Run
+  The commands are `apps/kv-store/`, `crates/merod` and the CLI definitions in
+  `crates/meroctl/src`. Run
   `meroctl <command> --help` to check them against your build; every command is
   in the [meroctl reference](/operate/meroctl/).
 </Aside>
@@ -25,12 +25,13 @@ a checkout of [core](https://github.com/calimero-network/core); the
 <Steps>
 
 1. **Install the tools.** Rust with the `wasm32-wasip2` target (core's
-   `rust-toolchain.toml` lists it), `mero-app-build`, and `meroctl`:
+   `rust-toolchain.toml` lists it), `meroctl`, and `merod` for the local
+   cluster:
 
    ```sh
    rustup target add wasm32-wasip2
-   scripts/install-mero-app-build.sh               # cargo install of crates/app-build
    cargo install --locked --path crates/meroctl
+   cargo install --locked --path crates/merod
    ```
 
 2. **Test the app** on the real engine, with no node. The tests build the crate
@@ -44,26 +45,30 @@ a checkout of [core](https://github.com/calimero-network/core); the
 3. **Build the component**:
 
    ```sh
-   mero-app-build apps/kv-store --out kv_store.wasm
+   meroctl app build apps/kv-store --out kv_store.wasm
    ```
 
    It compiles the crate for `wasm32-wasip2`, makes it a `calimero:app`
    component and lifts the ABI the macros wrote into its `calimero:abi`
    section.
 
-4. **Start a development cluster** in another terminal: three nodes in one
-   process on `127.0.0.1:2501`-`2503`, mock attestation, state in
-   `.merod-local/`:
+4. **Start a development cluster**: three nodes of `merod local` in the
+   background on `127.0.0.1:2501`-`2503`, mock attestation, state in
+   `.merod-local/`. `meroctl` saves it as the node `local` (trusting its mock
+   quote), the default when you have none:
 
    ```sh
-   cargo run -p merod -- local
+   meroctl local up
+   meroctl local status    # whether it runs, and its nodes
    ```
 
-5. **Sign in.** Save the node (trusting its mock quote) and sign up with a
-   passkey kept in a file, which only a development cluster accepts:
+   `meroctl local down` stops it; its state stays for the next `up`
+   (`--fresh` starts empty).
+
+5. **Sign in.** Sign up with a passkey kept in a file, which only a development
+   cluster accepts:
 
    ```sh
-   meroctl node add local http://127.0.0.1:2501/ --allow-mock
    meroctl login --dev-passkey ./dev-passkey.json --name alice
    ```
 
@@ -97,13 +102,13 @@ a checkout of [core](https://github.com/calimero-network/core); the
    ```
 
 7. **Pack it as a signed release.** A real cluster installs `.mpk` packages
-   from its registry, never a raw component. `pack-component.py` writes the
-   manifest, signs it with `mero-sign` (here the development key; see
+   from its registry, never a raw component. `meroctl app pack` writes the
+   manifest, signs it (here with the development key; see
    [Packaging & signing](/build/packaging-signing/) for your own) and packs
    the archive. A development cluster takes it as an upload too:
 
    ```sh
-   python3 -I scripts/pack-component.py --wasm kv_store.wasm --package com.example.kv \
+   meroctl app pack --wasm kv_store.wasm --package com.example.kv \
      --app-version 0.1.0 --out dist/com.example.kv-0.1.0.mpk
    meroctl app install --path dist/com.example.kv-0.1.0.mpk
    meroctl context create --name kv-pkg --package com.example.kv --alias kv-pkg

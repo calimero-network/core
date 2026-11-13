@@ -79,8 +79,9 @@ WORKFLOWS = {
             "scripts/tests/ci-scope-test.py",
             "scripts/tests/ci-paths-test.py",
             "scripts/tests/path-dep-closure-test.py",
+            "scripts/install.sh",
+            "scripts/tests/install-test.sh",
             "scripts/pack-component.py",
-            "scripts/tests/pack-component-test.py",
             "scripts/install-mero-app-build.sh",
             "scripts/install-mero-compute.sh",
             # calimero-node's openapi test compares it with what the registry builds.

@@ -1,6 +1,6 @@
 # Calimero Core - AI Agent Guidance
 
-A confidential cloud for collaborative apps. Apps are `calimero:app` WASM components, written in Rust with `calimero-sdk` and built with `mero-app-build` (the engine also takes componentize-js components; core ships no JavaScript SDK); each app instance is replicated by its own Raft log across attested TDX nodes (`merod`, inside it `calimero-node`), which clients reach through a sealed channel after verifying the node's attestation. `meroctl` is the command line. Apps run on wasmtime; SDK 0.12 apps (wasmer) are gone.
+A confidential cloud for collaborative apps. Apps are `calimero:app` WASM components, written in Rust with `calimero-sdk` and built with `meroctl app build` (the engine also takes componentize-js components; core ships no JavaScript SDK); each app instance is replicated by its own Raft log across attested TDX nodes (`merod`, inside it `calimero-node`), which clients reach through a sealed channel after verifying the node's attestation. `meroctl` is the command line. Apps run on wasmtime; SDK 0.12 apps (wasmer) are gone.
 
 ## Where to read
 
