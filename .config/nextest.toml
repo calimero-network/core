@@ -136,22 +136,21 @@ slow-timeout = { period = "15s", terminate-after = 4 }
 [[profile.ci.overrides]]
 # slowest 176 s
 filter = """binary_id(calimero-node::compute_runs) & (
-    test(=a_blob_stored_again_after_a_delete_survives_whichever_nodes_handle_it)
+    test(=a_session_file_stored_again_after_a_delete_survives_up_leader_del_leader)
+    | test(=a_session_file_stored_again_after_a_delete_survives_up_leader_del_follower)
+    | test(=a_session_file_stored_again_after_a_delete_survives_up_follower_del_leader)
+    | test(=a_session_file_stored_again_after_a_delete_survives_up_follower_del_follower)
     | test(=a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails)
-    | test(=a_file_stored_again_after_a_delete_survives_whichever_nodes_handle_it)
     | test(=a_forty_mib_output_is_fetched_a_segment_at_a_time_and_a_cut_fetch_resumes)
     | test(=a_held_report_survives_the_leaders_failing_writes)
     | test(=a_held_report_with_a_log_is_not_finished_with_it_once_a_replica_is_behind)
     | test(=a_hundred_mib_file_is_uploaded_read_by_a_run_and_written_back)
     | test(=a_job_node_that_reports_but_never_hands_over_its_outputs_does_not_hold_the_run_open)
-    | test(=a_published_output_stored_again_after_a_delete_survives_whichever_nodes_handle_it)
     | test(=a_push_that_never_succeeds_ends_the_run_by_timeout_at_the_ceiling)
     | test(=a_restarted_job_node_does_not_lose_an_attempt_whose_report_is_held)
     | test(=a_second_run_of_an_org_waits_for_the_first_final)
-    | test(=a_session_file_stored_again_after_a_delete_survives_whichever_nodes_handle_it)
     | test(=a_slow_failing_output_fetch_does_not_lose_an_attempt_whose_job_node_answers)
     | test(=an_outage_of_the_system_group_does_not_lose_a_running_attempt)
-    | test(=an_output_that_takes_longer_than_the_shared_clients_timeout_is_still_fetched)
     | test(=waiting_for_our_own_control_places_is_not_a_job_nodes_silence)
 )"""
 slow-timeout = { period = "15s", terminate-after = 18 }
