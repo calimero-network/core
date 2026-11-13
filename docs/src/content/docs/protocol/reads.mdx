@@ -19,12 +19,22 @@ it writes is discarded.
 
 | `consistency` | Where it runs | What it sees |
 | --- | --- | --- |
-| omitted (strong) | The app group's leader, after confirming it still leads | Every write committed before the view started |
+| omitted (strong) | Any replica, once it has applied the index the app's leader named after confirming it still leads | Every write committed before the view started |
 | `"stale"` | Any replica; this node if it is one | That replica's applied state, at least `minIndex` if given |
 
-A strong view is linearizable: it is answered by a node that has just
-confirmed leadership with a quorum, so a write acknowledged anywhere is
-visible. A stale view saves that round trip and spreads load across replicas.
+A strong view is linearizable, through a read index. The replica that takes
+it asks the app's leader for its applied index (`internal/app/index`); the
+leader first confirms with a quorum that it still leads, then names the index,
+and runs no WASM. The replica answers once it has applied that far. Every write
+acknowledged before the view arrived is at or below that index, and Raft gives
+every replica the same entries up to it, so the write is visible whichever
+replica answers. The leader answers its own strong views directly. A replica
+that cannot apply the index within 2 seconds (`Config::read_wait`), or whose
+leader runs an earlier release without the route, sends the view to the leader
+instead. `calimero_replica_strong_views_total` counts the views a replica
+answered itself.
+
+A stale view saves the round to the leader and reads whatever the replica has.
 With `minIndex` (the `index` a call answered), a stale view waits up to 2
 seconds for the replica to apply that entry and answers `503 NOT_CAUGHT_UP`
 otherwise: read-your-writes without going through the leader.

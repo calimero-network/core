@@ -530,6 +530,7 @@ async fn start_run(
     body: OrgUpgradeBody,
     apps: Vec<crate::types::AppRecord>,
     who: Upgrader,
+    by_release: bool,
 ) -> ApiResult {
     let run_id = typed_id::<12>();
     let run = crate::types::UpgradeRun {
@@ -550,6 +551,7 @@ async fn start_run(
             org: org.clone(),
             run: Box::new(run.clone()),
             consent: who.consent.clone(),
+            by_release,
         })
         .await?;
     // The run as it applied: its apps are the state's (`SystemState::upgrade_run_apps`).
@@ -689,7 +691,7 @@ async fn org_upgrade(
         consent,
         run: None,
     };
-    start_run(node, org, body, apps, who).await
+    start_run(node, org, body, apps, who, false).await
 }
 
 #[derive(Deserialize)]
@@ -734,6 +736,10 @@ async fn publisher_upgrade(
             "upgrading a published package's instances needs MANAGE_APPLICATION in the publisher",
         ));
     }
+    // Before the passkey step-up: a node that could not apply the run's
+    // `by_release` would cover other instances than this node does.
+    node.require_features(&[crate::system::cluster_version::Feature::PublishedRunByRelease])
+        .await?;
     // Installed from the registry first if the cluster lacks the release.
     let _bundle = node
         .resolve_release(&package, Some(&body.version), None, &account, false)
@@ -748,7 +754,7 @@ async fn publisher_upgrade(
     )
     .await?;
     let apps: Vec<crate::types::AppRecord> = node.sys(|s| {
-        s.published_run_apps(&package, &account)
+        s.published_run_apps(&package, &account, true)
             .iter()
             .filter_map(|a| s.apps.get(a).cloned())
             .collect()
@@ -771,7 +777,7 @@ async fn publisher_upgrade(
         confirm: None,
         operator_proof: None,
     };
-    start_run(node, org, run, apps, who).await
+    start_run(node, org, run, apps, who, true).await
 }
 
 /// [`org_upgrade`] by the operator, where the deployment gave it app upgrades.
@@ -811,7 +817,7 @@ async fn ops_org_upgrade(
         consent,
         run: None,
     };
-    start_run(node, org, body, apps, who).await
+    start_run(node, org, body, apps, who, false).await
 }
 
 /// An organization-wide upgrade's progress, cascade included.
@@ -875,7 +881,7 @@ async fn org_upgrade_retry(
             consent,
             run: None,
         };
-        return start_run(node, org, retry, failed, who).await;
+        return start_run(node, org, retry, failed, who, false).await;
     }
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
@@ -903,7 +909,7 @@ async fn org_upgrade_retry(
         consent,
         run: None,
     };
-    start_run(node, org, retry, failed, who).await
+    start_run(node, org, retry, failed, who, false).await
 }
 
 #[derive(Deserialize)]

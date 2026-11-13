@@ -745,6 +745,28 @@ async fn internal_system_index(
     Ok(Json(json!({ "index": index })))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppIndexBody {
+    app_id: String,
+}
+
+/// An app's leader's applied index, once it confirmed it leads: a replica
+/// that applies up to it answers a strong view itself (`Node::view_once`).
+/// Only for a node that may hold the app; `421 NOT_LEADER` here when this
+/// node does not lead the app's group.
+async fn internal_app_index(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Json(b): Json<AppIndexBody>,
+) -> ApiResult {
+    let caller = peer(&node, &headers, key).await?;
+    caller_may_hold_app(&node, &caller, &b.app_id).await?;
+    let index = node.app_read_index_here(&b.app_id).await?;
+    Ok(Json(json!({ "index": index })))
+}
+
 /// This node's runtime (`Config::release`), for a peer judging whether this
 /// node may run a release (`Node::runtime_of_node`).
 async fn internal_runtime(
@@ -836,6 +858,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/internal/raft", post(internal_raft))
         .route("/internal/system", post(internal_system))
         .route("/internal/system/index", post(internal_system_index))
+        .route("/internal/app/index", post(internal_app_index))
         .route("/internal/runtime", post(internal_runtime))
         .route("/internal/call", post(internal_call))
         .route(

@@ -192,7 +192,7 @@ meroctl call -c my-kv get --args '{"key":"a"}' --view --min-index 42
   committed at, the method's result, the events of that call the caller may
   see, and the answering node's signed receipt. Arguments are at most 512 KiB
   (`413 ARGS_TOO_LARGE`).
-- **A view** reads a caught-up replica by default (`consistency: "strong"`).
+- **A view** is linearizable by default (`consistency: "strong"`): the replica answering it first applies the index the app's leader names.
   `stale` reads the node you reached, and `minIndex` makes it wait until it
   has applied that index (`503 NOT_CAUGHT_UP` if it has not), which is how a
   client reads its own write cheaply.

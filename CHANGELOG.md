@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A follower answers a strong view itself** (`calimero-node`). The replica that
+  takes a strong view asks the app's leader for its applied index
+  (`POST /internal/app/index`: the leader confirms it leads and runs no WASM),
+  waits until it has applied that far, and runs the view locally: still
+  linearizable, and the leader no longer runs every strong view. A replica that
+  cannot catch up in `read_wait`, or whose leader runs an earlier release, sends
+  the view to the leader as before. `calimero_replica_strong_views_total` counts
+  the views a replica answered itself.
+- **`scripts/pack-component.py --frontend DIR`, `--outbound PREFIX`,
+  `--upgrades owner|publisher`**: the manifest fields no tool wrote, each checked
+  with the node's rules before signing.
+
+### Fixed
+
+- **A move is judged by the target's own quotas** (`calimero-node`). `MoveApp`
+  checked the target's file bytes and compute runs against the cluster's limits,
+  ignoring the organization's override (`POST /ops/quotas` with `org`), which
+  every other charge and `TransferApp` use. `MoveApp { org_quotas }`
+  (`Feature::MoveOrgQuotas`, 1.0.0-rc.22) judges the override; an entry without
+  the field replays as it applied. `POST /apps/{app}/move` answers
+  `409 FEATURE_NOT_ACTIVE` until every node runs this release.
+- **A publisher's upgrade run covers the instances that run its package**
+  (`calimero-node`). It chose apps by the package their bundle was first
+  recorded from, so an instance running the publisher's release on a component
+  another package shipped first was left out (and one running another package on
+  the publisher's first component was listed, then refused `RUN_OTHER_PACKAGE`).
+  `StartUpgradeRun { by_release }` (`Feature::PublishedRunByRelease`,
+  1.0.0-rc.22) picks them by the release they run, as organization runs do; an
+  entry without the field replays as it applied.
+  `POST /orgs/{org}/packages/{package}/upgrade` answers `409 FEATURE_NOT_ACTIVE`
+  until every node runs this release.
+- **Refusals name who approves**: outbound and release refusals no longer say "the
+  namespace" or "the app's owner" (approvals are the app's organization's, the
+  publisher's or the operator's since 1.0.0-rc.20); the `NotApproved:` and
+  `AwaitingApproval:` prefixes are unchanged.
+- `compute_e2e.py` uses base port 7660; it shared 7650 with the fault suite's
+  `kv-soak`. `calimero-outbound` builds on its own (it now enables
+  `calimero-primitives`' `borsh` feature).
+
 ### Removed
 
 - **`calimero-primitives`' v1 leftovers** (breaking). Nothing in this workspace,

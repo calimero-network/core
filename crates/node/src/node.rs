@@ -606,6 +606,9 @@ pub struct Node {
     /// Read-index rounds this node began on the system group
     /// (`calimero_system_read_rounds_total`).
     pub sys_rounds: std::sync::atomic::AtomicU64,
+    /// Strong views this replica answered itself, after a read index from
+    /// the app's leader (`calimero_replica_strong_views_total`).
+    pub replica_strong_views: std::sync::atomic::AtomicU64,
     /// Entries this node appended that applied as conflicts (built on state
     /// that changed before they applied) and were run again.
     pub conflicts: std::sync::atomic::AtomicU64,
@@ -995,6 +998,7 @@ impl Node {
             runs_kick: Arc::new(tokio::sync::Notify::new()),
             sys_reads: ReadRounds::default(),
             sys_rounds: std::sync::atomic::AtomicU64::new(0),
+            replica_strong_views: std::sync::atomic::AtomicU64::new(0),
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
             starting: tokio::sync::Mutex::new(()),
@@ -3313,6 +3317,32 @@ impl Node {
         }
     }
 
+    /// The app's leader's applied index, asked of the leader at `addr`
+    /// (`internal/app/index`): `None` when it does not answer one.
+    async fn app_read_index(&self, addr: &str, app_id: &str) -> Option<u64> {
+        self.peer_forward(addr, "internal/app/index", &json!({ "appId": app_id }))
+            .await
+            .ok()
+            .and_then(|v| v["index"].as_u64())
+    }
+
+    /// This node's applied index of `app_id`'s group, once it confirmed it
+    /// leads it: what `internal/app/index` answers.
+    pub async fn app_read_index_here(&self, app_id: &str) -> Result<u64, ApiError> {
+        let app = self.app(app_id).await?;
+        let g = self.replica_group(&app).ok_or_else(|| {
+            ApiError::new(421, "NOT_LEADER", "this node holds no replica of the app")
+        })?;
+        g.read_strong(|_, applied| applied)
+            .await
+            .map_err(|e| match e {
+                WriteError::NotLeader { .. } => {
+                    ApiError::new(421, "NOT_LEADER", "this node does not lead the app's group")
+                }
+                e => status_of(&e),
+            })
+    }
+
     async fn view_local(
         &self,
         g: &Group<AppMachine>,
@@ -3362,6 +3392,22 @@ impl Node {
                     Err(WriteError::NotLeader {
                         leader: Some((id, addr)),
                     }) if id != self.config.node_id && !addr.is_empty() => {
+                        // A read index: the leader confirms it leads and names
+                        // its applied index, and this replica answers once it
+                        // has applied that far, so the leader runs no WASM.
+                        // Every write committed before the request is at or
+                        // below that index (as for `Node::sys_fresh`). A
+                        // leader on an earlier release (no route), or a
+                        // replica that cannot catch up in `read_wait`, sends
+                        // the view to the leader instead.
+                        if let Some(index) = self.app_read_index(&addr, &req.app_id).await {
+                            if g.wait_applied(index, self.config.read_wait).await {
+                                let _prev = self
+                                    .replica_strong_views
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                return self.view_local(&g, req).await;
+                            }
+                        }
                         let v = self
                             .peer_forward(
                                 &addr,

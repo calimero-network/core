@@ -1737,6 +1737,11 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
     );
     let _r = writeln!(
         out,
+        "# HELP calimero_replica_strong_views_total Strong views this replica answered itself after a read index from the app's leader, instead of sending them to the leader.\n# TYPE calimero_replica_strong_views_total counter\ncalimero_replica_strong_views_total {}",
+        node.replica_strong_views.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    let _r = writeln!(
+        out,
         "# HELP calimero_group_applied An app group's applied index here.\n# TYPE calimero_group_applied gauge"
     );
     for (_app, s) in &hosted {

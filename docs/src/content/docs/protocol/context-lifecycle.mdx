@@ -155,8 +155,13 @@ has each in full):
    and after the move are both recorded and have no release in common (`MOVE_RELEASES_DISJOINT`): the nodes holding the app
    would hold it unapproved.
 5. **Payer and quotas.** The target pays from here on: the app's file bytes
-   and its granted compute runs count against the target's quotas, and a move
-   past them is refused (`429 QUOTA_EXCEEDED`).
+   and its granted compute runs count against the target's quotas (its own
+   override where the operator set one with `POST /ops/quotas`, else the
+   cluster's, as every other charge counts them), and a move past them is
+   refused (`429 QUOTA_EXCEEDED`). A move logged by a release before 1.0.0-rc.22
+   (no `org_quotas` on the entry) replays judging the cluster's limits, as it
+   did then; the `moveOrgQuotas` feature keeps moves refused until every node
+   reads the field.
 6. **`bringMembers`.** Every member of the source who reaches the app joins
    the target at their role there, capped at `member`, and gets a row on the
    target's app team.
