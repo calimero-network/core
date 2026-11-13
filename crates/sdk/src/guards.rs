@@ -11,8 +11,9 @@ fn account() -> Result<String> {
     }
 }
 
-/// An account whose role is at least `role` in the app's org; with no org, the app owner
-/// holds every role and any other account only `Member`.
+/// An account whose role is at least `role` in the app's org. With no org (a compute run,
+/// whose context names none, or a host-target test that sets none; on a node every app is
+/// in an organization), the app owner holds every role and any other account only `Member`.
 fn require_role(role: OrgRole) -> Result<String> {
     let account = account()?;
     let held = match env::org() {

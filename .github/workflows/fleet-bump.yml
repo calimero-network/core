@@ -264,8 +264,8 @@ jobs:
 
           **Check the upgrade range before merging.** Breaking changes between the
           pinned version and this one are a real risk for a fleet carrying state:
-          merobox validates a uniform, new-from-scratch network by construction, and
-          does not exercise mixed-version interop or data written by an older binary.
+          the consumer's own tests start a uniform, new-from-scratch network, and do
+          not exercise mixed-version interop or data written by an older binary.
           If the fleet's state is disposable this is routine; if it is not, it wants a
           deliberate answer rather than a merge.
           PR_BODY
@@ -289,9 +289,9 @@ jobs:
             copy in every \`apps/*/logic/Cargo.toml\`, because
             \`[package.metadata]\` is not on cargo's inheritable list and
             \`scripts/check-app-metadata.sh\` asserts the copies agree
-          - \`merod-image\`, and the image every merobox scenario starts its node
-            from — including the ones under \`workflows/probes/\`, which the metadata
-            check globs one level and never sees
+          - \`merod-image\`, the image the apps' end-to-end runs start their nodes
+            from, and the image of any legacy merobox scenario still in the tree
+            (the apps repository has none left)
           - the cargo-mero pin in \`.github/actions/install-cargo-mero\` and in the
             per-app dev scripts and Makefiles. Nothing checks those, and they had
             drifted up to four releases behind by the time this was automated

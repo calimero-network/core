@@ -126,8 +126,8 @@ fi
 #
 #   min-runtime-version   the workspace value, AND a copy in every app, because
 #                         [package.metadata] is not on cargo's inheritable list
-#   merod-image           the workspace value, AND the image every merobox
-#                         scenario starts its node from
+#   merod-image           the workspace value, AND the image any legacy merobox
+#                         scenario still in the tree starts its node from
 #
 # Miss either and the bump PR is red on a check that names the drift precisely.
 # So the rewrite covers all of it, and then re-reads to assert what that script
@@ -158,9 +158,12 @@ tool_manifests() {
   done
 }
 
-# Every merobox scenario. The checker globs apps/*/logic/workflows/*.yml, one
-# level; this recurses, so the probes/ subdirectories that carry the same image
-# and that the checker never looks at do not quietly rot.
+# Every legacy merobox scenario. calimero-network/apps has none left (its apps
+# are components tested with packages/merod-local), so this finds nothing there;
+# it stays for a consumer that still keeps some. The checker globs
+# apps/*/logic/workflows/*.yml, one level; this recurses, so the probes/
+# subdirectories that carry the same image and that the checker never looks at
+# do not quietly rot.
 #
 # logic/workflows-parked/ too: scenarios an app keeps but CI does not run yet
 # (mero-chat parks three it inherited that had never run). Parked is not
@@ -198,7 +201,8 @@ nested_core_manifests() {
     done
 }
 
-# Every merobox scenario / workflow document in the tree, for the nested shape.
+# Every legacy merobox scenario / workflow document in the tree, for the nested
+# shape (none in calimero-network/apps any more).
 # The exclusions mirror `tooling_files`: a recorded measurement or a committed
 # log states the conditions it ran under, and rewriting those rewrites history.
 nested_scenario_files() {
@@ -287,7 +291,7 @@ bump_cargo_workspace() {
   done
   note "core pins rewritten in $tools tool manifest(s)"
 
-  # ── every merobox scenario's node image ──────────────────────────────────
+  # ── every legacy merobox scenario's node image (none left in the apps repo) ──
   local scen=0
   local f
   for f in $(scenario_files); do
