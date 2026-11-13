@@ -1,0 +1,67 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-flow-placement">
+<svg viewBox="0 0 760 330" role="img" aria-label="Placing a new app's three replicas: of the registered nodes, the job node is left out, then a node on a release the app's approver has not approved, then any node whose runtime is older than the release needs; of the rest, the least-loaded node of each zone is taken first, zoneless nodes counting as one zone, and the picks here are n2, n4 and n5" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="fp-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="330" rx="10" fill="#0f0f16"/>
+
+  <g class="seq-step" style="--step-i:0">
+    <text x="80" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">registered nodes</text>
+    <rect x="10" y="36" width="140" height="200" rx="8" fill="none" stroke="#35354a"/>
+    <text x="20" y="58" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">n1  zone a · 4 apps</text>
+    <text x="20" y="76" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">n2  zone a · 1 app</text>
+    <text x="20" y="94" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">n3  zone b · 3 apps</text>
+    <text x="20" y="112" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">n4  zone b · 2 apps</text>
+    <text x="20" y="130" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">n5  no zone · 0</text>
+    <text x="20" y="148" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">n6  job node</text>
+    <text x="20" y="166" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">n7  zone c · 0</text>
+    <text x="20" y="180" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="7.5">    (release not approved)</text>
+    <text x="80" y="260" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">POST /apps, --replicas 3</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:1">
+    <line x1="152" y1="136" x2="168" y2="136" stroke="#8b949e" stroke-width="1.3" marker-end="url(#fp-arrow)"/>
+    <text x="240" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">1 · replica nodes</text>
+    <rect x="170" y="36" width="140" height="200" rx="8" fill="none" stroke="#35354a"/>
+    <text x="240" y="70" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">n1 n2 n3 n4 n5 n7</text>
+    <text x="240" y="110" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">n6 out</text>
+    <text x="240" y="260" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">job nodes hold no app</text>
+    <text x="240" y="274" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">(replica_nodes)</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:2">
+    <line x1="312" y1="136" x2="328" y2="136" stroke="#8b949e" stroke-width="1.3" marker-end="url(#fp-arrow)"/>
+    <text x="400" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">2 · may hold it</text>
+    <rect x="330" y="36" width="140" height="200" rx="8" fill="none" stroke="#35354a"/>
+    <text x="400" y="70" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">n1 n2 n3 n4 n5</text>
+    <text x="400" y="110" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">n7 out</text>
+    <text x="400" y="260" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">attested release approved</text>
+    <text x="400" y="274" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">and not past a deadline</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:3">
+    <line x1="472" y1="136" x2="488" y2="136" stroke="#8b949e" stroke-width="1.3" marker-end="url(#fp-arrow)"/>
+    <text x="560" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">3 · runtime floor</text>
+    <rect x="490" y="36" width="140" height="200" rx="8" fill="none" stroke="#35354a"/>
+    <text x="560" y="70" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">n1 n2 n3 n4 n5</text>
+    <text x="560" y="110" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="8.5">none below</text>
+    <text x="560" y="260" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">runtime ≥ the release's</text>
+    <text x="560" y="274" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">minRuntimeVersion</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:4">
+    <line x1="632" y1="136" x2="648" y2="136" stroke="#8b949e" stroke-width="1.3" marker-end="url(#fp-arrow)"/>
+    <text x="700" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">4 · choose</text>
+    <rect x="650" y="36" width="100" height="200" rx="8" fill="#10210f" stroke="#3fb950"/>
+    <text x="700" y="58" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="7.5">by (load, id):</text>
+    <text x="700" y="72" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="7.5">n5 n2 n4 n3 n1</text>
+    <text x="700" y="98" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="8.5">n5 · zone –</text>
+    <text x="700" y="116" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="8.5">n2 · zone a</text>
+    <text x="700" y="134" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="8.5">n4 · zone b</text>
+    <text x="700" y="166" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700">[2, 4, 5]</text>
+    <text x="700" y="260" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">a zone each first,</text>
+    <text x="700" y="274" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">then by load</text>
+  </g>
+</svg>
+</Figure>
