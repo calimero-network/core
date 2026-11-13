@@ -53,8 +53,8 @@ detail.
    #   signerId: did:key:z6Mkrb81NKkv7Mw4dZAWA5PTuwBhbq9u9eCPuby3icBUdirg
    ```
 
-   The key file is JSON with base64url-encoded `privateKey` and `publicKey` plus
-   the derived `signerId` (`meroctl app signer id <file>` prints it
+   The key file is JSON with base64url-encoded `private_key` and `public_key` plus
+   the derived `signer_id` (`meroctl app signer id <file>` prints it
    again). `signer new` will not overwrite an existing file unless you pass
    `--force`, which loses the old key for good. **Keep it secret and out of version control** — it is
    your update authority (see below).
