@@ -279,6 +279,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             recovery_key,
             at,
             name_fits,
+            personal,
         } => {
             if !s.accounts.contains_key(&actor) {
                 return Err("unknown account");
@@ -290,34 +291,23 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if s.orgs.contains_key(&org_id) {
                 return Err("organization exists");
             }
-            let owned = s
-                .orgs
-                .values()
-                .filter(|o| o.members.get(&actor) == Some(&OrgRole::Owner))
-                .count();
-            if owned >= s.quotas.max_orgs_per_account as usize {
-                return Err("quota exceeded: organizations");
+            if personal {
+                if s.personal_org_of(&actor).is_some() {
+                    return Err(PERSONAL_ORG_EXISTS);
+                }
+            } else {
+                let owned = s
+                    .orgs
+                    .values()
+                    .filter(|o| !o.personal && o.members.get(&actor) == Some(&OrgRole::Owner))
+                    .count();
+                if owned >= s.quotas.max_orgs_per_account as usize {
+                    return Err("quota exceeded: organizations");
+                }
             }
-            let mut members = BTreeMap::new();
-            let _prev = members.insert(actor, OrgRole::Owner);
-            let _prev = s.orgs.insert(
-                org_id.clone(),
-                Org {
-                    org_id: org_id.clone(),
-                    name,
-                    members,
-                    teams: BTreeMap::new(),
-                    default_capabilities: crate::types::caps::DEFAULT,
-                    capabilities: BTreeMap::new(),
-                    approved_releases: release.into_iter().collect(),
-                    outbound_approvals: BTreeMap::new(),
-                    metadata: Value::Null,
-                    member_metadata: BTreeMap::new(),
-                    upgrade_runs: BTreeMap::new(),
-                    recovery,
-                    all_apps: BTreeSet::new(),
-                },
-            );
+            let mut org = new_org(org_id.clone(), name, actor, release, personal);
+            org.recovery = recovery;
+            let _prev = s.orgs.insert(org_id.clone(), org);
             Ok(json!({ "orgId": org_id }))
         }
         SystemCmd::DeleteOrg {
@@ -351,7 +341,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             let apps: Vec<String> = s
                 .apps
                 .values()
-                .filter(|a| a.org.as_deref() == Some(org.as_str()))
+                .filter(|a| a.org == org)
                 .map(|a| a.app_id.clone())
                 .collect();
             for a in &apps {
@@ -924,5 +914,32 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached orgs::apply"),
+    }
+}
+
+/// A new organization owned by `owner` alone, approving `release` (the one it
+/// was made through) to hold its apps.
+pub(super) fn new_org(
+    org_id: OrgId,
+    name: String,
+    owner: AccountId,
+    release: Option<String>,
+    personal: bool,
+) -> Org {
+    Org {
+        org_id,
+        name,
+        members: BTreeMap::from([(owner, OrgRole::Owner)]),
+        teams: BTreeMap::new(),
+        default_capabilities: crate::types::caps::DEFAULT,
+        capabilities: BTreeMap::new(),
+        approved_releases: release.into_iter().collect(),
+        outbound_approvals: BTreeMap::new(),
+        metadata: Value::Null,
+        member_metadata: BTreeMap::new(),
+        upgrade_runs: BTreeMap::new(),
+        recovery: None,
+        all_apps: BTreeSet::new(),
+        personal,
     }
 }

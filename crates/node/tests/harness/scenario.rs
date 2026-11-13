@@ -2203,8 +2203,13 @@ impl<'a> Runner<'a> {
                                 .await
                                 .map(wire)?,
                             None => cl
-                                .auth()
-                                .account_release_approval(&version, None, Some(&mut *pk))
+                                .orgs()
+                                .release_approval(
+                                    &cl.personal_org().await.unwrap(),
+                                    &version,
+                                    None,
+                                    Some(&mut *pk),
+                                )
                                 .await
                                 .map(wire)?,
                         }
@@ -2228,8 +2233,9 @@ impl<'a> Runner<'a> {
                                 .await
                                 .map(wire)?,
                             None => cl
-                                .auth()
-                                .account_outbound_approval(
+                                .orgs()
+                                .outbound_approval(
+                                    &cl.personal_org().await.unwrap(),
                                     &package,
                                     selection,
                                     replace,

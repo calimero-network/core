@@ -7,6 +7,11 @@
 //! are read here; an app type (a record, a serde struct or enum, an alias) is [`Type::Named`],
 //! whose shape, when the ABI carries one, is in [`crate::abi::AppAbi::types`]
 //! ([`Type::named_parts`] splits `Page<Booking>` into the entry's name and its arguments).
+//!
+//! Two spellings describe what plain serde writes where the SDK's defaults (D20) would not:
+//! `u64_number` / `i64_number`, a 64-bit integer as a JSON number (JavaScript reads it exactly
+//! only up to 2^53), and `byte_list`, a `Vec<u8>` as a JSON array of numbers. `#[derive(AbiType)]`
+//! writes them for a field marked `#[abi(plain)]`.
 
 use std::fmt;
 
@@ -25,6 +30,10 @@ pub enum Int {
     I64,
     I128,
     Isize,
+    /// `u64_number`: a `u64` as a JSON number, not D20's decimal string.
+    U64Number,
+    /// `i64_number`: an `i64` as a JSON number, not D20's decimal string.
+    I64Number,
 }
 
 impl Int {
@@ -42,6 +51,8 @@ impl Int {
             "i64" => Self::I64,
             "i128" => Self::I128,
             "isize" => Self::Isize,
+            "u64_number" => Self::U64Number,
+            "i64_number" => Self::I64Number,
             _ => return None,
         })
     }
@@ -62,10 +73,13 @@ impl Int {
             Self::I64 => "i64",
             Self::I128 => "i128",
             Self::Isize => "isize",
+            Self::U64Number => "u64_number",
+            Self::I64Number => "i64_number",
         }
     }
 
-    /// Whether JSON carries it as a decimal string (D20): `u64` and `i64`.
+    /// Whether JSON carries it as a decimal string (D20): `u64` and `i64`, not `u64_number`
+    /// and `i64_number`.
     #[must_use]
     pub const fn is_string(self) -> bool {
         matches!(self, Self::U64 | Self::I64)
@@ -75,7 +89,13 @@ impl Int {
     pub const fn signed(self) -> bool {
         matches!(
             self,
-            Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::I128 | Self::Isize
+            Self::I8
+                | Self::I16
+                | Self::I32
+                | Self::I64
+                | Self::I128
+                | Self::Isize
+                | Self::I64Number
         )
     }
 
@@ -88,11 +108,11 @@ impl Int {
             Self::U8 => (0, u8::MAX as i128),
             Self::U16 => (0, u16::MAX as i128),
             Self::U32 | Self::Usize => (0, u32::MAX as i128),
-            Self::U64 | Self::U128 => (0, u64::MAX as i128),
+            Self::U64 | Self::U128 | Self::U64Number => (0, u64::MAX as i128),
             Self::I8 => (i8::MIN as i128, i8::MAX as i128),
             Self::I16 => (i16::MIN as i128, i16::MAX as i128),
             Self::I32 | Self::Isize => (i32::MIN as i128, i32::MAX as i128),
-            Self::I64 | Self::I128 => (i64::MIN as i128, i64::MAX as i128),
+            Self::I64 | Self::I128 | Self::I64Number => (i64::MIN as i128, i64::MAX as i128),
         }
     }
 }
@@ -111,6 +131,8 @@ pub enum Type {
     /// `Vec<u8>`: base64url without padding in JSON (D20).
     Bytes,
     Option(Box<Type>),
+    /// A JSON array. `List(Int(U8))` is spelled `byte_list` (`list<u8>` reads as [`Type::Bytes`]):
+    /// a `Vec<u8>` as plain serde writes it, an array of numbers.
     List(Box<Type>),
     /// `BTreeSet`/`HashSet`: a JSON array of distinct values.
     Set(Box<Type>),
@@ -219,6 +241,7 @@ impl fmt::Display for Type {
             Self::String => f.write_str("string"),
             Self::Bytes => f.write_str("bytes"),
             Self::Option(t) => write!(f, "option<{t}>"),
+            Self::List(t) if **t == Self::Int(Int::U8) => f.write_str("byte_list"),
             Self::List(t) => write!(f, "list<{t}>"),
             Self::Set(t) => write!(f, "set<{t}>"),
             Self::Tuple(ts) => {
@@ -390,6 +413,7 @@ impl Parser {
             ("char", 0) => Type::Char,
             ("string" | "String" | "str", 0) => Type::String,
             ("bytes", 0) => Type::Bytes,
+            ("byte_list", 0) => Type::List(Box::new(Type::Int(Int::U8))),
             ("option" | "Option", 1) => Type::Option(Box::new(one(&mut args)?)),
             ("list" | "Vec" | "VecDeque", 1) => slice_of(one(&mut args)?),
             ("BTreeSet" | "HashSet" | "IndexSet", 1) => Type::Set(Box::new(one(&mut args)?)),
@@ -440,6 +464,30 @@ mod tests {
             Type::parse("tuple<u32, bool>"),
             Type::Tuple(vec![Type::Int(Int::U32), Type::Bool])
         );
+    }
+
+    #[test]
+    fn plain_serde_spellings() {
+        assert_eq!(Type::parse("u64_number"), Type::Int(Int::U64Number));
+        assert_eq!(Type::parse("i64_number"), Type::Int(Int::I64Number));
+        assert!(!Int::U64Number.is_string() && Int::I64Number.signed());
+        assert_eq!(Int::U64Number.range(), Int::U64.range());
+        assert_eq!(
+            Type::parse("option<byte_list>"),
+            Type::Option(Box::new(Type::List(Box::new(Type::Int(Int::U8)))))
+        );
+        // `bytes`, `list<u8>` and `Vec<u8>` keep meaning base64url.
+        assert_eq!(Type::parse("list<u8>"), Type::Bytes);
+        assert_eq!(Type::parse("Vec<u8>"), Type::Bytes);
+        assert_eq!(
+            Type::parse("list<u16>"),
+            Type::List(Box::new(Type::Int(Int::U16)))
+        );
+        // A generic list of `u8` (serde writes numbers) is spelled so it reads back the same.
+        let params = ["T".to_owned()];
+        let list = Type::parse("list<T>").substitute(&params, &[Type::Int(Int::U8)]);
+        assert_eq!(list.to_string(), "byte_list");
+        assert_eq!(Type::parse(&list.to_string()), list);
     }
 
     #[test]
@@ -522,6 +570,9 @@ mod tests {
             "option<list<string>>",
             "tuple<u32, bool>",
             "bytes",
+            "byte_list",
+            "list<u64_number>",
+            "option<i64_number>",
             "Booking",
         ] {
             assert_eq!(Type::parse(t).to_string(), t);

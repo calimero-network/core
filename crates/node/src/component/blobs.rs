@@ -91,6 +91,7 @@ impl BlobRecord {
                 wrapped_key: mark.wrapped_key.clone(),
                 segments: mark.segments.clone(),
                 output: false,
+                log: false,
                 uploader: None,
             }),
             charged: false,
@@ -114,6 +115,10 @@ pub struct FileSeal {
     /// can be published.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub output: bool,
+    /// Set when the file is the module log of a run attempt: read only through the app's file
+    /// gate, never published, never an input of a run.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub log: bool,
     /// The account that uploaded the file, as the authenticated upload route saw it; none for a
     /// file a call or a run made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -258,6 +263,11 @@ impl BlobTable {
     /// [`Self::add_file`] for an output of a done compute run: the file may be published.
     pub fn add_output(&mut self, tx: &mut StateTx<'_>, mark: &FileMark, ts_ms: u64) {
         self.add_sealed(tx, mark, ts_ms, |seal| seal.output = true);
+    }
+
+    /// [`Self::add_file`] for the module log of a run attempt.
+    pub fn add_log(&mut self, tx: &mut StateTx<'_>, mark: &FileMark, ts_ms: u64) {
+        self.add_sealed(tx, mark, ts_ms, |seal| seal.log = true);
     }
 
     fn add_sealed(
@@ -591,6 +601,7 @@ mod tests {
                 wrapped_key: Bytes(vec![8; 60]),
                 segments: vec![hex::encode([7; 32])],
                 output: false,
+                log: false,
                 uploader: None,
             }),
             charged: false,

@@ -165,7 +165,7 @@ A run reads a file by decrypting it as it goes, and the end of the stream checks
 A file that was altered or cut short fails the run with a trap, so no app can ignore it.
 Each file has its own random key, so no other app can mark the same ciphertext.
 
-The plaintext bytes of an organization's files (a personal account's, for an app outside one) count against `maxFileBytesPerOrg` (default 50 GB).
+The plaintext bytes of an organization's files count against `maxFileBytesPerOrg` (default 50 GB).
 A file counts from the moment it is charged until retention collects it.
 The charge is taken before any bytes move, so an upload or a call that would pass the quota fails with `429 QUOTA_EXCEEDED`, nothing is logged and the stored bytes are removed.
 When the leader collects the bytes of files the app forgot, the same entry that logs the collection tells the node how many plaintext bytes it released.
@@ -174,7 +174,7 @@ A node that stops hosting a deleted app drops the bytes of its files.
 The count and the app's log are not one atomic step.
 When a record's commit fails, the leader checks whether it was logged and settles the count either way.
 A crash between the two can still leave an over-count.
-Transferring a personal app is refused if its files would pass the new owner's quota.
+Transferring an app from a personal organization to someone outside it, which moves it to their personal organization, is refused if its files would pass that organization's quota.
 `GET /auth/usage` shows an account's file bytes per payer.
 
 ## Publishing a compute output

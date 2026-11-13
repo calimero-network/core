@@ -52,12 +52,26 @@ pub fn swift(abi: &AppAbi, target: &Target<'_>) -> String {
     swift::module(abi, &target.class())
 }
 
-/// A Kotlin file over kotlin-sdk's mero-core in `package` ([`kotlin_package`] of the name when
-/// `None`): the client class, with the app's events and errors nested in it.
+/// How a Kotlin client is written.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KotlinOptions<'a> {
+    /// The package; [`kotlin_package`] of the name when `None`.
+    pub package: Option<&'a str>,
+    /// Whether the module compiling the file applies the kotlinx.serialization compiler plugin.
+    /// The plugin writes each `@Serializable` type's `serializer()` (and makes `serializer<T>()`
+    /// reflection-free), so the file then declares none of its own: a hand-written one clashes
+    /// with the plugin's. Without the plugin the file declares them.
+    pub serialization_plugin: bool,
+}
+
+/// A Kotlin file over kotlin-sdk's mero-core: the client class, with the app's events, errors
+/// and types nested in it.
 #[must_use]
-pub fn kotlin(abi: &AppAbi, target: &Target<'_>, package: Option<&str>) -> String {
-    let package = package.map_or_else(|| kotlin_package(target.name), str::to_owned);
-    kotlin::module(abi, &target.class(), &package)
+pub fn kotlin(abi: &AppAbi, target: &Target<'_>, options: &KotlinOptions<'_>) -> String {
+    let package = options
+        .package
+        .map_or_else(|| kotlin_package(target.name), str::to_owned);
+    kotlin::module(abi, &target.class(), &package, options.serialization_plugin)
 }
 
 /// The package a Kotlin client goes in by default: `kv-store` → `calimero.generated.kvstore`.

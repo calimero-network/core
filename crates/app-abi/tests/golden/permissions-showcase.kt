@@ -16,6 +16,7 @@ import com.calimero.mero.app.MeroAppBackend
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
@@ -518,6 +519,7 @@ class PermissionsShowcaseClient private constructor(
     }
 
     /** The app type `Evidence`. */
+    @Serializable(with = Evidence.Companion.Wire::class)
     data class Evidence(
         val hash: String,
         val kind: String,
@@ -527,7 +529,7 @@ class PermissionsShowcaseClient private constructor(
             /** `Evidence`'s JSON form. */
             fun serializer(): KSerializer<Evidence> = Wire
 
-            private object Wire : KSerializer<Evidence> {
+            internal object Wire : KSerializer<Evidence> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -557,6 +559,7 @@ class PermissionsShowcaseClient private constructor(
     }
 
     /** The app type `Founding`. */
+    @Serializable(with = Founding.Companion.Wire::class)
     data class Founding(
         val name: String,
         val motto: String,
@@ -565,7 +568,7 @@ class PermissionsShowcaseClient private constructor(
             /** `Founding`'s JSON form. */
             fun serializer(): KSerializer<Founding> = Wire
 
-            private object Wire : KSerializer<Founding> {
+            internal object Wire : KSerializer<Founding> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -593,6 +596,7 @@ class PermissionsShowcaseClient private constructor(
     }
 
     /** The app type `MessageView`. */
+    @Serializable(with = MessageView.Companion.Wire::class)
     data class MessageView(
         val key: String,
         val author: String,
@@ -603,7 +607,7 @@ class PermissionsShowcaseClient private constructor(
             /** `MessageView`'s JSON form. */
             fun serializer(): KSerializer<MessageView> = Wire
 
-            private object Wire : KSerializer<MessageView> {
+            internal object Wire : KSerializer<MessageView> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(
@@ -635,6 +639,7 @@ class PermissionsShowcaseClient private constructor(
     }
 
     /** The app type `PageView`. */
+    @Serializable(with = PageView.Companion.Wire::class)
     data class PageView(
         val id: String,
         val author: String,
@@ -645,7 +650,7 @@ class PermissionsShowcaseClient private constructor(
             /** `PageView`'s JSON form. */
             fun serializer(): KSerializer<PageView> = Wire
 
-            private object Wire : KSerializer<PageView> {
+            internal object Wire : KSerializer<PageView> {
                 override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
 
                 override fun serialize(

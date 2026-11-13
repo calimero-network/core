@@ -45,6 +45,19 @@ pub enum Slot {
     Held { booking: Booking },
 }
 
+/// Plain serde's JSON, described: `#[abi(plain)]` numbers and byte array, and a field a caller
+/// may leave out (`default`).
+#[derive(serde::Serialize, serde::Deserialize, AbiType)]
+#[serde(rename_all = "camelCase")]
+pub struct Tally {
+    #[abi(plain)]
+    pub total: u64,
+    #[abi(plain)]
+    pub shots: Vec<u8>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 #[app::state(version = 3)]
 pub struct Rooms {
     bookings: Table<Booking>,
@@ -145,6 +158,12 @@ impl Rooms {
             items: vec![slot],
             next_cursor: None,
         })
+    }
+
+    /// `tally` back, as plain serde writes it.
+    #[app::view]
+    pub fn echo_tally(&self, tally: Tally) -> app::Result<Tally> {
+        Ok(tally)
     }
 
     /// Bookings per room, from the maintained count.
@@ -335,7 +354,12 @@ impl Rooms {
     }
 
     /// A compute run: reports its id, its input count and a progress step.
-    #[app::compute(fuel = 5_000_000_000, memory_mib = 512, wall_secs = 60, result = "on_checksum")]
+    #[app::compute(
+        fuel = 5_000_000_000,
+        memory_mib = 512,
+        wall_secs = 60,
+        result = "on_checksum"
+    )]
     pub fn checksum(rounds: u32) -> app::Result<String> {
         compute::progress(50, "halfway");
         let run = compute::run_id().unwrap_or_default();
@@ -343,7 +367,12 @@ impl Rooms {
     }
 
     /// A compute run that asks a host call its world lacks: the call is a trapping stub.
-    #[app::compute(fuel = 5_000_000_000, memory_mib = 512, wall_secs = 60, result = "on_checksum")]
+    #[app::compute(
+        fuel = 5_000_000_000,
+        memory_mib = 512,
+        wall_secs = 60,
+        result = "on_checksum"
+    )]
     pub fn peek() -> app::Result<String> {
         Ok(env::app_id())
     }

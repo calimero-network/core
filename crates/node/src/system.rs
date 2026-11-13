@@ -875,6 +875,27 @@ pub const ONLY_ADMINS_RENAME: &str = "only the organization's owner and admins r
 /// whose apps have app teams, is installing an app there: an admin's.
 pub const ONLY_ADMINS_INSTALL: &str =
     "only the organization's owner and admins install apps in it and change its app teams";
+/// The personal organization a sign-up makes ([`SystemCmd::CreateAccount`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonalOrgSeed {
+    /// Its id, the node's choice as the account's is.
+    pub org_id: OrgId,
+    /// The release of the node the account signed up through, approved to
+    /// hold its apps from the start.
+    #[serde(default)]
+    pub release: Option<String>,
+}
+
+/// A refusal: an app in a personal organization goes to its new owner's
+/// personal organization, and they have none yet (the API makes it first).
+pub const NO_PERSONAL_ORG: &str = "the new owner has no personal organization to take the app";
+/// A refusal: an account owns at most one personal organization
+/// ([`crate::types::Org::personal`]).
+pub const PERSONAL_ORG_EXISTS: &str = "the account has a personal organization already";
+/// The name a personal organization is made with when the request names
+/// none: never the account's name, which the deployment report would show.
+pub const PERSONAL_ORG_NAME: &str = "Personal";
 /// A refusal: a standing grant of every app added later ([`Org::all_apps`]),
 /// by invite or set on a member, is the owner's or an admin's.
 pub const ONLY_ADMINS_ALL_APPS: &str =
@@ -1093,7 +1114,6 @@ pub enum ReleaseScope {
     Org {
         org: OrgId,
     },
-    Account,
     /// Every app, by the operator: only where the deployment gave it this
     /// decision ([`Governance`]).
     Cluster,
@@ -1475,12 +1495,12 @@ impl SystemState {
         self.payer_file_bytes.get(payer).copied().unwrap_or(0)
     }
 
-    /// The releases approved to hold `app`'s data: its organization's, or its
-    /// owner's for an app outside one. Empty means none was ever recorded
-    /// (state from before approvals), which leaves the app unrestricted.
+    /// The releases approved to hold `app`'s data: its organization's (or its
+    /// publisher's, [`Self::approved_for_bundle`]). Empty means none was ever
+    /// recorded, which leaves the app unrestricted.
     #[must_use]
     pub fn approved_releases(&self, app: &AppRecord) -> Option<&BTreeSet<String>> {
-        self.approved_for_release(self.governing_release(app), app.org.as_deref(), &app.owner)
+        self.approved_for_release(self.governing_release(app), &app.org)
     }
 
     /// The organization that publishes the package `signer` signs: the one
@@ -1519,6 +1539,16 @@ impl SystemState {
     #[must_use]
     pub fn publisher_of(&self, release: Option<&PackageRef>) -> Option<&OrgId> {
         self.publisher_of_signer(&self.packages.get(&release?.package)?.signer_id)
+    }
+
+    /// The personal organization `account` owns
+    /// ([`crate::types::Org::personal`]), if any.
+    #[must_use]
+    pub fn personal_org_of(&self, account: &str) -> Option<&OrgId> {
+        self.orgs
+            .iter()
+            .find(|(_, o)| o.personal && o.role(account) == Some(OrgRole::Owner))
+            .map(|(id, _)| id)
     }
 
     /// The release whose rules govern an app running `app.bundle`: its
@@ -1565,24 +1595,20 @@ impl SystemState {
         })
     }
 
-    /// The releases approved to hold an app governed by `release`
-    /// ([`Self::governing_release`]), of `org` (or of `owner` outside one):
-    /// the operator's where it holds release approvals; else the release's
-    /// publisher's, for every instance of its package; else, for a raw
-    /// upload or an unbound package, the app's own organization's or
-    /// owner's ([`Self::approved_for`]).
+    /// The releases approved to hold an app of `org` governed by `release`
+    /// ([`Self::governing_release`]): the operator's where it holds release
+    /// approvals; else the release's publisher's, for every instance of its
+    /// package; else, for a raw upload or an unbound package, the app's own
+    /// organization's ([`Self::approved_for`]).
     #[must_use]
     pub fn approved_for_release(
         &self,
         release: Option<&PackageRef>,
-        org: Option<&str>,
-        owner: &str,
+        org: &str,
     ) -> Option<&BTreeSet<String>> {
         match self.publisher_of(release) {
-            Some(p) if self.governance().releases == Authority::Owner => {
-                self.approved_for(Some(p), owner)
-            }
-            _ => self.approved_for(org, owner),
+            Some(p) if self.governance().releases == Authority::Owner => self.approved_for(p),
+            _ => self.approved_for(org),
         }
     }
 
@@ -1765,23 +1791,19 @@ impl SystemState {
             || shipped.any(|v| self.sees_release(v, who))
     }
 
-    /// [`Self::approved_releases`] for an app of `org` (or of `owner` outside
-    /// one), before it exists.
+    /// [`Self::approved_releases`] for an app of `org`, before it exists.
     #[must_use]
-    pub fn approved_for(&self, org: Option<&str>, owner: &str) -> Option<&BTreeSet<String>> {
+    pub fn approved_for(&self, org: &str) -> Option<&BTreeSet<String>> {
         if self.governance().releases == Authority::Operator {
             let set = &self.operator_releases;
             return (!set.is_empty()).then_some(set);
         }
-        let set = match org {
-            Some(o) => &self.orgs.get(o)?.approved_releases,
-            None => &self.accounts.get(owner)?.approved_releases,
-        };
+        let set = &self.orgs.get(org)?.approved_releases;
         (!set.is_empty()).then_some(set)
     }
 
-    /// What `app`'s owner (its organization's, or its account's outside one)
-    /// approved for apps signed by `signer` to call out to.
+    /// What `app`'s organization approved for apps signed by `signer` to call
+    /// out to.
     #[must_use]
     pub fn outbound_approval(
         &self,
@@ -1791,14 +1813,7 @@ impl SystemState {
         if self.governance().outbound == Authority::Operator {
             return self.operator_outbound.get(signer);
         }
-        match &app.org {
-            Some(o) => self.orgs.get(o)?.outbound_approvals.get(signer),
-            None => self
-                .accounts
-                .get(&app.owner)?
-                .outbound_approvals
-                .get(signer),
-        }
+        self.orgs.get(&app.org)?.outbound_approvals.get(signer)
     }
 
     /// The release `app` runs, if installed: the one it records
@@ -1836,7 +1851,7 @@ impl SystemState {
         });
         self.apps
             .values()
-            .filter(|a| a.org.as_deref() == Some(org))
+            .filter(|a| a.org == org)
             .filter(|a| match (&teams, &a.access) {
                 (None, _) => true,
                 (Some(ts), Access::Team { team }) => ts.contains(team),
@@ -2192,8 +2207,8 @@ impl SystemState {
 
     /// Who holds the key that opens `app`'s recovery-disk backups: whoever
     /// upgrades it. The operator where governance gives it app upgrades;
-    /// else the app's owner (its organization, or the owner's account for a
-    /// personal app). A package that declares `upgrades: publisher` still
+    /// else the app's owner: its organization (every app has one, its owner's
+    /// personal organization at the least). A package that declares `upgrades: publisher` still
     /// gives the key to the owner: a publisher ships code into attested
     /// nodes and never sees an instance's data, which the key would open.
     #[must_use]
@@ -2201,10 +2216,7 @@ impl SystemState {
         if self.governance().app_upgrades == Authority::Operator {
             return BackupHolder::Operator;
         }
-        match &app.org {
-            Some(org) => BackupHolder::Org(org.clone()),
-            None => BackupHolder::Account(app.owner.clone()),
-        }
+        BackupHolder::Org(app.org.clone())
     }
 
     /// The apps whose backups open with `holder`'s key.
@@ -2452,11 +2464,7 @@ impl SystemState {
             Access::Team { team } => Some(team.as_str()),
             _ => None,
         };
-        self.owner_acts_as_logged(app, account, rule)
-            || app
-                .org
-                .as_ref()
-                .is_some_and(|o| self.manages_apps(o, account, team))
+        self.owner_acts_as_logged(app, account, rule) || self.manages_apps(&app.org, account, team)
     }
 
     /// The package whose release `app` runs; `None` for a raw upload.
@@ -2488,9 +2496,7 @@ impl SystemState {
     /// admins and the owner hold it everywhere, a team's leads on their team.
     #[must_use]
     pub fn may_set_access(&self, app: &AppRecord, to: &Access, actor: &str) -> bool {
-        let Some(org) = app.org.as_deref() else {
-            return false;
-        };
+        let org = app.org.as_str();
         let manages = |a: &Access| match a {
             Access::Team { team } => self.manages_apps(org, actor, Some(team)),
             _ => self.manages_apps(org, actor, None),
@@ -2518,9 +2524,7 @@ impl SystemState {
         if app.owner != account {
             return false;
         }
-        let Some(org) = app.org.as_deref() else {
-            return true;
-        };
+        let org = app.org.as_str();
         if rule == OwnerRule::Ownership {
             return true;
         }
@@ -2537,9 +2541,8 @@ impl SystemState {
         let Access::Team { team } = &app.access else {
             return true;
         };
-        app.org
-            .as_deref()
-            .and_then(|o| self.orgs.get(o))
+        self.orgs
+            .get(&app.org)
             .is_some_and(|o| o.in_team(owner, team))
     }
 
@@ -2555,11 +2558,7 @@ impl SystemState {
     /// [`Self::manages_app`], with the owner judged as the release that
     /// logged the command did ([`OwnerRule`]).
     fn manages_app_as_logged(&self, app: &AppRecord, account: &str, rule: OwnerRule) -> bool {
-        self.owner_acts_as_logged(app, account, rule)
-            || app
-                .org
-                .as_deref()
-                .is_some_and(|o| self.is_org_admin(o, account))
+        self.owner_acts_as_logged(app, account, rule) || self.is_org_admin(&app.org, account)
     }
 
     /// Whether `actor` sees (and may revoke) the organization invite `inv`:
@@ -2781,7 +2780,7 @@ impl SystemState {
         if !o.role(actor).is_some_and(|r| r >= OrgRole::Admin) {
             return Err(ONLY_ADMINS_INSTALL);
         }
-        let in_org = |a: &&AppRecord| a.org.as_deref() == Some(org);
+        let in_org = |a: &&AppRecord| a.org == org;
         let specs = match apps {
             Some(specs) => specs,
             None => self
@@ -2870,7 +2869,7 @@ impl SystemState {
                     let ids: BTreeSet<AppId> = ids.into_iter().collect();
                     for id in &ids {
                         let a = self.apps.get(id).ok_or("no such app")?;
-                        if a.org.as_deref() != Some(org) || !of_package(a) {
+                        if a.org != org || !of_package(a) {
                             return Err(
                                 "an instance named is not of that package in this organization",
                             );
@@ -3162,7 +3161,7 @@ impl SystemState {
 
         let app = self.apps.get(app_id).ok_or("no such app")?;
         let from = app.org.clone();
-        if from.as_deref() == Some(to_org) {
+        if from == to_org {
             return Err("the app is in that organization already");
         }
         if !self.manages_app(app, actor) {
@@ -3172,7 +3171,7 @@ impl SystemState {
         if !target.role(actor).is_some_and(|r| r >= OrgRole::Admin) {
             return Err(ONLY_ADMINS_MOVE_IN);
         }
-        let source = from.as_deref().and_then(|o| self.orgs.get(o));
+        let source = self.orgs.get(&from);
         let package = self.package_of(app).map(str::to_owned);
         let source_team = match &app.access {
             Access::Team { team } => {
@@ -3220,8 +3219,8 @@ impl SystemState {
         }
 
         let release = self.governing_release(app);
-        let before = self.approved_for_release(release, from.as_deref(), &app.owner);
-        let after = self.approved_for_release(release, Some(to_org), &app.owner);
+        let before = self.approved_for_release(release, &from);
+        let after = self.approved_for_release(release, to_org);
         if let (Some(b), Some(a)) = (before, after) {
             if b.is_disjoint(a) {
                 return Err(MOVE_RELEASES_DISJOINT);
@@ -3376,7 +3375,7 @@ impl SystemState {
         }
         self.set_app_file_bytes(app_id, 0);
         if let Some(a) = self.apps.get_mut(app_id) {
-            a.org = Some(to_org.to_owned());
+            a.org = to_org.to_owned();
             a.access = access.clone();
         }
         self.set_app_file_bytes(app_id, held);
@@ -3387,10 +3386,10 @@ impl SystemState {
             self.grant_runs();
         }
         let mut revoked = 0usize;
-        if let (Some(from), Some(team)) = (from.as_deref(), leaves_team.as_deref()) {
+        if let Some(team) = leaves_team.as_deref() {
+            let from = from.as_str();
             let still = self.apps.values().any(|a| {
-                a.org.as_deref() == Some(from)
-                    && matches!(&a.access, Access::Team { team: t } if t == team)
+                a.org == from && matches!(&a.access, Access::Team { team: t } if t == team)
             });
             if !still {
                 let before = self.invites.len();
@@ -3463,26 +3462,23 @@ impl SystemState {
             })
     }
 
-    /// [`Self::stalled`] for the set `org` (or `owner` outside one) holds
-    /// itself: what governs the packages it publishes and its own apps of
-    /// unbound packages.
+    /// [`Self::stalled`] for the set `org` holds itself: what governs the
+    /// packages it publishes and its own apps of unbound packages.
     #[must_use]
-    pub fn stalled_for(&self, org: Option<&str>, owner: &str, now: u64) -> Option<Stall> {
-        self.stalled(self.approved_for(org, owner), now)
+    pub fn stalled_for(&self, org: &str, now: u64) -> Option<Stall> {
+        self.stalled(self.approved_for(org), now)
     }
 
-    /// [`Self::stalled`] for an app of `org` (or of `owner`) governed by
-    /// `release`: judged on the set that governs it
-    /// ([`Self::approved_for_release`]).
+    /// [`Self::stalled`] for an app of `org` governed by `release`: judged on
+    /// the set that governs it ([`Self::approved_for_release`]).
     #[must_use]
     pub fn stalled_for_release(
         &self,
         release: Option<&PackageRef>,
-        org: Option<&str>,
-        owner: &str,
+        org: &str,
         now: u64,
     ) -> Option<Stall> {
-        self.stalled(self.approved_for_release(release, org, owner), now)
+        self.stalled(self.approved_for_release(release, org), now)
     }
 
     /// Whether `actor` may install no release at `now`. An installed release
@@ -3498,15 +3494,22 @@ impl SystemState {
         }
         if let Some(p) = self.publisher_of_signer(signer) {
             if self.governance().releases == Authority::Owner {
-                return self.stalled_for(Some(p), actor, now);
+                return self.stalled_for(p, now);
             }
         }
-        let own = self.stalled_for(None, actor, now)?;
-        let an_org_may = self.orgs.values().any(|o| {
-            o.role(actor).is_some_and(|r| r >= OrgRole::Member)
-                && self.stalled_for(Some(&o.org_id), actor, now).is_none()
-        });
-        (!an_org_may).then_some(own)
+        // Refused only when every organization they may use it in is stalled;
+        // an account in none yet gets a personal organization, made on the
+        // release it is created through, with its first app.
+        let mut stalls = self
+            .orgs
+            .values()
+            .filter(|o| o.role(actor).is_some_and(|r| r >= OrgRole::Member))
+            .map(|o| self.stalled_for(&o.org_id, now));
+        let first = stalls.next()?;
+        if first.is_none() || stalls.any(|s| s.is_none()) {
+            return None;
+        }
+        first
     }
 
     /// Whether a node on `release` is past a deadline at `now`: some newer
@@ -3547,24 +3550,19 @@ impl SystemState {
 
     /// Whether a node on `release` may vouch for `account` (sign its
     /// sessions): a release the operator approved where it holds release
-    /// approvals; else one the account approved for its own apps, or one an
-    /// organization it belongs to approved (its membership already goes to
-    /// those). An account none of whose scopes ever recorded an approval
-    /// (state from before approvals) is unrestricted, as its apps are.
+    /// approvals; else one an organization it belongs to approved (its
+    /// personal one, made at sign-up, included). An account none of whose
+    /// organizations recorded an approval is unrestricted, as its apps are.
     #[must_use]
     pub fn release_may_serve_account(&self, account: &str, release: &str) -> bool {
         if self.governance().releases == Authority::Operator {
             return self.operator_releases.is_empty() || self.operator_releases.contains(release);
         }
-        let own = self.accounts.get(account).map(|a| &a.approved_releases);
-        let sets: Vec<&BTreeSet<String>> = own
-            .into_iter()
-            .chain(
-                self.orgs
-                    .values()
-                    .filter(|o| o.role(account).is_some())
-                    .map(|o| &o.approved_releases),
-            )
+        let sets: Vec<&BTreeSet<String>> = self
+            .orgs
+            .values()
+            .filter(|o| o.role(account).is_some())
+            .map(|o| &o.approved_releases)
             .filter(|set| !set.is_empty())
             .collect();
         sets.is_empty() || sets.iter().any(|set| set.contains(release))
@@ -3667,9 +3665,16 @@ impl SystemState {
         owner_in_team: bool,
         accounts_in_app_team: bool,
     ) -> bool {
-        if let (Some(org), Some(a)) = (&app.org, account) {
-            let member = self.orgs.get(org).and_then(|o| o.role(a)).is_some();
-            if !member && app.access != Access::Public {
+        if let (org, Some(a)) = (&app.org, account) {
+            let o = self.orgs.get(org);
+            let member = o.and_then(|o| o.role(a)).is_some();
+            // An app in a personal organization shared with listed accounts
+            // reaches them as a personal app's list did, without making them
+            // members. Only personal organizations, which exist from the
+            // release that judges this, so every replica decides alike.
+            let listed_in_personal =
+                o.is_some_and(|o| o.personal) && matches!(app.access, Access::Accounts { .. });
+            if !member && app.access != Access::Public && !listed_in_personal {
                 return false;
             }
         }
@@ -3687,10 +3692,7 @@ impl SystemState {
             (_, None) => false,
             // On a team, the owner too is judged by the team (below).
             (access, Some(a))
-                if a == app.owner
-                    && (!owner_in_team
-                        || app.org.is_none()
-                        || !matches!(access, Access::Team { .. })) =>
+                if a == app.owner && (!owner_in_team || !matches!(access, Access::Team { .. })) =>
             {
                 true
             }
@@ -3698,16 +3700,13 @@ impl SystemState {
             (Access::Accounts { accounts }, Some(a)) => accounts.iter().any(|x| x == a),
             // Where apps have app teams, a guest has only the apps of the
             // teams they are in.
-            (Access::Org, Some(a)) => app
-                .org
-                .as_ref()
-                .and_then(|o| self.orgs.get(o))
+            (Access::Org, Some(a)) => self
+                .orgs
+                .get(&app.org)
                 .is_some_and(|o| o.role(a).is_some() && !o.app_only(a)),
-            (Access::Team { team }, Some(a)) => app
-                .org
-                .as_ref()
-                .and_then(|o| self.orgs.get(o))
-                .is_some_and(|o| o.in_team(a, team)),
+            (Access::Team { team }, Some(a)) => {
+                self.orgs.get(&app.org).is_some_and(|o| o.in_team(a, team))
+            }
         }
     }
 
@@ -3715,7 +3714,7 @@ impl SystemState {
     /// organization, if both are there.
     #[must_use]
     pub fn app_team_of(&self, app: &AppRecord) -> Option<(&Org, &Team)> {
-        let o = self.orgs.get(app.org.as_deref()?)?;
+        let o = self.orgs.get(&app.org)?;
         let team = o.app_team(self.package_of(app)?)?;
         Some((o, team))
     }
@@ -3735,22 +3734,15 @@ impl SystemState {
         if !self.may_reach(app, account) {
             return false;
         }
-        let org = |id: &str| {
-            app.org
-                .as_deref()
-                .filter(|o| *o == id)
-                .and_then(|o| self.orgs.get(o))
-        };
+        let org = |id: &str| (app.org == id).then(|| self.orgs.get(id)).flatten();
         match (audience, account) {
             (Audience::All, _) => true,
             (_, None) => false,
             (Audience::Caller, Some(a)) => emitter == Some(a),
             (Audience::Accounts { accounts }, Some(a)) => accounts.iter().any(|x| x == a),
-            (Audience::Team { team }, Some(a)) => app
-                .org
-                .as_ref()
-                .and_then(|o| self.orgs.get(o))
-                .is_some_and(|o| o.in_team(a, team)),
+            (Audience::Team { team }, Some(a)) => {
+                self.orgs.get(&app.org).is_some_and(|o| o.in_team(a, team))
+            }
             (Audience::OrgMembers { org: id }, Some(a)) => {
                 org(id).is_some_and(|o| o.role(a).is_some_and(|r| r >= OrgRole::Member))
             }
@@ -3771,8 +3763,7 @@ impl SystemState {
         self.apps
             .values()
             .filter(|a| {
-                a.org.as_deref() == Some(org)
-                    && matches!(&a.access, Access::Team { team } if gone.contains(team))
+                a.org == org && matches!(&a.access, Access::Team { team } if gone.contains(team))
             })
             .map(|a| a.app_id.clone())
             .collect()
@@ -3803,10 +3794,9 @@ fn hex32(s: &str) -> Option<[u8; 32]> {
 }
 
 /// The subject a decision over `scope` names, as the API states it.
-fn scope_subject(scope: &ReleaseScope, actor: &str) -> String {
+fn scope_subject(scope: &ReleaseScope, _actor: &str) -> String {
     match scope {
         ReleaseScope::Org { org } => format!("org:{org}"),
-        ReleaseScope::Account => format!("account:{actor}"),
         ReleaseScope::Cluster => "cluster".to_owned(),
     }
 }
@@ -4647,6 +4637,12 @@ pub enum SystemCmd {
         /// sign-up an earlier release logged): unknown.
         #[serde(default, skip_serializing_if = "is_zero")]
         at: u64,
+        /// The account's personal organization, made with it
+        /// ([`crate::types::Org::personal`]): every account has one from
+        /// sign-up, so every app it makes is in an organization. Outside what
+        /// the passkey signs, as `at` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        personal_org: Option<PersonalOrgSeed>,
     },
     /// A new passkey, approved by one the account already has.
     AddPasskey {
@@ -4877,6 +4873,14 @@ pub enum SystemCmd {
         /// replays taking any name, as that release did.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         name_fits: bool,
+        /// The actor's personal organization ([`crate::types::Org::personal`]):
+        /// at most one per account, not counted against
+        /// `maxOrgsPerAccount`, and it starts with the release and outbound
+        /// approvals the account holds for apps outside an organization, so
+        /// an instance created there runs where one outside would.
+        /// Left out when false ([`cluster_version::Feature::PersonalOrg`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        personal: bool,
     },
     /// Rename an organization: its owner or an admin, with their passkey
     /// consent (`org:<org> / __rename_org / { name }`), to a name that fits
@@ -5713,12 +5717,9 @@ impl SystemMachine {
     fn new_work_refusal(&self, cmd: &SystemCmd) -> Option<Stall> {
         let s = &self.state;
         match cmd {
-            SystemCmd::CreateApp { app } => s.stalled_for_release(
-                s.governing_release(app),
-                app.org.as_deref(),
-                &app.owner,
-                app.created_at,
-            ),
+            SystemCmd::CreateApp { app } => {
+                s.stalled_for_release(s.governing_release(app), &app.org, app.created_at)
+            }
             SystemCmd::UpgradeApp {
                 app_id,
                 bundle,
@@ -5728,7 +5729,7 @@ impl SystemMachine {
             } => {
                 let a = s.apps.get(app_id)?;
                 let to = s.governing(release.as_ref(), bundle, *at);
-                s.stalled_for_release(to, a.org.as_deref(), &a.owner, *at)
+                s.stalled_for_release(to, &a.org, *at)
             }
             SystemCmd::InstallPackage {
                 release, signer_id, ..

@@ -37,6 +37,7 @@ const MAX_FINISHED_BYTES: u64 = 8 * 1024 * 1024 * 1024; // sealed bytes held for
 pub const MAX_ASSIGNMENT_BYTES: usize = 8 * 1024 * 1024; // the most a request to assign a run may weigh; a full collect is about 4 MiB
 pub const TOKEN_HEADER: &str = "x-run-token"; // the header carrying a run's capability token
 pub const UNKNOWN_RUN: &str = "UNKNOWN_RUN"; // the code of an answer about a run this node does not hold
+pub const LOG_HEADER: &str = "x-run-log"; // sent on a request by a leader that reads a report's log; without it the answer has none
 pub const NEED_BUNDLE: &str = "NEED_BUNDLE"; // the code of an assignment whose component this node does not hold
 
 /// A run's secrets, unwrapped at admission and taken by the thread that runs it.
@@ -54,8 +55,12 @@ pub(super) struct OutputFile {
 pub(super) struct Finished {
     pub report: Report,
     pub signature: String,
+    /// The same report without its log, signed on its own: what a request without the log header gets.
+    pub bare: Option<(Report, String)>,
     pub outputs: Vec<OutputFile>,
-    /// Bytes the outputs hold on disk.
+    /// The sealed module log, if the run kept one.
+    pub log: Option<OutputFile>,
+    /// Bytes the outputs and the log hold on disk.
     pub bytes: u64,
 }
 
@@ -154,14 +159,19 @@ impl Run {
         let _ended = self.finished.send_replace(true);
     }
 
-    fn status(&self) -> Value {
-        status_of(&locked(&self.state))
+    /// The status as the request's headers ask for it: a report carries its log only for a
+    /// request with [`LOG_HEADER`].
+    fn status(&self, headers: &HeaderMap) -> Value {
+        status_of(&locked(&self.state), headers.contains_key(LOG_HEADER))
     }
 
     /// The status and whether the run runs, read under one lock.
-    fn snapshot(&self) -> (Value, bool) {
+    fn snapshot(&self, headers: &HeaderMap) -> (Value, bool) {
         let state = locked(&self.state);
-        (status_of(&state), matches!(state.phase, Phase::Running))
+        (
+            status_of(&state, headers.contains_key(LOG_HEADER)),
+            matches!(state.phase, Phase::Running),
+        )
     }
 
     /// A wrong token answers as an unknown run does, so a probe learns nothing of what is held.
@@ -177,7 +187,7 @@ impl Run {
     }
 }
 
-fn status_of(state: &RunState) -> Value {
+fn status_of(state: &RunState, with_log: bool) -> Value {
     match &state.phase {
         Phase::Awaiting => json!({ "state": "awaiting" }),
         Phase::Running => match &state.progress {
@@ -187,7 +197,11 @@ fn status_of(state: &RunState) -> Value {
             None => json!({ "state": "running" }),
         },
         Phase::Done(done) => {
-            json!({ "state": "done", "report": done.report, "signature": done.signature })
+            let (report, signature) = match (&done.bare, with_log) {
+                (Some((report, signature)), false) => (report, signature),
+                _ => (&done.report, &done.signature),
+            };
+            json!({ "state": "done", "report": report, "signature": signature })
         }
         Phase::Lost => json!({ "state": "lost" }),
     }
@@ -415,6 +429,7 @@ fn unwrap_keys(job: &JobNode, a: &Assignment) -> Result<Keys, ApiError> {
 /// `POST /job/runs`: take an assignment, or answer what became of it.
 pub(super) async fn assign(
     State(job): State<Arc<JobNode>>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, ApiError> {
     let a: Assignment = serde_json::from_slice(&body)
@@ -432,7 +447,7 @@ pub(super) async fn assign(
             exec::start(&job, &run);
         }
     }
-    Ok(Json(run.status()))
+    Ok(Json(run.status(&headers)))
 }
 
 /// Registers the run unless it is already held (then that one answers) or there is no room.
@@ -550,7 +565,7 @@ pub(super) async fn put_segment(
     }
     let mut received = run.received.lock().await;
     if received.contains(&(i, k)) {
-        return Ok(Json(run.status()));
+        return Ok(Json(run.status(&headers)));
     }
     if !matches!(locked(&run.state).phase, Phase::Awaiting) {
         return Err(not_awaiting());
@@ -569,7 +584,7 @@ pub(super) async fn put_segment(
     let in_so_far = received.range((i, 0)..=(i, usize::MAX)).count();
     if in_so_far + 1 < hashes.len() {
         let _new = received.insert((i, k));
-        return Ok(Json(run.status()));
+        return Ok(Json(run.status(&headers)));
     }
     let key = locked(&run.keys)
         .as_ref()
@@ -586,7 +601,7 @@ pub(super) async fn put_segment(
     if !matches {
         // What the leader sent is not the file it declared: the report says so, signed.
         exec::fail_integrity(&job, &run);
-        return Ok(Json(run.status()));
+        return Ok(Json(run.status(&headers)));
     }
     #[cfg(feature = "testing")]
     let finished = if job.finish_input_fails.swap(false, Ordering::Relaxed) {
@@ -612,7 +627,7 @@ pub(super) async fn put_segment(
     if complete {
         exec::start(&job, &run);
     }
-    Ok(Json(run.status()))
+    Ok(Json(run.status(&headers)))
 }
 
 /// `GET /job/runs/{app}/{run}/{attempt}`.
@@ -626,7 +641,7 @@ pub(super) async fn status(
     if let Some(stuck) = test_probe(&job).await {
         return Ok(stuck);
     }
-    Ok(Json(run.status()))
+    Ok(Json(run.status(&headers)))
 }
 
 /// What a test makes a job node do instead of answering: hang, or claim to be still running.
@@ -652,6 +667,18 @@ fn output_of<T>(run: &Run, i: usize, read: impl FnOnce(&OutputFile) -> T) -> Res
         .ok_or_else(|| ApiError::new(404, "NO_SUCH_OUTPUT", "the run wrote no such output"))
 }
 
+/// `read` of a finished run's sealed log.
+fn log_of<T>(run: &Run, read: impl FnOnce(&OutputFile) -> T) -> Result<T, ApiError> {
+    let state = locked(&run.state);
+    let Phase::Done(done) = &state.phase else {
+        return Err(ApiError::new(409, "NOT_DONE", "the run has not ended"));
+    };
+    done.log
+        .as_ref()
+        .map(read)
+        .ok_or_else(|| ApiError::new(404, "NO_LOG", "the run kept no log"))
+}
+
 /// `GET /job/runs/{app}/{run}/{attempt}/outputs/{i}/{k}`: segment `k` of the output's ciphertext,
 /// read by range from the scratch file.
 pub(super) async fn output_segment(
@@ -660,8 +687,32 @@ pub(super) async fn output_segment(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let run = find(&job, &app, &run, attempt, &headers)?;
+    serve_segment(&job, &run, Some(i), k).await
+}
+
+/// `GET /job/runs/{app}/{run}/{attempt}/log/{k}`: segment `k` of the sealed module log.
+pub(super) async fn log_segment(
+    State(job): State<Arc<JobNode>>,
+    Path((app, run, attempt, k)): Path<(String, String, u32, usize)>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let run = find(&job, &app, &run, attempt, &headers)?;
+    serve_segment(&job, &run, None, k).await
+}
+
+/// Segment `k` of output `i`, or of the log when there is no `i`.
+#[cfg_attr(
+    not(feature = "testing"),
+    allow(unused_variables, reason = "only the test hooks read the node")
+)]
+async fn serve_segment(
+    job: &JobNode,
+    run: &Run,
+    i: Option<usize>,
+    k: usize,
+) -> Result<Response, ApiError> {
     #[cfg(feature = "testing")]
-    if job.outputs_fail.load(Ordering::Relaxed) || output_cut(&job) {
+    if job.outputs_fail.load(Ordering::Relaxed) || output_cut(job) {
         return Err(ApiError::internal("outputs are failing"));
     }
     #[cfg(feature = "testing")]
@@ -679,13 +730,19 @@ pub(super) async fn output_segment(
         tokio::time::sleep(Duration::from_millis(ms)).await;
         return Err(ApiError::internal("outputs are failing slowly"));
     }
-    let path = output_of(&run, i, |o| o.path.clone())?;
-    let bytes = read_segment(&path, k).await?;
+    let path = match i {
+        Some(i) => output_of(run, i, |o| o.path.clone())?,
+        None => log_of(run, |o| o.path.clone())?,
+    };
+    #[allow(unused_mut, reason = "a test may corrupt the log")]
+    let mut bytes = read_segment(&path, k).await?;
     #[cfg(feature = "testing")]
-    {
+    if let Some(i) = i {
         let mut log = locked(&job.output_log);
         log.0.push((i, k));
         log.1 = log.1.max(bytes.len());
+    } else if job.log_corrupt.load(Ordering::Relaxed) {
+        bytes[0] ^= 1;
     }
     Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response())
 }
@@ -741,6 +798,17 @@ pub(super) async fn output_key(
     Ok(Json(json!({ "key": key })))
 }
 
+/// `GET /job/runs/{app}/{run}/{attempt}/log/key`: the log's data key, hex, only inside the sealed channel.
+pub(super) async fn log_key(
+    State(job): State<Arc<JobNode>>,
+    Path((app, run, attempt)): Path<(String, String, u32)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let run = find(&job, &app, &run, attempt, &headers)?;
+    let key = log_of(&run, |o| hex::encode(*o.key))?;
+    Ok(Json(json!({ "key": key })))
+}
+
 /// `DELETE /job/runs/{app}/{run}/{attempt}`: stop the run if it runs, then drop it with its files.
 /// Answers its last status; a run that did not stop within [`CANCEL_WAIT`] stays, and still runs.
 pub(super) async fn cancel(
@@ -759,7 +827,7 @@ pub(super) async fn cancel(
         let mut ended = run.finished.subscribe();
         let _ = tokio::time::timeout(CANCEL_WAIT, ended.wait_for(|ended| *ended)).await;
     }
-    let (answer, running) = run.snapshot();
+    let (answer, running) = run.snapshot(&headers);
     if running {
         return Ok(Json(answer));
     }
@@ -874,12 +942,15 @@ mod tests {
             message: String::new(),
             result: Vec::new(),
             outputs: Vec::new(),
+            log: None,
             usage: crate::job_wire::ReportUsage::default(),
         };
         Phase::Done(Box::new(Finished {
             report,
             signature: String::new(),
+            bare: None,
             outputs: Vec::new(),
+            log: None,
             bytes,
         }))
     }
@@ -930,16 +1001,16 @@ mod tests {
     #[test]
     fn the_status_names_the_phase_and_the_last_progress() {
         let r = run("status");
-        assert_eq!(r.status(), json!({ "state": "awaiting" }));
+        assert_eq!(r.status(&HeaderMap::new()), json!({ "state": "awaiting" }));
         locked(&r.state).phase = Phase::Running;
-        assert_eq!(r.status(), json!({ "state": "running" }));
+        assert_eq!(r.status(&HeaderMap::new()), json!({ "state": "running" }));
         locked(&r.state).progress = Some((40, "hashing".to_owned()));
         assert_eq!(
-            r.status(),
+            r.status(&HeaderMap::new()),
             json!({ "state": "running", "progress": { "percent": 40, "step": "hashing" } })
         );
         r.end(Phase::Lost);
-        assert_eq!(r.status(), json!({ "state": "lost" }));
+        assert_eq!(r.status(&HeaderMap::new()), json!({ "state": "lost" }));
     }
 
     #[test]

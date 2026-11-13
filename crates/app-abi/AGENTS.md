@@ -19,7 +19,10 @@
   and tools and never decides access.
 - `ty::Type::parse` reads ABI type strings, the SDK's spellings (`option<T>`, `list<T>`,
   `tuple<..>`, `bytes`) and the Rust ones `abi_type` leaves (`BTreeMap<String,u32>`, `[u8;32]`);
-  anything else is `Type::Named`, never an error.
+  anything else is `Type::Named`, never an error. `u64_number`/`i64_number` (`Int::U64Number`,
+  `Int::I64Number`) and `byte_list` (`List(Int(U8))`, which displays as `byte_list` because
+  `list<u8>` reads as `bytes`) are plain serde's JSON numbers and byte arrays, written for an
+  `#[abi(plain)]` field.
 - `openapi::document` maps an ABI to OpenAPI 3.1: one `POST /apps/{app}/methods/{name}` per
   method a client calls (`Method::client_callable`), the app's errors as `422 APP_ERROR`,
   `412 CONFIRM_REQUIRED` on `confirm` methods, events on `GET /apps/{app}/events`. A method
@@ -50,7 +53,14 @@
   `Codable, Sendable, Equatable` struct or enum (Swift: hand-written `init(from:)`/`encode(to:)`
   per serde tagging, `indirect` or `@Indirect` where it holds itself) or a data class or sealed
   interface with a hand-written serializer in its companion (Kotlin: `Item.serializer()`,
-  `Page.serializer(Item.serializer())`, no plugin); one without stays `JSONValue`/`JsonElement`.
+  `Page.serializer(Item.serializer())`, no plugin), annotated `@Serializable(with = X.Companion.Wire::class)`
+  so `serializer<T>()` finds it; `KotlinOptions::serialization_plugin` (`--kotlin-serialization-plugin`)
+  leaves the companion's `serializer()` to the kotlinx.serialization plugin, which would clash
+  with a hand-written one. One without a shape stays `JSONValue` (Swift, a nested alias) /
+  `JsonElement` (Kotlin, under no alias: a top-level one clashes with app types in the package).
+- Every client leaves an unset optional argument out (TypeScript sends `args` as given; Python,
+  Swift and Kotlin skip `None`/`nil`/`null`): the SDK reads missing and `null` alike as `None`.
+  Python puts fields the JSON may leave out in a `total=False` `TypedDict` part.
 - `diff::diff` classifies changes between two ABIs (`Severity::Breaking` / `Compatible`) and
   sets `state_error` for an unreadable state change without a state version bump. `diff::shapes`
   compares `types` for each app type the old ABI's callers exchange, by name, in the direction
@@ -64,7 +74,8 @@
   (`crates/sdk-macros/src/types.rs`, D20); change them only with it.
 - Generated output is pinned by golden files: `tests/fixtures/<app>.abi.json` (ABIs of
   `apps/kv-store`, `apps/rooms`, `apps/permissions-showcase`, and a crafted `kitchen-sink`)
-  against `tests/golden/`. Refresh a fixture from a build: extract the component's
+  against `tests/golden/` (plus `kitchen-sink.plugin.kt`, the Kotlin client for the
+  serialization plugin). Refresh a fixture from a build: extract the component's
   `calimero:abi` section.
 - The goldens must run against the published clients, which the golden test cannot see:
   `tests/ts` type-checks every golden `.ts` against mero-js (pinned `^33`) and runs them on a
@@ -73,7 +84,8 @@
   change to this crate; bump the pins when a client's major moves.
 - The Swift and Kotlin goldens must compile with warnings as errors against the SDK releases
   they target, and the kitchen-sink's types must round-trip their JSON (`tests/native/swift`,
-  `tests/native/kotlin`: every enum tagging style, records, recursive and generic types):
+  `tests/native/kotlin`: every enum tagging style, records, recursive and generic types,
+  `serializer<T>()`; Kotlin twice, without the plugin and `*.plugin.kt` with it):
   `.github/workflows/app-abi-native-clients.yml` runs
   `scripts/check-app-abi-clients.py swift|kotlin` (macOS / Android SDK) on a change here.
   Moving to a new SDK release moves `SWIFT_SDK_VERSION` / `KOTLIN_SDK_REF` there.

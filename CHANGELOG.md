@@ -2,8 +2,33 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.20] - 2026-11-12
+
 ### Added
 
+- **Every app is in an organization, and every account has a personal one from
+  sign-up** (#5015, `calimero-node`). **Hard cutover**: apps outside any organization are
+  gone; a data directory or log holding one is not read, so clusters are recreated
+  (mdma refuses to roll across it), and nothing of before is replayed.
+  A sign-up makes the account's personal organization in the same entry
+  (`CreateAccount { personalOrg }`, named `Personal`), approving the release it signed
+  up through; `POST /apps` with no `org` creates the instance there. A personal
+  organization is an ordinary organization its owner can rename and invite people
+  into; an account owns exactly one, it does not count
+  against `maxOrgsPerAccount`, an instance there shared with listed accounts reaches
+  them without making them members, an instance there handed to someone outside it
+  goes to their personal organization, and a deployment's report counts it in
+  `outsideOrgs` without naming it. `personal: true` marks it in `GET /orgs/{org}`,
+  `/auth/me` and report scopes. Removed with the apps outside an organization: the
+  account's own release and outbound approvals (`POST /auth/releases`,
+  `POST /auth/outbound`, `approvedReleases` and `outboundApprovals` in `/auth/me`; a
+  personal organization's are approved on `/orgs/{org}/releases` and
+  `/orgs/{org}/outbound`), the `account:{id}` payer of usage and quotas (it is the
+  organization), the `account` approval scope (a consent request with no scope is
+  the personal organization's), and an xcall between one owner's personal apps.
+  `GET /auth/apps` now lists the apps the account owns in any organization.
+  **Operators:** recreate clusters on this release. **Clients:** approve on the
+  personal organization; an app's billing label is its organization.
 - **An app's frontend creates organizations, invites people and lets them join
   through the node's consent page** (#5014). Since #4934 a session opened on an
   app's frontend is refused `POST /orgs`, invites and redemption, so an app like
@@ -35,7 +60,7 @@
   the node's attestation on a site the node does not control. `https` only (`http`
   for localhost), 512 bytes at most; a job node refuses it.
 
-- **The recovery disk: backups that outlive every mero-kms, opened with the key of
+- **The recovery disk (#5013): backups that outlive every mero-kms, opened with the key of
   whoever upgrades the app.** `merod --recovery-dir DIR` writes, every 5 minutes, on
   every node that holds an app (leader or not), the app's state, the code it runs and
   its holder's slice of the system state (an organization or account's apps, people
@@ -66,8 +91,41 @@
   recovery uses must carry an attestation the node accepts under its peer
   policy (`400 UNATTESTED_RECOVERY_FILE`). `calimero-log` gains `read_snapshot_rows` and
   `Group::replace_state_rows` (state rows that move between cluster keys).
+- **ABI spellings for plain serde's JSON, and `#[serde(default)]` read as optional**
+  (`calimero-sdk-macros`, `calimero-app-abi`). A `#[derive(AbiType)]` field (or type)
+  marked `#[abi(plain)]` describes its `u64`/`i64` as `u64_number`/`i64_number` (a JSON
+  number) and its `Vec<u8>` as `byte_list` (an array of numbers), at any depth, where it
+  was refused before; the JSON does not change, and `u64`, `i64`, `bytes` and `list<u8>`
+  keep meaning the D20 strings. Clients type them `number` / `int` / `UInt64`,`Int64` /
+  `ULong`,`Long` and `number[]` / `List[int]` / `[UInt8]` / `List<UByte>` (JavaScript reads
+  a number exactly only up to 2^53). A field with `#[serde(default)]`, or every field of a
+  struct with it, is optional in the shape, so generated argument types no longer require
+  it (Python `TypedDict`s now put optional fields in a `total=False` part).
+- **`mero-app-build codegen --kotlin-serialization-plugin`**, and Kotlin app types annotated
+  `@Serializable(with = ...)` (`calimero-app-build`, `calimero-app-abi`), so
+  `serializer<T>()` finds their serializers, sealed interfaces included, and kotlinx's
+  bundled R8 rules keep them. **A Kotlin module that applies the kotlinx.serialization
+  compiler plugin must now generate with the flag**: the plugin writes each `serializer()`
+  and a hand-written one clashes with it ("Overload resolution ambiguity").
+- **`mero-app-build --version` names the source it was built from** (`1.0.0-rc.19
+  (<git describe>, <commit>)`); `--help` / `-h` (also after `codegen` and `abi-diff`)
+  prints the usage and exits 0 instead of failing with a backtrace.
 
 ### Changed
+
+- **A pipeline step's runs live in rows of their own** (#4996). A step's per-run
+  outputs, results and cache keys are hidden rows (`rows::CITEM`), written once
+  when a run ends, so a step's completion rewrites a record that no longer grows
+  with its fan-out. The leader keeps each fan-out's runs in memory and reads no
+  row twice; a step whose rows cannot all be read fails `ITEMS_UNREADABLE` rather
+  than build from part of them. A record 1.0.0-rc.19 wrote, with the per-run data
+  inline, is still read (#5026).
+- **A sealed file's export streams to disk** (#4998, `calimero-client`,
+  `meroctl`). `Client::export_file_to(app, id, out)` fetches and opens one
+  segment at a time, so memory stays at one segment, and checks the segment list,
+  each segment and the plaintext's size and SHA-256 before it returns `Ok`;
+  `meroctl file download` and `pipeline download` write `<target>.part` and move
+  it into place only then. `Client::export_file` is the same call into memory.
 
 - **One undecided consent request per account per node** (#5014). A new
   `POST /consent/requests` replaces the account's older undecided one, whose page

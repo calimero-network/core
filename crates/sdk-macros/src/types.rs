@@ -224,6 +224,71 @@ pub fn abi_type(ty: &Type) -> String {
     }
 }
 
+/// The ABI name of a Rust type as plain serde writes it (`#[abi(plain)]`): as [`abi_type`],
+/// but at any depth `u64`/`i64` are `u64_number`/`i64_number` (JSON numbers) and `Vec<u8>`/`[u8]`
+/// `byte_list` (an array of numbers), where D20 would write decimal strings and base64url.
+pub fn plain_abi_type(ty: &Type) -> String {
+    match ty {
+        Type::Reference(r) => plain_abi_type(&r.elem),
+        Type::Paren(p) => plain_abi_type(&p.elem),
+        Type::Group(g) => plain_abi_type(&g.elem),
+        Type::Slice(s) if ident_of(&s.elem).as_deref() == Some("u8") => "byte_list".into(),
+        Type::Slice(s) => format!("list<{}>", plain_abi_type(&s.elem)),
+        Type::Array(a) => format!(
+            "[{};{}]",
+            plain_abi_type(&a.elem),
+            a.len.to_token_stream().to_string().replace(' ', "")
+        ),
+        Type::Tuple(t) if t.elems.is_empty() => "unit".into(),
+        Type::Tuple(t) => {
+            let parts: Vec<_> = t.elems.iter().map(plain_abi_type).collect();
+            format!("tuple<{}>", parts.join(", "))
+        }
+        Type::Path(p) if p.qself.is_none() => plain_path_type(ty, p),
+        other => compact(other),
+    }
+}
+
+fn plain_path_type(ty: &Type, path: &syn::TypePath) -> String {
+    if let Some(name) = ident_of(ty) {
+        return match name.as_str() {
+            "u64" => "u64_number".into(),
+            "i64" => "i64_number".into(),
+            "String" | "str" => "string".into(),
+            _ => name,
+        };
+    }
+    if let Some(inner) = generic_arg(ty, "Option") {
+        return format!("option<{}>", plain_abi_type(inner));
+    }
+    if let Some(inner) = generic_arg(ty, "Vec") {
+        if ident_of(inner).as_deref() == Some("u8") {
+            return "byte_list".into();
+        }
+        return format!("list<{}>", plain_abi_type(inner));
+    }
+    if let Some(inner) = generic_arg(ty, "Box") {
+        return plain_abi_type(inner);
+    }
+    // Any other generic type (`BTreeMap<String, u64>`, `Page<u64>`): its name and its type
+    // arguments, each as plain serde writes it.
+    let Some(last) = path.path.segments.last() else {
+        return compact(ty);
+    };
+    let PathArguments::AngleBracketed(args) = &last.arguments else {
+        return compact(ty);
+    };
+    let args: Vec<String> = args
+        .args
+        .iter()
+        .filter_map(|a| match a {
+            GenericArgument::Type(t) => Some(plain_abi_type(t)),
+            _ => None,
+        })
+        .collect();
+    format!("{}<{}>", last.ident, args.join(","))
+}
+
 fn path_type(ty: &Type) -> String {
     if let Some(name) = ident_of(ty) {
         // Integers, floats and `bool` keep their Rust names; app types keep theirs.
@@ -397,6 +462,30 @@ mod tests {
         assert_eq!(abi_type(&parse_quote!(Vec<RoomId>)), "list<RoomId>");
         assert_eq!(abi_type(&parse_quote!((u32, bool))), "tuple<u32, bool>");
         assert_eq!(abi_type(&parse_quote!(Page<Booking>)), "Page<Booking>");
+    }
+
+    #[test]
+    fn plain_abi_type_names() {
+        assert_eq!(plain_abi_type(&parse_quote!(u64)), "u64_number");
+        assert_eq!(
+            plain_abi_type(&parse_quote!(Option<i64>)),
+            "option<i64_number>"
+        );
+        assert_eq!(plain_abi_type(&parse_quote!(Vec<u8>)), "byte_list");
+        assert_eq!(plain_abi_type(&parse_quote!(&[u8])), "byte_list");
+        assert_eq!(plain_abi_type(&parse_quote!([u8; 32])), "[u8;32]");
+        assert_eq!(plain_abi_type(&parse_quote!(Vec<u64>)), "list<u64_number>");
+        assert_eq!(
+            plain_abi_type(&parse_quote!(std::collections::BTreeMap<String, u64>)),
+            "BTreeMap<string,u64_number>"
+        );
+        assert_eq!(
+            plain_abi_type(&parse_quote!((u32, Vec<u8>))),
+            "tuple<u32, byte_list>"
+        );
+        assert_eq!(plain_abi_type(&parse_quote!(Page<i64>)), "Page<i64_number>");
+        assert_eq!(plain_abi_type(&parse_quote!(Room)), "Room");
+        assert_eq!(plain_abi_type(&parse_quote!(u32)), "u32");
     }
 
     #[test]

@@ -947,13 +947,16 @@ async fn apps_see_the_callers_organization_role_and_teams() {
         .unwrap_err();
     assert_eq!(err.code(), Some("APP_ERROR"), "{err}");
 
-    // Outside an organization the app sees no standing.
+    // Made without naming an organization, the app is in her personal one,
+    // and sees her standing there alone.
     let solo = alice
         .apps()
         .create(typed(json!({ "name": "solo", "bundle": &bundle })))
         .await
         .map(|a| a.app_id)
         .unwrap();
+    let home = json!(alice.personal_org().await.unwrap());
+    assert_ne!(home, json!(org));
     let me = alice
         .apps()
         .view(
@@ -966,7 +969,7 @@ async fn apps_see_the_callers_organization_role_and_teams() {
         .await
         .unwrap()
         .result;
-    assert_eq!(me, Value::Null);
+    assert_eq!((&me["role"], &me["org"]), (&json!("owner"), &home), "{me}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1724,7 +1727,8 @@ async fn an_owner_removed_from_the_organization_no_longer_manages_its_app() {
 }
 
 /// An owner who is a member of the app's organization manages it as before,
-/// and so does the owner of an app outside any organization.
+/// and so does the owner of an app in their personal organization, which goes
+/// to the new owner's personal organization when handed to someone outside it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_member_owner_and_a_personal_owner_still_manage_their_apps() {
     let c = Cluster::start(3).await;
@@ -1767,6 +1771,10 @@ async fn a_member_owner_and_a_personal_owner_still_manage_their_apps() {
             .unwrap();
     }
     all_applied(&c).await;
+    // It went to her personal organization.
+    let carols = carol.apps().get(&personal).await.map(wire).unwrap()["org"].clone();
+    assert_eq!(carols, json!(carol.personal_org().await.unwrap()));
+    assert_ne!(carols, json!(org));
     for app in [&in_org, &personal] {
         let record = carol.apps().get(app).await.map(wire).unwrap();
         assert_eq!(record["owner"], json!(carol_id), "{record}");
@@ -5110,8 +5118,9 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
 
     // Approved: the action calls out and writes what came back through its own call.
     let _ = alice
-        .auth()
-        .account_outbound_approval(
+        .orgs()
+        .outbound_approval(
+            &alice.personal_org().await.unwrap(),
             PACKAGE,
             Some(typed(json!("manifest"))),
             Some(false),
@@ -5386,8 +5395,9 @@ async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
     // Approved: Turnstile accepts the token, checked from the service's own call, and
     // the forms app writes in the same request.
     let _ = alice
-        .auth()
-        .account_outbound_approval(
+        .orgs()
+        .outbound_approval(
+            &alice.personal_org().await.unwrap(),
             PACKAGE,
             Some(typed(json!("manifest"))),
             Some(false),
@@ -5634,8 +5644,8 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
 
 /// Review item 3, D75 (spec v0.26): `orgs-of` answers only the app's own organization.
 /// Carol is a member of the app's org and the owner of another; a component in the
-/// app's org learns only her role there, and a personal app learns nothing about its
-/// callers' organizations.
+/// app's org learns only her role there, and an app in Alice's personal organization
+/// (made when it named none) learns only that one: Alice's role, nothing of Carol's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_component_sees_no_organization_but_its_own() {
     use calimero_app_host::{Directory as _, OrgRole};
@@ -5704,16 +5714,19 @@ async fn a_component_sees_no_organization_but_its_own() {
     assert_eq!(
         dir.orgs_of(&carol_id),
         Vec::new(),
-        "a personal app saw its caller's orgs"
+        "an app in a personal organization saw its caller's orgs"
     );
     let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
+    let mine = node
+        .sys(|s| s.personal_org_of(&alice_id).cloned())
+        .expect("the instance made Alice's personal organization");
     assert_eq!(
         dir.orgs_of(&alice_id),
-        Vec::new(),
-        "a personal app saw its owner's orgs"
+        vec![(mine, OrgRole::Owner)],
+        "an app in a personal organization saw more than its own"
     );
 }
 
@@ -6149,9 +6162,21 @@ async fn usage_survives_a_leader_change_and_a_snapshot_install() {
     assert!(fuel_after > fuel);
 }
 
-/// Q20: an account at its daily fuel quota gets `429 QUOTA_EXCEEDED` on a call to
-/// any app it owns, before the call runs; its apps' timers still tick and `init`
-/// still runs (Xabi), and both still count.
+/// The usage of the developer `app` is billed to: its organization's (an
+/// instance made without naming one is in its owner's personal organization),
+/// else the account's own, for an app from before outside any organization.
+async fn developer_usage(cl: &Client, app: &str) -> Value {
+    let org = cl.apps().get(app).await.map(wire).unwrap()["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    cl.orgs().usage(&org).await.map(wire).unwrap()
+}
+
+/// Q20: a developer at its daily fuel quota gets `429 QUOTA_EXCEEDED` on a call to
+/// any of its apps, before the call runs (here the owner's personal organization,
+/// where her instances go); its apps' timers still tick and `init` still runs
+/// (Xabi), and both still count.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick() {
     let c = Cluster::start(3).await;
@@ -6191,13 +6216,14 @@ async fn an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick() {
         "{err}"
     );
     let me = alice.auth().usage().await.map(wire).unwrap();
-    let before = figure(&me["developerFuelToday"]);
-    assert!(before >= 1, "{me}");
+    let dev = developer_usage(&alice, &app).await;
+    let before = figure(&dev["developerFuelToday"]);
+    assert!(before >= 1, "{dev}");
     // Only `init` ran: it is the whole of the account's day, and the app's.
     let u = app_usage(&alice, &app).await;
     assert_eq!(figure(&u["today"]["runs"]), 1, "{u}");
-    assert_eq!(figure(&u["today"]["fuel"]), before, "{u} vs {me}");
-    let _writes = figure(&me["developerWritesToday"]);
+    assert_eq!(figure(&u["today"]["fuel"]), before, "{u} vs {dev}");
+    let _writes = figure(&dev["developerWritesToday"]);
     let _bytes = figure(&me["bundleBytes"]);
     assert_eq!(me["quotas"]["maxFuelPerDeveloperPerDay"], json!("1"));
     assert!(
@@ -6232,7 +6258,7 @@ async fn an_account_over_its_daily_fuel_gets_429_and_its_timers_still_tick() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let after = figure(&alice.auth().usage().await.map(wire).unwrap()["developerFuelToday"]);
+    let after = figure(&developer_usage(&alice, &app).await["developerFuelToday"]);
     assert!(
         after > before,
         "the tick's fuel did not count: {before} → {after}"
@@ -6296,7 +6322,7 @@ async fn a_fuel_limit_of_zero_never_refuses() {
             .await
             .unwrap();
     }
-    let used = figure(&alice.auth().usage().await.map(wire).unwrap()["developerFuelToday"]);
+    let used = figure(&developer_usage(&alice, &app).await["developerFuelToday"]);
     assert!(used > 0);
 
     set_fuel_limit(&ops, used).await;
@@ -6466,8 +6492,10 @@ async fn join_org(
     let _r = who.orgs().invite_redeem(&token).await.unwrap();
 }
 
-/// D78: an org app's runs are the organization's, not its owner's. The owner's
-/// `/auth/usage` counts only its personal apps; the org's admins read the org's.
+/// D78: an org app's runs are the organization's, not its owner's. An instance made
+/// without naming an organization is in the owner's personal organization, so its
+/// runs are that organization's too; the owner's `/auth/usage` counts only apps
+/// outside any organization, and each organization's admins read its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
     let c = Cluster::start(3).await;
@@ -6503,7 +6531,7 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
         "the owner paid for the org's app: {me}"
     );
 
-    // A personal app is still the owner's, and only it.
+    // One in her personal organization is that organization's, and only it.
     let personal = alice
         .apps()
         .create(typed(json!({ "name": "kv", "bundle": &bundle })))
@@ -6512,15 +6540,19 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
         .unwrap();
     set(&alice, &personal, "p").await.unwrap();
     let mine = figure(&app_usage(&alice, &personal).await["today"]["fuel"]);
+    let home = alice.personal_org().await.unwrap();
+    assert_ne!(home, acme);
+    let theirs = alice.orgs().usage(&home).await.map(wire).unwrap();
+    assert_eq!(figure(&theirs["developerFuelToday"]), mine, "{theirs}");
     let me = alice.auth().usage().await.map(wire).unwrap();
-    assert_eq!(figure(&me["developerFuelToday"]), mine, "{me}");
+    assert_eq!(figure(&me["developerFuelToday"]), 0, "{me}");
     let org = alice.orgs().usage(&acme).await.map(wire).unwrap();
     assert_eq!(figure(&org["developerFuelToday"]), app_fuel, "{org}");
 }
 
 /// D78: the daily fuel cap holds per developer. An org app made from a release has
-/// the org as its developer: over the cap it gets 429, while its owner's personal
-/// apps, under the cap, still run.
+/// the org as its developer: over the cap it gets 429, while its owner's apps in her
+/// personal organization, another developer under the cap, still run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run() {
     let c = Cluster::start(3).await;
@@ -6549,7 +6581,8 @@ async fn an_org_over_its_fuel_cap_gets_429_while_its_owners_personal_apps_run() 
         .map(|a| a.app_id)
         .unwrap();
     // The org burns far more than the owner's personal app will.
-    let mine = figure(&alice.auth().usage().await.map(wire).unwrap()["developerFuelToday"]);
+    let home = alice.personal_org().await.unwrap();
+    let mine = figure(&alice.orgs().usage(&home).await.map(wire).unwrap()["developerFuelToday"]);
     let mut org_fuel = 0;
     for i in 0..400 {
         set(&alice, &in_org, &format!("v{i}")).await.unwrap();

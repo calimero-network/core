@@ -1551,9 +1551,11 @@ async fn a_step_runs_another_packages_module_under_the_callers_keys_and_payer() 
         (a.bundle.as_str(), a.owner.as_str()),
         (own.as_str(), b.owner.as_str())
     );
+    // The app's organization (its owner's personal one) pays.
+    let org = rig.leader().sys(|s| s.apps[&rig.app].org.clone());
     assert_eq!(
         done["payer"],
-        json!(format!("account:{}", a.owner)),
+        json!(org),
         "the app's payer, never the module package's: {done}"
     );
 

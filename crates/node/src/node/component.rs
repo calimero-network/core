@@ -633,6 +633,14 @@ impl Node {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = limits;
     }
 
+    /// Makes a replica count as running an older release than this node. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn set_replica_behind(&self, behind: bool) {
+        self.probes
+            .replica_behind
+            .store(behind, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Makes this node's system reads fail as if the system group had no leader. Tests only.
     #[cfg(feature = "testing")]
     pub fn set_system_outage(&self, on: bool) {
@@ -2925,17 +2933,12 @@ impl calimero_app_host::HttpHost for NodeHttp {
     }
 }
 
-/// Whether an xcall from `source` may reach `target`: both in one organization, or both
-/// personal apps of one owner.
+/// Whether an xcall from `source` may reach `target`: both in one organization.
 fn same_boundary(s: &crate::system::SystemState, source: &str, target: &str) -> bool {
     let (Some(a), Some(b)) = (s.apps.get(source), s.apps.get(target)) else {
         return false;
     };
-    match (&a.org, &b.org) {
-        (Some(x), Some(y)) => x == y,
-        (None, None) => a.owner == b.owner,
-        _ => false,
-    }
+    a.org == b.org
 }
 
 /// A component's answer in the shape the node's own commands (`init`, upgrades)
@@ -3020,6 +3023,7 @@ mod tests {
             report: None,
             signature: None,
             outputs: vec![file(10), file(20)],
+            log: None,
             usage: ReportUsage::default(),
             result: Outcome {
                 files: vec![file(4)],
@@ -3056,6 +3060,7 @@ mod tests {
             report: None,
             signature: None,
             outputs: (0..outputs).map(file).collect(),
+            log: None,
             usage: ReportUsage::default(),
             result: Outcome {
                 diff: vec![crate::app::Write {

@@ -96,8 +96,11 @@ impl StepStatus {
 }
 
 /// One step of a pipeline run; the default is a step that has not started.
+///
+/// It reads either shape: this one, or the one 1.0.0-rc.19 wrote, which kept each run's outputs,
+/// results and cache keys in the record and had no `started` ([`StepStateRepr`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "StepStateRepr")]
 pub struct StepState {
     pub status: StepStatus,
     /// How many runs the step started so far, cached ones included.
@@ -148,6 +151,93 @@ pub struct StepState {
     /// Set when the cost cap stopped the step from starting more runs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub capped: bool,
+    /// Runs that had finished when a record in the earlier shape was read: they have no item
+    /// row, their data is the record's own (`run_outputs`, `run_results`, `cached_keys`, kept
+    /// as stored), so they count as found when the rows are read. Zero for a record this shape
+    /// wrote.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub legacy_items: u32,
+}
+
+/// What a step record may hold on the wire or on disk: this release's shape, or the earlier one
+/// (no `started`; the run ids in `runs`, cached runs in `cachedRuns`, every run's data inline).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StepStateRepr {
+    status: StepStatus,
+    #[serde(default)]
+    started: Option<u32>,
+    #[serde(default)]
+    runs: Vec<String>,
+    #[serde(default)]
+    run_outputs: BTreeMap<u32, Vec<RunInputRef>>,
+    #[serde(default)]
+    run_results: BTreeMap<u32, Bytes>,
+    #[serde(default)]
+    results_bytes: u32,
+    #[serde(default)]
+    results_too_large: bool,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    fan: FanOut,
+    #[serde(default)]
+    finished: u32,
+    #[serde(default)]
+    failed_items: u32,
+    #[serde(default)]
+    cached_count: u32,
+    #[serde(default)]
+    cached_items: u32,
+    #[serde(default)]
+    cached_runs: BTreeSet<u32>,
+    #[serde(default)]
+    cached_keys: BTreeMap<u32, String>,
+    #[serde(default)]
+    cost: u64,
+    #[serde(default)]
+    run_cost: u64,
+    #[serde(default)]
+    capped: bool,
+    #[serde(default)]
+    legacy_items: u32,
+}
+
+impl From<StepStateRepr> for StepState {
+    fn from(r: StepStateRepr) -> Self {
+        let mut step = Self {
+            status: r.status,
+            started: r.started.unwrap_or(0),
+            runs: r.runs,
+            run_outputs: r.run_outputs,
+            run_results: r.run_results,
+            items_unreadable: false,
+            results_bytes: r.results_bytes,
+            results_too_large: r.results_too_large,
+            reason: r.reason,
+            fan: r.fan,
+            finished: r.finished,
+            failed_items: r.failed_items,
+            cached_count: r.cached_count,
+            cached_items: r.cached_items,
+            cached_keys: r.cached_keys,
+            cost: r.cost,
+            run_cost: r.run_cost,
+            capped: r.capped,
+            legacy_items: r.legacy_items,
+        };
+        if r.started.is_none() {
+            // The earlier shape: `runs` named every run started, cached ones included, and the
+            // finished runs' data is in the record, with no item rows.
+            step.started = u32::try_from(step.runs.len()).unwrap_or(u32::MAX);
+            step.cached_count = u32::try_from(r.cached_runs.len()).unwrap_or(u32::MAX);
+            step.cached_items = r.cached_runs.iter().map(|i| step.items_of(*i)).sum();
+            let held: usize = step.run_results.values().map(|b| b.0.len()).sum();
+            step.results_bytes = u32::try_from(held).unwrap_or(u32::MAX);
+            step.legacy_items = step.finished;
+        }
+        step
+    }
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -185,7 +275,7 @@ impl StepState {
         self.runs = (0..self.started as usize)
             .map(|i| run_id(run, name, i))
             .collect();
-        let mut found = 0;
+        let mut found = self.legacy_items;
         for index in 0..self.started {
             if found == self.finished {
                 break;
@@ -554,7 +644,9 @@ impl AppMachine {
     fn drop_step_items(tx: &mut StateTx<'_>, pipeline: &PipelineRun) -> Vec<String> {
         let mut files = Vec::new();
         for (name, step) in &pipeline.steps {
-            let mut found = 0;
+            // Runs recorded in the earlier shape pinned their outputs from the record itself.
+            files.extend(step.outputs().map(|o| o.id.clone()));
+            let mut found = step.legacy_items;
             for index in 0..step.started {
                 let key = item_key(&pipeline.id, name, index);
                 let item = get_json::<ItemRow>(tx, rows::CITEM, &key);
@@ -578,7 +670,7 @@ impl AppMachine {
         ids.into_iter()
             .map(|id| {
                 let record = blobs.get(&parse_hex32(id)?)?;
-                let seal = record.file.as_ref()?;
+                let seal = record.file.as_ref().filter(|f| !f.log)?;
                 Some(RunInputRef {
                     id: id.clone(),
                     size: record.size,
@@ -993,6 +1085,7 @@ impl AppMachine {
                 }),
                 cache_key: r.cache_key.clone(),
                 pool: r.pool.clone(),
+                log: None,
             };
             put_json(tx, rows::CRUN, &record.run, &record);
             let _new = self.state.component.head.active_runs.insert(r.run.clone());
@@ -1362,4 +1455,87 @@ fn same_start(known: &PipelineRun, entry: &PipelineStartEntry) -> bool {
             .steps
             .keys()
             .eq(entry.steps.iter().collect::<BTreeSet<_>>())
+}
+
+#[cfg(test)]
+mod earlier_shape_tests {
+    use super::*;
+
+    fn output(id: &str) -> serde_json::Value {
+        serde_json::json!([{ "id": id, "size": 1, "sha256": "00".repeat(32) }])
+    }
+
+    /// A step as 1.0.0-rc.19 stored and answered it: a fan-out of five items two at a time, run 0
+    /// answered from the cache, run 1 done with a result, run 2 failed.
+    fn rc19_step() -> serde_json::Value {
+        serde_json::json!({
+            "status": "succeeded",
+            "runs": ["p.a.0", "p.a.1", "p.a.2"],
+            "runOutputs": { "0": output("f0"), "1": output("f1") },
+            "runResults": { "1": "aGk=" },
+            "resultsTooLarge": false,
+            "reason": null,
+            "fan": { "total": 3, "items": 5, "batch": 2, "allowed": 1 },
+            "finished": 3,
+            "failedItems": 1,
+            "cachedRuns": [0],
+            "cachedKeys": { "0": "k0" },
+        })
+    }
+
+    #[test]
+    fn a_step_in_the_rc19_shape_reads_with_its_counters_and_data() {
+        let mut step: StepState = serde_json::from_value(rc19_step()).unwrap();
+        assert_eq!(step.started, 3, "started is the runs it named");
+        assert_eq!((step.cached_count, step.cached_items), (1, 2));
+        assert!(!step.is_cached(), "one of three runs came from the cache");
+        assert_eq!(step.results_bytes, 2);
+        assert_eq!(step.legacy_items, 3);
+        // No item rows exist for it; its finished runs' data is the record's own.
+        step.fill("p", "a", |_| None);
+        assert!(!step.items_unreadable, "{step:?}");
+        assert_eq!(step.runs, ["p.a.0", "p.a.1", "p.a.2"]);
+        assert_eq!(
+            step.outputs().map(|o| o.id.as_str()).collect::<Vec<_>>(),
+            ["f0", "f1"]
+        );
+        assert_eq!(step.run_results[&1].0, b"hi");
+        assert_eq!(step.cached_keys[&0], "k0");
+    }
+
+    #[test]
+    fn a_step_in_the_rc19_shape_finishing_on_this_release_counts_both() {
+        let mut old = rc19_step();
+        old["status"] = "running".into();
+        old["fan"]["total"] = 4.into();
+        old["runs"] = serde_json::json!(["p.a.0", "p.a.1", "p.a.2", "p.a.3"]);
+        let mut step: StepState = serde_json::from_value(old).unwrap();
+        // Run 3 ends here and writes its row; the record is stored again in this shape.
+        step.finished += 1;
+        let stored = serde_json::to_value(&step).unwrap();
+        let mut step: StepState = serde_json::from_value(stored).unwrap();
+        let row = serde_json::to_vec(&ItemRow {
+            cached_key: None,
+            outputs: vec![],
+            result: None,
+        })
+        .unwrap();
+        let key3 = item_key("p", "a", 3);
+        step.fill("p", "a", |k| (k == key3).then(|| row.clone()));
+        assert!(!step.items_unreadable, "{step:?}");
+        assert_eq!(step.started, 4);
+        assert_eq!(step.outputs().count(), 2);
+    }
+
+    #[test]
+    fn a_step_in_this_shape_reads_back_as_written() {
+        let mut step: StepState = serde_json::from_value(rc19_step()).unwrap();
+        step.legacy_items = 0;
+        step.run_outputs.clear();
+        step.run_results.clear();
+        step.cached_keys.clear();
+        step.runs.clear();
+        let back: StepState = serde_json::from_value(serde_json::to_value(&step).unwrap()).unwrap();
+        assert_eq!(back, step);
+    }
 }

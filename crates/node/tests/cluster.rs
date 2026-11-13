@@ -1474,10 +1474,11 @@ async fn a_private_package_is_listed_only_to_accounts_that_may_use_it() {
     assert!(e.to_string().starts_with("404"), "{e}");
     // Approving its outbound hosts answers as for a missing package, before
     // any passkey ceremony.
+    let bobs = bob.personal_org().await.unwrap();
     for package in ["com.acme.secret", "com.never.installed"] {
         let e = bob
-            .auth()
-            .account_outbound_approval(package, None, None, None)
+            .orgs()
+            .outbound_approval(&bobs, package, None, None, None)
             .await
             .unwrap_err();
         assert!(e.to_string().starts_with("404"), "{package}: {e}");
@@ -1733,8 +1734,11 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
     })
     .await;
     let (alice, mut key) = signed_up(&c, 0, "alice").await;
+    // Her personal organization, made at sign-up, approves the release she
+    // signed up through.
+    let mine = alice.personal_org().await.unwrap();
     assert_eq!(
-        alice.auth().me().await.map(wire).unwrap()["approvedReleases"],
+        alice.orgs().get(&mine).await.map(wire).unwrap()["approvedReleases"],
         json!(["1.0.0"])
     );
     let bundle = alice
@@ -1805,8 +1809,13 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
 
     // The owner approves 2.0.0: now the app may move there, and node 3 serves it.
     let _ok = alice
-        .auth()
-        .account_release_approval("2.0.0", None, Some(&mut key))
+        .orgs()
+        .release_approval(
+            &alice.personal_org().await.unwrap(),
+            "2.0.0",
+            None,
+            Some(&mut key),
+        )
         .await
         .map(wire)
         .unwrap();
@@ -1844,8 +1853,8 @@ async fn only_releases_the_owner_approved_hold_an_apps_data() {
 
     // Withdrawn again: node 3 is sent nothing new.
     let _ok = alice
-        .auth()
-        .account_release_approval("2.0.0", Some(false), Some(&mut key))
+        .orgs()
+        .release_approval(&mine, "2.0.0", Some(false), Some(&mut key))
         .await
         .map(wire)
         .unwrap();
@@ -2427,8 +2436,13 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             "{g:?}: {ops_release:?}"
         );
         let owner_release = alice
-            .auth()
-            .account_release_approval("9.0.0", None, Some(&mut pk))
+            .orgs()
+            .release_approval(
+                &alice.personal_org().await.unwrap(),
+                "9.0.0",
+                None,
+                Some(&mut pk),
+            )
             .await
             .map(wire);
         assert_eq!(
@@ -2446,8 +2460,9 @@ async fn the_deployment_decides_who_upgrades_and_users_can_prove_it() {
             "{g:?}: {ops_outbound:?}"
         );
         let owner_outbound = alice
-            .auth()
-            .account_outbound_approval(
+            .orgs()
+            .outbound_approval(
+                &alice.personal_org().await.unwrap(),
                 "com.test.gov",
                 Some(typed(json!("manifest"))),
                 Some(false),
@@ -4627,8 +4642,9 @@ fn sample(text: &str, metric: &str, labels: &str) -> Option<f64> {
 /// that ran its WASM (calls and strong views on the app's leader, a stale view
 /// on the replica that answered it), never on the replicas that applied the
 /// entry, so the cluster's sum is the number of runs. Series are labelled
-/// with the app's id, its payer (the organization, or `account:{owner}` for a
-/// personal app) and its developer, the payer for an app made from a release
+/// with the app's id, its payer (the organization, or `account:{owner}` for an
+/// app from before outside any; one made without naming an organization is in its
+/// owner's personal organization) and its developer, the payer for an app made from a release
 /// directly (`tests/deployments.rs` has an instance of a deployment). State
 /// bytes are a gauge every replica reports alike.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -4745,8 +4761,10 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
         texts.push(text);
     }
     let in_org = format!("app=\"{app}\",org=\"{org}\",developer=\"{org}\"");
-    let mine =
-        format!("app=\"{personal}\",org=\"account:{alice_id}\",developer=\"account:{alice_id}\"");
+    // Made without naming an organization: in Alice's personal one, which pays.
+    let home = org_of(&alice, &personal).await;
+    assert_ne!(home, org);
+    let mine = format!("app=\"{personal}\",org=\"{home}\",developer=\"{home}\"");
     let calls = |labels: &str, kind: &str| -> Vec<f64> {
         texts
             .iter()
@@ -5087,7 +5105,8 @@ async fn metrics_count_requests_errors_and_raft_without_naming_anyone() {
     assert!(metrics.contains("# TYPE http_request_duration_seconds histogram"));
     // Ids are labels of the per-app usage series (`calimero_app_*`) only, which
     // bill an app to its payer; a name or a request's path never is.
-    assert!(metrics.contains(&format!("app=\"{app}\",org=\"account:{alice_id}\"")));
+    let home = org_of(&alice, &app).await;
+    assert!(metrics.contains(&format!("app=\"{app}\",org=\"{home}\"")));
     let elsewhere: String = metrics
         .lines()
         .filter(|l| !l.starts_with("calimero_app_"))
@@ -5394,8 +5413,13 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
 
     // Bob approves 2.0.0 in time; then the deadline passes.
     let _ok = bob
-        .auth()
-        .account_release_approval("2.0.0", None, Some(&mut bob_pk))
+        .orgs()
+        .release_approval(
+            &bob.personal_org().await.unwrap(),
+            "2.0.0",
+            None,
+            Some(&mut bob_pk),
+        )
         .await
         .map(wire)
         .unwrap();
@@ -5460,8 +5484,13 @@ async fn a_release_deadline_stops_new_work_but_not_running_apps() {
 
     // Approving lifts it for Alice at once.
     let _ok = alice
-        .auth()
-        .account_release_approval("2.0.0", None, Some(&mut alice_pk))
+        .orgs()
+        .release_approval(
+            &alice.personal_org().await.unwrap(),
+            "2.0.0",
+            None,
+            Some(&mut alice_pk),
+        )
         .await
         .map(wire)
         .unwrap();
@@ -5653,6 +5682,21 @@ async fn a_publisher_upgrades_the_instances_of_its_publisher_packages() {
 }
 
 // ---------------------------------------------------------------- version and approval reports
+
+/// The report that holds `app` for its owner: its organization's
+/// (`orgs/{org}/apps`; an instance made without naming one is in its owner's
+/// personal organization), else the account's own (`auth/apps`).
+async fn own_report(cl: &Client, app: &str) -> String {
+    format!("orgs/{}/apps", org_of(cl, app).await)
+}
+
+/// The organization `app` is in.
+async fn org_of(cl: &Client, app: &str) -> String {
+    cl.apps().get(app).await.map(wire).unwrap()["org"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{app} is in no organization"))
+        .to_owned()
+}
 
 /// The entry for `app` in a paged app report (`ops/apps`, `orgs/{org}/apps`,
 /// `auth/apps`), reading every page.
@@ -5889,13 +5933,14 @@ async fn app_versions_and_release_approvals_are_reported_without_names() {
             .any(|r| r["release"] == json!("2.0.0") && r["approved"] == json!(false)),
         "{own}"
     );
-    let a = reported_app(&alice, "auth/apps", &mine).await;
+    let a = reported_app(&alice, &own_report(&alice, &mine).await, &mine).await;
     assert_eq!(a["package"]["version"], json!("1.0.0"), "{a}");
     assert_eq!(a["availableVersions"], json!(["1.1.0"]), "{a}");
     assert_eq!(a["lastUpgrade"], Value::Null, "{a}");
+    // The account's own apps are those it owns in any organization.
     assert!(
-        !own.to_string().contains(&app),
-        "an organization's app is not the account's own: {own}"
+        own.to_string().contains(&app),
+        "an app the account owns in an organization is its own: {own}"
     );
     // Another account sees none of alice's.
     let theirs = carol
@@ -5964,7 +6009,12 @@ async fn an_operator_upgrade_is_reported_as_the_operators() {
     .unwrap();
 
     let a = reported_app(&ops, "ops/apps", &app).await;
-    assert_eq!(a["scope"], json!({ "kind": "account" }), "{a}");
+    let home = org_of(&alice, &app).await;
+    assert_eq!(
+        a["scope"],
+        json!({ "kind": "org", "org": home, "personal": true }),
+        "{a}"
+    );
     assert_eq!(a["upgradesHeldBy"], json!("operator"), "{a}");
     assert_eq!(
         a["package"],
@@ -5980,7 +6030,7 @@ async fn an_operator_upgrade_is_reported_as_the_operators() {
     assert_eq!(a["lastUpgrade"]["actorKind"], json!("operator"), "{a}");
     assert_eq!(a["lastUpgrade"]["from"]["version"], json!("1.0.0"), "{a}");
 
-    let a = reported_app(&alice, "auth/apps", &app).await;
+    let a = reported_app(&alice, &own_report(&alice, &app).await, &app).await;
     assert_eq!(a["lastUpgrade"]["actorKind"], json!("operator"), "{a}");
     assert_eq!(a["lastUpgrade"]["actor"], json!("operator"), "{a}");
     assert_eq!(a["availableVersions"], json!([]), "{a}");
@@ -6045,7 +6095,7 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
         .as_str()
         .unwrap()
         .to_owned();
-    let a = reported_app(&alice, "auth/apps", &mine).await;
+    let a = reported_app(&alice, &own_report(&alice, &mine).await, &mine).await;
     assert_eq!(a["package"]["version"], json!("1.1.0"), "{a}");
     assert_eq!(a["availableVersions"], json!(["1.2.0"]), "{a}");
     let record = alice.apps().get(&mine).await.map(wire).unwrap();
@@ -6067,7 +6117,7 @@ async fn a_frontend_only_release_is_an_upgrade_of_its_own() {
         .upgrade(&mine, typed(json!({ "version": "1.2.0" })), Some(&mut apk))
         .await
         .unwrap();
-    let a = reported_app(&alice, "auth/apps", &mine).await;
+    let a = reported_app(&alice, &own_report(&alice, &mine).await, &mine).await;
     assert_eq!(a["package"]["version"], json!("1.2.0"), "{a}");
     assert_eq!(a["availableVersions"], json!([]), "{a}");
     assert_eq!(a["lastUpgrade"]["ok"], json!(true), "{a}");

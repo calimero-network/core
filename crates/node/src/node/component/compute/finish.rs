@@ -9,11 +9,12 @@ use calimero_log::Bytes;
 use serde_json::{json, Value};
 use tracing::warn;
 
+use super::job_io::{Held, Polled};
 use super::{stored_of, Blob, Drive, FinalPlan, Stored, Watch};
 use crate::app::AppMachine;
 use crate::component::{Attempt, FailedReason, FileMark, FinalOutcome, RunRecord, RunState};
 use crate::files::{file_id, sealed_len, wrap_key, SegmentReader, SEGMENT_BYTES};
-use crate::job_wire::{hash_bytes, FailReason, Report, ReportStatus};
+use crate::job_wire::{hash_bytes, FailReason, OutputRef, Report, ReportStatus, MAX_RUN_LOG_BYTES};
 use crate::node::job::busy_here;
 use crate::node::{JobPeer, QUOTA_EXCEEDED, REJECTED};
 
@@ -92,6 +93,17 @@ impl Drive<'_> {
     ) -> bool {
         watch.leader_wait = false;
         let started = Instant::now();
+        // The gate may have closed since the report arrived (an older replica joined): a report
+        // with a log is dropped and asked for again without the header, which answers without it.
+        let (report, signature) = if report.log.is_some() && !self.node.replicas_take_logs().await {
+            watch.held = None;
+            match self.poll(attempt).await {
+                Polled::Done(bare, signature) => (*bare, signature),
+                _ => return false,
+            }
+        } else {
+            (report, signature)
+        };
         let acceptable = self.report_is_valid(attempt, &report, &signature)
             && AppMachine::check_usage(&self.rec.caps, &report.usage).is_ok()
             && (report.reason != Some(FailReason::Cancelled) || self.rec.cancel_requested);
@@ -103,7 +115,10 @@ impl Drive<'_> {
         watch.held = Some((attempt.attempt, report.clone(), signature.clone()));
         let plan = if report.status == ReportStatus::Done {
             match self.stage(attempt, &report, watch).await {
-                Staging::Ready(outputs) => FinalPlan::reported(report, signature, outputs),
+                Staging::Ready(outputs) => {
+                    let log = self.stage_log(attempt, &report, &outputs, watch).await;
+                    FinalPlan::reported(report, signature, outputs, log)
+                }
                 Staging::Retry => {
                     watch.credit(started.elapsed());
                     return true;
@@ -120,7 +135,8 @@ impl Drive<'_> {
                 Staging::Quota => FinalPlan::failed(self.rec, FailedReason::Quota),
             }
         } else {
-            FinalPlan::reported(report, signature, Vec::new())
+            let log = self.stage_log(attempt, &report, &[], watch).await;
+            FinalPlan::reported(report, signature, Vec::new(), log)
         };
         if self.end(&plan, watch).await {
             self.lost(attempt, watch).await;
@@ -132,7 +148,8 @@ impl Drive<'_> {
     /// file's bytes are held. Kept in `watch` until the final commits.
     async fn stage(&self, attempt: &Attempt, report: &Report, watch: &mut Watch) -> Staging {
         if let Some(marks) = &watch.staged {
-            return Staging::Ready(marks.clone());
+            // The log, if one was staged after the outputs, is stage_log's.
+            return Staging::Ready(marks[..report.outputs.len().min(marks.len())].to_vec());
         }
         let sizes: Vec<u64> = report.outputs.iter().map(|o| o.size).collect();
         if !AppMachine::outputs_fit(&sizes) {
@@ -170,7 +187,13 @@ impl Drive<'_> {
         let mut marks: Vec<FileMark> = Vec::new();
         for i in 0..report.outputs.len() {
             let step = self
-                .store_output(&peer, attempt.attempt, report, i, watch)
+                .store_file(
+                    &peer,
+                    attempt.attempt,
+                    &report.outputs[i],
+                    Held::Output(i),
+                    watch,
+                )
                 .await;
             match step {
                 Ok(mark) => marks.push(mark),
@@ -182,8 +205,11 @@ impl Drive<'_> {
                             ..stored_of(&marks)
                         },
                     );
-                    // The finished outputs were undone; the stored segments of this one stay.
-                    watch.fetched.retain(|n, _| *n == i);
+                    // The finished outputs were undone; the stored segments of this one stay. The
+                    // log is staged after the outputs, so it has none to resume.
+                    watch
+                        .fetched
+                        .retain(|n, _| *n == i && *n != Held::Log.slot());
                     return staging;
                 }
             }
@@ -192,17 +218,79 @@ impl Drive<'_> {
         Staging::Ready(marks)
     }
 
-    /// Output `i` of `report`, fetched segment by segment: each checked against the signed list and
+    /// The log of `report`, charged and stored like an output after the `outputs` and kept in
+    /// `watch.staged` with them. A log that cannot be had is left out: it never ends or retries the run.
+    async fn stage_log(
+        &self,
+        attempt: &Attempt,
+        report: &Report,
+        outputs: &[FileMark],
+        watch: &mut Watch,
+    ) -> Option<FileMark> {
+        let log = report.log.as_ref()?;
+        if let Some(staged) = watch.staged.as_ref().filter(|m| m.len() > outputs.len()) {
+            return staged.last().cloned();
+        }
+        let (node, app_id) = (self.node, &self.app.app_id);
+        let skipped = |why: &str| {
+            warn!(app = %app_id, run = %self.rec.run, %why, "a run's log was left out");
+        };
+        let taken = self.g.read_local(|m, _| super::holds_file(m, &log.id))
+            || report.outputs.iter().any(|o| o.id == log.id);
+        if log.size > MAX_RUN_LOG_BYTES as u64 || taken {
+            skipped("it is over the cap or already a file of the app");
+            return None;
+        }
+        let charge = i64::try_from(log.size).ok()?;
+        if let Err(e) = node.count_file_bytes(app_id, charge).await {
+            if charge_may_have_landed(&e) {
+                node.refund_files(app_id, log.size).await;
+            }
+            skipped("it cannot be charged");
+            return None;
+        }
+        let refund = Stored {
+            charged: log.size,
+            ..Stored::default()
+        };
+        let Ok(peer) = node.attest_job(attempt.node, self.app).await else {
+            node.discard(app_id, refund);
+            skipped("its job node cannot be attested");
+            return None;
+        };
+        let stored = self
+            .store_file(&peer, attempt.attempt, log, Held::Log, watch)
+            .await;
+        let Ok(mark) = stored else {
+            // Its pushed segments go too, once no file of the app lists them.
+            let pushed = Stored {
+                segments: log.segments.clone(),
+                outputs: true,
+                ..refund
+            };
+            node.discard(app_id, pushed);
+            // Its stored segments are being deleted: a later try fetches and pushes them again.
+            let _resumed = watch.fetched.remove(&Held::Log.slot());
+            skipped("it was not handed over as signed");
+            return None;
+        };
+        let mut staged = outputs.to_vec();
+        staged.push(mark.clone());
+        watch.staged = Some(staged);
+        Some(mark)
+    }
+
+    /// `out` of the attempt, fetched segment by segment: each checked against the signed list and
     /// stored on the replicas, then the whole opened to prove size and hash; a cut fetch resumes.
-    async fn store_output(
+    async fn store_file(
         &self,
         peer: &JobPeer,
         attempt: u32,
-        report: &Report,
-        i: usize,
+        out: &OutputRef,
+        held: Held,
         watch: &mut Watch,
     ) -> Result<FileMark, Staging> {
-        let out = &report.outputs[i];
+        let i = held.slot();
         let Ok(plain_hash) = hash_bytes(&out.sha256) else {
             return Err(Staging::Lost);
         };
@@ -221,7 +309,7 @@ impl Drive<'_> {
                 Staging::Retry
             }
         };
-        let key = self.fetch_output_key(peer, attempt, i).await.map_err(cut)?;
+        let key = self.fetch_key(peer, attempt, held).await.map_err(cut)?;
         let mut reader = SegmentReader::new(&key, hashes.clone());
         let mut next = watch.fetched.get(&i).copied().unwrap_or(0);
         for k in 0..next {
@@ -235,7 +323,7 @@ impl Drive<'_> {
         }
         for k in next..out.segments.len() {
             let bytes = self
-                .fetch_output_segment(peer, attempt, i, k)
+                .fetch_segment(peer, attempt, held, k)
                 .await
                 .map_err(cut)?;
             watch.saw();

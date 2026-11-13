@@ -61,7 +61,10 @@ the package of an `.mpk`, else the file's name (`kv-store.wasm` gives
 and asks for `--name`. A Kotlin client goes in `--package` (default
 `calimero.generated.<name>`, here `calimero.generated.kvstore`). A multi-service
 bundle writes one directory per service, each Kotlin client in `<package>.<service>`;
-`--service <name>` picks one.
+`--service <name>` picks one. Pass `--kotlin-serialization-plugin` when the Kotlin
+module that compiles the client applies the kotlinx.serialization compiler plugin
+(below). `mero-app-build --version` prints the release and the source it was built
+from (`1.0.0-rc.19 (1.0.0-rc.19-11-g3da5b6edb, 3da5b6edb)`); `--help` prints the usage.
 
 ## Use it from TypeScript
 
@@ -92,7 +95,11 @@ await rooms.adminRelease({ id, reason }, { confirm: passkeyConfirm(passkey) });
 ```
 
 An `option<..>` argument may be left out or be `null`: the SDK reads both as
-`None`. In an error's or an event's fields it is always there, `null` for none.
+`None`. Every generated client leaves out an optional argument the caller does
+not set: TypeScript sends the `args` object as given (a key left out stays out),
+and the Python, Swift and Kotlin methods leave out a `None` / `nil` / `null`
+argument rather than sending `null`. In an error's or an event's fields it is
+always there, `null` for none.
 
 ### Read a call's log index and events
 
@@ -282,8 +289,11 @@ views and throw `UnsupportedOperationException` for the rest. Decode
 In TypeScript and Python `u64` and `i64` are decimal strings and `bytes` base64url
 strings, as on the wire; Swift and Kotlin take and give `UInt64`/`ULong`,
 `Int64`/`Long` and `Data`/`ByteArray` and write the wire forms themselves.
-`option<T>` is `T | null` (`Optional[T]`, `T?`) and an optional argument may be
-left out (Swift and Kotlin send it as `null`). Errors and events are typed:
+`u64_number` / `i64_number` (a `#[abi(plain)]` field) are JSON numbers: `number` in
+TypeScript (exact only up to 2^53), `int` in Python, and the same `UInt64`/`ULong`,
+`Int64`/`Long` written as numbers; `byte_list` is `number[]`, `List[int]`,
+`[UInt8]`, `List<UByte>`. `option<T>` is `T | null` (`Optional[T]`, `T?`) and an
+optional argument may be left out (every client leaves out one that is not set). Errors and events are typed:
 `NotFoundError` / `InsertedEvent` in TypeScript and Python, the cases of
 `Refusal` and `Event` in Swift and Kotlin. The full table is in
 [App interface](/core/build/app-abi/#types).
@@ -314,17 +324,28 @@ variant names and arrays of the wrong length are refused. A type that holds itse
 works: a Swift enum that does is `indirect`, and a Swift field that holds its own
 type outside an array or a dictionary (`option<Tree>`) is stored boxed
 (`@Indirect`); Kotlin needs nothing. Fields the JSON may leave out are optional
-(`nil` / `null`) and left out when unset; any other `option` is written as `null`.
-Kotlin's serializers are written out in the client, so no serialization plugin is
-needed: pass them where kotlinx.serialization takes one.
+(`nil` / `null`; Python's `TypedDict` puts them in a `total=False` part, so a caller
+may leave them out) and left out when unset; any other `option` is written as
+`null`. Kotlin's serializers are written out in the client, so no serialization
+plugin is needed: pass them where kotlinx.serialization takes one. Each type is
+also annotated `@Serializable(with = ...)` naming its serializer, so
+`serializer<Slot>()` finds it, sealed interfaces too: by reflection on the
+companion's `serializer()`, which kotlinx's bundled R8 rules keep for
+`@Serializable` classes. A module that applies the kotlinx.serialization compiler
+plugin generates with `--kotlin-serialization-plugin`: the plugin then writes each
+`serializer()` itself (a hand-written one would clash with it, "Overload resolution
+ambiguity") and resolves `serializer<T>()` without reflection; call sites
+(`Slot.serializer()`) stay the same.
 
 <Aside type="caution">
   A type is described when it derives `Record` or `AbiType`
   ([SDK macros](/core/build/sdk-macros/#deriveabitype)). Any other type, and every
   type of an app built before the SDK wrote `types`, is `unknown` (`Any`): cast or
   validate the value where you use it, or rebuild the app. The Swift and Kotlin
-  clients type it MeroKit's `JSONValue` / kotlinx's `JsonElement`: decode it where
-  you use it.
+  clients type it MeroKit's `JSONValue` / kotlinx's `JsonElement` (Swift under a
+  nested alias with the type's name; Kotlin as `JsonElement` itself, since a
+  top-level alias would clash with an app type of that name in the package): decode
+  it where you use it.
 </Aside>
 
 ## Use any OpenAPI tool

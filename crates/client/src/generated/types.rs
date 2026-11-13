@@ -1681,7 +1681,7 @@ pub struct OrgNewWorkStopped {
     pub extra: Map<String, Value>,
 }
 
-/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later.
+/// An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is its owner's personal organization (where instances created without naming an organization go).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Org {
     #[serde(rename = "orgId")]
@@ -1707,6 +1707,8 @@ pub struct Org {
     #[serde(rename = "allApps")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub all_apps: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<OrgMode>,
     #[serde(rename = "releaseApprovers")]
@@ -1862,12 +1864,16 @@ pub struct OutboundApproval {
     pub extra: Map<String, Value>,
 }
 
-/// The scope whose approvals cover an app: its organization, or its owner's account (never named).
+/// The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum AppScope {
     #[serde(rename = "org")]
-    Org { org: String },
+    Org {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        personal: Option<bool>,
+        org: String,
+    },
     #[serde(rename = "account")]
     Account,
 }
@@ -2839,6 +2845,25 @@ pub struct AppRunsResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppRunLogsResponseLogsItem {
+    pub attempt: u64,
+    pub id: String,
+    pub size: u64,
+    pub sha256: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppRunLogsResponse {
+    pub logs: Vec<AppRunLogsResponseLogsItem>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AppStorageResponse {
     pub keys: u64,
     pub bytes: u64,
@@ -3173,6 +3198,8 @@ pub struct MeResponseOrgsItem {
     pub org_id: String,
     pub name: String,
     pub role: OrgRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal: Option<bool>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -3253,10 +3280,6 @@ pub struct MeResponse {
         with = "crate::route::present"
     )]
     pub origin: Option<Option<String>>,
-    #[serde(rename = "approvedReleases")]
-    pub approved_releases: Vec<String>,
-    #[serde(rename = "outboundApprovals")]
-    pub outbound_approvals: BTreeMap<String, OutboundApproval>,
     #[serde(rename = "recoveryCode")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_code: Option<bool>,

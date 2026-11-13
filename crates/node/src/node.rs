@@ -562,6 +562,8 @@ pub struct Node {
     issuer_tries: Mutex<HashMap<NodeId, u64>>,
     /// Job nodes this node attested, with when ([`Node::attest_job`]).
     job_peers: Mutex<HashMap<NodeId, (std::time::Instant, u64, JobPeer)>>,
+    /// Whether every replica was lately at this release: what [`Node::replicas_take_logs`] answers.
+    replicas_current: job::TtlFlag,
     /// Bounds the transfers to job nodes under way at once.
     job_ops: tokio::sync::Semaphore,
     /// Bounds the control requests to job nodes, so no transfer starves them.
@@ -825,6 +827,9 @@ pub const QUOTA_EXCEEDED: &str = "QUOTA_EXCEEDED";
 /// The code of a system command that `apply` refused: it changed nothing.
 pub const REJECTED: &str = "REJECTED";
 
+/// The code of [`crate::system::PERSONAL_ORG_EXISTS`].
+pub const PERSONAL_ORG_EXISTS: &str = "PERSONAL_ORG_EXISTS";
+
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
         ApiError::new(429, QUOTA_EXCEEDED, reason)
@@ -834,6 +839,8 @@ pub fn rejected(reason: &str) -> ApiError {
         ApiError::new(403, "SIGN_UP_REFUSED", reason)
     } else if reason == crate::system::NOT_A_DEPLOYER {
         not_a_deployer()
+    } else if reason == crate::system::PERSONAL_ORG_EXISTS {
+        ApiError::new(409, PERSONAL_ORG_EXISTS, reason)
     } else if reason == crate::system::MODULE_IN_USE {
         ApiError::new(409, "MODULE_IN_USE", reason)
     } else if let Some(code) = recovery_code(reason) {
@@ -981,6 +988,7 @@ impl Node {
             issuers: Mutex::new(HashMap::new()),
             issuer_tries: Mutex::new(HashMap::new()),
             job_peers: Mutex::new(HashMap::new()),
+            replicas_current: job::TtlFlag::default(),
             job_ops: tokio::sync::Semaphore::new(job::MAX_INFLIGHT_JOB_OPS),
             job_control: tokio::sync::Semaphore::new(job::MAX_INFLIGHT_JOB_CONTROL),
             compute: component::ComputeState::default(),

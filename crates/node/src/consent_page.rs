@@ -293,7 +293,8 @@ impl CreateBody {
     }
 }
 
-/// Whose approval: the account's own apps, or an organization's.
+/// Whose approval: an organization's, or (`account`) the caller's own apps,
+/// which are its personal organization's.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum ScopeBody {
@@ -1038,31 +1039,39 @@ fn scope_of(
     scope: &ScopeBody,
 ) -> Result<(ReleaseScope, Value), ApiError> {
     match scope {
-        ScopeBody::Account => Ok((
-            ReleaseScope::Account,
-            json!({ "kind": "account", "account": account }),
-        )),
+        // The account's own apps are its personal organization's, made at
+        // sign-up.
+        ScopeBody::Account => {
+            let org = node
+                .sys(|s| s.personal_org_of(account).cloned())
+                .ok_or_else(|| ApiError::not_found("no personal organization"))?;
+            Ok((
+                ReleaseScope::Org { org: org.clone() },
+                json!({ "kind": "org", "org": org, "personal": true }),
+            ))
+        }
         ScopeBody::Org(org) => {
-            let name = node
+            let (name, personal) = node
                 .sys(|s| {
                     let o = s.orgs.get(org)?;
                     o.role(account)?;
-                    Some(o.name.clone())
+                    Some((o.name.clone(), o.personal))
                 })
                 .ok_or_else(|| ApiError::not_found("no such organization"))?;
-            Ok((
-                ReleaseScope::Org { org: org.clone() },
-                json!({ "kind": "org", "org": org, "name": name }),
-            ))
+            let mut shown = json!({ "kind": "org", "org": org, "name": name });
+            if personal {
+                shown["personal"] = json!(true);
+            }
+            Ok((ReleaseScope::Org { org: org.clone() }, shown))
         }
     }
 }
 
-/// How the scope reads in a sentence: "your organization Acme", "your apps".
+/// How the scope reads in a sentence: "the organization Acme", "your apps".
 fn scope_words(scope: &Value) -> String {
     match scope["name"].as_str() {
-        Some(name) => format!("the organization {name}"),
-        None => "your own apps".to_owned(),
+        Some(name) if scope["personal"] != json!(true) => format!("the organization {name}"),
+        _ => "your own apps".to_owned(),
     }
 }
 
@@ -1258,7 +1267,6 @@ async fn release_request(
     let approved: Vec<String> = node.sys(|s| {
         let set = match &scope {
             ReleaseScope::Org { org } => s.orgs.get(org).map(|o| o.approved_releases.clone()),
-            ReleaseScope::Account => s.accounts.get(account).map(|a| a.approved_releases.clone()),
             ReleaseScope::Cluster => None,
         };
         set.unwrap_or_default().into_iter().collect()
@@ -1719,7 +1727,6 @@ async fn outbound_request(
     let approved: Vec<String> = node.sys(|s| {
         let approvals = match &scope {
             ReleaseScope::Org { org } => s.orgs.get(org).map(|o| &o.outbound_approvals),
-            ReleaseScope::Account => s.accounts.get(account).map(|a| &a.outbound_approvals),
             ReleaseScope::Cluster => None,
         };
         approvals
@@ -2469,7 +2476,7 @@ async fn act(
                 confirm,
             )
             .await?;
-            let Json(v) = create_org(node, req.account.clone(), name.clone(), None).await?;
+            let Json(v) = create_org(node, req.account.clone(), name.clone(), None, false).await?;
             return Ok(Acted {
                 shown: v.clone(),
                 outcome: Some(v),
@@ -2602,7 +2609,7 @@ mod tests {
             account: account.to_owned(),
             package: None,
             action: Action::Release {
-                scope: ReleaseScope::Account,
+                scope: ReleaseScope::Org { org: "o".into() },
                 version: "1.0.0".into(),
                 change: ReleaseChange::Approve {
                     policy_digest: "digest".into(),

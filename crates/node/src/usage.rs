@@ -72,14 +72,15 @@ impl Kind {
     }
 }
 
-/// Who an app's usage is billed to: its organization's id, or for a personal
-/// app `account:{owner}` (`:` is not base64url, so the two never collide).
+/// Who an app's usage is billed to: its organization's id.
 #[must_use]
 pub fn payer(app: &AppRecord) -> String {
-    app.org.clone().unwrap_or_else(|| account_payer(&app.owner))
+    app.org.clone()
 }
 
-/// The payer of an account's personal apps: `account:{account}` ([`payer`]).
+/// An account as a developer billed for its deployments' instances:
+/// `account:{account}` (`:` is not base64url, so it never collides with an
+/// organization's id).
 #[must_use]
 pub fn account_payer(account: &str) -> String {
     format!("account:{account}")
@@ -574,7 +575,7 @@ mod tests {
     fn app(org: Option<&str>, deployment: Option<&str>) -> AppRecord {
         serde_json::from_value(serde_json::json!({
             "appId": "a", "name": "n", "group": 2, "bundle": "b", "owner": "carol",
-            "org": org, "replicas": [1], "createdAt": 0, "deployment": deployment,
+            "org": org.unwrap_or("p-carol"), "replicas": [1], "createdAt": 0, "deployment": deployment,
         }))
         .unwrap()
     }
@@ -602,7 +603,7 @@ mod tests {
         let s = state_with_deployment("d2", serde_json::json!({ "account": "dave" }));
         assert_eq!(
             Billed::of(&s, &app(None, Some("d2"))),
-            billed("account:carol", "account:dave")
+            billed("p-carol", "account:dave")
         );
     }
 
@@ -612,7 +613,7 @@ mod tests {
         assert_eq!(Billed::of(&s, &app(Some("o"), None)), billed("o", "o"));
         assert_eq!(
             Billed::of(&s, &app(None, None)),
-            billed("account:carol", "account:carol")
+            billed("p-carol", "p-carol")
         );
         // A deployment the state no longer has: the payer, never an empty label.
         assert_eq!(

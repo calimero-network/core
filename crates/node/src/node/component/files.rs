@@ -200,6 +200,8 @@ pub(crate) struct Probes {
     pub commit_fault: std::sync::atomic::AtomicU8,
     /// The waits of the leader's run driving, shortened by tests.
     pub limits: std::sync::Mutex<crate::node::ComputeLimits>,
+    /// While set, a replica counts as running an older release than this node.
+    pub replica_behind: std::sync::atomic::AtomicBool,
     /// While set, this node's system reads fail.
     pub system_outage: std::sync::atomic::AtomicBool,
     /// The fewest bytes the pending budget had left.
@@ -259,6 +261,7 @@ impl Default for Probes {
             run_open_cap: std::sync::atomic::AtomicUsize::new(MAX_RUN_OPEN_BYTES),
             commit_fault: std::sync::atomic::AtomicU8::new(0),
             limits: std::sync::Mutex::new(crate::node::ComputeLimits::default()),
+            replica_behind: std::sync::atomic::AtomicBool::new(false),
             system_outage: std::sync::atomic::AtomicBool::new(false),
             pending_low: Arc::new(std::sync::atomic::AtomicUsize::new(MAX_PENDING_FILE_BYTES)),
             push_low: std::sync::atomic::AtomicUsize::new(MAX_PUSH_BYTES),
@@ -422,10 +425,11 @@ impl NodeFiles {
         Some((run, permit))
     }
 
-    /// The record of `id` and its seal, if it is one of the app's sealed files.
+    /// The record of `id` and its seal, if it is one of the app's sealed files; a run's log is
+    /// not one the app's code sees.
     fn sealed(&self, id: &str) -> Option<(&BlobRecord, &FileSeal)> {
         let record = self.blobs.get(&parse_blob_id(id)?)?;
-        Some((record, record.file.as_ref()?))
+        Some((record, record.file.as_ref().filter(|f| !f.log)?))
     }
 
     fn source(&self) -> SegmentSource {
@@ -1553,6 +1557,7 @@ mod tests {
             wrapped_key: mark.wrapped_key.clone(),
             segments: mark.segments.clone(),
             output: false,
+            log: false,
             uploader: None,
         };
         let held: HashMap<String, Vec<u8>> = mark.segments.iter().cloned().zip(segments).collect();

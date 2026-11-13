@@ -29,8 +29,7 @@ No label carries a name or anything from a request: labels are route
 templates (`/apps/{app}/intents`), route groups, status classes, the node's
 error codes, run kinds, call phases, group numbers and node ids. The one exception is the
 [usage metering](#usage-metering) family `calimero_app_*`, labelled with an
-app's id and its payer's id (an organization, or a personal app's owner
-account) so it can be billed; those are opaque random ids, never names. Whoever
+app's id and its payer's id (its organization) so it can be billed; those are opaque random ids, never names. Whoever
 scrapes the metrics is the operator, who learns counts, and which app ids use
 how much, and nothing more.
 
@@ -121,9 +120,8 @@ Code: `crates/node/src/usage.rs`.
 | `calimero_app_blob_bytes` | gauge | `app`, `org`, `developer` | Bytes of the blobs the app holds, on this replica, sampled with the state. |
 
 **Labels.** `app` is the app's id (as `/apps` lists it). `org` is the app's
-payer, whose quotas it counts against: the organization's id for an org app,
-`account:{owner account id}` for a personal app (`:` is not in an id's
-alphabet, so the two never collide). `developer` is who is billed for its
+payer, whose quotas it counts against: its organization's id (every app is in
+one). `developer` is who is billed for its
 usage on a shared cluster: for an instance a customer made from a deployment
 (`POST /apps { deployment }`), the deployment's owner, in the same form (an
 organization's id, or `account:{id}`); for an app made from a release
