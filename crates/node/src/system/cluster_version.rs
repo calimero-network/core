@@ -86,10 +86,13 @@ pub enum Feature {
     /// `SetBackupKey` and `ImportHolder`: an earlier release cannot read
     /// them, so its replicas keep no key and import nothing.
     BackupKeys,
+    /// `CreateOrg` starting with an app team (`app_team`): an earlier
+    /// release ignores the field and makes the organization without it.
+    OrgAppTeam,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 20] = [
+pub const FEATURES: [Feature; 21] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -110,6 +113,7 @@ pub const FEATURES: [Feature; 20] = [
     Feature::AttributeByRelease,
     Feature::CurrentRules,
     Feature::BackupKeys,
+    Feature::OrgAppTeam,
 ];
 
 impl Feature {
@@ -137,6 +141,7 @@ impl Feature {
             Self::AttributeByRelease => "attributeByRelease",
             Self::CurrentRules => "currentRules",
             Self::BackupKeys => "backupKeys",
+            Self::OrgAppTeam => "orgAppTeam",
         }
     }
 
@@ -164,6 +169,7 @@ impl Feature {
             | Self::AttributeByRelease
             | Self::CurrentRules => "1.0.0-rc.19",
             Self::BackupKeys => "1.0.0-rc.20",
+            Self::OrgAppTeam => "1.0.0-rc.22",
         }
     }
 }
@@ -396,6 +402,9 @@ impl SystemCmd {
             }
             Self::CreateApp { app } if !app.components.is_app() => vec![Feature::ComputeOnly],
             Self::AcquireRun { pool: Some(_), .. } => vec![Feature::NamedPool],
+            Self::CreateOrg {
+                app_team: Some(_), ..
+            } => vec![Feature::OrgAppTeam],
             Self::RegisterNode { .. }
             | Self::RemoveNode { .. }
             | Self::PutBundle { .. }
@@ -520,10 +529,22 @@ mod tests {
     const RC16: &str = "1.0.0-rc.16";
     const RC19: &str = "1.0.0-rc.19";
     const RC20: &str = "1.0.0-rc.20";
+    const RC22: &str = "1.0.0-rc.22";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
         match feature {
+            Feature::OrgAppTeam => SystemCmd::CreateOrg {
+                org_id: "org-c".into(),
+                name: "Chat".into(),
+                actor: "alice".into(),
+                release: None,
+                recovery_key: None,
+                at: 0,
+                name_fits: true,
+                personal: false,
+                app_team: Some("chat".into()),
+            },
             Feature::BackupKeys => SystemCmd::SetBackupKey {
                 holder: crate::system::BackupHolder::Operator,
                 public_key: "ab".repeat(32),
@@ -846,9 +867,11 @@ mod tests {
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
             .iter()
-            .partition(|f| ![RC19, RC20].contains(&f.since()));
-        let (engine, after): (Vec<Feature>, Vec<Feature>) =
+            .partition(|f| ![RC19, RC20, RC22].contains(&f.since()));
+        let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
+        let (after, last): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC20);
         for feature in older {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -890,6 +913,25 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &after {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.22's wait for every node on rc.22.
+        for &feature in &last {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC20))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC22;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC22.into(),
+            nodes: (1..=3).map(|id| (id, RC22.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &last {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));
