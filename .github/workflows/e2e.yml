@@ -44,22 +44,11 @@ name: E2E
 # entry (the `E2E result` check gathers it), and the nightly runs all of it. The
 # `plan` job decides, by what the change reaches (scripts/ci-scope.py).
 on:
+  # Every PR, with no `paths:` filter: `E2E result` is a required check and must
+  # report on every PR (a docs-only one too); `plan` skips everything a change
+  # cannot reach, and on a PR everything unless it is labelled `ci:e2e`.
   pull_request:
     types: [opened, synchronize, reopened, labeled]
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "crates/**"
-      - "apps/**"
-      - "workflows/**"
-      - "scripts/soak-summary.sh"
-      - "scripts/soak-flamegraph.sh"
-      - "scripts/pack-component.py"
-      - "scripts/resolve-paired-ref.sh"
-      - ".github/workflows/e2e.yml"
-      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
-      - "!**/*.md"
-      - "!**/*.mdx"
   # No push trigger: every PR into master ran this already, and the nightly
   # (schedule) runs all of it again on master, with the long soak.
   merge_group:
