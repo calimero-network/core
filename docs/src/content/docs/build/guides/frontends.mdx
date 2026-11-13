@@ -187,7 +187,9 @@ await client.apps.call({ app: appId, method: 'add', args: { text: 'hello' } });
 
 ## What a frontend session may do
 
-It acts as the person, but only within its package:
+It acts as the person, but only within its package. [Sessions and authority](/protocol/sessions-and-authority/)
+explains why (the session gate and the account's authority are separate checks)
+and walks through a chat app creating a workspace and inviting someone.
 
 | May | May not |
 | --- | --- |
