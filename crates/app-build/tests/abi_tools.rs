@@ -241,7 +241,10 @@ fn help_prints_usage_and_succeeds() {
         (&["-h"], "usage: mero-app-build"),
         (&["codegen", "--help"], "usage: meroctl app codegen"),
         (&["codegen", "-h"], "usage: meroctl app codegen"),
-        (&["codegen", "--abi", "x.json", "--help"], "usage: meroctl app codegen"),
+        (
+            &["codegen", "--abi", "x.json", "--help"],
+            "usage: meroctl app codegen",
+        ),
         (&["abi-diff", "--help"], "usage: meroctl app abi diff"),
     ] {
         let out = bin().args(args).output().unwrap();
@@ -251,7 +254,8 @@ fn help_prints_usage_and_succeeds() {
         // The one line on stderr is the shim's notice of what replaces it.
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(
-            err.lines().all(|l| l.starts_with("mero-app-build is deprecated")),
+            err.lines()
+                .all(|l| l.starts_with("mero-app-build is deprecated")),
             "{args:?}: {out:?}"
         );
     }
