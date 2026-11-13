@@ -587,12 +587,15 @@ pub(super) struct RefreshBody {
 
 async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -> ApiResult {
     let old_hash = b64url(&sha256(body.refresh_token.as_bytes()));
-    let mut found = node.sys_until(|s| s.refresh.get(&old_hash).cloned()).await;
+    let mut found = node.sys(|s| s.refresh.get(&old_hash).cloned());
     let mut caught_up = true;
     if found.is_none() {
-        // Not here yet, or exchanged already: this replica may be behind, so
-        // ask the leader how far the log is before telling a reused token
-        // (revoke the session) from an unknown one.
+        // Not here yet, or exchanged or revoked already: this replica may be
+        // behind, so bring it up to what the cluster has committed (a read
+        // index) before telling a token issued elsewhere from a reused one
+        // (revoke the session) or an unknown one. The round returns as soon as
+        // this replica has caught up, so a revoked token is refused at once
+        // rather than after waiting `read_wait` for a record that will not come.
         caught_up = node.sys_fresh().await;
         found = node.sys(|s| s.refresh.get(&old_hash).cloned());
     }
