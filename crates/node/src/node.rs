@@ -723,6 +723,19 @@ pub enum PeerBlobs {
     Delay(u64),
 }
 
+/// What a view forwarded to a peer answers when the peer did not serve it. A peer's refusal
+/// (a 4xx: the caller may not read the app, the app is gone) is final and passes through, as
+/// [`Node::call`] passes a peer's refusal through, so `Node::view` does not retry it until its
+/// attempts run out. Anything else (no answer, a 5xx, a peer that does not lead now, `421`, or
+/// is busy, `429`) is `UNAVAILABLE`, which `Node::view` retries to ride out an election.
+fn forwarded_view_error(e: eyre::Report) -> ApiError {
+    match e.downcast::<ApiError>() {
+        Ok(api) if (400..500).contains(&api.status) && !matches!(api.status, 421 | 429) => api,
+        Ok(api) => ApiError::unavailable(&api.message),
+        Err(e) => ApiError::unavailable(&e.to_string()),
+    }
+}
+
 /// How long a forwarded call or read waits for the leader before retrying.
 pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -3369,7 +3382,7 @@ impl Node {
                                 &serde_json::to_value(req).unwrap_or_default(),
                             )
                             .await
-                            .map_err(|e| ApiError::unavailable(&e.to_string()))?;
+                            .map_err(forwarded_view_error)?;
                         return serde_json::from_value(v)
                             .map_err(|e| ApiError::internal(&e.to_string()));
                     }
@@ -3395,7 +3408,7 @@ impl Node {
                 &serde_json::to_value(req).unwrap_or_default(),
             )
             .await
-            .map_err(|e| ApiError::unavailable(&e.to_string()))?;
+            .map_err(forwarded_view_error)?;
         serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
     }
 
