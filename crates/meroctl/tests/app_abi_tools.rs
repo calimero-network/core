@@ -223,10 +223,7 @@ fn version_prints_the_release() {
             .unwrap();
         assert!(out.status.success(), "{flag}: {out:?}");
         let text = String::from_utf8_lossy(&out.stdout);
-        let rest = text
-            .strip_prefix("meroctl ")
-            .unwrap_or_default()
-            .trim();
+        let rest = text.strip_prefix("meroctl ").unwrap_or_default().trim();
         let (version, build) = rest.split_once(' ').unwrap_or((rest, ""));
         // The release (`[workspace.metadata.workspaces].version`), not the `0.0.0` placeholder,
         // then what it was built from: `(<git describe>, <commit>)`.
@@ -245,7 +242,10 @@ fn help_prints_usage_and_succeeds() {
     for (args, usage) in [
         (&["codegen", "--help"][..], "usage: meroctl app codegen"),
         (&["codegen", "-h"], "usage: meroctl app codegen"),
-        (&["codegen", "--abi", "x.json", "--help"], "usage: meroctl app codegen"),
+        (
+            &["codegen", "--abi", "x.json", "--help"],
+            "usage: meroctl app codegen",
+        ),
         (&["abi", "diff", "--help"], "usage: meroctl app abi diff"),
     ] {
         let out = bin().args(args).output().unwrap();
