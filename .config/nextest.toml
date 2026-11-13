@@ -35,9 +35,11 @@ threads-required = 3
 slow-timeout = { period = "15s", terminate-after = 2 }
 
 [[profile.ci.overrides]]
-# Tests the guest builder itself, which builds on purpose (into its own target dirs).
+# Tests the guest builder itself, which builds on purpose: the cache test needs an empty
+# cache, so it compiles the SDK and its dependencies from nothing, and on a shared runner that
+# took past 120 s (two of these were killed there).
 filter = 'package(calimero-app-build)'
-slow-timeout = { period = "15s", terminate-after = 8 }
+slow-timeout = { period = "15s", terminate-after = 20 }
 
 [[profile.ci.overrides]]
 # slowest 37 s
