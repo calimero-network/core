@@ -21,7 +21,6 @@ use calimero_node::node::{ComputeLimits, PeerBlobs, JOB_CONTROL_TIMEOUT, JOB_POL
 use calimero_node::types::Caller;
 use calimero_node::Node;
 use common::{mpk_with, signed_up, typed, wire, Cluster, JobNode, PUBLISHER};
-use futures_util::FutureExt;
 use rand_chacha::rand_core::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 use serde_json::{json, Value};
@@ -426,6 +425,11 @@ async fn a_run_ends_with_its_output_usage_and_one_result() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_run_restarts_on_the_other_job_node_when_its_node_is_lost() {
     let mut rig = Rig::start(&[JOB_A, JOB_B]).await;
+    // The stopped node's silence is a loss after 3 s here, not the 20 s a cluster waits.
+    rig.limits(ComputeLimits {
+        lost_after: Duration::from_secs(3),
+        ..ComputeLimits::default()
+    });
     let plain = input();
     let file = rig.upload(&plain).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
@@ -1181,12 +1185,15 @@ async fn a_job_node_that_reports_but_never_hands_over_its_outputs_does_not_hold_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_output_that_takes_longer_than_the_shared_clients_timeout_is_still_fetched() {
+    // The shared client gives up after 3 s here, not the 30 s a cluster uses; the output
+    // takes 5 s.
+    calimero_node::testing::shared_http_timeout(Duration::from_secs(3));
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {
-        lost_after: Duration::from_secs(120),
+        lost_after: Duration::from_secs(20),
         ..ComputeLimits::default()
     });
-    rig.jobs[0].running.delay_outputs(Duration::from_secs(40));
+    rig.jobs[0].running.delay_outputs(Duration::from_secs(5));
     let file = rig.upload(&input()).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     let outcome = rig.outcome_within(&run, 150).await;
@@ -1198,12 +1205,13 @@ async fn an_output_that_takes_longer_than_the_shared_clients_timeout_is_still_fe
 async fn a_slow_failing_output_fetch_does_not_lose_an_attempt_whose_job_node_answers() {
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {
-        lost_after: Duration::from_secs(7),
+        lost_after: Duration::from_secs(3),
         ..ComputeLimits::default()
     });
+    // Each failing fetch takes longer than the job node may stay silent: still not a loss.
     rig.jobs[0]
         .running
-        .fail_outputs_slowly(Duration::from_secs(8), 4);
+        .fail_outputs_slowly(Duration::from_secs(4), 3);
     let file = rig.upload(&input()).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     let outcome = rig.outcome_within(&run, 90).await;
@@ -1444,6 +1452,11 @@ async fn waiting_for_our_own_control_places_is_not_a_job_nodes_silence() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_cancel() {
     let rig = Rig::start(&[JOB_A]).await;
+    // A cancel ends a silent run after 3 s here, not the 20 s a cluster waits.
+    rig.limits(ComputeLimits {
+        cancel_deadline: Duration::from_secs(3),
+        ..ComputeLimits::default()
+    });
     let file = rig.upload(&input()).await;
     let leader = rig.c.app_leader(&rig.app).unwrap();
     let followers: Vec<usize> = (0..3).filter(|i| *i != leader).collect();
@@ -1465,7 +1478,8 @@ async fn a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_can
         .call(&rig.app, "cancel", Some(json!({ "run": run })), None, None)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_secs(20)).await;
+    // Twice the cancel deadline: a cancel with no report would have ended the run by now.
+    tokio::time::sleep(Duration::from_secs(6)).await;
     assert!(
         rig.record(&run).state.is_active(),
         "ended before the push could work: {:?}",
@@ -2585,78 +2599,71 @@ impl Case<'_> {
     }
 }
 
-// One test per kind, each over the four (upload, delete) node pairs: a case starts a cluster
-// of its own, so the kinds run in parallel rather than sixteen clusters one after another.
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_blob_stored_again_after_a_delete_survives_whichever_nodes_handle_it() {
-    blob_stored_again_after_a_delete(Kind::Plain).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_published_output_stored_again_after_a_delete_survives_whichever_nodes_handle_it() {
-    blob_stored_again_after_a_delete(Kind::Published).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_file_stored_again_after_a_delete_survives_whichever_nodes_handle_it() {
-    blob_stored_again_after_a_delete(Kind::File).await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_session_file_stored_again_after_a_delete_survives_whichever_nodes_handle_it() {
-    blob_stored_again_after_a_delete(Kind::Session).await;
-}
-
-/// Stores a blob of `kind` through the leader or a follower, deletes it through either, and
-/// stores it again: the bytes survive, whichever nodes each step went through.
-async fn blob_stored_again_after_a_delete(kind: Kind) {
-    let mut failures = Vec::new();
-    for up in [Via::Leader, Via::Follower] {
-        for del in [Via::Leader, Via::Follower] {
-            let label = format!("kind={kind:?} up={up:?} del={del:?}");
-            let jobs: &[u64] = match kind {
-                Kind::Plain => &[],
-                Kind::Published | Kind::File | Kind::Session => &[JOB_A],
-            };
-            let mut rig = Rig::start(jobs).await;
-            let (output, expected) = match kind {
-                Kind::Plain => (String::new(), format!("plain {label}").into_bytes()),
-                Kind::Published => rig.finished_output().await,
-                Kind::File => (String::new(), input()),
-                Kind::Session => (String::new(), vec![7; SESSION_LEN]),
-            };
-            let baseline = rig.charged().await;
-            let leader = rig.c.app_leader(&rig.app).unwrap();
-            let follower = (0..3).find(|i| *i != leader).unwrap();
-            let mut clients = Vec::new();
-            for i in 0..3 {
-                let client = rig.c.client(i);
-                client.sign_in(&mut rig.pk).await.unwrap();
-                clients.push(client);
-            }
-            let case = Case {
-                rig: &rig,
-                kind,
-                clients,
-                leader,
-                follower,
-                output,
-                expected,
-            };
-            let ran = std::panic::AssertUnwindSafe(case.run(up, del, baseline))
-                .catch_unwind()
-                .await;
-            if let Err(e) = ran {
-                let why = e
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| e.downcast_ref::<&str>().copied())
-                    .unwrap_or("panicked");
-                failures.push(format!("{label}: {why}"));
-            }
+// The store-and-delete matrix, one test per case: a case starts a cluster of its own, so
+// nextest runs them in parallel. Each name says the kind stored, the node the store goes
+// through (`up`) and the node the delete goes through (`del`).
+macro_rules! blob_matrix {
+    ($($name:ident: $kind:ident, $up:ident, $del:ident;)*) => {$(
+        #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+        async fn $name() {
+            blob_stored_again_after_a_delete(Kind::$kind, Via::$up, Via::$del).await;
         }
+    )*};
+}
+
+blob_matrix! {
+    a_blob_stored_again_after_a_delete_survives_up_leader_del_leader: Plain, Leader, Leader;
+    a_blob_stored_again_after_a_delete_survives_up_leader_del_follower: Plain, Leader, Follower;
+    a_blob_stored_again_after_a_delete_survives_up_follower_del_leader: Plain, Follower, Leader;
+    a_blob_stored_again_after_a_delete_survives_up_follower_del_follower: Plain, Follower, Follower;
+    a_published_output_stored_again_after_a_delete_survives_up_leader_del_leader: Published, Leader, Leader;
+    a_published_output_stored_again_after_a_delete_survives_up_leader_del_follower: Published, Leader, Follower;
+    a_published_output_stored_again_after_a_delete_survives_up_follower_del_leader: Published, Follower, Leader;
+    a_published_output_stored_again_after_a_delete_survives_up_follower_del_follower: Published, Follower, Follower;
+    a_file_stored_again_after_a_delete_survives_up_leader_del_leader: File, Leader, Leader;
+    a_file_stored_again_after_a_delete_survives_up_leader_del_follower: File, Leader, Follower;
+    a_file_stored_again_after_a_delete_survives_up_follower_del_leader: File, Follower, Leader;
+    a_file_stored_again_after_a_delete_survives_up_follower_del_follower: File, Follower, Follower;
+    a_session_file_stored_again_after_a_delete_survives_up_leader_del_leader: Session, Leader, Leader;
+    a_session_file_stored_again_after_a_delete_survives_up_leader_del_follower: Session, Leader, Follower;
+    a_session_file_stored_again_after_a_delete_survives_up_follower_del_leader: Session, Follower, Leader;
+    a_session_file_stored_again_after_a_delete_survives_up_follower_del_follower: Session, Follower, Follower;
+}
+
+/// Stores a blob of `kind` through the leader or a follower (`up`), deletes it through either
+/// (`del`), and stores it again: the bytes survive, whichever nodes each step went through.
+async fn blob_stored_again_after_a_delete(kind: Kind, up: Via, del: Via) {
+    let label = format!("kind={kind:?} up={up:?} del={del:?}");
+    let jobs: &[u64] = match kind {
+        Kind::Plain => &[],
+        Kind::Published | Kind::File | Kind::Session => &[JOB_A],
+    };
+    let mut rig = Rig::start(jobs).await;
+    let (output, expected) = match kind {
+        Kind::Plain => (String::new(), format!("plain {label}").into_bytes()),
+        Kind::Published => rig.finished_output().await,
+        Kind::File => (String::new(), input()),
+        Kind::Session => (String::new(), vec![7; SESSION_LEN]),
+    };
+    let baseline = rig.charged().await;
+    let leader = rig.c.app_leader(&rig.app).unwrap();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let mut clients = Vec::new();
+    for i in 0..3 {
+        let client = rig.c.client(i);
+        client.sign_in(&mut rig.pk).await.unwrap();
+        clients.push(client);
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    let case = Case {
+        rig: &rig,
+        kind,
+        clients,
+        leader,
+        follower,
+        output,
+        expected,
+    };
+    case.run(up, del, baseline).await;
 }
 
 impl Rig {

@@ -25,3 +25,21 @@ pub(crate) fn attestation_delay(public_url: &str) -> Option<Duration> {
         .find(|(u, _)| u == public_url)
         .map(|(_, d)| *d)
 }
+
+/// The timeout of the HTTP client nodes share for peers, job nodes and attestation, when a
+/// test set one: nodes started after [`shared_http_timeout`] in this process use it instead of
+/// [`crate::node::SHARED_HTTP_TIMEOUT`].
+static SHARED_HTTP_TIMEOUT: Mutex<Option<Duration>> = Mutex::new(None);
+
+/// Make nodes started from now on in this process give their shared HTTP client `timeout`, so
+/// a test can show a transfer outlives it without waiting out the 30 s a cluster uses.
+pub fn shared_http_timeout(timeout: Duration) {
+    if let Ok(mut t) = SHARED_HTTP_TIMEOUT.lock() {
+        *t = Some(timeout);
+    }
+}
+
+/// The timeout [`shared_http_timeout`] set, if any.
+pub(crate) fn shared_http_timeout_override() -> Option<Duration> {
+    SHARED_HTTP_TIMEOUT.lock().ok().and_then(|t| *t)
+}

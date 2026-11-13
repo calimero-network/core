@@ -90,6 +90,19 @@ impl From<StatsWire> for crate::app::StorageStats {
     }
 }
 
+/// The timeout of the HTTP client a node shares for its peers, job nodes and attestation
+/// fetches. Transfers that may take longer (job transfers) bound themselves.
+pub const SHARED_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// [`SHARED_HTTP_TIMEOUT`], or the timeout a test set (`testing::shared_http_timeout`).
+fn shared_http_timeout() -> Duration {
+    #[cfg(feature = "testing")]
+    if let Some(timeout) = crate::testing::shared_http_timeout_override() {
+        return timeout;
+    }
+    SHARED_HTTP_TIMEOUT
+}
+
 /// Node configuration.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -982,7 +995,7 @@ impl Node {
             recovery: recovery_disk::RecoveryWriter::default(),
             peers: Mutex::new(HashMap::new()),
             http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
+                .timeout(shared_http_timeout())
                 .build()?,
             challenges: Mutex::new(HashMap::new()),
             event_streams: std::sync::Arc::default(),

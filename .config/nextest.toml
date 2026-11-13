@@ -56,23 +56,9 @@ filter = """binary_id(calimero-log::cluster) & (
 slow-timeout = { period = "15s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
-# slowest 86 s
-filter = """binary_id(calimero-node::access_gate) & (
-    test(=a_blob_deleted_through_the_leader_is_not_served_by_a_follower_behind)
-    | test(=a_call_costs_one_system_read_round)
-    | test(=a_follower_behind_drops_the_bytes_of_a_blob_deleted_through_the_leader)
-    | test(=a_grant_is_honoured_by_a_follower_that_has_not_applied_it_yet)
-    | test(=a_revocation_committed_before_the_round_holds_on_a_leader_behind)
-    | test(=a_revocation_holds_on_a_follower_that_has_not_applied_it_yet)
-    | test(=an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behind)
-)"""
-slow-timeout = { period = "15s", terminate-after = 9 }
-
-[[profile.ci.overrides]]
 # slowest 43 s
 filter = """binary_id(calimero-node::approval_bypasses) & (
     test(=a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes)
-    | test(=forged_credentials_memberships_and_redemptions_are_refused)
 )"""
 slow-timeout = { period = "15s", terminate-after = 5 }
 
@@ -89,81 +75,42 @@ slow-timeout = { period = "15s", terminate-after = 3 }
 [[profile.ci.overrides]]
 # slowest 51 s
 filter = """binary_id(calimero-node::component_cluster) & (
-    test(=a_call_checks_a_turnstile_token_through_a_captcha_service)
-    | test(=a_call_verifies_a_captcha_with_another_app_in_the_same_request)
-    | test(=a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey)
-    | test(=a_read_only_members_emit_only_call_is_refused)
-    | test(=a_retry_replays_even_after_an_upgrade_removed_its_method)
-    | test(=an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor)
-    | test(=compute_and_compute_result_methods_are_refused_to_clients)
+    test(=an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor)
     | test(=end_to_end)
-    | test(=removed_member_stops_receiving_org_events)
     | test(=slow_calls_do_not_stall_the_async_workers)
     | test(=timeouts_are_not_logged)
 )"""
 slow-timeout = { period = "15s", terminate-after = 6 }
 
 [[profile.ci.overrides]]
-# slowest 76 s
-filter = """binary_id(calimero-node::component_compute) & (
-    test(=a_call_starts_a_queued_run_and_an_identical_call_answers_the_same_one)
-    | test(=a_run_keeps_the_compute_component_it_started_on_through_an_upgrade)
-    | test(=an_upgrade_that_drops_the_result_method_of_an_active_run_is_refused)
-)"""
-slow-timeout = { period = "15s", terminate-after = 8 }
-
-[[profile.ci.overrides]]
 # slowest 46 s
 filter = """binary_id(calimero-node::component_files) & (
-    test(=a_bad_recipient_is_refused)
-    | test(=a_blob_swapped_for_another_files_ciphertext_is_never_read)
-    | test(=a_call_and_a_view_cannot_open_a_sealed_file)
-    | test(=a_call_creating_a_file_past_the_quota_fails_and_logs_nothing)
-    | test(=a_complete_retried_after_a_leader_change_replays_its_answer)
-    | test(=a_failed_push_is_retried_and_complete_answers_503_until_it_lands)
+    test(=a_failed_push_is_retried_and_complete_answers_503_until_it_lands)
     | test(=a_node_that_hosts_no_replica_reads_the_upload_from_the_leader)
 )"""
 slow-timeout = { period = "15s", terminate-after = 5 }
 
 [[profile.ci.overrides]]
-# slowest 36 s
-filter = """binary_id(calimero-node::component_packages) & (
-    test(=rooms_installs_and_runs_as_an_uploaded_signed_package)
-    | test(=rooms_installs_and_runs_from_the_registry)
-)"""
-slow-timeout = { period = "15s", terminate-after = 4 }
-
-[[profile.ci.overrides]]
 # slowest 176 s
 filter = """binary_id(calimero-node::compute_runs) & (
-    test(=a_blob_stored_again_after_a_delete_survives_whichever_nodes_handle_it)
+    test(=a_session_file_stored_again_after_a_delete_survives_up_leader_del_leader)
+    | test(=a_session_file_stored_again_after_a_delete_survives_up_leader_del_follower)
+    | test(=a_session_file_stored_again_after_a_delete_survives_up_follower_del_leader)
+    | test(=a_session_file_stored_again_after_a_delete_survives_up_follower_del_follower)
     | test(=a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails)
-    | test(=a_file_stored_again_after_a_delete_survives_whichever_nodes_handle_it)
     | test(=a_forty_mib_output_is_fetched_a_segment_at_a_time_and_a_cut_fetch_resumes)
     | test(=a_held_report_survives_the_leaders_failing_writes)
-    | test(=a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_cancel)
     | test(=a_held_report_with_a_log_is_not_finished_with_it_once_a_replica_is_behind)
     | test(=a_hundred_mib_file_is_uploaded_read_by_a_run_and_written_back)
     | test(=a_job_node_that_reports_but_never_hands_over_its_outputs_does_not_hold_the_run_open)
-    | test(=a_published_output_stored_again_after_a_delete_survives_whichever_nodes_handle_it)
     | test(=a_push_that_never_succeeds_ends_the_run_by_timeout_at_the_ceiling)
     | test(=a_restarted_job_node_does_not_lose_an_attempt_whose_report_is_held)
     | test(=a_second_run_of_an_org_waits_for_the_first_final)
-    | test(=a_session_file_stored_again_after_a_delete_survives_whichever_nodes_handle_it)
     | test(=a_slow_failing_output_fetch_does_not_lose_an_attempt_whose_job_node_answers)
     | test(=an_outage_of_the_system_group_does_not_lose_a_running_attempt)
-    | test(=an_output_that_takes_longer_than_the_shared_clients_timeout_is_still_fetched)
-    | test(=the_run_restarts_on_the_other_job_node_when_its_node_is_lost)
     | test(=waiting_for_our_own_control_places_is_not_a_job_nodes_silence)
 )"""
 slow-timeout = { period = "15s", terminate-after = 18 }
-
-[[profile.ci.overrides]]
-# slowest 82 s
-filter = """binary_id(calimero-node::consent_page) & (
-    test(=an_upgrades_page_names_what_the_components_abis_change)
-)"""
-slow-timeout = { period = "15s", terminate-after = 9 }
 
 [[profile.ci.overrides]]
 # slowest 28 s
@@ -192,13 +139,6 @@ slow-timeout = { period = "15s", terminate-after = 4 }
 
 [[profile.ci.overrides]]
 # slowest 30 s
-filter = """binary_id(calimero-node::rooms) & (
-    test(=followers_honour_min_index_and_hide_titles)
-)"""
-slow-timeout = { period = "15s", terminate-after = 4 }
-
-[[profile.ci.overrides]]
-# slowest 30 s
 filter = """binary_id(calimero-node::shared_storage) & (
     test(=a_non_writers_map_write_is_refused_and_a_writers_lands)
 )"""
@@ -208,7 +148,6 @@ slow-timeout = { period = "15s", terminate-after = 4 }
 # slowest 19 s
 filter = """binary_id(calimero-node::upgrade_keys) & (
     test(=an_upgrade_key_upgrades_its_app_and_does_nothing_else)
-    | test(=an_upgrade_keys_proof_is_judged_where_it_applies)
 )"""
 slow-timeout = { period = "15s", terminate-after = 3 }
 
