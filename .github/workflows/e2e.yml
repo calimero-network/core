@@ -210,6 +210,12 @@ jobs:
           mkdir -p target/scenario-runner
           cp "$bin" target/scenario-runner/scenarios
 
+      # The clients' merod: a debug build, as master's CI tested them with (a release
+      # merod answered mero-js's outbound replace with a 404 that a debug one does not).
+      # It reuses the libraries the runner just compiled.
+      - name: Build a debug merod for the clients
+        run: cargo build -p merod
+
       - name: The discovery check lists what the runner discovers
         working-directory: crates/node
         run: |
@@ -222,6 +228,14 @@ jobs:
         with:
           name: scenario-runner
           path: target/scenario-runner/scenarios
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload the debug merod
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: debug-merod
+          path: target/debug/merod
           if-no-files-found: error
           retention-days: 1
 
@@ -770,10 +784,10 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # One job per client, on the release merod `build-release` built.
+  # One job per client, on `build-scenarios`' debug merod and `build-release`'s kv fixture.
   clients:
     name: clients against merod (${{ matrix.client }})
-    needs: build-release
+    needs: [build-release, build-scenarios]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -834,16 +848,22 @@ jobs:
 
       # KV_STORE_WASM is the kv component (apps/v2-fixtures/kv: set, get, len,
       # and `clear`, a confirm method it declares itself).
-      - name: Download merod and the kv fixture
+      - name: Download the kv fixture
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: e2e-release
           path: .
 
+      - name: Download the debug merod
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: debug-merod
+          path: target/debug
+
       - name: Point the clients at them
         run: |
-          chmod +x target/release/merod
-          echo "MEROD_BINARY=$PWD/target/release/merod" >> "$GITHUB_ENV"
+          chmod +x target/debug/merod
+          echo "MEROD_BINARY=$PWD/target/debug/merod" >> "$GITHUB_ENV"
           echo "KV_STORE_WASM=$PWD/target/app-components/kv.wasm" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
