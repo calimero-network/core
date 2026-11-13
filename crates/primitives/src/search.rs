@@ -8,35 +8,11 @@
 //! becomes a [`SearchRequest`] and comes back as a [`SearchResponse`]. There is
 //! no app field: the node binds the query to the app the view runs in.
 //!
-//! The export names ([`SCHEMA_EXPORT`], [`EXTRACT_EXPORT`], [`SCAN_EXPORT`],
-//! [`is_export`]) and their request and response types are the SDK 0.12 app
-//! side, which no current code calls.
-//!
 //! All of it is node-local: derived from state, never in the log or a snapshot.
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
-
-/// Name of the app export that lists the app's search indexes. No input;
-/// returns a borsh `Vec<SearchIndexSchema>`.
-pub const SCHEMA_EXPORT: &str = "__calimero_search_schema";
-
-/// Name of the app export that turns entity ids into documents: a borsh
-/// [`ExtractRequest`] in, a borsh [`ExtractResponse`] out. Its presence in a
-/// module is what opts the app into search.
-pub const EXTRACT_EXPORT: &str = "__calimero_search_extract";
-
-/// Name of the app export that pages through every document of an index, for
-/// a full (re)build: a borsh [`ScanRequest`] in, a borsh [`ScanResponse`] out.
-pub const SCAN_EXPORT: &str = "__calimero_search_scan";
-
-/// Whether `method` is one of the search exports. They only ever read state,
-/// whatever the app's ABI says, so the node runs them as views.
-#[must_use]
-pub fn is_export(method: &str) -> bool {
-    matches!(method, SCHEMA_EXPORT | EXTRACT_EXPORT | SCAN_EXPORT)
-}
 
 /// How one field of a document is indexed.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -101,45 +77,6 @@ pub struct SearchDoc {
     /// `(field name, value)` pairs; a name the schema does not declare is
     /// ignored.
     pub fields: Vec<(String, SearchValue)>,
-}
-
-/// Input of [`EXTRACT_EXPORT`].
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
-pub struct ExtractRequest {
-    /// Which of the app's indexes the documents are for.
-    pub index: String,
-    /// The entity ids that changed.
-    pub ids: Vec<[u8; 32]>,
-}
-
-/// Output of [`EXTRACT_EXPORT`]: one entry per requested id, in order.
-pub type ExtractResponse = Vec<Option<SearchDoc>>;
-
-/// Input of [`SCAN_EXPORT`].
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
-pub struct ScanRequest {
-    /// Which of the app's indexes to page through.
-    pub index: String,
-    /// Where to resume: empty for the first page, then the previous page's
-    /// `next`. Opaque to the node, which only requires it to grow (compared as
-    /// bytes). The SDK writes which of the index's collections it is paging
-    /// and the lowest entity id the page may return, which stays put while
-    /// entries come and go.
-    pub from: Vec<u8>,
-    /// Documents to return at most.
-    pub limit: u32,
-}
-
-/// Output of [`SCAN_EXPORT`].
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-#[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
-pub struct ScanResponse {
-    /// This page's documents.
-    pub docs: Vec<SearchDoc>,
-    /// The `from` of the next page, `None` on the last one.
-    pub next: Option<Vec<u8>>,
 }
 
 /// How the query string is matched.

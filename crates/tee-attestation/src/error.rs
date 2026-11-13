@@ -35,9 +35,6 @@ pub enum AttestationError {
     /// Application hash verification failed.
     ApplicationHashMismatch { expected: String, actual: String },
 
-    /// Failed to get TEE info.
-    InfoRetrievalFailed(String),
-
     /// System time error.
     SystemTimeError(String),
 }
@@ -75,7 +72,6 @@ impl fmt::Display for AttestationError {
                     "Application hash mismatch: expected {expected}, got {actual}"
                 )
             }
-            Self::InfoRetrievalFailed(msg) => write!(f, "Failed to get TEE info: {msg}"),
             Self::SystemTimeError(msg) => write!(f, "System time error: {msg}"),
         }
     }

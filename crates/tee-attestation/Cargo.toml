@@ -20,7 +20,6 @@ mock-attestation = []
 cli = ["dep:tokio"]
 
 [dependencies]
-eyre.workspace = true
 hex.workspace = true
 tracing.workspace = true
 base64.workspace = true
@@ -28,7 +27,8 @@ base64.workspace = true
 # records which baseline produced it. See `verify::tcb_evaluation_data_number_of`.
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-# `attest_key_binding`, shared by the attest endpoint and the clients that check it.
+# `attest_transport_binding`, shared by the attest endpoint and the clients that
+# check it, and `KmsEvidence::quote_sha256`.
 sha2.workspace = true
 
 # Quote verification dependencies (cross-platform)
@@ -48,6 +48,4 @@ required-features = ["cli"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 configfs-tsm.workspace = true
-tdx_workload_attestation = { workspace = true, features = ["tdx-linux"] }
-reqwest.workspace = true
 
