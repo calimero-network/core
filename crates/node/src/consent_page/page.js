@@ -8,6 +8,8 @@
   var $ = function (sel) { return document.getElementById(sel); };
   // Withdrawing a release approval reads differently from approving.
   var withdrawing = false;
+  // Checks that call for care: listed under Details, and repeated up top.
+  var cautions = [];
 
   function el(tag, text, cls) {
     var e = document.createElement(tag);
@@ -101,13 +103,15 @@
     if (withdrawing) $("approve").textContent = "Withdraw approval";
     renderWho(m);
     $("headline").textContent = m.title || m.headline;
+    $("summary").textContent = m.after || (has(m.points) ? m.points[0] : "");
     renderMeans(m);
     renderChecks(m, host);
+    renderCautions();
     $("code").textContent = m.code || "";
     renderTech(m);
     $("content").hidden = false;
     $("tech").hidden = false;
-    $("expires").textContent = "This request expires at " +
+    $("expires").textContent = "Expires at " +
       new Date(m.expiresAt * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) + ".";
     if (m.status === "pending") {
       $("actions").hidden = false;
@@ -135,7 +139,7 @@
     var box = $("attention"), attn = m.attention || [];
     if (attn.length) {
       var w = add(box, el("div", null, "attn"));
-      w.appendChild(el("h3", "Needs your attention"));
+      w.appendChild(el("h2", "Needs your attention"));
       var list = add(w, el("ul"));
       attn.forEach(function (a) {
         var li = add(list, el("li", a.text));
@@ -153,6 +157,18 @@
     li.appendChild(el("strong", strong));
     if (rest) li.appendChild(document.createTextNode(rest));
     if (sub) li.appendChild(el("span", sub, "sub"));
+    if (note) cautions.push([strong + (rest || ""), sub]);
+  }
+  // A check that calls for care stays in sight, next to the action.
+  function renderCautions() {
+    if (!cautions.length) return;
+    var w = add($("attention"), el("div", null, "attn"));
+    w.appendChild(el("h2", "Check before you approve"));
+    var list = add(w, el("ul"));
+    cautions.forEach(function (c) {
+      var li = add(list, el("li", c[0]));
+      if (c[1]) li.appendChild(el("span", c[1], "sub"));
+    });
   }
   function renderChecks(m, host) {
     var ul = $("checks"), mockShown = false;
