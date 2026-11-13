@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.24] - 2026-11-13
+
 ### Added
 
 - **`scripts/install.sh` installs `merod` and `meroctl` from a release**:
