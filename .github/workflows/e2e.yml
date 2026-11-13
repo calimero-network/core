@@ -210,12 +210,6 @@ jobs:
           mkdir -p target/scenario-runner
           cp "$bin" target/scenario-runner/scenarios
 
-      # The clients' merod: a debug build, as master's CI tested them with (a release
-      # merod answered mero-js's outbound replace with a 404 that a debug one does not).
-      # It reuses the libraries the runner just compiled.
-      - name: Build a debug merod for the clients
-        run: cargo build -p merod
-
       - name: The discovery check lists what the runner discovers
         working-directory: crates/node
         run: |
@@ -228,14 +222,6 @@ jobs:
         with:
           name: scenario-runner
           path: target/scenario-runner/scenarios
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Upload the debug merod
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: debug-merod
-          path: target/debug/merod
           if-no-files-found: error
           retention-days: 1
 
@@ -784,10 +770,11 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # One job per client, on `build-scenarios`' debug merod and `build-release`'s kv fixture.
+  # One job per client, each building its own debug merod and kv component as the
+  # single clients job did: on merod and kv taken from the build jobs instead, mero-js's
+  # console test failed (404 on its outbound replace) where this setup passes.
   clients:
     name: clients against merod (${{ matrix.client }})
-    needs: [build-release, build-scenarios]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -837,45 +824,27 @@ jobs:
           path: _client-py
           persist-credentials: false
 
-      # The pinned toolchain: the kv component below, and calimero-client-py's extension.
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
           targets: wasm32-wasip2
           shared-key: ci-checks
-          rust-cache: false
+          save-if: false
           sccache: true
 
-      # mero-app-build, from `build-release`.
-      - name: Download the tools
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: e2e-release
-          path: .
+      # KV_STORE_WASM is the kv component (apps/v2-fixtures/kv: set, get, len,
+      # and `clear`, a confirm method it declares itself).
+      - name: Install mero-app-build
+        run: scripts/install-mero-app-build.sh
 
-      # KV_STORE_WASM is the kv component (apps/v2-fixtures/kv: set, get, len, and
-      # `clear`, a confirm method it declares itself), built here with the default
-      # release profile as master's CI did: `build-release`'s copy is built without
-      # fat LTO, and mero-js's console test failed on it.
-      - name: Build the kv fixture
+      - name: Build merod and the kv fixture
         run: |
           set -euo pipefail
-          chmod +x target/e2e-tools/bin/*
-          rm -f "$CARGO_TARGET_DIR/app-components/kv.wasm"
-          target/e2e-tools/bin/mero-app-build \
+          cargo build -p merod
+          mero-app-build \
             apps/v2-fixtures/kv --out "$CARGO_TARGET_DIR/app-components/kv.wasm"
-
-      - name: Download the debug merod
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: debug-merod
-          path: target/debug
-
-      - name: Point the clients at them
-        run: |
-          chmod +x target/debug/merod
-          echo "MEROD_BINARY=$PWD/target/debug/merod" >> "$GITHUB_ENV"
-          echo "KV_STORE_WASM=$PWD/target/app-components/kv.wasm" >> "$GITHUB_ENV"
+          echo "MEROD_BINARY=$CARGO_TARGET_DIR/debug/merod" >> "$GITHUB_ENV"
+          echo "KV_STORE_WASM=$CARGO_TARGET_DIR/app-components/kv.wasm" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: matrix.client == 'mero-js'
