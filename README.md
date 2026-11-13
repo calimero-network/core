@@ -99,7 +99,6 @@ The docs live in [`docs/`](docs/) (Astro Starlight).
 | --- | --- |
 | [mero-tee](https://github.com/calimero-network/mero-tee) | TDX node images, mero-kms, signed releases |
 | [app-registry](https://github.com/calimero-network/app-registry) | Where signed apps are published and installed from |
-| [mdma](https://github.com/calimero-network/mdma) | Calimero Cloud's cluster manager (VMs, placement, rollouts) |
 | [mero-js](https://github.com/calimero-network/mero-js) · [mero-react](https://github.com/calimero-network/mero-react) | JavaScript/TypeScript client and React bindings |
 | [calimero-client-py](https://github.com/calimero-network/calimero-client-py) | Python client |
 | [swift-sdk](https://github.com/calimero-network/swift-sdk) · [kotlin-sdk](https://github.com/calimero-network/kotlin-sdk) | iOS/macOS and Android clients |
