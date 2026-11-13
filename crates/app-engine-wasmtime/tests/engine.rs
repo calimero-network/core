@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use std::time::Instant;
 
-use calimero_app_build::{build_component, build_components, BuiltApp};
+use calimero_app_build::{build_in_repo_cache, BuiltApp};
 use calimero_app_engine_wasmtime::{
     WasmtimeEngine, CANCELLED, MAX_RANDOM_BYTES_PER_CALL, WALL_CLOCK_EXCEEDED,
 };
@@ -24,10 +24,10 @@ fn guest(name: &str) -> Vec<u8> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/guests")
         .join(name);
-    // One target dir for every guest, so wit-bindgen compiles once per test binary run.
-    let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guests");
-    build_component(&dir, &target)
+    // The repository's component cache: compiled once, then read by every test process.
+    build_in_repo_cache(&dir)
         .unwrap_or_else(|e| panic!("build {name}: {e}"))
+        .app
         .component
 }
 
@@ -1269,8 +1269,7 @@ fn compute_fixture() -> &'static BuiltApp {
     static BUILT: OnceLock<BuiltApp> = OnceLock::new();
     BUILT.get_or_init(|| {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
-        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("compute-fixture");
-        build_components(&dir, &target).unwrap_or_else(|e| panic!("build fixture: {e}"))
+        build_in_repo_cache(&dir).unwrap_or_else(|e| panic!("build fixture: {e}"))
     })
 }
 

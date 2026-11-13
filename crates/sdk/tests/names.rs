@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use calimero_app_build::build_component;
+use calimero_app_build::build_in_repo_cache;
 use calimero_sdk::testing::{run_migration, run_scenario, Failure, Org, TestApp};
 use serde_json::json;
 
@@ -16,9 +16,9 @@ fn build(guest: &str) -> Vec<u8> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/guests")
         .join(guest);
-    let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("name-guests");
-    build_component(&dir, &target)
+    build_in_repo_cache(&dir)
         .unwrap_or_else(|e| panic!("build {guest}: {e}"))
+        .app
         .component
 }
 
@@ -82,7 +82,9 @@ fn an_upgrade_switches_the_code_and_keeps_the_state() {
 }
 
 fn scenario(name: &str, steps: &serde_json::Value) -> PathBuf {
-    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(&dir).expect("the scratch dir");
+    let path = dir.join(name);
     std::fs::write(&path, steps.to_string()).expect("write scenario");
     path
 }

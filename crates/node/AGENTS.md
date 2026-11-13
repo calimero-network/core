@@ -1082,8 +1082,9 @@ is its command line.
   peer's `internal/blob/delete`) asks `Node::blob_in_use`: held or pinned, as each app's leader
   answers, unknown counting as in use. A put of an id (`BlobGuards::put`) also stops a deletion of
   that id that was between its checks and its delete, here and on every peer. Regressions:
-  `compute_runs.rs` (`a_blob_stored_again_after_a_delete_survives_whichever_nodes_handle_it`, a
-  matrix over the kind stored, the node it goes through and the node the delete goes through;
+  `compute_runs.rs` (`a_blob_stored_again_after_a_delete_survives_whichever_nodes_handle_it` and its
+  published-output, file and session-file siblings, one test per kind stored, each over the node
+  it goes through and the node the delete goes through;
   `a_collection_between_a_publishes_push_and_its_commit_leaves_the_bytes`,
   `a_peer_asked_to_delete_between_a_publishes_push_and_its_commit_keeps_the_bytes`,
   `a_peers_delete_that_checked_before_a_publish_stored_its_bytes_keeps_them`).

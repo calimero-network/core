@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
 
-use calimero_app_build::build_components;
+use calimero_app_build::build_in_repo_cache;
 use rand_chacha::rand_core::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 
@@ -21,8 +21,7 @@ fn built() -> &'static Built {
     static BUILT: OnceLock<Built> = OnceLock::new();
     BUILT.get_or_init(|| {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
-        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("compute-fixture");
-        let both = build_components(&dir, &target).expect("build the compute fixture");
+        let both = build_in_repo_cache(&dir).expect("build the compute fixture");
         let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("components");
         std::fs::create_dir_all(&out).expect("components dir");
         let (compute, app) = (out.join("compute.wasm"), out.join("app.wasm"));
