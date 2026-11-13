@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.21] - 2026-11-13
+
+### Added
+
+- **ABI spellings for plain serde's JSON, and `#[serde(default)]` read as optional**
+  (`calimero-sdk-macros`, `calimero-app-abi`). A `#[derive(AbiType)]` field (or type)
+  marked `#[abi(plain)]` describes its `u64`/`i64` as `u64_number`/`i64_number` (a JSON
+  number) and its `Vec<u8>` as `byte_list` (an array of numbers), at any depth, where it
+  was refused before; the JSON does not change, and `u64`, `i64`, `bytes` and `list<u8>`
+  keep meaning the D20 strings. Clients type them `number` / `int` / `UInt64`,`Int64` /
+  `ULong`,`Long` and `number[]` / `List[int]` / `[UInt8]` / `List<UByte>` (JavaScript reads
+  a number exactly only up to 2^53). A field with `#[serde(default)]`, or every field of a
+  struct with it, is optional in the shape, so generated argument types no longer require
+  it (Python `TypedDict`s now put optional fields in a `total=False` part).
+- **`mero-app-build codegen --kotlin-serialization-plugin`**, and Kotlin app types annotated
+  `@Serializable(with = ...)` (`calimero-app-build`, `calimero-app-abi`), so
+  `serializer<T>()` finds their serializers, sealed interfaces included, and kotlinx's
+  bundled R8 rules keep them. **A Kotlin module that applies the kotlinx.serialization
+  compiler plugin must now generate with the flag**: the plugin writes each `serializer()`
+  and a hand-written one clashes with it ("Overload resolution ambiguity").
+- **`mero-app-build --version` names the source it was built from** (`1.0.0-rc.21
+  (<git describe>, <commit>)`); `--help` / `-h` (also after `codegen` and `abi-diff`)
+  prints the usage and exits 0 instead of failing with a backtrace.
+- **Each compute run attempt's log is kept as a sealed file** (#4999, `calimero-node`,
+  `calimero-client`, `meroctl`). A run's module log (stdout, stderr, `log`) used to be
+  dropped; the job node now joins it, caps it at 1 MiB and seals it under a fresh key, and
+  the leader keeps it with the run like an output. `GET /apps/{app}/runs/{run}/logs` lists
+  each attempt's log (`attempt`, `id`, `size`, `sha256`) to those who may handle the app's
+  files, and its bytes come through the files export. `meroctl run logs <app> <run>
+  [--attempt N]` and `meroctl pipeline logs <app> <pipeline-run> --step S [--index I]`
+  read them. A log is never publishable (`NOT_A_RUN_OUTPUT`), never a compute or pipeline
+  input, not visible to the app's code and not in `GET /apps/{app}/files`; it counts toward
+  the app's file quota. New optional fields (`log` in the signed job report and the final
+  entry, `FileSeal.log`, `RunRecord.log`) read as before when absent, a log-less report
+  signs the same bytes as before, and a leader asks for logs only while every replica
+  reads them, so a rolling upgrade keeps no log until it completes.
+
+### Changed
+
+- **Generated Python, Swift and Kotlin clients leave out an unset optional argument**
+  (#5027, `calimero-app-abi`) instead of sending `null`, as the TypeScript client already
+  did. The SDK reads a missing argument and `null` alike as `None`, so apps see no
+  difference; only the request bytes change.
+- **Kotlin: an app type the ABI gives no shape is typed `JsonElement`** (#5027). The
+  top-level `typealias X = JsonElement` it used to get clashed with app types of the same
+  name in the client's package; code that named the alias uses `JsonElement`.
+
 ## [1.0.0-rc.20] - 2026-11-12
 
 ### Added
@@ -91,25 +138,6 @@
   recovery uses must carry an attestation the node accepts under its peer
   policy (`400 UNATTESTED_RECOVERY_FILE`). `calimero-log` gains `read_snapshot_rows` and
   `Group::replace_state_rows` (state rows that move between cluster keys).
-- **ABI spellings for plain serde's JSON, and `#[serde(default)]` read as optional**
-  (`calimero-sdk-macros`, `calimero-app-abi`). A `#[derive(AbiType)]` field (or type)
-  marked `#[abi(plain)]` describes its `u64`/`i64` as `u64_number`/`i64_number` (a JSON
-  number) and its `Vec<u8>` as `byte_list` (an array of numbers), at any depth, where it
-  was refused before; the JSON does not change, and `u64`, `i64`, `bytes` and `list<u8>`
-  keep meaning the D20 strings. Clients type them `number` / `int` / `UInt64`,`Int64` /
-  `ULong`,`Long` and `number[]` / `List[int]` / `[UInt8]` / `List<UByte>` (JavaScript reads
-  a number exactly only up to 2^53). A field with `#[serde(default)]`, or every field of a
-  struct with it, is optional in the shape, so generated argument types no longer require
-  it (Python `TypedDict`s now put optional fields in a `total=False` part).
-- **`mero-app-build codegen --kotlin-serialization-plugin`**, and Kotlin app types annotated
-  `@Serializable(with = ...)` (`calimero-app-build`, `calimero-app-abi`), so
-  `serializer<T>()` finds their serializers, sealed interfaces included, and kotlinx's
-  bundled R8 rules keep them. **A Kotlin module that applies the kotlinx.serialization
-  compiler plugin must now generate with the flag**: the plugin writes each `serializer()`
-  and a hand-written one clashes with it ("Overload resolution ambiguity").
-- **`mero-app-build --version` names the source it was built from** (`1.0.0-rc.19
-  (<git describe>, <commit>)`); `--help` / `-h` (also after `codegen` and `abi-diff`)
-  prints the usage and exits 0 instead of failing with a backtrace.
 
 ### Changed
 
