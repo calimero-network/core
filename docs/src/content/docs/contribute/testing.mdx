@@ -631,7 +631,10 @@ and the workspace's own crates as master last built them. setup-rust-ci then set
 every tracked file's mtime to an old date and touches the files that differ from
 the commit that build was made from (`target/.ci-cache-commit`), so cargo
 rebuilds only the crates a change reaches; with no such commit, every file counts
-as changed. (sccache on the Actions cache was tried and dropped: with this many
+as changed. The test apps the tests build from source on first use (the
+engine's and app-build's guests in `target/tmp`, the node's fixtures in
+`target/app-components`) are cached apart, saved from master, whose single
+`Rust tests` shard runs every test. (sccache on the Actions cache was tried and dropped: with this many
 parallel jobs its writes hit the cache API's rate limit.) CI builds carry no debuginfo
 (`CARGO_PROFILE_DEV_DEBUG=0`): the cache restores faster and the test binaries
 link faster, and a failing test still names its file and line. The workspace
