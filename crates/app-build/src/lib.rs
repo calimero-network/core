@@ -114,22 +114,30 @@ fn compute_rustflags() -> String {
     flags.join("\x1f")
 }
 
-fn build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Built> {
-    // Builds into one target dir race on its artifacts across threads and processes.
-    std::fs::create_dir_all(target_dir)?;
-    let _lock = lock_exclusive(&target_dir.join(TARGET_LOCK))?;
+/// The `cargo build` of `crate_dir` into `target_dir`. Cargo runs in
+/// `crate_dir`, so a relative `target_dir` (the caller's, relative to the
+/// caller's directory) is made absolute first; passed as is, it would land
+/// under the crate (`<crate>/<crate>/target`).
+fn cargo_build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Command> {
     let mut cargo = Command::new("cargo");
     let _ = cargo
         .args(["build", "--release", "--target", TARGET])
         .args(["--message-format", "json-render-diagnostics"])
         .arg("--target-dir")
-        .arg(target_dir)
+        .arg(std::path::absolute(target_dir)?)
         .current_dir(crate_dir)
         .stdin(Stdio::null());
     if compute {
         let _ = cargo.env("CARGO_ENCODED_RUSTFLAGS", compute_rustflags());
     }
-    let output = cargo.output()?;
+    Ok(cargo)
+}
+
+fn build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Built> {
+    // Builds into one target dir race on its artifacts across threads and processes.
+    std::fs::create_dir_all(target_dir)?;
+    let _lock = lock_exclusive(&target_dir.join(TARGET_LOCK))?;
+    let output = cargo_build(crate_dir, target_dir, compute)?.output()?;
     if !output.status.success() {
         eyre::bail!(
             "cargo build failed ({}):\n{}",
@@ -480,4 +488,28 @@ fn lift_abi(bytes: &[u8]) -> EyreResult<(Vec<u8>, Option<Value>)> {
         }
     }
     Ok((out, abi))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::cargo_build;
+
+    // `meroctl app build apps/kv-store/logic` from the repository root used to
+    // hand cargo `--target-dir apps/kv-store/logic/target` while running it in
+    // the crate, so the build landed in `apps/kv-store/logic/apps/kv-store/logic/target`.
+    #[test]
+    fn a_relative_target_dir_is_the_callers_not_the_crates() {
+        let cargo = cargo_build(Path::new("apps/kv"), Path::new("apps/kv/target"), false).unwrap();
+        let args: Vec<_> = cargo.get_args().collect();
+        let at = args.iter().position(|a| *a == "--target-dir").unwrap();
+        let target = Path::new(args[at + 1]);
+        assert!(target.is_absolute(), "{}", target.display());
+        assert_eq!(
+            target,
+            std::env::current_dir().unwrap().join("apps/kv/target")
+        );
+        assert_eq!(cargo.get_current_dir(), Some(Path::new("apps/kv")));
+    }
 }
