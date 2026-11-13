@@ -426,6 +426,11 @@ async fn a_run_ends_with_its_output_usage_and_one_result() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_run_restarts_on_the_other_job_node_when_its_node_is_lost() {
     let mut rig = Rig::start(&[JOB_A, JOB_B]).await;
+    // The stopped node's silence is a loss after 3 s here, not the 20 s a cluster waits.
+    rig.limits(ComputeLimits {
+        lost_after: Duration::from_secs(3),
+        ..ComputeLimits::default()
+    });
     let plain = input();
     let file = rig.upload(&plain).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
@@ -1198,12 +1203,13 @@ async fn an_output_that_takes_longer_than_the_shared_clients_timeout_is_still_fe
 async fn a_slow_failing_output_fetch_does_not_lose_an_attempt_whose_job_node_answers() {
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {
-        lost_after: Duration::from_secs(7),
+        lost_after: Duration::from_secs(3),
         ..ComputeLimits::default()
     });
+    // Each failing fetch takes longer than the job node may stay silent: still not a loss.
     rig.jobs[0]
         .running
-        .fail_outputs_slowly(Duration::from_secs(8), 4);
+        .fail_outputs_slowly(Duration::from_secs(4), 3);
     let file = rig.upload(&input()).await;
     let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     let outcome = rig.outcome_within(&run, 90).await;
