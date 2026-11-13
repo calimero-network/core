@@ -1,5 +1,5 @@
 //! `meroctl app` without a node: start a project, build it, generate its
-//! clients, compare its ABI, make a signing key, pack and sign an `.mpk`,
+//! clients, compare its ABI, make a signing key (`signer`), pack and sign an `.mpk`,
 //! inspect one, and publish it to a registry. Each calls the library the
 //! tool it replaced was built on (`calimero-app-build`, `calimero-app-abi`,
 //! `mero-sign`, `calimero-bundle`), so the formats are the node's own.
@@ -78,7 +78,7 @@ pub enum AbiCmd {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum KeyCmd {
+pub enum SignerCmd {
     /// A new Ed25519 signing key, written owner-only (`mero-sign generate-key`).
     New {
         /// The key file to write.
@@ -139,7 +139,7 @@ pub struct PackArgs {
     /// The `.mpk` to write (default: `<DIR>/dist/<package>-<version>.mpk`, else in `.`).
     #[arg(long)]
     pub out: Option<PathBuf>,
-    /// Sign with this key file (`meroctl app key new`); without it, the
+    /// Sign with this key file (`meroctl app signer new`); without it, the
     /// development key, which a public registry refuses.
     #[arg(long)]
     pub key: Option<PathBuf>,
@@ -242,13 +242,13 @@ pub fn abi(cmd: &AbiCmd) -> eyre::Result<Value> {
     }
 }
 
-pub fn key(cmd: &KeyCmd) -> eyre::Result<Value> {
+pub fn signer(cmd: &SignerCmd) -> eyre::Result<Value> {
     match cmd {
-        KeyCmd::New { output, force } => {
+        SignerCmd::New { output, force } => {
             mero_sign::generate_key(output, *force)?;
             Ok(Value::Null)
         }
-        KeyCmd::Id { key } => {
+        SignerCmd::Id { key } => {
             mero_sign::derive_signer_id(key)?;
             Ok(Value::Null)
         }

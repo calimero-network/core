@@ -32,9 +32,10 @@ pub enum AppCmd {
     /// An app's ABI: print it, or compare two releases. No node.
     #[command(subcommand)]
     Abi(crate::make::AbiCmd),
-    /// Signing keys: a package's identity is its package id and its signer. No node.
+    /// The signing key a release is signed with: a package's identity is its
+    /// package id and its signer. No node.
     #[command(subcommand)]
-    Key(crate::make::KeyCmd),
+    Signer(crate::make::SignerCmd),
     /// Write a signed `.mpk`: from the app's crate DIR (its
     /// `[package.metadata.calimero]`), or from `--wasm`/`--compute` and flags. No node.
     Pack(crate::make::PackArgs),
@@ -175,7 +176,7 @@ impl AppCmd {
                 | Self::Build(_)
                 | Self::Codegen { .. }
                 | Self::Abi(_)
-                | Self::Key(_)
+                | Self::Signer(_)
                 | Self::Pack(_)
                 | Self::Sign(_)
                 | Self::Inspect { .. }
@@ -192,7 +193,7 @@ pub async fn run_offline(cmd: AppCmd) -> eyre::Result<Value> {
         AppCmd::Build(a) => make::build(&a),
         AppCmd::Codegen { args } => make::codegen(&args),
         AppCmd::Abi(c) => make::abi(&c),
-        AppCmd::Key(c) => make::key(&c),
+        AppCmd::Signer(c) => make::signer(&c),
         AppCmd::Pack(a) => make::pack(&a),
         AppCmd::Sign(a) => make::sign(&a),
         AppCmd::Inspect { mpk } => make::inspect(&mpk),
@@ -250,7 +251,7 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
         | AppCmd::Build(_)
         | AppCmd::Codegen { .. }
         | AppCmd::Abi(_)
-        | AppCmd::Key(_)
+        | AppCmd::Signer(_)
         | AppCmd::Pack(_)
         | AppCmd::Sign(_)
         | AppCmd::Inspect { .. }

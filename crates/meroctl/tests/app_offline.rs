@@ -232,8 +232,8 @@ fn pack_refuses_what_the_node_would_refuse() {
 fn a_key_signs_and_inspect_verifies_what_pack_wrote() {
     let tmp = tempfile::tempdir().unwrap();
     let d = tmp.path();
-    let _ = ok(&meroctl(d, &["app", "key", "new", "k.json"]));
-    let id = meroctl(d, &["app", "key", "id", "k.json"]);
+    let _ = ok(&meroctl(d, &["app", "signer", "new", "k.json"]));
+    let id = meroctl(d, &["app", "signer", "id", "k.json"]);
     let signer = String::from_utf8(ok_raw(&id)).unwrap().trim().to_owned();
     assert!(signer.starts_with("did:key:z"), "{signer}");
 

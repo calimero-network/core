@@ -39,8 +39,8 @@ with any field the client's types do not name kept as the node sent it.
 Commands that stream (`context watch`, `cloud compute pipeline watch`,
 `context presence stream`, `ops metrics`, `blob download` to stdout, `app
 watch`, `local dev`) print their own lines, as do `app codegen`, `app abi
-diff` and `app key`. The commands that need no node (`app new`, `app build`,
-`app codegen`, `app abi`, `app key`, `app pack`, `app sign`, `app inspect`,
+diff` and `app signer`. The commands that need no node (`app new`, `app build`,
+`app codegen`, `app abi`, `app signer`, `app pack`, `app sign`, `app inspect`,
 `app publish`, `local`, `cloud` but `cloud compute`) never read `--node` or
 `--api`.
 
@@ -119,7 +119,7 @@ one needs no node:
 | `app codegen --abi FILE --lang ts\|python\|swift\|kotlin\|openapi [-o DIR] [--name N] [--package P] [--service S] [--kotlin-serialization-plugin] [--no-openapi]` | The app's OpenAPI document and a typed client ([Typed clients](/build/guides/typed-clients/)). `FILE` is a component, an `.mpk`, a `manifest.json` or ABI JSON. |
 | `app abi show FILE [--service S]` | The ABI as JSON. |
 | `app abi diff OLD NEW [--service S] [--json]` | What changed between two releases; exit code 1 when a change breaks existing callers ([App interface](/build/app-abi/)). |
-| `app key new FILE [--force]` / `app key id FILE` | A new Ed25519 signing key (written owner-only), and its `did:key` signer id. A package's identity is its package id and its signer. |
+| `app signer new FILE [--force]` / `app signer id FILE` | A new Ed25519 signing key (written owner-only), and its `did:key` signer id. A package's identity is its package id and its signer. |
 | `app pack [DIR] [--wasm F] [--compute F] [--pipeline F]... [--frontend DIR] [--frontend-entry E] [--no-frontend] [--outbound URL]... [--upgrades owner\|publisher] [--package P] [--app-version V] [--min-runtime-version V] [--key FILE] [--previous OLD] [--out FILE]` | Write the manifest the node reads, sign it, and write it with every file it names as an `.mpk`. With the crate `DIR`, its `[package.metadata.calimero]` (`package`, `min-runtime-version`, `frontend-dir`) and `version` fill what the flags leave out, the components are built unless `--wasm`/`--compute` name them, and the default output is `DIR/dist/<package>-<version>.mpk`. A frontend is checked with the node's rules (paths, types, `MAX_FRONTEND_BYTES`, the entry) and the HTML rules its CSP enforces. Without `--key` the development key signs, which a public registry refuses. `--previous` reports ABI changes against the last release first. |
 | `app sign MANIFEST (--key FILE \| --dev) [--previous OLD]` | Sign a `manifest.json` in place. |
 | `app inspect FILE.mpk` | Open the bundle as a node does (signature, every artifact's hash) and print `verified`, `signerId`, `bundleHash` and the manifest. |
@@ -525,7 +525,7 @@ meroctl local down
 A release:
 
 ```bash
-meroctl app key new release.key                     # once; keep it safe
+meroctl app signer new release.key                  # once; keep it safe
 meroctl app pack apps/kv-store/logic --key release.key --previous last.mpk --out release.mpk
 meroctl app publish release.mpk --public            # CALIMERO_REGISTRY_API_KEY
 ```

@@ -42,19 +42,19 @@ detail.
 
 2. **Generate a signing key (one-time).**
 
-   `meroctl app key new` creates an Ed25519 keypair and derives your **signer
+   `meroctl app signer new` creates an Ed25519 keypair and derives your **signer
    id** — a `did:key` identifier built from the public key (the `0xed01`
    ed25519-pub multicodec tag plus the 32-byte key, base58btc-encoded under the
    `did:key:` prefix).
 
    ```bash
-   meroctl app key new my-signing-key.json
+   meroctl app signer new my-signing-key.json
    # Generated new keypair: my-signing-key.json
    #   signerId: did:key:z6Mkrb81NKkv7Mw4dZAWA5PTuwBhbq9u9eCPuby3icBUdirg
    ```
 
    The key file is JSON with base64url-encoded `privateKey` and `publicKey` plus
-   the derived `signerId` (`meroctl app key id <file>` prints it
+   the derived `signerId` (`meroctl app signer id <file>` prints it
    again). `key new` will not overwrite an existing file unless you pass
    `--force`, which loses the old key for good. **Keep it secret and out of version control** — it is
    your update authority (see below).

@@ -11,7 +11,7 @@
 - **One command line: `meroctl` makes, ships and runs an app** (`meroctl`).
   `app new DIR` starts a project from an app of calimero-network/apps (default
   the KV Store); `app build`, `app codegen`, `app abi show|diff` are
-  `mero-app-build`'s; `app key new|id` and `app sign` are `mero-sign`'s;
+  `mero-app-build`'s; `app signer new|id` and `app sign` are `mero-sign`'s;
   `app pack [DIR]` writes and signs the `.mpk` (the flags of
   `scripts/pack-component.py`, or the crate's `[package.metadata.calimero]`),
   checking a frontend with the node's rules and the HTML rules of its CSP;
