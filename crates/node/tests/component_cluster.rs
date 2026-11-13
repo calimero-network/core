@@ -5512,9 +5512,9 @@ async fn an_owner_deletes_a_components_blob() {
 fn spin_component() -> Vec<u8> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../app-engine-wasmtime/tests/guests/spin");
-    let target = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guests");
-    calimero_app_build::build_component(&dir, &target)
+    calimero_app_build::build_in_repo_cache(&dir)
         .unwrap_or_else(|e| panic!("build spin: {e}"))
+        .app
         .component
 }
 
