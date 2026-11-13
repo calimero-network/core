@@ -1450,6 +1450,11 @@ async fn waiting_for_our_own_control_places_is_not_a_job_nodes_silence() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_cancel() {
     let rig = Rig::start(&[JOB_A]).await;
+    // A cancel ends a silent run after 3 s here, not the 20 s a cluster waits.
+    rig.limits(ComputeLimits {
+        cancel_deadline: Duration::from_secs(3),
+        ..ComputeLimits::default()
+    });
     let file = rig.upload(&input()).await;
     let leader = rig.c.app_leader(&rig.app).unwrap();
     let followers: Vec<usize> = (0..3).filter(|i| *i != leader).collect();
@@ -1471,7 +1476,8 @@ async fn a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_can
         .call(&rig.app, "cancel", Some(json!({ "run": run })), None, None)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_secs(20)).await;
+    // Twice the cancel deadline: a cancel with no report would have ended the run by now.
+    tokio::time::sleep(Duration::from_secs(6)).await;
     assert!(
         rig.record(&run).state.is_active(),
         "ended before the push could work: {:?}",
