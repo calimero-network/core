@@ -12,7 +12,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only # keeps the target cache inside the 10 GB Actions budget
+  # No debuginfo in CI: a smaller target cache (faster to restore) and faster links of
+  # the test binaries. A failing test still names its file and line.
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 permissions:
   contents: read
@@ -196,7 +198,12 @@ jobs:
 
       - name: sccache stats
         if: ${{ !cancelled() }}
-        run: sccache --show-stats || true
+        run: |
+          sccache --show-stats || true
+          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
+            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
+            head -n 30 "$SCCACHE_ERROR_LOG"
+          fi
 
   # The workspace tests in four shards. Each compiles the tests itself (rust-cache
   # and sccache keep that short): a nextest archive of them was 8 GB, and
@@ -232,9 +239,12 @@ jobs:
           tool: cargo-nextest@0.9.146,cargo-expand@1.0.127
 
       # PARTITION is unset in a local run (scripts/check-like-ci.py), which then runs them all.
+      # Twice the cores: the slowest tests (the in-process clusters) mostly wait on
+      # timers and the network, not the CPU.
       - name: Cargo test
         env:
           PARTITION: count:${{ matrix.shard }}/4
+          NEXTEST_TEST_THREADS: "8"
         run: |
           FIRST_HOST=$(hostname -I | awk '{print $1}')
           export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
@@ -243,7 +253,12 @@ jobs:
 
       - name: sccache stats
         if: ${{ !cancelled() }}
-        run: sccache --show-stats || true
+        run: |
+          sccache --show-stats || true
+          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
+            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
+            head -n 30 "$SCCACHE_ERROR_LOG"
+          fi
 
   rust-doctests:
     name: Rust doctests
@@ -270,7 +285,12 @@ jobs:
 
       - name: sccache stats
         if: ${{ !cancelled() }}
-        run: sccache --show-stats || true
+        run: |
+          sccache --show-stats || true
+          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
+            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
+            head -n 30 "$SCCACHE_ERROR_LOG"
+          fi
 
   # Apps on the component SDK are workspaces of their own, so the workspace tests
   # never reach their harness tests. Each is found by its calimero-sdk dependency
@@ -324,7 +344,12 @@ jobs:
 
       - name: sccache stats
         if: ${{ !cancelled() }}
-        run: sccache --show-stats || true
+        run: |
+          sccache --show-stats || true
+          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
+            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
+            head -n 30 "$SCCACHE_ERROR_LOG"
+          fi
 
   # The compute tools a developer tests a compute method with, end to end.
   rust-compute-tools:

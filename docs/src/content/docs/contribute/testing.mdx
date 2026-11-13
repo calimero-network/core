@@ -656,7 +656,12 @@ Every job runs on a standard GitHub-hosted runner (4 cores). The Rust jobs of
 `ci-checks.yml` and `e2e.yml` restore their rust-cache group (the dependencies)
 and compile through sccache, backed by the Actions cache, so a workspace crate
 whose inputs did not change is not compiled again; a job's `sccache stats` step
-shows its hit rate. `release.yml` never uses sccache: what it builds ships.
+shows its hit rate and any warning the cache backend gave. `release.yml` never uses
+sccache: what it builds ships. CI builds carry no debuginfo
+(`CARGO_PROFILE_DEV_DEBUG=0`): the cache restores faster and the test binaries
+link faster, and a failing test still names its file and line. The workspace
+tests run eight at a time per 4-core shard, since the slowest of them wait on
+timers and the network.
 
 `.github/workflows/e2e.yml` runs on every PR that touches code, and nightly on
 master (a merge into master does not run it again: its PR did, and the nightly

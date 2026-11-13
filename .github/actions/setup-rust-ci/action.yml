@@ -126,7 +126,9 @@ runs:
         RUST_BACKTRACE: ""
         RUST_LOG: ""
       with:
-        prefix-key: v2-rust
+        # v3: CI builds dropped their debuginfo (CARGO_PROFILE_DEV_DEBUG=0); the
+        # variable is blanked above, so only a new prefix starts fresh caches.
+        prefix-key: v3-rust
         shared-key: ${{ inputs.shared-key }}-${{ steps.toolchain.outputs.channel }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
         save-if: ${{ inputs.save-if }}
@@ -146,4 +148,8 @@ runs:
         {
           echo "SCCACHE_GHA_ENABLED=true"
           echo "RUSTC_WRAPPER=sccache"
+          # The server's warnings (a cache write the backend refused, and why); a job's
+          # `sccache stats` step prints them.
+          echo "SCCACHE_LOG=warn"
+          echo "SCCACHE_ERROR_LOG=$RUNNER_TEMP/sccache.log"
         } >> "$GITHUB_ENV"

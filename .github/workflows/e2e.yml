@@ -95,7 +95,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # As ci-checks.yml compiles with, so the ci-checks cache it restores is reusable.
+  CARGO_PROFILE_DEV_DEBUG: "0"
   # The flamegraph job's renderer (`cargo install inferno`, cached).
   INFERNO_VERSION: 0.12.8
 
@@ -172,7 +173,12 @@ jobs:
 
       - name: sccache stats
         if: ${{ !cancelled() }}
-        run: sccache --show-stats || true
+        run: |
+          sccache --show-stats || true
+          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
+            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
+            head -n 30 "$SCCACHE_ERROR_LOG"
+          fi
 
   # The scenario runner (crates/node/tests/scenarios.rs), compiled once; the
   # shards run the binary. ci-checks' required `scope` job checks discovery with
@@ -221,7 +227,12 @@ jobs:
 
       - name: sccache stats
         if: ${{ !cancelled() }}
-        run: sccache --show-stats || true
+        run: |
+          sccache --show-stats || true
+          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
+            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
+            head -n 30 "$SCCACHE_ERROR_LOG"
+          fi
 
   # Every scenario, app-level and cluster, in four shards (SCENARIO_SHARD), each
   # on an in-process 3-node cluster (crates/node/tests/harness/scenario.rs); no
@@ -269,7 +280,12 @@ jobs:
 
       - name: sccache stats
         if: ${{ !cancelled() }}
-        run: sccache --show-stats || true
+        run: |
+          sccache --show-stats || true
+          if [ -s "${SCCACHE_ERROR_LOG:-}" ]; then
+            echo "sccache warnings ($(wc -l < "$SCCACHE_ERROR_LOG") lines; first 30):"
+            head -n 30 "$SCCACHE_ERROR_LOG"
+          fi
 
   # Process-level tests on real `merod run --dev` processes, one per node: a crash,
   # a frozen node and a restart; a frozen leader under a 10 s budget; organizations
