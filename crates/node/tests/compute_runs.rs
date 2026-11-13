@@ -47,6 +47,14 @@ struct Rig {
     seen: std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
 }
 
+/// The production limits, but a leader that polls its job nodes every 200 ms.
+fn test_limits() -> ComputeLimits {
+    ComputeLimits {
+        poll: Duration::from_millis(200),
+        ..ComputeLimits::default()
+    }
+}
+
 impl Rig {
     async fn start(job_ids: &[u64]) -> Self {
         Self::start_with(job_ids, json!({})).await
@@ -54,6 +62,10 @@ impl Rig {
 
     async fn start_with(job_ids: &[u64], options: Value) -> Self {
         let c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
+        // A run's end is seen within 200 ms here, not the 2 s a cluster polls at.
+        for n in c.nodes.iter().flatten() {
+            n.node.set_compute_limits(test_limits());
+        }
         let (alice, pk) = signed_up(&c, 0, "alice").await;
         let both = common::components("compute");
         let compute = both.compute.expect("a compute component");
@@ -428,7 +440,7 @@ async fn the_run_restarts_on_the_other_job_node_when_its_node_is_lost() {
     // The stopped node's silence is a loss after 3 s here, not the 20 s a cluster waits.
     rig.limits(ComputeLimits {
         lost_after: Duration::from_secs(3),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let plain = input();
     let file = rig.upload(&plain).await;
@@ -863,7 +875,7 @@ async fn a_staged_output_is_committed_when_its_job_node_vanishes_after_reporting
     let mut rig = Rig::start(&[JOB_A, JOB_B]).await;
     rig.limits(ComputeLimits {
         lost_after: Duration::from_secs(4),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let plain = input();
     let file = rig.upload(&plain).await;
@@ -992,7 +1004,7 @@ async fn a_cancel_ends_the_run_even_when_the_job_node_never_stops() {
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {
         cancel_deadline: Duration::from_secs(3),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let run = rig.begin("startRun", json!({ "method": "spin" })).await;
     rig.until("the run runs", || !rig.record(&run).attempts.is_empty())
@@ -1039,7 +1051,7 @@ async fn an_outage_of_the_system_group_does_not_lose_a_running_attempt() {
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {
         lost_after: Duration::from_secs(4),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let run = rig.begin("startRun", json!({ "method": "burn" })).await;
     rig.until("the run runs", || !rig.record(&run).attempts.is_empty())
@@ -1057,7 +1069,7 @@ async fn a_report_waiting_through_an_outage_past_the_deadline_still_ends_the_run
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {
         deadline_grace: Duration::from_secs(1),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let run = rig.begin("startRun", json!({ "method": "burn" })).await;
     rig.until("the run runs", || !rig.record(&run).attempts.is_empty())
@@ -1079,7 +1091,7 @@ async fn a_granted_run_is_not_refused_for_waiting_through_an_outage() {
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {
         queued_timeout: Duration::from_secs(3),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     rig.outage(true);
     let run = rig.begin("startRun", json!({ "method": "burn" })).await;
@@ -1099,7 +1111,7 @@ async fn a_held_report_survives_the_leaders_failing_writes() {
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {
         lost_after: Duration::from_secs(4),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let file = rig.upload(&input()).await;
     let leader = rig.c.app_leader(&rig.app).unwrap();
@@ -1173,7 +1185,7 @@ async fn a_job_node_that_reports_but_never_hands_over_its_outputs_does_not_hold_
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {
         lost_after: Duration::from_secs(3),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     rig.jobs[0].running.fail_outputs();
     let file = rig.upload(&input()).await;
@@ -1191,7 +1203,7 @@ async fn an_output_that_takes_longer_than_the_shared_clients_timeout_is_still_fe
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {
         lost_after: Duration::from_secs(20),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     rig.jobs[0].running.delay_outputs(Duration::from_secs(5));
     let file = rig.upload(&input()).await;
@@ -1206,7 +1218,7 @@ async fn a_slow_failing_output_fetch_does_not_lose_an_attempt_whose_job_node_ans
     let rig = Rig::start(&[JOB_A]).await;
     rig.limits(ComputeLimits {
         lost_after: Duration::from_secs(3),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     // Each failing fetch takes longer than the job node may stay silent: still not a loss.
     rig.jobs[0]
@@ -1244,7 +1256,7 @@ async fn a_push_that_never_succeeds_ends_the_run_by_timeout_at_the_ceiling() {
     rig.limits(ComputeLimits {
         deadline_grace: Duration::from_secs(1),
         outage_credit: Duration::from_secs(3),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let file = rig.upload(&input()).await;
     let leader = rig.c.app_leader(&rig.app).unwrap();
@@ -1266,7 +1278,7 @@ async fn a_leader_whose_system_reads_fail_forever_still_ends_the_run_at_the_ceil
     rig.limits(ComputeLimits {
         deadline_grace: Duration::from_secs(1),
         outage_credit: Duration::from_secs(3),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let run = rig.begin("startRun", json!({ "method": "spin" })).await;
     rig.until("the run runs", || !rig.record(&run).attempts.is_empty())
@@ -1282,7 +1294,7 @@ async fn a_granted_run_no_job_node_takes_is_refused_at_the_ceiling_whatever_the_
     rig.limits(ComputeLimits {
         queued_timeout: Duration::from_secs(3),
         outage_credit: Duration::from_secs(3),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     rig.outage(true);
     let run = rig.begin("startRun", json!({ "method": "burn" })).await;
@@ -1329,7 +1341,7 @@ async fn a_cancel_ends_within_its_deadline_when_the_job_node_stops_answering() {
     let deadline = Duration::from_secs(3);
     rig.limits(ComputeLimits {
         cancel_deadline: deadline,
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let run = rig.begin("startRun", json!({ "method": "spin" })).await;
     rig.until("the run runs", || !rig.record(&run).attempts.is_empty())
@@ -1390,7 +1402,7 @@ async fn a_cancel_is_not_delayed_by_another_run_of_the_app_stuck_in_a_transfer()
     let deadline = Duration::from_secs(3);
     rig.limits(ComputeLimits {
         cancel_deadline: deadline,
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let first = rig.begin("startRun", json!({ "method": "spin" })).await;
     rig.until("the first runs", || !rig.record(&first).attempts.is_empty())
@@ -1455,7 +1467,7 @@ async fn a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_can
     // A cancel ends a silent run after 3 s here, not the 20 s a cluster waits.
     rig.limits(ComputeLimits {
         cancel_deadline: Duration::from_secs(3),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let file = rig.upload(&input()).await;
     let leader = rig.c.app_leader(&rig.app).unwrap();
@@ -1683,7 +1695,7 @@ async fn a_run_the_queue_never_grants_ends_not_granted_instead_of_waiting_foreve
     rig.limits(ComputeLimits {
         queued_timeout: Duration::from_secs(2),
         outage_credit: Duration::from_secs(1),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let run = rig.begin("startDigest", json!({ "inputs": [] })).await;
     let rec = until_ended(&rig, &run, 60).await;
@@ -1737,7 +1749,7 @@ async fn a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails(
         deadline_grace: Duration::from_secs(1),
         outage_credit: Duration::from_secs(3),
         cancel_deadline: Duration::from_secs(3),
-        ..ComputeLimits::default()
+        ..test_limits()
     });
     let file = rig.upload(&input()).await;
     let leader = rig.c.app_leader(&rig.app).unwrap();

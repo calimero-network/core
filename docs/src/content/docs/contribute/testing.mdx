@@ -653,9 +653,13 @@ at 30 s it is killed and fails. Compiling a test app is not a test's time: the
 read them. The tests over budget when the rule came in are listed in
 `.config/nextest.toml` with a limit each; that list only shrinks. To take a
 test off it, make the test fast without making it prove less: a test limit
-instead of the production one (`ComputeLimits` and the like), polling for the
-state instead of a fixed sleep, a smaller file where size is not the point, a
-matrix split into tests. A new slow test is made fast, not listed.
+instead of the production one (`ComputeLimits`, whose `poll` sets how often a
+leader asks its job nodes, and `calimero_node::testing`'s `app_start_wait`,
+`upload_complete_wait` and `shared_http_timeout`), polling for the state instead
+of a fixed sleep, a smaller file where size is not the point, a matrix split into
+tests. A request a test expects to answer `503` is sent once through
+`client.transport()`: the client's `call` and `view` send it again while the node
+answers `503` (D70), about seven times. A new slow test is made fast, not listed.
 
 `.github/workflows/e2e.yml` runs in the merge queue, on every entry whose change
 reaches code, and nightly on master with the long soak; a PR runs it only when

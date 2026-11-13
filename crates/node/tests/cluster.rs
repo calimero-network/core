@@ -1258,14 +1258,17 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
     for i in 0..3 {
         let cl = c.client(i);
         cl.use_session(session.clone()).await;
+        // Sent once: the client sends a view again while the node answers `503` (D70), and
+        // a refused release answers the same every time.
         match cl
-            .apps()
-            .view(
-                &app2,
-                "get",
-                Some(json!({ "key": "k" })),
-                Some(ViewsRequestConsistency::Stale),
-                Some(0),
+            .transport()
+            .json(
+                Request::new(Method::POST, format!("apps/{app2}/views")).json(json!({
+                    "method": "get",
+                    "args": { "key": "k" },
+                    "consistency": "stale",
+                    "minIndex": 0,
+                })),
             )
             .await
         {

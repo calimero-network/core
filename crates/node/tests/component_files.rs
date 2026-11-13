@@ -2075,9 +2075,9 @@ async fn hosted_after_restart(f: &Fixture, i: usize) {
 
 fn slow_raft(cfg: &mut calimero_node::Config) {
     more_fuel(cfg);
-    cfg.raft.heartbeat_ms = 2_000;
-    cfg.raft.election_min_ms = 8_000;
-    cfg.raft.election_max_ms = 12_000;
+    cfg.raft.heartbeat_ms = 1_000;
+    cfg.raft.election_min_ms = 4_000;
+    cfg.raft.election_max_ms = 6_000;
 }
 
 fn listed(stats: &Value, id: &[u8; 32]) -> bool {
@@ -2842,6 +2842,8 @@ async fn an_upload_aborted_mid_pipeline_leaves_no_bytes_and_no_charge() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_push_is_retried_and_complete_answers_503_until_it_lands() {
+    // `complete` gives up on the refused pushes after 3 s here, not the 20 s a cluster waits.
+    calimero_node::testing::upload_complete_wait(Duration::from_secs(3));
     let f = start_with(Cluster::start_with(3, more_time).await).await;
     let leader = f.leader();
     for i in (0..3).filter(|i| *i != leader) {
