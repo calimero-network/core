@@ -531,9 +531,9 @@ The node never lets a client reach either: `/intents` and `/views` answer `Wrong
 A release ships the compute component as `compute` in the signed manifest (`services[].compute` in a multi-service bundle), so the signature and the artifact digest cover it like every artifact, and an older node ignores it.
 At install the node prepares it on the compute world only, never on the replica engine, and refuses the release unless its ABI is the compute world's and lists exactly the app ABI's compute methods with the same caps (`COMPUTE_ABI_MISMATCH`).
 A release without a compute component installs and its app runs calls, but cannot run compute.
-An author builds both from one crate with `mero-app-build <crate> --out app.wasm --compute-out compute.wasm`; the second build sets `--cfg calimero_compute` in its own target directory, and a crate with no compute methods builds only the first.
-`scripts/pack-component.py --wasm app.wasm --compute compute.wasm` packs and signs a `.mpk` carrying both.
-`mero-compute run <compute.wasm> --method <name> [--args <json or @file>] [--input <file>]... --out <dir> [--seed <hex>] [--twice]` runs one compute method alone, with no app component, cluster or job node.
+An author builds both from one crate with `meroctl app build <crate> --out app.wasm --compute-out compute.wasm`; the second build sets `--cfg calimero_compute` in its own target directory, and a crate with no compute methods builds only the first.
+`meroctl app pack --wasm app.wasm --compute compute.wasm` packs and signs a `.mpk` carrying both.
+`meroctl local compute run <compute.wasm> --method <name> [--args <json or @file>] [--input <file>]... --out <dir> [--seed <hex>] [--twice]` runs one compute method alone, with no app component, cluster or job node.
 It calls the same run setup as a job node (`WasmtimeEngine::run_compute`) on `WasmtimeEngine::for_compute()`, so the caps come from the compute ABI, the clock is fixed, randomness is seeded from `--seed` (a fixed default) and the failure reasons are the node's (`fuel`, `memory`, `trap`, `app-error`, `cancelled`), and a wall clock that ran out is reported as `lost`, the attempt a job node retries elsewhere.
 Only the files differ: inputs are plain files named by their SHA-256, and outputs are written unsealed to `<dir>/output-<i>` in the order the run finished them.
 It prints progress as the run reports it, then the result, each output and the usage, and exits non-zero with the reason when the run does not end `Ok`.
