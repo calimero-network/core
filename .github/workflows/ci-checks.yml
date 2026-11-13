@@ -297,6 +297,8 @@ jobs:
       # mero-sign: the release's kv-store-test-fixture.mpk) installs, runs and
       # upgrades on this tree's node: crates/node/tests/previous-release/kv-store.json
       # on the in-process cluster, with the scenario runner this shard already built.
+      # `--workspace`, as `Cargo test` builds: `-p calimero-node` alone resolves other
+      # features and rebuilds about 200 crates (3.5 minutes) before the one scenario.
       - name: Fetch the previous release's kv bundle
         if: ${{ !cancelled() && matrix.shard == 2 }}
         env:
@@ -308,7 +310,7 @@ jobs:
         run: |
           export PREVIOUS_RELEASE_DIR="$PWD/target/previous-release"
           SCENARIO_FILES=crates/node/tests/previous-release/kv-store.json \
-            cargo test -p calimero-node --test scenarios -- --test-threads 1
+            cargo test --workspace --test scenarios -- --test-threads 1
 
       - name: Save the test apps' builds
         if: ${{ !cancelled() && github.ref == 'refs/heads/master' && matrix.shard == 1 }}
