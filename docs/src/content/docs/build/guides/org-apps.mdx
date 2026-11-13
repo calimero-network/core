@@ -1,0 +1,232 @@
+---
+title: Organizations, teams and your app
+description: Where an app's people, rooms and roles belong — in the app's state, in the app's own teams, or in the organization — what an app's frontend may change itself, what goes through the consent page, and why it is split this way.
+sidebar:
+  order: 16
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+An app whose people work together (a chat, a docs editor, a CRM, a game
+lobby) keeps three kinds of things, and each one has its place. Putting one
+in the wrong place is the most common mistake, and on Calimero Cloud it shows
+up as:
+
+```text
+403 FORBIDDEN: a session opened on an app's frontend can use that app only; do this on the cluster's own page
+```
+
+This page says where each thing goes, what your frontend may change on its
+own, what it must send to the node's consent page, and why. The rules
+themselves, route by route, are in
+[Sessions & authority](/protocol/sessions-and-authority/).
+
+## The three places
+
+```text
+Organization "Acme"                     ③ the organization's: everyone's, every app's
+├── members, org roles (owner/admin/member/guest), org-wide capabilities
+├── invites, name, deletion
+│
+├── Chat's app team                     ② your app's own teams: your frontend runs them
+│   ├── #general   open team    ── instance of chat (access: team #general)
+│   ├── #design    open team    ── instance of chat
+│   └── #secret    closed team  ── instance of chat
+│
+└── Docs' app team                      another app's teams: not yours
+    └── …
+
+inside each instance                    ① your app's state: your code runs it
+    messages, reactions, pins, a moderator list, per-account settings
+```
+
+| | ① App state | ② The app's own teams | ③ The organization |
+| --- | --- | --- | --- |
+| What it is | Rows in one instance, written by your app's methods | Your package's [app team](/protocol/organizations/#app-teams) in the org, and the teams you make below it | The org itself: who is in it, their org role and org-wide capabilities, invites |
+| Who enforces it | Your code (`env::caller()`, guards), inside the instance | The node, before your code runs: someone outside a team never reaches an instance whose access is that team | The node, for every app in the org |
+| Your frontend changes it | Yes, by calling your methods | Yes, directly (`orgs.teamCreate`, `teamSetMember`, ...) | No: it asks the node's consent page |
+| Use it for | Content, and rules that only your app understands | Rooms, channels, folders, boards, DMs: anything with its own member list that must be **private** from others in the org; your app's admins and permissions | Making the workspace, inviting, joining, org admins, removing someone from the org, renaming or deleting it |
+
+The rule of thumb:
+
+- **Private between people in the same org?** Then it is a team, below your app team, with its own instance.
+- **Only means something to your app?** Then it is your app team's (a team row: lead, capabilities) or your app's state, never the organization's.
+- **Affects other apps or the org as a whole?** Then it is the organization's, and your frontend asks for it on the consent page.
+
+## Why it is not all inside the app
+
+It would be simpler if an app could manage everything about its users itself.
+Three things stop that, and each one is a guarantee the people using your app
+rely on.
+
+**1. The organization is shared by every app in it.** Acme's people, their
+roles and their invites are the same in Chat, Docs and the CRM, and in
+Calimero Home, which is where the org is administered. "Admin" in the org
+means admin of every app in it. If Chat could make someone an org admin, or
+remove someone from the org, it would be changing Docs and the CRM too.
+So an app changes only what is its own (②), and org-wide changes are made
+where everyone can see what they are agreeing to (③).
+
+**2. A passkey prompt is blind.** The authenticator shows the site's name and
+"Use your passkey?", never what the request commits to. Whichever page runs
+the ceremony decides what the person believes they are approving. An app's
+frontend is its publisher's code. If it could run the step-up for an
+org-wide change, a buggy or malicious page could show "Create channel" and
+have the passkey sign "Make Mallory an owner". So org-wide changes are
+approved on the **node's** [consent page](/protocol/consent-page/): served
+from the node's own origin, compiled into `merod`, showing what was frozen
+from node state, never what the app said. The app can ask; it cannot word
+the question.
+
+**3. Privacy inside one instance is only as good as the app's code.** An
+instance's data is one replicated state. The node decides who reaches the
+instance at all (its access: `org`, a team, a list of accounts); inside it,
+only your methods decide who reads what. A private channel kept as a flag in
+a shared instance is private only while every method, view and event of the
+app gets it right. A private channel that is its own instance, reached
+through a closed team, is private because the node never lets anyone else in.
+
+That is why the split exists: your frontend has a free hand over your app's
+state and your app's own teams, because nothing there can reach beyond your
+app; everything that can, goes to the person on a page your app does not
+control.
+
+## What your frontend may change on its own
+
+A person who signs in on your package's frontend origin (served by the node,
+or [registered](/protocol/identities/#registered-origins)) holds a session
+**bound to your package** (`me().app` is your package's name). A session
+opened on the cluster's own page, `meroctl`, or a dev node without
+`--apps-domain` is **unbound** and may call every route; see
+[Test as your users will](#test-as-your-users-will).
+
+A bound session may, with the person's own authority:
+
+| Do | Call |
+| --- | --- |
+| Call and read your package's instances; create new ones | your methods; `apps.create({ package, org, access })` |
+| Make a room below your app team | `orgs.teamCreate({ org, parent: appTeam, name, join: 'everyone' \| 'invite' })` |
+| Rename it, open or close it, move it (within your teams) | `orgs.teamUpdate({ org, team, name?, join?, parent? })` |
+| Add or remove someone, make them lead, give them capabilities there, on your app team or a team below it | `orgs.teamSetMember({ org, team, account, lead?, role?, capabilities? })`, `orgs.teamRemoveMember({ org, team, account })` (passkey) |
+| Delete a room, with its instances | `orgs.teamDelete({ org, team })` (passkey when apps go with it) |
+| Move one of your instances from one of your teams to another | `apps.access({ app, access: { kind: 'team', team } })` |
+| Set the person's display name in the org | `orgs.memberMetadata({ org, account, metadata })` |
+| Ask for anything else | `client.openConsentPage(...)` |
+
+Whether the person *may* is still judged by the log: a member who is not a
+lead of `#secret` cannot add people to it from any page.
+
+## What goes through the consent page
+
+| The person wants to | Consent kind (mero-js builder) |
+| --- | --- |
+| Create a workspace (comes with your app team) | `createOrg` (`createOrgConsent`) |
+| Invite someone / join with an invite | `createInvite`, `acceptInvite` |
+| Make someone an org admin, or change their org role | `setMemberRole` |
+| Remove someone from the whole org / leave it | `removeMember` / `leaveOrg` |
+| Rename or delete the org | `renameOrg` / `deleteOrg` |
+| Change org-wide capabilities or a member's org-wide capabilities | `setCapabilities` |
+| Put someone in several teams at once | `setMemberTeams`, `removeMemberTeams` |
+| Revoke an invite | `revokeInvite` |
+| Upgrade the app, approve a release or outbound hosts | `upgrade`, `release`, `outbound` |
+
+The page is a full-page redirect: keep what you were doing in
+`sessionStorage`, call `openConsentPage`, and when the node sends the person
+back, read the decision with `resumeConsent()`, never from the URL. See
+[Ask for consent](/build/guides/frontends/#ask-for-consent).
+
+Some things have no consent kind and are not for an app's frontend at all:
+deleting, transferring or moving an instance, changing an instance's access
+other than between your own teams, giving packages app teams in an existing
+org, API keys, passkeys. Those belong to the person's own tools: Calimero
+Home, the cluster's page, or `meroctl`.
+
+## Recipes
+
+**Channels, rooms, folders, boards.** One closed or open team below your app
+team per room, and one instance per room with `access: { kind: 'team', team }`.
+The person who makes the team leads it, so they can create its instance and
+add people.
+
+```ts
+const appTeam = consentOutcome.teamId; // from createOrg, or GET /orgs/{org}/app-teams
+const { teamId } = await client.orgs.teamCreate({ org, parent: appTeam, name: 'secret', join: 'invite' });
+const { appId } = await client.apps.create({ package: 'chat', org, access: { kind: 'team', team: teamId } });
+await client.orgs.teamSetMember({ org, team: teamId, account: bob }, { confirm: passkeyConfirm(passkey) });
+```
+
+Removing someone from your app team takes their rows in every team below it,
+so "remove from Chat" also removes them from its private channels.
+
+**Your app's admins and permissions.** Make them **leads** of your app team, or
+give them capabilities on their app-team row (`teamSetMember({ lead: true })`,
+`teamSetMember({ capabilities })`). `CREATE_CHILD_TEAM` on the app team is
+"may create channels". `teamSetMember` writes the whole row: send `lead`,
+`role` and `capabilities` together, as a missing `lead` is `false`. Keep finer roles that only your app understands (a
+channel moderator, who may pin) in your app's state, checked in your methods.
+
+**A DM.** A closed team of two below the app team, and its instance.
+
+**One shared instance.** If nothing in it is private between members (a
+whiteboard, a game table everyone at the table sees), keep one instance on
+your app team and use app state. Make it a team the moment some of it must be
+hidden from some members.
+
+## Mistakes to avoid
+
+These are all in apps today, and all fail from a bound session.
+
+| Instead of | Do |
+| --- | --- |
+| `orgs.capabilities({ org, account, capabilities })` for an app permission ("may create channels") | `orgs.teamSetMember({ org, team: appTeam, account, capabilities })` |
+| `orgs.setMember({ role: 'admin' })` to make an app admin | `orgs.teamSetMember({ org, team: appTeam, account, lead: true })`; org admin only through `setMemberRole` |
+| A private room as an instance with `access: { kind: 'accounts', accounts }`, members changed with `apps.access` | a closed team below the app team; members with `teamSetMember` |
+| `apps.delete` to delete a room | `orgs.teamDelete` of its team |
+| `orgs.teamCreate` without `parent` | `parent` = your app team or a team below it |
+| `orgs.create`, `orgs.inviteCreate`, `orgs.inviteRedeem` | `createOrg`, `createInvite`, `acceptInvite` on the consent page |
+| `orgs.removeMember` to remove someone from the app | `orgs.teamRemoveMember` on your app team (from the whole org: `removeMember` on the consent page) |
+| `orgs.metadata` for the workspace name | the org's name at `createOrg`; `renameOrg` to change it |
+
+## Limitations
+
+- **Your app needs its app team in the org.** A workspace made with
+  `createOrg` from your frontend comes with it (clusters on 1.0.0-rc.22 or
+  later). An org made elsewhere, or before, has none until an admin adds it
+  from an unbound session (`POST /orgs/{org}/app-teams`, Calimero Home);
+  until then your frontend cannot create teams there.
+- **A team's default capabilities** (`orgs.capabilities({ team })`) cannot be
+  set from a bound session, even on your own app team, and there is no
+  consent kind for it yet. Set capabilities on each row instead.
+- **Your app team itself** (its name, openness, mark) is the org admins', not
+  your frontend's. You manage the teams below it and the rows in it.
+- **Instances**: a bound session cannot delete, transfer or move an instance,
+  or change its access except between your own teams. Delete through the
+  room's team.
+- **Existing private rooms made with an account list** cannot be turned into
+  teams from your frontend; do it once from an unbound session.
+- **The consent page** is a redirect, lives 10 minutes, and an account has one
+  undecided request per node (a new one replaces it). Batch what you ask for.
+
+## Test as your users will
+
+On a dev node without `--apps-domain`, or signed in on the node's own origin,
+your session is **unbound** and every call above succeeds: you will not see
+these 403s until Cloud. Test bound:
+
+1. Run the node with an apps domain (`merod local` serves frontends at
+   `{label}.localhost`).
+2. Open your frontend on its served origin and sign in there.
+3. Check `(await client.auth.me()).app` is your package's name.
+4. Run your end-to-end flows: create a workspace, make a private room, add and
+   remove a member, delete the room, leave.
+
+Your frontend can tell which kind it holds (`me().app` set or not) and call
+the routes directly when unbound, as a dev tool or the cluster's own page may
+do, and go through the consent page when bound.
+
+<Aside>
+  The table of every route and how each session kind is judged, and two worked
+  examples (creating a workspace and joining it from a chat app), are in
+  [Sessions & authority](/protocol/sessions-and-authority/). Teams, app teams and
+  capabilities are specified in [Organizations, teams & access](/protocol/organizations/).
+</Aside>

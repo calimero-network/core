@@ -119,6 +119,7 @@ export default defineConfig({
                 'build/guides/compute-actions',
                 'build/guides/files-and-pipelines',
                 'build/guides/access-control',
+                'build/guides/org-apps',
                 'build/guides/typed-clients',
                 'build/guides/calling-your-app',
                 'build/guides/frontends',
