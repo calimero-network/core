@@ -133,7 +133,7 @@ jobs:
       # (bump-fleet.sh, "the client generator"), through the repository's pnpm.
       - name: Set up pnpm
         if: matrix.surface == 'cargo' && hashFiles('consumer/scripts/install-mero-app-build.sh') != ''
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: consumer/package.json
 
