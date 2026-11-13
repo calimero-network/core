@@ -114,6 +114,7 @@ fn a_crate_with_compute_methods_builds_a_second_component_that_cannot_reach_stat
             "chatter",
             "check",
             "digest",
+            "digestBrief",
             "digestThen",
             "digestUnkept",
             "echo",

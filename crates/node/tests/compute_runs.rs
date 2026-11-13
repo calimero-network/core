@@ -1244,9 +1244,11 @@ async fn a_push_that_never_succeeds_ends_the_run_by_timeout_at_the_ceiling() {
         let node = &rig.c.nodes[i].as_ref().unwrap().node;
         node.set_peer_blobs(PeerBlobs::Refuse);
     }
-    // The digest method's wall cap is 60 s: the ceiling is that plus the grace and the credit.
-    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
-    let rec = until_ended(&rig, &run, 110).await;
+    // digestBrief's wall cap is 10 s: the ceiling is that plus the grace and the credit.
+    let run = rig
+        .begin("startDigestBrief", json!({ "inputs": [file] }))
+        .await;
+    let rec = until_ended(&rig, &run, 60).await;
     assert_eq!(rec.final_.unwrap().outcome, failed(FailedReason::Timeout));
 }
 
@@ -1450,7 +1452,9 @@ async fn a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_can
         node.set_peer_blobs(PeerBlobs::Refuse);
     }
     let pushes = rig.leader().file_pushes();
-    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let run = rig
+        .begin("startDigestBrief", json!({ "inputs": [file] }))
+        .await;
     rig.until("the leader tried to push the output", || {
         rig.leader().file_pushes() > pushes
     })
@@ -1742,8 +1746,8 @@ async fn a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails(
         .call(&rig.app, "cancel", Some(json!({ "run": run })), None, None)
         .await
         .unwrap();
-    // The digest method's wall cap is 60 s: the ceiling is that plus the grace and the credit.
-    let rec = until_ended(&rig, &run, 90).await;
+    // digestBrief's wall cap is 10 s: the ceiling is that plus the grace and the credit.
+    let rec = until_ended(&rig, &run, 60).await;
     assert_eq!(rec.final_.unwrap().outcome, FinalOutcome::Cancelled);
 }
 
@@ -2581,53 +2585,74 @@ impl Case<'_> {
     }
 }
 
+// One test per kind, each over the four (upload, delete) node pairs: a case starts a cluster
+// of its own, so the kinds run in parallel rather than sixteen clusters one after another.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_blob_stored_again_after_a_delete_survives_whichever_nodes_handle_it() {
+    blob_stored_again_after_a_delete(Kind::Plain).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_published_output_stored_again_after_a_delete_survives_whichever_nodes_handle_it() {
+    blob_stored_again_after_a_delete(Kind::Published).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_file_stored_again_after_a_delete_survives_whichever_nodes_handle_it() {
+    blob_stored_again_after_a_delete(Kind::File).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_session_file_stored_again_after_a_delete_survives_whichever_nodes_handle_it() {
+    blob_stored_again_after_a_delete(Kind::Session).await;
+}
+
+/// Stores a blob of `kind` through the leader or a follower, deletes it through either, and
+/// stores it again: the bytes survive, whichever nodes each step went through.
+async fn blob_stored_again_after_a_delete(kind: Kind) {
     let mut failures = Vec::new();
-    for kind in [Kind::Plain, Kind::Published, Kind::File, Kind::Session] {
-        for up in [Via::Leader, Via::Follower] {
-            for del in [Via::Leader, Via::Follower] {
-                let label = format!("kind={kind:?} up={up:?} del={del:?}");
-                let jobs: &[u64] = match kind {
-                    Kind::Plain => &[],
-                    Kind::Published | Kind::File | Kind::Session => &[JOB_A],
-                };
-                let mut rig = Rig::start(jobs).await;
-                let (output, expected) = match kind {
-                    Kind::Plain => (String::new(), format!("plain {label}").into_bytes()),
-                    Kind::Published => rig.finished_output().await,
-                    Kind::File => (String::new(), input()),
-                    Kind::Session => (String::new(), vec![7; SESSION_LEN]),
-                };
-                let baseline = rig.charged().await;
-                let leader = rig.c.app_leader(&rig.app).unwrap();
-                let follower = (0..3).find(|i| *i != leader).unwrap();
-                let mut clients = Vec::new();
-                for i in 0..3 {
-                    let client = rig.c.client(i);
-                    client.sign_in(&mut rig.pk).await.unwrap();
-                    clients.push(client);
-                }
-                let case = Case {
-                    rig: &rig,
-                    kind,
-                    clients,
-                    leader,
-                    follower,
-                    output,
-                    expected,
-                };
-                let ran = std::panic::AssertUnwindSafe(case.run(up, del, baseline))
-                    .catch_unwind()
-                    .await;
-                if let Err(e) = ran {
-                    let why = e
-                        .downcast_ref::<String>()
-                        .map(String::as_str)
-                        .or_else(|| e.downcast_ref::<&str>().copied())
-                        .unwrap_or("panicked");
-                    failures.push(format!("{label}: {why}"));
-                }
+    for up in [Via::Leader, Via::Follower] {
+        for del in [Via::Leader, Via::Follower] {
+            let label = format!("kind={kind:?} up={up:?} del={del:?}");
+            let jobs: &[u64] = match kind {
+                Kind::Plain => &[],
+                Kind::Published | Kind::File | Kind::Session => &[JOB_A],
+            };
+            let mut rig = Rig::start(jobs).await;
+            let (output, expected) = match kind {
+                Kind::Plain => (String::new(), format!("plain {label}").into_bytes()),
+                Kind::Published => rig.finished_output().await,
+                Kind::File => (String::new(), input()),
+                Kind::Session => (String::new(), vec![7; SESSION_LEN]),
+            };
+            let baseline = rig.charged().await;
+            let leader = rig.c.app_leader(&rig.app).unwrap();
+            let follower = (0..3).find(|i| *i != leader).unwrap();
+            let mut clients = Vec::new();
+            for i in 0..3 {
+                let client = rig.c.client(i);
+                client.sign_in(&mut rig.pk).await.unwrap();
+                clients.push(client);
+            }
+            let case = Case {
+                rig: &rig,
+                kind,
+                clients,
+                leader,
+                follower,
+                output,
+                expected,
+            };
+            let ran = std::panic::AssertUnwindSafe(case.run(up, del, baseline))
+                .catch_unwind()
+                .await;
+            if let Err(e) = ran {
+                let why = e
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| e.downcast_ref::<&str>().copied())
+                    .unwrap_or("panicked");
+                failures.push(format!("{label}: {why}"));
             }
         }
     }
