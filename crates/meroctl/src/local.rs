@@ -41,8 +41,8 @@ pub struct ClusterArgs {
     /// Start from empty state.
     #[arg(long)]
     pub fresh: bool,
-    /// Run the release's container image instead of `merod` from PATH
-    /// (`docker run --network host`: the nodes listen on 127.0.0.1).
+    /// Run the release's container image instead of `merod` from PATH (`merod
+    /// local --bind 0.0.0.0`, its ports published on 127.0.0.1).
     #[arg(long)]
     pub docker: bool,
     /// The image for `--docker`.
@@ -206,17 +206,28 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
     }
     let out = std::fs::File::create(&log)?;
     let (pid, container, child) = if a.docker {
-        // The image's merod writes as uid 10001 under /data, the mounted dir.
-        local.extend(["--dir".into(), "/data/cluster".into()]);
+        // The image's merod writes as uid 10001 under /data, the mounted dir; it
+        // listens on 0.0.0.0 inside the container and the ports are published on
+        // loopback only, so this works on macOS and Linux alike.
+        local.extend([
+            "--dir".into(),
+            "/data/cluster".into(),
+            "--bind".into(),
+            "0.0.0.0".into(),
+        ]);
         let name = format!("meroctl-local-{}", a.base_port);
         let _ = Command::new("docker")
             .args(["rm", "-f", &name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+        let first = a.base_port + 1;
+        let last = a.base_port + a.nodes;
         let mut cmd = Command::new("docker");
         let _ = cmd
-            .args(["run", "-d", "--name", &name, "--network", "host", "-v"])
+            .args(["run", "-d", "--name", &name, "-p"])
+            .arg(format!("127.0.0.1:{first}-{last}:{first}-{last}"))
+            .arg("-v")
             .arg(format!("{}:/data", dir.display()))
             .arg(&a.image)
             .args(&local);
