@@ -40,6 +40,14 @@ pub(super) const UPLOAD_WINDOW: usize = 4;
 const PART_PUSH_WAIT: Duration = Duration::from_secs(20);
 /// The longest `complete` waits for every segment to reach a majority.
 const COMPLETE_WAIT: Duration = Duration::from_secs(20);
+/// [`COMPLETE_WAIT`], or the wait a test set (`testing::upload_complete_wait`).
+fn complete_wait() -> Duration {
+    #[cfg(feature = "testing")]
+    if let Some(wait) = crate::testing::upload_complete_wait_override() {
+        return wait;
+    }
+    COMPLETE_WAIT
+}
 /// The first wait before a failed background push is tried again; it doubles up to the second.
 const PUSH_RETRY_FIRST: Duration = Duration::from_millis(200);
 const PUSH_RETRY_MAX: Duration = Duration::from_secs(5);
@@ -759,7 +767,7 @@ impl Node {
             ));
         }
         session
-            .wait_until(COMPLETE_WAIT, |pushed| pushed.iter().all(|p| *p))
+            .wait_until(complete_wait(), |pushed| pushed.iter().all(|p| *p))
             .await?;
         self.finish_upload(g, &session, st, &key).await
     }

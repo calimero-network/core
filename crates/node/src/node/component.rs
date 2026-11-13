@@ -659,6 +659,12 @@ impl Node {
         ComputeLimits::default()
     }
 
+    /// How often the compute driver wakes and the leader polls a job node ([`JOB_POLL`], or what a
+    /// test set).
+    pub(crate) fn job_poll(&self) -> std::time::Duration {
+        self.limits().poll
+    }
+
     /// The bytes the readers of one run may hold.
     fn run_open_cap(&self) -> usize {
         #[cfg(feature = "testing")]

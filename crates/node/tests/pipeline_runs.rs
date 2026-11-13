@@ -13,6 +13,7 @@ use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BLOB_IDLE_MS;
 use calimero_node::component::{FailedReason, FinalOutcome, RunRecord, MAX_ACTIVE_PIPELINE_RUNS};
+use calimero_node::node::ComputeLimits;
 use calimero_node::Node;
 use common::{mpk_with_pipelines, signed_up, typed, wire, Cluster, JobNode, PUBLISHER};
 use serde_json::{json, Value};
@@ -195,6 +196,14 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(sha2::Sha256::digest(bytes))
 }
 
+/// The production limits, but a leader that polls its job nodes every 200 ms.
+fn test_limits() -> ComputeLimits {
+    ComputeLimits {
+        poll: Duration::from_millis(200),
+        ..ComputeLimits::default()
+    }
+}
+
 struct Rig {
     c: Cluster,
     alice: Client,
@@ -215,6 +224,10 @@ impl Rig {
             configure(cfg);
         })
         .await;
+        // A step's end is seen within 200 ms here, not the 2 s a cluster polls at.
+        for n in c.nodes.iter().flatten() {
+            n.node.set_compute_limits(test_limits());
+        }
         let (alice, pk) = signed_up(&c, 0, "alice").await;
         let compute = common::components("compute")
             .compute
@@ -1285,6 +1298,13 @@ async fn a_fuel_failure_is_not_retried_automatically() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_lost_item_is_retried_and_billed_once() {
     let mut rig = Rig::start(&[JOB_A, JOB_B]).await;
+    // The stopped node's silence is a loss after 3 s here, not the 20 s a cluster waits.
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.set_compute_limits(ComputeLimits {
+            lost_after: Duration::from_secs(3),
+            ..test_limits()
+        });
+    }
     set_prices(&rig).await;
     let file = rig.upload(&vec![5u8; INPUT_LEN]).await;
     let body = json!({ "inputs": { "docs": [file] }, "maxCost": "1000000000" });

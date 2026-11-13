@@ -63,6 +63,8 @@ const MAX_RUNS_CURSOR_BYTES: usize = 256; // a real cursor is a timestamp and a 
 /// The waits that end a run the leader cannot get an answer for; tests shorten them.
 #[derive(Clone, Copy, Debug)]
 pub struct ComputeLimits {
+    /// How often the leader polls a job node for a run's status, and the compute driver wakes.
+    pub poll: Duration,
     pub lost_after: Duration,
     pub deadline_grace: Duration,
     pub queued_timeout: Duration,
@@ -73,6 +75,7 @@ pub struct ComputeLimits {
 impl Default for ComputeLimits {
     fn default() -> Self {
         Self {
+            poll: JOB_POLL,
             lost_after: JOB_LOST_AFTER,
             deadline_grace: DEADLINE_GRACE,
             queued_timeout: QUEUED_RUN_TIMEOUT,
@@ -1096,7 +1099,10 @@ impl Drive<'_> {
             }
             return;
         }
-        if watch.polled.is_some_and(|at| at.elapsed() < JOB_POLL) {
+        if watch
+            .polled
+            .is_some_and(|at| at.elapsed() < self.node.limits().poll)
+        {
             return;
         }
         watch.polled = Some(Instant::now());

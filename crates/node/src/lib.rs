@@ -260,9 +260,10 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
     let stop = shutdown.clone();
     drop(tokio::spawn(async move {
         loop {
+            let poll = weak.upgrade().map_or(node::JOB_POLL, |n| n.job_poll());
             tokio::select! {
                 () = stop.cancelled() => return,
-                () = tokio::time::sleep(node::JOB_POLL) => {}
+                () = tokio::time::sleep(poll) => {}
                 () = kick.notified() => {}
             }
             let Some(node) = weak.upgrade() else { return };

@@ -43,3 +43,37 @@ pub fn shared_http_timeout(timeout: Duration) {
 pub(crate) fn shared_http_timeout_override() -> Option<Duration> {
     SHARED_HTTP_TIMEOUT.lock().ok().and_then(|t| *t)
 }
+
+/// How long creating an app waits for its `init` when a test set it: every node in this process
+/// uses it from now on instead of [`crate::api::apps::APP_START_WAIT`].
+static APP_START_WAIT: Mutex<Option<Duration>> = Mutex::new(None);
+
+/// Make app creation in this process wait `wait` for the app's `init` instead of 30 s, so a
+/// test of an app whose `init` never applies sees the `503` sooner.
+pub fn app_start_wait(wait: Duration) {
+    if let Ok(mut w) = APP_START_WAIT.lock() {
+        *w = Some(wait);
+    }
+}
+
+/// The wait [`app_start_wait`] set, if any.
+pub(crate) fn app_start_wait_override() -> Option<Duration> {
+    APP_START_WAIT.lock().ok().and_then(|w| *w)
+}
+
+/// How long an upload's `complete` waits for its segments to reach a majority when a test set
+/// it: every node in this process uses it from now on instead of 20 s.
+static UPLOAD_COMPLETE_WAIT: Mutex<Option<Duration>> = Mutex::new(None);
+
+/// Make an upload's `complete` in this process wait `wait` for its segments instead of 20 s, so
+/// a test whose pushes fail sees the `503 FILES_UNAVAILABLE` sooner.
+pub fn upload_complete_wait(wait: Duration) {
+    if let Ok(mut w) = UPLOAD_COMPLETE_WAIT.lock() {
+        *w = Some(wait);
+    }
+}
+
+/// The wait [`upload_complete_wait`] set, if any.
+pub(crate) fn upload_complete_wait_override() -> Option<Duration> {
+    UPLOAD_COMPLETE_WAIT.lock().ok().and_then(|w| *w)
+}

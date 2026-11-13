@@ -2222,6 +2222,25 @@ async fn methods_run_as_intents_and_views_and_the_openapi_document_lists_them() 
     );
 }
 
+/// `POST /apps/{app}/intents` sent once. `apps().call` sends a call again while the node
+/// answers `503` (D70), so a method that always hits its deadline would take seven deadlines
+/// and the waits between them there; a test of the timeout itself needs one.
+async fn call_once(
+    client: &Client,
+    app: &str,
+    method: &str,
+    key: &str,
+) -> Result<Value, Box<calimero_client::Error>> {
+    client
+        .transport()
+        .json(
+            Request::new(Method::POST, format!("apps/{app}/intents"))
+                .json(json!({ "method": method, "args": {}, "idempotencyKey": key })),
+        )
+        .await
+        .map_err(Box::new)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn timeouts_are_not_logged() {
     let c = Cluster::start_with(3, |cfg| {
@@ -2255,11 +2274,7 @@ async fn timeouts_are_not_logged() {
             .applied()
     };
     let before = applied();
-    let e = alice
-        .apps()
-        .call(&app, "spin", Some(json!({})), Some("k-1"), None)
-        .await
-        .unwrap_err();
+    let e = call_once(&alice, &app, "spin", "k-1").await.unwrap_err();
     assert_eq!(e.code(), Some("TIMEOUT"), "{e}");
     assert!(e.details().unwrap()["retryAfter"].is_u64(), "{e}");
     assert_eq!(applied(), before, "a timeout was logged");
@@ -3896,8 +3911,8 @@ async fn slow_calls_do_not_stall_the_async_workers() {
         })
     };
     let (ra, rb) = tokio::join!(
-        alice.apps().call(&a, "spin", Some(json!({})), None, None),
-        alice.apps().call(&b, "spin", Some(json!({})), None, None),
+        call_once(&alice, &a, "spin", "spin-a"),
+        call_once(&alice, &b, "spin", "spin-b"),
     );
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let worst = probe.await.unwrap();
@@ -5584,6 +5599,8 @@ fn spin_component() -> Vec<u8> {
 /// component bundle is taken, and `init` then runs on it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor() {
+    // The create call answers 503 after 4 s here, not the 30 s a cluster waits.
+    calimero_node::testing::app_start_wait(Duration::from_secs(4));
     // Unlimited fuel, so the spinning init hits its wall clock (a timeout, never
     // logged) instead of running out of fuel (a trap, logged as a failed init).
     let c = Cluster::start_with(3, |cfg| {
@@ -5606,8 +5623,8 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
         .await
         .map(|b| b.hash)
         .unwrap();
-    // Created; its init never applies (the create call itself waits 30 s for it,
-    // so it runs beside the test).
+    // Created; its init never applies (the create call itself waits for it, so
+    // it runs beside the test).
     let creating = {
         let cl = c.client(0);
         let mut pk2 = SoftAuthenticator::new("localhost", ORIGIN);
