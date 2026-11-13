@@ -22,7 +22,7 @@ Comprehensive checklist for Calimero core PR reviews. Align with AGENTS.md conve
 
 - [ ] **No dead code** – all functions, variables, imports, types are used
 - [ ] No commented-out code blocks
-- [ ] Commit format: `<type>(<scope>): <summary>` (e.g. `feat(runtime): add wasm bounds check`)
+- [ ] Commit format: `<type>(<scope>): <summary>` (e.g. `fix(node): bound the presence state size`)
 - [ ] Relevant documentation updated (README, AGENTS.md, crate docs)
 
 ## Tests

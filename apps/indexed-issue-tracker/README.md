@@ -13,12 +13,21 @@ lookups:
     index(by_assignee = ["assignee"]),
     count(by_status = ["status"]),
 )]
-pub struct Issue { id, title, status, assignee: Option<String>, labels: Vec<String>, created_at: u64 }
+pub struct Issue { id, title, status, assignee: Option<String>, created_at: u64 }
 
 #[derive(Record)]
-#[table(key = ["label", "issue_id"], index(by_label = ["label"]))]
-pub struct Label { label, issue_id }   // one row per label of an issue
+#[table(
+    key = ["issue_id", "label"],
+    index(by_label = ["label", "issue_id"]),
+    index(by_issue = ["issue_id", "label"]),
+)]
+pub struct Label { issue_id, label }   // one row per label of an issue
 ```
+
+Methods: `open { id, title, labels, createdAt }` (status `open`), `setStatus { id, status }`
+(`open`, `in_progress`, `closed`), `assign { id, assignee }`, `get { id }` and the lists
+below, plus `issueCount`. Errors: `Exists`, `NotFound` (each with its `id`),
+`UnknownStatus { status }`. Events, to the organization: `Opened { id }`, `Changed { id }`.
 
 | method | read | cost |
 |---|---|---|
