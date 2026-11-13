@@ -51,8 +51,7 @@ A compute method is marked in the same crate as the rest of the app.
 The crate is built twice, once as `app.wasm` (every method, the state, the result methods) and once as `compute.wasm` (the compute methods only, which is all a job node receives).
 
 ```bash
-scripts/install-mero-app-build.sh
-mero-app-build apps/compute-redact --out app.wasm --compute-out compute.wasm
+meroctl app build apps/compute-redact --out app.wasm --compute-out compute.wasm
 ```
 
 Without `--compute-out`, the compute component is written beside `--out` as `compute.component.wasm`.
@@ -61,7 +60,7 @@ A crate with no compute method builds one component and no compute output.
 Pack both into the signed bundle, which carries the compute component as `compute` next to `wasm`:
 
 ```bash
-python3 -I scripts/pack-component.py --wasm app.wasm --compute compute.wasm \
+meroctl app pack --wasm app.wasm --compute compute.wasm \
   --package com.example.redact --app-version 1.0.0 --key my-signing-key.json \
   --out dist/com.example.redact-1.0.0.mpk
 ```
@@ -182,7 +181,7 @@ The node never hands out a sealed file's plaintext or its key in the clear.
 The node answers the file's segment hashes and its data key wrapped to that public key, and serves each ciphertext segment at `GET /apps/{app}/files/{id}/segments/{k}`.
 The client checks the segment list against the file id, each segment against its hash, then the plaintext size and SHA-256, and returns bytes only when all of it matches.
 Only the app's owner and members of its organization may export, even on a public app, and one account gets `429 TOO_MANY_EXPORTS` past 30 exports a minute on a node.
-`meroctl file download APP ID --out PATH` runs it on one file, and `meroctl pipeline download APP RUN [--out DIR]` on every output of every step of an ended run, as `STEP-INDEX.bin`.
+`meroctl file download APP ID --out PATH` runs it on one file, and `meroctl cloud compute pipeline download APP RUN [--out DIR]` on every output of every step of an ended run, as `STEP-INDEX.bin`.
 
 ## Pipeline run receipts
 
@@ -191,7 +190,7 @@ Writing a pipeline, shipping it in a release and starting its runs: [Sealed file
 `GET /apps/{app}/pipeline-runs/{run}/receipt` answers `{ receipt, node, signature }` once the run has ended (`409 RUN_NOT_ENDED` before), for the app's owner and members of its organization.
 The receipt names the cluster identity, release, pipeline hash, the compute component of each module, the inputs and params, and per step the status and, for each run, the job node, job key, assignment digest, the hash and signature of the job's report and the files it made; a run answered from the step cache is listed as `cached` with its cache key.
 `signature` is the answering node's receipt key over `"calimero.pipeline.receipt.v1\0"` and the receipt's canonical JSON, and `Client::verify_receipt` checks it under the key `verify_app_cluster` attests.
-`meroctl pipeline receipt APP RUN [--verify] [--out FILE]` prints it, and with `--verify` also downloads each output and compares its SHA-256 with the receipt.
+`meroctl cloud compute pipeline receipt APP RUN [--verify] [--out FILE]` prints it, and with `--verify` also downloads each output and compares its SHA-256 with the receipt.
 
 ## Watching a run
 
@@ -199,7 +198,7 @@ The receipt names the cluster identity, release, pipeline hash, the compute comp
 The first event is a `snapshot` of the run and every step, then a `run` event when the run's state or cost changes and a `step` event when a step's status, run counts or reason changes, then `end` when the run leaves `running`, after which the stream closes.
 Events carry metadata only: no results, output or input file ids, hashes, params or args.
 A stream lasts at most an hour (reconnect for a new snapshot), a node serves at most 64 per app (`429 TOO_MANY_SUBSCRIBERS`), and quiet streams carry a comment every 15 seconds.
-`Client::pipeline_run_events` returns the typed events and `meroctl pipeline watch APP RUN` prints one JSON line per event.
+`Client::pipeline_run_events` returns the typed events and `meroctl cloud compute pipeline watch APP RUN` prints one JSON line per event.
 It does not yet verify each job's report signature on the client (the node's signature vouches for them), and it carries no module logs.
 
 ## Start, list and cancel runs
@@ -253,18 +252,17 @@ pub fn link(&mut self, job: String, part: u32, ttl_secs: u32) -> app::Result<Str
 
 ## Test it before you deploy
 
-Run the compute component alone with `mero-compute`:
+Run the compute component alone with `meroctl local compute run`:
 
 ```bash
-scripts/install-mero-compute.sh
-mero-compute run compute.wasm --method redact \
+meroctl local compute run compute.wasm --method redact \
   --args @apps/compute-redact/example/redact.json \
   --input apps/compute-redact/example/people.csv \
   --out out --twice
 ```
 
 It uses the engine, caps and determinism of a job node, writes outputs to `out/output-0` and fails, naming the reason, if a cap is hit or if `--twice` finds the two runs differ.
-It runs no app, no state and no result method ([mero-compute](https://github.com/calimero-network/core/blob/master/tools/mero-compute/README.md)).
+It runs no app, no state and no result method.
 
 Test the app side with the SDK's `TestApp` harness, which runs the real component but no compute: `compute::start` fails on the host target.
 `compute-redact` therefore passes the start and the publish as parameters (`Starter`, `Publisher`) and tests the queue and the outcomes with fakes in `src/lib.rs`.

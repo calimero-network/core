@@ -574,9 +574,15 @@ mod tests {
             &["meroctl", "attest", "app", "c"],
             &["meroctl", "cloud", "compute", "logs", "a", "r"],
             &["meroctl", "cloud", "compute", "pipeline", "runs", "a"],
-            &["meroctl", "local", "compute", "run", "c.wasm", "--method", "m", "--out", "o"],
-            &["meroctl", "app", "codegen", "--abi", "a.json", "--lang", "ts"],
-            &["meroctl", "app", "abi", "diff", "old.mpk", "new.wasm", "--json"],
+            &[
+                "meroctl", "local", "compute", "run", "c.wasm", "--method", "m", "--out", "o",
+            ],
+            &[
+                "meroctl", "app", "codegen", "--abi", "a.json", "--lang", "ts",
+            ],
+            &[
+                "meroctl", "app", "abi", "diff", "old.mpk", "new.wasm", "--json",
+            ],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
         }

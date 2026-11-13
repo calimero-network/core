@@ -1,6 +1,6 @@
 ---
 title: Packaging & signing your app
-description: The builder workflow that turns an app into an installable, signed .mpk bundle — build the component, sign with mero-sign, and install with meroctl.
+description: The builder workflow that turns an app into an installable, signed .mpk bundle — build, sign and pack with meroctl app, then install.
 sidebar:
   label: Packaging & signing
 ---
@@ -13,8 +13,9 @@ That deliverable is an **`.mpk` bundle**: a single archive carrying your
 `calimero:app` component, a `manifest.json`, and an Ed25519 signature.
 This page walks the builder workflow that produces one.
 
-The signing tool is `mero-sign` (`tools/mero-sign/`); `scripts/pack-component.py`
-writes the manifest, signs it through `mero-sign` and packs the archive. The node
+Every step is a `meroctl app` subcommand: `build` compiles the components, `key`
+makes the signing key, `pack` writes the manifest, signs it and packs the
+archive, and `inspect` checks the result as a node would. The node
 side — how a bundle is parsed, verified, and trusted on install — lives in
 [Upgrades & migration](/protocol/upgrades/); this page does not duplicate that
 detail.
@@ -27,13 +28,13 @@ detail.
 
 1. **Build the component.**
 
-   `calimero-app-build` compiles your crate for `wasm32-wasip2` and turns it into a
+   `meroctl app build` compiles your crate for `wasm32-wasip2` and turns it into a
    `calimero:app` component, with the ABI the SDK's macros embed (its
-   `calimero:abi` section):
+   `calimero:abi` section). `meroctl` comes with each release, beside `merod`
+   ([Install](/operate/install/)).
 
    ```bash
-   scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
-   mero-app-build apps/my-app --out my-app.wasm
+   meroctl app build apps/my-app --out my-app.wasm
    ```
 
    A WASM core module (an SDK 0.12 app) is refused by the node
@@ -41,26 +42,27 @@ detail.
 
 2. **Generate a signing key (one-time).**
 
-   `mero-sign generate-key` creates an Ed25519 keypair and derives your **signer
+   `meroctl app key new` creates an Ed25519 keypair and derives your **signer
    id** — a `did:key` identifier built from the public key (the `0xed01`
    ed25519-pub multicodec tag plus the 32-byte key, base58btc-encoded under the
    `did:key:` prefix).
 
    ```bash
-   mero-sign generate-key --output my-signing-key.json
+   meroctl app key new my-signing-key.json
    # Generated new keypair: my-signing-key.json
    #   signerId: did:key:z6Mkrb81NKkv7Mw4dZAWA5PTuwBhbq9u9eCPuby3icBUdirg
    ```
 
    The key file is JSON with base64url-encoded `privateKey` and `publicKey` plus
-   the derived `signerId` (`mero-sign derive-signer-id --key <file>` prints it
-   again). `generate-key` will not overwrite an existing file unless you pass
+   the derived `signerId` (`meroctl app key id <file>` prints it
+   again). `key new` will not overwrite an existing file unless you pass
    `--force`, which loses the old key for good. **Keep it secret and out of version control** — it is
    your update authority (see below).
 
    <Aside type="caution">
    For local development you can sign with the built-in well-known dev key via
-   `mero-sign sign <manifest> --dev` instead of `--key`. A dev-signed bundle is
+   `meroctl app sign <manifest> --dev` instead of `--key` (`meroctl app pack`
+   uses it when `--key` is left out). A dev-signed bundle is
    marked as such, **cannot be published to the registry**, and is refused
    (`403 DEV_SIGNED_PACKAGE`) by a node not running with `--dev` or
    `--allow-unsigned-bundles` — use a generated key for anything real.
@@ -68,27 +70,32 @@ detail.
 
 3. **Write and sign the manifest, and create the `.mpk`.**
 
-   `scripts/pack-component.py` writes `manifest.json` (`version`, `package`,
+   `meroctl app pack` writes `manifest.json` (`version`, `package`,
    `appVersion`, `minRuntimeVersion` and the `app.wasm` artifact with its SHA-256
-   and size), has `mero-sign sign` sign it, and packs `manifest.json` and
-   `app.wasm` into a gzip-compressed tar. `mero-sign` derives the `signerId` from
+   and size), signs it, and packs `manifest.json` and
+   `app.wasm` into a gzip-compressed tar. Signing derives the `signerId` from
    the key, refuses to sign if `minRuntimeVersion` is absent (a signer must not
    rewrite the document it signs), canonicalizes the manifest with RFC 8785 (JCS),
    signs the domain-tagged SHA-256 of those canonical bytes, and writes a
    `signature` object back into the manifest.
 
    ```bash
-   python3 -I scripts/pack-component.py --wasm my-app.wasm --package com.example.my-app \
+   meroctl app pack --wasm my-app.wasm --package com.example.my-app \
      --app-version 1.0.0 --key my-signing-key.json --out dist/com.example.my-app-1.0.0.mpk
    # omit --key to sign with the development key
+   meroctl app inspect dist/com.example.my-app-1.0.0.mpk   # verify it as a node does
    ```
 
-   The script runs from a checkout of core: it signs through `cargo run -p
-   mero-sign` unless `--mero-sign` (or `MERO_SIGN`) names a `mero-sign`
-   binary. `--min-runtime-version` (default `0.1.0`) is the oldest `merod`
+   Given the crate's directory instead, `meroctl app pack apps/my-app --key
+   my-signing-key.json` reads `package`, `min-runtime-version` and `frontend-dir`
+   from the crate's `[package.metadata.calimero]` and the release from its
+   `version`, builds the components when `--wasm` and `--compute` are not given,
+   and writes `apps/my-app/dist/<package>-<version>.mpk`.
+
+   `--min-runtime-version` (default `0.1.0`) is the oldest `merod`
    release the app needs; a cluster with an older replica refuses the upgrade
    (`409 RUNTIME_TOO_OLD`). For every release after the first, pass
-   `--previous <last .mpk>`: `mero-sign` then compares the two ABIs, warns about
+   `--previous <last .mpk>`: `pack` then compares the two ABIs, warns about
    changes that break callers, and refuses a state change made without a state
    version bump ([App interface](/build/app-abi/#check-a-new-version-against-the-last)).
 
@@ -100,16 +107,16 @@ detail.
    | `--outbound <https prefix>` (repeatable) | `outbound` | URL prefixes a run may send requests under ([Call an external service](/build/guides/outbound/)) |
    | `--upgrades owner\|publisher` | `upgrades` | who upgrades the package's instances; absent means `owner` |
 
-   The script checks each against the node's own rules before signing.
+   `pack` checks each against the node's own rules before signing.
 
    <Aside type="caution">
    `links`, `frontendAliases` and multi-service `services`
    (`calimero_bundle::BundleManifest`) have no flag: a release that needs them
-   adds them to `manifest.json` before `mero-sign sign manifest.json --key <file>`.
+   adds them to `manifest.json` before `meroctl app sign manifest.json --key <file>`.
    </Aside>
 
    An app with compute methods also builds a compute component
-   (`mero-app-build <crate> --out app.wasm --compute-out compute.wasm`). Pass it
+   (`meroctl app build <crate> --out app.wasm --compute-out compute.wasm`). Pass it
    with `--compute compute.wasm`: the manifest then declares it as `compute`, and
    the `.mpk` carries it as `compute.wasm`. Without it a release cannot run
    compute, and neither can a raw `.wasm` upload. `--compute` without `--wasm`
@@ -138,8 +145,15 @@ detail.
 4. **Install it.**
 
    A real cluster installs releases from its operator's registry
-   (`POST /packages/install { package, version }`); publish the `.mpk` there.
-   A development cluster (`merod --dev`, and `merod local`) also takes an
+   (`POST /packages/install { package, version }`); publish the `.mpk` there
+   with `meroctl app publish dist/com.example.my-app-1.0.0.mpk`: it pushes to the
+   app registry (`--registry`) with the registry's API key (`--api-key` or
+   `CALIMERO_REGISTRY_API_KEY`), or with `--org ORG` as a Calimero Cloud
+   organization, whose API key it trades for a publish token. A new package is
+   private unless `--public` lists it. A public registry refuses a dev-signed
+   bundle.
+   A development cluster (`merod --dev`, and `merod local`, which
+   `meroctl local up` starts) also takes an
    upload:
 
    ```bash
@@ -175,7 +189,7 @@ identity of your app and guard it accordingly.
 There is one rule, not a per-path split: a bundle must carry a valid Ed25519
 manifest signature to be installed, whether it comes from a registry, a URL, or
 a local file. Dev builds are not an exception - they sign with the well-known
-dev key (`mero-sign sign --dev`) and are verified like any other bundle; since
+dev key (`meroctl app sign --dev`) and are verified like any other bundle; since
 that key's seed is public, only a development node (`--dev` or
 `--allow-unsigned-bundles`) installs a release it signed. The
 signature also binds the wasm bytes: each wasm artifact is checked against the

@@ -190,19 +190,20 @@ application, not an upgrade) and publish, as in
 [Packaging & signing](/build/packaging-signing/):
 
 ```bash
-mero-app-build . --out kv-store.wasm
-python3 -I scripts/pack-component.py --wasm kv-store.wasm --package com.example.kv-store \
+meroctl app build . --out kv-store.wasm
+meroctl app pack --wasm kv-store.wasm --package com.example.kv-store \
   --app-version 2.0.0 --key my-signing-key.json --out dist/com.example.kv-store-2.0.0.mpk
 cp dist/com.example.kv-store-2.0.0.mpk releases/2.0.0.mpk   # the next release tests against it
 ```
 
-Add `--previous releases/1.0.0.mpk` to the `pack-component.py` line and
-`mero-sign` compares the ABI with the last release before signing: it warns
+Add `--previous releases/1.0.0.mpk` to the `meroctl app pack` line and
+it compares the ABI with the last release before signing: it warns
 about changes that break callers and refuses a state change without a state
 version bump ([App interface](/build/app-abi/#check-a-new-version-against-the-last)).
 
-Then publish it to the cluster's registry; a node installs it from there on
-the first upgrade that names it. A development cluster (`--dev`, as
+Then publish it to the cluster's registry
+(`meroctl app publish dist/com.example.kv-store-2.0.0.mpk`); a node installs it
+from there on the first upgrade that names it. A development cluster (`--dev`, as
 `merod local` runs) also takes an upload:
 `meroctl app install --path dist/com.example.kv-store-2.0.0.mpk`.
 
@@ -309,7 +310,7 @@ The refusals an upgrade meets before it runs, and after:
 | `400 BAD_BUNDLE` | The release's component does not prepare on this node | Rebuild with the cluster's `calimero-sdk`; run `cargo test` first |
 | `409 RELEASE_DEADLINE` | The organization whose approvals govern the app has approved no mero-tee release new enough, past the operator's deadline | Approve a current release on that organization (`namespace approve-release`; `account approve-release` does it on your personal organization) |
 | `409 RUNTIME_TOO_OLD` | The release's `minRuntimeVersion` is newer than a replica's `merod` | Wait for the operator to roll the cluster, or build the release with a lower `--min-runtime-version` |
-| `400 UNSUPPORTED_BUNDLE` | The target is a WASM core module (an SDK 0.12 build) | Rebuild with `mero-app-build` |
+| `400 UNSUPPORTED_BUNDLE` | The target is a WASM core module (an SDK 0.12 build) | Rebuild with `meroctl app build` |
 | `422 UPGRADE_FAILED`, `RUN_NEEDS_RESULT_METHOD` | A compute run in progress will call a result method v2 no longer declares | Keep the method in v2, or wait for the run to end |
 | Calls fail or read nothing after the upgrade | v2 cannot read what v1 stored | Roll back, fix the state change, and add the case to `migrations/` |
 

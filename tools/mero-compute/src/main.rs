@@ -7,7 +7,9 @@ use mero_compute::RunArgs;
 
 #[derive(Parser)]
 #[command(name = "mero-compute", version)]
-#[command(about = "Test a compute component alone, as a job node would run it (deprecated: use `meroctl local compute run`)")]
+#[command(
+    about = "Test a compute component alone, as a job node would run it (deprecated: use `meroctl local compute run`)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

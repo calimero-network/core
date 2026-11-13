@@ -110,8 +110,9 @@ fn file(home: &Home) -> PathBuf {
 }
 
 fn load(home: &Home) -> eyre::Result<Saved> {
-    let text = std::fs::read_to_string(file(home))
-        .map_err(|_| eyre!("not signed in to the Cloud: meroctl cloud login --token <session token>"))?;
+    let text = std::fs::read_to_string(file(home)).map_err(|_| {
+        eyre!("not signed in to the Cloud: meroctl cloud login --token <session token>")
+    })?;
     Ok(serde_json::from_str(&text)?)
 }
 
@@ -147,7 +148,10 @@ async fn request(
     if let Some(body) = body {
         req = req.json(&body);
     }
-    let res = req.send().await.wrap_err_with(|| format!("reaching {base}"))?;
+    let res = req
+        .send()
+        .await
+        .wrap_err_with(|| format!("reaching {base}"))?;
     let status = res.status();
     let refreshed = res
         .headers()
@@ -174,7 +178,8 @@ async fn request(
 pub async fn run(cmd: CloudCmd, home: &Home) -> eyre::Result<Value> {
     match cmd {
         CloudCmd::Login { token, url } => {
-            let (orgs, refreshed) = request(&url, &token, Method::GET, "/api/v2/orgs", None).await?;
+            let (orgs, refreshed) =
+                request(&url, &token, Method::GET, "/api/v2/orgs", None).await?;
             save(
                 home,
                 &Saved {
@@ -189,7 +194,9 @@ pub async fn run(cmd: CloudCmd, home: &Home) -> eyre::Result<Value> {
             Ok(Value::Null)
         }
         CloudCmd::Orgs => call(home, Method::GET, "/api/v2/orgs", None).await,
-        CloudCmd::Clusters(ClustersCmd::List) => call(home, Method::GET, "/api/v2/clusters", None).await,
+        CloudCmd::Clusters(ClustersCmd::List) => {
+            call(home, Method::GET, "/api/v2/clusters", None).await
+        }
         CloudCmd::Clusters(ClustersCmd::Create {
             name,
             org,
@@ -224,7 +231,13 @@ pub async fn run(cmd: CloudCmd, home: &Home) -> eyre::Result<Value> {
                     .as_str()
                     .unwrap_or(&cluster)
                     .chars()
-                    .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' {
+                            c
+                        } else {
+                            '-'
+                        }
+                    })
                     .collect()
             });
             let mut nodes = home.nodes();

@@ -170,7 +170,9 @@ fn scaffold(
     git_init: bool,
 ) -> eyre::Result<Value> {
     let app = format!("apps/{template}");
-    let dir_s = dir.to_str().ok_or_else(|| eyre::eyre!("DIR must be UTF-8"))?;
+    let dir_s = dir
+        .to_str()
+        .ok_or_else(|| eyre::eyre!("DIR must be UTF-8"))?;
     git(
         None,
         &[
@@ -195,7 +197,10 @@ fn scaffold(
     }
     let commit = git_output(dir, &["rev-parse", "HEAD"])?;
     std::fs::remove_dir_all(dir.join(".git"))?;
-    std::fs::write(dir.join("README.md"), readme(template, repo, git_ref, &commit))?;
+    std::fs::write(
+        dir.join("README.md"),
+        readme(template, repo, git_ref, &commit),
+    )?;
     if git_init {
         git(Some(dir), &["init", "--quiet"])?;
     }

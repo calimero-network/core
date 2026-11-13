@@ -70,18 +70,20 @@ own checkout, the root `Dockerfile` builds the same kind of image:
 1. **Start three nodes in one process:**
 
    ```bash
-   merod local
+   meroctl local up
    ```
 
-   They listen on `http://127.0.0.1:2501/` to `2503`, with mock attestation and
-   a development storage key, and keep state in `.merod-local/` (`--fresh`
-   starts over). It prints the ops token and the `meroctl` commands to connect.
+   It runs `merod local` (from `PATH`) in the background. The nodes listen on
+   `http://127.0.0.1:2501/` to `2503`, with mock attestation and a development
+   storage key, and keep state in `.merod-local/` (`--fresh` starts over).
+   `meroctl` saves the cluster as the node `local`, trusting its mock
+   attestation, and makes it the default node if you have none.
+   It prints the node URLs and the Ops token (`opsToken`); `meroctl local
+   status` prints them again and `meroctl local down` stops the cluster.
 
-2. **Save the node and sign up** with a file passkey (development clusters
-   only):
+2. **Sign up** with a file passkey (development clusters only):
 
    ```bash
-   meroctl node add local http://127.0.0.1:2501/ --allow-mock
    meroctl login --dev-passkey ./dev-passkey.json --name ada
    ```
 
@@ -90,7 +92,7 @@ own checkout, the root `Dockerfile` builds the same kind of image:
    ```bash
    meroctl network status      # node, release, system leader
    meroctl whoami
-   meroctl --ops-token <printed token> ops status
+   meroctl --ops-token <opsToken> ops status   # the token local up and local status print
    ```
 
 </Steps>

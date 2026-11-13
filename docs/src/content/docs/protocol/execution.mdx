@@ -63,7 +63,7 @@ impl KvStore {
 }
 ```
 
-`mero-app-build` turns the crate into a component with its ABI embedded
+`meroctl app build` turns the crate into a component with its ABI embedded
 (`calimero:abi`), which the node reads to tell views from calls and to find
 confirm methods ([Build](/build/)). On a cluster, a call to
 `set` is one run on the leader, and the map's writes are its diff.

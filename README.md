@@ -13,26 +13,25 @@ operating the nodes can read the apps' data.
 | Crate | Description |
 |-------|-------------|
 | **merod** | The node: `init`, `run`, `config`, `local` (a development cluster), `inspect`, `kms disk-key`, `attest` |
-| **meroctl** | The command line: packages, app instances (`context`), organizations, teams, blobs, accounts, and `ops` for the operator |
+| **meroctl** | The command line: building, signing and publishing apps (`app`), a local development cluster (`local`), app instances (`context`), organizations, teams, blobs, accounts, and `ops` for the operator |
 | **calimero-node** | The node's inside: system group, app groups, the HTTP and Ops API |
 | **calimero-log** | Multi-group Raft (openraft) over a sealed RocksDB store |
 | **calimero-sealed** | The sealed HTTP transport, server and client |
 | **calimero-identity** | Passkeys, sessions, API keys, confirmation challenges |
 | **calimero-client** | Rust client: attestation check, sealed requests, sign-in |
 | **calimero-app-engine-wasmtime** | Wasmtime engine for `calimero:app` components |
-| **calimero-sdk** | The Rust SDK apps are written with, built into `calimero:app` components by `calimero-app-build` |
+| **calimero-sdk** | The Rust SDK apps are written with, built into `calimero:app` components by `meroctl app build` (`calimero-app-build`) |
 
 The full list is in [`crates/AGENTS.md`](crates/AGENTS.md).
 
 ## Quick start
 
 ```bash
-cargo run -p merod -- local                     # 3 nodes on 127.0.0.1:2501-2503; keeps running, go on in another terminal
-cargo install --path crates/meroctl
-meroctl node add local http://127.0.0.1:2501/ --allow-mock
+cargo install --locked --path crates/merod
+cargo install --locked --path crates/meroctl
+meroctl local up                                            # 3 nodes on 127.0.0.1:2501-2503 in the background, saved as node local
 meroctl login --dev-passkey ./dev-passkey.json --name ada   # signs up: an account and its personal organization
-scripts/install-mero-app-build.sh                           # once: puts mero-app-build on PATH
-mero-app-build apps/kv-store --out kv_store.wasm
+meroctl app build apps/kv-store --out kv_store.wasm
 meroctl context create --path kv_store.wasm --name kv --alias kv
 meroctl call --context kv set --args '{"key":"a","value":"1"}'
 meroctl call --context kv get --args '{"key":"a"}' --view
@@ -63,7 +62,7 @@ The docs live in [`docs/`](docs/) (Astro Starlight).
 - [calimero-network/mero-js](https://github.com/calimero-network/mero-js) -- JavaScript/TypeScript client
 - [calimero-network/calimero-client-py](https://github.com/calimero-network/calimero-client-py) -- Python client
 
-Apps build with `calimero-app-build` (`mero-app-build`) and are signed with [`tools/mero-sign`](tools/mero-sign).
+Apps are built, signed and packed with `meroctl app build|pack` (the crates `calimero-app-build` and `calimero-bundle`, and the signing in [`tools/mero-sign`](tools/mero-sign)).
 
 ## License
 

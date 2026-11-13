@@ -142,7 +142,7 @@ environment variable. See [Configuration](/operate/config/) for the file.
 | `--peer-profiles NAME,...` | `MEROD_PEER_PROFILES` | `--tee-profile` | Profiles a peer's quote may match. |
 | `--peer-min-release VERSION` | `MEROD_PEER_MIN_RELEASE` | client floor (`2.3.109`) | The oldest mero-tee release a peer may run; a value below the client floor is refused. |
 | `--registry-url URL` | `MEROD_REGISTRY_URL` | none | The package registry nodes fetch signed releases from. Without it, `PACKAGE@VERSION` installs answer `NO_REGISTRY`. |
-| `--allow-unsigned-bundles [BOOL]` | `MEROD_ALLOW_UNSIGNED_BUNDLES` | `false` (on with `--dev`) | Accept raw WASM uploads (`POST /bundles`), which carry no publisher signature, and releases signed by `mero-sign --dev`'s public key. |
+| `--allow-unsigned-bundles [BOOL]` | `MEROD_ALLOW_UNSIGNED_BUNDLES` | `false` (on with `--dev`) | Accept raw WASM uploads (`POST /bundles`), which carry no publisher signature, and releases signed with the development key (`meroctl app sign --dev`). |
 | `--release-approvals owner\|operator` | `MEROD_RELEASE_APPROVALS` | `owner` | Who approves the mero-tee releases that may hold apps' data. |
 | `--app-upgrades owner\|operator` | `MEROD_APP_UPGRADES` | `owner` | Who upgrades apps to another bundle. |
 | `--outbound-approvals owner\|operator` | `MEROD_OUTBOUND_APPROVALS` | `owner` | Who approves the URL prefixes apps may call out to. |
@@ -182,6 +182,8 @@ under `localhost` (`--apps-domain localhost`), backups under `{dir}/backups`.
 Node 1 bootstraps the system group; each app gets `min(N, 3)` replicas. It
 prints the node URLs, the state directory, the ops token and the two
 `meroctl` commands that connect to it, then runs until `Ctrl-C`.
+`meroctl local up` runs it in the background and saves it as the node `local`
+([meroctl](/operate/meroctl/)).
 
 | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- |
@@ -301,7 +303,7 @@ report_data = nonce(32) || SHA-256("calimero.tee-attest.release.v1"
 
 `measurements` is `null` for a mock quote, and only informational otherwise: a
 verifier reads the registers from the verified quote. Verify with `meroctl
-attest-release` or `calimero_client::attest::release::verify_release` (the
+attest release` or `calimero_client::attest::release::verify_release` (the
 same quote check as every client's, with its measurement policy), or with
 `calimero-tee-verify` given the quote, the nonce and the report data's second
 half as `app_hash_hex`, then the registers against the signed release. See

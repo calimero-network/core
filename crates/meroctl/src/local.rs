@@ -51,7 +51,10 @@ pub struct ClusterArgs {
 }
 
 fn default_image() -> String {
-    format!("ghcr.io/calimero-network/merod:{}", env!("CALIMERO_RELEASE_VERSION"))
+    format!(
+        "ghcr.io/calimero-network/merod:{}",
+        env!("CALIMERO_RELEASE_VERSION")
+    )
 }
 
 #[derive(Debug, Subcommand)]
@@ -150,8 +153,11 @@ fn urls(nodes: u16, base_port: u16) -> Vec<String> {
 
 fn listening(url: &str) -> bool {
     let addr = url.trim_start_matches("http://").trim_end_matches('/');
-    TcpStream::connect_timeout(&addr.parse().expect("127.0.0.1:port"), Duration::from_millis(300))
-        .is_ok()
+    TcpStream::connect_timeout(
+        &addr.parse().expect("127.0.0.1:port"),
+        Duration::from_millis(300),
+    )
+    .is_ok()
 }
 
 fn read_state(dir: &Path) -> Option<State> {
@@ -170,7 +176,10 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
     }
     if let Some(state) = read_state(&a.dir).filter(alive) {
         if a.fresh {
-            bail!("a cluster is running from {}: `meroctl local down` first", a.dir.display());
+            bail!(
+                "a cluster is running from {}: `meroctl local down` first",
+                a.dir.display()
+            );
         }
         save_node(home, &state.urls[0])?;
         return Ok((describe(&a.dir, &state, true), None));
@@ -249,7 +258,10 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
         ops_token: token,
         log: log.clone(),
     };
-    write_private(&dir.join(STATE_FILE), &serde_json::to_string_pretty(&state)?)?;
+    write_private(
+        &dir.join(STATE_FILE),
+        &serde_json::to_string_pretty(&state)?,
+    )?;
     // Only a caller that owns the cluster (`dev`) stops it when done.
     let started = own.then(|| Started {
         dir: a.dir.clone(),
@@ -260,11 +272,18 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
     let printed_ready = || std::fs::read_to_string(&log).is_ok_and(|t| t.contains("ops token"));
     while !(alive(&state) && printed_ready()) {
         if Instant::now() > deadline {
-            bail!("the cluster did not start in {READY_TIMEOUT:?}; its log: {}", log.display());
+            bail!(
+                "the cluster did not start in {READY_TIMEOUT:?}; its log: {}",
+                log.display()
+            );
         }
         if let Some(pid) = state.pid {
             if !Path::new(&format!("/proc/{pid}")).exists() && cfg!(target_os = "linux") {
-                bail!("merod local exited; its log: {}\n{}", log.display(), tail(&log));
+                bail!(
+                    "merod local exited; its log: {}\n{}",
+                    log.display(),
+                    tail(&log)
+                );
             }
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -410,22 +429,32 @@ fn sources_changed_at(krate: &Path) -> Option<SystemTime> {
 async fn dev(a: DevArgs, home: Home) -> eyre::Result<Value> {
     let krate = crate_dir(&a.app);
     if !krate.join("Cargo.toml").is_file() {
-        bail!("{} holds no crate (no Cargo.toml, nor logic/Cargo.toml)", a.app.display());
+        bail!(
+            "{} holds no crate (no Cargo.toml, nor logic/Cargo.toml)",
+            a.app.display()
+        );
     }
-    let frontend = Some(a.app.join("app")).filter(|f| !a.no_frontend && f.join("package.json").is_file());
+    let frontend =
+        Some(a.app.join("app")).filter(|f| !a.no_frontend && f.join("package.json").is_file());
 
     let (cluster, _owned) = up(&a.cluster, &home, true)?;
     let url = cluster["urls"][0]
         .as_str()
         .ok_or_else(|| eyre!("no node"))?
         .to_owned();
-    eprintln!("• cluster: {} (log: {})", url, cluster["log"].as_str().unwrap_or_default());
+    eprintln!(
+        "• cluster: {} (log: {})",
+        url,
+        cluster["log"].as_str().unwrap_or_default()
+    );
 
     // A deployer account of its own: a raw bundle is visible to every account
     // on a development cluster, so the person signing in to the frontend
     // creates their instance from it.
     let env = Env::connect(
-        Home { dir: home.dir.clone() },
+        Home {
+            dir: home.dir.clone(),
+        },
         url.clone(),
         Trust {
             allow_mock: true,
@@ -452,7 +481,12 @@ async fn dev(a: DevArgs, home: Home) -> eyre::Result<Value> {
     let wasm = std::path::absolute(krate.join(crate::make::APP_FILE))?;
     let nodes: Vec<String> = cluster["urls"]
         .as_array()
-        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default();
     let target = Deploy {
         krate: krate.clone(),
@@ -472,7 +506,9 @@ async fn dev(a: DevArgs, home: Home) -> eyre::Result<Value> {
                     .args(["dev", "--port", "5173", "--strictPort"])
                     .kill_on_drop(true)
                     .spawn()
-                    .wrap_err("running pnpm (install the frontend's dependencies first: pnpm install)")?,
+                    .wrap_err(
+                        "running pnpm (install the frontend's dependencies first: pnpm install)",
+                    )?,
             )
         }
         None => None,

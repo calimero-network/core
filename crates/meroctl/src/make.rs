@@ -169,7 +169,11 @@ pub struct PublishArgs {
     /// The signed `.mpk`.
     pub mpk: PathBuf,
     /// The registry.
-    #[arg(long, env = "CALIMERO_REGISTRY_URL", default_value = "https://apps.calimero.network")]
+    #[arg(
+        long,
+        env = "CALIMERO_REGISTRY_URL",
+        default_value = "https://apps.calimero.network"
+    )]
     pub registry: String,
     /// The registry API key (the registry's Organizations page, CLI Access),
     /// or with `--org` the Cloud organization's `ck_live_` key.
@@ -180,7 +184,11 @@ pub struct PublishArgs {
     #[arg(long)]
     pub org: Option<String>,
     /// The Cloud, for `--org`.
-    #[arg(long, env = "CALIMERO_CLOUD_URL", default_value = "https://cloud.calimero.network")]
+    #[arg(
+        long,
+        env = "CALIMERO_CLOUD_URL",
+        default_value = "https://cloud.calimero.network"
+    )]
     pub cloud: String,
     /// List the package publicly (a new package is private by default).
     #[arg(long)]
@@ -201,7 +209,9 @@ pub fn build(a: &BuildArgs) -> eyre::Result<Value> {
     let mut answer = json!({ "app": out });
     match (&built.compute, &a.compute_out) {
         (Some(compute), path) => {
-            let path = path.clone().unwrap_or_else(|| out.with_file_name(COMPUTE_FILE));
+            let path = path
+                .clone()
+                .unwrap_or_else(|| out.with_file_name(COMPUTE_FILE));
             write_file(&path, &compute.component)?;
             answer["compute"] = json!(path);
         }
@@ -257,7 +267,9 @@ fn report_abi(manifest: &Path, previous: &Path) -> eyre::Result<()> {
     eprintln!("ABI changes since {}:", previous.display());
     eprint!("{}", check.report);
     if check.breaking {
-        eprintln!("\u{26a0}  This release breaks existing callers of the app (see `breaking` above).");
+        eprintln!(
+            "\u{26a0}  This release breaks existing callers of the app (see `breaking` above)."
+        );
     }
     Ok(())
 }
@@ -291,6 +303,9 @@ pub fn inspect(mpk: &Path) -> eyre::Result<Value> {
     }))
 }
 
+/// A file as it goes into the archive: its path there and its bytes.
+type ArchiveFile = (String, Vec<u8>);
+
 /// What a crate's Cargo.toml says about its package: `[package] version` and
 /// `[package.metadata.calimero]`.
 #[derive(Default)]
@@ -305,14 +320,18 @@ fn crate_meta(dir: &Path) -> eyre::Result<CrateMeta> {
     let path = dir.join("Cargo.toml");
     let text =
         std::fs::read_to_string(&path).wrap_err_with(|| format!("reading {}", path.display()))?;
-    let doc: toml::Table = text.parse().wrap_err_with(|| format!("parsing {}", path.display()))?;
+    let doc: toml::Table = text
+        .parse()
+        .wrap_err_with(|| format!("parsing {}", path.display()))?;
     let package = doc.get("package").and_then(toml::Value::as_table);
     let meta = package
         .and_then(|p| p.get("metadata"))
         .and_then(|m| m.get("calimero"))
         .and_then(toml::Value::as_table);
     let text_of = |t: Option<&toml::Table>, k: &str| {
-        t.and_then(|t| t.get(k)).and_then(toml::Value::as_str).map(str::to_owned)
+        t.and_then(|t| t.get(k))
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
     };
     Ok(CrateMeta {
         version: text_of(package, "version"),
@@ -332,7 +351,7 @@ fn artifact(path: &str, data: &[u8]) -> BundleArtifact {
 
 /// Every file under `root` as `frontend/<path>`, sorted, refused as the node
 /// would refuse the manifest (`BundleFrontend::validate`).
-fn frontend_files(root: &Path, entry: &str) -> eyre::Result<(BundleFrontend, Vec<(String, Vec<u8>)>)> {
+fn frontend_files(root: &Path, entry: &str) -> eyre::Result<(BundleFrontend, Vec<ArchiveFile>)> {
     if !root.is_dir() {
         bail!("--frontend {}: not a directory", root.display());
     }
@@ -388,12 +407,15 @@ fn component(path: &Path) -> eyre::Result<Vec<u8>> {
 
 /// `app pack`: the manifest the node reads, signed, and every file it names, as a `.mpk`.
 pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
-    let meta = a.dir.as_deref().map(crate_meta).transpose()?.unwrap_or_default();
-    let package = a
-        .package
-        .clone()
-        .or(meta.package)
-        .ok_or_else(|| eyre!("give --package, or a DIR whose Cargo.toml has [package.metadata.calimero] package"))?;
+    let meta = a
+        .dir
+        .as_deref()
+        .map(crate_meta)
+        .transpose()?
+        .unwrap_or_default();
+    let package = a.package.clone().or(meta.package).ok_or_else(|| {
+        eyre!("give --package, or a DIR whose Cargo.toml has [package.metadata.calimero] package")
+    })?;
     let version = a
         .app_version
         .clone()
@@ -494,7 +516,9 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
 
     let key = signing_key(a.key.as_deref())?;
     if a.key.is_none() {
-        eprintln!("signing with the development key (a public registry refuses it; --key for yours)");
+        eprintln!(
+            "signing with the development key (a public registry refuses it; --key for yours)"
+        );
     }
     let tmp = tempfile::tempdir()?;
     let path = tmp.path().join("manifest.json");
@@ -519,7 +543,8 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
     }
-    let gz = flate2::write::GzEncoder::new(std::fs::File::create(&out)?, flate2::Compression::default());
+    let gz =
+        flate2::write::GzEncoder::new(std::fs::File::create(&out)?, flate2::Compression::default());
     let mut tar = tar::Builder::new(gz);
     let mut entries: Vec<(&str, &[u8])> = vec![("manifest.json", &signed)];
     entries.extend(parts.iter().map(|(_, n, d)| (*n, d.as_slice())));
@@ -543,10 +568,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
 /// the whole `.mpk` as hex in `_binary`.
 pub async fn publish(a: &PublishArgs) -> eyre::Result<Value> {
     let data = std::fs::read(&a.mpk).wrap_err_with(|| format!("reading {}", a.mpk.display()))?;
-    let (manifest, _) = extract_bundle_manifest(
-        &data,
-        &semver::Version::new(u64::MAX, 0, 0),
-    )?;
+    let (manifest, _) = extract_bundle_manifest(&data, &semver::Version::new(u64::MAX, 0, 0))?;
     let Value::Object(mut body) = manifest else {
         bail!("{}: the manifest is not an object", a.mpk.display());
     };
@@ -619,7 +641,10 @@ async fn registry_token(
     if !status.is_success() {
         bail!(
             "the Cloud refused the organization key: {status} {}",
-            answer["detail"].as_str().or(answer["message"].as_str()).unwrap_or_default()
+            answer["detail"]
+                .as_str()
+                .or(answer["message"].as_str())
+                .unwrap_or_default()
         );
     }
     answer["token"]

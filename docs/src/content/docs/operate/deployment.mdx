@@ -163,7 +163,7 @@ Three more rules are set the same way:
 | `--sign-up open\|invite\|closed` | `open` | Who may create an account ([Sign-up policy](/operate/auth/#sign-up-policy)); changed later only by a signed `POST /ops/sign-up` (or the owner's `POST /sign-up`). |
 
 They are fixed at genesis, attested with every node's receipt key, and
-reported to users (`meroctl attest --context`), so a user can check them before
+reported to users (`meroctl attest app`), so a user can check them before
 trusting the cluster. Give the operator a decision only where users trust it
 with code, or destinations, that can read their data. See
 [Security](/operate/security/#governance).

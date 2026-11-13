@@ -20,7 +20,11 @@ fn meroctl(cwd: &Path, args: &[&str]) -> Output {
 }
 
 fn ok(out: &Output) -> Value {
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
 }
 
@@ -42,7 +46,16 @@ fn untar(mpk: &Path) -> BTreeMap<String, Vec<u8>> {
 /// Packs `app.wasm` (unless `with_app` is false) with `extra`, answering the archive or the failure.
 fn pack(dir: &Path, extra: &[&str], with_app: bool) -> Result<BTreeMap<String, Vec<u8>>, String> {
     std::fs::write(dir.join("app.wasm"), [COMPONENT, b"app"].concat()).unwrap();
-    let mut args = vec!["app", "pack", "--package", "p", "--app-version", "1.0.0", "--out", "out.mpk"];
+    let mut args = vec![
+        "app",
+        "pack",
+        "--package",
+        "p",
+        "--app-version",
+        "1.0.0",
+        "--out",
+        "out.mpk",
+    ];
     if with_app {
         args.extend(["--wasm", "app.wasm"]);
     }
@@ -64,7 +77,11 @@ fn names(files: &BTreeMap<String, Vec<u8>>) -> Vec<&str> {
 }
 
 fn compute(dir: &Path) {
-    std::fs::write(dir.join("compute.component.wasm"), [COMPONENT, b"compute"].concat()).unwrap();
+    std::fs::write(
+        dir.join("compute.component.wasm"),
+        [COMPONENT, b"compute"].concat(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -98,13 +115,25 @@ fn pack_ships_what_it_is_given_and_declares_it() {
     std::fs::write(d.join("second.yaml"), "name: second\n").unwrap();
     let files = pack(
         d,
-        &["--compute", "compute.component.wasm", "--pipeline", "first.yaml", "--pipeline", "second.yaml"],
+        &[
+            "--compute",
+            "compute.component.wasm",
+            "--pipeline",
+            "first.yaml",
+            "--pipeline",
+            "second.yaml",
+        ],
         false,
     )
     .unwrap();
     assert_eq!(
         names(&files),
-        ["compute.wasm", "manifest.json", "pipelines/first.yaml", "pipelines/second.yaml"]
+        [
+            "compute.wasm",
+            "manifest.json",
+            "pipelines/first.yaml",
+            "pipelines/second.yaml"
+        ]
     );
     let declared = &manifest(&files)["pipelines"];
     assert_eq!(declared[0]["path"], "pipelines/first.yaml");
@@ -117,7 +146,12 @@ fn pack_ships_what_it_is_given_and_declares_it() {
     let files = pack(d, &["--frontend", "dist"], true).unwrap();
     assert_eq!(
         names(&files),
-        ["app.wasm", "frontend/assets/app.js", "frontend/index.html", "manifest.json"]
+        [
+            "app.wasm",
+            "frontend/assets/app.js",
+            "frontend/index.html",
+            "manifest.json"
+        ]
     );
     let f = &manifest(&files)["frontend"];
     assert_eq!(f["entry"], "frontend/index.html");
@@ -151,20 +185,31 @@ fn pack_refuses_what_the_node_would_refuse() {
     let tmp = tempfile::tempdir().unwrap();
     let d = tmp.path();
     // Neither an app nor a compute component.
-    assert!(pack(d, &[], false).unwrap_err().contains("--wasm, --compute"));
+    assert!(pack(d, &[], false)
+        .unwrap_err()
+        .contains("--wasm, --compute"));
     // Not a component.
     std::fs::write(d.join("bad.wasm"), "not wasm at all").unwrap();
-    assert!(pack(d, &["--compute", "bad.wasm"], true).unwrap_err().contains("not a WASM component"));
+    assert!(pack(d, &["--compute", "bad.wasm"], true)
+        .unwrap_err()
+        .contains("not a WASM component"));
     // Two pipelines with one name.
     for sub in ["a", "b"] {
         std::fs::create_dir_all(d.join(sub)).unwrap();
         std::fs::write(d.join(sub).join("p.yaml"), "name: p\n").unwrap();
     }
-    assert!(pack(d, &["--pipeline", "a/p.yaml", "--pipeline", "b/p.yaml"], true)
-        .unwrap_err()
-        .contains("same name"));
+    assert!(pack(
+        d,
+        &["--pipeline", "a/p.yaml", "--pipeline", "b/p.yaml"],
+        true
+    )
+    .unwrap_err()
+    .contains("same name"));
     // Frontend files the node refuses, and a build without its entry.
-    for (name, code) in [("bad name.html", "FRONTEND_UNSAFE_PATH"), ("tool.exe", "FRONTEND_UNSUPPORTED_TYPE")] {
+    for (name, code) in [
+        ("bad name.html", "FRONTEND_UNSAFE_PATH"),
+        ("tool.exe", "FRONTEND_UNSUPPORTED_TYPE"),
+    ] {
         let dist = d.join(format!("dist-{code}"));
         std::fs::create_dir_all(&dist).unwrap();
         std::fs::write(dist.join("index.html"), "<p>").unwrap();
@@ -174,7 +219,9 @@ fn pack_refuses_what_the_node_would_refuse() {
     }
     std::fs::create_dir_all(d.join("noentry")).unwrap();
     std::fs::write(d.join("noentry/app.js"), "x").unwrap();
-    assert!(pack(d, &["--frontend", "noentry"], true).unwrap_err().contains("FRONTEND_NO_ENTRY"));
+    assert!(pack(d, &["--frontend", "noentry"], true)
+        .unwrap_err()
+        .contains("FRONTEND_NO_ENTRY"));
     // A bad outbound prefix.
     assert!(pack(d, &["--outbound", "http://insecure.example/"], true)
         .unwrap_err()
@@ -201,9 +248,15 @@ fn a_key_signs_and_inspect_verifies_what_pack_wrote() {
     let mut m = manifest(&files);
     m["appVersion"] = "9.9.9".into();
     let tampered = d.join("tampered.mpk");
-    let gz = flate2::write::GzEncoder::new(std::fs::File::create(&tampered).unwrap(), flate2::Compression::default());
+    let gz = flate2::write::GzEncoder::new(
+        std::fs::File::create(&tampered).unwrap(),
+        flate2::Compression::default(),
+    );
     let mut tar = tar::Builder::new(gz);
-    for (name, data) in [("manifest.json", serde_json::to_vec(&m).unwrap()), ("app.wasm", files["app.wasm"].clone())] {
+    for (name, data) in [
+        ("manifest.json", serde_json::to_vec(&m).unwrap()),
+        ("app.wasm", files["app.wasm"].clone()),
+    ] {
         let mut h = tar::Header::new_gnu();
         h.set_size(data.len() as u64);
         h.set_mode(0o644);
@@ -211,7 +264,9 @@ fn a_key_signs_and_inspect_verifies_what_pack_wrote() {
         tar.append_data(&mut h, name, data.as_slice()).unwrap();
     }
     tar.into_inner().unwrap().finish().unwrap();
-    assert!(!meroctl(d, &["app", "inspect", "tampered.mpk"]).status.success());
+    assert!(!meroctl(d, &["app", "inspect", "tampered.mpk"])
+        .status
+        .success());
 
     // `sign` signs a manifest in place; without --key or --dev it refuses.
     std::fs::write(
@@ -219,14 +274,24 @@ fn a_key_signs_and_inspect_verifies_what_pack_wrote() {
         r#"{"version":"1.0","package":"p","appVersion":"1.0.0","minRuntimeVersion":"0.1.0"}"#,
     )
     .unwrap();
-    assert!(!meroctl(d, &["app", "sign", "manifest.json"]).status.success());
-    let _ = ok(&meroctl(d, &["app", "sign", "manifest.json", "--key", "k.json"]));
-    let signed: Value = serde_json::from_slice(&std::fs::read(d.join("manifest.json")).unwrap()).unwrap();
+    assert!(!meroctl(d, &["app", "sign", "manifest.json"])
+        .status
+        .success());
+    let _ = ok(&meroctl(
+        d,
+        &["app", "sign", "manifest.json", "--key", "k.json"],
+    ));
+    let signed: Value =
+        serde_json::from_slice(&std::fs::read(d.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(signed["signerId"], signer);
 }
 
 fn ok_raw(out: &Output) -> Vec<u8> {
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     out.stdout.clone()
 }
 
@@ -251,8 +316,17 @@ fn pack_reads_the_crate_metadata_of_dir() {
     assert_eq!(manifest(&files)["minRuntimeVersion"], "1.0.0-rc.20");
     // Built: packed from frontend-dir.
     std::fs::create_dir_all(d.join("app/dist")).unwrap();
-    std::fs::write(d.join("app/dist/index.html"), "<!doctype html><title>x</title>").unwrap();
-    let _ = ok(&meroctl(d, &["app", "pack", "logic", "--wasm", "app.wasm", "--out", "with.mpk"]));
+    std::fs::write(
+        d.join("app/dist/index.html"),
+        "<!doctype html><title>x</title>",
+    )
+    .unwrap();
+    let _ = ok(&meroctl(
+        d,
+        &[
+            "app", "pack", "logic", "--wasm", "app.wasm", "--out", "with.mpk",
+        ],
+    ));
     assert!(untar(&d.join("with.mpk")).contains_key("frontend/index.html"));
 }
 
@@ -279,10 +353,15 @@ async fn publish_pushes_the_bundle_to_the_registry() {
         if refused {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "version_not_allowed", "message": "New version (0.0.1) must be greater than latest (1.0.0)."})),
+                Json(
+                    serde_json::json!({"error": "version_not_allowed", "message": "New version (0.0.1) must be greater than latest (1.0.0)."}),
+                ),
             );
         }
-        (StatusCode::CREATED, Json(serde_json::json!({"package": "p", "version": "1.0.0"})))
+        (
+            StatusCode::CREATED,
+            Json(serde_json::json!({"package": "p", "version": "1.0.0"})),
+        )
     }
     let seen: Seen = Arc::default();
     let app = axum::Router::new()
@@ -302,8 +381,14 @@ async fn publish_pushes_the_bundle_to_the_registry() {
     };
     let _ = pack(&d, &[], true).unwrap();
     let out = run(vec![
-        "app".into(), "publish".into(), "out.mpk".into(), "--registry".into(), url.clone(),
-        "--api-key".into(), "secret".into(), "--public".into(),
+        "app".into(),
+        "publish".into(),
+        "out.mpk".into(),
+        "--registry".into(),
+        url.clone(),
+        "--api-key".into(),
+        "secret".into(),
+        "--public".into(),
     ])
     .await
     .unwrap();
@@ -314,19 +399,35 @@ async fn publish_pushes_the_bundle_to_the_registry() {
     assert_eq!(body["signature"]["algorithm"], "ed25519");
     assert_eq!(body["_visibility"], "public");
     assert_eq!(body["migrations"], serde_json::json!([]));
-    assert_eq!(hex::decode(body["_binary"].as_str().unwrap()).unwrap(), std::fs::read(d.join("out.mpk")).unwrap());
+    assert_eq!(
+        hex::decode(body["_binary"].as_str().unwrap()).unwrap(),
+        std::fs::read(d.join("out.mpk")).unwrap()
+    );
 
     // A refusal comes back with the registry's code.
     let out = run(vec![
-        "app".into(), "pack".into(), "--wasm".into(), "app.wasm".into(), "--package".into(), "p".into(),
-        "--app-version".into(), "0.0.1".into(), "--out".into(), "old.mpk".into(),
+        "app".into(),
+        "pack".into(),
+        "--wasm".into(),
+        "app.wasm".into(),
+        "--package".into(),
+        "p".into(),
+        "--app-version".into(),
+        "0.0.1".into(),
+        "--out".into(),
+        "old.mpk".into(),
     ])
     .await
     .unwrap();
     let _ = ok(&out);
     let out = run(vec![
-        "app".into(), "publish".into(), "old.mpk".into(), "--registry".into(), url.clone(),
-        "--api-key".into(), "secret".into(),
+        "app".into(),
+        "publish".into(),
+        "old.mpk".into(),
+        "--registry".into(),
+        url.clone(),
+        "--api-key".into(),
+        "secret".into(),
     ])
     .await
     .unwrap();
@@ -335,8 +436,13 @@ async fn publish_pushes_the_bundle_to_the_registry() {
 
     // Never an API key over plain http to anything but loopback.
     let out = run(vec![
-        "app".into(), "publish".into(), "out.mpk".into(), "--registry".into(), "http://registry.example".into(),
-        "--api-key".into(), "secret".into(),
+        "app".into(),
+        "publish".into(),
+        "out.mpk".into(),
+        "--registry".into(),
+        "http://registry.example".into(),
+        "--api-key".into(),
+        "secret".into(),
     ])
     .await
     .unwrap();

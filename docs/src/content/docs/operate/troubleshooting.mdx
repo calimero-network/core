@@ -99,7 +99,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | You see | Cause | Fix |
 | --- | --- | --- |
 | `403` "this node takes signed packages only" | Raw WASM on a node without `--allow-unsigned-bundles` | Install a signed `.mpk`. |
-| `400 BAD_PACKAGE` | Signature, digest, pinned signer or `minRuntimeVersion` check failed | Rebuild and sign with `mero-sign` (`scripts/pack-component.py`); a package keeps its first release's signer. |
+| `400 BAD_PACKAGE` | Signature, digest, pinned signer or `minRuntimeVersion` check failed | Rebuild and sign with `meroctl app pack`; a package keeps its first release's signer. |
 | `400 UNSUPPORTED_BUNDLE` | The bundle is a WASM core module (an SDK 0.12 app), which this node no longer runs | Rebuild the app with `calimero-sdk` into a `calimero:app` component. |
 | `410 UNSUPPORTED_ENGINE` | The app is an SDK 0.12 (wasmer) app from before the engine was removed: listed, but nothing runs | Rebuild it with `calimero-sdk`, create it again, and delete the old instance. |
 | `400 NO_REGISTRY` | `PACKAGE@VERSION` with no `--registry-url` | Configure the registry (on a `--dev` cluster you may upload the `.mpk` instead). |

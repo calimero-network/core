@@ -111,7 +111,7 @@ client.use_api_key(&std::env::var("CALIMERO_API_KEY")?).await;
 meroctl node add eu https://node1.example.com
 export CALIMERO_TEE_PROFILES=<profile> CALIMERO_API_KEY=cal_...
 meroctl --node eu whoami
-# A development cluster: meroctl node add local http://127.0.0.1:2501 --allow-mock
+# A development cluster: meroctl local up   (saves it as the node local)
 #                        meroctl login --dev-passkey ./me.passkey
 ```
 
@@ -313,7 +313,7 @@ let key = cluster.keys.get(&set.receipt.node).expect("an attested replica");
 assert!(set.receipt.verify(key, &set.result));
 ```
 
-Python has `client.verify_app_cluster(app)`, and `meroctl attest -c CONTEXT`
+Python has `client.verify_app_cluster(app)`, and `meroctl attest app CONTEXT`
 prints the same.
 
 <Aside type="note">

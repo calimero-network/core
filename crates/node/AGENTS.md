@@ -1882,8 +1882,8 @@ cargo test -p calimero-node --test scenarios [-- FILTER]   # SCENARIO_FILTER, SC
 python3 -I crates/node/tests/fault/rooms_fault.py --iterations 200 --seed 1
 # the process suite (tests/fault/README.md): crash/freeze/restart, frozen leader, orgs and
 # keys, signed packages, rolling upgrade under load, the kv-store soak; the kv component
-# (target/app-components/kv.wasm, mero-app-build) and dist/com.calimero.kv-store-{1.0.0,1.1.0}.mpk
-# (scripts/pack-component.py)
+# (target/app-components/kv.wasm, meroctl app build) and dist/com.calimero.kv-store-{1.0.0,1.1.0}.mpk
+# (meroctl app pack)
 python3 -I crates/node/tests/fault/suite.py [--only NAME,..] [--iterations N] [--nightly]
 python3 -I crates/node/tests/fault/suite.py --smoke --merod PATH   # the release image's set
 python3 -I crates/node/tests/fault/suite.py --only kv-soak --soak-report soak.json   # soak.py report renders it

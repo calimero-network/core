@@ -110,7 +110,7 @@ an `abiVersion` bump.
 - `GET /apps/{app}/openapi.json` returns it as an OpenAPI 3.1 document (below),
   under the same access.
 - mero-js and calimero-client-py read it to build typed calls;
-  `mero-app-build codegen` writes a typed client for an app from it in
+  `meroctl app codegen` writes a typed client for an app from it in
   TypeScript, Python, Swift or Kotlin
   ([Typed clients for your app](/build/guides/typed-clients/)).
 
@@ -119,7 +119,7 @@ an `abiVersion` bump.
 `calimero_app_abi::openapi` turns an ABI into an OpenAPI 3.1 document. The node
 serves the one of the bundle an app runs at `GET /apps/{app}/openapi.json`
 (`info.title` the app's name, `info.version` its bundle hash), and
-`mero-app-build codegen --lang openapi` writes it for a built app.
+`meroctl app codegen --lang openapi` writes it for a built app.
 
 - **One operation per method a client calls**: `POST /apps/{app}/methods/{name}`,
   `operationId` the method's name, tagged `call` or `view`. Init, timers,
@@ -145,7 +145,7 @@ serves the one of the bundle an app runs at `GET /apps/{app}/openapi.json`
   actions also gets the node's `ActionFailed { actionId, method, reason }`.
 - **Transport**: every request travels inside the node's sealed channel, so a
   client generated from the document needs mero-js, calimero-client-py,
-  swift-sdk or kotlin-sdk underneath (the clients `mero-app-build codegen` writes
+  swift-sdk or kotlin-sdk underneath (the clients `meroctl app codegen` writes
   are built on them).
 
 ### Types
@@ -202,9 +202,9 @@ themselves: `u64` is `UInt64` / `ULong`, `i64` `Int64` / `Long`, `bytes` `Data` 
 
 ## Check a new version against the last
 
-`mero-app-build abi-diff <old> <new>` (each a `.wasm`, `.mpk` or ABI JSON) lists
+`meroctl app abi diff <old> <new>` (each a `.wasm`, `.mpk` or ABI JSON) lists
 what changed and whether existing callers notice, and exits `1` on a breaking
-change; `--json` prints it as JSON. Parameters may widen and results narrow:
+change; `--json` prints it as JSON. `meroctl app abi show <file>` prints one ABI. Parameters may widen and results narrow:
 
 | Breaking | Compatible |
 | --- | --- |
@@ -248,8 +248,8 @@ exchange (only an `allow(action)` method takes it, or nothing names it) is not
 compared. Recursive types (`Tree` holding `list<Tree>`) and generic ones
 (`Page<T>`, reached as `Page<Item>`) are compared once each.
 
-`mero-sign sign --previous <last release>` (and
-`scripts/pack-component.py --previous`) runs the same check before signing: it prints the changes, warns
+`meroctl app sign --previous <last release>` (and
+`meroctl app pack --previous`) runs the same check before signing: it prints the changes, warns
 about breaking ones, and **refuses to sign** when a state field was removed or
 changed kind while `#[app::state(version = N)]` stayed the same, since the
 upgrade to that release would leave the app's data unreadable

@@ -7,7 +7,14 @@ use std::process::Command;
 fn git(dir: &Path, args: &[&str]) {
     let ok = Command::new("git")
         .current_dir(dir)
-        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"])
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "init.defaultBranch=main",
+        ])
         .args(args)
         .status()
         .unwrap()
@@ -25,7 +32,10 @@ fn write(root: &Path, rel: &str, text: &str) {
 fn apps_repo(root: &Path) -> String {
     for (rel, text) in [
         ("package.json", "{}"),
-        ("pnpm-workspace.yaml", "packages: [\"apps/*/app\", \"packages/*\"]"),
+        (
+            "pnpm-workspace.yaml",
+            "packages: [\"apps/*/app\", \"packages/*\"]",
+        ),
         ("Cargo.toml", "[workspace]"),
         ("README.md", "the monorepo"),
         ("apps/kv-store/logic/Cargo.toml", "[package]"),
@@ -58,7 +68,11 @@ fn dev_new_starts_a_project_from_an_app_of_the_apps_repo() {
     let repo = apps_repo(&tmp.path().join("apps-repo"));
 
     let out = meroctl(tmp.path(), &["dev", "new", "my-app", "--repo", &repo]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let answer: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(answer["app"], "apps/kv-store");
 
@@ -79,7 +93,11 @@ fn dev_new_starts_a_project_from_an_app_of_the_apps_repo() {
     assert!(!p.join("docs").exists());
     let readme = std::fs::read_to_string(p.join("README.md")).unwrap();
     assert!(readme.starts_with("# kv-store"), "{readme}");
-    let log = Command::new("git").current_dir(&p).args(["log", "--oneline"]).output().unwrap();
+    let log = Command::new("git")
+        .current_dir(&p)
+        .args(["log", "--oneline"])
+        .output()
+        .unwrap();
     assert!(!log.status.success(), "a fresh repository has no commits");
 
     // A directory with something in it is refused, and left as it was.
@@ -89,7 +107,10 @@ fn dev_new_starts_a_project_from_an_app_of_the_apps_repo() {
     assert!(p.join("apps/kv-store").exists());
 
     // An app the repository does not have is refused, and leaves nothing behind.
-    let missing = meroctl(tmp.path(), &["dev", "new", "other", "--repo", &repo, "--template", "nope"]);
+    let missing = meroctl(
+        tmp.path(),
+        &["dev", "new", "other", "--repo", &repo, "--template", "nope"],
+    );
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("has no app apps/nope"));
     assert!(!tmp.path().join("other").exists());

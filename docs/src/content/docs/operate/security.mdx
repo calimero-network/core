@@ -201,7 +201,7 @@ fixed the same way; see [Deployment](/operate/deployment/#governance)):
   log refuses the command too.
 - The first leader writes the choice to the system state at genesis; it cannot
   change afterwards, whatever later starts are given.
-- Every receipt-key quote binds it, so `meroctl attest --context` and
+- Every receipt-key quote binds it, so `meroctl attest app` and
   `verify_app_cluster` in the clients prove it to users.
 
 Release approvals are enforced by the replicas holding the data: a node does not

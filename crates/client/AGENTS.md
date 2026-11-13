@@ -63,7 +63,7 @@ merodSha256, teeRelease, teeProfile, identity)`. `verify_release` refuses anothe
 nonce or claim, then runs the same quote check (a `Release` policy reads the release the
 claim names) and refuses an envelope whose registers or profile are not the verified
 quote's. `fetch_release_attestation` gets one from `GET /attestation/release`. Only
-managers use it (mdma, `meroctl attest-release`); mero-js has no counterpart.
+managers use it (mdma, `meroctl attest release`); mero-js has no counterpart.
 
 Errors: `Error::Api` is the node's answer (`{ error, message, details }`);
 `Error::Transport` is not reaching, attesting or understanding it. One envelope
@@ -105,17 +105,17 @@ retried on `503` with backoff; any other refusal (`413`, `429`) aborts the sessi
 Tests: `files::tests`, against a mock node over the real sealed channel, with a proxy that cuts
 the connection.
 
-`Client::export_file_to(app, id, out)` (`files.rs`, used by `meroctl file download` and `meroctl pipeline download`) streams a sealed file's plaintext to an `AsyncWrite` and returns `ExportedFile { size, sha256 }`.
+`Client::export_file_to(app, id, out)` (`files.rs`, used by `meroctl file download` and `meroctl cloud compute pipeline download`) streams a sealed file's plaintext to an `AsyncWrite` and returns `ExportedFile { size, sha256 }`.
 It makes a fresh X25519 key pair, asks `POST .../files/{id}/export`, unwraps the data key with `calimero_sealed::wrap::unwrap_export`, and fetches each segment from `GET .../segments/{k}` one at a time, so memory stays bounded by one segment.
 It checks the segment list against the file id, each segment against its hash before opening it, and the size and SHA-256 of the plaintext at the end.
 Until it returns `Ok`, `out` holds authentic bytes that may be a prefix of the file, so a caller writing to disk writes a temporary file and moves it into place after success (as `meroctl` does with `<target>.part`).
 `Client::export_file(app, id)` is the same call into a `Vec<u8>`.
 
-`client.apps().run_logs(app, run)` lists the module log of each attempt of a compute run that kept one (`{ logs: [{ attempt, id, size, sha256 }] }`, the app's file handlers only); `export_file` reads one, and `meroctl run logs` and `meroctl pipeline logs` print it.
+`client.apps().run_logs(app, run)` lists the module log of each attempt of a compute run that kept one (`{ logs: [{ attempt, id, size, sha256 }] }`, the app's file handlers only); `export_file` reads one, and `meroctl cloud compute logs` and `meroctl cloud compute pipeline logs` print it.
 
-`receipt.rs` holds the signed pipeline run receipt (`PipelineReceipt`, `StepRunProof`) and the one message the node signs and `verify_pipeline_receipt` rebuilds: `"calimero.pipeline.receipt.v1\0" || JCS(receipt)`, checked over the JSON as sent. `Client::pipeline_receipt` fetches it and `Client::verify_receipt` checks it under the answering node's key from `verify_app_cluster`; `meroctl pipeline receipt --verify` also compares each downloaded output with the receipt. A job's own report signature is not verified here yet.
+`receipt.rs` holds the signed pipeline run receipt (`PipelineReceipt`, `StepRunProof`) and the one message the node signs and `verify_pipeline_receipt` rebuilds: `"calimero.pipeline.receipt.v1\0" || JCS(receipt)`, checked over the JSON as sent. `Client::pipeline_receipt` fetches it and `Client::verify_receipt` checks it under the answering node's key from `verify_app_cluster`; `meroctl cloud compute pipeline receipt --verify` also compares each downloaded output with the receipt. A job's own report signature is not verified here yet.
 
-`pipeline_events.rs` holds the typed, metadata-only events of `GET /apps/{app}/pipeline-runs/{run}/events` (`RunEvent`, `StepEvent`, `Snapshot`, `PipelineEvent`) and `RunProgress`, which reads the run view's JSON into only those fields and diffs two views; the node sends them and `Client::pipeline_run_events` (`meroctl pipeline watch`) reads them. A key set test pins each event's fields, so a new record field never reaches a stream.
+`pipeline_events.rs` holds the typed, metadata-only events of `GET /apps/{app}/pipeline-runs/{run}/events` (`RunEvent`, `StepEvent`, `Snapshot`, `PipelineEvent`) and `RunProgress`, which reads the run view's JSON into only those fields and diffs two views; the node sends them and `Client::pipeline_run_events` (`meroctl cloud compute pipeline watch`) reads them. A key set test pins each event's fields, so a new record field never reaches a stream.
 
 Runtime and routes (`transport.rs`): `Transport` is everything that is not a
 route: the attested, sealed channel (`SealedTransport::attested`), the

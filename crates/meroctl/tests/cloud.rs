@@ -23,26 +23,45 @@ fn meroctl(home: &Path, args: &[String]) -> Output {
 }
 
 fn ok(out: &Output) -> Value {
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     serde_json::from_slice(&out.stdout).unwrap_or(Value::Null)
 }
 
 type Tokens = Arc<Mutex<Vec<String>>>;
 
 fn bearer(headers: &HeaderMap) -> String {
-    headers["authorization"].to_str().unwrap().trim_start_matches("Bearer ").to_owned()
+    headers["authorization"]
+        .to_str()
+        .unwrap()
+        .trim_start_matches("Bearer ")
+        .to_owned()
 }
 
 async fn orgs(State(seen): State<Tokens>, headers: HeaderMap) -> impl IntoResponse {
     let token = bearer(&headers);
     seen.lock().unwrap().push(token.clone());
     if token == "bad" {
-        return (StatusCode::UNAUTHORIZED, HeaderMap::new(), Json(json!({"detail": "invalid session"})));
+        return (
+            StatusCode::UNAUTHORIZED,
+            HeaderMap::new(),
+            Json(json!({"detail": "invalid session"})),
+        );
     }
     // The manager rolls the session: the next request uses the new one.
     let mut h = HeaderMap::new();
-    let _ = h.insert("x-mdma-session-refresh", format!("{token}+").parse().unwrap());
-    (StatusCode::OK, h, Json(json!([{ "id": "o1", "name": "Personal" }])))
+    let _ = h.insert(
+        "x-mdma-session-refresh",
+        format!("{token}+").parse().unwrap(),
+    );
+    (
+        StatusCode::OK,
+        h,
+        Json(json!([{ "id": "o1", "name": "Personal" }])),
+    )
 }
 
 async fn clusters(State(seen): State<Tokens>, headers: HeaderMap) -> Json<Value> {
@@ -78,16 +97,23 @@ async fn cloud_signs_in_lists_and_uses_a_cluster() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("meroctl cloud login"));
 
     // A refused session is not saved.
-    let out = run(&["cloud", "login", "--token", "bad", "--url", &url]).await.unwrap();
+    let out = run(&["cloud", "login", "--token", "bad", "--url", &url])
+        .await
+        .unwrap();
     assert!(!out.status.success());
     assert!(!home.join("meroctl/cloud.json").exists());
 
-    let login = ok(&run(&["cloud", "login", "--token", "t", "--url", &url]).await.unwrap());
+    let login = ok(&run(&["cloud", "login", "--token", "t", "--url", &url])
+        .await
+        .unwrap());
     assert_eq!(login["orgs"][0]["name"], "Personal");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(home.join("meroctl/cloud.json")).unwrap().permissions().mode();
+        let mode = std::fs::metadata(home.join("meroctl/cloud.json"))
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o077, 0, "the session is the owner's only");
     }
 

@@ -12,8 +12,8 @@ named by `hex(SHA-256(wasm))`. A core module (an SDK 0.12 app, which ran on
 wasmer) is refused at upload, create and install (`400 UNSUPPORTED_BUNDLE`),
 and an instance the node left behind answers `410 UNSUPPORTED_ENGINE`. In production a bundle always comes out of a **package
 release**: a signed `.mpk` (`calimero-bundle`) holding a `calimero:app`
-component built with `calimero-app-build`, its manifest signed by its publisher
-with `mero-sign`. See
+component built with `meroctl app build`, its manifest signed by its publisher
+with `meroctl app pack` (or `meroctl app sign`). See
 [Packaging & signing](/build/packaging-signing/) for building one.
 
 ## What a release carries
@@ -58,7 +58,7 @@ publisher's key, and every artifact in the archive is listed with its digest.
     { label: 'Replica', color: '#58a6ff' },
   ]}
   steps={[
-    { from: 0, to: 0, label: 'mero-app-build; mero-sign the manifest' },
+    { from: 0, to: 0, label: 'meroctl app build; meroctl app pack (sign)' },
     { from: 0, to: 1, label: 'publish package@version (.mpk)' },
     { from: 2, to: 3, label: 'POST /packages/install { package, version }' },
     { from: 3, to: 1, label: 'fetch the .mpk (--registry-url)' },
