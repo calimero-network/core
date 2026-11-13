@@ -140,7 +140,16 @@ another account after 72 hours unless the owner cancels. See
 **Package-bound session** — A session opened on a package's frontend (a served,
 registered or custom-domain origin): it reaches only that package's apps,
 manages only that package's channels, and asks the consent page for anything
-more. See [Accounts, passkeys & sessions](/protocol/identities/#package-bound-sessions).
+more; also called a bound session. See [Accounts, passkeys & sessions](/protocol/identities/#package-bound-sessions).
+
+**Unbound session** — A session opened on one of the cluster's own origins
+(`--origins`: its console, `meroctl login`): every route is open to it, and the
+account's authority decides the rest. See [Sessions & authority](/protocol/sessions-and-authority/).
+
+**Session check** — The first thing a route does with a session: whether this
+session may call this route (`holder`, `within`, `within_team`), before
+anything is logged. Authority, whether the account may do it, is judged
+afterwards from the system log. See [Sessions & authority](/protocol/sessions-and-authority/).
 
 **Registered origin** — A web origin a package's manager registers
 (`/package-origins/{package}`) so passkey ceremonies run there under its own

@@ -206,6 +206,7 @@ export default defineConfig({
               label: 'People & authority',
               items: [
                 'protocol/identities',
+                'protocol/sessions-and-authority',
                 'protocol/authorship',
                 'protocol/organizations',
                 'protocol/governance',
