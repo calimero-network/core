@@ -2,9 +2,7 @@ name: CI
 
 on:
   push:
-    # release-v2-parity is the release branch: it never merges into
-    # master, so its merges run CI as master's do.
-    branches: ["master", "release-v2-parity"]
+    branches: ["master"]
   merge_group:
   # Every PR, with no `paths:` filter: the `Rust` check is required, and `scope`
   # below skips what a change cannot reach (all of it, for docs). A filter would
@@ -14,15 +12,17 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only # keeps the target cache inside the 10 GB Actions budget
+  # No debuginfo in CI: a smaller target cache (faster to restore) and faster links of
+  # the test binaries. A failing test still names its file and line.
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 permissions:
   contents: read
 
-# Cancel superseded PR runs; never cancel a run of master or the release branch.
+# Cancel superseded PR runs; never cancel a run of master.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/release-v2-parity' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   # The macOS release build of the developer CLIs lives in platforms.yml (nightly).
@@ -103,27 +103,35 @@ jobs:
   rust:
     name: Rust
     if: ${{ !cancelled() }}
-    needs: [scope, rust-lint, rust-test, rust-features, rust-supply-chain, compat, previous-release, upgrade-path]
+    needs: [scope, rust-quick, rust-lint, rust-test, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, upgrade-path]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Require every Rust job to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
           # job -> the `scope` output that decides whether it runs
-          GATES: '{"rust-lint":"rust","rust-test":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","previous-release":"rust","upgrade-path":"upgrade_path"}'
+          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test":"rust","rust-apps":"rust","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","upgrade-path":"upgrade_path"}'
         run: |
-          jq -e --argjson gates "$GATES" '
+          # A push to master runs only the jobs that save caches (the merge queue ran
+          # the rest on this tree), so there a gated job may be skipped.
+          jq -e --argjson gates "$GATES" --arg event "$EVENT" '
             .scope.outputs as $scope
             | to_entries | all(
                 .value.result == "success"
-                or (.value.result == "skipped" and ($gates[.key] // "") != "" and $scope[$gates[.key]] == "false")
+                or (.value.result == "skipped" and ($gates[.key] // "") != ""
+                    and ($scope[$gates[.key]] == "false" or $event == "push"))
               )' <<<"$NEEDS"
 
-  rust-lint:
-    name: Rust lint
+  # The checks that need no build: they fail a PR in about a minute, before the
+  # jobs that compile start (they wait on this one).
+  rust-quick:
+    name: Rust quick checks
     needs: scope
     if: needs.scope.outputs.rust == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -131,21 +139,21 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
+      - name: Install the pinned Rust toolchain
+        uses: ./.github/actions/rust-toolchain
         with:
-          components: rustfmt, clippy
-          shared-key: ci-checks
-          save-if: false
+          components: rustfmt
 
       - name: Cargo format
         run: cargo fmt --check
 
       - name: Naming gate
+        if: ${{ !cancelled() }}
         run: ./scripts/check-naming.sh
 
       # Fleet nodes run at INFO and operators read their logs, so info! must not carry user data.
       - name: No user data at info level
+        if: ${{ !cancelled() }}
         run: python3 scripts/check-no-user-data-at-info.py
 
       - name: Test check-like-ci
@@ -162,8 +170,27 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/tests/pack-component-test.py
 
+  rust-lint:
+    name: Rust lint
+    needs: [scope, rust-quick]
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          components: clippy
+          shared-key: ci-checks
+          save-if: false
+
       - name: Cargo clippy
-        if: ${{ !cancelled() }}
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # mock-attestation and calimero-node's outbound-testing are default-off so they
@@ -172,12 +199,25 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy -p calimero-tee-attestation -p calimero-node --all-targets --features calimero-tee-attestation/mock-attestation,calimero-node/outbound-testing -- -D warnings
 
-  # The only job that saves `ci-checks`; the others restore it read-only.
+  # The workspace tests in four shards. Each compiles the tests itself: rust-cache
+  # restores the dependencies and the workspace's own crates as master last built
+  # them, so a shard rebuilds only what the change reaches (setup-rust-ci's
+  # `workspace-crates`). A nextest archive built once was 8 GB, slower to download
+  # than to build. Shard 1 saves `ci-checks` on master, the only job that does; it
+  # also runs the doctests, and shard 2 the previous release's app.
   rust-test:
-    name: Rust tests
-    needs: scope
+    name: Rust tests (${{ matrix.shard }}/4)
+    needs: [scope, rust-quick]
     if: needs.scope.outputs.rust == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # A push to master runs one shard of every test: the merge queue already
+        # ran them on this tree, and the push only refreshes the caches, the test
+        # apps' builds included, which every test then makes.
+        shard: ${{ fromJSON(github.event_name == 'push' && '[1]' || '[1, 2, 3, 4]') }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -189,36 +229,151 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: ci-checks
-          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/release-v2-parity' }}
+          save-if: ${{ github.ref == 'refs/heads/master' && matrix.shard == 1 }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-nextest@0.9.146,cargo-expand@1.0.127
 
-      - name: Cargo test
-        run: |
-          FIRST_HOST=$(ifconfig | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -n 1)
+      # The test apps the tests build from source on first use: the engine's and
+      # app-build's guests (CARGO_TARGET_TMPDIR, target/tmp) and the node's fixtures
+      # (target/app-components, cached there by source hash). Most of the slowest
+      # tests' time was these builds. Restored after setup-rust-ci marked what changed,
+      # so cargo rebuilds a guest only if its sources did; saved from master below.
+      - name: Restore the test apps' builds
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/tmp
+            target/app-components
+          key: test-apps-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'apps/**') }}
+          restore-keys: test-apps-v1-
 
+      # PARTITION is unset in a local run (scripts/check-like-ci.py), which then runs them
+      # all, and on a push to master, whose one shard runs every test.
+      # Twice the cores: most slow tests wait on timers and the network, not the
+      # CPU. The node's integration tests, which do load it, take three or four of
+      # these slots each (.config/nextest.toml).
+      - name: Cargo test
+        env:
+          PARTITION: ${{ github.event_name != 'push' && format('count:{0}/4', matrix.shard) || '' }}
+          NEXTEST_TEST_THREADS: "8"
+        run: |
+          FIRST_HOST=$(hostname -I | awk '{print $1}')
           export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
           echo "$TEST_HOSTS"
+          cargo nextest run --workspace ${PARTITION:+--partition "$PARTITION"} --no-fail-fast
 
-          cargo nextest run --workspace --no-fail-fast
-
+      # The doctests, in the shard that already built the libraries they link.
       - name: Cargo doctests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.shard == 1 }}
         run: cargo test --workspace --doc
 
+      # An app built and signed by the last published release (its SDK, WIT and
+      # mero-sign: the release's kv-store-test-fixture.mpk) installs, runs and
+      # upgrades on this tree's node: crates/node/tests/previous-release/kv-store.json
+      # on the in-process cluster, with the scenario runner this shard already built.
+      - name: Fetch the previous release's kv bundle
+        if: ${{ !cancelled() && matrix.shard == 2 }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/fetch-release-app.py --out target/previous-release
+
+      - name: Apps of the previous release, on this tree's node
+        if: ${{ !cancelled() && matrix.shard == 2 }}
+        run: |
+          export PREVIOUS_RELEASE_DIR="$PWD/target/previous-release"
+          SCENARIO_FILES=crates/node/tests/previous-release/kv-store.json \
+            cargo test -p calimero-node --test scenarios -- --test-threads 1
+
+      - name: Save the test apps' builds
+        if: ${{ !cancelled() && github.ref == 'refs/heads/master' && matrix.shard == 1 }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            target/tmp
+            target/app-components
+          key: test-apps-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'apps/**') }}
+
+
+  # Apps on the component SDK are workspaces of their own, so the workspace tests
+  # never reach their harness tests. Each is found by its calimero-sdk dependency
+  # (or calimero-app-sdk, the SDK's old name, while apps move over) and taken by
+  # one of three shards, every third in sorted order.
+  rust-apps:
+    name: Rust standalone apps (${{ matrix.shard }}/3)
+    needs: [scope, rust-quick]
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: ci-checks
+          rust-cache: false
+
+      # SHARD is unset in a local run (scripts/check-like-ci.py), which then takes every app.
+      # The same crates as the guests they ship: their tests, clippy on the host (tests
+      # included) and on wasm32-wasip2, and the release component build the node loads.
+      - name: Test, clippy and wasm32-wasip2 build
+        env:
+          SHARD: ${{ matrix.shard }}
+          # One target dir for every app, apart from the workspace's.
+          CARGO_TARGET_DIR: target/standalone-apps
+        run: |
+          set -euo pipefail
+          i=0
+          for manifest in $(grep -lE '^calimero-(app-)?sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml | sort); do
+            i=$((i + 1))
+            if [ -n "${SHARD:-}" ] && [ $(( (i - 1) % 3 + 1 )) -ne "$SHARD" ]; then continue; fi
+            echo "::group::$manifest"
+            cargo test --manifest-path "$manifest"
+            cargo clippy --manifest-path "$manifest" --all-targets -- -D warnings
+            cargo clippy --manifest-path "$manifest" --target wasm32-wasip2 -- -D warnings
+            cargo build --manifest-path "$manifest" --release --target wasm32-wasip2
+            echo "::endgroup::"
+          done
+
+
+  # The compute tools a developer tests a compute method with, end to end.
+  rust-compute-tools:
+    name: mero-compute end to end
+    needs: [scope, rust-quick]
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: ci-checks
+          rust-cache: false
+
       - name: Install mero-app-build and mero-compute
-        if: ${{ !cancelled() }}
         run: |
           scripts/install-mero-app-build.sh
           scripts/install-mero-compute.sh
 
-      # The tool a developer tests a compute method with, run end to end on the fixture: a
-      # digest of 300 KB must write one output of the same size, identically twice.
+      # A digest of 300 KB must write one output of the same size, identically twice.
       - name: mero-compute on the compute fixture
-        if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           out=target/mero-compute-check
@@ -247,38 +402,12 @@ jobs:
             exit 1
           fi
 
-      - name: Cargo test (standalone v2 apps)
-        if: ${{ !cancelled() }}
-        # Apps on the component SDK are workspaces of their own, so the workspace run above
-        # never reaches their harness tests. Each is found by its calimero-sdk dependency (or
-        # calimero-app-sdk, the SDK's old name, while apps move over);
-        # one target dir serves them all.
-        env:
-          CARGO_TARGET_DIR: target/standalone-apps
-        run: |
-          for manifest in $(grep -lE '^calimero-(app-)?sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml); do
-            cargo test --manifest-path "$manifest"
-          done
-
-      # The same crates as the guests they ship: clippy on the host (tests included) and on
-      # wasm32-wasip2, and the release component build the node loads.
-      - name: Clippy and wasm32-wasip2 build (standalone v2 apps)
-        if: ${{ !cancelled() }}
-        env:
-          CARGO_TARGET_DIR: target/standalone-apps
-        run: |
-          set -euo pipefail
-          for manifest in $(grep -lE '^calimero-(app-)?sdk = ' apps/*/Cargo.toml apps/*/*/Cargo.toml); do
-            cargo clippy --manifest-path "$manifest" --all-targets -- -D warnings
-            cargo clippy --manifest-path "$manifest" --target wasm32-wasip2 -- -D warnings
-            cargo build --manifest-path "$manifest" --release --target wasm32-wasip2
-          done
-
   rust-features:
     name: Rust feature-gated tests
-    needs: scope
-    if: needs.scope.outputs.rust == 'true'
-    runs-on: big-machine
+    needs: [scope, rust-quick]
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -304,7 +433,7 @@ jobs:
   compat:
     name: Compatibility
     needs: scope
-    if: needs.scope.outputs.rust == 'true'
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -325,46 +454,12 @@ jobs:
           if [ -n "${GITHUB_ACTIONS:-}" ]; then base="HEAD^1"; fi
           python3 scripts/check-api-compat.py ${base:+--base "$base"}
 
-  # An app built and signed by the last published release (its SDK, WIT and mero-sign:
-  # the release's kv-store-test-fixture.mpk) installs, runs and upgrades on this tree's
-  # node: crates/node/tests/previous-release/kv-store.json on the in-process cluster.
-  previous-release:
-    name: Apps of the previous release
-    needs: scope
-    if: needs.scope.outputs.rust == 'true'
-    runs-on: big-machine
-    timeout-minutes: 60
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-
-      # wasm32-wasip2: this tree's kv, which the scenario upgrades the release's app to.
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          targets: wasm32-wasip2
-          shared-key: ci-checks
-          save-if: false
-
-      - name: Fetch the previous release's kv bundle
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 -I scripts/fetch-release-app.py --out target/previous-release
-
-      - name: Run it on this tree's node
-        run: |
-          export PREVIOUS_RELEASE_DIR="$PWD/target/previous-release"
-          SCENARIO_FILES=crates/node/tests/previous-release/kv-store.json \
-            cargo test -p calimero-node --test scenarios -- --test-threads 1
-
   rust-supply-chain:
     name: Rust supply chain
     needs: scope
-    if: needs.scope.outputs.rust == 'true'
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -402,10 +497,10 @@ jobs:
   # .github/upgrade-from (docs: contribute/testing, "Upgrade path").
   upgrade-path:
     name: Upgrade path (from the pinned release)
-    needs: scope
+    needs: [scope, rust-quick]
     if: needs.scope.outputs.upgrade_path == 'true'
-    runs-on: big-machine
-    timeout-minutes: 60
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -414,15 +509,25 @@ jobs:
           persist-credentials: false
 
       # wasm32-wasip2: this tree's kv and the release's compute fixture. The release
-      # group: the same release build of merod and meroctl as e2e's process suite.
+      # group: the same release build of merod and meroctl (without fat LTO) as
+      # e2e's process suite and a PR's Build Binaries. This job saves it, on master
+      # only; it was dropped while the repository's cache
+      # was capped at 10 GB, and every release build was then cold.
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
           targets: wasm32-wasip2
           shared-key: release
-          save-if: false
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
+      # This tree's merod is built optimized without fat LTO (as compute-e2e's is):
+      # the upgrade path tests what the node reads and writes, not how it links,
+      # and fat LTO's single-threaded link was most of this job. Set on this step
+      # only, so the cache step above hashes what the release group's other jobs do.
       - name: Upgrade path
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: scripts/upgrade-path.sh
 
       - name: Upload the results
