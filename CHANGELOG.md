@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **The sealed channel drops `v2` from its paths** (`calimero-sealed`). A
+  session opens at `POST /sealed/handshake` and its requests go to
+  `POST /sealed`; the body, the version byte and the Noise prologue are
+  unchanged. The client (`meroctl`, `calimero-client`, a node calling its
+  peers) falls back once to the old paths against a node of 1.0.0-rc.24 or
+  earlier (`404`, `405` or `403 sealed_required` on the new handshake path).
+- **`meroctl` calls the app registry and Calimero Cloud without `/v2`**:
+  `app publish` pushes to `{registry}/api/bundles/push`, and the Cloud
+  manager's routes (`cloud login`, `orgs`, `clusters`, the registry token,
+  ...) are called at `/api/...`. Each falls back once to its `/api/v2/...`
+  path when the service answers `404` (an older registry or manager).
+
+### Deprecated
+
+- **`POST /sealed/v2/handshake` and `POST /sealed/v2`**: still served, the
+  same, with a `Deprecation` header; removable from 1.0.0-rc.28
+  (`crates/node/api-deprecations.toml`). Clients use `/sealed/handshake` and
+  `/sealed`.
+
 ## [1.0.0-rc.24] - 2026-11-13
 
 ### Added

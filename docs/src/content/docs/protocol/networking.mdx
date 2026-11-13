@@ -31,18 +31,27 @@ binds, and only the attested process can open it.
   the process's memory and is never written anywhere, so a restart replaces it.
   `GET /attestation` returns its public half and binds it into the quote's
   report data.
-- **Handshake.** `POST /sealed/v2/handshake` runs Noise
+- **Handshake.** `POST /sealed/handshake` runs Noise
   `NK_25519_AESGCM_SHA256` with prologue `calimero/sealed-http/v2`: the client
   knows the node's static key in advance (from the quote), and both sides'
   ephemeral keys make the session keys. The reply carries a session id and its
   lifetime.
 - **Exchange.** The client wraps a whole HTTP request — method, path, headers
   (the bearer token among them), body — seals it under the session's request
-  key and posts it to `/sealed/v2`. Each request carries an id its session
+  key and posts it to `/sealed`. Each request carries an id its session
   accepts once. The node opens it, routes the inner request through the same
   router a direct request takes, and streams the response back as sealed frames
   (a head, body frames, an end frame), so server-sent events are sealed too and
   a truncated response is detected.
+- **Legacy paths.** Releases up to 1.0.0-rc.24 served the two at
+  `/sealed/v2/handshake` and `/sealed/v2`. A node still serves those, the
+  same bytes, with a `Deprecation` header, until the release
+  `crates/node/api-deprecations.toml` names. A client opens its session at
+  `/sealed/handshake` and, when the node does not serve it (`404`, `405`, or
+  `403 sealed_required` from a node that seals everything), once more at the
+  legacy path, and then posts that session's requests to `/sealed/v2`: a new
+  client or peer reaches an older node through a rollout. The `v2` named no
+  wire format; the version byte does.
 
 | Property | Value |
 | --- | --- |
@@ -68,11 +77,11 @@ binds, and only the attested process can open it.
     { from: 0, to: 2, label: 'GET /attestation?nonce=N (in the clear)' },
     { from: 2, to: 0, label: '{ quote, transportKey, release, … }', dashed: true },
     { from: 0, to: 0, label: 'verify the quote; report data binds N and transportKey' },
-    { from: 0, to: 2, label: 'POST /sealed/v2/handshake: 0x02 ‖ transportKey ‖ Noise NK msg 1', color: '#a5ff11' },
+    { from: 0, to: 2, label: 'POST /sealed/handshake: 0x02 ‖ transportKey ‖ Noise NK msg 1', color: '#a5ff11' },
     { from: 2, to: 2, label: 'Noise with the in-memory static key; new session' },
     { from: 2, to: 0, label: '0x02 ‖ msg 2 (session id, lifetime)', dashed: true, color: '#a5ff11' },
     { from: 0, to: 0, label: 'request and response keys from both ephemerals' },
-    { from: 0, to: 2, label: 'POST /sealed/v2: header ‖ AES-GCM(inner request)', color: '#a5ff11' },
+    { from: 0, to: 2, label: 'POST /sealed: header ‖ AES-GCM(inner request)', color: '#a5ff11' },
     { from: 2, to: 2, label: 'open; check request id; route the inner request' },
     { from: 2, to: 0, label: 'sealed frames: head, data…, end', dashed: true, color: '#a5ff11' },
   ]}
@@ -83,10 +92,10 @@ mero-js `src/sealed/`):
 
 ```text
 handshake   Noise_NK_25519_AESGCM_SHA256, prologue "calimero/sealed-http/v2"
-  request   POST /sealed/v2/handshake   0x02 || transport_pk || Noise message 1
+  request   POST /sealed/handshake   0x02 || transport_pk || Noise message 1
   response  0x02 || Noise message 2 (payload = session_id(16) || lifetime secs, u32 BE)
 identified  0x03 instead of 0x02, Noise_IK_25519_AESGCM_SHA256 (peers only)
-exchange    POST /sealed/v2   (content type application/vnd.calimero.sealed)
+exchange    POST /sealed   (content type application/vnd.calimero.sealed)
   header    0x02 || session_id(16) || request_id (u64 BE; from 1, each used once)
   request   header || AES-256-GCM(req key, nonce = request_id || 0u32, aad = header, inner)
   response  frames: u32 BE length || AES-256-GCM(resp key, nonce = request_id || index, aad = header, kind || data)

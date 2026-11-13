@@ -14,12 +14,29 @@
 #   remove_after = "1.0.0-rc.19"          # the first release that may ship without it,
 #                                         # at least 3 releases after `since`
 #   replacement  = "POST /auth/new"       # what to use instead, or "nothing"
+# The sealed channel's two paths are served by `calimero-sealed`'s envelope, outside the router:
+# it marks its own legacy paths' answers (`LEGACY_PATHS_DEPRECATED_AT`, which `api::deprecation`'s
+# tests hold to the `date` here).
 #
 # [[cutover]]: removed at once, which breaks earlier clients, apps or nodes; also marked
 # "Hard cutover" in CHANGELOG.md and in mdma's release_compat CUTOVERS.
 #   route = "...", field = "...", wit = "0.6.0" or abi = 2   # what it removes
 #   pr    = 4999                                              # the PR that removes it
 #   why   = "..."                                             # what breaks, and for whom
+
+[[deprecated]]
+route = "POST /sealed/v2/handshake"
+since = "1.0.0-rc.25"
+date = 2026-11-13
+remove_after = "1.0.0-rc.28"
+replacement = "POST /sealed/handshake"
+
+[[deprecated]]
+route = "POST /sealed/v2"
+since = "1.0.0-rc.25"
+date = 2026-11-13
+remove_after = "1.0.0-rc.28"
+replacement = "POST /sealed"
 
 [[cutover]]
 route = "POST /auth/releases"

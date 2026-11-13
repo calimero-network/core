@@ -365,7 +365,7 @@ async fn publish_pushes_the_bundle_to_the_registry() {
     }
     let seen: Seen = Arc::default();
     let app = axum::Router::new()
-        .route("/api/v2/bundles/push", post(push))
+        .route("/api/bundles/push", post(push))
         .with_state(Arc::clone(&seen));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -403,6 +403,39 @@ async fn publish_pushes_the_bundle_to_the_registry() {
         hex::decode(body["_binary"].as_str().unwrap()).unwrap(),
         std::fs::read(d.join("out.mpk")).unwrap()
     );
+
+    // A registry and a Cloud manager from before their unversioned routes
+    // serve only `/api/v2/...`: each request falls back to it on the `404`.
+    async fn token(Json(body): Json<Value>) -> Json<Value> {
+        assert_eq!(body["org"], "o");
+        Json(serde_json::json!({"token": "publish-token"}))
+    }
+    let older: Seen = Arc::default();
+    let app = axum::Router::new()
+        .route("/api/v2/bundles/push", post(push))
+        .route("/api/v2/registry/token", post(token))
+        .with_state(Arc::clone(&older));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let older_url = format!("http://{}", listener.local_addr().unwrap());
+    let _older = tokio::spawn(async move { axum::serve(listener, app).await });
+    let out = run(vec![
+        "app".into(),
+        "publish".into(),
+        "out.mpk".into(),
+        "--registry".into(),
+        older_url.clone(),
+        "--api-key".into(),
+        "ck_live_x".into(),
+        "--org".into(),
+        "o".into(),
+        "--cloud".into(),
+        older_url,
+    ])
+    .await
+    .unwrap();
+    assert_eq!(ok(&out)["version"], "1.0.0");
+    let (auth, _) = older.lock().unwrap().clone().unwrap();
+    assert_eq!(auth, "Bearer publish-token");
 
     // A refusal comes back with the registry's code.
     let out = run(vec![

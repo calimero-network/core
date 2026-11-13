@@ -18,6 +18,8 @@ use eyre::{bail, eyre, WrapErr};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::commons::send_api;
+
 /// The default component file names, as `mero-app-build` wrote them.
 pub const APP_FILE: &str = "app.component.wasm";
 const COMPUTE_FILE: &str = "compute.component.wasm";
@@ -718,7 +720,8 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     Ok(json!({ "wrote": out, "package": package, "appVersion": version }))
 }
 
-/// `app publish`: the registry's `POST /api/v2/bundles/push`, the signed
+/// `app publish`: the registry's `POST /api/bundles/push` (`/api/v2/...` on an
+/// older registry, [`send_api`]), the signed
 /// manifest's own fields (all of them: the signature covers every key) with
 /// the whole `.mpk` as hex in `_binary`.
 pub async fn publish(a: &PublishArgs) -> eyre::Result<Value> {
@@ -746,12 +749,10 @@ pub async fn publish(a: &PublishArgs) -> eyre::Result<Value> {
         Some(org) => registry_token(&http, &a.cloud, &key, org).await?,
         None => key,
     };
-    let res = http
-        .post(format!("{registry}/api/v2/bundles/push"))
-        .bearer_auth(token)
-        .json(&body)
-        .send()
-        .await?;
+    let res = send_api(registry, "bundles/push", |url| {
+        http.post(url).bearer_auth(&token).json(&body)
+    })
+    .await?;
     let status = res.status();
     let answer: Value = res.json().await.unwrap_or(Value::Null);
     if !status.is_success() {
@@ -777,7 +778,7 @@ fn write_file(out: &Path, bytes: &[u8]) -> eyre::Result<()> {
 
 /// Trade a Cloud organization's API key (`ck_live_…`, scope `registry:publish`)
 /// for the short-lived token the registry takes from that organization:
-/// `POST /api/v2/registry/token`.
+/// `POST /api/registry/token` (`/api/v2/...` on an older manager).
 async fn registry_token(
     http: &reqwest::Client,
     cloud: &str,
@@ -785,12 +786,11 @@ async fn registry_token(
     org: &str,
 ) -> eyre::Result<String> {
     let cloud = cloud.trim_end_matches('/');
-    let res = http
-        .post(format!("{cloud}/api/v2/registry/token"))
-        .bearer_auth(org_key)
-        .json(&json!({ "org": org, "scope": "publish" }))
-        .send()
-        .await?;
+    let body = json!({ "org": org, "scope": "publish" });
+    let res = send_api(cloud, "registry/token", |url| {
+        http.post(url).bearer_auth(org_key).json(&body)
+    })
+    .await?;
     let status = res.status();
     let answer: Value = res.json().await.unwrap_or(Value::Null);
     if !status.is_success() {

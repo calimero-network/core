@@ -75,8 +75,12 @@ is a bug, and the CI checks below fail it.
 
 ## What is deprecated or cut over now
 
-`crates/node/api-deprecations.toml` lists no `[[deprecated]]` route or field
-at 1.0.0-rc.20. Its `[[cutover]]` entries are the ones 1.0.0-rc.20 made when
+`crates/node/api-deprecations.toml` deprecates, since 1.0.0-rc.25, the
+sealed channel's paths `POST /sealed/v2/handshake` and `POST /sealed/v2`
+(now `/sealed/handshake` and `/sealed`; removable from 1.0.0-rc.28). The
+envelope serves them outside the router, so `calimero-sealed` sets their
+`Deprecation` header itself; clients fall back to them against an older node
+([The sealed channel](/protocol/networking/#the-sealed-channel)). Its `[[cutover]]` entries are the ones 1.0.0-rc.20 made when
 every app moved into an organization (#5015): `POST /auth/releases` and
 `POST /auth/outbound` are gone (approve on the personal organization,
 `POST /orgs/{org}/releases` and `/orgs/{org}/outbound`), and so is
