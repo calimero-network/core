@@ -198,13 +198,16 @@ async fn the_leader_attests_a_job_node_and_asks_its_load() {
         peer.job_key
     );
 
-    // A release the owner has not approved is refused.
+    // A release not approved for the app is refused.
     let other = c
         .start_job_node(JOB + 1, |cfg| cfg.tee_release = Some("2.0.0".into()))
         .await;
     c.register_job_node(JOB + 1, &other.url).await;
     let e = node.attest_job(JOB + 1, &record).await.unwrap_err();
-    assert!(e.to_string().contains("has not approved"), "{e}");
+    assert!(
+        e.to_string().contains("is not approved for this app"),
+        "{e}"
+    );
 
     // A cluster node has no job key to attest.
     let nonce = hex::encode([5_u8; 32]);
