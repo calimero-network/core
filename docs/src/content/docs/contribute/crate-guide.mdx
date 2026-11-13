@@ -1,14 +1,15 @@
 ---
 title: Crate guide
-description: Every crate and tool in the workspace, grouped by role, with what it is and who uses it — including the older crates kept only because the WASM runtime links them.
+description: Every crate and tool in the workspace, grouped by role, with what it is and who uses it.
 sidebar:
   label: Crate guide
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-Every workspace member, grouped by role. The [architecture orientation](/contribute/architecture/)
-shows how they fit; each crate's `AGENTS.md` (with a `CLAUDE.md` symlink
+Every workspace member, grouped by role; a crate not listed here does not
+exist. The [architecture orientation](/contribute/architecture/) shows how they
+fit, in dependency layers; each crate's `AGENTS.md` (with a `CLAUDE.md` symlink
 beside it) has its commands and detail. The same index, for agents, is
 [`crates/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/AGENTS.md).
 
@@ -16,14 +17,14 @@ beside it) has its commands and detail. The same index, for agents, is
 
 | Crate | Package | What it is |
 | --- | --- | --- |
-| `crates/merod` | `merod` | The node binary: `init`, `run`, `config`, `local`, `inspect`, `kms disk-key`. Turns `NodeArgs` into the node's `Config`. |
+| `crates/merod` | `merod` | The node binary: `init`, `run`, `config`, `local`, `inspect`, `kms disk-key`, `attest`. Turns `NodeArgs` into the node's `Config`. |
 | `crates/meroctl` | `meroctl` | The command line for nodes, over the attested, sealed client. |
 
 ## The node
 
 | Crate | Package | What it is |
 | --- | --- | --- |
-| `crates/node` | `calimero-node` | The node: system group, app groups, executor glue, routing, the HTTP API and Ops API, packages, follow-ups, blobs, presence, search, app frontends, backups, the storage key. |
+| `crates/node` | `calimero-node` | The node: system group, app groups, executor glue, routing, the HTTP API and Ops API, packages, follow-ups, blobs, sealed files, compute and pipeline runs, the job node, the consent page, presence, search, app frontends, backups and the recovery disk, the storage key. |
 | `crates/log` | `calimero-log` | Multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration. |
 | `crates/sealed` | `calimero-sealed` | The sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js. |
 | `crates/identity` | `calimero-identity` | WebAuthn passkeys, session tokens, API keys, confirm challenges; `testing`: a software authenticator. |
@@ -44,6 +45,7 @@ beside it) has its commands and detail. The same index, for agents, is
 | Crate | Package | What it is |
 | --- | --- | --- |
 | `crates/bundle` | `calimero-bundle` | The `.mpk` manifest, JCS canonicalization and Ed25519 signatures; shared with `mero-sign`. |
+| `crates/pipeline` | `calimero-pipeline` | The pipeline YAML language: compile, canonical JSON, apply-time checks, worst-case fuel, prices and estimates. |
 | `crates/app-downloader` | `calimero-app-downloader` | Fetching signed releases from a package registry (`HttpRegistry`). |
 
 ## The app runtime
@@ -73,7 +75,7 @@ changing these.
 | --- | --- | --- |
 | `crates/build-utils` | `calimero-build-utils` | `build.rs` helpers: release version, git and rustc metadata. |
 | `crates/git-hooks` | `calimero-git-hooks` | Installs `.githooks/pre-commit` (`cargo fmt --check`) on any build. |
-| `crates/utils/fs` | `calimero-utils-fs` | Writing a secret file only its owner can read, on Unix and Windows; used by `mero-sign`. |
+| `crates/utils/fs` | `calimero-utils-fs` | Writing a secret file only its owner can read, on Unix and Windows; used by `merod`, `meroctl` and `mero-sign`. |
 
 ## Tools
 
@@ -82,3 +84,4 @@ changing these.
 | `tools/mero-sign` | `mero-sign` | Sign bundle manifests. |
 | `tools/mero-compute` | `mero-compute` | Run one compute method of a compute component alone, with a job node's engine and caps. |
 | `tools/client-gen` | `calimero-client-gen` | Generate `calimero-client`'s route layer from `docs/public/openapi.json`; its test fails while the checked-in code is stale. |
+| `tools/search-bench` | `search-bench` | `calimero-search`'s engine over the node's in-memory directory: index size, query latency, memory, the search-gas fit (`benchmarks.yml` uploads its report). |

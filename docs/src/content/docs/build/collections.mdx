@@ -15,11 +15,11 @@ reads nothing; every operation reads or writes only the keys it needs.
 One leader applies every write in log order, so these are plain data
 structures, not CRDTs: there is nothing to merge. The exception is `Text`,
 which stays a sequence CRDT so that edits typed against a stale view still land
-where they were meant (see [Collaborative text](/core/build/guides/collaborative-text/)).
+where they were meant (see [Collaborative text](/build/guides/collaborative-text/)).
 
 ## Tables
 
-A `Table<R>` holds [records](/core/build/sdk-macros/#deriverecord-and-table):
+A `Table<R>` holds [records](/build/sdk-macros/#deriverecord-and-table):
 rows with a primary key, unique constraints, indexes, maintained counts and,
 optionally, full-text search.
 
@@ -45,15 +45,17 @@ pub struct Booking {
 | `insert(record)` | Inserts; an existing key is `Duplicate { index: "key" }`, a unique clash `Duplicate { index: <name> }`. |
 | `upsert(record)` | Inserts or replaces; unique constraints still apply. |
 | `get(&key)` / `contains(&key)` | The record with this key / whether it exists. |
-| `update(&key, \|r\| ..)` | Changes the record and re-indexes what changed; `false` when absent. |
+| `update(&key, \|r\| ..)` | Changes the record and re-indexes what changed; `false` when absent; a change to the key itself is refused (`KeyChanged`). |
 | `remove(&key)` | Removes the record and its index, unique and count entries; `false` when absent. |
 | `find(index, &prefix, opts)` | Records whose index fields start with `prefix`, in index order, one page at a time. |
 | `scan(opts)` | All records in key order, one page at a time. |
 | `count(name, &prefix)` | A maintained count: one read when `prefix` names every field of the count. |
-| `search(query, ..)` | Full-text search over `#[table(search = [..])]` fields, best match first (views only). |
+| `search(text, SearchOpts)` | Full-text search over `#[table(search = [..])]` fields, best match first (views only). |
 
-Index and count names are camelCase (`by_start` → `"byStart"`). Prefixes and
-bounds are `KeyPart`s: `Str`, `Int`, `Bool`, `Bytes`.
+Index and count names are camelCase (`by_start` → `"byStart"`); a name the
+table does not declare is `UnknownName`. Prefixes and bounds are `KeyPart`s:
+`Str`, `Int`, `Bool`, `Bytes`. A unique constraint with a `None` field is not
+checked (SQL's `NULL` rule): two records with no email both insert.
 
 ```rust
 let due = self.bookings.find(
@@ -113,5 +115,5 @@ pub struct Store {
 
 <Aside type="tip">
   Prefer `env::unique_id()` to a `Counter` for ids: it needs no read and no
-  write ([The env API](/core/build/host-functions/)).
+  write ([The env API](/build/host-functions/)).
 </Aside>

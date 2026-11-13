@@ -5,12 +5,14 @@ sidebar:
   order: 9
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 Every node runs inside an Intel TDX VM built from a signed **mero-tee
 release**. Before a client or another node sends it anything, it asks the node
 for a **quote** — a hardware-signed statement of what the VM is running — and
 checks it. The check lives in one place, `calimero_client::attest`,
 shared by the Rust client, `meroctl`, calimero-client-py and every node judging
-its peers; mero-js's `src/cloud-v2/attestation.ts` implements the same check.
+its peers; mero-js's `src/runtime/attestation.ts` implements the same check.
 
 ## The attestation document
 
@@ -62,6 +64,32 @@ the measured image, and nobody else can open what is sealed to it.
 
 ## What the verifier checks
 
+<SeqDiagram
+  id="d-proto-attest-verify"
+  title="Verifying a node before the first sealed request"
+  lanes={[
+    { label: 'Client or peer', color: '#f0883e' },
+    { label: 'Node', color: '#3fb950' },
+    { label: 'Release mirror', color: '#a5ff11' },
+    { label: 'Intel collateral', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'fresh 32-byte nonce' },
+    { from: 0, to: 1, label: 'GET /attestation?nonce=…' },
+    { from: 1, to: 1, label: 'TSM configfs: quote over nonce ‖ H(domain ‖ key)' },
+    { from: 1, to: 0, label: '{ quote, transportKey, release, cluster, node }', dashed: true },
+    { from: 0, to: 0, label: 'release ≥ floor; profile allowed (no debug unless asked)' },
+    { from: 0, to: 2, label: 'published-mrtds.json of that release' },
+    { from: 2, to: 0, label: 'measurements + Sigstore bundle', dashed: true },
+    { from: 0, to: 0, label: 'verify the Sigstore signature' },
+    { from: 0, to: 3, label: 'DCAP collateral (PCK, TCB info, QE identity)' },
+    { from: 3, to: 0, label: 'collateral', dashed: true },
+    { from: 0, to: 0, label: 'DCAP: genuine, not a debug TD, TCB status allowed' },
+    { from: 0, to: 0, label: 'MRTD and RTMRs match the profile; report data = expected' },
+    { from: 0, to: 1, label: 'Noise handshake to transportKey', color: '#a5ff11' },
+  ]}
+/>
+
 `attest::verify` (transport) and `verify_receipt_key` (receipts) run the same
 steps (`verify_report`):
 
@@ -109,6 +137,10 @@ transport key, and a record that passes is as trustworthy as the node's own
 code. The public attestation verifier (mero-tee `attestation-verifier`) shows
 it as "Keys from a verified KMS" and checks the KMS's registers against the
 `kms_allowed_*` lists of the release it names, as it does on `/kms`.
+
+The record does not carry the [rollback](/protocol/encryption/#rollback-protection)
+epoch yet: a node reports it in `/health` (`rollbackEpoch`) and in
+`/ops/status`, outside any quote.
 
 The binding is opt in, so nothing changes for a client that does not ask: its
 report data is the transport form above, byte for byte. A node with no record
@@ -228,6 +260,27 @@ What a user learns from it:
 
 The entry node gathers the documents but cannot forge them: each quote binds
 the caller's fresh nonce and is verified against Intel's collateral.
+
+```sh
+meroctl attest                 # this node's transport attestation, verified
+meroctl attest -c my-kv        # every replica of the app, verified, and the governance they attest
+```
+
+A person who does not run a client can check a node on an independent site:
+with `merod --attestation-verifier-url URL`, every [consent
+page](/protocol/consent-page/) links to `{URL}/mero-tee?node_url=…&release_tag=mero-tee-v…`,
+a verifier the node does not control, and runs no check of its own (a
+tampered node could fake any in-page verdict).
+
+## Recovery files carry an attestation
+
+Each file a node writes to the [recovery disk](/protocol/encryption/#the-recovery-disk)
+is signed by its receipt key and carries that key's `purpose=receipts` quote,
+over the nonce `SHA-256("calimero.recovery-backup.attest.v1\0" ‖ u32 length ‖
+cluster ‖ u64 node)`. A holder's client checks the signature and the quote
+before it opens a key, and a node takes no recovery file whose attestation its
+peer policy refuses (`400 UNATTESTED_RECOVERY_FILE`)
+([Storage schema](/protocol/storage/#recovery-files)).
 
 ## Release attestations
 

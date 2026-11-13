@@ -32,8 +32,10 @@ is the only node that runs calls.
 **Replica** — A node hosting a group. An app's replicas are listed in the
 directory; a **learner** is a replica that receives entries but does not vote.
 
-**Entry** — One committed command in a group's log: a `SystemCmd` or an
-`AppCmd`. At most 1 MiB.
+**Entry** — One committed command in a group's log: a `SystemCmd` in the
+system group, a component command (a call's outcome, `init`, an upgrade, a
+blob record, a compute attempt or final, a pipeline step) in an app group. At
+most 1 MiB.
 
 **Outcome** — What a run produced: status, result or error, the diff, events,
 follow-ups, touched entities. Recorded in the entry.
@@ -50,6 +52,15 @@ too far behind for the log.
 
 **Read index** — Asking the leader for its applied index and waiting to apply
 it, so a local read sees every committed write (`Node::sys_fresh`).
+
+**Cluster version** — The newest core release every node of the cluster
+supports, logged by the system leader (`SetClusterVersion`). A command or
+field that needs a newer one (a **feature**) is refused `409
+FEATURE_NOT_ACTIVE`. See [The cluster version](/protocol/upgrades/#the-cluster-version).
+
+**Hard cutover** — A release whose data or log entries an earlier release's
+cannot be read by it, or the other way round, so clusters are recreated rather
+than rolled (1.0.0-rc.20: every app in an organization).
 
 ## Trust
 
@@ -88,11 +99,57 @@ attested, and returns their receipt keys and the governance they all attest.
 mero-kms releases to an attested TD; it wraps the cluster key K_c on disk, and
 changes with each mero-tee release.
 
+**Independent verifier** — A site on its own origin that checks a node's
+attestation against a mero-tee release's signed measurements; the consent page
+links to it when the node runs with `--attestation-verifier-url`. See
+[The consent page](/protocol/consent-page/#the-independent-verifier).
+
+**Backup** — A sealed copy of an app group's snapshot under K_c, written to
+`--backup-dir`; it opens only on a cluster holding that K_c.
+
+**Recovery disk** — `--recovery-dir`: a second set of backups that outlives
+every mero-kms, each `.rbak` file sealed (HPKE) to its **backup holder's**
+X25519 key and signed by the writing node's receipt key. See
+[Recovery files](/protocol/storage/#recovery-files).
+
+**Backup holder** — Whoever a recovery-disk file is sealed to: the operator
+where it holds app upgrades, else the app's organization
+(`SystemState::backup_holder`). Its **backup key** is the X25519 public half it
+registered; no node holds a private one. See
+[Backup key](/protocol/organizations/#backup-key).
+
 ## People & authority
 
 **Account** — A person, 32 random bytes. [Identity, account]
 
 **Passkey** — A WebAuthn credential on an account; each one is a **device**.
+Passkeys are each cluster's own: one from another cluster answers `401
+PASSKEY_UNKNOWN_HERE`.
+
+**Recovery code** — An account's one-time code (32 Crockford base32
+characters) standing for an Ed25519 key whose public half the log keeps; it
+starts an **account recovery**, which adds a new passkey after 72 hours unless
+a passkey the account still has cancels it. See
+[Account recovery](/protocol/identities/#account-recovery).
+
+**Recovery key** — An organization's Ed25519 key whose seed its owner keeps
+offline; it starts an **organization recovery**, which moves ownership to
+another account after 72 hours unless the owner cancels. See
+[Organizations](/protocol/organizations/#recovery).
+
+**Package-bound session** — A session opened on a package's frontend (a served,
+registered or custom-domain origin): it reaches only that package's apps,
+manages only that package's channels, and asks the consent page for anything
+more. See [Accounts, passkeys & sessions](/protocol/identities/#package-bound-sessions).
+
+**Registered origin** — A web origin a package's manager registers
+(`/package-origins/{package}`) so passkey ceremonies run there under its own
+rp-id; a **served origin** (custom domain) is one the cluster also serves the
+package's frontend on.
+
+**Consent page** — The node's own page, on its own origin, where a person
+approves with their passkey what an app asked for (an upgrade, a release, an
+outbound host, an organization change). See [The consent page](/protocol/consent-page/).
 
 **Session** — A 15-minute token signed by the node that issued it (its
 attested receipt key), naming the account, the passkey, the issuing node, and,
@@ -112,14 +169,31 @@ action: a confirm method, an upgrade, an approval, deleting an organization.
 `confirmMethods`) that runs only with a step-up; the assertion is logged as
 **consent**.
 
-**Caller** — Who a run is for: an account, an API key's account, the public, or
-an app (handlers, timers, xcalls). See [Who a run acts as](/protocol/authorship/).
+**Caller** — Who a run is for: an account, an API key's account, the public,
+the system (timers, result methods, `onXcallFailed`) or another app (xcalls).
+See [Who a run acts as](/protocol/authorship/).
 
-**TEE authority** — The author of runs the cluster fires itself (timers, `tee:`
-handlers), the only writer of `TeeOnly` state.
+**Upgrade key** — An API key scoped to one app's upgrades to signed releases of
+its package, which signs each upgrade in place of a passkey step-up (for CI).
+See [Upgrade keys](/protocol/identities/#upgrade-keys).
 
 **Organization** — A name (its owner or an admin renames it), members with
-roles `guest < member < admin < owner`, teams, approvals, metadata. [Namespace]
+roles `guest < member < admin < owner`, teams, approvals, metadata. Every app
+instance is in exactly one. [Namespace]
+
+**Personal organization** — The organization every account owns from sign-up
+(`CreateAccount { personalOrg }`, named `Personal`, `personal: true`): where an
+instance created without naming an organization goes, and whose approvals are
+the account's own apps'. One per account, outside `maxOrgsPerAccount`. See
+[Personal organizations](/protocol/organizations/#personal-organizations).
+
+**Invite** — A token `inv_…` that adds whoever redeems it to an organization at
+a role and in named teams; only the token's Ed25519 public key is stored.
+
+**Publisher** — The organization a package's signing key is bound to, by the
+key's own signature; it approves releases (and, where the package says
+`upgrades: publisher`, runs upgrades) for every instance of that key's
+packages. See [Publishers](/protocol/governance/#publishers).
 
 **Team** — A nested group of an organization's members, open or restricted, with
 direct rows of role `lead`, `member` or `read-only`. [Group, subgroup]
@@ -151,63 +225,108 @@ approvals, `owner` or `operator`, fixed at genesis. See
 **Operator** — Whoever runs the machines, with the ops token and the Ops API.
 See [The operator](/protocol/operator/).
 
+**Deployer** — An account or organization with a grant to install packages
+where the cluster's deployments are `granted`. See [Deployers](/protocol/governance/#deployers).
+
+**Deployment** — An owner's list of the apps it offers on a cluster (app name →
+one installed `package@version`); customers create instances from its offers,
+and usage of those instances is billed to its owner as their **developer**.
+See [Deployments](/protocol/governance/#deployments).
+
+**Release deadline** — An operator's announced date after which a party that
+has not approved a mero-tee release (or a newer one) creates, installs and
+upgrades nothing. See [Release deadlines](/protocol/governance/#release-deadlines).
+
 ## Apps
 
-**App instance** — One running copy of a bundle, with an id, an owner, an access
-rule and its own group. [Context]
+**App instance** — One running copy of a bundle, with an id, an owner, an
+organization, an access rule and its own group. [Context]
 
-**Context id** — `hex(SHA-256(app_id))`, what the app reads as
-`env::context_id()`; accepted wherever the API takes an app id.
+**Context id** — `hex(SHA-256(app_id))`, the id SDK 0.12 apps saw as their
+context; accepted wherever the API takes an app id. A component app reads its
+id with `env::app_id()`.
 
-**Bundle** — A WASM module, named by `hex(SHA-256)`. Stored in the blob store;
-the log records its hash.
+**Bundle** — A `calimero:app` WebAssembly component, named by `hex(SHA-256)`.
+Stored in the blob store; the log records its hash. A core module (an SDK 0.12
+app) is refused `400 UNSUPPORTED_BUNDLE`.
 
-**Package / release** — [Application] A signed `.mpk`: package, version, services, frontend,
-declared outbound prefixes. A package's signer is **pinned** by its first
-release. See [Packages & frontends](/protocol/applications/).
+**Package / release** — [Application] A signed `.mpk`: package, version,
+services (an app component, optionally a compute component), frontend,
+declared outbound prefixes, pipelines. A package's signer is **pinned** by its
+first release. See [Packages & frontends](/protocol/applications/).
 
 **Registry** — The operator's package source (`--registry-url`); each node
 fetches registry releases from it itself.
 
-**Frontend** — A package's web files, served at `{label}.{apps-domain}`, at its cluster's `{cluster_label}.{apps-domain}`, and at each deployment's own host `{dlabel}.{apps-domain}`.
+**Frontend** — A package's web files, served at `{label}.{apps-domain}`, at its
+cluster's `{cluster_label}.{apps-domain}`, at each deployment's own host
+`{dlabel}.{apps-domain}`, and at its served origins.
 
-**Follow-up** — A run another run asked for: an event handler or an xcall,
-queued in the app's state and run once by the leader. See
-[Event handlers & cross-app calls](/protocol/xcall/).
+**Follow-up** — A run another run asked for: an xcall message, appended to the
+source app's outbox when the sending entry commits and delivered once by its
+leader. See [Cross-app calls](/protocol/xcall/).
 
 **Xcall** — A message to another app's method that allows the sender
-(`#[app::allow(app = ..)]`), delivered after the sending entry commits. [Cross-context call]
+(`#[app::allow(app = ..)]`), in the same organization, delivered after the
+sending entry commits; `env::xcall_call` and `env::xcall_view` are the
+synchronous forms. [Cross-context call]
 
-**Timer** — An `#[app::tee(every = "…")]` method the leader fires once per
-period.
+**Dead letter** — An xcall the platform gave up on (an hour of retries, a
+deleted target, one outside the organization); the source keeps the newest
+1,000 and its `onXcallFailed` is told.
+
+**Timer** — An `#[app::every("…")]` method the leader fires once per period, as
+the system.
+
+**Upgrade** — Moving an app instance to another release of its package: code
+only, the new code reads the state as it is. See
+[Upgrades & migrations](/protocol/upgrades/).
 
 **Upgrade run** — An organization-wide upgrade of every app running a package.
 [Cascade upgrade]
 
-**Compute action** - An app method that runs outside the log on a job node, with no network, over sealed input files, writing sealed output files. See
+**Compute action** — An app method that runs outside the log on a job node, with no network, over sealed input files, writing sealed output files. See
 [Compute actions](/protocol/compute-actions/).
 
-**Compute run** - One execution of a compute action, from its start to its final entry, in one or more attempts. Its state is queued, running, done, failed or cancelled.
+**Compute run** — One execution of a compute action, from its start to its final entry, in one or more attempts. Its state is queued, running, done, failed or cancelled.
 
-**Job node** - A node with `role: job` that runs compute runs. It is never a Raft member and holds no cluster key; it attests only for `purpose=jobs`.
+**Compute component** — The second component a crate with compute methods
+builds (world `calimero:app/compute`), shipped as `compute` beside `wasm`; only
+job nodes run it. A **compute-only** package ships it alone.
 
-**Result method** - The `#[app::compute_result]` method the node runs as a logged call, with the system as caller, when a compute run ends. It is the run's only way into the app's state.
+**Job node** — A node with `role: job` that runs compute runs. It is never a Raft member and holds no cluster key; it attests only for `purpose=jobs`.
 
-**File (component)** - Sealed, content-addressed bytes of a component app, with a mark in its state (size, hash, wrapped key), stored on its replicas and read only by its own code.
+**Pool** — A named set of job nodes with a run capacity and memory ceiling
+(`/ops/pools`); a run goes to the smallest pool its memory fits, or to the pool
+its pipeline step names.
 
-**Migration** — The target bundle's `#[app::migrate]` export, run once on the
-leader, checked by `__calimero_migration_check`. See
-[Upgrades & migrations](/protocol/upgrades/).
+**Pipeline** — A DAG of compute steps over sealed files, declared in a
+release (`pipelines/*.yaml`) and compiled at install; a **pipeline run** fans
+steps out over items, caches step results, and ends with a signed receipt. See
+[Pipeline runs](/protocol/compute-actions/#pipeline-runs).
 
-**Blob** — Content in the cluster's blob store; an app's own blobs are those its
-state **marks**. See [Blobs](/protocol/blobs/).
+**Result method** — The `#[app::compute_result]` method the node runs as a logged call, with the system as caller, when a compute run ends. It is the run's only way into the app's state.
+
+**File (component)** — Sealed, content-addressed bytes of a component app, with a record in its hidden rows (size, hash, wrapped key), stored in segments on its replicas and read only inside its compute runs. See [Blobs](/protocol/blobs/#files-of-component-apps).
+
+**Migration** — Reshaping an app's state during an upgrade. Not in this
+version: an upgrade is code only and a named `migrate` is refused
+`MigrationsNotSupported`. See [Upgrades & migrations](/protocol/upgrades/#what-an-upgrade-runs).
+
+**Blob** — Content in the cluster's blob store; an app's own blobs are those
+the node records for it and its state refers to with a `BlobRef`. See
+[Blobs](/protocol/blobs/).
+
+**Grant** — A time-limited download link for one of an app's blobs
+(`blobs.grant`, 1 s to 24 h), usable with no session.
 
 **Private space** — An account's own part of an app's state: in
 `calimero-sdk`, a `PerUser<T>` value, which each account reads and writes only
 for itself.
 
-**Host key space** — Keys under `\0calimero.` in an app's state, written only by
-the node.
+**Hidden rows** — Rows of an app's group the node writes and the app cannot
+reach: blob and file records, the outbox and dead letters, idempotency
+records, compute run records, pipeline runs and their step rows.
 
 **Presence** — Ephemeral per-device state, in memory on every node. See
 [Presence](/protocol/presence/).

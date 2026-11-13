@@ -4,10 +4,12 @@ The Calimero Core documentation site, built with [Astro Starlight](https://starl
 and published to <https://calimero-network.github.io/core/>.
 
 - **Astro Starlight** shell — sidebar, built-in search, dark/light, responsive.
-- The **Calimero dark theme** ported into Starlight tokens (`src/styles/theme.css`).
+- The **Calimero theme** (light and dark) ported into Starlight tokens (`src/styles/theme.css`).
 - **MDX authoring** — content as Markdown, diffs cleanly in PRs.
 - A **bespoke animated-SVG diagram engine** mounted as an Astro island
-  (`src/components/SeqDiagram.astro`), used across the tracks.
+  (`src/components/SeqDiagram.astro`) for sequences, and hand-authored structural
+  diagrams in `src/components/diagrams/` wrapped in `Figure`; both follow the
+  light and dark themes through the palette in `src/styles/theme.css`.
 
 ## Run it
 

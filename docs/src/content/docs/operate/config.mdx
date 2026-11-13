@@ -52,12 +52,20 @@ mode `0600`.
 | `storage-key-file` | path | none | `dev` only. |
 | `kms-url` | string | none | [Deployment](/operate/deployment/#storage-key) |
 | `kms-identity` | path | none | [Deployment](/operate/deployment/#storage-key) |
+| `kms-disk-evidence` | path | none | The `merod kms disk-key --evidence-out` record to report in the attestation; [merod](/operate/merod/#kms-disk-key) |
+| `job-node` | bool | `false` | Run as a job node; [merod](/operate/merod/#node-flags) |
+| `cluster-identity` | hex string | none | With `job-node`: the cluster's identity key (`meroctl ops cluster`). |
+| `job-slots` | integer | `2` | With `job-node`: compute runs taken at once. |
 | `rp-id` | string | `"localhost"` | [Authentication](/operate/auth/#passkeys) |
 | `origins` | list of URLs | `["http://localhost:3000"]` | [Authentication](/operate/auth/#passkeys) |
 | `ops-token` | string | none | [Authentication](/operate/auth/#the-ops-token) |
 | `ops-token-sha256` | hex string | none | [Authentication](/operate/auth/#the-ops-token) |
+| `metrics-listen` | `"ip:port"` | none (off) | [Observability](/operate/observability/#collecting-metrics) |
 | `replicas` | integer | `3` | How many nodes hold each new app. |
 | `backup-dir` | path | none | [Runbooks](/operate/runbooks/#back-up-app-state) |
+| `recovery-dir` | path | none | [Deployment](/operate/deployment/#backups-and-the-recovery-disk) |
+| `restore-from` | path | none | With `bootstrap`: [found a cluster again](/operate/runbooks/#found-a-cluster-again-from-its-backups). Leave it out of the file once the cluster runs. |
+| `recover-from` | path | none | With `bootstrap`: [recover from a recovery disk](/operate/runbooks/#recover-after-every-key-service-is-gone). Conflicts with `restore-from`. |
 | `operator-key` | hex string | none | [Operator](/protocol/operator/#the-credential) |
 | `tee-release` | string | none (`MERO_TEE_VERSION`) | [Security](/operate/security/#peer-and-client-trust) |
 | `tee-profile` | string | none (`MERO_TEE_PROFILE`) | [Security](/operate/security/#peer-and-client-trust) |
@@ -68,6 +76,9 @@ mode `0600`.
 | `release-approvals` | `"owner"` \| `"operator"` | `"owner"` | [Governance](/operate/security/#governance) |
 | `app-upgrades` | `"owner"` \| `"operator"` | `"owner"` | [Governance](/operate/security/#governance) |
 | `outbound-approvals` | `"owner"` \| `"operator"` | `"owner"` | [Governance](/operate/security/#governance) |
+| `deployments` | `"open"` \| `"granted"` | `"open"` | [Governance](/operate/deployment/#governance) |
+| `deployers` | `"operator"` \| `"owner"` | `"operator"` | [Governance](/operate/deployment/#governance) |
+| `sign-up` | `"open"` \| `"invite"` \| `"closed"` | `"open"` | [Sign-up policy](/operate/auth/#sign-up-policy) |
 | `apps-domain` | string | none | [Networking](/operate/networking/#app-frontends) |
 | `attestation-verifier-url` | string | none | The independent verifier the [consent page](/protocol/consent-page/#what-the-page-shows) links to (`https://verify.calimero.network`); [merod](/operate/merod/#node-flags) |
 | `settings` | path | none | A file whose `[outbound]` table replaces this one's. |
@@ -91,7 +102,10 @@ kms-identity = "/data/disk-identity"
 rp-id = "example.com"
 origins = ["https://app.example.com"]
 ops-token-sha256 = "<hex SHA-256 of the ops token>"
+operator-key = "<the operator's Ed25519 public key, 64 hex>"
 backup-dir = "/backups"
+recovery-dir = "/recovery"
+metrics-listen = "10.0.0.11:9464"
 registry-url = "https://registry.example.com/"
 
 [outbound]
@@ -116,6 +130,12 @@ hosts = ["api.example.com"]
 | --- | --- |
 | `store/` | One RocksDB: the Raft logs, votes, state of every group and the sealed blob store (bundles, `.mpk` files, app blobs). Every value is AES-256-GCM sealed and bound to its column, group and key. |
 | `snapshots/` | Raft snapshot files, sealed frame by frame. |
+| `cluster-key` | The cluster key K_c, wrapped under this release's storage key K_r. A K_r that does not open it stops the node: a node never moves to another release in place. |
+| `signing-key` | The node's receipt key (it signs sessions, receipts and recovery files), wrapped under K_r; made on first start. |
+| `components/` | Compiled app components, each with a MAC under a key derived from K_c, so only this cluster's own compilations load. |
+
+A job node (`job-node = true`) keeps only `scratch/`, the files of the runs it
+holds, emptied at each start.
 
 A directory that still holds the earlier `log.redb` file is migrated into
 `store/` on start, and the old file is renamed `log.redb.migrated`.

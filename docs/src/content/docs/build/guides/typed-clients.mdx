@@ -11,7 +11,7 @@ import { Aside } from '@astrojs/starlight/components';
 by the compiler, and find out before publishing whether a new version breaks
 the clients already out there.
 
-Every app embeds its [ABI](/core/build/app-abi/): its methods, their parameters
+Every app embeds its [ABI](/build/app-abi/): its methods, their parameters
 and results, its errors and events. `mero-app-build codegen` turns it into an
 OpenAPI 3.1 document and a thin typed client over the client you already use:
 mero-js's `CalimeroClient` (its `client.apps.call` and `client.apps.view`),
@@ -296,7 +296,7 @@ TypeScript (exact only up to 2^53), `int` in Python, and the same `UInt64`/`ULon
 optional argument may be left out (every client leaves out one that is not set). Errors and events are typed:
 `NotFoundError` / `InsertedEvent` in TypeScript and Python, the cases of
 `Refusal` and `Event` in Swift and Kotlin. The full table is in
-[App interface](/core/build/app-abi/#types).
+[App interface](/build/app-abi/#types).
 
 Your own types come from the ABI's `types`: a record is an interface (a
 `TypedDict`), an enum a union of its variants as serde writes them (`'Open'`,
@@ -339,7 +339,7 @@ ambiguity") and resolves `serializer<T>()` without reflection; call sites
 
 <Aside type="caution">
   A type is described when it derives `Record` or `AbiType`
-  ([SDK macros](/core/build/sdk-macros/#deriveabitype)). Any other type, and every
+  ([SDK macros](/build/sdk-macros/#deriveabitype)). Any other type, and every
   type of an app built before the SDK wrote `types`, is `unknown` (`Any`): cast or
   validate the value where you use it, or rebuild the app. The Swift and Kotlin
   clients type it MeroKit's `JSONValue` / kotlinx's `JsonElement` (Swift under a
@@ -372,7 +372,7 @@ compatible method count: added (view)
 ```
 
 It exits `1` when a change breaks existing callers, so it can gate CI. The rules
-are in [App interface](/core/build/app-abi/#check-a-new-version-against-the-last).
+are in [App interface](/build/app-abi/#check-a-new-version-against-the-last).
 Signing runs the same check when you name the last release:
 
 ```bash
@@ -384,4 +384,4 @@ python3 -I scripts/pack-component.py --wasm kv-store.wasm --package com.example.
 Breaking changes are printed as a warning. A state field removed or changed in
 kind while the state version stayed the same is refused: bump
 `#[app::state(version = N)]` and migrate the data
-([Upgrades & state](/core/build/migrations/)).
+([Upgrades & state](/build/migrations/)).

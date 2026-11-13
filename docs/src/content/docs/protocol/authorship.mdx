@@ -20,7 +20,7 @@ one. An app reads it with `env::caller()` (`crates/sdk/src/env.rs`):
 | `Account(id)` | A passkey session. |
 | `ApiKey { key_id, account }` | An API key acting for `account`. |
 | `Public` | No credential, on a public app, for a `#[app::public]` method. |
-| `System` | The node itself: a timer tick (`#[app::every]`). |
+| `System` | The node itself: a timer tick (`#[app::every]`), a compute run's result method (`#[app::compute_result]`), the dead-letter handler `onXcallFailed`. |
 | `App(id)` | A message or synchronous call from app `id` ([Cross-app calls](/protocol/xcall/)). |
 
 A person has one identity everywhere: an account is the same on every device,
@@ -31,12 +31,27 @@ so two of one person's devices are the same caller.
 `env::org()` is the app's organization, `env::org_role(account)` an account's
 role in it (`Guest`, `Member`, `Admin`, `Owner`), and `env::in_team(account,
 team)` its teams. The node answers from the system group's state at the entry
-the run applies on, so every replica agrees. With no organization, the owner
-holds every role ([Access control](/build/guides/access-control/)).
+the run applies on, so every replica agrees. Every app is in an organization
+(an account's own apps in its [personal
+organization](/protocol/organizations/#personal-organizations), which it owns),
+so `env::org()` names one for every app a node of this release runs. The
+`guards` module still has a branch for an app with none (the owner holds
+every role, any other account `Member`), which only a test harness without an
+organization reaches ([Access control](/build/guides/access-control/)).
+
+```rust
+use calimero_sdk::env::{self, OrgRole};
+use calimero_sdk::guards;
+
+// Inside an #[app::logic] method: members write, admins also moderate.
+let me = guards::require_member()?;                 // LoginRequired / Forbidden otherwise
+let is_admin = env::org_role(&me) >= Some(OrgRole::Admin);
+```
 
 ## The node's own runs
 
-Timers run as `System` and cross-app deliveries as `App(source)`; neither has
+Timers and result methods run as `System` and cross-app deliveries as
+`App(source)`; neither has
 an account, so `guards::require_member()` refuses them with `LoginRequired`. A
 method that should run this way says so in its ABI: `allow(system)` (implied by
 `every`) or `allow(app = ..)`, and the node refuses every other caller kind for

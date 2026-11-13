@@ -1,0 +1,99 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-contrib-ci">
+<svg viewBox="0 0 760 430" role="img" aria-label="CI on a pull request: ci-checks.yml runs a scope job, then quick checks, lint, tests in four shards, doctests, the standalone apps, feature tests, supply chain, compatibility, the previous release's apps and the upgrade path, all gathered by the required Rust check; e2e.yml runs the scenarios in four shards, the process suite, the compute end-to-end test and the clients; release.yml builds the PR's merod image and runs the smoke suite on it; docs-ci.yml builds the docs; nightly runs add the long soak, the latest release image, the flamegraph, fuzzing and the macOS build" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="cc-arrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#8b949e"/></marker></defs>
+  <rect x="0" y="0" width="760" height="430" rx="10" fill="#0f0f16"/>
+  <text x="380" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">CI on a pull request</text>
+
+  <!-- the PR -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="14" y="180" width="118" height="60" rx="8" fill="#231708" stroke="#f0883e" stroke-width="1.4"/>
+    <text x="73" y="204" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">pull request</text>
+    <text x="73" y="220" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">or merge queue</text>
+    <line x1="132" y1="210" x2="142" y2="210" stroke="#8b949e" stroke-width="1.2"/>
+    <line x1="142" y1="104" x2="142" y2="318" stroke="#8b949e" stroke-width="1.2"/>
+    <line x1="142" y1="104" x2="156" y2="104" stroke="#8b949e" stroke-width="1.2" marker-end="url(#cc-arrow)"/>
+    <line x1="142" y1="222" x2="156" y2="222" stroke="#8b949e" stroke-width="1.2" marker-end="url(#cc-arrow)"/>
+    <line x1="142" y1="318" x2="156" y2="318" stroke="#8b949e" stroke-width="1.2" marker-end="url(#cc-arrow)"/>
+  </g>
+
+  <!-- ci-checks.yml -->
+  <g class="seq-step" style="--step-i:1">
+    <rect x="152" y="40" width="596" height="128" rx="8" fill="none" stroke="#3fb950" stroke-width="1.1" stroke-dasharray="5 4"/>
+    <text x="164" y="58" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">ci-checks.yml</text>
+    <rect x="164" y="80" width="80" height="50" rx="6" fill="#161b22" stroke="#444c56"/>
+    <text x="204" y="101" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">Scope</text>
+    <text x="204" y="116" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">ci-scope.py</text>
+    <line x1="244" y1="105" x2="256" y2="105" stroke="#8b949e" stroke-width="1.2" marker-end="url(#cc-arrow)"/>
+  </g>
+  <g class="seq-step" style="--step-i:2">
+    <rect x="262" y="70" width="112" height="24" rx="5" fill="#10210f" stroke="#3fb950"/>
+    <text x="318" y="86" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">Rust lint</text>
+    <rect x="262" y="100" width="112" height="24" rx="5" fill="#10210f" stroke="#3fb950"/>
+    <text x="318" y="116" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">Rust tests (K/4)</text>
+    <rect x="262" y="130" width="112" height="24" rx="5" fill="#10210f" stroke="#3fb950"/>
+    <text x="318" y="146" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">feature-gated tests</text>
+    <rect x="380" y="70" width="112" height="24" rx="5" fill="#10210f" stroke="#3fb950"/>
+    <text x="436" y="86" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">supply chain</text>
+    <rect x="380" y="100" width="112" height="24" rx="5" fill="#10210f" stroke="#3fb950"/>
+    <text x="436" y="116" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">Compatibility</text>
+    <rect x="380" y="130" width="112" height="24" rx="5" fill="#10210f" stroke="#3fb950"/>
+    <text x="436" y="146" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">previous release</text>
+    <rect x="498" y="100" width="100" height="24" rx="5" fill="#10210f" stroke="#3fb950"/>
+    <text x="548" y="116" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">Upgrade path</text>
+  </g>
+  <g class="seq-step" style="--step-i:3">
+    <line x1="598" y1="112" x2="620" y2="112" stroke="#a5ff11" stroke-width="1.3" marker-end="url(#cc-arrow)"/>
+    <rect x="626" y="88" width="112" height="48" rx="6" fill="#13160f" stroke="#a5ff11" stroke-width="1.6"/>
+    <text x="682" y="108" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">Rust</text>
+    <text x="682" y="124" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">the required check</text>
+    <text x="548" y="146" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="7.5">check-like-ci.py runs these</text>
+  </g>
+
+  <!-- e2e.yml -->
+  <g class="seq-step" style="--step-i:4">
+    <rect x="152" y="180" width="596" height="84" rx="8" fill="none" stroke="#58a6ff" stroke-width="1.1" stroke-dasharray="5 4"/>
+    <text x="164" y="198" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">e2e.yml</text>
+    <rect x="164" y="208" width="136" height="44" rx="6" fill="#10151c" stroke="#58a6ff"/>
+    <text x="232" y="226" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">scenarios (K/4)</text>
+    <text x="232" y="241" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">in-process clusters</text>
+    <rect x="310" y="208" width="136" height="44" rx="6" fill="#10151c" stroke="#58a6ff"/>
+    <text x="378" y="226" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">process suite</text>
+    <text x="378" y="241" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">merod processes</text>
+    <rect x="456" y="208" width="136" height="44" rx="6" fill="#10151c" stroke="#58a6ff"/>
+    <text x="524" y="226" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">compute actions</text>
+    <text x="524" y="241" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">replicas + job nodes</text>
+    <rect x="602" y="208" width="136" height="44" rx="6" fill="#10151c" stroke="#58a6ff"/>
+    <text x="670" y="226" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">clients</text>
+    <text x="670" y="241" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">mero-js · Python</text>
+  </g>
+
+  <!-- release.yml and docs-ci.yml -->
+  <g class="seq-step" style="--step-i:5">
+    <rect x="152" y="276" width="440" height="84" rx="8" fill="none" stroke="#a371f7" stroke-width="1.1" stroke-dasharray="5 4"/>
+    <text x="164" y="294" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">release.yml (when the PR builds the image)</text>
+    <rect x="164" y="304" width="190" height="44" rx="6" fill="#1a1430" stroke="#a371f7"/>
+    <text x="259" y="322" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">Release Merod container</text>
+    <text x="259" y="337" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">the image, loaded, not pushed</text>
+    <line x1="354" y1="326" x2="384" y2="326" stroke="#8b949e" stroke-width="1.2" marker-end="url(#cc-arrow)"/>
+    <rect x="390" y="304" width="190" height="44" rx="6" fill="#1a1430" stroke="#a371f7"/>
+    <text x="485" y="322" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">E2E on the merod image</text>
+    <text x="485" y="337" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">suite.py --smoke</text>
+    <rect x="602" y="276" width="146" height="84" rx="8" fill="none" stroke="#39d0d8" stroke-width="1.1" stroke-dasharray="5 4"/>
+    <text x="675" y="296" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">docs-ci.yml</text>
+    <text x="675" y="318" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">npm run check</text>
+    <text x="675" y="334" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">build + link check</text>
+    <text x="675" y="347" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8">(docs/** only)</text>
+  </g>
+
+  <!-- nightly -->
+  <g class="seq-step" style="--step-i:6">
+    <rect x="14" y="374" width="734" height="44" rx="8" fill="#161b22" stroke="#444c56" stroke-dasharray="3 3"/>
+    <text x="28" y="392" fill="#e3b341" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">nightly</text>
+    <text x="90" y="392" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">e2e.yml: 900 s soak, process suite and scenarios on the latest release image, flamegraph</text>
+    <text x="90" y="408" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="8.5">fuzz.yml: 30 min per target · platforms.yml: macOS build · benchmarks.yml on master</text>
+  </g>
+</svg>
+</Figure>

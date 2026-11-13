@@ -6,11 +6,12 @@ sidebar:
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
 
 **Task:** have one app tell, or ask, another app in the same organization.
 
 The protocol side, delivery order, dead letters and the node's checks, is in
-[Cross-app calls](/core/protocol/xcall/).
+[Cross-app calls](/protocol/xcall/).
 
 ## 1. Admit the caller
 
@@ -46,8 +47,33 @@ pub fn ping(&mut self, target: String) -> app::Result<()> {
 `args` is any serde value, sent as the JSON arguments a client would send.
 `env::xcall(app, method, &args)` queues the message in this run's outbox. The
 node delivers it after the entry commits, only if the run succeeds, at least
-once and in order per sending app. The target must be in the same organization
-(or have the same owner). A run may queue at most 100.
+once and in order per sending app. The target must be in the same
+organization: since 1.0.0-rc.20 every app is in one, and an app in someone's
+personal organization reaches only the other apps there. A run may queue at
+most 100.
+
+<SeqDiagram id="d-build-xcall-send" title="A message, from send to delivery"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'Sender leader', color: '#58a6ff' },
+    { label: 'Sender log', color: '#a371f7' },
+    { label: 'Target leader', color: '#39d0d8' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'call ping { target }' },
+    { from: 1, to: 1, label: 'run: env::xcall(target, "pong", args)' },
+    { from: 1, to: 2, label: 'commit entry + outbox message' },
+    { from: 1, to: 0, label: 'result', dashed: true },
+    { from: 1, to: 3, label: 'deliver outbox head (in order, retried)' },
+    { from: 3, to: 3, label: 'same org? allow(app = sender)? run pong as Caller::App' },
+    { from: 3, to: 1, label: 'answered: next message', dashed: true },
+  ]} />
+
+A message the target answers with an error or a trap is still delivered: that
+answer is final. One the node cannot deliver for an hour (or at once, for a
+deleted target or one outside the organization) goes to the sender's dead
+letters, and the sender's `onXcallFailed` method runs if its ABI has one that
+allows the system.
 
 ## 3. Call and read synchronously
 
@@ -66,7 +92,7 @@ only methods that `allow` this app.
 
 `TestApp` keeps the messages a run sent: `take_xcalls()` returns them and
 `deliver(..)` runs one against another `TestApp`; `mock_app(..)` stands in for
-the target of a synchronous call ([Testing](/core/build/testing/)).
+the target of a synchronous call ([Testing](/build/testing/)).
 
 <Aside type="note">
   Events are for clients. To make another app react, send it a message.

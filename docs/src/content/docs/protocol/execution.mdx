@@ -21,6 +21,53 @@ wasmer) is refused at upload (`400 UNSUPPORTED_BUNDLE`); an app of that kind
 that a data directory still holds is listed and can be deleted, and anything
 else on it answers `410 UNSUPPORTED_ENGINE`.
 
+## What an app looks like
+
+A method is a Rust function on the app's state; `&mut self` makes a call,
+`#[app::view]` a read. This is `apps/kv-store`'s `set` and `get`:
+
+```rust
+use calimero_sdk::prelude::*;
+
+#[app::state(version = 1)]
+pub struct KvStore {
+    entries: UnorderedMap<String, String>,
+}
+
+#[app::event]
+pub enum Event {
+    Inserted { key: String, value: String },
+    Updated { key: String, value: String },
+}
+
+#[app::logic]
+impl KvStore {
+    #[app::init]
+    pub fn init() -> app::Result<Self> {
+        Ok(Self::load())
+    }
+
+    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+        let event = match self.entries.insert(&key, &value)? {
+            Some(_) => Event::Updated { key, value },
+            None => Event::Inserted { key, value },
+        };
+        env::emit(event, Audience::All)?;
+        Ok(())
+    }
+
+    #[app::view]
+    pub fn get(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.entries.get(&key)?)
+    }
+}
+```
+
+`mero-app-build` turns the crate into a component with its ABI embedded
+(`calimero:abi`), which the node reads to tell views from calls and to find
+confirm methods ([Build](/build/)). On a cluster, a call to
+`set` is one run on the leader, and the map's writes are its diff.
+
 ## One run
 
 <SeqDiagram
@@ -58,18 +105,24 @@ The `calimero:app` world (`crates/app-wit/wit/calimero-app.wit`):
 | Interface | What it does on a cluster |
 | --- | --- |
 | `storage` | The app's replicated state: `get`, `put`, `delete`, the commutative `add`, ordered `range` |
-| `context` | The caller, the app's id and owner, its organization, the caller's role and teams there, the applied index, unique ids, and starting an [action](#actions-component-apps) |
-| `events` | Emit an event to an audience; a removed member stops receiving at once |
+| `context` | The caller, the app's id and owner, its organization, the caller's role and teams there (`org-role-strict` on a read index), the applied index, unique ids, and starting an [action](#actions-component-apps) |
+| `events` | Emit an event to an audience (`all`, the caller, listed accounts, a team, the org's members or admins); a removed member stops receiving at once |
 | `blobs`, `files` | The app's [blobs](/protocol/blobs/) and sealed files |
 | `search` | The app's own full-text indexes, in views |
 | `xcall` | Send a call into another app (outbox), or call or view one synchronously |
+| `runs` | Start or cancel a [compute run](/protocol/compute-actions/) on a job node, the uploader of a sealed file, publish a done run's output (logged writes only) |
+| `rebuild` | A migration's new key space; migrations are refused today (`MigrationsNotSupported`), so no run gets it |
 | `action` | Inside an action: its key, and views and calls of the app |
 | `wasi:clocks`, `wasi:random` | The leader's wall clock and randomness, read once: followers apply the result |
 | `wasi:http` | Outbound HTTPS, from actions and as one recorded request of a call (below) |
 
-## Three storage spaces in one state
+A package may also ship a **compute component** (world `compute`: `files`,
+`job` and WASI's clocks and randomness, no storage, no network), which job
+nodes run outside the log ([Compute actions](/protocol/compute-actions/)).
 
-A component has one space: its own keys, which the node keeps as hidden rows of
+## Storage
+
+A component has one key space: its own keys, which the node keeps as hidden rows of
 the app's group, sealed on disk. Per-caller data is rows keyed by
 `env::caller()`, and writer sets are rows the app checks before it writes
 (`apps/kv-store-with-shared-storage`); the host keeps no space of its own inside
@@ -124,8 +177,8 @@ log, on the app's leader. A call can also make one recorded request itself
   `#[app::allow(action)]` is reachable only from the app's own actions.
 - **Outbound** (S9, R14). A request leaves only through the same gate as
   above. The URL must sit under a prefix the signed release's manifest
-  declares, the owner must have approved it, the operator's hosts apply, and
-  there is one request per run. `{{secret:NAME}}` is filled in by the node and
+  declares, whoever governance gives outbound approvals (the app's organization, or the operator) must have approved it, the operator's hosts apply, and
+  an action run sends at most 8 requests (`MAX_HTTP_REQUESTS`). `{{secret:NAME}}` is filled in by the node and
   redacted from the response. Bodies are bounded in-memory buffers, so a guest
   cannot block a node thread.
 - **End** (D22). Success, or an app error, a fault or out-of-fuel, ends the
@@ -141,7 +194,7 @@ A component's call, timer or xcall delivery may send one request itself
 write it guards, such as a captcha service verifying a Turnstile token:
 
 - **The same gate as actions.** A URL the signed release declares under
-  `outbound`, the owner approved and the operator allows; `{{secret:NAME}}` is
+  `outbound`, its organization (or, per governance, the operator) approved and the operator allows; `{{secret:NAME}}` is
   filled in by the node and redacted from the response. Views, `init` and
   migrations cannot send (`HostDenied`), nor can a read-only member's call.
 - **Once, recorded.** The leader sends it while it runs the call, before
@@ -166,8 +219,10 @@ token is checked and the form written in one request.
 
 Only the leader runs, so the clock, randomness, outbound responses and search
 answers cannot make replicas disagree. Runs are still bounded and
-transactional: resources are capped ([Limits](/protocol/limits/#execution-limits)),
-and a trap or an app error leaves an empty diff.
+transactional: a call or view gets 200 000 000 fuel, 64 MiB of memory and 2 s
+of wall clock, an action 10 s, and one run writes at most 10 000 keys and
+1 MiB ([Limits](/protocol/limits/#execution-limits)); a trap or an app error
+leaves an empty diff.
 
 ## Views and upgrades
 

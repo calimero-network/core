@@ -31,6 +31,8 @@ use calimero_sdk::prelude::*;
 | `#[app::allow(app = "<id>")]` / `allow(app = "*")` | method | Another app may call it with a cross-app call. |
 | `#[app::action]` | method | An action: may fetch over HTTP and read and call the app, outside the log. |
 | `#[app::allow(action)]` | method | Only the app's own actions may call it. |
+| `#[app::compute(fuel = .., result = "..")]` | method | A compute method: runs on a job node over sealed files, outside the log. |
+| `#[app::compute_result]` | method | The logged call the node runs with a compute run's outcome. |
 | `#[app::error]` | enum | The app's errors: variant name = error code. |
 | `#[app::event]` | enum | The app's events: variant name = event name. |
 | `#[derive(Record)]` + `#[table(..)]` | struct | A table row: key, unique constraints, indexes, counts, search. |
@@ -71,7 +73,7 @@ pub struct Rooms {
 pub enum Error {
     NotFound,
     Taken { start: u64 },
-    Invalid(String),
+    Invalid { reason: String },
 }
 
 #[app::event]
@@ -89,7 +91,7 @@ impl Rooms {
 
     pub fn book(&mut self, room_id: String, start: u64, title: String) -> app::Result<String> {
         if title.is_empty() {
-            app::bail!(Error::Invalid("empty title".into()));
+            app::bail!(Error::Invalid { reason: "empty title".into() });
         }
         let id = env::unique_id();
         self.bookings.insert(Booking { id: id.clone(), room_id: room_id.clone(), start, title, checked_in: false })?;
@@ -119,9 +121,14 @@ impl Rooms {
 }
 ```
 
+Compile-time refusals worth knowing: an `every` interval other than
+`<n>s|m|h`, a `rate` other than `<n>/s|min|h`, `init` with any other attribute,
+a `u64`/`i64`/`Vec<u8>` nested in another type the macro sees, and a table
+`partition` (reserved).
+
 ## `#[app::state(version = N)]`
 
-The struct holds handles only: each field is a [table or collection](/core/build/collections/),
+The struct holds handles only: each field is a [table or collection](/build/collections/),
 built from its camelCase field name, so `Self::load()` reads nothing. `version`
 is recorded in the ABI. The fields and their kinds (`table`, `unorderedMap`,
 `counter`, `cell`, `set`, `vector`, `frozen`, `perUser`, `text`, `richText`) are
@@ -160,21 +167,32 @@ The generated `handle`:
 - `#[app::every("<n>s|m|h")]` is a timer. It implies `allow(system)`. Inside it,
   `env::timer()` gives the tick (`scheduled`, and `previous` when there was one).
 - `#[app::allow(app = "<app id>")]`, or `"*"` for any app, admits
-  [cross-app calls](/core/build/guides/cross-context/).
+  [cross-app calls](/build/guides/cross-context/).
+- `#[app::compute(fuel = N, memory_mib = M, wall_secs = S, result = "method")]`
+  marks a compute method: no `self`, run on a job node from the app's compute
+  component, with `fuel` and `result` required and the memory and wall caps
+  optional (the host checks them against its maxima). `result` names an
+  `#[app::compute_result]` method of the same block: a plain call method, not
+  public, that implies `allow(system)` and takes the run's whole
+  `ComputeOutcome` as its one parameter. A compute method takes no other kind
+  or access attribute. See [Compute actions](/build/guides/compute-actions/).
 - `#[app::action]` takes no `self`; its first parameter is
   `ctx: &mut ActionCtx`, with `ctx.view`, `ctx.call` and `ctx.fetch` (see
-  [Outbound](/core/build/guides/outbound/)). `#[app::allow(action)]` on a method
+  [Outbound](/build/guides/outbound/)). `#[app::allow(action)]` on a method
   lets only the app's own actions call it.
 
 ## `#[app::error]` and `#[app::event]`
 
-Both go in the `#[app::logic]` module, at most one of each.
+Both go in the `#[app::logic]` module, at most one of each. Every field has a
+name: a tuple variant (`Invalid(String)`), or a tuple struct in place of the
+enum, is a compile error; unit variants are fine.
 
 - `#[app::error]` implements `From<Error> for AppError`. The variant name is the
   code; the fields become the error's `message`, a JSON object with camelCase
-  keys (`Taken { start: 7 }` → code `Taken`, `{"start":"7"}`).
+  keys (`Taken { start: 7 }` → code `Taken`, `{"start":"7"}`). A client sees
+  it as `422 APP_ERROR` with `details.code` and `details.fields`.
 - `#[app::event]` implements `AppEvent`, emitted with
-  `env::emit(event, audience)` (see [Events](/core/build/guides/events/)).
+  `env::emit(event, audience)` (see [Events](/build/guides/events/)).
 
 `app::bail!(Error::NotFound)` returns `Err(Error::NotFound.into())`.
 
@@ -189,12 +207,12 @@ A table row. The derive writes the serde impls itself, so do not also derive
 | `unique(name = ["f", ..])` | A unique constraint; an insert that breaks it fails. |
 | `index(name = ["f", ..])` | An index, read with `Table::find`. |
 | `count(name = ["f", ..])` | A count kept on every write, read with `Table::count`. |
-| `search = ["f", ..]` | Fields indexed for [full-text search](/core/build/guides/search/). |
+| `search = ["f", ..]` | Fields indexed for [full-text search](/build/guides/search/). |
 
 Index, count and unique names are used in camelCase (`by_room` → `"byRoom"`).
 `u64`/`i64` fields are CBOR integers when stored and decimal strings in JSON.
 A record's fields are listed in the ABI's `types` too, so a
-[typed client](/core/build/guides/typed-clients/) types it as an interface.
+[typed client](/build/guides/typed-clients/) types it as an interface.
 
 ## `#[derive(AbiType)]`
 
@@ -266,5 +284,5 @@ dependency gives it).
 
 <Aside type="note">
   Not in this version: migrations between state versions (`#[app::migrate]`),
-  event handlers and typed index enums. See [Migrations](/core/build/migrations/).
+  event handlers and typed index enums. See [Migrations](/build/migrations/).
 </Aside>

@@ -1,17 +1,17 @@
 # Build WASM App
 
-Build a Calimero WASM application for deployment.
+Build a Calimero app into a `calimero:app` component for deployment.
 
 **Instructions:**
 
 1. If user specified an app (e.g. `/build-wasm-app kv-store`), use that. Otherwise ask which app or use `kv-store` as default.
-2. Run:
+2. Run, from the repository root:
    ```bash
-   rustup target add wasm32-unknown-unknown   # if not already added
-   PATH="$(scripts/setup-cargo-mero.sh):$PATH"
-   cargo mero build --manifest-path apps/<app-name>/Cargo.toml
+   rustup target add wasm32-wasip2           # if not already added
+   scripts/install-mero-app-build.sh         # once: puts mero-app-build on PATH
+   mero-app-build apps/<app-name> --out <app_name>.wasm
    ```
-3. Output: `apps/<app-name>/res/<app_name>.wasm`, with the ABI embedded. The node reads handlers, timers, xcall entry points, search exports and migrations from that ABI; a plain `cargo build --target wasm32-unknown-unknown --profile app-release` (what some tests load from `target/wasm32-unknown-unknown/app-release/`) has none.
-4. To install it as a signed package, bundle it with `cargo mero bundle`.
+3. Output: one component with its ABI in it. The node reads handlers, timers, xcall entry points, search exports and migrations from that ABI, so a plain `cargo build` of the crate is not an installable app.
+4. To install it as a signed package, pack and sign it into an `.mpk` (see `docs/src/content/docs/build/packaging-signing.mdx` and `tools/mero-sign`).
 
-**Common apps:** kv-store, kv-store-with-handlers, blobs, collaborative-editor, xcall-example, org-gated
+**Common apps:** kv-store, rooms, indexed-forum, org-gated, compute-redact (all under `apps/`; the node's test fixtures are under `apps/v2-fixtures/`).

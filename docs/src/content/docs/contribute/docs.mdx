@@ -85,7 +85,12 @@ Two kinds, both animated with the bespoke step-cascade engine:
 
 - **Structural diagrams** are hand-authored SVG kept in
   `src/components/diagrams/*.astro` (raw SVG is first-class in Astro components,
-  but breaks inside MDX), and referenced like any component.
+  but breaks inside MDX), wrapped in `Figure` (`src/components/Figure.astro`,
+  which adds the replay button), and referenced like any component. Paint them
+  only with the hex keys `src/styles/theme.css` maps under "Diagrams"
+  (`#0f0f16` ground, `#c9d1d9` text, `#58a6ff` blue, ...): the stylesheet
+  repaints each key with a theme token, so the diagram follows light and dark
+  mode. Group what appears together in `<g class="seq-step" style="--step-i:N">`.
 
 <Aside type="tip">
 Don't inline raw `<svg>` directly in an `.mdx` file — its indentation flips MDX

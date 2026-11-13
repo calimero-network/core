@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
 
 **Task:** run work that a call cannot (minutes of CPU over large files that must stay private) and keep its result in your app.
 
@@ -23,7 +24,26 @@ A compute run may take up to 15 minutes, reads and writes sealed files, and leav
 - A compute run has no state, no network and no way to start another run.
   It reaches state in one place, its **result method**, which the node runs as an ordinary logged call when the run ends.
 
-Compute runs need a component app (the `calimero-sdk` and `wasm32-wasip2` toolchain).
+<SeqDiagram id="d-build-compute-run" title="A compute run, from the call that starts it to the result method"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'App leader', color: '#58a6ff' },
+    { label: 'App log', color: '#a371f7' },
+    { label: 'Job node', color: '#39d0d8' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'call submit { file }' },
+    { from: 1, to: 2, label: 'entry: compute::start(redact, args, [file]) → run record' },
+    { from: 1, to: 0, label: 'result: run id', dashed: true },
+    { from: 1, to: 3, label: 'attest; push compute.wasm, signed assignment, input segments' },
+    { from: 1, to: 2, label: 'computeAttempt: node, job key' },
+    { from: 3, to: 3, label: 'run redact: files::open → files::create, progress' },
+    { from: 3, to: 1, label: 'signed report: result, outputs, usage', dashed: true },
+    { from: 1, to: 3, label: 'fetch output segments, check hashes' },
+    { from: 1, to: 2, label: 'computeFinal: outputs registered, on_run(outcome) applied' },
+  ]} />
+
+Compute runs need a component app (the `calimero-sdk` and `wasm32-wasip2` toolchain), built with its compute component.
 
 ## Build the two components
 
@@ -41,7 +61,9 @@ A crate with no compute method builds one component and no compute output.
 Pack both into the signed bundle, which carries the compute component as `compute` next to `wasm`:
 
 ```bash
-scripts/pack-component.py --wasm app.wasm --compute compute.wasm
+python3 -I scripts/pack-component.py --wasm app.wasm --compute compute.wasm \
+  --package com.example.redact --app-version 1.0.0 --key my-signing-key.json \
+  --out dist/com.example.redact-1.0.0.mpk
 ```
 
 A raw single `.wasm` upload has no compute component and cannot start runs, so ship the `.mpk`.
@@ -190,7 +212,7 @@ meroctl call -c CONTEXT submit --args '{"file":"<file id>","rowsPerPart":50000}'
 `GET /apps/{app}/runs/{run}` answers one run's state, attempts, input and output ids, usage, reason and `progress` while it runs.
 `GET /apps/{app}/runs?limit=<n>&before=<cursor>` lists the active runs and the last 256 finished ones, newest first.
 Neither carries the arguments or any key.
-They are reachable from `meroctl raw get` (the node API reference lists them).
+They are reachable from `meroctl raw get /apps/<app>/runs` (the node API reference lists them).
 
 To cancel, expose a method that calls `compute::cancel(&run)`, and decide in it who may:
 

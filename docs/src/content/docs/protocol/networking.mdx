@@ -5,6 +5,8 @@ sidebar:
   order: 8
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 A node speaks HTTP and nothing else: one listener (`--listen`) serves clients,
 peers and the operator. There is no gossip, no peer discovery and no
 peer-to-peer stream protocol. Nodes learn each other's URLs from the system
@@ -44,11 +46,55 @@ binds, and only the attested process can open it.
 
 | Property | Value |
 | --- | --- |
-| Session lifetime | 1 hour, however busy (the forward-secrecy window) |
+| Session lifetime | 1 hour, however busy (the forward-secrecy window); a client renews a minute before |
 | Idle session kept | 10 minutes |
-| Sessions held | 16 384; past that, the least useful session is dropped and its client opens another |
+| Sessions held | 16 384 anonymous and 4096 identified (peers), apart; past that, the least useful session is dropped and its client opens another |
+| Handshakes | 100 a second (burst 200) anonymous, 50 (burst 100) identified |
 | Replay window | 4096 request ids per session; ids below the window are refused too |
-| Largest sealed request | 64 MiB |
+| Largest sealed request | 64 MiB; 256 MiB of sealed bodies in flight per node |
+| Response frame | at most 64 KiB of data |
+
+### The handshake and one request
+
+<SeqDiagram
+  id="d-proto-sealed"
+  title="A sealed session: attest, handshake, exchange"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'Proxy / TLS', color: '#8b949e' },
+    { label: 'Node (in the TD)', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 0, to: 2, label: 'GET /attestation?nonce=N (in the clear)' },
+    { from: 2, to: 0, label: '{ quote, transportKey, release, … }', dashed: true },
+    { from: 0, to: 0, label: 'verify the quote; report data binds N and transportKey' },
+    { from: 0, to: 2, label: 'POST /sealed/v2/handshake: 0x02 ‖ transportKey ‖ Noise NK msg 1', color: '#a5ff11' },
+    { from: 2, to: 2, label: 'Noise with the in-memory static key; new session' },
+    { from: 2, to: 0, label: '0x02 ‖ msg 2 (session id, lifetime)', dashed: true, color: '#a5ff11' },
+    { from: 0, to: 0, label: 'request and response keys from both ephemerals' },
+    { from: 0, to: 2, label: 'POST /sealed/v2: header ‖ AES-GCM(inner request)', color: '#a5ff11' },
+    { from: 2, to: 2, label: 'open; check request id; route the inner request' },
+    { from: 2, to: 0, label: 'sealed frames: head, data…, end', dashed: true, color: '#a5ff11' },
+  ]}
+/>
+
+On the wire (`calimero-sealed`'s module documentation, byte-compatible with
+mero-js `src/sealed/`):
+
+```text
+handshake   Noise_NK_25519_AESGCM_SHA256, prologue "calimero/sealed-http/v2"
+  request   POST /sealed/v2/handshake   0x02 || transport_pk || Noise message 1
+  response  0x02 || Noise message 2 (payload = session_id(16) || lifetime secs, u32 BE)
+identified  0x03 instead of 0x02, Noise_IK_25519_AESGCM_SHA256 (peers only)
+exchange    POST /sealed/v2   (content type application/vnd.calimero.sealed)
+  header    0x02 || session_id(16) || request_id (u64 BE; from 1, each used once)
+  request   header || AES-256-GCM(req key, nonce = request_id || 0u32, aad = header, inner)
+  response  frames: u32 BE length || AES-256-GCM(resp key, nonce = request_id || index, aad = header, kind || data)
+  inner     u32 BE head length || head (JSON) || body
+```
+
+The `transport_pk` the client puts in the handshake is the key it attested; a
+node whose key has changed refuses it as `stale_transport_key`.
 
 A proxy in the middle sees opaque POSTs. It cannot read a request or a
 response, forge or reorder a frame, or replay a request. When a node restarts,
@@ -58,15 +104,19 @@ envelope and are refused inside it.
 
 ## What is served in the clear
 
-Only `GET /attestation` and `GET /health` (node id, system leader, release)
-answer outside the envelope; with `sealed_required` (every non-`--dev` node)
+Only `GET /attestation` and `GET /health` (`{ ok, node, systemLeader,
+release, clusterVersion, rollbackEpoch }`) answer outside the envelope; with `sealed_required` (every non-`--dev` node)
 any other unsealed request is refused. Two outer layers sit in front of the
 envelope:
 
 - **App frontends.** With `--apps-domain`, a request whose host is a package's
   label under that domain is answered from the package's signed frontend and
   never reaches a node route ([Packages & frontends](/protocol/applications/#frontends)).
-- **CORS.** The configured `--origins` and every package frontend origin may
+- **The consent page.** `GET /consent/{id}` and its `/model`, `/approve` and
+  `/decline` are served in the clear on the node's own origin, so a person
+  approves on a page no app controls ([The consent page](/protocol/consent-page/)).
+- **CORS.** The configured `--origins`, every package frontend origin and every
+  registered package origin may
   call the node from a browser. CORS is outermost so a preflight is answered
   before the envelope sees it; what travels sealed needs no header of its own.
 
@@ -75,12 +125,23 @@ envelope:
 | Prefix | Who | What |
 | --- | --- | --- |
 | `/attestation`, `/health` | Anyone, unsealed | The node's quote; liveness |
-| `/auth/*` | People and API keys | Passkey sign-up and sign-in, devices, sessions, API keys, aliases, approvals, usage |
-| `/packages*`, `/bundles` | Installers | Install, list and remove releases; raw WASM in development |
-| `/apps*` | Callers the app admits | Create, list, call, view, events, upgrade, access, metadata, blobs, presence, storage, ABI, attestation |
-| `/orgs*`, `/invites/{token}/redeem` | Members | Organizations, teams, members, capabilities, invites, approvals, upgrade runs |
-| `/internal/*` | Peers only | Raft RPCs, system writes and read index, forwarded calls and views, blobs, presence, events, storage stats |
-| `/ops/*` | The operator's token | Status, metrics, node registration, replica moves, backups, quotas, and the decisions governance gives the operator |
+| `/consent/*` | An app (request, result); the person (the page, in the clear) | [The consent page](/protocol/consent-page/) |
+| `/auth/*` | People and API keys | Passkey sign-up and sign-in, devices, sessions, API keys, aliases, recovery codes, backup key, account proofs, activity, usage |
+| `/sign-up*`, `/deployers*`, `/deployments*`, `/releases`, `/publishers/*` | Anyone signed in, or the cluster's owner | The sign-up policy and invites, deployer grants, deployments, release deadlines, publisher bindings |
+| `/packages*`, `/package-origins/*`, `/bundles` | Installers, package managers | Install, list and remove releases; registered web origins; raw WASM in development |
+| `/apps*` | Callers the app admits | Create, list, call, view, events, upgrade, access, transfer, move, metadata, blobs and files, runs and pipeline runs, presence, storage, ABI, attestation |
+| `/pipelines/validate` | Anyone signed in | Check a pipeline before it ships |
+| `/orgs*`, `/invites/{token}/redeem` | Members | Organizations, teams, members, capabilities, invites, approvals, upgrade runs, backup key, recovery |
+| `/recover/holder` | A holder's own device | Bring an organization's or account's apps onto this cluster from a recovery disk |
+| `/internal/*` | Peers only | Raft RPCs, system writes and read index, forwarded calls and views, blobs, presence, events, storage stats, the cluster key |
+| `/ops/*` | The operator's token (and its signature for decisions) | Status, metrics, node registration, replica moves, backups, restores and recovery, quotas, pools and prices, and the decisions governance gives the operator |
+
+A job node serves a different set: `/health`, `/attestation`
+(`purpose=jobs` only) and `/job/*`, all from the cluster that started it
+([Compute actions](/protocol/compute-actions/#the-job-node)). With
+`--metrics-listen`, a second plain-HTTP listener serves `GET /metrics` and
+nothing else. The full list is the node's OpenAPI document
+([Node API](/operate/admin-api/), [OpenAPI](/operate/api-reference/)).
 
 Errors are JSON `{ "error": CODE, "message": …, "details"? }` with an HTTP
 status.

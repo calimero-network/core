@@ -16,7 +16,7 @@ lists what that rests on.
 | --- | --- | --- |
 | Intel TDX and its attestation (DCAP collateral) | That a quote comes from a genuine TD with the measured image, and that a debug TD is not passed off as one | Every client and peer, on every new channel |
 | The signed mero-tee release | That the measurements in `published-mrtds.json` are the image Calimero built and signed (Sigstore) | `Measurements::Release` in the client and peer policy |
-| mero-kms | Releasing the storage key only to an attested TD | The KMS client verifies the KMS against the signed release too, and the node reports the KMS quote it accepted, bound into its own quote (`purpose=kms`, [Attestation](/protocol/tee-attestation/#which-kms-a-node-took-its-keys-from)), so anyone verifying the node can check which KMS that was |
+| mero-kms | Releasing the storage key only to an attested TD, and keeping each node's rollback counter | The KMS client verifies the KMS against the signed release too, and the node reports the KMS quote it accepted, bound into its own quote (`purpose=kms`, [Attestation](/protocol/tee-attestation/#which-kms-a-node-took-its-keys-from)), so anyone verifying the node can check which KMS that was |
 | The `merod` build in that image | Everything in this reference | Its measurement is part of the image |
 | The person's authenticator | Their passkey | WebAuthn, with user verification for step-ups |
 
@@ -29,13 +29,15 @@ code, and app code beyond what its owner approved.
 | Party | Can | Cannot |
 | --- | --- | --- |
 | **Network / proxy** | See that clients talk to nodes, sizes, timing; drop or delay traffic | Read or forge requests, responses or frames; replay a request; impersonate a node without its attested key |
-| **Host / hypervisor** | Stop, freeze, restart a node; read sealed disks; withhold the network | Read memory of a non-debug TD; open sealed values without K_c; get K_r (it comes from mero-kms, not the host) or K_c (wrapped under K_r, or delivered by a peer only to the attested TD at a registered node's address) |
-| **Operator** (ops token) | Register nodes, move replicas onto approved releases, set quotas, take sealed backups, read counts and Raft status, set public release deadlines that stop new work on old images (signed with the operator key); and whatever governance gives it | Read state, events, blobs or credentials; sign in as anyone; move an app's data to an unapproved image (a deadline approves nothing); block an approval; upgrade apps, approve releases or outbound destinations unless governance gives it that decision |
+| **Host / hypervisor** | Stop, freeze, restart a node; read sealed disks; withhold the network; restart a node on an older copy of its disk, which then refuses to start | Read memory of a non-debug TD; open sealed values without K_c; get K_r (it comes from mero-kms, not the host) or K_c (wrapped under K_r, or delivered by a peer only to the attested TD at a registered node's address) |
+| **Operator** (ops token) | Register nodes, move replicas onto approved releases, set quotas, take sealed backups, read counts and Raft status, set public release deadlines that stop new work on old images (signed with the operator key); force a start past a rollback (`--accept-rollback`, which raises the epoch every node reports); and whatever governance gives it | Read state, events, blobs or credentials; sign in as anyone; move an app's data to an unapproved image (a deadline approves nothing); block an approval; upgrade apps, approve releases or outbound destinations unless governance gives it that decision |
+| **A backup holder** (whoever upgrades an app: the operator, the app's organization or its owner) | Open its own apps' recovery-disk files on its own device and bring them back on a cluster that admits it | Open another holder's files; recover onto a cluster without that cluster's operator signing the import (`/recover/holder`) |
 | **A publisher** (the organization a package's signing key is bound to) | Where owners decide: approve the releases every instance of its packages runs on (`APPROVE_RELEASES` holders), and upgrade every instance of a package whose manifest says `upgrades: publisher` (`MANAGE_APPLICATION` holders), each with a passkey assertion checked where it applies | Read its customers' apps; take upgrades from instances of an `owner` package, or turn a package back to `publisher` once a release declared `owner` |
 | **A node on an approved release** | Everything this reference describes for the apps whose owners approved its release | — (it is the trusted computing base for those apps; that is why every peer is attested) |
 | **A node on a release nobody approved** (attested, registered: an operator rolled it out) | Join the system group, hold and replicate the system state, lead it; propose system commands | Receive or read an app's data, through Raft, internal routes, blobs or presence; act as a user with a session it signed; log a decision (approval, publisher binding, upgrade, transfer, deletion, operator decision) without its maker's passkey or the operator key |
-| **An app's owner** | Upgrade it (unless its package says `publisher`), change its access, approve outbound prefixes for it, approve releases for it while its package's key is not bound to a publisher (where governance says owner), delete it | Read other apps; act for other accounts |
-| **A member** | What the app's access rule and the app's own code allow | Read another member's private space; forge a writer rotation, a blob mark or TEE-only state; write if their team row is read-only |
+| **An app's owner** (while a member of its organization) | Upgrade it (unless its package says `publisher`), change its access, transfer or delete it | Read other apps; act for other accounts |
+| **An organization's approvers** (owner and admins; members granted `APPROVE_RELEASES`, or `MANAGE_APPLICATION` org-wide) | Where governance says owner: approve the releases its apps run on while their package's key is not bound to a publisher, and the outbound prefixes its apps may reach; an account's own apps are its personal organization's | Approve for another organization; approve without a passkey assertion |
+| **A member** | What the app's access rule and the app's own code allow | Read the app's state except through its methods; receive events outside their audience; write if their team row is read-only |
 | **An app's frontend** (third-party page) | Act as the signed-in person for that package's apps only; ask the node to show its user a consent page | Reach other apps, manage credentials or API keys, approve anything, upgrade or uninstall, or choose what the consent page shows or where it returns |
 | **An API key** | What its scope allows | Manage credentials or keys; produce a passkey assertion |
 
@@ -83,9 +85,17 @@ code, and app code beyond what its owner approved.
   node-side facts and takes the passkey, and the consent binds the target
   manifest's hash or the release's measurements digest
   ([The consent page](/protocol/consent-page/)).
-- **A malicious app** — the WASM sandbox and its limits; the host's key space
-  is closed to it; it reaches only its own blobs and its caller's private space;
-  xcalls only into entry points within its organization.
+- **A malicious app** — the WASM component sandbox and its limits (fuel,
+  memory, wall clock, writes); it reaches only its own keys, blobs and files;
+  outbound HTTPS only through the gate above; xcalls only into entry points
+  within its organization.
+- **A restored older disk** — the rollback counter: mero-kms and the node's
+  sealed store keep the same per-node checkpoint, and a store behind mero-kms
+  does not start; a forced start raises the cluster's epoch, which every node
+  reports ([Rollback protection](/protocol/encryption/#rollback-protection)).
+- **Losing every mero-kms** — the recovery disk: backups sealed to a backup
+  key only its holder has, signed and attested by the node that wrote them
+  ([The recovery disk](/protocol/encryption/#the-recovery-disk)).
 - **Proving all this to a user** — `verify_app_cluster`: every replica's quote,
   receipt keys, and the governance they all attest; receipts on every answer.
 
@@ -102,9 +112,17 @@ code, and app code beyond what its owner approved.
   not that the user's approver approved its release, so it sends credentials and
   passkey assertions to any attested node (F5 in the design).
 
-- **Rollback.** A host that restarts a node on an older copy of its disk is not
-  detected. A rollback counter (a mero-kms epoch, restored nodes rejoining as
-  learners) is proposed, not done.
+- **Rollback, partly.** A rollback shorter than one checkpoint (1 s) looks like
+  a crash; a store spliced from rows of different ages is not caught; an
+  operator can force a rollback (`--accept-rollback`), which is visible in
+  `/health` and `/ops/status` but not yet in the attested KMS evidence; and an
+  older mero-kms without counters starts nodes unprotected. Requiring the
+  owner's consent to force one is not done.
+- **The recovery disk's holder.** Whoever holds an app's upgrades holds the key
+  to its recovery-disk files: where governance gives app upgrades to the
+  operator, the operator's backup key opens every app's state and the whole
+  system state on that disk. That is the same party that could already move
+  the app to new code.
 - **Keys per app.** One K_c covers every app on a cluster; keys per app from
   mero-kms are not done.
 - **Availability.** The host and operator can stop nodes. Raft tolerates the
@@ -113,7 +131,6 @@ code, and app code beyond what its owner approved.
   ([Failover](/protocol/identities/#failover)). A new app's replicas are spread
   across the zones the operator registered ([placement](/protocol/context-lifecycle/#create));
   moving existing apps between zones is the operator's (`ops placement`, `ops move`).
-- **Event audiences.** Everyone who reaches an app receives all its events.
 - **Side channels** on the TD and timing of requests are outside this model.
 - **The consent page under TLS.** The node's consent page and its model travel
   as plain HTTPS, not in the sealed channel: whoever terminates TLS in front of

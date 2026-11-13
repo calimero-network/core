@@ -306,6 +306,40 @@ same quote check as every client's, with its measurement policy), or with
 half as `app_hash_hex`, then the registers against the signed release. See
 [Attestation & receipts](/protocol/tee-attestation/#release-attestations).
 
+## Examples
+
+A development node of its own, reachable from other machines (`merod local`
+binds `127.0.0.1` only):
+
+```bash
+merod --node dev init --dev --node-id 1 --public-url http://127.0.0.1:2528/ \
+  --peers 1=http://127.0.0.1:2528/ --bootstrap --ops-token devtoken
+merod --node dev run
+```
+
+A production node's configuration, then a change to it (governance flags go
+on every founding node's first start, and change nothing after genesis):
+
+```bash
+merod --node n1 init --node-id 1 --public-url https://n1.eu1.example.com/ --cluster eu1 \
+  --peers 1=https://n1.eu1.example.com/,2=https://n2.eu1.example.com/,3=https://n3.eu1.example.com/ \
+  --kms-url https://kms.internal.example.com/ --kms-identity /data/disk-identity \
+  --rp-id example.com --origins https://app.example.com --apps-domain apps.example.com \
+  --ops-token-sha256 "$OPS_TOKEN_SHA256" --operator-key "$OPERATOR_PUBLIC_HEX" \
+  --backup-dir /backups --recovery-dir /recovery --metrics-listen 10.0.0.11:9464 \
+  --registry-url https://registry.example.com/ --sign-up invite
+merod --node n1 config --peer-min-release 2.4.0     # prints the merged file
+merod --node n1 run --bootstrap                      # on one founding node only
+```
+
+A job node for that cluster, and what a stopped node holds:
+
+```bash
+merod run --job-node --node-id 21 --listen 0.0.0.0:2528 --cluster eu1 \
+  --cluster-identity "$(meroctl ops cluster | jq -r .identity)" --job-slots 4
+merod --node n1 inspect | jq .
+```
+
 ## Next steps
 
 - [Configuration](/operate/config/): the same settings as a file.

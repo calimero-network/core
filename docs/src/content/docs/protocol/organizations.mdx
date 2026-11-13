@@ -1,14 +1,26 @@
 ---
 title: Organizations, teams & access
-description: Who reaches an app — access rules, organization roles, nested open and restricted teams, capabilities, invites — and how each rule is checked.
+description: Who reaches an app — personal and shared organizations, access rules, roles, nested open and restricted teams, capabilities, invites, recovery and backup keys — and how each rule is checked.
 sidebar:
   order: 14
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import OrgStructure from '../../../components/diagrams/OrgStructure.astro';
+import OrgRecoveryTimeline from '../../../components/diagrams/OrgRecoveryTimeline.astro';
+
+Every app instance is in exactly one **organization**, and every account has
+one of its own, its **personal organization**, from sign-up. An organization
+holds members with roles, nested **teams** (an **app team** per package it
+uses, with restricted child teams below for private channels) and the app
+instances, each with an access rule that names who reaches it.
+
+<OrgStructure />
+
 Access has two layers. The node decides **who reaches an app at all**, from the
 app's access rule and the system state, on every request. Everything finer —
 who may edit which record — is the app's own code, which can read the caller's
-standing with `env::caller_org()`.
+standing with `env::org()`, `env::org_role(account)` and `env::in_team(account, team)` ([Who a run acts as](/protocol/authorship/#the-org-the-app-sees)).
 
 Every rule on this page is enforced by the system group's state machine when
 the command applies ([The system group](/protocol/system-group/)); the API
@@ -106,10 +118,13 @@ in `GET /orgs/{org}`, in the `orgs` of `/auth/me` and in report scopes):
 
 - An account owns exactly one (the log refuses a second, `PERSONAL_ORG_EXISTS`), and it does not
   count against `maxOrgsPerAccount`.
-- Its release and outbound approvals are the account's own: approved with
+- Its release and outbound approvals are the only ones the account's own apps
+  have (an account holds none itself): approved with
   `POST /orgs/{org}/releases` and `/orgs/{org}/outbound` like any
-  organization's (a consent request with no scope is the personal
-  organization's).
+  organization's, and on the [consent page](/protocol/consent-page/) a
+  request's `"scope": "account"` names it.
+- Its apps' usage and quotas are billed to it like any organization's: there
+  is no account payer.
 - An instance there shared with listed accounts (`accounts` access) reaches
   them without making them members; anywhere else an organization's app
   reaches only its members (or anyone, `public`).
@@ -421,6 +436,34 @@ rows; `412 CONFIRM_REQUIRED` first); `GET
 
 ## Invites
 
+<SeqDiagram
+  id="d-invite-join"
+  title="Inviting someone and their joining"
+  lanes={[
+    { label: 'Inviter', color: '#f0883e' },
+    { label: 'Any node', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: 'Invitee', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /orgs/{org}/invites { role, teams?, ttlSecs?, uses?, allApps? }' },
+    { from: 1, to: 0, label: '412 CONFIRM_REQUIRED (challenge binds inviteKey, role, teams, expiresAt, uses)', dashed: true },
+    { from: 0, to: 1, label: 'retry with a passkey assertion' },
+    { from: 1, to: 2, label: 'CreateInvite: only the token key (inviteKey) is kept' },
+    { from: 1, to: 0, label: '{ token: inv_… } (shown once)', dashed: true },
+    { from: 0, to: 3, label: 'hand over the link (/?invite=inv_…)' },
+    { type: 'divider', label: 'no account yet: sign up (an invite-only cluster takes the invite in CreateAccount)' },
+    { from: 3, to: 1, label: 'POST /invites/{token}/redeem (signed in)' },
+    { from: 1, to: 2, label: 'RedeemInvite, signed with the token key' },
+    { from: 2, to: 2, label: 'apply: role (or keep a higher one), team rows, allApps; a use spent if anything changed' },
+    { from: 1, to: 3, label: '{ org }', dashed: true },
+  ]}
+/>
+
+An app's own frontend cannot call these routes; it asks the node's consent page
+to mint (`createInvite`) or accept (`acceptInvite`) an invite with the person's
+passkey ([The consent page](/protocol/consent-page/#organizations-and-invites)).
+
 `POST /orgs/{org}/invites { role, teams?, ttlSecs?, uses?, allApps? }` returns a token
 `inv_…`, after the inviter approves it with a passkey (`412 CONFIRM_REQUIRED`
 first; the consent binds `{ inviteKey, role, teams, expiresAt, uses }`). Only
@@ -466,18 +509,105 @@ public half (`publicKey`, base64url). It is set at creation (`POST /orgs
 { publicKey }`; `null` removes it). An organization created before recovery
 keys has none until its owner sets one.
 
-Whoever holds the seed hands the organization to the account they are signed
-in as: the client signs `"calimero.org-recovery.v1\0" ‖ org ‖ 0 ‖ account ‖ 0 ‖
-nonce` with the seed and sends only the signature (`POST
-/orgs/{org}/recovery/start { nonce, signature }`). Every node checks it
-against the organization's current key where `StartRecovery` applies and
-spends it, so a node that saw the log cannot redirect or replay it. The
-recovery then waits `RECOVERY_DELAY_SECS` (72 hours, judged at the commands'
-own times); members see it as `recovery.pending` on `GET /orgs/{org}`. The
-owner may cancel it with a passkey (`__cancel_recovery { account }`), and
-setting a new key cancels it too. Once the delay has passed, the account it
-names finishes it with its own passkey (`__finish_recovery { org }`): it
-becomes the owner, every previous owner leaves the organization and its teams,
-and the apps they owned in it become the new owner's. One recovery runs at a
-time (`409 RECOVERY_PENDING`). Recovery never changes an account's passkeys:
-the previous owner's account and its other organizations are as they were.
+An organization's owner is an account, and an account acts only with its own
+passkeys. An owner who loses every passkey can no longer act for the
+organization, and nobody can act for them: an admin cannot change ownership,
+no Ops route touches an organization, and every decision carries its maker's
+proof. Recovery moves the organization's **ownership** to another account, the
+one the person signs up with a new passkey, after a delay during which the
+current owner can cancel. It acts on the organization only: one
+organization's seed reaches nothing outside it (not the owner's other
+organizations, not their personal one), and an account that owns several sets
+a key on each. To get the account itself back, see
+[Account recovery](/protocol/identities/#account-recovery).
+
+<OrgRecoveryTimeline />
+
+| Step | Route | Who | Proof logged | Effect where it applies |
+| --- | --- | --- | --- | --- |
+| Set or rotate | `POST /orgs/{org}/recovery { publicKey }` (`null` removes; `412` first) | The owner | Passkey consent over `org:<org> / __set_recovery_key / { publicKey }` | `SetRecoveryKey`: replaces the key and cancels a pending recovery |
+| Set at creation | `POST /orgs { name, recoveryKey }` | The creator | The session, as for any new organization | The new organization holds the key |
+| Start | `POST /orgs/{org}/recovery/start { nonce, signature }` | Any signed-in account (the new one) | The seed's signature over `recovery_message(org, account, nonce)` | `StartRecovery`: `pending = { account, startedAt, readyAt = startedAt + 72 h }` |
+| Cancel | `POST /orgs/{org}/recovery/cancel` (`412` first) | The owner | Passkey consent over `__cancel_recovery / { account }` | `CancelRecovery`: nothing pending |
+| Finish | `POST /orgs/{org}/recovery/finish` (`412` first) | The pending account, at or after `readyAt` | Passkey consent over `__finish_recovery / { org }` | `FinishRecovery`: the account becomes the owner; every previous owner leaves the organization and its teams, and the apps they owned in it become the new owner's |
+
+`recovery_message` is `"calimero.org-recovery.v1\0" ‖ org ‖ 0 ‖ account ‖ 0 ‖
+nonce` (`calimero_identity::recovery_message`). The client derives the public
+key and signs on the person's machine, and only the signature travels. It binds
+the account the organization goes to, so a node that saw the log cannot
+redirect it, and it is spent once (`used_proofs`). It is checked against the
+organization's **current** key, at the API and again where the command
+applies, on every node, so rotating the key makes every signature under the old
+one fail.
+
+**Limits.** `RECOVERY_DELAY_SECS` (72 hours) is judged at the commands' own
+times (stamped by the node that takes the request, replicated with it), never
+at apply. One pending recovery per organization: a second start is `409
+RECOVERY_PENDING` until the owner cancels or the pending one finishes, so a
+seed holder cannot replace a pending recovery with their own. The nonce is at
+most `MAX_RECOVERY_NONCE_BYTES` (64); the key and signature text are bounded
+before decoding (`MAX_RECOVERY_KEY_CHARS`, 44; `MAX_RECOVERY_SIGNATURE_CHARS`,
+88). A wrong seed is refused at the API before anything is logged, and no
+counter limits attempts: guessing a 256-bit seed is not a threat a counter
+changes. An unknown organization, one with no key and a wrong signature all
+answer `403 WRONG_RECOVERY_KEY`, so an outsider learns nothing about which
+organizations exist or hold a key.
+
+**What members see.** `GET /orgs/{org}` shows members `recovery: { publicKey,
+setAt, pending }` (absent when no key is set), so a client can warn every
+member, the owner first, while a recovery is pending. The recovering account is
+not a member yet; it reads the pending recovery's times in the answers of
+`start` and `finish`. Nothing about recovery is in the Ops API or
+`/ops/metrics`.
+
+| Who | Can they recover the organization? | What limits it |
+| --- | --- | --- |
+| The operator | No | The seed never reaches a node; no Ops route starts, cancels or finishes a recovery, and the operator's signature is not a recovery proof |
+| A node, or anyone reading the log | No | The log holds the public key and spent signatures, each bound to one account |
+| An admin or member | No | Setting, rotating and cancelling need the owner's passkey; starting needs the seed |
+| An account outside the organization | Only with the seed | The seed is the credential |
+| Someone who stole the seed | Yes, unless the owner acts within 72 hours | Every member sees the pending recovery; the owner cancels with a passkey and rotates the key |
+| The owner, every passkey lost | Yes | Sign up with a new passkey, start with the seed, wait 72 hours, finish |
+| The owner, passkeys and seed lost | No | Nobody can |
+
+A thief who already finished a recovery owns the organization; the delay and
+the warning to members are the defence. Recovery never changes an account's
+passkeys: the previous owner's account and its other organizations are as they
+were. Organizations written before recovery keys hold none
+(`Org::recovery` is left out when unset) until their owner sets one.
+
+Recovering the **data** after every mero-kms replica is lost is a different
+mechanism: the recovery disk and its backup keys, below.
+
+## Backup key
+
+The recovery disk (`merod --recovery-dir`) writes, every 5 minutes, on every
+node that holds an app, the app's state, the code it runs and its holder's
+slice of the system state, each sealed to the holder's X25519 public key (HPKE)
+and signed by the node's attested receipt key
+([Recovery files](/protocol/storage/#recovery-files)). The **backup holder**
+is whoever upgrades the app (`SystemState::backup_holder`): the operator where
+it holds app upgrades, else the app's organization, also for a package that
+declares `upgrades: publisher`. An account's own apps are its personal
+organization's. No node ever holds a private half.
+
+| Holder | Read | Set |
+| --- | --- | --- |
+| An organization | `GET /orgs/{org}/backup-key` (any member) | `POST /orgs/{org}/backup-key { publicKey }` by an org-wide `MANAGE_APPLICATION` holder, with a passkey (`org:<org> / __set_backup_key / { publicKey }`, `412` first) |
+| The operator | `GET /ops/backup-key` | `POST /ops/backup-key { publicKey }`, signed with the operator key (`operator / __set_backup_key / { publicKey }`; [The operator](/protocol/operator/#the-recovery-disk)) |
+
+`publicKey` is 64 lowercase hex characters (`400 BAD_BACKUP_KEY` otherwise).
+The answer is `{ holder, key: { publicKey, setAt, setBy } | null, apps }`,
+`apps` being how many apps' backups open with it. Setting a key is the
+`SetBackupKey` command, gated by the `backupKeys` feature (1.0.0-rc.20,
+[The cluster version](/protocol/upgrades/#the-cluster-version)); the owner-side
+routes answer `403` where the operator holds app upgrades. Until a key is set,
+nothing is written for that holder's apps.
+
+An organization's apps come back on a cluster that does not hold them with
+`POST /recover/holder`: the holder's own device opens the data keys of its
+files with its private key and sends them over the sealed channel, and the
+operator admits the import with its signature (`SystemCmd::ImportHolder`). The
+organization, its people (who sign in with the passkeys they had), its apps and
+its backup key come back; it is refused where any of them is on the cluster
+already ([Recover after every key service is gone](/operate/runbooks/#recover-after-every-key-service-is-gone)).

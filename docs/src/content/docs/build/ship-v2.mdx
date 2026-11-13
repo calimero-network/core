@@ -1,24 +1,28 @@
 ---
-title: Ship v2 of your app
+title: Ship your app's next release
 description: Change an app's state, test the new code against the state your last release wrote, publish the release, and upgrade one instance and then a whole organization - with what to do about each refusal.
 sidebar:
+  label: Ship the next release
   order: 3
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 Your app is live and people have data in it. This tutorial ships its next
 release: a change to what it stores, tested against the state the shipped
 release wrote, published, and rolled out to one instance and then to an
 organization. It follows `apps/kv-store`, a string key-value store, which the
-running example extends with the time each key was last written.
+running example extends with the time each key was last written. "v1" and
+"v2" here are two releases of *your* app (`1.0.0` and `2.0.0`), not versions
+of the SDK.
 
 ## What an upgrade does
 
 An upgrade switches an instance to another release's code and keeps its state.
 It is one entry in the app's own log: from that index on, the leader runs the
 new component against the keys the old one wrote, and nothing runs at the
-switch ([Upgrades & migrations](/core/protocol/upgrades/) covers who may
+switch ([Upgrades & migrations](/protocol/upgrades/) covers who may
 upgrade and organization-wide runs).
 
 <Aside type="caution" title="No migrations in this version">
@@ -26,7 +30,7 @@ upgrade and organization-wide runs).
   during an upgrade: an upgrade that names one (`migrate`) is refused
   (`MigrationsNotSupported`, below). The new code reads what the old code
   stored, so a release changes its state by adding to it, never by rewriting
-  it in place ([Upgrades & state](/core/build/migrations/)).
+  it in place ([Upgrades & state](/build/migrations/)).
 </Aside>
 
 So the work of shipping v2 is in three places: the state change has to be one
@@ -69,15 +73,18 @@ pub struct KvStore {
     updated_at: UnorderedMap<String, u64>,
 }
 
-pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
-    let _old = self.updated_at.insert(&key, &env::time_now())?;
-    // .. as before
-}
+#[app::logic]
+impl KvStore {
+    pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
+        let _old = self.updated_at.insert(&key, &env::time_now())?;
+        // .. as before
+    }
 
-/// When `key` was last written, or `null` for a key 1.0.0 wrote and nothing since.
-#[app::view]
-pub fn updated_at(&self, key: String) -> app::Result<Option<u64>> {
-    Ok(self.updated_at.get(&key)?)
+    /// When `key` was last written, or `null` for a key 1.0.0 wrote and nothing since.
+    #[app::view]
+    pub fn updated_at(&self, key: String) -> app::Result<Option<u64>> {
+        Ok(self.updated_at.get(&key)?)
+    }
 }
 ```
 
@@ -103,7 +110,7 @@ pub fn get(&self, key: String) -> app::Result<Option<Entry>> {
 
 ## 3. Write the migration scenario
 
-A migration scenario is an ordinary [scenario](/core/build/testing/#scenarios)
+A migration scenario is an ordinary [scenario](/build/testing/#scenarios)
 with one `{ "op": "upgrade" }` step: the steps before it run on the shipped
 release and write state, the steps after it run on the build under test and
 read it back. Saved variables (`"save"`) carry across the upgrade.
@@ -170,17 +177,17 @@ there. Fix the code, not the scenario.
 
 <Aside type="tip">
   The harness runs the real component on the real engine, as
-  [Testing apps](/core/build/testing/) describes. For node-level behaviour
+  [Testing apps](/build/testing/) describes. For node-level behaviour
   around an upgrade (who may approve it, an organization-wide run), a cluster
   scenario uses `deploy`, `install_package` and `upgrade_app`
-  ([Testing strategy](/core/contribute/testing/#cluster-scenarios)).
+  ([Testing strategy](/contribute/testing/#cluster-scenarios)).
 </Aside>
 
 ## 5. Publish v2
 
 Build, sign with **the same key** as v1 (another key makes another
 application, not an upgrade) and publish, as in
-[Packaging & signing](/core/build/packaging-signing/):
+[Packaging & signing](/build/packaging-signing/):
 
 ```bash
 mero-app-build . --out kv-store.wasm
@@ -189,9 +196,15 @@ python3 -I scripts/pack-component.py --wasm kv-store.wasm --package com.example.
 cp dist/com.example.kv-store-2.0.0.mpk releases/2.0.0.mpk   # the next release tests against it
 ```
 
+Add `--previous releases/1.0.0.mpk` to the `pack-component.py` line and
+`mero-sign` compares the ABI with the last release before signing: it warns
+about changes that break callers and refuses a state change without a state
+version bump ([App interface](/build/app-abi/#check-a-new-version-against-the-last)).
+
 Then publish it to the cluster's registry; a node installs it from there on
-the first upgrade that names it. On a development cluster,
-`meroctl app install --path dist/com.example.kv-store-2.0.0.mpk` uploads it.
+the first upgrade that names it. A development cluster (`--dev`, as
+`merod local` runs) also takes an upload:
+`meroctl app install --path dist/com.example.kv-store-2.0.0.mpk`.
 
 ## 6. Upgrade one instance
 
@@ -204,13 +217,17 @@ Upgrade one instance first, yours or a test organization's, and use it:
    holders for a `publisher` package.
 
    ```bash
-   meroctl context update <app-id> --version 2.0.0
+   meroctl context update <app-id> --version 2.0.0 --dev-passkey ./dev-passkey.json
    ```
 
    This is `POST /apps/{app}/upgrade { version }`; the node answers
-   `412 CONFIRM_REQUIRED` and `meroctl` signs the challenge, which covers the
-   target WASM's hash and the release's signed manifest. From CI, an
-   [upgrade key](/core/cloud/deploy-from-ci/) signs instead.
+   `412 CONFIRM_REQUIRED` with a challenge over the target WASM's hash and the
+   release's signed manifest. On a development cluster `--dev-passkey` signs
+   it with the passkey file you logged in with; on a real cluster the owner
+   approves in the console, or the app sends them to the node's consent page
+   (`POST /consent/requests` with `kind: upgrade`), which shows the state
+   version each side declares. From CI, an
+   [upgrade key](/cloud/deploy-from-ci/) signs instead.
 
 2. Check what it runs now: `meroctl context get <app-id>` shows the release,
    and `GET /auth/apps` (or `/orgs/{org}/apps`) the newer releases it may move
@@ -221,6 +238,25 @@ Upgrade one instance first, yours or a test organization's, and use it:
 
 </Steps>
 
+<SeqDiagram id="d-build-upgrade" title="An upgrade, from request to the new code running"
+  lanes={[
+    { label: 'Owner', color: '#f0883e' },
+    { label: 'Node', color: '#3fb950' },
+    { label: 'App leader', color: '#58a6ff' },
+    { label: 'App log', color: '#a371f7' },
+    { label: 'System log', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /apps/{app}/upgrade { version }' },
+    { from: 1, to: 0, label: '412 CONFIRM_REQUIRED (wasm hash, manifest)', dashed: true },
+    { from: 0, to: 1, label: 'retry with the passkey assertion' },
+    { from: 1, to: 1, label: 'who upgrades? runtime? does it prepare?' },
+    { from: 1, to: 2, label: 'upgrade the app' },
+    { from: 2, to: 3, label: 'upgrade entry: new bundle, state kept, nothing runs' },
+    { from: 1, to: 4, label: 'UpgradeApp: the directory records the release' },
+    { from: 2, to: 2, label: 'the next call runs v2 on what v1 stored' },
+  ]} />
+
 ## 7. Upgrade the organization
 
 An organization-wide run upgrades every instance of the package in the
@@ -228,9 +264,10 @@ organization (or in one team, with `--cascade` its subtree) under one passkey
 approval:
 
 ```bash
-meroctl group upgrade trigger <org> --package com.example.kv-store --version 2.0.0
+meroctl group upgrade trigger <org> --package com.example.kv-store --version 2.0.0 \
+  --dev-passkey ./dev-passkey.json
 meroctl group upgrade status <org> <run>
-meroctl group upgrade retry <org> <run>     # the failed instances, as a new run
+meroctl group upgrade retry <org> <run> --dev-passkey ./dev-passkey.json   # the failed instances, as a new run
 ```
 
 The run (`POST /orgs/{org}/upgrade`, `GET /orgs/{org}/upgrades/{run}`) lists
@@ -243,7 +280,7 @@ upgrade with `meroctl ops upgrade-namespace` where it holds app upgrades.
 
 ## Troubleshooting
 
-[Upgrades & migrations](/core/protocol/upgrades/#planning-the-migration)
+[Upgrades & migrations](/protocol/upgrades/#planning-the-migration)
 describes a migration plan made from the two releases' ABIs. In this version
 the node makes no plan: every upgrade is code only, so each row of that table
 ends as follows.
@@ -270,7 +307,9 @@ The refusals an upgrade meets before it runs, and after:
 | `400 REJECTED` "unknown bundle" | A `bundle` hash the caller may not see, or not on the cluster | Name the release (`--version`), or install it first |
 | `400 VERSION_REQUIRED` | An upgrade key named no version | Pass `--version` |
 | `400 BAD_BUNDLE` | The release's component does not prepare on this node | Rebuild with the cluster's `calimero-sdk`; run `cargo test` first |
-| `409 RELEASE_DEADLINE` | The target release needs a mero-tee release the instance's approver has not approved past its deadline | Approve a current release (`account approve-release`, `namespace approve-release`) |
+| `409 RELEASE_DEADLINE` | The organization whose approvals govern the app has approved no mero-tee release new enough, past the operator's deadline | Approve a current release on that organization (`namespace approve-release`; `account approve-release` does it on your personal organization) |
+| `409 RUNTIME_TOO_OLD` | The release's `minRuntimeVersion` is newer than a replica's `merod` | Wait for the operator to roll the cluster, or build the release with a lower `--min-runtime-version` |
+| `400 UNSUPPORTED_BUNDLE` | The target is a WASM core module (an SDK 0.12 build) | Rebuild with `mero-app-build` |
 | `422 UPGRADE_FAILED`, `RUN_NEEDS_RESULT_METHOD` | A compute run in progress will call a result method v2 no longer declares | Keep the method in v2, or wait for the run to end |
 | Calls fail or read nothing after the upgrade | v2 cannot read what v1 stored | Roll back, fix the state change, and add the case to `migrations/` |
 

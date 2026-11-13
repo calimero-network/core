@@ -24,7 +24,7 @@ clients read it to learn the methods, arguments and results.
   "world": "calimero:app@0.5.1",
   "state": {
     "fields": { "bookings": "table", "titles": "unorderedMap", "nextId": "counter" },
-    "search": { "bookings": [] },
+    "search": { "bookings": [], "nextId": [], "titles": [] },
     "version": 3
   },
   "methods": {
@@ -40,17 +40,17 @@ clients read it to learn the methods, arguments and results.
       "returns": "u64",
       "confirm": false, "public": true, "allowSystem": false
     },
-    "heartbeat": {
-      "kind": "timer", "params": [], "returns": "unit",
-      "every": "30s", "confirm": false, "public": false, "allowSystem": true
+    "releaseNoShows": {
+      "kind": "timer", "params": [], "returns": "option<u64>",
+      "every": "1m", "confirm": false, "public": false, "allowSystem": true
     }
   },
-  "errors": { "NotFound": {}, "Taken": { "start": "u64" }, "Invalid": { "0": "string" } },
+  "errors": { "NotFound": {}, "Taken": { "start": "u64" }, "Invalid": { "reason": "string" } },
   "events": { "Booked": { "id": "string", "roomId": "string", "start": "u64" } },
   "types": {
     "Booking": {
       "kind": "record",
-      "fields": [["id", "string"], ["roomId", "string"], ["start", "u64"], ["title", "string"]]
+      "fields": [["id", "string"], ["roomId", "string"], ["start", "u64"], ["title", "string"], ["checkedIn", "bool"]]
     },
     "Listing": { "kind": "record", "params": ["T"], "fields": [["items", "list<T>"], ["nextCursor", "option<string>"]] },
     "Slot": {
@@ -61,18 +61,21 @@ clients read it to learn the methods, arguments and results.
 }
 ```
 
-- **`methods`**, by camelCase name. `kind` is `init`, `call`, `view`, `timer` or
-  `action`. `params` are ordered `[name, type]` pairs. The flags come from the
-  [method attributes](/core/build/sdk-macros/#method-attributes): `confirm`,
+- **`methods`**, by camelCase name. `kind` is `init`, `call`, `view`, `timer`,
+  `action` or `compute`. `params` are ordered `[name, type]` pairs. The flags come from the
+  [method attributes](/build/sdk-macros/#method-attributes): `confirm`,
   `public` (and `rate`), `allowSystem`, `every` on timers, `allowApps`,
-  `allowAction`.
+  `allowAction`, `compute` (`fuel`, `memoryMib`, `wallSecs`, `result`) on compute
+  methods and `computeResult` on their result methods. A compute method's own
+  kind makes a node that does not know compute refuse the bundle rather than
+  serve the method as a call.
 - **`state`**: each field's kind, the search fields of each table, and the
   `#[app::state(version = N)]`.
 - **`errors`** and **`events`**: each code or name with its fields.
 - **`types`**: the JSON shape of each app type the methods, errors and events
   name, and of the types those name, by the Rust type's name: every
   `#[derive(Record)]` and every `#[derive(AbiType)]` serde type
-  ([SDK macros](/core/build/sdk-macros/#deriveabitype)). `kind` is `record`
+  ([SDK macros](/build/sdk-macros/#deriveabitype)). `kind` is `record`
   (`fields` as ordered `[name, type]`, with `{ "optional": true }` third when the
   JSON may leave the field out), `newtype` (`type`), `tuple` (`items`), `unit`, or
   `enum` (`variants`, each `{ name }`, `{ name, type }`, `{ name, items }` or
@@ -103,13 +106,13 @@ an `abiVersion` bump.
 ## Read it
 
 - `GET /apps/{app}/abi` returns an installed app's ABI
-  ([Node API](/core/operate/admin-api/)); `meroctl context abi` prints it.
+  ([Node API](/operate/admin-api/)); `meroctl context abi` prints it.
 - `GET /apps/{app}/openapi.json` returns it as an OpenAPI 3.1 document (below),
   under the same access.
 - mero-js and calimero-client-py read it to build typed calls;
   `mero-app-build codegen` writes a typed client for an app from it in
   TypeScript, Python, Swift or Kotlin
-  ([Typed clients for your app](/core/build/guides/typed-clients/)).
+  ([Typed clients for your app](/build/guides/typed-clients/)).
 
 ## As OpenAPI
 
@@ -186,7 +189,7 @@ name) and a typed client types it `unknown` / `Any` / `JSONValue` /
 `JsonElement`. The Swift and Kotlin clients make each described type a nested
 type: a record a `struct` / `data class`, an enum an `enum` / `sealed interface`
 coded in its serde tagging, generic where the Rust type is
-([Typed clients](/core/build/guides/typed-clients/#how-the-types-come-out)).
+([Typed clients](/build/guides/typed-clients/#how-the-types-come-out)).
 
 The Swift and Kotlin clients take the Swift or Kotlin type and write its JSON form
 themselves: `u64` is `UInt64` / `ULong`, `i64` `Int64` / `Long`, `bytes` `Data` /
@@ -212,7 +215,7 @@ change; `--json` prints it as JSON. Parameters may widen and results narrow:
 | `confirm` added; `public`, `allowSystem` or an `allowApps` entry removed; `allow(action)` added | The reverse of each; parameters reordered (JSON passes them by name); `rate`, `every` or compute caps changed |
 | An error or event removed, or one of its fields removed or changed outside its old type | An error, event or field added |
 | `abiVersion` changed; `world` moved to another minor | `world` moved to another patch |
-| A state field removed or its collection kind changed; the state version going down or up by more than one | A state field added; the state version up by one (the upgrade runs its `#[app::migrate]` edge); search fields changed |
+| A state field removed or its collection kind changed; the state version going down or up by more than one | A state field added; the state version up by one; search fields changed |
 | A type's shape in `types` changed in a way its callers notice (below) | A type gaining a shape (it was any JSON) |
 
 The app types the methods, errors and events name, and the types those name, are
@@ -250,9 +253,9 @@ compared. Recursive types (`Tree` holding `list<Tree>`) and generic ones
 about breaking ones, and **refuses to sign** when a state field was removed or
 changed kind while `#[app::state(version = N)]` stayed the same, since the
 upgrade to that release would leave the app's data unreadable
-([Upgrades & state](/core/build/migrations/)).
+([Upgrades & state](/build/migrations/)).
 
 <Aside type="note">
   Upgrades compare the state section of the two ABIs: see
-  [Upgrades & state](/core/build/migrations/).
+  [Upgrades & state](/build/migrations/).
 </Aside>

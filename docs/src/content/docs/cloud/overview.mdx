@@ -66,6 +66,14 @@ to hold it. See [Concepts](/protocol/concepts/) and
 - **Packages** are signed `.mpk` releases, installed from a registry or
   uploaded, and verified on every node that runs them. A package's frontend is
   served from its own origin.
+- **Every app instance is in an organization.** Signing up makes the account
+  and its *personal organization* in one entry; an instance created without
+  naming an organization goes there, and its approvals (node images, outbound
+  hosts) are that organization's. Shared apps live in organizations people
+  create and invite others to ([Organizations](/protocol/organizations/)).
+- **Compute** that is too large for a call runs as a compute run on separate
+  job nodes (`merod run --job-node`) over the app's sealed files, and returns
+  its result to the app ([Compute actions](/protocol/compute-actions/)).
 
 ## Trust
 
@@ -77,8 +85,9 @@ to hold it. See [Concepts](/protocol/concepts/) and
   `#[app::confirm]` needs a fresh passkey assertion over the exact call, which
   is logged as consent.
 - **Governance.** Who approves new node images, who upgrades apps and who
-  approves outbound hosts is fixed when the cluster is created — each app's
-  owner, or the operator — and attested with every receipt key, so a user can
+  approves outbound hosts is fixed when the cluster is created — the owner side
+  (an app's organization, or its package's publisher, acting with passkeys), or
+  the operator — and attested with every receipt key, so a user can
   check it ([Deployment governance](/protocol/governance/)).
 - **Operators see counts.** The Ops API reports Raft status and counts, sets
   quotas, registers nodes, moves replicas and triggers sealed backups. It has
@@ -102,7 +111,7 @@ manager), not the node's.
 
 | Crate / package | What it is |
 | --- | --- |
-| `merod` | The node binary: `init`, `run`, `config`, `local`, `inspect`, `kms`, `attest` |
+| `merod` | The node binary: `init`, `run`, `config`, `local`, `inspect`, `kms disk-key`, `attest` |
 | `calimero-node` | The node's inside: system group, app groups, API, Ops API |
 | `calimero-log` | Multi-group Raft engine (openraft) over a sealed RocksDB store |
 | `calimero-sealed` | The sealed HTTP transport, server and client |
@@ -110,7 +119,7 @@ manager), not the node's.
 | `meroctl` | The command line: packages, app instances, organizations, teams, blobs, accounts, `ops` |
 | `calimero-client` | Rust client (attestation, sealed channel, passkeys) |
 | mero-js `CalimeroClient` | Browser / Node client |
-| calimero-client-py `CloudClient` | Python client (binds the Rust client) |
+| calimero-client-py `Client` | Python client (binds the Rust client; `CloudClient` is the same class) |
 | mero-kms (mero-tee) | Releases storage keys to attested nodes |
 | mdma | Calimero's cluster manager: VMs, placement of nodes, the Ops API client, the rebalancer |
 

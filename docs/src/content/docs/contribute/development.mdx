@@ -52,8 +52,13 @@ then, in another terminal:
 ```bash
 cargo run -p meroctl -- node add local http://127.0.0.1:2501/ --allow-mock
 cargo run -p meroctl -- login --dev-passkey ./dev-passkey.json --name dev
-cargo run -p meroctl -- context create --name kv --path kv_store.wasm
+cargo run -p meroctl -- context create --name kv --path kv_store.wasm --alias kv
+cargo run -p meroctl -- call --context kv set --args '{"key":"a","value":"1"}'
 ```
+
+The login signs up an account (with its personal organization, where the
+instance goes when `--namespace` names none); `--dev-passkey` is accepted only
+by a development cluster.
 
 `merod local` runs every node in one process, with mock attestation and the
 development storage key. To exercise separate processes (crashes, restarts,

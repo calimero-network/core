@@ -1,0 +1,81 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-build-app-pipeline">
+<svg viewBox="0 0 760 340" role="img" aria-label="An app goes from a Rust crate on calimero-sdk, through mero-app-build into a calimero:app component with its ABI section, through pack-component.py and mero-sign into a signed .mpk, and onto the cluster, which verifies, prepares and creates it; a development cluster also takes the raw component. On the cluster, the app's leader runs each call and replicates the writes through the app's Raft log." xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="bap-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="760" height="340" rx="10" fill="#0f0f16"/>
+  <text x="380" y="26" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">from a Rust crate to a running app</text>
+
+  <!-- 1: crate -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="16" y="48" width="164" height="150" rx="8" fill="#10210f" stroke="#3fb950" stroke-width="1.4"/>
+    <text x="98" y="68" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">1 · Rust crate</text>
+    <text x="28" y="92" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">cdylib + calimero-sdk</text>
+    <text x="28" y="110" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">#[app::state] struct</text>
+    <text x="28" y="126" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">#[app::logic] impl</text>
+    <text x="28" y="142" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">#[app::event] / error</text>
+    <text x="28" y="172" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">cargo test: TestApp</text>
+    <text x="28" y="186" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">on the real engine</text>
+  </g>
+
+  <!-- 2: component -->
+  <g class="seq-step" style="--step-i:1">
+    <line x1="180" y1="123" x2="202" y2="123" stroke="#8b949e" stroke-width="1.4" marker-end="url(#bap-arrow)"/>
+    <rect x="204" y="48" width="164" height="150" rx="8" fill="#10151c" stroke="#58a6ff" stroke-width="1.4"/>
+    <text x="286" y="68" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">2 · component</text>
+    <text x="216" y="92" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">mero-app-build</text>
+    <text x="216" y="110" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">cargo build --release</text>
+    <text x="216" y="126" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">  wasm32-wasip2</text>
+    <text x="216" y="142" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">lift calimero:abi</text>
+    <text x="216" y="172" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9">→ app.wasm</text>
+    <text x="216" y="186" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">(+ compute.wasm)</text>
+  </g>
+
+  <!-- 3: signed package -->
+  <g class="seq-step" style="--step-i:2">
+    <line x1="368" y1="123" x2="390" y2="123" stroke="#8b949e" stroke-width="1.4" marker-end="url(#bap-arrow)"/>
+    <rect x="392" y="48" width="164" height="150" rx="8" fill="#1a1430" stroke="#a371f7" stroke-width="1.4"/>
+    <text x="474" y="68" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">3 · signed .mpk</text>
+    <text x="404" y="92" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">pack-component.py</text>
+    <text x="404" y="110" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">manifest.json:</text>
+    <text x="404" y="126" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">  package, appVersion,</text>
+    <text x="404" y="142" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">  sha256 of app.wasm</text>
+    <text x="404" y="158" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">mero-sign: JCS+Ed25519</text>
+    <text x="404" y="186" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="9">→ pkg-1.0.0.mpk</text>
+  </g>
+
+  <!-- 4: cluster -->
+  <g class="seq-step" style="--step-i:3">
+    <line x1="556" y1="123" x2="578" y2="123" stroke="#8b949e" stroke-width="1.4" marker-end="url(#bap-arrow)"/>
+    <rect x="580" y="48" width="164" height="150" rx="8" fill="#10201f" stroke="#39d0d8" stroke-width="1.4"/>
+    <text x="662" y="68" text-anchor="middle" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">4 · on the cluster</text>
+    <text x="592" y="92" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">install the package:</text>
+    <text x="592" y="110" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">  signature, digest</text>
+    <text x="592" y="126" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">  imports ⊆ world</text>
+    <text x="592" y="142" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">  prepare (wasmtime)</text>
+    <text x="592" y="158" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">create an app:</text>
+    <text x="592" y="174" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">  init as the owner,</text>
+    <text x="592" y="190" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">  in an organization</text>
+  </g>
+
+  <!-- dev shortcut -->
+  <g class="seq-step" style="--step-i:4">
+    <path d="M286,198 L286,222 L662,222 L662,202" fill="none" stroke="#f0883e" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#bap-arrow)"/>
+    <text x="474" y="216" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="8.5">development cluster only: meroctl context create --path app.wasm</text>
+  </g>
+
+  <!-- runtime -->
+  <g class="seq-step" style="--step-i:5">
+    <rect x="16" y="244" width="728" height="80" rx="8" fill="#161b22" stroke="#39d0d8" stroke-opacity=".5"/>
+    <text x="28" y="264" fill="#39d0d8" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">every call, at run time</text>
+    <text x="28" y="284" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">client → any node → app's leader: handle(kind, method, args) on the component</text>
+    <text x="28" y="300" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">Ok → writes + events become one entry in the app's Raft log; followers apply the diff, never re-run</text>
+    <text x="28" y="316" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">Err or trap → nothing written, no events; a view reads state and writes nothing</text>
+  </g>
+</svg>
+</Figure>

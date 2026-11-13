@@ -11,31 +11,39 @@ disagree, the code wins.
 
 ## Execution limits
 
-`VMLimits::default` (`crates/runtime/src/logic.rs`) bounds one run. Exceeding a
-limit traps the run, which then leaves an empty diff.
+One run of a `calimero:app` component is bounded by the host core
+(`crates/app-host`) and the engine (`crates/app-engine-wasmtime`). A limit
+that stops the run traps it, which leaves an empty diff; a soft limit is an
+error the guest's host call returns.
 
-| Limit | Default |
-| --- | --- |
-| Memory | 1024 pages = 64 MiB |
-| Stack | 200 KiB |
-| Gas | 1 000 000 000 (one point per executed WASM operator) |
-| Host calls | 1 000 000 |
-| Registers | 100; 100 MiB each; 1 GiB in all |
-| Logs | 1024 lines of at most 16 KiB (a longer line traps) |
-| Events | 100; kind 100 bytes; data 16 KiB |
-| Cross-app calls | 8; function name 100 bytes; parameters 16 KiB |
-| Storage key / value | 1 MiB / 10 MiB |
-| Storage writes | 100 000, and 128 MiB in all |
-| Blob handles | 100; chunk 10 MiB; 512 MiB written in all |
-| Ordered-index scan | 100 000 entries |
-| Return value | 16 MiB |
-| Commit artifact | 16 MiB |
-| Method name | 256 bytes |
-| WASM module | 128 MiB (256 MiB precompiled) |
-| Table elements | 100 000 |
+| Limit | Value | Constant |
+| --- | --- | --- |
+| Fuel per call or view | 200 000 000 | `DEFAULT_FUEL` |
+| Memory | 1024 pages = 64 MiB, one memory | `DEFAULT_MEMORY_PAGES`, `MAX_MEMORIES` |
+| Wall clock | 2 s for a call, view, timer or delivery; 10 s for an action | `CALL_WALL_CLOCK`, `ACTION_WALL_CLOCK` |
+| Stack | 200 KiB | `MAX_WASM_STACK` |
+| Table elements, instances, tables, resources | 100 000, 20, 2, 4096 | `MAX_TABLE_ELEMENTS`, `MAX_INSTANCES`, `MAX_TABLES`, `MAX_RESOURCES` |
+| Storage key | 1 KiB | `MAX_KEY_BYTES` |
+| Bytes one run writes (keys, values, event names and data; every overwrite counts) | 1 MiB (`HostDenied("entry too large")`) | `MAX_RUN_BYTES` |
+| Writes per run | 10 000 | `MAX_WRITES` |
+| Range reads | 1000 entries per batch; 1024 open cursors | `MAX_RANGE_BATCH`, `MAX_OPEN_CURSORS` |
+| Events | 1000 per run; name 100 bytes; data 16 KiB; 1000 accounts in an audience | `MAX_EVENTS`, `MAX_EVENT_NAME_BYTES`, `MAX_EVENT_DATA_BYTES`, `MAX_AUDIENCE_ACCOUNTS` |
+| App log | 64 KiB per run; later lines dropped | `MAX_LOG_BYTES` |
+| Xcalls (outbox) | 100 per run; app id or method 128 bytes | `MAX_XCALLS`, `MAX_XCALL_NAME_BYTES` |
+| Synchronous xcalls | 16 per run; arguments 512 KiB; result 1 MiB | `MAX_SYNC_XCALLS`, `MAX_SYNC_XCALL_ARGS_BYTES`, `MAX_SYNC_XCALL_RESULT_BYTES` |
+| Actions | 100 started per call or timer; 1000 `ctx.view` and `ctx.call` per action run | `MAX_STARTED_ACTIONS`, `MAX_ACTION_SUBCALLS` |
+| Outbound HTTP | 8 requests per action, one per call; bodies 1 MiB; 64 KiB recorded in a call's entry; 100 headers | `MAX_HTTP_REQUESTS`, `MAX_HTTP_BODY_BYTES`, `MAX_RECORDED_BODY_BYTES`, `MAX_HEADERS` |
+| Search | 100 hits at most; query 256 bytes | `MAX_SEARCH_LIMIT`, `MAX_SEARCH_QUERY_BYTES` |
+| Files | 16 open; 2 GiB each; 64 MiB written per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_READ_CHUNK` |
+| Blob download grant | 1 day at most | `MAX_GRANT_TTL_SECS` |
+| Compute runs started | 16 per run; 64 active per app; 64 inputs, 64 KiB of arguments | `MAX_STARTS_PER_RUN`, `MAX_ACTIVE_RUNS`, `MAX_RUN_INPUTS`, `MAX_COMPUTE_ARGS_BYTES` |
+| Call arguments | 512 KiB (`413 ARGS_TOO_LARGE`, before anything runs) | `MAX_ARGS_BYTES` |
 
 A run's result also has to fit the log: its whole entry — arguments, diff,
-events — must stay under **1 MiB**.
+events — must stay under **1 MiB** (`calimero_log::MAX_ENTRY_BYTES`); a run
+past it is logged trapped. Compute runs on job nodes have their own caps
+(`MAX_COMPUTE_FUEL` 10^12, `MAX_COMPUTE_MEMORY_MIB` 4096,
+`MAX_COMPUTE_WALL_SECS` 900; [Compute actions](/protocol/compute-actions/#limits)).
 
 ## Node limits
 
@@ -51,7 +59,6 @@ events — must stay under **1 MiB**.
 | Aliases per account | 1000, each 1–64 characters | `MAX_ALIASES` |
 | Passkey label | 64 characters | `MAX_LABEL_CHARS` |
 | Upgrade runs kept per organization | 20 | `UPGRADE_RUNS_KEPT` |
-| Follow-up depth | 3 | `MAX_FOLLOWUP_DEPTH` |
 | Events kept per app | 10 000 | `EVENT_RING` |
 | Entries whose touched entities search remembers | 4096 | `TOUCHED_RING` |
 | Presence | 512 authors per app, 4 KiB state, 7 s TTL | `MAX_AUTHORS_PER_APP`, `MAX_STATE_BYTES`, `PRESENCE_TTL_MS` |
@@ -61,6 +68,18 @@ events — must stay under **1 MiB**.
 | Sealed handshakes per node | anonymous 100/s (burst 200); identified 50/s (burst 100), apart | `HANDSHAKES_PER_SECOND`, `IDENTIFIED_HANDSHAKES_PER_SECOND` |
 | Release frontends | 32 open, 4096 releases remembered as shipping none; 4 `.mpk` loads at once, one per release | `CACHED_FRONTENDS`, `CACHED_ABSENT_FRONTENDS`, `FRONTEND_LOADS` |
 | Forward to an app's leader | 5 s, then retry | `FORWARD_TIMEOUT` |
+| A system write | 10 s, then `503 UNAVAILABLE` | `SYSTEM_WRITE_TIMEOUT` |
+| Idempotency records per app | 100 000 (both kinds), at most 4096 dropped per entry | `IDEMPOTENCY_MAX_RECORDS`, `EXPIRY_STEP` |
+| Cluster-key requests handled at once | 4 | `MAX_CONCURRENT_KEY_RELEASES` |
+| Sealed-file exports | 30 a minute per account per node | `MAX_EXPORTS_PER_MINUTE` |
+| Sessions listed (`GET /auth/sessions`) | 256 | `MAX_SESSIONS_LISTED` |
+| Deployments | 16 per owner, 10 000 per cluster, 64 apps each | `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT` |
+| Organization and app-team names | 64 characters | `MAX_ORG_NAME_CHARS`, `MAX_APP_TEAM_NAME_CHARS` |
+| Team rows changed at once | 64 teams | `MAX_TEAM_BATCH` |
+| Sign-up invites | 10 000, each at most 10 000 uses | `MAX_SIGN_UP_INVITES`, `MAX_SIGN_UP_INVITE_USES` |
+| Compute pools | 32, names 1–64 bytes; 10 000 payer overrides | `MAX_POOLS`, `MAX_POOL_NAME_BYTES`, `MAX_ORG_QUOTAS` |
+| Recovery disk | written every 5 min; the newest 3 files per subject; unlisted segments kept 7 days | `RECOVERY_EVERY`, `KEEP`, `SEGMENT_KEEP` |
+| Rollback checkpoint | every 1 s | `CHECKPOINT_EVERY` |
 | Compute runs, files and job nodes | See [Compute actions](/protocol/compute-actions/#limits) | `MAX_COMPUTE_WALL_SECS`, `MAX_COMPUTE_MEMORY_MIB`, `MAX_COMPUTE_FUEL` |
 | Replicas per app | `--replicas`, 3 by default; moves keep at least 3 | |
 
@@ -83,26 +102,30 @@ that, or for a declared length past 1 GiB or a client waiting on
 | --- | --- |
 | Session token | 15 minutes |
 | Refresh token | 30 days; exchanged by the first refresh once an hour old |
-| Session-signing key rotation | 6 hours by default, at least 30 minutes |
 | API key | Up to 1 year |
+| Passkey ceremony (sign-in, sign-up, step-up challenge) | 5 minutes |
 | Invite | 7 days by default; 1 use by default |
-| Client idempotency record | 24 hours; the newest 10 000 kept regardless; at most 1 000 000 |
+| Sign-up invite | 7 days by default; at most 1 year |
+| Account proof | 5 minutes |
+| Organization or account recovery | 72 hours from start to finish (`RECOVERY_DELAY_SECS`) |
+| Client idempotency record | 24 hours; the newest 10 000 kept regardless; at most 100 000 per app |
 | Node idempotency record (`node:…`) | 10 minutes; the newest 1000 kept regardless |
 | Revoked session remembered | 1 hour |
 | `sys_until` / read-index wait | 2 seconds |
 
 ## Quotas
 
-Per account, set by the operator (`POST /ops/quotas`), checked at apply
-([The system group](/protocol/system-group/#quotas)); a refusal is
-`429 QUOTA_EXCEEDED`.
+Per account or per organization (the payer), set by the operator
+(`POST /ops/quotas`, with `org` for one payer's compute and file overrides),
+checked at apply ([The system group](/protocol/system-group/#quotas)); a
+refusal is `429 QUOTA_EXCEEDED`.
 
 | Quota | Default |
 | --- | --- |
 | Apps owned | 100 |
 | Bundle and package bytes uploaded | 1 GiB |
 | API keys | 50 |
-| Organizations owned | 20 |
+| Organizations owned (the personal one not counted) | 20 |
 | Accounts on the cluster | 100 000 |
 | Stored file bytes per organization (`maxFileBytesPerOrg`) | 50 GB |
 | Concurrent compute runs per organization (`maxConcurrentRunsPerOrg`) | 4 |
@@ -124,6 +147,4 @@ its release or newer (`409 UPGRADE_PENDING`).
 
 Organization roles (`guest < member < admin < owner`), team row roles (`lead`,
 `member`, `read-only`) and the capability bits are on
-[Organizations, teams & access](/protocol/organizations/). The storage crate's
-per-entity write mask (`OpMask`: `WRITE`, `DELETE`, `ADMIN`) is unchanged; it is
-checked inside the run, on the leader.
+[Organizations, teams & access](/protocol/organizations/).

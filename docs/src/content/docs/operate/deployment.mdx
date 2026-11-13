@@ -7,6 +7,8 @@ sidebar:
 
 import { Aside, Steps } from '@astrojs/starlight/components';
 import GrowCluster from '../../../components/diagrams/GrowCluster.astro';
+import OpsDeploymentTopology from '../../../components/diagrams/OpsDeploymentTopology.astro';
+import OpsRecoveryFlow from '../../../components/diagrams/OpsRecoveryFlow.astro';
 
 A production cluster is `merod` nodes, each in an Intel TDX VM booted from a
 signed mero-tee image: three or more for redundancy, or one that grows
@@ -18,12 +20,17 @@ and the file in [Configuration](/operate/config/).
 
 ## The shape of a deployment
 
+<OpsDeploymentTopology />
+
 | Piece | What it is |
 | --- | --- |
 | Nodes | `merod run` in TDX mode (no `--dev`), one per TD. Each serves the node API on `--listen` and is reached at its `--public-url`. |
 | mero-kms | Releases each node's storage key after verifying its quote against the signed release policy. |
 | Package registry | Where nodes fetch signed `.mpk` releases (`--registry-url`). Optional if every release is uploaded. |
-| Backup storage | A directory (`--backup-dir`) that receives sealed app snapshots. |
+| Job nodes | Optional: `merod run --job-node --cluster-identity HEX`, TDs that only run compute (pipelines) for the cluster's apps; no store, vote or cluster key. Registered with `meroctl ops add-node ID URL --role job`. |
+| Backup storage | A directory (`--backup-dir`) that receives sealed snapshots of the apps and the system group, opened only with the cluster key. |
+| Recovery disk | A second disk (`--recovery-dir`) that receives backups sealed to each app's holder's backup key, which outlive every mero-kms ([Backups and the recovery disk](#backups-and-the-recovery-disk)). |
+| Operator keys | Kept off the nodes: the ops token (only its hash on the nodes), the operator's Ed25519 key (`--operator-key` takes its public half) and, where the operator upgrades apps, its X25519 backup key. |
 | TLS front | Whatever terminates HTTPS for browsers in front of each node. |
 | DNS | A name per node, and a wildcard name for `--apps-domain` if you serve app frontends. |
 
@@ -81,18 +88,24 @@ ramfs only.
      --peers 1=https://n1.eu1.example.com/,2=https://n2.eu1.example.com/,3=https://n3.eu1.example.com/ \
      --kms-url https://kms.internal.example.com/ --kms-identity /data/disk-identity \
      --rp-id example.com --origins https://app.example.com \
-     --ops-token-sha256 "$OPS_TOKEN_SHA256" --backup-dir /backups \
+     --ops-token-sha256 "$OPS_TOKEN_SHA256" --operator-key "$OPERATOR_PUBLIC_HEX" \
+     --backup-dir /backups --recovery-dir /recovery \
      --registry-url https://registry.example.com/
    ```
+
+   The operator key is an Ed25519 key pair the operator keeps; the node
+   takes only its 32-byte public half in hex. Every operator decision
+   (registering a node, a replica move, quotas, a restore, the operator's
+   backup key) is refused without its signature, and the key is recorded at
+   genesis, so choose it before the first start.
 
 2. **Bootstrap on one node.** Add `--bootstrap` to exactly one founding node's
    first start. It forms the system group with `--peers` as voters; the others
    wait to be contacted. A restart with `--bootstrap` still set does nothing.
 
 3. **Start them all** with `merod --node nX run`. The first leader writes the
-   genesis (the governance below), registers the `--peers` in the fleet
-   directory and adds the first session-signing key. Nobody can sign up before
-   genesis.
+   genesis (the governance below and the operator key) and registers the
+   `--peers` in the fleet directory. Nobody can sign up before genesis.
 
 4. **Check it formed:**
 
@@ -131,20 +144,72 @@ keeps a replica there. The steps are in the runbooks:
 ## Governance
 
 Three decisions are each given, when the cluster is formed, to either each
-app's **owner** (the default; an organization's owner for its apps, approving
-with a passkey) or the **operator** (for every app, with the ops token):
+app's **owner** (the default: the app's organization, whose members holding
+the right capability approve with a passkey) or the **operator** (for every
+app, signed with the operator key):
 
 | Flag | The decision |
 | --- | --- |
 | `--release-approvals` | Which mero-tee releases may hold apps' data (cluster upgrades). |
-| `--app-upgrades` | Which bundle an app runs. |
+| `--app-upgrades` | Which bundle an app runs, and so who holds each app's backup key on the recovery disk. |
 | `--outbound-approvals` | Which URL prefixes apps may call out to. |
+
+Three more rules are set the same way:
+
+| Flag | Default | The rule |
+| --- | --- | --- |
+| `--deployments open\|granted` | `open` | Who may install packages: any account, or only accounts and organizations holding a deployer grant. The operator may later move `open` to `granted` (`POST /ops/deployments/granted`), never back. |
+| `--deployers operator\|owner` | `operator` | Who grants deployers and runs sign-up: the operator's key, or the cluster's owner once the operator names it (`POST /ops/cluster-owner`). |
+| `--sign-up open\|invite\|closed` | `open` | Who may create an account ([Sign-up policy](/operate/auth/#sign-up-policy)); changed later only by a signed `POST /ops/sign-up` (or the owner's `POST /sign-up`). |
 
 They are fixed at genesis, attested with every node's receipt key, and
 reported to users (`meroctl attest --context`), so a user can check them before
 trusting the cluster. Give the operator a decision only where users trust it
 with code, or destinations, that can read their data. See
 [Security](/operate/security/#governance).
+
+## Backups and the recovery disk
+
+A node can write two kinds of backup, and a production cluster wants both:
+
+<OpsRecoveryFlow />
+
+- **`--backup-dir DIR`**: every 60 seconds, a snapshot of each group the node
+  leads, sealed under the cluster key K_c, beside K_c wrapped under this
+  release's storage key and the code the system state names. Only a node that
+  holds K_c (this cluster's, or a founder whose mero-kms still opens a kept
+  copy) reads it. It restores one app (`meroctl ops restore APP`) or founds
+  the cluster again (`merod run --bootstrap --restore-from DIR`). Copy it off
+  the machine.
+- **`--recovery-dir DIR`**: every 5 minutes, on every node that holds an app
+  (leader or not), the app's state, its sealed files' segments and its code,
+  and each holder's slice of the system state, each sealed (HPKE) to the
+  X25519 public key of whoever upgrades the app and signed by the node's
+  attested receipt key. It opens with that key alone, so it survives the loss
+  of every mero-kms. On Calimero Cloud the image mounts the disk mdma
+  attaches as `recovery` here.
+
+Nothing is written to the recovery disk for a holder that set no backup key;
+the node warns `apps whose holder set no backup key are not on the recovery
+disk` on each pass. Where the operator upgrades apps (`--app-upgrades
+operator`), set the operator's key once the cluster is formed (needs every
+node on 1.0.0-rc.20 or later, else `409 FEATURE_NOT_ACTIVE`):
+
+```bash
+# on a machine that is not a node; keep operator-backup.key offline
+meroctl ops recovery-keygen --out operator-backup.key
+# prints { "publicKey": "<64 hex>", "secretKeyFile": "operator-backup.key" }
+meroctl --ops-token "$OPS_TOKEN" --operator-key-file operator.key \
+  ops backup-key --public-key <64 hex>
+meroctl --ops-token "$OPS_TOKEN" ops backup-key     # check: { holder, key, apps }
+```
+
+Where owners upgrade apps, each organization's `MANAGE_APPLICATION` holders
+set its key with a passkey (`POST /orgs/{org}/backup-key`; a person's own
+apps are in their personal organization). Recovery itself is in the
+runbooks: [Restore an app](/operate/runbooks/#restore-an-app),
+[Found a cluster again](/operate/runbooks/#found-a-cluster-again-from-its-backups),
+[Recover after every key service is gone](/operate/runbooks/#recover-after-every-key-service-is-gone).
 
 ## Run it in a container
 
@@ -158,7 +223,7 @@ docker run -d --name n1 -p 2528:2528 -v n1-data:/data \
   -e MEROD_DATA_DIR=/data/n1 -e MEROD_CLUSTER=eu1 \
   -e MEROD_PEERS=1=https://n1.eu1.example.com/,2=https://n2.eu1.example.com/,3=https://n3.eu1.example.com/ \
   -e MEROD_KMS_URL=https://kms.internal.example.com/ -e MEROD_KMS_IDENTITY=/data/disk-identity \
-  -e MEROD_OPS_TOKEN_SHA256="$OPS_TOKEN_SHA256" \
+  -e MEROD_OPS_TOKEN_SHA256="$OPS_TOKEN_SHA256" -e MEROD_OPERATOR_KEY="$OPERATOR_PUBLIC_HEX" \
   -e MERO_TEE_VERSION="$RELEASE" -e MERO_TEE_PROFILE="$PROFILE" \
   merod run
 ```
@@ -166,8 +231,7 @@ docker run -d --name n1 -p 2528:2528 -v n1-data:/data \
 `merod` here is the image tag (`docker build -t merod .`); the arguments after
 it go to the `merod` binary.
 
-The image `EXPOSE`s `2428` and `2528`; only `2528` (the default `--listen`
-port) is used.
+The image `EXPOSE`s `2528`, the default `--listen` port.
 
 ## TLS and load balancers
 
@@ -202,6 +266,12 @@ origin also needs its own DNS record to the front and a certificate for its
 name; `GET /ops/served-origins` lists them. See
 [Networking](/operate/networking/#app-frontends).
 
+The consent page, where people approve what an app's frontend asks, can link
+to an independent attestation verifier so they check the node's TDX
+attestation on a site the node does not control:
+`--attestation-verifier-url https://verify.calimero.network` (Calimero's), or
+your own deployment of one ([merod](/operate/merod/#node-flags)).
+
 ## Checklist
 
 - [ ] No node runs with `--dev`, `--storage-key`, `--storage-key-file` or
@@ -214,6 +284,11 @@ name; `GET /ops/served-origins` lists them. See
 - [ ] The ops token is configured as `--ops-token-sha256`, and the token
       itself is kept outside the machines.
 - [ ] `--backup-dir` is set and its contents leave the machine.
+- [ ] `--recovery-dir` is a disk of its own, and the holder of every app's
+      backups (the operator, or each organization) has set a backup key whose
+      private half is kept off the nodes.
+- [ ] `--operator-key` was set on the founding nodes, and the operator's
+      Ed25519 key is kept outside the machines.
 - [ ] `--rp-id` is the domain users sign in on; `--origins` lists the HTTPS
       origins of your frontends.
 - [ ] Quotas are set for your cluster (`meroctl ops set-quotas`).

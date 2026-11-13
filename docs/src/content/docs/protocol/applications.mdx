@@ -7,8 +7,10 @@ sidebar:
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 
-An app instance runs one **bundle**: a WASM module named by
-`hex(SHA-256(wasm))`. In production a bundle always comes out of a **package
+An app instance runs one **bundle**: a `calimero:app` WebAssembly component
+named by `hex(SHA-256(wasm))`. A core module (an SDK 0.12 app, which ran on
+wasmer) is refused at upload, create and install (`400 UNSUPPORTED_BUNDLE`),
+and an instance the node left behind answers `410 UNSUPPORTED_ENGINE`. In production a bundle always comes out of a **package
 release**: a signed `.mpk` (`calimero-bundle`) holding a `calimero:app`
 component built with `calimero-app-build`, its manifest signed by its publisher
 with `mero-sign`. See
@@ -16,11 +18,31 @@ with `mero-sign`. See
 
 ## What a release carries
 
-The `.mpk` manifest names the package, its version, its services (each a WASM
-module; a single-service package has one unnamed service), a frontend, display
-metadata, the `minRuntimeVersion` it needs, and the outbound URL prefixes it
-declares. The manifest is signed by the publisher's key, and every artifact in
-the archive is listed with its digest.
+The `.mpk` manifest names the package, its version, its services (each a
+`calimero:app` component, `wasm`, and optionally a compute component,
+`compute`; a single-service package has one unnamed service), a frontend,
+display metadata, who upgrades its instances (`upgrades: owner | publisher`),
+the `minRuntimeVersion` it needs, the outbound URL prefixes it declares and
+any pipelines it registers (`pipelines`). The manifest is signed by the
+publisher's key, and every artifact in the archive is listed with its digest.
+
+- **A compute component** runs only on job nodes, never on a replica. Install
+  prepares it on the compute engine alone and refuses the release unless its
+  ABI lists exactly the app component's compute methods with the same caps
+  (`400 COMPUTE_ABI_MISMATCH`) and it imports nothing outside the compute world
+  (`400 BAD_BUNDLE`). A release without one installs and runs calls; it cannot
+  run compute ([Compute actions](/protocol/compute-actions/#two-components)).
+- **A compute-only package** ships the compute component alone (one service,
+  no `wasm`). It needs at least one compute method (`400 NO_COMPUTE_METHODS`)
+  and installs only once every node runs a release that knows it (`409
+  CLUSTER_NOT_UPGRADED`). Its instances have no app state: a call, view or
+  init is `422 NO_APP_COMPONENT`; they hold files and run pipelines.
+- **Pipelines** (`pipelines/*.yaml`) are compiled and checked at install
+  against the release's compute methods and the modules of other packages a
+  step names (`module: <package>[@<version>]`, pinned to the release resolved
+  then); any error is `400 BAD_PIPELINE` with every problem listed. `GET
+  /packages/{package}/{version}/pipelines` answers them ([Pipeline
+  runs](/protocol/compute-actions/#pipeline-runs)).
 
 ## Installing a release
 
@@ -85,8 +107,8 @@ the request verifies the release (`Node::verify_release`):
 
 `apply` checks the signer pin and the one-signer rule again, refuses a version already installed with
 other contents (the same release again changes nothing but who installed it:
-the new installer is added to the release's `installers`), and charges the `.mpk`'s
-size to the installer's bundle quota (the operator's installs count against no
+the new installer is added to the release's `installers`), and charges each of its parts (every service's
+component and compute component) at its own size to the installer's bundle quota (the operator's installs count against no
 account). The log keeps, per release, the `.mpk`'s hash and size, where it came
 from (`registry` or `upload`), each service's bundle hash, the metadata, and the
 declared outbound prefixes.
@@ -292,6 +314,9 @@ cluster's own origin, it could reach anything the signed-in account can. On its
 own origin it is a separate site to the browser, and a passkey ceremony from it
 opens a session **bound to its package**: that session reaches only instances
 of that package, creates only instances of it, and is refused credentials, API
-keys, approvals, upgrades, uninstalls and uploads ([Accounts, passkeys &
-sessions](/protocol/identities/#which-credential-may-do-what)). Its step-ups
-come only from its own origin.
+keys, approvals, upgrades, uninstalls and uploads, and every organization
+change but its own package's channels ([Package-bound
+sessions](/protocol/identities/#package-bound-sessions)). Its step-ups come
+only from its own origin. What it may not do itself, such as approving an
+upgrade or creating an organization, it asks the node's
+[consent page](/protocol/consent-page/) for.
