@@ -1214,7 +1214,7 @@ is its command line.
   `an_upgrades_page_names_what_the_components_abis_change` with
   `apps/v2-fixtures/notes-v1` and `notes-v2`; the plain-language `title`, `points` and
   `attention` the page leads with are the node's too, and the rest sits under
-  a collapsed *Technical details*). `GET /consent/{id}` (static HTML in the
+  a collapsed *Details*). `GET /consent/{id}` (static HTML in the
   binary, hash-only CSP, `frame-ancestors 'none'`), `/model`, `/approve`,
   `/decline` are an outer layer in the clear on the node's own origin (outside
   CORS and the sealed channel); `/approve` runs the same route code

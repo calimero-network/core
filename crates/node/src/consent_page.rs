@@ -2794,6 +2794,26 @@ mod tests {
     }
 
     #[test]
+    fn the_page_keeps_its_security_cues_in_the_main_view() {
+        let main = PAGE_HTML
+            .split("<details")
+            .next()
+            .expect("the page has a main view");
+        for cue in [
+            "Check your address bar shows <strong class=\"host\">",
+            "id=\"code\"",
+            "id=\"approve\"",
+            "id=\"decline\"",
+            "id=\"attention\"",
+            "id=\"expires\"",
+        ] {
+            assert!(main.contains(cue), "{cue} is in the main view");
+        }
+        assert!(PAGE_HTML.contains("<summary>Details</summary>"));
+        assert!(!PAGE_HTML.contains("https://"), "no external resource");
+    }
+
+    #[test]
     fn a_release_request_withdraws_only_when_it_says_so() {
         let parse = |subject: Value| {
             serde_json::from_value::<CreateBody>(json!({
