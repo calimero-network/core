@@ -2761,6 +2761,18 @@ struct ScopeAsLogged {
     by_release: bool,
 }
 
+impl ScopeAsLogged {
+    /// Every rule as this release judges it: what a command this release
+    /// writes and applies in the same entry (`CreateOrg { app_team }`) uses.
+    const CURRENT: Self = Self {
+        owner_in_team: true,
+        accounts_in_app_team: true,
+        member_child_teams: true,
+        all_apps_rows: true,
+        by_release: true,
+    };
+}
+
 impl SystemState {
     /// [`SystemCmd::ScopeApps`], judged and applied as one step: everything
     /// is checked and every person who reaches an instance now is found
@@ -4881,6 +4893,13 @@ pub enum SystemCmd {
         /// Left out when false ([`cluster_version::Feature::PersonalOrg`]).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         personal: bool,
+        /// A package whose app team the new organization starts with, made
+        /// in the same entry as `ScopeApps` makes one for a package with no
+        /// instances yet, the creator its lead (the consent page's
+        /// `createOrg` asked from that package's frontend). Left out when
+        /// none ([`cluster_version::Feature::OrgAppTeam`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app_team: Option<String>,
     },
     /// Rename an organization: its owner or an admin, with their passkey
     /// consent (`org:<org> / __rename_org / { name }`), to a name that fits

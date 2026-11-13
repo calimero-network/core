@@ -1241,8 +1241,17 @@ is its command line.
   invite's `token`, the `org` joined) is kept with the decision
   (`ConsentRequests::decide`, `Outcome`, redacted in `Debug` as
   `InviteToken` is) and answered as `/result`'s `outcome`, never in the
-  page's clear answer. Regression:
-  `an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page`.
+  page's clear answer. A `createOrg` from a package-bound session also makes
+  that package's app team (`Action::CreateOrg { app_team }`,
+  `consent_page::org_app_team`: the package installed and
+  `Feature::OrgAppTeam` active, else a bare organization), in the same
+  `CreateOrg { app_team }` entry: apply runs `SystemState::scope_apps` for
+  the package with no instances (`ScopeAsLogged::CURRENT`, standalone, nonce
+  `{org}/app-team`, so the team id is the same on every replica) and takes the
+  organization back on a refusal; `outcome` gains `teamId`, the model
+  `appTeam`, the step-up `appTeam`. Regressions:
+  `an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page`,
+  `system::tests::an_organization_made_from_an_app_starts_with_its_app_team`.
   Moderation and settings (`consent_page/orgs.rs`): `leaveOrg { org }`,
   `removeMember { org, account }`, `setMemberRole { org, account, role }`,
   `setMemberTeams { org, account, teams: [TeamRow] }`, `removeMemberTeams

@@ -2,7 +2,18 @@
 
 ## [Unreleased]
 
-## [1.0.0-rc.22] - 2026-11-13
+### Added
+
+- **An organization made on the consent page from an app comes with that app's
+  team** (`calimero-node`). A `createOrg` consent request from an app's frontend
+  (a package-bound session) now also makes the package's app team in the new
+  organization, open, with the creator its lead, in the same approval and the
+  same `CreateOrg` entry (`app_team`), so the app (Mero Chat's "Create
+  workspace") runs its channels there at once; before, the organization was bare
+  and the frontend could not add its team. `/consent/{id}/result`'s `outcome`
+  gains `teamId`, and the page names the app. Behind `Feature::OrgAppTeam`
+  (1.0.0-rc.22): below that cluster version the organization is made bare, as
+  before.
 
 ## [1.0.0-rc.21] - 2026-11-13
 

@@ -67,7 +67,9 @@ NOT_COVERED = [
                   "`deleteOrg`, `setCapabilities`, `setAllApps`) and the page's verifier link"),
      "a consent request is approved in a browser on the node's consent page; the cluster test "
      "`consent_page.rs` covers every kind on one build. What an approval writes is the same log entry as "
-     "the API's route, which the organization and team cases cover. The verifier link is a startup setting "
+     "the API's route, which the organization and team cases cover; a `createOrg` asked from an app's "
+     "frontend also makes that app's team in the same `CreateOrg`, the organization and team `ScopeApps` "
+     "makes, which `app-teams` covers. The verifier link is a startup setting "
      "(`--attestation-verifier-url`) that stores nothing"),
     ("Apps", "Timers (`#[app::every]`) firing across the roll",
      "the fixture's timer is hourly on the nodes' real clock, which a process cluster cannot move; "
