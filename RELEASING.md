@@ -161,11 +161,13 @@ check lints them) and to what counts as breaking.
   `[Unreleased]`. Deciding to cut a release and merging this pull request is a
   human's call; an agent drafts one only when asked.
 - **Merge to master.** [`release.yml`](.github/workflows/release.yml) runs on
-  every push to master that touches the build. Its `prepare` job reads the
-  version; when no GitHub Release named `X` exists yet, it creates the release
+  every push to master. Its `prepare` job reads the version; when no GitHub Release named `X` exists yet, it creates the release
   and its tag `X` (the bare version, no `v`) at the merged commit, marked as a
   pre-release when the version has a suffix such as `-rc.N`. A push that does
-  not change the version releases nothing (master still gets its `edge` image).
+  not change the version builds and releases nothing. Only a cut builds the
+  binaries and the image, tests the image (`E2E on the merod image`), and then
+  publishes. A manual dispatch of `release.yml` builds and tests the same way
+  without publishing.
 - **The upgrade path pin.** Once the release's assets are up, a follow-up pull
   request (`chore(release): upgrade path from X`) sets `.github/upgrade-from` to
   `X`, at the latest in the next release pull request. Hard cutovers set it to
@@ -192,8 +194,8 @@ binary only: `calimero-app-build` and the `calimero-app-abi` it builds on are
 `publish = false`, so it is not on crates.io, and an app's CI downloads the
 archive (checked against `SHA256SUMS`) rather than running `cargo install --git`.
 
-Every master push that builds also pushes `ghcr.io/calimero-network/merod:edge`
-and a short-sha tag; neither is a release.
+The image holds `merod` only; `meroctl` and the other tools ship as the archives
+above. No other image tags are pushed: there is no `edge` or per-commit image.
 
 ### Pre-releases
 

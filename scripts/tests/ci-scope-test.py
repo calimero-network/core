@@ -49,18 +49,6 @@ CASES = [
     ("no input fails closed", [], ALL),
 ]
 
-RELEASE_CASES = [
-    # (name, changed paths, whether release.yml builds)
-    ("a crate change builds", ["crates/node/src/lib.rs"], True),
-    ("a tool change builds", ["tools/merodb/src/main.rs"], True),
-    ("the image Dockerfile builds", [".github/workflows/deps/prebuilt.Dockerfile"], True),
-    ("crate docs do not build", ["crates/node/AGENTS.md", "crates/log/README.md"], False),
-    ("an app does not build", ["apps/kv-store/src/lib.rs"], False),
-    ("site docs do not build", ["docs/src/content/docs/index.mdx"], False),
-    ("no input fails closed", [], True),
-]
-
-
 def run(paths, *args):
     out = subprocess.run(
         [sys.executable, str(SCRIPT), *args], input="".join(p + "\n" for p in paths),
@@ -88,13 +76,6 @@ def main():
             failures += 1
         else:
             print(f"ok   {name}")
-    for name, paths, want in RELEASE_CASES:
-        runs, jobs = run(paths, "--workflow", "release")
-        if jobs != {"build"} or (runs == {"build"}) != want:
-            print(f"FAIL release: {name}: got {sorted(runs)} of {sorted(jobs)}")
-            failures += 1
-        else:
-            print(f"ok   release: {name}")
     spec = importlib.util.spec_from_file_location("ci_scope", SCRIPT)
     ci_scope = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ci_scope)
@@ -105,7 +86,7 @@ def main():
             failures += 1
     if failures:
         return 1
-    print(f"all {len(CASES) + len(RELEASE_CASES)} ci-scope cases passed")
+    print(f"all {len(CASES)} ci-scope cases passed")
     return 0
 
 

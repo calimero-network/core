@@ -13,17 +13,17 @@ test or bundle, so it runs nothing. Markdown that IS read counts as code:
 anything named by include_str!/include_bytes! in a Rust source, and every
 `guide`/`readme` a Cargo manifest names (a bundle embeds its guide).
 
-A workflow that must report a required check on every PR (ci-checks.yml's `Rust`,
-release.yml's `Build Binaries`) runs on every PR and asks this for a whole-
-workflow verdict instead of using a `paths:` filter, which would need a stub
-workflow to report the check whenever it skipped: `rust` and `build` are true
-when any non-documentation file matches what that workflow used to filter on.
+A workflow that must report a required check on every PR (ci-checks.yml's `Rust`)
+runs on every PR and asks this for a whole-workflow verdict instead of using a
+`paths:` filter, which would need a stub workflow to report the check whenever it
+skipped: `rust` is true when any non-documentation file matches what that
+workflow used to filter on.
 
 Reads changed paths on stdin, one per line. Prints `<job>=true|false` for every
 job of the workflow, and the reasons on stderr. Fails closed: no input, an
 error, or a path it cannot place runs every job.
 
-Usage: ci-scope.py [--workflow ci-checks|release] < changed-paths
+Usage: ci-scope.py [--workflow ci-checks] < changed-paths
 """
 
 from __future__ import annotations
@@ -98,23 +98,6 @@ WORKFLOWS = {
             "scripts/build-upgrade-deep-fixtures.sh",
             "scripts/upgrade-dev-bundle.py",
             "scripts/upgrade-path.sh",
-        ),
-    ),
-    "release": (
-        "build",
-        (
-            "Cargo.lock",
-            "Cargo.toml",
-            "rust-toolchain.toml",
-            ".cargo/*",
-            "crates/*",
-            "tools/*",
-            ".github/workflows/release.yml",
-            ".github/workflows/deps/*",
-            ".github/actions/*",
-            # COPYed into the profiling image by prebuilt.profiling.Dockerfile.
-            "scripts/profiling/*",
-            "scripts/ci-scope.py",
         ),
     ),
 }

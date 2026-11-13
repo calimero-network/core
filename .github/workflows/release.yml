@@ -1,7 +1,14 @@
 name: Release
 
-# Pushes to master release: binaries, crates, the App Bundle, the Homebrew tap
-# and SDK bump PRs for a new version, and the merod image's version tags.
+# A release cut builds and publishes: a push to master whose version (the root
+# Cargo.toml's) has no GitHub release yet. It publishes the binaries (Linux
+# x86_64 and aarch64; the command-line tools for macOS), crates, the App Bundle,
+# the Homebrew tap and SDK bump PRs, and the merod image (amd64 and arm64) under
+# the version and `latest` or `prerelease`, once that image passed its smoke e2e.
+# Any other push builds nothing: `prepare` decides in seconds. PRs and the merge
+# queue build no release: ci-checks tests every crate, and e2e.yml runs a release
+# merod in the queue. `workflow_dispatch` builds and tests a release on any branch
+# and publishes nothing.
 on:
   push:
     branches:
@@ -18,11 +25,7 @@ on:
       - "!**/*.md"
       - "!**/*.mdx"
       - "tools/mero-sign/README.md"
-  merge_group:
-  # Every PR, with no `paths:` filter: a `Build Binaries` check is required, and
-  # `prepare` below decides whether this change builds anything (docs never do).
-  # A filter would need a stub workflow to report the check whenever it skipped.
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -40,8 +43,10 @@ env:
     mero-sign
   HOMEBREW_BINARIES: |-
     meroctl
-  DOCKER_PLATFORMS: ${{ github.event_name != 'push' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
-  INCLUDE_AARCH64: ${{ github.event_name != 'push' && 'false' || 'true' }}
+  # The image runs a node and nothing else: meroctl and the other tools ship as
+  # release archives and through Homebrew.
+  IMAGE_BINARIES: |-
+    merod
 
 jobs:
   # Every job runs on a standard GitHub-hosted runner, free on a public repository.
@@ -57,17 +62,15 @@ jobs:
       binary_release: ${{ steps.version_info.outputs.binary_release }}
       crate_release: ${{ steps.version_info.outputs.crate_release }}
       docker_release: ${{ steps.version_info.outputs.docker_release }}
-      docker_push: ${{ github.event_name == 'push' || github.event.pull_request && !github.event.pull_request.head.repo.fork }}
       prerelease: ${{ steps.version_info.outputs.prerelease }}
       build_matrix: ${{ steps.build_matrix.outputs.matrix }}
-      # Whether this change can alter anything this workflow builds (scripts/ci-scope.py).
-      build: ${{ steps.scope.outputs.build }}
+      # Whether this run builds: a release cut, or a run by hand (which publishes nothing).
+      build: ${{ github.event_name == 'workflow_dispatch' || steps.version_info.outputs.binary_release == 'true' }}
       target_commit: ${{ steps.version_info.outputs.target_commit }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Get version info
@@ -103,8 +106,6 @@ jobs:
               # tag points at that commit.
               echo "::warning::Release $version exists with no assets. If its build failed, re-run that run; this push will not upload binaries."
             fi
-          elif [ "${GITHUB_EVENT_NAME}" == "pull_request" ]; then
-            docker_release=true
           fi
 
           echo "version=$version" >> $GITHUB_OUTPUT
@@ -113,60 +114,18 @@ jobs:
           echo "crate_release=$crate_release" >> $GITHUB_OUTPUT
           echo "docker_release=$docker_release" >> $GITHUB_OUTPUT
 
-      # Fails closed: a change whose files cannot be listed builds everything.
-      - name: Decide whether this change builds anything
-        id: scope
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT: ${{ github.event_name }}
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          FROM: ${{ github.event.before || github.event.merge_group.base_sha }}
-          TO: ${{ github.event.merge_group.head_sha || github.sha }}
-        run: |
-          set -uo pipefail
-          files=""
-          case "$EVENT" in
-            pull_request)
-              if listed=$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename') \
-                && [ "$(grep -c . <<<"$listed")" -lt 3000 ]; then
-                files=$listed
-              fi
-              ;;
-            push | merge_group)
-              if [ -n "${FROM//0/}" ] \
-                && listed=$(gh api "repos/$REPO/compare/$FROM...$TO" --jq '.files[].filename') \
-                && [ "$(grep -c . <<<"$listed")" -lt 300 ]; then
-                files=$listed
-              fi
-              ;;
-          esac
-          [ -n "$files" ] || echo "::notice::could not list this change's files; everything builds"
-          printf '%s\n' "$files" | python3 scripts/ci-scope.py --workflow release >> "$GITHUB_OUTPUT"
-
-      # Linux x86_64 always (a required check; the name keeps the runner it once
-      # had, since branch protection requires the check by name); arm64 on pushes to master, which
-      # the multi-arch edge images need; macOS only when this run publishes binaries,
-      # the one job that reads them (platforms.yml builds it nightly). There is no
-      # Windows build: nodes run on Linux TDX hosts only.
+      # Every build is a release's (or a run by hand that checks one): Linux x86_64
+      # and aarch64 (the release archives and the image's two platforms), and macOS
+      # for the command-line tools Homebrew installs. There is no Windows build:
+      # nodes run on Linux TDX hosts only.
       - name: Choose the build targets
         id: build_matrix
-        env:
-          EVENT: ${{ github.event_name }}
-          BINARY_RELEASE: ${{ steps.version_info.outputs.binary_release }}
         run: |
           set -euo pipefail
-          # Keep legacy check names for required status checks.
-          linux='{"name":"ubuntu-24.04-8cpu, x86_64-unknown-linux-gnu","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}'
-          arm='{"name":"ubuntu-24.04-arm, aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"}'
-          macos='{"name":"macos-latest, aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"}'
-          matrix="[$linux]"
-          if [ "$EVENT" = push ]; then
-            matrix="[$linux,$arm]"
-            if [ "$BINARY_RELEASE" = true ]; then
-              matrix="[$linux,$arm,$macos]"
-            fi
-          fi
+          linux='{"name":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}'
+          arm='{"name":"aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"}'
+          macos='{"name":"aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"}'
+          matrix="[$linux,$arm,$macos]"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           jq -r '.[].name' <<<"$matrix"
 
@@ -195,9 +154,7 @@ jobs:
   build-binaries:
     name: Build Binaries (${{ matrix.name }})
     needs: prepare
-    # Always runs, so its required check reports on every PR; every step is gated
-    # on `build` instead, since a job-level `if` would leave the matrix name
-    # unexpanded and the required check would never report.
+    if: needs.prepare.outputs.build == 'true'
     strategy:
       matrix:
         # Chosen in `prepare`: see "Choose the build targets".
@@ -212,32 +169,26 @@ jobs:
 
     steps:
       - name: Checkout code
-        if: needs.prepare.outputs.build == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      # A PR's and the queue's build restores the release group, which ci-checks'
-      # upgrade path saves on master (the dependencies built without fat LTO, as they
-      # build them here). A push builds with fat LTO, which compiles every crate
-      # differently, so it keeps a group of its own and saves it (each runner's OS and
-      # architecture key it apart); macOS restores nothing.
+      # Fat LTO compiles every crate differently from the other release builds
+      # (ci-checks' `release` group), so a cut keeps its own group and saves it for
+      # the next cut (each runner's OS and architecture key it apart).
       - name: Setup Rust CI
-        if: needs.prepare.outputs.build == 'true'
         uses: ./.github/actions/setup-rust-ci
         with:
-          shared-key: ${{ github.event_name == 'push' && 'release-lto' || 'release' }}
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          shared-key: release-lto
+          save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Update Bash
-        if: ${{ needs.prepare.outputs.build == 'true' && (matrix.runner == 'macos-13' || matrix.runner == 'macos-latest') }}
+        if: ${{ matrix.runner == 'macos-13' || matrix.runner == 'macos-latest' }}
         run: brew install bash
 
       # mock-attestation must never compile into a release binary: with it off, a
       # MOCK_TDX_QUOTE_V1 blob fails real DCAP parsing and is rejected.
       - name: Guard - mock-attestation must not leak into the release build
-        if: needs.prepare.outputs.build == 'true'
         run: |
           if cargo tree -e features -i calimero-tee-attestation -p merod | grep -q 'mock-attestation'; then
             echo "::error::mock-attestation leaked into production build"
@@ -247,7 +198,6 @@ jobs:
 
       # Resolved once so the steps below cannot drift from MACOS_BINARIES.
       - name: Resolve the binaries this target publishes
-        if: needs.prepare.outputs.build == 'true'
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
             printf 'TARGET_BINARIES<<CALIMERO_EOF\n%s\nCALIMERO_EOF\n' "$MACOS_BINARIES" >> "$GITHUB_ENV"
@@ -255,16 +205,10 @@ jobs:
             printf 'TARGET_BINARIES<<CALIMERO_EOF\n%s\nCALIMERO_EOF\n' "$BINARIES" >> "$GITHUB_ENV"
           fi
 
-      # A push builds what ships (fat LTO, one codegen unit). A PR or the merge
-      # queue builds optimized without fat LTO: its binaries only feed the PR's
-      # image and its e2e, and fat LTO's single-threaded link was most of the
-      # job. Set on the build steps only, so the cache step hashes one environment.
+      # What ships: the release profile (fat LTO, one codegen unit).
       - name: Build binaries
-        if: needs.prepare.outputs.build == 'true'
         env:
           MATRIX_TARGET: ${{ matrix.target }}
-          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'push' && 'fat' || 'false' }}
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'push' && '1' || '16' }}
         run: |
           readarray -t binaries <<< "$TARGET_BINARIES"
 
@@ -273,7 +217,6 @@ jobs:
           cargo build $binaries --release --target ${MATRIX_TARGET}
 
       - name: Compress artifacts using gzip
-        if: needs.prepare.outputs.build == 'true'
         env:
           MATRIX_TARGET: ${{ matrix.target }}
         run: |
@@ -291,11 +234,8 @@ jobs:
       # built on its own so its dependencies' features never unify into merod's. Every target:
       # app developers and their CI run its `codegen` without compiling it.
       - name: Build mero-app-build
-        if: needs.prepare.outputs.build == 'true'
         env:
           MATRIX_TARGET: ${{ matrix.target }}
-          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'push' && 'fat' || 'false' }}
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'push' && '1' || '16' }}
         run: |
           cargo build -p calimero-app-build --bin mero-app-build --release --target "$MATRIX_TARGET"
 
@@ -305,11 +245,9 @@ jobs:
       # A bin target of calimero-tee-attestation behind the `cli` feature, so it cannot join $BINARIES (`-p`).
       # Ships because mdma's manager shells out to it to verify TDX quotes; linux/amd64 image only.
       - name: Build calimero-tee-verify (Linux only)
-        if: ${{ needs.prepare.outputs.build == 'true' && (matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu') }}
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu' }}
         env:
           MATRIX_TARGET: ${{ matrix.target }}
-          CARGO_PROFILE_RELEASE_LTO: ${{ github.event_name == 'push' && 'fat' || 'false' }}
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ github.event_name == 'push' && '1' || '16' }}
         run: |
           # With mock-attestation compiled in, the verifier would accept a forged
           # MOCK_TDX_QUOTE_V1 blob.
@@ -326,7 +264,6 @@ jobs:
             -C target/${MATRIX_TARGET}/release calimero-tee-verify
 
       - name: Upload artifacts
-        if: needs.prepare.outputs.build == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-${{ matrix.target }}
@@ -337,11 +274,13 @@ jobs:
     name: Release Binaries
     if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
     runs-on: ubuntu-latest
-    needs: [prepare, build-binaries]
+    # The merod these archives hold passed the image's smoke e2e first: the image copies
+    # the very same binary.
+    needs: [prepare, build-binaries, image-e2e]
     concurrency:
       # Per-commit, not per-version: a version key would cancel an older, still-good master push.
       # No `github.job` here: it is null outside steps, which collapses jobs into one group.
-      group: ${{ github.workflow }}-release-binaries-${{ github.event.pull_request.number || github.sha }}
+      group: ${{ github.workflow }}-release-binaries-${{ github.sha }}
       cancel-in-progress: true
     permissions:
       contents: write
@@ -351,7 +290,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Download x86_64 Linux artifacts
@@ -361,14 +299,12 @@ jobs:
           path: artifacts/
 
       - name: Download aarch64 Linux artifacts
-        if: ${{ env.INCLUDE_AARCH64 == 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: artifacts-aarch64-unknown-linux-gnu
           path: artifacts/
 
       - name: Download aarch64 macOS artifacts
-        if: ${{ env.INCLUDE_AARCH64 == 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: artifacts-aarch64-apple-darwin
@@ -408,7 +344,7 @@ jobs:
     if: github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true'
     concurrency:
       # Per-commit, not per-version: a version key would cancel an older, still-good master push.
-      group: ${{ github.workflow }}-release-app-bundle-${{ github.event.pull_request.number || github.sha }}
+      group: ${{ github.workflow }}-release-app-bundle-${{ github.sha }}
       cancel-in-progress: true
     permissions:
       contents: write
@@ -416,7 +352,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Setup Rust CI
@@ -467,7 +402,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Setup Rust CI
@@ -503,13 +437,56 @@ jobs:
           echo "::error::cargo ws publish failed after 5 attempts"
           exit 1
 
-  release-merod-container:
-    name: Release Merod container
+  # The amd64 image, built and saved for `E2E on the merod image` before anything is
+  # pushed: a release publishes only an image whose merod passed the smoke e2e.
+  merod-image:
+    name: Merod image
     needs: [prepare, build-binaries]
     if: needs.prepare.outputs.build == 'true'
+    permissions:
+      contents: read
+    # Copies the prebuilt binaries into the image; compiles nothing.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build
+        uses: ./.github/actions/container-release
+        with:
+          version: ${{ needs.prepare.outputs.version }}
+          release: "false"
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          push: "false"
+          load-to: merod-image.tar
+          binaries: ${{ env.IMAGE_BINARIES }}
+          dockerfile: .github/workflows/deps/prebuilt.Dockerfile
+          container_name: merod
+          platforms: linux/amd64
+          include_aarch64: "false"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload the image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: merod-image
+          path: merod-image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  # A cut's image, amd64 and arm64 (Apple Silicon machines run the arm64 one), pushed
+  # under the version and `latest` (a stable release) or `prerelease` (an rc), once the
+  # amd64 image of the same binaries passed `E2E on the merod image`.
+  release-merod-container:
+    name: Release Merod container
+    needs: [prepare, build-binaries, image-e2e]
+    if: github.ref == 'refs/heads/master' && needs.prepare.outputs.docker_release == 'true'
     concurrency:
       # Per-commit, not per-version: a version key would cancel an older, still-good master push.
-      group: ${{ github.workflow }}-merod-container-${{ github.event.pull_request.number || github.sha }}
+      group: ${{ github.workflow }}-merod-container-${{ github.sha }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -521,49 +498,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Release
         uses: ./.github/actions/container-release
         with:
           version: ${{ needs.prepare.outputs.version }}
-          release: ${{ needs.prepare.outputs.docker_release }}
+          release: "true"
           prerelease: ${{ needs.prepare.outputs.prerelease }}
-          # PRs build the image to prove the Dockerfile still packages the binaries,
-          # but push nothing; master pushes the multi-arch (amd64, arm64) image.
-          push: ${{ github.event_name == 'push' }}
-          # Everything else saves its amd64 image for `E2E on the merod image`.
-          load-to: ${{ github.event_name != 'push' && 'merod-image.tar' || '' }}
-          binaries: ${{ env.BINARIES }}
+          push: "true"
+          binaries: ${{ env.IMAGE_BINARIES }}
           dockerfile: .github/workflows/deps/prebuilt.Dockerfile
           container_name: merod
-          platforms: ${{ env.DOCKER_PLATFORMS }}
-          include_aarch64: ${{ env.INCLUDE_AARCH64 }}
+          platforms: linux/amd64,linux/arm64
+          include_aarch64: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload the image
-        if: github.event_name != 'push'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: merod-image
-          path: merod-image.tar
-          if-no-files-found: error
-          retention-days: 1
 
   # What `E2E on the merod image` needs besides the image: a release meroctl,
   # the kv component and two signed releases of it, built while the binaries build.
   image-e2e-fixtures:
     name: Image E2E fixtures
     needs: prepare
-    if: needs.prepare.outputs.build == 'true' && github.event_name != 'push'
+    if: needs.prepare.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Setup Rust CI
@@ -606,22 +568,21 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # The image this run built is tested, not only built: e2e.yml runs the
-  # process suite against a fresh release build, and this runs its smoke set
-  # (`suite.py --smoke`: a crashed and a frozen node, a frozen leader,
-  # organizations and keys, signed packages, a 30 s kv-store soak) against
-  # the `merod` inside the image. Master pushes its image instead; e2e.yml's
-  # nightly tests the latest release's.
+  # The image this run built is tested before anything is published: this runs the
+  # process suite's smoke set (`suite.py --smoke`: a crashed and a frozen node, a
+  # frozen leader, organizations and keys, signed packages, a 30 s kv-store soak)
+  # against the `merod` inside the image. e2e.yml's nightly tests the latest
+  # published release's image.
   image-e2e:
     name: E2E on the merod image
-    needs: [prepare, release-merod-container, image-e2e-fixtures]
+    needs: [prepare, merod-image, image-e2e-fixtures]
+    if: needs.prepare.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0

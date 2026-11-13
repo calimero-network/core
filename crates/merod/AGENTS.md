@@ -23,7 +23,7 @@ turns a configuration into `calimero_node::Config` and calls `run`.
   `--cluster-identity HEX` (`meroctl ops cluster`: the Ed25519 key derived from K_c whose
   signature the job node demands on every assignment and component), which become a
   `calimero_node::JobConfig` (no storage key exists in it; `--peers` and the peer-policy flags are refused). Its data dir holds only `scratch/`.
-- `merod local` (a development cluster in process), `merod inspect` (a stopped
+- `merod local` (a development cluster in process; `--bind 0.0.0.0` in a container, `calimero_node::local::start_on`), `merod inspect` (a stopped
   node's store, `calimero_node::inspect`), `merod kms disk-key` (for a
   TEE boot script, `calimero-kms-client`).
 - `merod attest` (a release attestation, `calimero_node::attest::release_attestation`):

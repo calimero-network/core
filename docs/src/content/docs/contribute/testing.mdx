@@ -724,9 +724,9 @@ and what those depend on (`scripts/ci-scope.py`, `standalone_apps`); each
 shard caches its apps' target dir and the cargo registry, saved from master.
 `Rust lint` keeps a cache group of its own (`ci-lint`; clippy's check-mode
 build is not the test build), saved by the push to master, which lints too.
-The release build keeps two: a PR's and the queue's builds restore `release`
-(saved by the upgrade path, without fat LTO), and a push's fat-LTO build
-restores and saves `release-lto`.
+Release builds without fat LTO (the upgrade path, e2e's process suite) share
+`release`, saved by the upgrade path; `release.yml`, which builds only on a
+release cut, restores and saves `release-lto` for its fat-LTO build.
 
 Nothing has to list a scenario for it to run: the runner discovers every file
 on disk, and one it must not run yet is listed, with its reason, in
@@ -736,20 +736,20 @@ Those test a fresh build. Two jobs test the `merod` that ships, the binary
 inside the Docker image (the suite starts processes, so it is copied out with
 `docker create` and `docker cp`):
 
-- **A PR's own image** (`.github/workflows/release.yml`, job
-  `E2E on the merod image`, on PRs and the merge queue whenever the PR builds
-  the image). `Release Merod container` builds the amd64 image as it does for
-  master (from binaries built without fat LTO, which only a push to master
-  builds with), loads it instead of pushing it, and hands it on as the artifact
-  `merod-image`; `Image E2E fixtures` builds a release `meroctl`, kv-store's
-  WASM and two signed releases of it alongside the binaries. The job runs
-  `suite.py --smoke` against the image's `merod`: `kv-failover`,
-  `frozen-leader`, `orgs-and-keys`, `packages` and a 30 s `kv-soak`. Master
-  pushes its image instead.
+- **A release's image, before it is published** (`.github/workflows/release.yml`,
+  job `E2E on the merod image`, on a release cut, the master push that changes
+  the version, or a manual dispatch of the workflow). `Merod image` builds the
+  amd64 image from the release binaries, loads it instead of pushing it, and
+  hands it on as the artifact `merod-image`; `Image E2E fixtures` builds a
+  release `meroctl`, kv-store's WASM and two signed releases of it alongside
+  the binaries. The job runs `suite.py --smoke` against the image's `merod`:
+  `kv-failover`, `frozen-leader`, `orgs-and-keys`, `packages` and a 30 s
+  `kv-soak`. The release and its multi-arch image are published only once it
+  passes. PRs and other master pushes build no image.
 - **The latest release's image, nightly** (`e2e.yml`, jobs
   `Latest release image` (`release-image`) and `process suite on release V`
   (`release-process-suite`); on demand with the `release_image` input:
-  `latest`, a tag of `ghcr.io/<owner>/merod` such as `edge`, or an
+  `latest`, a tag of `ghcr.io/<owner>/merod` such as `prerelease`, or an
   image reference). It pulls `ghcr.io/calimero-network/merod:<version>` for the
   newest published release (a prerelease included) and runs the process suite
   of the commit the image was built from (its
@@ -769,7 +769,7 @@ To run the smoke set against a binary taken out of an image locally (with the
 fixtures built as in [Process suite](#process-suite)):
 
 ```bash
-docker create --name m ghcr.io/calimero-network/merod:edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
+docker create --name m ghcr.io/calimero-network/merod:prerelease && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
 python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 ```
 

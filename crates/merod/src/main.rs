@@ -206,6 +206,11 @@ struct LocalArgs {
     /// Node i listens on base-port + i.
     #[arg(long, default_value_t = 2500)]
     base_port: u16,
+    /// The address the nodes listen on. `0.0.0.0` in a container, so the host reaches them
+    /// through the published ports (`-p 2501-2503:2501-2503`); the nodes still call each
+    /// other `http://127.0.0.1:<port>/`.
+    #[arg(long, default_value = "127.0.0.1")]
+    bind: std::net::IpAddr,
     /// Where the cluster keeps its state (kept across restarts).
     #[arg(long, default_value = ".merod-local")]
     dir: PathBuf,
@@ -272,7 +277,8 @@ async fn local(args: LocalArgs) -> eyre::Result<()> {
     let token = args
         .ops_token
         .unwrap_or_else(|| hex::encode(calimero_identity::random::<16>()));
-    let cluster = calimero_node::local::start(
+    let cluster = calimero_node::local::start_on(
+        args.bind,
         args.nodes,
         args.base_port,
         &args.dir,

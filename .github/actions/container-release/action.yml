@@ -34,13 +34,6 @@ inputs:
   github-token:
     description: "GitHub token"
     required: true
-  tag-prefix:
-    description: >
-      Tag a branch other than master under tags of its own: `<prefix>edge` and
-      `<prefix><short sha>`, and nothing else (no `edge`, bare sha, version,
-      `latest` or `prerelease`). Empty: master's tags.
-    required: false
-    default: ""
   load-to:
     description: >
       A file to `docker save` the built image to, for a later job to test (a
@@ -110,11 +103,7 @@ runs:
       shell: bash
       id: prepare
       run: |
-        if [ "${{ github.event_name }}" == "pull_request" ]; then
-          echo "docker_source=${{ github.event.pull_request.html_url }}" >> $GITHUB_OUTPUT
-        else
-          echo "docker_source=https://github.com/${{ github.repository }}/tree/${{ github.sha }}" >> $GITHUB_OUTPUT
-        fi
+        echo "docker_source=https://github.com/${{ github.repository }}/tree/${{ github.sha }}" >> $GITHUB_OUTPUT
 
     - name: Extract metadata
       id: metadata
@@ -126,21 +115,19 @@ runs:
           org.opencontainers.image.licenses=MIT OR Apache-2.0
           org.opencontainers.image.authors=Calimero Limited <info@calimero.network>
           org.opencontainers.image.url=https://calimero.network
-          org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
+          org.opencontainers.image.revision=${{ github.sha }}
         DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
-        DOCKER_METADATA_PR_HEAD_SHA: true
       with:
         images: ghcr.io/${{ github.repository_owner }}/${{ inputs.container_name }}
-        # The commit is in the labels (org.opencontainers.image.revision), which
-        # e2e.yml's `Latest release image` reads to test that commit's workflows.
+        # Only releases are published (release.yml builds on a cut), so the tags are
+        # the version, and `latest` for a stable release or `prerelease` for an rc.
+        # A build that is only tested is saved under its version. The commit is in
+        # the labels (org.opencontainers.image.revision), which e2e.yml's `Latest
+        # release image` reads to test that commit's workflows.
         tags: |
-          type=edge,enable=${{ inputs.tag-prefix == '' }}
-          type=sha,prefix=,format=short,enable=${{ inputs.tag-prefix == '' }}
-          type=raw,value=${{ inputs.tag-prefix }}edge,enable=${{ inputs.tag-prefix != '' }}
-          type=sha,prefix=${{ inputs.tag-prefix }},format=short,enable=${{ inputs.tag-prefix != '' }}
-          type=raw,value=${{ inputs.version }},enable=${{ github.ref == 'refs/heads/master' && inputs.tag-prefix == '' && inputs.release == 'true' }}
-          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && inputs.tag-prefix == '' && inputs.release == 'true' && inputs.prerelease == 'false' }}
-          type=raw,value=prerelease,enable=${{ github.ref == 'refs/heads/master' && inputs.tag-prefix == '' && inputs.release == 'true' && inputs.prerelease == 'true' }}
+          type=raw,value=${{ inputs.version }}
+          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' && inputs.prerelease == 'false' }}
+          type=raw,value=prerelease,enable=${{ github.ref == 'refs/heads/master' && inputs.release == 'true' && inputs.prerelease == 'true' }}
         labels: ${{ env.LABELS }}
         annotations: ${{ env.LABELS }}
 
