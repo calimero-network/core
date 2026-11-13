@@ -649,7 +649,7 @@ runs all of it with the long soak):
   the artifact `compute-e2e-logs` on failure);
 - jobs `clients against merod (mero-js)` and `(calimero-client-py)`
   (`clients`): mero-js's `test:cluster` and calimero-client-py's cluster tests
-  against a debug `merod` (`build-scenarios` builds it). A change that
+  against a debug `merod` (`build-scenarios` builds it) and a kv component each job builds. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
   or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
 

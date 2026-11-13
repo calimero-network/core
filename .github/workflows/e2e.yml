@@ -837,22 +837,33 @@ jobs:
           path: _client-py
           persist-credentials: false
 
-      # The client's extension (calimero-client-py) builds with the pinned toolchain.
+      # The pinned toolchain: the kv component below, and calimero-client-py's extension.
       - name: Setup Rust CI
-        if: matrix.client == 'calimero-client-py'
         uses: ./.github/actions/setup-rust-ci
         with:
+          targets: wasm32-wasip2
           shared-key: ci-checks
           rust-cache: false
           sccache: true
 
-      # KV_STORE_WASM is the kv component (apps/v2-fixtures/kv: set, get, len,
-      # and `clear`, a confirm method it declares itself).
-      - name: Download the kv fixture
+      # mero-app-build, from `build-release`.
+      - name: Download the tools
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: e2e-release
           path: .
+
+      # KV_STORE_WASM is the kv component (apps/v2-fixtures/kv: set, get, len, and
+      # `clear`, a confirm method it declares itself), built here with the default
+      # release profile as master's CI did: `build-release`'s copy is built without
+      # fat LTO, and mero-js's console test failed on it.
+      - name: Build the kv fixture
+        run: |
+          set -euo pipefail
+          chmod +x target/e2e-tools/bin/*
+          rm -f "$CARGO_TARGET_DIR/app-components/kv.wasm"
+          target/e2e-tools/bin/mero-app-build \
+            apps/v2-fixtures/kv --out "$CARGO_TARGET_DIR/app-components/kv.wasm"
 
       - name: Download the debug merod
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
