@@ -833,6 +833,42 @@ expect_file "$D/scripts/install-mero-app-build.sh" ':-0.11.0-rc.3}' "  the pin s
 expect_file "$D/apps/kv/app/src/generated/client.ts" 'written by 0.11.0-rc.1' "  ...and the client is not rewritten"
 expect_absent "$CH" 'install-mero-app-build.sh' "  ...nor staged"
 
+# The same repository after it moved to meroctl: scripts/install-meroctl.sh pins it
+# (MEROCTL_TAG), and the codegen scripts run `meroctl app codegen`. meroctl prints
+# `meroctl X (describe, commit)` to --version.
+mkmeroctl() {
+  local d="$1" tag="$2"
+  mkgenerator "$d" "$tag"
+  rm "$d/scripts/install-mero-app-build.sh"
+  printf '#!/usr/bin/env bash\n# installs calimero-network/core meroctl at the tag below\nset -euo pipefail\n\nTAG="${MEROCTL_TAG:-%s}"\n' "$tag" \
+    > "$d/scripts/install-meroctl.sh"
+}
+mkdir -p "$STUBS/pnpm-meroctl" "$STUBS/meroctl"
+printf '#!/usr/bin/env bash\n[ "$*" = "-r --if-present run codegen" ] || exit 9\ncd apps/kv/app && meroctl app codegen\n' > "$STUBS/pnpm-meroctl/pnpm"
+printf '#!/usr/bin/env bash\ncase "$1" in\n  --version) echo "meroctl %s (%s-0-gabc, abc)" ;;\n  app) echo "written by meroctl %s" > src/generated/client.ts ;;\nesac\n' 0.11.0-rc.2 0.11.0-rc.2 0.11.0-rc.2 \
+  > "$STUBS/meroctl/meroctl"
+chmod +x "$STUBS/pnpm-meroctl/pnpm" "$STUBS/meroctl/meroctl"
+
+D=$(mkfixture generator-meroctl); mkmeroctl "$D" 0.11.0-rc.1; commit "$D"
+CH="$ROOT/changed-generator-meroctl.txt"
+UNCLAIMED="$ROOT/unclaimed-generator-meroctl.txt"
+expect_exit 0 "a meroctl pin moves and the clients are regenerated with the release's meroctl" \
+  env PATH="$STUBS/pnpm-meroctl:$PATH" MERO_APP_BUILD_BIN="$STUBS/meroctl/meroctl" \
+  CHANGED_FILES_OUT="$CH" UNCLAIMED_OUT="$UNCLAIMED" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$D/scripts/install-meroctl.sh" 'TAG="${MEROCTL_TAG:-0.11.0-rc.2}"' "  the pin is the release"
+expect_file "$D/apps/kv/app/src/generated/client.ts" 'written by meroctl 0.11.0-rc.2' "  the client is the release meroctl's"
+expect_file "$CH" 'scripts/install-meroctl.sh' "  the installer is staged with the bump"
+expect_absent "$UNCLAIMED" 'NOT REGENERATED' "  ...and nothing is left to regenerate by hand"
+
+D=$(mkfixture generator-meroctl-wrong); mkmeroctl "$D" 0.11.0-rc.1; commit "$D"
+UNCLAIMED="$ROOT/unclaimed-generator-meroctl-wrong.txt"
+expect_exit 0 "a meroctl of another release is not run" \
+  env PATH="$STUBS/pnpm-meroctl:$PATH" MERO_APP_BUILD_BIN="$STUBS/gen/mero-app-build" UNCLAIMED_OUT="$UNCLAIMED" \
+  bash "$BUMP" --surface cargo --version 0.11.0-rc.2 --dir "$D" --no-lock
+expect_file "$D/apps/kv/app/src/generated/client.ts" 'written by 0.11.0-rc.1' "  ...the client is left"
+expect_file "$UNCLAIMED" 'scripts/install-meroctl.sh && pnpm' "  ...and the report names the meroctl installer"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
