@@ -1,6 +1,6 @@
 ---
 title: The consent page
-description: How an app asks its user to approve an upgrade, a mero-tee release (or withdraw one), outbound addresses, a new organization, an invite or joining with one — through a page the node serves on its own origin, never the app's — what that page shows, and what the passkey's consent binds.
+description: How an app asks its user to approve an upgrade, a mero-tee release (or withdraw one), outbound addresses, a new organization, an invite or joining with one, and moderating or changing an organization — through a page the node serves on its own origin, never the app's — what that page shows, and what the passkey's consent binds.
 sidebar:
   order: 15
 ---
@@ -101,7 +101,9 @@ That stays true. Instead, the app asks the **node** to ask the person.
    The organization kinds (`createOrg` onwards) are how an app's frontend
    manages organizations at all: a package-bound session is refused every
    organization route (`POST /orgs`, members, teams, invites, redemption,
-   capabilities, renaming, deleting; `403`), so an app that creates
+   capabilities, renaming, deleting; `403`) except its own package's channels
+   ([Package-bound sessions](/protocol/identities/#package-bound-sessions)),
+   so an app that creates
    workspaces, invites people, moderates them or changes a workspace's
    settings asks here
    ([Organizations and invites](#organizations-and-invites)).
@@ -135,8 +137,9 @@ That stays true. Instead, the app asks the **node** to ask the person.
    no-store`. It reads `GET /consent/{id}/model` and shows it.
 3. **Passkey.** *Approve* posts `POST /consent/{id}/approve`. The node runs the
    very route a signed-in client would run (`/apps/{app}/upgrade`,
-   `/orgs/{org}/releases`, `/orgs/{org}/outbound`; a request with no scope is
-   the account's personal organization's) with the arguments frozen in the request, so the
+   `/orgs/{org}/releases`, `/orgs/{org}/outbound`; `"scope": "account"` is the
+   account's [personal organization](/protocol/organizations/#personal-organizations),
+   since an account approves nothing of its own) with the arguments frozen in the request, so the
    `412 CONFIRM_REQUIRED` challenge commits to exactly what the page showed.
    The page asks the authenticator for a user-verified assertion and posts it
    back as `confirm`. The node checks that the passkey is one of the request's
@@ -152,6 +155,33 @@ That stays true. Instead, the app asks the **node** to ask the person.
    is approved (below).
 
 ### Organizations and invites
+
+<SeqDiagram
+  id="d-consent-org-flow"
+  title="An app makes a workspace and invites someone, through the consent page"
+  lanes={[
+    { label: "App's page", color: '#f0883e' },
+    { label: 'Node API (sealed)', color: '#3fb950' },
+    { label: "Node's consent page", color: '#58a6ff' },
+    { label: 'System log', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: "POST /consent/requests { kind: 'createOrg', subject: { name } }" },
+    { from: 1, to: 0, label: '{ requestId, url, code }', dashed: true },
+    { from: 0, to: 2, label: 'navigate to url' },
+    { from: 2, to: 2, label: 'passkey over account:<a> / __create_org / { name } (not logged)' },
+    { from: 2, to: 3, label: 'CreateOrg, as POST /orgs writes it' },
+    { from: 0, to: 1, label: 'GET /consent/{id}/result → outcome { orgId }' },
+    { type: 'divider', label: 'later: invite a teammate' },
+    { from: 0, to: 1, label: "POST /consent/requests { kind: 'createInvite', subject: { org, role } }" },
+    { from: 2, to: 3, label: 'CreateInvite with org:<org> / __create_invite (logged)' },
+    { from: 0, to: 1, label: 'GET /consent/{id}/result → outcome { token }' },
+    { type: 'divider', label: "the invitee, on the same app's page" },
+    { from: 0, to: 1, label: "POST /consent/requests { kind: 'acceptInvite', subject: { token } }" },
+    { from: 2, to: 3, label: 'RedeemInvite (step-up __accept_invite not logged)' },
+    { from: 0, to: 1, label: 'GET /consent/{id}/result → outcome { org }' },
+  ]}
+/>
 
 `POST /orgs` and `POST /invites/{token}/redeem` take no passkey from a
 person on the cluster's own page; through the consent page they do, so the
@@ -276,6 +306,7 @@ top to bottom:
 | **New organization** | The name; that the person becomes its owner |
 | **New invite** | The organization, the role, the teams by name, how many may join and until when, `allApps`, and that the app receives the link |
 | **Joining** | The organization, the role, the teams by name, the person's current role there if any (they keep the higher), `allApps` |
+| **Moderation and settings** (`leaveOrg` … `setAllApps`) | The organization and the people by the name the approver sees them by; the teams and apps a member who leaves or is removed loses; the role, teams or capabilities before and after; for `deleteOrg` the counts of members, teams, invites and apps it takes (`attention`: `deletes`, `transfersOwnership`, `grantsManagement`) |
 
 Each kind's model also keeps the engineer's wording: `headline`, `before`
 (what holds until the person approves), `after` (what changes once they do)
@@ -287,7 +318,7 @@ and `notes`, shown under *Technical details*.
 | --- | --- | --- |
 | `title` | all | The headline in plain words |
 | `points` | all | Two to five plain sentences: what approving means |
-| `attention` | all | `[{ "flag", "text", "items" }]`, what not to miss; `items` are hosts, origins or method names. Flags: `sendsData`, `newSignIn`, `newPublic`, `stateVersion`, `removesFeatures`, `newPublisherKey` (upgrade), `lastApproved` (withdrawal). Empty: no new permissions |
+| `attention` | all | `[{ "flag", "text", "items" }]`, what not to miss; `items` are hosts, origins or method names. Flags: `sendsData`, `newSignIn`, `newPublic`, `stateVersion`, `removesFeatures`, `newPublisherKey` (upgrade), `lastApproved` (withdrawal), `transfersOwnership` (`setMemberRole` to owner), `grantsManagement` (granting `MANAGE_MEMBERS`, `MANAGE_APPLICATION` or `APPROVE_RELEASES`), `deletes` (`deleteOrg`). Empty: no new permissions |
 | `app` | upgrade, outbound | `{ "name", "package" }`: the manifest's display name and the package id |
 | `publisher` | upgrade, outbound | `{ "name", "signer", "keyChanged", "org" }`: the manifest's author (`null` when it names none), the verified signing key (`did:key`), whether it differs from the running version's, and the organization the key is bound to on this cluster (`{ "id", "name" }`, from `BindPublisher`; `null` while unbound). The page names that organization as the publisher when there is one |
 | `release.deadline` | release | `{ "after", "afterSecs", "passed" }` when the operator set an end-of-new-work deadline for the version (`SetReleaseDeadline`, `GET /releases`), else `null`; `points` then say it in plain words ("After Nov 15, 2026 (UTC), new apps, installs and updates for Acme's apps pause until this version (or a newer one) is approved") |

@@ -1,6 +1,6 @@
 ---
 title: The env API
-description: Reference for calimero_sdk::env and guards — the caller, the org, time, randomness, ids, events, cross-app calls, actions, timers and logging.
+description: Reference for calimero_sdk::env and guards — the caller, the org, time, randomness, ids, events, cross-app calls, actions, timers and logging — and the calimero:app WIT imports each one reaches.
 sidebar:
   order: 4
 ---
@@ -9,8 +9,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 `calimero_sdk::env` is an app's view of the host: everything outside its own
 state. In a component every function reaches the host through the
-`calimero:app` imports; in host-target tests they read a thread-local stand-in
-(`env::mock`). Source: `crates/sdk/src/env.rs`.
+`calimero:app` world's imports ([below](#the-world-underneath)); in host-target
+tests they read a thread-local stand-in (`env::mock`). Source:
+`crates/sdk/src/env.rs`.
 
 ## The caller and the org
 
@@ -19,7 +20,7 @@ state. In a component every function reaches the host through the
 | `env::caller()` | `Caller`: `Account(id)`, `ApiKey { key_id, account }`, `Public` (not signed in), `System` (the node: timers) or `App(id)` (a delivered cross-app call). |
 | `env::app_id()` | This app instance's id. |
 | `env::app_owner()` | The account that owns the app. |
-| `env::org()` | The app's organization, if it has one. |
+| `env::org()` | The app's organization. Every app is in one (an app created without naming one is in its owner's personal organization), so on a node this is always `Some`. |
 | `env::org_role(account)` | `Option<OrgRole>`: `Guest`, `Member`, `Admin` or `Owner`, ordered. |
 | `env::in_team(account, team)` | Whether `account` is in `team`. |
 
@@ -32,9 +33,10 @@ state. In a component every function reaches the host through the
 | `guards::require_admin()` | The caller acts for an account that is an admin or the owner; returns the account. |
 
 Both refuse system, public and app callers with `LoginRequired`, and an account
-below the role with `Forbidden`. With no org, the owner holds every role and any
-other account only `Member`. For other checks, match on `env::caller()` and
-`env::org_role(..)` directly.
+below the role with `Forbidden`. (The guards still treat an app with no
+organization as one where the owner holds every role and anyone else is a
+`Member`; since 1.0.0-rc.20 a node has no such app.) For other checks, match on
+`env::caller()` and `env::org_role(..)` directly.
 
 ```rust
 #[app::confirm]
@@ -45,7 +47,7 @@ pub fn remove_member_item(&mut self, id: String) -> app::Result<()> {
 }
 ```
 
-See [Access control](/core/build/guides/access-control/) for the full pattern.
+See [Access control](/build/guides/access-control/) for the full pattern.
 
 ## Time, randomness and ids
 
@@ -66,41 +68,81 @@ env::emit(Event::Booked { id, room_id, start }, Audience::All)?;
 `env::emit(event, audience)` takes an `#[app::event]` value;
 `env::emit_raw(name, &data, audience)` takes any serde value. `Audience` is
 `All`, `Caller`, `Accounts(Vec<String>)`, `Team(id)`, `Org` or `OrgAdmins`.
-Events are delivered once the entry commits. See [Events](/core/build/guides/events/).
+Events are delivered once the entry commits. See [Events](/build/guides/events/).
 
 ## Cross-app calls
 
 | Function | Does |
 | --- | --- |
-| `env::xcall(app, method, &args)` | Sends a message delivered after this run commits, only if it succeeds, at least once and in order per sending app. The target must be in the same org (or have the same owner) and allow this app. |
-| `env::xcall_call::<T>(app, method, &args)` | Calls the target now and decodes its result as `T`. |
-| `env::xcall_view::<T>(app, method, &args)` | Reads the target now. |
+| `env::xcall(app, method, &args)` | Sends a message delivered after this run commits, only if it succeeds, at least once and in order per sending app. The target must be in the same organization and allow this app. At most 100 per run. |
+| `env::xcall_call::<T>(app, method, &args)` | Calls the target now (one call in its own log, not atomic with this run) and decodes its result as `T`. Calls, timers and actions. |
+| `env::xcall_view::<T>(app, method, &args)` | Reads the target's latest committed state now. Calls, timers, views and actions. |
 
 A failed `xcall_call`/`xcall_view` is `AppError` `XcallFailed` carrying the
-target's error. See [Cross-app calls](/core/build/guides/cross-context/).
+target's error. See [Cross-app calls](/build/guides/cross-context/).
 
 ## Outbound HTTP and actions
 
 `env::fetch(&Request)` makes an HTTP request from a call, timer or delivery,
 to an origin the app's owner approved; `env::start_action(method, &args)`
 starts an `#[app::action]` method and returns its key. See
-[Outbound](/core/build/guides/outbound/).
+[Outbound](/build/guides/outbound/).
 
 ## Files, blobs and search
 
 `calimero_sdk::files` writes and reads sealed files (`files::create()`,
 `files::open(&BlobRef)`); `BlobRef::info` and `BlobRef::grant` wrap
 `env::blob_info` and `env::blob_grant`. `Table::search` wraps
-`env::search_query`. See [Blobs](/core/build/guides/blobs/) and
-[Search](/core/build/guides/search/).
+`env::search_query`. See [Blobs](/build/guides/blobs/) and
+[Search](/build/guides/search/).
+
+## Compute runs
+
+`calimero_sdk::compute` starts and cancels runs from a logged write
+(`compute::start(method, &args, &inputs)`, `compute::cancel(&run)`), publishes a
+done run's output (`compute::publish(&output)`), and, inside an
+`#[app::compute]` method, lists the run's inputs (`compute::inputs()`) and
+reports progress (`compute::progress(percent, step)`).
+`files::uploader(&file)` names the account that uploaded a sealed file. See
+[Compute actions](/build/guides/compute-actions/).
 
 ## Logging
 
-`env::log(message)` writes a line to the run's log. The host keeps 64 KiB per
-run.
+`env::log(message)` writes a line to the run's log (the component's stderr). The
+host keeps 64 KiB per run.
+
+## The world underneath
+
+An app is a component of the world `calimero:app@0.5.1`
+(`crates/app-wit/wit/calimero-app.wit`). It exports one function,
+`handle(kind, method, args) -> result<list<u8>, app-error>`, which
+`#[app::logic]` generates, and imports the interfaces below. The node refuses at
+install a component that imports anything else, so an app cannot reach a file
+system, a socket or the network except through these.
+
+| WIT import | What the SDK reaches it with |
+| --- | --- |
+| `storage` (`get`, `put`, `delete`, `add`, `range`) | Every table and collection; `add` keeps counts and lengths without a read |
+| `rebuild` | Nothing: it is for state migrations, which this version does not run |
+| `context` | `env::caller`, `app_id`, `app_owner`, `org`, `org_role`, `in_team`, `applied_index`, `unique_id`, `start_action` (`org-role-strict` and `orgs-of` have no SDK wrapper) |
+| `events` | `env::emit`, `env::emit_raw` |
+| `blobs` | `BlobRef::info`, `BlobRef::grant` (`env::blob_info`, `env::blob_grant`) |
+| `search` | `Table::search` (`env::search_query`), views only |
+| `files` | `files::create`, `files::open`, `files::info` |
+| `xcall` (`send`, `call`, `view`) | `env::xcall`, `env::xcall_call`, `env::xcall_view` |
+| `action` | `ActionCtx::key`, `view`, `call` inside an `#[app::action]` |
+| `runs` | `compute::start`, `cancel`, `publish`, `files::uploader` |
+| `wasi:clocks`, `wasi:random` | `env::time_now`, `env::random_bytes` (and `std`'s clock and `HashMap` seed), served by the host so a logged run is deterministic |
+| `wasi:cli/stdout`, `stderr` | `env::log` |
+| `wasi:http` | `env::fetch`, `ActionCtx::fetch` |
+
+The `compute` world, which the compute component of an app is built against,
+imports only `types`, `files`, `job` (`compute::run_id`, `inputs`, `progress`)
+and the WASI clocks, random and stdio: no state, no events, no cross-app calls
+and no network.
 
 <Aside type="note">
   Every function is deterministic within a logged run: the leader runs the call
   once, and followers apply its diff without running it again
-  ([Execution](/core/protocol/execution/)).
+  ([Execution](/protocol/execution/)).
 </Aside>

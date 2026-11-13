@@ -11,6 +11,18 @@ A write is a **call**: `POST /apps/{app}/intents { method, args, idempotencyKey?
 This page follows one from the moment a node opens it to the answer the client
 gets back.
 
+From the command line, the same call and a read of its write:
+
+```sh
+meroctl call -c my-kv set --args '{"key":"a","value":"1"}' --idempotency-key k1
+# { "index": 42, "result": null, "events": [ { "kind": "Inserted", … } ], "receipt": { … } }
+meroctl call -c my-kv get --args '{"key":"a"}' --view --min-index 42
+```
+
+`meroctl` (and every client library) attests the node, opens the sealed
+channel and sends `POST /apps/{app}/intents` inside it; a retry with the same
+`--idempotency-key` is answered from the log instead of running again.
+
 ## Any node takes any request
 
 A client may talk to any node of the cluster. Every node holds the system
@@ -113,7 +125,9 @@ call with that key, the stored answer is replayed and nothing is appended.
 - A client key is remembered for 24 hours by the log's own clock (the leader's
   timestamp in the entry). The newest 10 000 client records are kept whatever
   the clock says, so a leader whose clock jumps ahead cannot forget acknowledged
-  calls; at most 1 000 000 are kept at all.
+  calls; an app keeps at most 100 000 records of both kinds together
+  (`IDEMPOTENCY_MAX_RECORDS`), oldest dropped first, at most 4096 per applied
+  entry.
 - A call without a key gets a node key (`node:…`) before routing, remembered
   10 minutes (the newest 1 000 always), so a retried forward of a call that
   did commit replays instead of running twice.
@@ -149,10 +163,11 @@ but its answer would have been handed back unconfirmed.
 
 | Outcome | HTTP |
 | --- | --- |
-| The app returned | `200 { index, result, events, receipt }` |
-| The app returned an error | `422 APP_ERROR` with `details.error` |
-| The run trapped (panic, out of gas, unknown method) | `422 TRAP` |
-| A read-only team member calls a method that is not a view, or whose run writes, sends an xcall or starts an action | `403` |
+| The app returned | `200 { index, result, events, receipt }`, `events` being those the caller is in the audience of |
+| The app returned an error | `422 APP_ERROR` with `details.{code, fields}` |
+| The run trapped (panic, out of fuel, unknown method) | `422 TRAP` with `details.{kind, detail}` |
+| The arguments pass 512 KiB | `413 ARGS_TOO_LARGE`, before anything is proposed |
+| A read-only team member calls a method that is not a view | `403`, before it runs |
 | The call kept racing leader changes | `503`; retry with the same idempotency key |
 | No leader could be reached | `503 UNAVAILABLE` |
 | A system write (account, passkey, org, node) did not commit in 10 s | `503 UNAVAILABLE` naming the system group's leader, voters, learners and lagging members; it may still apply |

@@ -1,20 +1,63 @@
 ---
 title: Cross-app calls
-description: How the cluster delivers one app's message to another — the outbox, ordering, deduplication, authorization, retries and dead letters.
+description: How the cluster delivers one app's message to another — the outbox, ordering, deduplication, authorization, retries and dead letters — and the synchronous calls and views that answer in the same run.
 sidebar:
   order: 20
 ---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 A run may send messages to other apps (`env::xcall(app, method, &args)`). The
 message is a **follow-up**: it runs after the sending entry commits. The guest
 API is in [Cross-app calls](/build/guides/cross-context/); this page is how the
 cluster runs them (`crates/node/src/component/xcall.rs`).
 
+```rust
+// Sender (apps/v2-fixtures/kv): queue a message; it leaves once this entry commits.
+pub fn relay(&mut self, app: String, key: String, value: String) -> app::Result<()> {
+    env::xcall(&app, "setFromApp", &SetArgs { key: &key, value: &value })?;
+    Ok(())
+}
+
+// Sender: told when the platform gives up on a message.
+#[app::allow(system)]
+pub fn on_xcall_failed(&mut self, app: String, method: String, reason: String) -> app::Result<()> {
+    self.xcall_failures.insert(&method, &format!("{app}|{reason}"))?;
+    Ok(())
+}
+```
+
+The target method names who may call it, `#[app::allow(app = "<source>")]` or
+`#[app::allow(app = "*")]`, and sees the sender as `Caller::App(<source>)`.
+
+<SeqDiagram
+  id="d-xcall"
+  title="A message from app A to app B"
+  lanes={[
+    { label: "A's leader", color: '#58a6ff' },
+    { label: "A's log", color: '#a5ff11' },
+    { label: "B's leader", color: '#a371f7' },
+    { label: "B's log", color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 0, to: 0, label: 'run: env::xcall(B, method, args) → outcome.xcalls' },
+    { from: 0, to: 1, label: 'entry commits (status Ok): message appended to the outbox, seq n' },
+    { from: 0, to: 2, label: 'deliver the outbox head (one at a time, in order)' },
+    { from: 2, to: 2, label: 'check: same organization, ABI allows A, n above the watermark for A' },
+    { from: 2, to: 3, label: 'run as Caller::App(A); watermark[A] = n' },
+    { from: 2, to: 0, label: 'answer (an app error is a final answer too)', dashed: true },
+    { from: 0, to: 1, label: 'outbox head moves on' },
+    { type: 'divider', label: 'unreachable for an hour, deleted, outside the organization' },
+    { from: 0, to: 1, label: 'dead letter; onXcallFailed(app, method, reason) as System' },
+  ]}
+/>
+
 ## Outbox
 
-A run's messages go to its outcome. When the entry ends `Ok`, they are appended,
-in order, to the source app's outbox, kept as host rows in the source app's
-state. A failed run sends nothing.
+A run's messages go to its outcome. When the entry ends `Ok`, they are
+appended, in order, to the source app's outbox, kept as hidden rows of the
+source app's group. A failed run sends nothing. The outbox holds at most
+`MAX_OUTBOX` (10,000) messages; one past it goes to the dead letters at once.
 
 ## Delivery
 
@@ -28,31 +71,54 @@ The node that runs the target checks:
 
 1. **Entry point.** The target method's ABI must allow the source:
    `#[app::allow(app = "<source>")]` or `allow(app = "*")` (`allowApps`).
-2. **Boundary.** The two apps belong to the same organization, or, outside any
-   organization, have the same owner.
+2. **Boundary.** The two apps are in the same organization. Every app is in
+   one, so an account's own apps reach each other through their shared
+   [personal organization](/protocol/organizations/#personal-organizations),
+   and apps of two different organizations never do.
 3. **Provenance.** The target sees the caller as `Caller::App(<source>)`, set by
    the node; no argument can claim it.
 
-Synchronous calls and views (`env::xcall_call`, `env::xcall_view`) pass the same
-checks and answer at once.
+## Synchronous calls and views
+
+`env::xcall_call(app, method, &args)` runs the target's method as one call in
+its own log, as `Caller::App(<source>)`, before the sending run continues, and
+answers its result; `env::xcall_view` runs a view on the target's latest
+committed state. Both pass the same checks, and the target must be a component
+app other than the sender. They are not atomic: the target's call commits
+whatever the sender does next, so a target method should be safe to have run (a
+captcha's `verify` spends the challenge either way). A re-run of the sending
+call replays the target's answer: the target's idempotency key is derived from
+the sender's, the target, the method, the arguments and how many identical
+calls came before in the run. A read-only member's run may make a synchronous
+view, never a synchronous call. A delivered xcall makes no synchronous call.
 
 ## Deduplication
 
 The target keeps, per source app, the highest sequence number it applied; a
 message at or below it is answered as delivered without running. A leader
-change on either side never runs a message twice.
+change on either side never runs a message twice. A target keeps watermarks
+for at most `MAX_WATERMARKS` (10,000) sources; past that the lowest is dropped.
 
 ## Retries and dead letters
 
-A timeout or an unreachable target is retried with backoff for up to an hour
-from the send. Then, or at once for a deleted target, one outside the
-organization, or one that is not a component (an SDK 0.12 app the node no
-longer runs), the message goes to the source's dead letters (the newest 1,000),
-and the source's `onXcallFailed` runs if its ABI has one that allows the system.
-Anything the target answered, an app error or a trap included, is a final
-answer.
+A timeout or an unreachable target is retried with backoff (at most 30 s
+between attempts) for up to an hour from the send (`XCALL_WINDOW_MS`). Then, or
+at once for a deleted target, one outside the organization, or one that is not
+a component (an app the node no longer runs), the message goes to the source's
+dead letters (the newest 1,000), and the source's `onXcallFailed` runs if its
+ABI has one that allows the system. Anything the target answered, an app error
+or a trap included, is a final answer; so is a refusal because the target's
+developer is over its fuel cap for the day.
 
 ## Limits
 
-A run may send at most 100 messages; an empty or overlong app id or method, or a
-reserved (`__`) method, is refused at the send.
+| Limit | Value |
+| --- | --- |
+| Messages one run sends | 100 |
+| Messages one outbox holds (`MAX_OUTBOX`) | 10,000 |
+| Retry window (`XCALL_WINDOW_MS`) | 1 hour from the send |
+| Dead letters kept (`MAX_DEAD_LETTERS`) | 1,000 |
+| Sources one target keeps a watermark for (`MAX_WATERMARKS`) | 10,000 |
+
+An empty or overlong app id or method, or a reserved (`__`) method, is refused
+at the send.

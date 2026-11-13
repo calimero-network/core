@@ -51,8 +51,8 @@ package-bound session:
    first if the cluster lacks it) or, on a development cluster, a raw bundle
    hash.
 2. **Place.** The node picks `--replicas` nodes (3 by default) among those
-   whose attested mero-tee release is approved to hold the owner's (or the
-   organization's) apps ([Release
+   whose attested mero-tee release is approved to hold the organization's apps (its publisher's, for a
+   bound package; [Release
    approvals](/protocol/governance/#release-approvals)). No such node: `503`.
    The replicas span as many zones as those nodes are in (the `zone` that
    `POST /ops/nodes` registered), so an app outlives the loss of a zone
@@ -88,11 +88,13 @@ Calls, views and events go through any node ([The write path](/protocol/write-pa
 
 | Change | Route | Who |
 | --- | --- | --- |
-| Access rule | `POST /apps/{app}/access` | The owner, with a passkey session |
-| Metadata (a title, an icon; at most 16 KiB) | `POST /apps/{app}/metadata` | The owner, or an admin of its organization |
+| Access rule | `POST /apps/{app}/access` | The owner while a member, an admin, or whoever holds `MANAGE_APPLICATION` on its team (and on the team it moves to; org-wide for any access but `team`); a frontend session moves its own package's apps between its channels ([App access](/protocol/organizations/#app-access)) |
+| Owner | `POST /apps/{app}/transfer { to }` | The owner while a member, or an admin, with a passkey; to a member of the organization. An app in a personal organization handed to someone outside it goes to their personal organization |
+| Organization | `POST /apps/{app}/move { toOrg, bringMembers? }` | Its manager where it is, as an admin of the target, with a passkey; data stays put ([Moving an app](/protocol/organizations/#moving-an-app)) |
+| Metadata (a title, an icon; at most 16 KiB) | `POST /apps/{app}/metadata` | The owner while a member, or an admin of its organization |
 | An alias for the app | `PUT /auth/aliases/{alias}` | Any account, for an app it reaches; aliases are the account's own |
 
-## Move
+## Replica moves
 
 The operator can move an instance to another replica set
 (`POST /ops/apps/{app}/replicas`): new nodes join the group as learners, catch
@@ -102,8 +104,9 @@ nodes whose release the app's approver has approved.
 
 ## Upgrade
 
-`POST /apps/{app}/upgrade` switches the instance to another release and runs
-its migration; the directory records the new bundle only once the upgrade
+`POST /apps/{app}/upgrade` switches the instance to another release of its
+package. It is code only: the new code reads the state as the old code left it
+and no migration runs. The directory records the new bundle only once the upgrade
 succeeded ([Upgrades & migrations](/protocol/upgrades/)).
 
 ## Delete

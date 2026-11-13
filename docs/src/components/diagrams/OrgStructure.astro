@@ -1,0 +1,69 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-org-structure">
+<svg viewBox="0 0 760 400" role="img" aria-label="Every account has a personal organization made at sign-up; an organization holds members with roles, top-level teams and app teams, restricted child teams below an app team, and app instances whose access rule names the organization, a team, listed accounts, the owner or the public. Every app instance is in exactly one organization." xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="760" height="400" rx="10" fill="#0f0f16"/>
+  <text x="380" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">every app instance is in one organization</text>
+
+  <!-- account and personal org -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="20" y="44" width="200" height="54" rx="6" fill="#161b22" stroke="#444c56"/>
+    <text x="120" y="66" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">account (alice)</text>
+    <text x="120" y="84" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">passkeys · sessions · API keys</text>
+    <line x1="120" y1="98" x2="120" y2="128" stroke="#444c56" stroke-width="1.2"/>
+    <text x="126" y="117" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">CreateAccount &#123; personalOrg &#125;</text>
+    <rect x="20" y="128" width="200" height="130" rx="6" fill="#13160f" stroke="#a5ff11" stroke-width="1.4"/>
+    <text x="120" y="148" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">personal org "Personal"</text>
+    <text x="120" y="163" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">personal: true · one per account</text>
+    <rect x="34" y="176" width="172" height="30" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="120" y="195" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">notes (access: owner)</text>
+    <rect x="34" y="214" width="172" height="30" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="120" y="233" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">board (accounts: bob)</text>
+    <text x="120" y="278" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">POST /apps with no org lands here</text>
+  </g>
+
+  <!-- shared org -->
+  <g class="seq-step" style="--step-i:1">
+    <rect x="250" y="44" width="490" height="340" rx="6" fill="#10210f" stroke="#3fb950" stroke-opacity=".6"/>
+    <text x="495" y="64" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">organization "Acme" [namespace]</text>
+    <text x="495" y="80" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">members: owner · admin · member · guest  ·  approvals · capabilities · invites</text>
+  </g>
+
+  <!-- app teams -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="266" y="96" width="220" height="172" rx="6" fill="#161b22" stroke="#a371f7"/>
+    <text x="376" y="114" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">app team: chat [group]</text>
+    <text x="376" y="128" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">metadata.app.package = chat</text>
+    <rect x="280" y="138" width="192" height="28" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="376" y="156" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">#general (team: chat)</text>
+    <rect x="280" y="176" width="192" height="80" rx="5" fill="#1a1430" stroke="#a371f7" stroke-dasharray="4 3"/>
+    <text x="376" y="192" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="9">child team (restricted)</text>
+    <rect x="294" y="202" width="164" height="26" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="376" y="219" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">#private (team: child)</text>
+    <text x="376" y="246" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">CREATE_CHILD_TEAM</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:3">
+    <rect x="504" y="96" width="220" height="80" rx="6" fill="#161b22" stroke="#a371f7"/>
+    <text x="614" y="114" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">app team: kv-store</text>
+    <rect x="518" y="128" width="192" height="28" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="614" y="146" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">kv (team: kv-store)</text>
+
+    <rect x="504" y="190" width="220" height="78" rx="6" fill="#161b22" stroke="#444c56"/>
+    <text x="614" y="208" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10" font-weight="700">team: design (open)</text>
+    <text x="614" y="224" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">a plain team, nested teams below</text>
+    <text x="614" y="250" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">rows: lead · member · read-only</text>
+  </g>
+
+  <g class="seq-step" style="--step-i:4">
+    <rect x="266" y="284" width="220" height="30" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="376" y="303" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">wiki (access: org)</text>
+    <rect x="504" y="284" width="220" height="30" rx="5" fill="#10151c" stroke="#58a6ff"/>
+    <text x="614" y="303" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">site (access: public)</text>
+    <text x="495" y="340" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">app instance [context] = one Raft group on its replicas</text>
+    <text x="495" y="356" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">mode: legacy (no app team) · standalone (all open) · shared (one closed)</text>
+    <text x="495" y="372" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">POST /apps/&#123;app&#125;/move takes an instance to another org; data stays put</text>
+  </g>
+</svg>
+</Figure>

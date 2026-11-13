@@ -1,6 +1,6 @@
 ---
 title: How to use these docs
-description: How this documentation is organized — the four tracks, the page types, and where to start.
+description: How this documentation is organized — the five tracks, the page types, and where to start.
 sidebar:
   label: How to use these docs
   order: 1
@@ -8,13 +8,14 @@ sidebar:
 
 import { CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
 
-These docs are split into **four tracks by audience**, and within each track the
+These docs are split into **five tracks by audience**, and within each track the
 sidebar groups pages by **what they're for** — so you can tell a "read in order"
 page from a "look it up" page at a glance.
 
 ## Pick your track
 
 <CardGrid>
+  <LinkCard title="Cloud" href="/cloud/overview/" description="You're new: what Calimero is, a quickstart, and what an app sees on a cluster." />
   <LinkCard title="Build" href="/build/" description="You're writing a Calimero app on the SDK." />
   <LinkCard title="Operate" href="/operate/" description="You're running a cluster: merod, meroctl, the Ops API." />
   <LinkCard title="Protocol Reference" href="/protocol/overview/" description="You want to know how a cluster works, and why." />
@@ -45,8 +46,9 @@ log entry, then widens out.
 - **Code blocks** have a copy button; where a format matters (report data,
   receipts, key layouts) the page gives it exactly.
 - **Release candidate.** Everything here is meant to match current code, which
-  may still change; request and entry formats are not yet versioned. What is
-  not done yet is named where it matters.
+  may still change. Stored and replicated formats carry versions, and what
+  changes between releases is in [Compatibility](/operate/compatibility/). What
+  is not done yet is named where it matters.
 
 ## Two faster ways in
 

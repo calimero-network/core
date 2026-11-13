@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
 
 **Task:** announce that something changed so clients can react.
 
@@ -29,7 +30,7 @@ pub enum Event {
 }
 ```
 
-The events and their fields are listed in the app's [ABI](/core/build/app-abi/).
+The events and their fields are listed in the app's [ABI](/build/app-abi/).
 
 ## Emit them
 
@@ -38,7 +39,7 @@ pub fn update_if_exists(&mut self, key: String, value: String) -> app::Result<bo
     if !self.entries.contains(&key)? {
         return Ok(false);
     }
-    self.entries.insert(&key, &value)?;
+    let _old = self.entries.insert(&key, &value)?;
     env::emit(Event::Updated { key, value }, Audience::All)?;
     Ok(true)
 }
@@ -65,11 +66,39 @@ moment.
 ## Read them
 
 Clients follow `GET /apps/{app}/events?from=N`: server-sent events, the
-committed events from log index `N`, then live ones
-([Node API](/core/operate/admin-api/)). mero-js and calimero-client-py wrap the
-stream; `meroctl context watch` prints it.
+committed events from log index `N`, then live ones, each sent only to the
+accounts its audience names ([Node API](/operate/admin-api/)). mero-js and
+calimero-client-py wrap the stream, and a [typed client](/build/guides/typed-clients/)
+types each event; `meroctl` prints it:
+
+```sh
+meroctl context watch my-kv --from 0      # --limit N to stop after N events
+```
+
+<SeqDiagram id="d-build-events" title="From emit to a subscribed client"
+  lanes={[
+    { label: 'Writer', color: '#f0883e' },
+    { label: 'App leader', color: '#58a6ff' },
+    { label: 'Component', color: '#a371f7' },
+    { label: 'Any replica', color: '#39d0d8' },
+    { label: 'Subscriber', color: '#3fb950' },
+  ]}
+  steps={[
+    { from: 4, to: 3, label: 'GET /apps/{app}/events?from=N (SSE)' },
+    { from: 0, to: 1, label: 'POST /apps/{app}/intents set' },
+    { from: 1, to: 2, label: 'handle(call, "set", args)' },
+    { from: 2, to: 2, label: 'env::emit(Updated, Audience::All)' },
+    { from: 2, to: 1, label: 'Ok + writes + events', dashed: true },
+    { from: 1, to: 3, label: 'one Raft entry: diff and events' },
+    { from: 1, to: 0, label: 'result, index, the events it may see', dashed: true },
+    { from: 3, to: 3, label: 'commit: resolve each audience' },
+    { from: 3, to: 4, label: 'event: Updated {key, value}', dashed: true },
+  ]} />
+
+A client that renders state from a view and then follows the stream passes
+`from` = the view's `index + 1`, so it misses nothing and sees nothing twice.
 
 <Aside type="note">
-  To make another app react, send it a [cross-app call](/core/build/guides/cross-context/)
+  To make another app react, send it a [cross-app call](/build/guides/cross-context/)
   instead: an event is for clients.
 </Aside>

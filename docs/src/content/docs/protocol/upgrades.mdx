@@ -5,6 +5,8 @@ sidebar:
   order: 19
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 An **upgrade** moves an app instance to another bundle, usually another release
 of its package, and keeps its state: the new code reads what the old code
 stored ([Upgrades & state](/build/migrations/)). This page is about what the
@@ -25,8 +27,8 @@ New code reads the app's data, so an upgrade is one of the three decisions
     key is bound.
 
   Each upgrades with a passkey session and a step-up over the exact upgrade
-  (`POST /apps/{app}/upgrade { version | bundle, migrate? }`, then the `412`
-  challenge). The assertion is recorded as `consent` on the directory's
+  (`POST /apps/{app}/upgrade { version | bundle }`, then the `412`
+  challenge; a `migrate` is refused, below). The assertion is recorded as `consent` on the directory's
   `UpgradeApp` command. A package may move from `publisher` to `owner` in a
   later release, never back, and an app is never upgraded from an `owner`
   release to a `publisher` one.
@@ -84,7 +86,7 @@ is refused. A raw development bundle has no manifest, and `manifest` is
 session is bound to its package). It asks the node for a consent request
 (`{ kind: "upgrade", subject: { app, toVersion } }`); the node's own page shows
 the capability sheet (outbound, frontend origins, interfaces, methods,
-events, timers, migration, build) and takes the owner's passkey there
+events, timers, the state version each side declares, build) and takes the owner's passkey there
 ([The consent page](/protocol/consent-page/)).
 
 ## What an upgrade runs
@@ -162,6 +164,33 @@ from the release's `.mpk` and still refuses it.
 The upgrade is an entry in the app's own log, so it is ordered against the
 app's calls: every call before it ran on the old code, every call after it runs
 on the new.
+
+<SeqDiagram
+  id="d-app-upgrade"
+  title="Upgrading one app to a newer release"
+  lanes={[
+    { label: 'Upgrader', color: '#f0883e' },
+    { label: 'Any node', color: '#3fb950' },
+    { label: "App's leader", color: '#58a6ff' },
+    { label: "App's log", color: '#a371f7' },
+    { label: 'System log', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /apps/{app}/upgrade { version }' },
+    { from: 1, to: 1, label: 'who may upgrade, deadline, runtime of every replica; install from the registry if missing' },
+    { from: 1, to: 0, label: '412 CONFIRM_REQUIRED over { bundle, migrate, manifest }', dashed: true },
+    { from: 0, to: 1, label: 'retry with a passkey assertion (or an upgrade key signs)' },
+    { from: 1, to: 2, label: 'prepare the target component; refuse if a run needs a missing result method' },
+    { from: 2, to: 3, label: 'Upgrade { bundle, computeBundle, base_index }: every replica switches here' },
+    { from: 1, to: 4, label: 'UpgradeApp { release, consent }: authority checked again, lastUpgrade noted' },
+    { from: 1, to: 0, label: '{ index, status, error, compute }', dashed: true },
+    { type: 'divider', label: 'refused anywhere above: UpgradeFailed records lastUpgrade { ok: false }' },
+  ]}
+/>
+
+An app's frontend asks for the same upgrade through the
+[consent page](/protocol/consent-page/) (`kind: "upgrade"`), which runs this
+route as the person once they approve there.
 
 1. The app group's leader prepares the target bundle, and refuses the
    upgrade while an active compute run will call a result method the target
@@ -305,6 +334,7 @@ every feature gated it stays at zero.
 | `namedPool` | `AcquireRun` naming a pool; an earlier release ignores `pool` and places the run by memory | 1.0.0-rc.19 |
 | `attributeByRelease` | `AttributeByRelease`, the system leader's one-time mark after which an app's upgrades, publisher and release approvals follow the release it runs; an earlier release cannot read it. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.19 |
 | `currentRules` | `RequireCurrentRules`, the system leader's one-time mark after which every entry applies under this release's rules; an earlier release cannot read it. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.19 |
+| `backupKeys` | `SetBackupKey` and `ImportHolder`, the recovery disk's backup keys and a holder's import; an earlier release cannot read them | 1.0.0-rc.20 |
 | `clusterVersion` | `SetClusterVersion` | 1.0.0-rc.16 |
 
 The rc.15 features were added before the gate: on a cluster whose every node

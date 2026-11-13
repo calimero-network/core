@@ -24,12 +24,13 @@ Declare them once, in the `#[app::logic]` module:
 pub enum Error {
     NotFound,
     Taken { start: u64 },
-    Invalid(String),
+    Invalid { reason: String },
 }
 ```
 
-The variant name is the code; named fields keep their camelCase names, tuple
-fields are `"0"`, `"1"`; `u64`, `i64` and bytes are strings. `Taken { start: 7 }`
+The variant name is the code; fields keep their camelCase names, and `u64`,
+`i64` and bytes are strings. Every field must have a name: a tuple variant
+(`Invalid(String)`) does not compile. `Taken { start: 7 }`
 reaches the client as code `Taken`, message `{"start":"7"}`. The ABI lists every
 code and its fields.
 
@@ -37,24 +38,39 @@ Return one with `app::bail!` or `?`:
 
 ```rust
 if title.is_empty() {
-    app::bail!(Error::Invalid("empty title".into()));
+    app::bail!(Error::Invalid { reason: "empty title".into() });
 }
 self.bookings.get(&id)?.ok_or_else(|| Error::NotFound.into())
 ```
 
 For an ad-hoc error, `AppError::new("Code")` or
-`AppError::with_fields("Code", json!({ .. }))`.
+`AppError::with_fields("Code", json!({ .. }))`; `AppError::forbidden()` and
+`AppError::login_required()` are the guards' two.
+
+## What the client receives
+
+A failed call or view answers `422`:
+
+| The run | Answer |
+| --- | --- |
+| Returned an `AppError` | `422 APP_ERROR`, `details.code` the code and `details.fields` its fields |
+| Trapped (a panic, out of fuel or memory, a host refusal) | `422 TRAP` |
+
+`meroctl call` prints the node's error; a typed client turns `APP_ERROR` into
+the app's own error type ([Typed clients](/build/guides/typed-clients/)).
 
 ## Errors the SDK produces
 
 | Source | Code |
 | --- | --- |
 | `guards::require_member` / `require_admin` | `LoginRequired` (not an account), `Forbidden` (below the role) |
-| A `Table` write | `Duplicate` with the unique constraint's name, or `"key"` |
-| Storage (encoding, limits, cursors) | the `StorageError` variant, e.g. `KeyTooLong`, `OutOfBounds`, `BadCursor` |
+| A `Table` write | `Duplicate`, fields `{ "index": <unique constraint's name, or "key"> }` |
+| Storage (encoding, limits, cursors) | `Storage`, fields `{ "message": .. }`: the `StorageError`'s text, e.g. "key is 1100 bytes, over the 1023 byte limit", "malformed cursor", "index 2 is out of bounds for length 2" |
 | `files` and `std::io` | `Files`, or `Io` for other io errors |
-| Cross-app calls | `Xcall`, `XcallFailed` (carrying the target's error) |
-| Outbound HTTP | `Fetch` |
+| Cross-app calls | `Xcall` (`{ message }`), `XcallFailed` (the target's `{ code, fields }`, or `{ message }`) |
+| Outbound HTTP | `Fetch` (`{ message }`) |
+| Actions | `ActionView`, `ActionCall`, `StartAction` |
+| Compute runs | `Compute` (`{ message }`, the host's reason) |
 
 `StorageError`, `TableError` and `std::io::Error` convert into `AppError`, so
 `?` works on every SDK call.
@@ -63,8 +79,11 @@ For an ad-hoc error, `AppError::new("Code")` or
 
 Before your method runs, the generated `handle` refuses an unknown method
 (`UnknownMethod`), malformed arguments (`BadArgs`), a call run as a view
-(`NotAView`), and a caller the method does not allow (`Forbidden`,
-`LoginRequired`).
+(`NotAView`), a method run as the wrong kind (`WrongKind`), and a caller the
+method does not allow (`Forbidden`, `LoginRequired`). The node makes the same
+ABI checks before it runs the app at all, so a client normally sees them with
+the node's codes; an anonymous caller of a method that is not `public` is
+`401 UNAUTHENTICATED` before the app runs.
 
 ## Traps
 
@@ -74,5 +93,5 @@ client should handle, and keep panics for bugs.
 
 <Aside type="tip">
   Test failures by code: the harness's `Failure::App { code, fields }` is the
-  same shape a client sees ([Testing](/core/build/testing/)).
+  same shape a client sees ([Testing](/build/testing/)).
 </Aside>

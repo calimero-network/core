@@ -34,13 +34,18 @@ The signed bytes are, with `0` a zero byte and every field UTF-8:
 ```
 
 `subject` is `cluster` (release and outbound approvals, deadlines, nodes,
-quotas), the app id (an app's upgrade or replica move) or `org:<id>` (an
-organization's run); `method` is `__approve_release`, `__withdraw_release`,
-`__approve_outbound`, `__upgrade`, `__upgrade_org`, `__upgrade_org_retry`,
-`__release_deadline`, `__register_node` (`{ id, addr, zone }`),
-`__remove_node` (`{ id }`), `__set_quotas` (`{ quotas }`, every limit after
-the change) or `__set_replicas` (`{ replicas }`, the target set sorted; one
-signature covers both writes of the move); `args` is the exact JSON text the
+quotas, pools, prices, deployers, sign-up, a holder's recovery), the app id (an
+app's upgrade, replica move or restore), `org:<id>` (an organization's run) or
+`operator` (its own backup key); `method` names the decision, among them
+`__approve_release`, `__withdraw_release`, `__approve_outbound`, `__upgrade`,
+`__upgrade_org`, `__upgrade_org_retry`, `__release_deadline`,
+`__register_node` (`{ id, addr, zone }`), `__remove_node` (`{ id }`),
+`__set_quotas` (`{ quotas }`, every limit after the change),
+`__set_org_quotas` (`{ payer, quotas }`), `__set_pools`, `__set_price_table`,
+`__set_replicas` (`{ replicas }`, the target set sorted; one signature covers
+both writes of the move), `__restore_app` (`{ backup, sha256 }`),
+`__set_backup_key` (`{ publicKey }`) and `__recover_holder`
+(`{ holder, slice, apps }`); `args` is the exact JSON text the
 node states; `nonce` is base64url, used once. A decision sent without a proof
 answers `428 OPERATOR_SIGNATURE_REQUIRED` with `details { subject, method, args,
 nonce, cluster, message }`, `message` being the bytes above in base64: the
@@ -62,8 +67,16 @@ refused by the log. With no key recorded, operator decisions are refused
 | `POST /ops/nodes` | Register a node, signed (`428` first); the system leader then adds it as a learner ([Replication](/protocol/replication/#joining-nodes)). The nodes a cluster starts with are registered at genesis |
 | `DELETE /ops/nodes/{id}` | Remove a node, signed (`428` first; the proof in a JSON body) |
 | `POST /ops/apps/{app}/replicas` | Move an app to a new replica set, onto approved releases only, signed (`428` first) ([Replica moves](/protocol/replication/#replica-moves)) |
-| `GET` / `POST /ops/quotas` | Read or set the per-account quotas; setting is signed (`428` first; `operatorProof` beside the limits) |
+| `GET /ops/cluster` | The cluster's identity key, which a job node is started with (`merod run --job-node --cluster-identity`) |
+| `GET /ops/nodes/{id}/receipt-key` | The receipt key this node holds for a peer, to check an account proof from any node |
+| `GET` / `POST /ops/quotas` | Read or set the quotas (per account, per organization, and the developer's fuel per day); `{ org, … }` sets one organization's override. Setting is signed (`428` first; `operatorProof` beside the limits) |
+| `GET` / `POST /ops/pools`, `GET` / `POST /ops/prices` | Compute pools and the price table, setting signed ([Compute actions](/protocol/compute-actions/)) |
+| `GET /ops/served-origins` | Custom domains packages registered as served origins (`{ origin, host, label, addedAt }`, no package names), for certificates and routing |
+| `POST /ops/sign-up`, `/ops/sign-up/invites[/{key}]` | The sign-up policy and cluster sign-up invites, signed, until the cluster's owner is named ([Sign-up](/protocol/governance/#sign-up)) |
 | `POST /ops/backup` | Write sealed snapshots of the app groups this node leads (below) |
+| `POST /ops/apps/{app}/restore` | Restore an app from a backup or a recovery file, signed (below) |
+| `GET` / `POST /ops/backup-key`, `GET /ops/recovery-files`, `POST /ops/recover` | The recovery disk: the operator's backup key, the recovery files' headers, founding the cluster again from them ([below](#the-recovery-disk)) |
+| `POST /ops/releases/{version}/deadline { after, operatorProof }`, `DELETE …` | Set (RFC 3339) or lift (`after: null`, or `DELETE` with the proof in its body) a release's end-of-new-work deadline, signed with the operator key (`428` first): after it, a party that has not approved the release creates, installs and upgrades nothing until it does; running apps go on ([Release deadlines](/protocol/governance/#release-deadlines)). Public at `GET /releases` |
 | `POST /ops/deployments/granted { operatorProof }` | Move the cluster's deployments from `open` to `granted`, once, never back ([Deployers](/protocol/governance/#deployers)) |
 | `POST /ops/deployers { deployer, until?, operatorProof }`, `DELETE /ops/deployers/{key}` (or `POST /ops/deployers/{key}/revoke`, for a client whose `DELETE` carries no body) | Grant (`until`: RFC 3339) or revoke a deployer (`{ "account": id }` or `{ "org": id }`; the key is `account:<id>` or `org:<id>`), signed with the operator key, while the operator grants deployers |
 | `POST /ops/cluster-owner { owner, operatorProof }` | Where governance says `deployers: owner`: name the cluster's owner, once; it grants deployers from then on |
@@ -71,7 +84,6 @@ refused by the log. With no key recorded, operator decisions are refused
 
 The operator does not act inside a deployment: creating one, offering,
 withdrawing and deleting take a manager's passkey ([Deployments](/protocol/governance/#deployments)).
-| `POST /ops/releases/{version}/deadline { after, operatorProof }`, `DELETE …` | Set (RFC 3339) or lift (`after: null`, or `DELETE` with the proof in its body) a release's end-of-new-work deadline, signed with the operator key (`428` first): after it, a party that has not approved the release creates, installs and upgrades nothing until it does; running apps go on ([Release deadlines](/protocol/governance/#release-deadlines)). Public at `GET /releases` |
 
 And, only where the deployment's [governance](/protocol/governance/) gives
 the operator that decision:
@@ -91,8 +103,8 @@ measurement policy for peers.
 ## What runs where
 
 `GET /ops/apps` is how the operator follows a rollout: per app, its id, group
-and **scope** (`{ kind: "org", org }`, or `{ kind: "account" }` for an
-account's own app, never the account), the **bundle digest** it runs, its publisher (the package's pinned signer,
+and **scope** (`{ kind: "org", org }`, with `personal: true` for a personal
+organization, never the account), the **bundle digest** it runs, its publisher (the package's pinned signer,
 with the package), who holds
 app upgrades, its **last upgrade** (`from` and `to` digests, with each end's
 release where the operator may see it, when, whether it
@@ -172,6 +184,36 @@ What the operator decides is which backup the app goes back to: a restore is a
 rollback of the app's data, never a way to read it. A backup restores only on
 the cluster that sealed it (the same K_c), for the app its manifest names, on
 the release that wrote it or a later one ([Restore an app](/operate/runbooks/#restore-an-app)).
+
+### The recovery disk
+
+Backups open only with K_c, which only a live mero-kms of a release they hold
+a copy for can unwrap. The recovery disk (`merod --recovery-dir DIR`) keeps a
+second set that outlives every mero-kms: every 5 minutes each node writes, for
+every app it holds (leader or not), the app's state, the code it runs and its
+holder's slice of the system state, each sealed to the **backup holder's**
+X25519 public key (HPKE, RFC 9180) and signed by the node's attested receipt
+key ([Recovery files](/protocol/storage/#recovery-files)). The holder is
+whoever upgrades the app: the operator where it holds app upgrades, else the
+app's organization ([Backup key](/protocol/organizations/#backup-key)). No
+node holds a private half.
+
+| Route | What |
+| --- | --- |
+| `GET` / `POST /ops/backup-key { publicKey }` | The operator's backup key (64 hex), where it holds app upgrades; setting is signed (`operator / __set_backup_key / { publicKey }`) |
+| `GET /ops/recovery-files?holder=` | The headers and signatures of a holder's recovery files on this node, never a key or a body, for the holder to check before it opens anything |
+| `POST /ops/recover { system, code }` | On a founder started with `merod run --bootstrap --recover-from DIR`: the data keys of the newest `system` file and the code files, opened on the operator's machine; the system state is seeded as a founding from backups seeds it |
+| `POST /ops/apps/{app}/restore { recovery: { file, key } }` | Restore one app from its recovery file, signed |
+| `POST /recover/holder { holder, slice, apps, code }` | An organization's apps on a cluster that does not hold them: the holder's own device sends the data keys, and the operator admits the import with its signature (`cluster / __recover_holder / { holder, slice, apps }`; `SystemCmd::ImportHolder`) |
+
+Sealed files come back with their apps: their segments are copied to the disk
+as stored, checked against their hash when read back (`409
+RECOVERY_SEGMENTS_MISSING` while one is missing), and each file's data key is
+wrapped again under the new cluster's file key. Every file a recovery uses
+must carry an attestation the node accepts under its peer policy (`400
+UNATTESTED_RECOVERY_FILE`). `meroctl ops recovery-keygen`, `ops backup-key`,
+`ops recover` and `ops restore --recovery-key-file` drive the operator's side
+([Recover after every key service is gone](/operate/runbooks/#recover-after-every-key-service-is-gone)).
 
 ## Offline inspection
 

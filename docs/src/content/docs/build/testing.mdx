@@ -109,7 +109,7 @@ fn every_scenario_passes() {
 
 An upgrade switches an app's code and keeps its state, so the code you ship
 next must read what every release still in use wrote
-([Upgrades & state](/core/build/migrations/)). Test that against the real
+([Upgrades & state](/build/migrations/)). Test that against the real
 thing: the signed `.mpk` you shipped, not today's code with an old version
 number. The harness runs that release's component, lets a scenario write state
 with it, upgrades to the build under test as a node does (code only, nothing
@@ -180,7 +180,7 @@ expected ok {"a":"1","b":"2"}, got Ok(Object {})
 
 Keep a release's files for as long as an instance may still run it: an
 instance can skip releases, and every later build must read its state. The
-step-by-step walk through a release is [Ship v2 of your app](/core/build/ship-v2/).
+step-by-step walk through a release is [Ship your app's next release](/build/ship-v2/).
 
 <Aside type="note" title="In the apps repository">
   An app there (`logic/crates/<service>/`) adds the same three things to its
@@ -201,5 +201,5 @@ HTTP answer an error outside a component; use `TestApp` for those.
 <Aside type="note">
   The node's own tests run the same scenarios on a three-node cluster
   (`crates/node/tests/scenarios.rs`); see
-  [Testing strategy](/core/contribute/testing/).
+  [Testing strategy](/contribute/testing/).
 </Aside>

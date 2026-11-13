@@ -21,14 +21,18 @@ import ClusterArchitecture from '../../components/diagrams/ClusterArchitecture.a
 {/* Audience-routed landing (Tailscale/Vercel pattern) — pick your track. */}
 
 <CardGrid>
-  <Card title="Build" icon="rocket">
-    Write a WASM app on the SDK. Quickstart, the SDK macros, and the collection
-    types. [Start building →](/build/)
+  <Card title="Start" icon="star">
+    What Calimero is, then a local cluster, an account and a running app in a
+    few commands. [Calimero Cloud →](/cloud/overview/) ·
+    [Quickstart →](/cloud/quickstart/)
   </Card>
-  <Card title="Run a cluster" icon="setting">
-    Start a local cluster, deploy an app, and operate `merod` in production:
-    the storage key, peers, governance and the Ops API.
-    [Calimero Cloud →](/cloud/overview/)
+  <Card title="Build" icon="rocket">
+    Write a `calimero:app` component with the Rust SDK: the macros, tables and
+    collections, testing, signed packages. [Start building →](/build/)
+  </Card>
+  <Card title="Operate" icon="setting">
+    Run `merod` in production: install, the storage key, peers, governance,
+    the Ops API, backups and upgrades. [Operate a cluster →](/operate/)
   </Card>
   <Card title="Protocol" icon="open-book">
     How a cluster works and why: replication, the system group, attestation,
@@ -47,7 +51,8 @@ import ClusterArchitecture from '../../components/diagrams/ClusterArchitecture.a
 
 A client verifies a node's TDX attestation, then talks to any node through a
 sealed channel. That node checks the caller against the cluster's system group
-and forwards the call to the app's leader, which runs the WASM and replicates
-the result to the app's other replicas. [More in Calimero Cloud →](/cloud/overview/)
+and forwards the call to the leader of the app's own Raft group, which runs the
+component and replicates the resulting diff to the app's other replicas; the
+answer comes back with a receipt signed by an attested key. [More in Calimero Cloud →](/cloud/overview/)
 
 New here? [How to use these docs](/using-the-docs/) · [Journeys by goal](/journeys/) · [Browse by topic](/topics/)

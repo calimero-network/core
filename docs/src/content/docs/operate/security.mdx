@@ -17,7 +17,8 @@ operator controls, and which settings break it.
 | --- | --- |
 | Start, stop and place nodes; move app replicas between nodes | Read app state, blobs, account names or credentials: the Ops API has no read path into them |
 | See counts, Raft status, placement and per-app usage by app and payer id (`/ops/status`, `/ops/metrics`) | Open the disks: they are sealed under a key only an attested TD receives |
-| Set quotas and trigger backups | Open a backup: snapshots are sealed under the same key |
+| Set quotas and trigger backups | Open a `--backup-dir` backup: snapshots are sealed under the same key |
+| Hold the recovery disk and, where it upgrades apps, open it with its own backup key | Open an organization's recovery files: they are sealed to that organization's backup key |
 | Make the governance decisions the deployment gave the operator | Make the ones it gave the owners |
 
 This holds only for TDX-mode nodes running a mero-tee image the users' clients
@@ -98,6 +99,30 @@ one. Someone who steals the code is stopped by any of the account's passkeys
 within the 72 hours. Design:
 [`docs/specs/account-recovery.md`](https://github.com/calimero-network/core/blob/master/docs/specs/account-recovery.md).
 
+## The recovery disk
+
+`--recovery-dir` files are sealed (HPKE) to the X25519 key of whoever
+upgrades each app, so that party alone can read them, with no TD and no
+mero-kms: that is what lets them outlive every key service. Who that is
+follows `--app-upgrades`:
+
+- **`owner` (the default):** each organization's files open with the key its
+  org-wide `MANAGE_APPLICATION` holders set (`POST /orgs/{org}/backup-key`,
+  with a passkey). The operator holds the disk but reads nothing on it.
+- **`operator`:** every app's files open with the operator's key (`POST
+  /ops/backup-key`, signed with the operator key). The operator can then read
+  every app's state from the disk. That is no new power (an operator that
+  upgrades apps already chooses the code that reads their data), but say so
+  to users.
+
+No node holds a private half. Each file is signed by the receipt key of the
+node that wrote it and carries that key's attestation; `meroctl ops recover`
+and `ops restore --recovery-key-file` check both on the holder's machine
+before opening anything, and a node refuses a file whose attestation its peer
+policy does not accept (`400 UNATTESTED_RECOVERY_FILE`). Keep the private half
+of a backup key offline (`meroctl ops recovery-keygen` writes it mode `0600`):
+whoever holds it and a copy of the disk reads what it covers.
+
 ## TDX mode and development mode
 
 | | TDX mode (default) | `--dev` |
@@ -162,7 +187,8 @@ its memory. Never list one for a production cluster.
 ## Governance
 
 Three decisions are each held by exactly one party, chosen when the cluster is
-formed:
+formed (three more rules, `--deployments`, `--deployers` and `--sign-up`, are
+fixed the same way; see [Deployment](/operate/deployment/#governance)):
 
 | Decision | Flag | Owner side | Operator side |
 | --- | --- | --- | --- |
@@ -219,6 +245,9 @@ declares.
 | `{home}/meroctl/sessions.json` | saved sessions per node | mode `0600` (written so) |
 | `--dev-passkey` files | a software passkey's private key | development only |
 | `--backup-dir` | sealed snapshots | sealed under K_c; keep them anyway |
+| `--recovery-dir` | recovery files | sealed to each holder's backup key; keep them anyway |
+| the operator's Ed25519 key (`--operator-key-file`) | signs every operator decision | off every node; the node takes only its public half |
+| a backup key's private half (`ops recovery-keygen --out`) | opens the recovery files it covers | offline, off every node |
 
 ## Rollback
 
@@ -243,14 +272,13 @@ that ran before, or another node's store.
 
 ## Known gaps
 
-The node's own notes (`crates/node/AGENTS.md`) list what is not done:
-no keys per app from mero-kms, no restore of a snapshot into a
-running cluster, no event audiences, no pruning of revoked session ids, and
-search indexes rebuilt from state at each start, and no recovery when every
-mero-kms replica is lost: backups are sealed only under the cluster's key
-(planned: an organization's own key opens its backups; the recovery seed
-above restores access, not data). Sign-up is open by
-default; bound it with the `maxAccounts` quota, or deploy with `--sign-up invite|closed`
+No keys per app come from mero-kms, events have no audiences, revoked
+session ids are not pruned, and search indexes are rebuilt from state at each
+start. A backup key covers only what is written after it is set: until the
+operator or an organization sets one, nothing of its apps is on the recovery
+disk, and their data is lost with the last mero-kms that opens the cluster
+key. Sign-up is open by default; bound it with the `maxAccounts` quota, or
+deploy with `--sign-up invite|closed`
 ([Sign-up policy](/operate/auth/#sign-up-policy)).
 
 ## Checklist
@@ -263,5 +291,9 @@ default; bound it with the `maxAccounts` quota, or deploy with `--sign-up invite
       you run, once all nodes run it.
 - [ ] The governance flags are what you told users, on every founding node.
 - [ ] The ops token is configured by hash and stored outside the machines.
+- [ ] `--operator-key` is set; the operator's private key and every backup
+      key's private half are kept off the nodes.
+- [ ] `--recovery-dir` is set and each holder (the operator, or every
+      organization) has a backup key.
 - [ ] `[outbound]` is absent, or `hosts` lists only what apps need.
 - [ ] Quotas, `maxAccounts` included, fit the cluster.

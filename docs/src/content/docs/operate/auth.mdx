@@ -7,6 +7,7 @@ sidebar:
 ---
 
 import { Aside } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../components/SeqDiagram.astro';
 
 There is no separate auth service: the node itself registers passkeys,
 mints sessions and checks API keys (`crates/node/src/api.rs`, with the
@@ -25,6 +26,48 @@ All three travel as `Authorization: Bearer …` inside the sealed channel. A
 credential is judged on the cluster's latest system state (a read index), so a
 revocation committed through one node holds on every node from the next
 request.
+
+## The request path
+
+Every client (`meroctl`, `calimero-client`, mero-js, calimero-client-py, a
+page through mero-js) does the same before it sends a credential: it checks
+the node's attestation, opens the sealed channel to the key the quote binds,
+and only then signs in or calls.
+
+<SeqDiagram
+  id="d-ops-auth-path"
+  title="Attest, seal, sign in, call"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'Entry node', color: '#3fb950' },
+    { label: 'System leader', color: '#a5ff11' },
+    { label: 'App leader', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'GET /attestation?nonce (in the clear)' },
+    { from: 1, to: 0, label: 'quote binds nonce + transport key, release, profile', dashed: true },
+    { from: 0, to: 0, label: 'DCAP + signed mero-tee release + --tee-profiles / --min-release' },
+    { from: 0, to: 1, label: 'Noise NK to the attested key: every request sealed from here' },
+    { from: 0, to: 1, label: 'POST /auth/passkey/login/begin' },
+    { from: 1, to: 0, label: '{ challengeId, options } (held on this node, 5 min)', dashed: true },
+    { from: 0, to: 1, label: 'login/finish { assertion }' },
+    { from: 1, to: 2, label: 'CreateRefresh, with the assertion as proof', color: '#a5ff11' },
+    { from: 1, to: 0, label: '{ sessionToken (15 min, node-signed), refreshToken }', dashed: true },
+    { from: 0, to: 1, label: 'POST /apps/{app}/intents, Authorization: Bearer v2…' },
+    { from: 1, to: 2, label: 'read index: credential, revocations, access', dashed: true },
+    { from: 1, to: 0, label: 'a confirm method: 412 CONFIRM_REQUIRED { challenge }', dashed: true },
+    { from: 0, to: 1, label: 'the same request + confirm { challengeId, assertion }' },
+    { from: 1, to: 3, label: 'internal/call (consent logged with the entry)' },
+    { from: 3, to: 1, label: '{ index, result, events }', dashed: true },
+    { from: 1, to: 0, label: 'answer + receipt signed by the node', dashed: true },
+  ]}
+/>
+
+An API key skips the passkey steps: it is the bearer token from the start, and
+the node judges its scope (apps, methods, read-only) at the same gate. The ops
+token is sent the same way to `/ops/*`; an operator decision then answers
+`428 OPERATOR_SIGNATURE_REQUIRED` instead of `412`, and the retry carries the
+operator key's signature (`operatorProof`).
 
 ## Passkeys
 
@@ -214,21 +257,37 @@ key never creates another.
 | `readOnly` | Refuse writes. |
 | `allowConfirm` | May call confirm methods; each call still needs the account holder's passkey assertion. Without it such calls answer `403`. |
 | `ttlSecs` | Lifetime; at most and by default 365 days. |
+| `upgrades` | `{ app, package? }`: an **upgrade key**, for CI. It upgrades that one app to signed releases of its package (`package`, default the one it runs) with `POST /apps/{app}/upgrade { version }`, signing the upgrade in place of the passkey step-up, and is refused everywhere else (`403 UPGRADE_KEY_ONLY`). Takes no other scope. |
 
 A key cannot manage credentials (passkeys, other keys, sessions), approvals or
-upgrades: those need a passkey session. A key scoped to apps or methods, or
+upgrades (an upgrade key's one app aside): those need a passkey session. A key scoped to apps or methods, or
 read-only, also cannot install code or create apps. `meroctl` takes a key with
-`--api-key` or `CALIMERO_API_KEY`.
+`--api-key` or `CALIMERO_API_KEY`:
+
+```bash
+# with a passkey session (development cluster: a file passkey approves it)
+meroctl account api-key create --label ci --context notes --read-only --dev-passkey ./dev-passkey.json
+meroctl account api-key create --label deploy --upgrades notes --dev-passkey ./dev-passkey.json
+# then, on the machine that uses it
+export CALIMERO_API_KEY=cal_...
+meroctl call -c notes get --args '{"key":"a"}' --view
+```
 
 ## Confirmations
 
 Some actions need a fresh passkey assertion over the exact request, which the
 log keeps as the owner's consent:
 
-- calls of methods listed in the app's `confirmMethods`;
-- app upgrades, release approvals and outbound approvals by an owner;
-- organization-wide upgrade runs and their retries;
-- deleting an organization.
+- calls of methods the app's ABI declares as confirm methods
+  (`#[app::confirm]`);
+- credentials: adding or removing a passkey, making or revoking an API key,
+  setting a recovery code or a backup key;
+- app upgrades, release approvals and outbound approvals by an owner, and
+  organization-wide upgrade runs and their retries;
+- organization changes: members, roles, teams, capabilities, invites,
+  renaming or deleting it;
+- a package's registered origins, deployments and their offers, and, on a
+  `--deployers owner` cluster, the owner's deployer grants and sign-up changes.
 
 The node first answers `412 CONFIRM_REQUIRED` with a challenge in `details`;
 the client signs it with a passkey and retries with `confirm: { challengeId,
@@ -236,6 +295,28 @@ assertion }`. Like a sign-in challenge, it is held by the node that issued it
 for 5 minutes, so the retry must reach the same node. Browsers and the SDK
 clients do this; `meroctl` does it with a
 file passkey (`--dev-passkey`) on development clusters.
+
+## The consent page
+
+A session opened on an app's frontend (below) may not approve releases,
+upgrades or outbound prefixes, nor create organizations, invite or moderate.
+The app asks instead: `POST /consent/requests { kind, scope?, subject,
+returnTo }` answers a `url` on the node's own origin, where the person reads
+what is asked (the node builds the page from its own state and the signed
+manifests, not from the app) and approves with their passkey. The app then
+reads `GET /consent/{id}/result`. One undecided request per account and node:
+a new one replaces the older. With `--attestation-verifier-url`, the page
+links to an independent verifier of the node's attestation. See
+[The consent page](/protocol/consent-page/).
+
+## Account proofs
+
+`POST /auth/account-proof { nonce, audience }` (a passkey session, not an
+API key or a package-bound session) answers a statement, signed with the
+node's receipt key and valid 5 minutes, that this account asked to bind
+`nonce` for `audience`. A third party checks it against the node's receipt
+key (`GET /ops/nodes/{id}/receipt-key` for the operator, or the node's
+`purpose=receipts` attestation).
 
 ## App-bound sessions
 

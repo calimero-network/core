@@ -9,15 +9,15 @@ The [`apps/`](https://github.com/calimero-network/core/tree/master/apps)
 directory of core is the ground truth for writing an app: every example is a
 real `calimero-sdk` crate, built into a `wasm32-wasip2` component by
 `calimero-app-build` and tested on `TestApp` and its `scenarios/*.json`
-([Testing](/core/build/testing/)). Each is a standalone crate, so it builds and
+([Testing](/build/testing/)). Each is a standalone crate, so it builds and
 tests on its own:
 
 ```bash
 cargo test --manifest-path apps/kv-store/Cargo.toml
 ```
 
-Each follows the same shape ([SDK macros](/core/build/sdk-macros/)): one
-`#[app::state]` struct of [tables and collections](/core/build/collections/),
+Each follows the same shape ([SDK macros](/build/sdk-macros/)): one
+`#[app::state]` struct of [tables and collections](/build/collections/),
 an `#[app::logic]` impl with an `#[app::init]`, calls and views, and optionally
 `#[app::error]` and `#[app::event]` enums. Read the state struct first: it says
 which reads and writes are cheap.
@@ -26,7 +26,7 @@ which reads and writes are cheap.
 
 | App | Shows |
 | --- | --- |
-| `kv-store` | The basic example: a string key-value store on an `UnorderedMap`, events, views. |
+| `kv-store` | The basic example: a string key-value store on an `UnorderedMap`, events, views, a typed error; harness tests, scenarios, and a migration scenario against its shipped `releases/0.1.0.mpk`. |
 | `kv-store-init` | An `init` that seeds entries. |
 | `sorted-kv-store` | Ordered reads on a map: `range`, `prefix`, `page`, `first`, `last`. |
 | `sorted-set-store` | The same on a `Set`. |
@@ -53,10 +53,25 @@ which reads and writes are cheap.
 | `name-registry-admin` | Usernames: one owner per name, decided by the admins. |
 | `components-demo` | An owned cell, a writer set and a role registry. |
 
-See [Access control](/core/build/guides/access-control/) for the patterns.
+See [Access control](/build/guides/access-control/) for the patterns.
+
+## Compute
+
+| App | Shows |
+| --- | --- |
+| `compute-redact` | `#[app::compute]` runs over sealed CSV files: a preview, then one run per part, at most 4 active; the compute component (`mero-app-build --compute-out`); `compute::publish` and a grant link. See [Compute actions](/build/guides/compute-actions/). |
 
 ## Fixtures
 
-`apps/v2-fixtures/` holds the small apps the node's own tests run (`kv`,
-`org-gated`, `files`, `captcha`). `kv` is also the `kv-store-test-fixture.mpk`
-attached to core's releases, which the clients' tests install.
+`apps/v2-fixtures/` holds the small apps the node's own tests run. The name is
+historical (they were the fixtures of the component SDK while SDK 0.12 still
+ran); they are ordinary `calimero-sdk` apps.
+
+| Fixture | Used for |
+| --- | --- |
+| `kv` | Calls, views, a `confirm` method, files, blobs, xcalls, actions and timers; also the `kv-store-test-fixture.mpk` attached to core's releases, which the clients' tests install |
+| `compute` | Compute methods that stream files, report progress and break each cap (`mero-compute`'s tests, the job-node tests) |
+| `captcha` | A captcha service other apps of the organization verify against in the same request (`env::xcall_call`), and a Cloudflare Turnstile check with `env::fetch` |
+| `files` | Deterministic files written from calls and kept by `BlobRef`, and the refusal to stream them back outside a compute run |
+| `org-gated` | Org roles and teams on a cluster |
+| `notes-v1`, `notes-v2` | Two releases of one app, for the consent page's upgrade diff |

@@ -1,6 +1,6 @@
 # Custom domains for node-served app frontends
 
-Status: core part implemented (this PR: served origins, `/ops/served-origins`); mero-tee, mdma, resolver and console parts designed here, not built.
+Status: core part implemented (served origins, `served: true` on `/package-origins/{package}`, `GET /ops/served-origins`); the mero-tee, mdma, resolver and console parts are designed here and live in those repositories.
 
 ## Problem
 

@@ -118,14 +118,14 @@ Do **not** report something as dead until you have ruled out:
 - **Serde-only wire types.** A struct with no Rust callers may still be
   deserialized from JSON by an external client. Check `mero-js`,
   `calimero-client-py`, and the scenario runner and process suite before concluding.
-- **Macro-generated references.** `#[app::*]`, derive macros, and
-  `storage-macros` can reference types no plain grep will show.
+- **Macro-generated references.** `#[app::*]` (`calimero-sdk-macros`) and
+  derive macros can reference types no plain grep will show.
 - **Trait impls as the whole point.** An `impl Report for X` is a "reference" to
   `X`, but if nothing constructs `X`, both are dead.
 - **Test-only survival.** Used only by tests that test *it* is dead; used by
   tests that test *something else* may be a real fixture.
 - **Feature-gated builds.** Check `--features mock-attestation`,
-  `outbound-testing` and `calimero-storage/testing` before saying nothing
+  `outbound-testing` and the crates' `testing` features before saying nothing
   compiles against it.
 - **The `AGENTS.md` echo.** Docs mentioning a type are not a consumer, and a
   reference count that includes them will mislead you. Filter them out.

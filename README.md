@@ -6,7 +6,7 @@ attested Intel TDX nodes, reached through a sealed channel the client opens only
 after verifying the node's attestation, and signed into with passkeys. Nobody
 operating the nodes can read the apps' data.
 
-> **Full documentation**: <https://calimero-network.github.io/core/>, organized into **Cloud** (start here), **Build** (write apps), **Operate** (run a cluster), **Protocol Reference** and **Contribute** (work on core). Coming from the earlier peer-to-peer release? See [Coming from v1](https://calimero-network.github.io/core/cloud/coming-from-v1/).
+> **Full documentation**: <https://calimero-network.github.io/core/>, organized into **Cloud** (start here), **Build** (write apps), **Operate** (run a cluster), **Protocol Reference** and **Contribute** (work on core). Coming from the earlier peer-to-peer release? The [glossary](https://calimero-network.github.io/core/protocol/glossary/) maps its names to these.
 
 ## Components
 
@@ -20,18 +20,26 @@ operating the nodes can read the apps' data.
 | **calimero-identity** | Passkeys, sessions, API keys, confirmation challenges |
 | **calimero-client** | Rust client: attestation check, sealed requests, sign-in |
 | **calimero-app-engine-wasmtime** | Wasmtime engine for `calimero:app` components |
-| **calimero-sdk** | The Rust SDK apps are written with, built into `calimero:app` components |
+| **calimero-sdk** | The Rust SDK apps are written with, built into `calimero:app` components by `calimero-app-build` |
 
 The full list is in [`crates/AGENTS.md`](crates/AGENTS.md).
 
 ## Quick start
 
 ```bash
-cargo run -p merod -- local                     # 3 nodes on 127.0.0.1:2501-2503
+cargo run -p merod -- local                     # 3 nodes on 127.0.0.1:2501-2503; keeps running, go on in another terminal
 cargo install --path crates/meroctl
 meroctl node add local http://127.0.0.1:2501/ --allow-mock
-meroctl login --dev-passkey ./dev-passkey.json --name ada
+meroctl login --dev-passkey ./dev-passkey.json --name ada   # signs up: an account and its personal organization
+scripts/install-mero-app-build.sh                           # once: puts mero-app-build on PATH
+mero-app-build apps/kv-store --out kv_store.wasm
+meroctl context create --path kv_store.wasm --name kv --alias kv
+meroctl call --context kv set --args '{"key":"a","value":"1"}'
+meroctl call --context kv get --args '{"key":"a"}' --view
 ```
+
+The full walk-through, with the JavaScript and Python clients, is the
+[Quickstart](https://calimero-network.github.io/core/cloud/quickstart/).
 
 Nodes run on Linux; on macOS, run `merod` in Docker and `meroctl` natively.
 See [Install & first run](https://calimero-network.github.io/core/operate/install/).

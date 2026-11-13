@@ -13,8 +13,8 @@ and, for billing, each app's usage under its opaque id.
 
 | Source | Access | What |
 | --- | --- | --- |
-| `GET /health` | public, in the clear | `{ ok, node, systemLeader, release, clusterVersion }` |
-| `GET /ops/status` | ops token, sealed | Raft status of the system group and of every app group this node hosts, governance, the fleet directory, counts |
+| `GET /health` | public, in the clear | `{ ok, node, systemLeader, release, clusterVersion, rollbackEpoch }`, and `waiting` on a node still waiting for the cluster key |
+| `GET /ops/status` | ops token, sealed | Raft status of the system group and of every app group this node hosts, governance, the fleet directory, counts, the rollback counter |
 | `GET /ops/metrics` | ops token, sealed | Prometheus text (`text/plain; version=0.0.4`) |
 | `GET /metrics` on `--metrics-listen` | plain HTTP, no credential, off by default | The same Prometheus text |
 | stdout | the host | `tracing` log lines |
@@ -222,6 +222,9 @@ prints the text, or mdma's `OpsClient` (`mdma_common.cloud_v2`).
 | `calimero_build_conflicts_total` rate | near zero | a steady rise: leaders keep losing their builds to leader changes or to concurrent writes |
 | `calimero_event_streams` | well under 4096 | near the limit: new streams answer `429` |
 | `calimero_build_info{release}` | the release you deployed, on every node | a node on a release you did not expect |
+| `calimero_log_undecodable_entries_total` | `0` | anything above zero: a node skipped an entry and its state differs |
+| `rollbackEpoch` in `/health` | unchanged | a rise: some node was started with `--accept-rollback` ([Rollback](/operate/security/#rollback)) |
+| the `recovery disk` warnings below | absent | apps not covered by a backup key, or a disk that cannot be written |
 
 `ops status` gives the same Raft facts with leaders and member ids per group,
 which is what you need before a [replica move](/operate/runbooks/#move-an-apps-replicas).
@@ -252,6 +255,8 @@ appear. Lines worth knowing:
 | info | `migrated the log from the previous storage format` | A data directory with `log.redb` was converted at start. |
 | warn | `could not start app group` | A replica could not open an app; see the error. |
 | warn | `backup failed` | A periodic backup could not be written. |
+| warn | `apps whose holder set no backup key are not on the recovery disk` | `--recovery-dir` is set, but the operator or some organizations set no backup key; their apps are not covered. |
+| warn | `recovery disk write failed` | A pass of the recovery disk could not be written; see the error. |
 | warn | `blob held by too few nodes`, `blob not stored`, `bundle not stored on peer` | Blob replication fell short of a majority, or a peer refused. |
 | warn | `event handler failed`, `timer method failed`, `xcall refused`, `xcall failed` | An app's follow-up work failed; the app's own logic is the usual cause. |
 | error | `state read failed`, `reading events failed` | The store could not be read; check the disk and the storage key. |

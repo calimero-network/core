@@ -8,9 +8,10 @@ A request is made only when every gate holds:
 1. The operator turned it on (`OutboundSettings::enabled`) and allows the host
    (`hosts`, or `"*"` for any host an app declares).
 2. The app's signed `.mpk` manifest declares a URL prefix covering it (`outbound`).
-3. The owner approved that prefix for the app's publisher (`Approval`). In
-   merod that is the organization owner (or the account, for an app outside
-   an organization), with a passkey assertion; never the operator.
+3. That prefix is approved for the app's publisher (`Approval`). In merod it
+   is the app's organization (whoever holds `MANAGE_APPLICATION` org-wide, with
+   a passkey assertion), or the operator where `--outbound-approvals operator`
+   gives it the decision; every app is in an organization since 1.0.0-rc.20.
 4. The run writes (calls, follow-ups, timers; a component's actions and, D76, its calls,
    timers and deliveries): never a view or a migration.
 5. `https` on 443 to a name resolving only to public addresses, size limits from
