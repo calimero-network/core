@@ -255,7 +255,8 @@ For work that needs several requests, or a request that should not hold up the
 call, an `#[app::action]` runs outside the log on the leader: it fetches with
 `ctx.fetch`, reads the app with `ctx.view` and writes through `ctx.call` to an
 `#[app::allow(action)]` method. A call or timer starts one with
-`env::start_action(method, &args)`.
+`env::start_action(method, &args)`
+([Timers and actions](/build/guides/timers-and-actions/)).
 
 <SeqDiagram id="d-build-outbound-fetch" title="A call that checks a token with an outside service"
   lanes={[

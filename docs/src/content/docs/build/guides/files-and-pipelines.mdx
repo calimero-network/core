@@ -1,0 +1,397 @@
+---
+title: Sealed files and pipelines
+description: Take private files from members, keep them by BlobRef, process them in compute runs, and ship a pipeline in your release that fans a step out over many files - write the YAML, validate and estimate it, start runs from meroctl or a client, and read their receipts.
+sidebar:
+  order: 6.5
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
+
+**Task:** accept private documents from your app's members, process them
+without any code but a compute run ever reading them, and run the same
+multi-step job (one step per document, then one that joins the results) on
+hundreds of files at a time.
+
+Three pieces, each built on the one before:
+
+1. **Sealed files**: a member uploads a file, the app keeps a `BlobRef` to it,
+   and only a compute run can read its bytes.
+2. **Compute runs**: a method marked `#[app::compute]` runs on a job node over
+   files and writes new files.
+   How to write, build, start and test one is in
+   [Compute actions](/build/guides/compute-actions/); this guide uses it.
+3. **Pipelines**: a YAML file shipped in the release names compute steps and
+   how they connect; the node runs it as compute runs, without a call per step.
+
+The example is a word counter.
+The Rust code builds for both components, and the pipeline passes
+`calimero_pipeline::compile` and `check` against the app's compute methods.
+
+## Files or blobs
+
+| | Plain blob | Sealed file |
+| --- | --- | --- |
+| Uploaded with | `POST /apps/{app}/blobs` (`meroctl blob upload`) | `POST /apps/{app}/files`, or an upload session for a large one (`meroctl file upload`) |
+| Who may upload | a signed-in account the app's access admits | the app's owner and its organization's members |
+| Size | 47 MiB | 2 GiB per file, uploaded in 16 MiB parts |
+| App code reads the bytes | no (`BlobRef::info` only) | only inside a compute run (`files::open`) |
+| Leaves the cluster | `GET .../blobs/{id}` with a session or a grant | only through an export, sealed to the requester's key, or as a published compute output |
+
+For blobs, and `grant` links, see [Files and blobs](/build/guides/blobs/).
+The rest of this page is about sealed files.
+
+## Keep a member's file
+
+The member uploads first, then calls a method with the file's id, which a
+`BlobRef` parameter takes as a 64-hex string:
+
+```bash
+meroctl file upload ./report.txt -c docs        # prints { id, size, sha256, index }
+meroctl call -c docs submit --args '{"file":"<id>"}'
+```
+
+```ts
+const { id } = await client.uploadFile(app, fileFromInput);   // mero-js: one request, or parts that resume
+await client.apps.call({ app, method: 'submit', args: { file: id } });
+```
+
+```rust
+use calimero_sdk::blob::BlobRef;
+use calimero_sdk::compute::{self, ComputeOutcome, ComputeStatus, RunId};
+use calimero_sdk::files;
+use calimero_sdk::prelude::*;
+
+#[app::state(version = 1)]
+pub struct DocIndex {
+    /// The documents submitted, by file id: a reference in state keeps the file.
+    docs: UnorderedMap<String, BlobRef>,
+    /// The count files runs made, by file id.
+    counts: UnorderedMap<String, BlobRef>,
+}
+
+#[app::error]
+pub enum Error {
+    NoSuchFile,
+    NotYourFile,
+}
+
+/// A document as `doc` describes it (D20: the size as a decimal string).
+#[derive(serde::Serialize)]
+pub struct DocOut {
+    pub size: String,
+    pub uploader: Option<String>,
+}
+
+/// `countWords`'s arguments.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CountArgs {
+    min_len: u32,
+}
+
+#[app::logic]
+impl DocIndex {
+    #[app::init]
+    pub fn init() -> app::Result<Self> {
+        Ok(Self::load())
+    }
+
+    /// Keep a file the caller uploaded, and count its words in a compute run.
+    pub fn submit(&mut self, file: BlobRef) -> app::Result<RunId> {
+        let Some(_info) = files::info(&file) else {
+            app::bail!(Error::NoSuchFile);
+        };
+        let me = guards::require_member()?;
+        if files::uploader(&file).as_deref() != Some(me.as_str()) {
+            app::bail!(Error::NotYourFile);
+        }
+        self.docs.insert(&file.id(), &file)?;
+        compute::start("countWords", &CountArgs { min_len: 1 }, &[file])
+    }
+
+    /// A kept document's size and uploader; its bytes stay sealed.
+    #[app::view]
+    pub fn doc(&self, file: BlobRef) -> app::Result<Option<DocOut>> {
+        if self.docs.get(&file.id())?.is_none() {
+            return Ok(None);
+        }
+        Ok(files::info(&file).map(|info| DocOut {
+            size: info.size.to_string(),
+            uploader: files::uploader(&file),
+        }))
+    }
+
+    // countWords, join and onCounted: below.
+}
+```
+
+- `files::info(&file)` is `Some(FileInfo { size, sha256 })` for a sealed file
+  the app holds, else `None`. It works in every kind of run but a migration.
+- `files::uploader(&file)` is the account the node recorded from the
+  authenticated upload: `None` for a file a call or a run made, and not
+  available inside a compute run.
+  It is how an app decides who may submit what.
+- **A reference in state is what keeps a file.**
+  An uploaded file nothing refers to is forgotten an hour later
+  (`BLOB_IDLE_MS`), and so is one whose last `BlobRef` the app removes.
+  There is no delete call: drop the reference.
+- Outside a compute run `files::open` traps (`HostDenied`: "a sealed file is
+  readable only inside a compute run"), so no call or view can leak the bytes
+  into state, an event or a result.
+
+A call, timer or `init` may also write a file with `files::create()` (a
+`std::io::Write`; `finish()` answers the `BlobRef`), at most 64 MiB per run.
+
+## Process it in a compute run
+
+```rust
+use std::io::{BufRead, BufReader, Write};
+
+    /// Writes one line per input, `<file id> <words>`, counting words of at least `min_len`
+    /// characters. Runs on a job node.
+    #[app::compute(fuel = 50_000_000_000, memory_mib = 128, wall_secs = 120, result = "on_counted")]
+    pub fn count_words(min_len: u32) -> app::Result<u64> {
+        let mut out = files::create()?;
+        let mut total = 0u64;
+        let inputs = compute::inputs();
+        for (i, input) in inputs.iter().enumerate() {
+            let mut words = 0u64;
+            for line in BufReader::new(files::open(input)?).lines() {
+                let line = line?;
+                let long = line
+                    .split_whitespace()
+                    .filter(|w| w.chars().count() >= min_len as usize);
+                words += long.count() as u64;
+            }
+            compute::progress((100 * (i + 1) / inputs.len()) as u8, "counting");
+            writeln!(out, "{} {words}", input.id())?;
+            total += words;
+        }
+        out.finish()?;
+        Ok(total)
+    }
+
+    /// Joins every input into one file, in the order given.
+    #[app::compute(fuel = 50_000_000_000, memory_mib = 128, wall_secs = 120, result = "on_counted")]
+    pub fn join() -> app::Result<u32> {
+        let mut out = files::create()?;
+        let inputs = compute::inputs();
+        for input in &inputs {
+            std::io::copy(&mut files::open(input)?, &mut out)?;
+        }
+        out.finish()?;
+        Ok(inputs.len() as u32)
+    }
+
+    /// The node runs this when a run the app started ends; it keeps the outputs.
+    #[app::compute_result]
+    pub fn on_counted(&mut self, outcome: ComputeOutcome) -> app::Result<()> {
+        if outcome.status == ComputeStatus::Done {
+            for output in &outcome.outputs {
+                self.counts.insert(&output.id.id(), &output.id)?;
+            }
+        }
+        Ok(())
+    }
+```
+
+`submit` starts `countWords` over one file, and `on_counted` stores the output's
+`BlobRef`, which is what keeps it.
+The rules (caps, determinism, result methods, publishing an output, the
+`mero-app-build --compute-out` build and the `mero-compute` test runner) are in
+[Compute actions](/build/guides/compute-actions/).
+In a compute run, files are bounded by `MAX_FILE_BYTES` (2 GiB each) and 2 GiB
+written in all, 16 open at once, and 1,000 new files.
+
+## Ship a pipeline
+
+Starting one run per file from a call works for a few files.
+For hundreds, with a step that waits for all of them, ship a pipeline: the
+leader decides each step from the run's record and starts its compute runs in
+waves, and a client starts the whole thing with one request.
+
+`pipelines/wordcount.yaml`:
+
+```yaml
+apiVersion: compute.calimero.network/v1
+kind: Pipeline
+name: wordcount
+params:
+  min-len: { type: number, default: 1, min: 1, max: 64 }
+inputs:
+  docs: { kind: files, maxItems: 500 }
+steps:
+  count:
+    method: countWords
+    forEach: inputs.docs
+    maxItems: 500
+    batch: 10
+    maxParallel: 8
+    allowFailures: 5%
+    args: { minLen: params.min-len }
+    limits: { wallSecs: 60 }
+  total:
+    method: join
+    collect: count.outputs
+outputs: [total.outputs]
+```
+
+| Field | Meaning |
+| --- | --- |
+| `apiVersion`, `kind`, `name` | Required: `compute.calimero.network/v1`, `Pipeline`, and a name of 1 to 64 characters of `[a-z0-9-]` starting with a letter (the same rule for every step, input and param name; `inputs`, `params` and `item` are reserved). |
+| `module` | The module steps run in when they name none: `self` (the release's own compute component, the default) or another installed package, `com.acme.pdf[@0.1.0]`, pinned at install. |
+| `params` | Typed values a run passes: `type` (`number`, `string`, `boolean`), `default`, `min`, `max`, `enum`. A step reads one as `params.<name>`. |
+| `inputs` | What a run binds: `kind: files` (with `maxItems`), `artifact` or `table` (one file each), and an optional `default`. |
+| `steps.<name>.method` | A compute method of the step's module, by its ABI name (`countWords`). |
+| `args` | The method's arguments, a JSON object whose values may be `params.x`, `<step>.result` or, in a fan-out, `item`. A method that takes none gets none. |
+| `inputs` (step) | Files the run gets: `inputs.x`, `<step>.outputs`, and `item` in a fan-out. |
+| `needs` | Steps that must succeed first; a reference to a step adds it. |
+| `forEach` | One item per file of `inputs.x` or `<step>.outputs`, or per value of `<step>.results`; needs `maxItems`. `batch` groups items into one run, `maxParallel` bounds the runs active at once, `allowFailures` (a count or a percentage) lets the step succeed with some items failed. |
+| `collect` | `<fan-out step>.outputs`: one run over all of that step's outputs, in item order. |
+| `limits` | `fuel`, `memoryMib`, `wallSecs`: only lower than the method's caps. |
+| `pool` | Run this step's runs on that pool's job nodes. |
+| `cache` | `false` turns the step cache off for this step (default on). |
+| `outputs`, `failFast` | The run's outputs; `failFast: true` cancels the other steps at the first failed one. |
+
+`when`, `runIf`, `uses`, `loops`, `variables`, `sources`, `sinks`, `publish`,
+`notify` and an input's `accept`, `maxFileSize`, `format` and `schema` are
+refused with `NOT_IN_V1`, never ignored.
+A source is at most 64 KiB, with at most 64 steps, 64 inputs, 64 params and
+10,000 items per fan-out (`crates/pipeline/src/compile.rs`).
+
+### Check it before you pack
+
+```bash
+meroctl pipeline validate pipelines/wordcount.yaml                          # structure only
+meroctl pipeline validate pipelines/wordcount.yaml --package com.example.docs --version 1.0.0
+```
+
+`POST /pipelines/validate` lists every problem with its `path` and stable
+`code` (`BAD_NAME`, `BAD_REF`, `CYCLE`, `NOT_IN_V1`, `MISSING_MODULE`, ...) and
+writes nothing; against an installed release it also checks the methods and
+caps the release would give it, and answers `worstCaseFuel` (and
+`worstCaseCost` when the operator has set prices).
+
+### Pack it into the release
+
+```bash
+mero-app-build apps/doc-index --out app.wasm --compute-out compute.wasm
+python3 -I scripts/pack-component.py --wasm app.wasm --compute compute.wasm \
+  --pipeline pipelines/wordcount.yaml \
+  --package com.example.docs --app-version 1.0.0 --key my-signing-key.json \
+  --out dist/com.example.docs-1.0.0.mpk
+```
+
+The manifest lists the file under `pipelines` (at most 16 per package, each at
+most 64 KiB), signed with the rest.
+At install the node compiles each one and checks it against the release's
+compute methods, the modules it names and the cluster's pools.
+Any problem refuses the release with `400 BAD_PIPELINE` and `details: [{ file,
+path, code, message }]` for every error (`NO_COMPUTE` for a release without a
+compute component, `DUPLICATE_NAME` for two pipelines of one name); a
+multi-service package declaring pipelines is `422 PIPELINES_NEED_ONE_SERVICE`.
+A release with pipelines installs only once every node runs this release
+(`409 CLUSTER_NOT_UPGRADED`).
+`meroctl app pipelines com.example.docs` prints what a version registered:
+each pipeline's hash, worst-case fuel, pinned modules and canonical JSON.
+
+## Run it
+
+<SeqDiagram id="d-guide-pipeline" title="One pipeline run: a fan-out over three files, then a collect"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'App leader', color: '#58a6ff' },
+    { label: 'App log', color: '#a371f7' },
+    { label: 'Job nodes', color: '#39d0d8' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /apps/{app}/pipelines/wordcount/runs { inputs, params }' },
+    { from: 1, to: 2, label: 'pipelineStart: inputs pinned, release and pipeline hash fixed' },
+    { from: 1, to: 0, label: '202 { run }', dashed: true },
+    { from: 1, to: 2, label: 'pipelineStep count: start runs .count.0 ... (a wave)' },
+    { from: 1, to: 3, label: 'compute runs countWords, one per batch' },
+    { from: 3, to: 1, label: 'signed reports and outputs', dashed: true },
+    { from: 1, to: 2, label: 'computeFinal per run: count succeeded' },
+    { from: 1, to: 2, label: 'pipelineStep total: start one run over count.outputs' },
+    { from: 1, to: 3, label: 'compute run join' },
+    { from: 3, to: 1, label: 'report and output', dashed: true },
+    { from: 1, to: 2, label: 'computeFinal: run succeeded' },
+  ]} />
+
+```bash
+meroctl file upload ./a.txt -c docs                    # one id per file
+meroctl pipeline estimate docs wordcount --input docs=<id1>,<id2>,<id3>
+meroctl pipeline run docs wordcount --input docs=<id1>,<id2>,<id3> \
+  --param min-len=4 --max-cost 5000000 --wait
+meroctl pipeline watch docs <run>                      # snapshot, run and step events, then end
+meroctl pipeline receipt docs <run> --verify
+meroctl pipeline download docs <run> --out ./counts    # every output as STEP-INDEX.bin
+```
+
+From mero-js the routes are generated methods of `client.apps`:
+
+```ts
+const estimate = await client.apps.pipelinesEstimateRun({ app, name: 'wordcount', counts: { docs: 120 } });
+const { run } = await client.apps.pipelinesStart({
+  app, name: 'wordcount', inputs: { docs: ids }, params: { 'min-len': 4 }, maxCost: '5000000',
+});
+const state = await client.apps.pipelinesGet({ app, run });   // each step's status, runs and reason
+const bytes = await client.exportFile(app, outputId);          // checked against its hashes before it answers
+```
+
+In Python, `client.apps.pipelines_start(app=..., name="wordcount", inputs={...})`
+and `pipelines_estimate_run`, and in Rust `Client::start_pipeline_run`,
+`estimate_pipeline`, `pipeline_run_events`, `pipeline_receipt` and
+`verify_receipt`.
+
+What happens to the run:
+
+- It pins the release's pipeline by hash and its compute component at start,
+  so upgrading the app does not change a run already going, and a retry keeps
+  the original release.
+- Each step's work is ordinary compute runs with ids `<run>.<step>.<index>`,
+  under the app's owner, payer and file keys.
+  They have **no result method**: the step keeps each run's result (at most
+  64 KiB) and outputs, held by the pipeline run's record until it is dropped
+  (an app keeps its last 64 finished runs).
+  Download the outputs you need, or have a call keep them.
+- A step run whose method, arguments and input contents match an earlier
+  successful run in the app is answered from the **step cache**, at no cost.
+  `meroctl pipeline retry docs <run> --limit count.fuel=80000000000` starts a
+  new run where only the failed items run again.
+- `maxCost` caps what the run may owe under the operator's price table: no step
+  run starts that could take it past the cap, and the step that hits it fails
+  with `COST_CAP`.
+
+The step and run rules (fan-out waves, `allowFailures`, `failFast`, pools,
+cache lifetime, cost) are in [Pipeline runs](/protocol/compute-actions/#pipeline-runs);
+receipts, events and exports are also covered in
+[Compute actions](/build/guides/compute-actions/#pipeline-run-receipts).
+
+## Errors
+
+| Status, code | When |
+| --- | --- |
+| `400 BAD_PIPELINE` | at install: a pipeline does not compile or check; `details` lists every error |
+| `404 NO_SUCH_PIPELINE` | the app's release registers no pipeline of that name |
+| `400 BAD_INPUTS` | an input that is not the pipeline's, unbound, past its `maxItems`, more than 1,024 files in all, or not a file id |
+| `410 OUTPUT_EXPIRED` | an input (or, on a retry, an original input) is not a file the app holds |
+| `400 BAD_PARAMS` | a param of the wrong type, outside `min`/`max`/`enum`, or undeclared |
+| `409 NO_PRICE_TABLE`, `400 BAD_MAX_COST` | `maxCost` given and the operator set no prices, or it is not a whole number of micro-units |
+| `429 TOO_MANY_PIPELINE_RUNS` | 8 runs already going in this app |
+| `403 FORBIDDEN` | the caller is not the app's owner or a member of its organization (start, cancel, retry, receipt), even on a public app |
+| `409 STILL_RUNNING`, `400 LIMIT_EXCEEDS_CAP`, `400 BAD_LIMITS` | a retry of a running run, or with limits above the method's caps or for a step the pipeline lacks |
+| `409 RUN_NOT_ENDED` | a receipt asked for before the run ended |
+| `429 TOO_MANY_EXPORTS` | more than 30 exports a minute by one account on one node |
+
+A step that cannot be built fails with its own code in the run's record
+(`TOO_MANY_ITEMS`, `TOO_MANY_INPUTS`, `RUN_TOO_LARGE`, `COST_CAP`,
+`RESULTS_TOO_LARGE`, ...): [Pipeline runs](/protocol/compute-actions/#pipeline-runs).
+
+<Aside type="caution">
+  A step cache hit reuses an earlier output for equal method, arguments and
+  input contents. A method whose output varies for the same inputs (it should
+  not: a compute run's clock and randomness are fixed per run) needs
+  `cache: false` on its step.
+</Aside>

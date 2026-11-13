@@ -1,0 +1,323 @@
+---
+title: Call your app from a client
+description: Reach a deployed app from TypeScript (mero-js), Python, Rust or meroctl - attest the node, sign in with a passkey or an API key, call and view methods, handle confirm methods, retries and errors, follow events over SSE, and check receipts.
+sidebar:
+  order: 10.5
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
+
+**Task:** call the methods of an app you deployed, from a web page, a script,
+a service or the command line, and read its events as they happen.
+
+Every client does the same five things, which is why you use one of the
+Calimero clients rather than plain HTTP:
+
+1. **Attest** the node: fetch its TDX quote and check it against a policy you
+   give (the signed mero-tee release it names, at least a minimum version) before
+   sending anything.
+2. **Seal** every request end to end to the attested key (Noise,
+   `calimero/sealed-http/v2`), so nothing between you and the enclave reads it.
+3. **Authenticate** with a passkey session (people) or an API key (machines).
+4. **Call** the app's routes: `POST /apps/{app}/intents` for a logged call,
+   `POST /apps/{app}/views` for a read, `GET /apps/{app}/events` for the event stream.
+5. **Retry** a call the node answered `503` with the same idempotency key, so it
+   runs once even if the first attempt committed.
+
+| Client | Where | Package |
+| --- | --- | --- |
+| mero-js | browser, Node 18+ | `@calimero-network/mero-js` ([docs](https://calimero-network.github.io/mero-js/)) |
+| calimero-client-py | CPython 3.9+ | `calimero-client-py` ([docs](https://calimero-network.github.io/calimero-client-py/)) |
+| calimero-client | Rust | `crates/client` in this repository |
+| meroctl | the command line | `crates/meroctl` ([reference](/operate/meroctl/)) |
+
+All four send the same requests over the same sealed channel. For methods and
+types generated from your app's ABI on top of mero-js or the Python client,
+see [Typed clients for your app](/build/guides/typed-clients/).
+
+<SeqDiagram id="d-guide-calling" title="A client's first call to an app"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'Any node', color: '#3fb950' },
+    { label: 'App leader', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'GET /attestation?nonce=… (in the clear)' },
+    { from: 0, to: 0, label: 'verify the quote, its release and the bound key' },
+    { from: 0, to: 1, label: 'sealed: POST /auth/passkey/login/* or an API key' },
+    { from: 0, to: 1, label: 'sealed: POST /apps/{app}/intents { method, args, idempotencyKey }' },
+    { from: 1, to: 2, label: 'forwarded to the leader (peer sealed channel)' },
+    { from: 2, to: 2, label: 'run, append, commit' },
+    { from: 2, to: 1, label: '{ index, result, events, receipt }', dashed: true },
+    { from: 1, to: 0, label: '{ index, result, events, receipt }', dashed: true },
+    { from: 0, to: 1, label: 'sealed: GET /apps/{app}/events?from=index+1 (SSE)' },
+  ]} />
+
+## Connect and sign in
+
+<Tabs>
+<TabItem label="mero-js">
+
+```ts
+import { CalimeroClient, browserPasskey } from '@calimero-network/mero-js';
+
+// A Calimero Cloud cluster by name: its nodes come from the public directory,
+// and each is attested under your policy before anything is sent.
+const client = await CalimeroClient.connect({
+  cluster: 'eu-shared-1',
+  policy: { release: { minReleaseVersion: '2.3.109' } },
+});
+// Or nodes you name: new CalimeroClient({ baseUrl, nodes, policy }).
+// A development cluster (merod local, merod run --dev): policy: { allowMock: true }.
+
+await client.signIn(browserPasskey());   // a person, in a browser
+client.useApiKey('cal_...');             // or a machine
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+from calimero_client_py import Client
+
+client = Client.connect("eu-shared-1", tee_profiles=["<profile>"])
+# Or one node: Client("https://node1.example.com", tee_profiles=[...]);
+# a development cluster: Client("http://127.0.0.1:2501", allow_mock=True).
+client.use_api_key("cal_...")
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+use calimero_client::{Client, Measurements, Policy};
+
+let policy = Policy {
+    measurements: Measurements::Release {
+        allowed_profiles: vec!["<profile>".to_owned()],
+        min_version: None, // 2.3.109 when none is given
+    },
+    ..Policy::default()   // allow_mock: true for a development cluster
+};
+let client = Client::connect("https://node1.example.com", policy)?;
+client.use_api_key(&std::env::var("CALIMERO_API_KEY")?).await;
+```
+
+</TabItem>
+<TabItem label="meroctl">
+
+```bash
+meroctl node add eu https://node1.example.com
+export CALIMERO_TEE_PROFILES=<profile> CALIMERO_API_KEY=cal_...
+meroctl --node eu whoami
+# A development cluster: meroctl node add local http://127.0.0.1:2501 --allow-mock
+#                        meroctl login --dev-passkey ./me.passkey
+```
+
+</TabItem>
+</Tabs>
+
+- **Passkeys** are for people, in a browser (`browserPasskey()`); a passkey
+  belongs to one cluster, and one made elsewhere is
+  `401 PASSKEY_UNKNOWN_HERE`. A page served from the app's own frontend gets
+  a session bound to its package: see [Ship a frontend](/build/guides/frontends/).
+- **API keys** are for scripts and services. An account holder creates one
+  with a passkey step-up (`meroctl account api-key create [--context C]...
+  [--read-only] [--ttl-secs N]`, or `client.auth.apikeyCreate` in mero-js);
+  the key is shown once. `--context` limits it to some apps and `--read-only`
+  to views.
+- Sessions refresh themselves: a `401` on a session the client holds the
+  refresh token of is refreshed once and the request sent again.
+- `421 WRONG_NODE` means the node runs a release the account's owners have
+  not approved. mero-js and the Python client move to the next node they were
+  given; the Rust client returns `Error::WrongNode` for you to do so.
+
+## Call and read
+
+<Tabs>
+<TabItem label="mero-js">
+
+```ts
+const { index, result, events } = await client.apps.call({
+  app, method: 'set', args: { key: 'a', value: '1' }, idempotencyKey: 'set-a-1',
+});
+const { result: value } = await client.apps.view({ app, method: 'get', args: { key: 'a' } });
+const fast = await client.apps.view({ app, method: 'get', args: { key: 'a' }, consistency: 'stale', minIndex: index });
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+r = client.apps.call(app=app_id, method="set", args={"key": "a", "value": "1"},
+                     idempotency_key="set-a-1")
+v = client.apps.view(app=app_id, method="get", args={"key": "a"}).to_dict()["result"]
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+use serde_json::json;
+
+let set = client
+    .apps()
+    .call(&app, "set", Some(json!({ "key": "a", "value": "1" })), Some("set-a-1"), None)
+    .await?;
+let got = client
+    .apps()
+    .view(&app, "get", Some(json!({ "key": "a" })), None, None)
+    .await?;
+println!("{} at {}", got.result, got.index);
+```
+
+</TabItem>
+<TabItem label="meroctl">
+
+```bash
+meroctl call -c my-kv set --args '{"key":"a","value":"1"}' --idempotency-key set-a-1
+meroctl call -c my-kv get --args '{"key":"a"}' --view
+meroctl call -c my-kv get --args '{"key":"a"}' --view --min-index 42
+```
+
+</TabItem>
+</Tabs>
+
+- **Names and arguments are the ABI's**: methods in camelCase, arguments a
+  JSON object keyed by camelCase parameter names (`{}` for none; unknown keys
+  are refused). `u64` and `i64` go as decimal strings and bytes as base64url
+  without padding, in both directions ([App interface](/build/app-abi/)).
+- **A call** answers `{ index, result, events, receipt }`: the log index it
+  committed at, the method's result, the events of that call the caller may
+  see, and the answering node's signed receipt. Arguments are at most 512 KiB
+  (`413 ARGS_TOO_LARGE`).
+- **A view** reads a caught-up replica by default (`consistency: "strong"`).
+  `stale` reads the node you reached, and `minIndex` makes it wait until it
+  has applied that index (`503 NOT_CAUGHT_UP` if it has not), which is how a
+  client reads its own write cheaply.
+- **Idempotency.** A call with a key is answered once: yours is kept 24
+  hours, and mero-js and the Rust client make one when you give none (kept 10
+  minutes). They resend a call with the same key while the node answers `503`
+  or cannot be reached (6 retries from 200 ms doubling to 2 s; mero-js then
+  moves to its next node); the Python client leaves such a node for its next one. A call
+  that did commit is answered from its record, never run twice. Give your own
+  key when the call must not repeat across restarts of your program.
+- **Calling an action** (`#[app::action]`) only starts it: the result is
+  `{ "actionId": "a.…" }` and the work happens later on the leader
+  ([Timers and actions](/build/guides/timers-and-actions/)).
+
+### Confirm methods
+
+A method marked `#[app::confirm]` needs the caller's passkey on every call:
+the node answers `412 CONFIRM_REQUIRED` with a challenge over that exact call,
+and the client sends it again with the assertion, which is logged as consent.
+An API key cannot answer it.
+
+```ts
+import { passkeyConfirm, browserPasskey } from '@calimero-network/mero-js';
+await client.apps.call({ app, method: 'clear', args: {} }, { confirm: passkeyConfirm(browserPasskey()) });
+```
+
+```python
+client.use_passkey(passkey)                                   # answers each 412
+client.apps.call(app=app_id, method="clear", args={})
+```
+
+In Rust the last argument of `apps().call` is `Some(&mut passkey)`; `meroctl
+call` takes `--dev-passkey FILE` on a development cluster.
+
+## Errors
+
+| Status, code | Meaning | mero-js |
+| --- | --- | --- |
+| `422 APP_ERROR` | the app refused: `details.code` is the `#[app::error]` variant (or the node's ABI check: `UnknownMethod`, `WrongKind`, `NotAView`, `Forbidden`, `ConfirmRequired`), `details.fields` its fields | `AppError` (`appCode`, `fields`) |
+| `422 TRAP` | the run trapped (`details.kind`: out of fuel, host denied, ...); nothing was written | `TrapError` |
+| `401 UNAUTHENTICATED` | no or expired credential, or an anonymous call of a method that is not `public` | `LoginRequired` |
+| `404 NOT_FOUND` | no such app, or one you may not reach (the same answer) | `NotFound` |
+| `412 CONFIRM_REQUIRED` | a confirm method, sent without a passkey assertion | `ConfirmRequired` |
+| `413 ARGS_TOO_LARGE` | arguments over 512 KiB | `ArgsTooLarge` |
+| `403 FORBIDDEN` | a read-only team member's call that would write, or a credential that may not do this | `CalimeroError` |
+| `429 QUOTA_EXCEEDED` | the app's developer is over its fuel for the day | `QuotaExceeded` |
+| `503` | the node could not serve it now (`NOT_CAUGHT_UP`, no leader, a timeout); the clients retry | `UnavailableError` (`committed`: `false` or `'unknown'`) |
+| `400 RESERVED_METHOD` | a method name starting `__` | `CalimeroError` |
+
+Python raises `CloudError(message, status, code, details)` and Rust returns
+`Error::Api { status, code, .. }`; `meroctl` prints the code and message.
+The app's own error codes and fields are in its ABI (`meroctl context abi`).
+
+## Follow events
+
+`GET /apps/{app}/events?from=N` is a server-sent event stream: the committed
+events from log index `N`, then live ones, each sent only to the accounts its
+audience names. Read the state with a view, then follow from the view's
+`index + 1`, so you miss nothing and see nothing twice.
+
+<Tabs>
+<TabItem label="mero-js">
+
+```ts
+const stop = new AbortController();
+for await (const { id, kind, data } of client.events(app, index + 1, stop.signal)) {
+  console.log(id, kind, data);
+}
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+for e in client.events(app_id, start=index + 1, limit=100, timeout=5):
+    print(e["id"], e["kind"], e["data"])
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+use futures_util::StreamExt;
+
+let mut events = Box::pin(client.events(&app, set.index + 1).await?);
+while let Some((id, kind, data)) = events.next().await {
+    println!("{id} {kind} {data}");
+}
+```
+
+</TabItem>
+<TabItem label="meroctl">
+
+```bash
+meroctl context watch my-kv --from 0 --limit 10
+```
+
+</TabItem>
+</Tabs>
+
+A node serves at most 4,096 event and presence streams together
+(`429 RATE_LIMITED` past that). What the app emits and who receives it:
+[Emit events](/build/guides/events/). Live state that is not an event, such as
+cursors: [Show who is here](/build/guides/presence/).
+
+## Check a receipt
+
+Every call and view answer carries `receipt { app, index, resultHash, node,
+key, signature }`: the answering node's Ed25519 signature over the app, the
+index and the SHA-256 of the result's canonical JSON. A receipt proves the
+result to someone else, later, offline, but only under a key the app's
+replicas attest: `verify_app_cluster` attests every replica over a fresh nonce
+and answers their receipt keys and the cluster's governance.
+
+```rust
+let cluster = client.verify_app_cluster(&app).await?;
+let key = cluster.keys.get(&set.receipt.node).expect("an attested replica");
+assert!(set.receipt.verify(key, &set.result));
+```
+
+Python has `client.verify_app_cluster(app)`, and `meroctl attest -c CONTEXT`
+prints the same.
+
+<Aside type="note">
+  The Rust snippets on this page compile against `crates/client`; the mero-js
+  and Python ones use the methods those clients generate from the node's API
+  document, named in their READMEs.
+</Aside>

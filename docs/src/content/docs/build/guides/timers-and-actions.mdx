@@ -1,0 +1,383 @@
+---
+title: Timers and actions
+description: Run a method on a schedule with #[app::every], and do slow or outbound work outside the log with #[app::action] - start it from a call, a timer or a client, read and write through ActionCtx, handle failures, and test both.
+sidebar:
+  order: 6.3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
+
+**Task:** do something in your app without a client asking each time (sweep
+expired bookings every minute, refresh data every hour), and do work a call
+cannot (several HTTP requests, seconds of waiting) without holding up the log.
+
+- A **timer** (`#[app::every]`) is a logged write the node runs on an interval,
+  as the system caller.
+- An **action** (`#[app::action]`) runs outside the log on the app's leader.
+  It has no state of its own: it reads with views, writes with calls and talks
+  to the outside world with HTTP.
+
+The example is a watchlist of company domains: `watch` adds one and looks it
+up at once, an hourly timer looks every domain up again, and the `enrich`
+action asks an outside service for the industry and stores it. It builds and
+its harness test below passes against the SDK in this repository; the patterns
+come from `apps/v2-fixtures/kv` (`beat`, `startEnrich`, `enrich`) and
+`apps/rooms` (`releaseNoShows`).
+
+## The app
+
+```rust
+use calimero_sdk::prelude::*;
+use calimero_sdk::Request;
+
+#[app::state(version = 1)]
+pub struct Watchlist {
+    /// The domains watched; the value is the slot of the tick that last queued it.
+    domains: UnorderedMap<String, u64>,
+    /// What `enrich` brought back, by domain.
+    industries: UnorderedMap<String, String>,
+    /// What `onActionFailed` was told, by action id: `"<method>|<reason>"`.
+    failures: UnorderedMap<String, String>,
+}
+
+#[derive(serde::Serialize)]
+struct DomainArg<'a> {
+    domain: &'a str,
+}
+
+#[derive(serde::Serialize)]
+struct Industry<'a> {
+    domain: &'a str,
+    industry: &'a str,
+}
+
+#[derive(serde::Deserialize)]
+struct Answer {
+    industry: String,
+}
+
+#[app::error]
+pub enum Error {
+    NotATick,
+}
+
+/// Domains one tick queues: one run may start at most 100 actions.
+const PER_TICK: u32 = 50;
+
+#[app::logic]
+impl Watchlist {
+    #[app::init]
+    pub fn init() -> app::Result<Self> {
+        Ok(Self::load())
+    }
+
+    /// Watch `domain` and look it up now; answers the action's key.
+    pub fn watch(&mut self, domain: String) -> app::Result<String> {
+        self.domains.insert(&domain, &0)?;
+        env::start_action("enrich", &DomainArg { domain: &domain })
+    }
+
+    /// Every hour, look the watched domains up again.
+    #[app::every("1h")]
+    pub fn refresh(&mut self) -> app::Result<()> {
+        let Some(tick) = env::timer() else {
+            app::bail!(Error::NotATick);
+        };
+        let page = self.domains.page(FindOpts::default().limit(PER_TICK))?;
+        for (domain, _) in page.items {
+            env::start_action("enrich", &DomainArg { domain: &domain })?;
+            self.domains.insert(&domain, &tick.scheduled)?;
+        }
+        Ok(())
+    }
+
+    /// Runs on the leader, outside the log: reads with a view, fetches, writes with a call.
+    #[app::action]
+    pub fn enrich(ctx: &mut ActionCtx, domain: String) -> app::Result<()> {
+        let known: Option<String> = ctx.view("industry", &DomainArg { domain: &domain })?;
+        let request = Request::get(format!("https://enrich.example.com/v1/{domain}"))
+            .header("Idempotency-Key", &ctx.key())
+            .header("Authorization", "Bearer {{secret:ENRICH_KEY}}");
+        let answer: Answer = ctx.fetch(&request)?.json()?;
+        if known.as_deref() != Some(answer.industry.as_str()) {
+            ctx.call::<(), _>(
+                "applyIndustry",
+                &Industry {
+                    domain: &domain,
+                    industry: &answer.industry,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Only the app's own actions write here.
+    #[app::allow(action)]
+    pub fn apply_industry(&mut self, domain: String, industry: String) -> app::Result<()> {
+        self.industries.insert(&domain, &industry)?;
+        Ok(())
+    }
+
+    /// The node runs this as the action's starter when an action fails for good.
+    pub fn on_action_failed(
+        &mut self,
+        action_id: String,
+        method: String,
+        reason: String,
+    ) -> app::Result<()> {
+        self.failures
+            .insert(&action_id, &format!("{method}|{reason}"))?;
+        Ok(())
+    }
+
+    #[app::view]
+    pub fn industry(&self, domain: String) -> app::Result<Option<String>> {
+        Ok(self.industries.get(&domain)?)
+    }
+}
+```
+
+## Timers
+
+```rust
+#[app::every("1h")]
+pub fn refresh(&mut self) -> app::Result<()> { /* ... */ }
+```
+
+- The interval is `"<n>s"`, `"<n>m"` or `"<n>h"` with `n > 0`.
+  Anything else is a compile error.
+- A timer takes `&mut self` and no arguments, and its caller is always
+  `System`.
+  `every` implies `#[app::allow(system)]`, so the ABI says `allowSystem: true`;
+  `apps/rooms` writes both, which changes nothing.
+- No client can call a timer: `/intents` and `/views` refuse it with the app
+  error `WrongKind`.
+- Inside it, `env::timer()` is `Some(TimerInfo { scheduled, previous })`: the
+  slot this tick is for and the slot applied before it (`None` on the timer's
+  first tick), both app times in milliseconds.
+  It is `None` in every other kind of run.
+  `env::time_now()` is the time of the tick's log entry, a little after
+  `scheduled`.
+
+### When ticks run
+
+Slots are counted from the moment the app was installed: the first is one
+interval after it, then one every interval.
+The app's leader looks for due slots every 100 ms (`TIMER_POLL`) and proposes
+each tick as an ordinary log entry, so followers apply its diff and never run
+it themselves.
+
+- **Missed slots are not replayed.**
+  After a gap (no leader, a long tick, a restart) the leader runs only the
+  latest due slot, once; `previous` tells the method how far back the last
+  applied one is.
+- **A tick is applied once.**
+  A slot at or before the applied one changes nothing, so a new leader does
+  not repeat a tick.
+- **A failed tick still counts.**
+  An app error or a trap is logged as that slot's outcome, its writes thrown
+  away, and the next tick is the next slot.
+  Only a tick that hit its time budget, or ran while the node could not serve
+  its data, is not logged; the leader proposes the same slot again on its next
+  poll.
+- A tick runs with a call's budget (2 s of wall clock, the same fuel and
+  memory) and a call's write limits (1 MiB per entry, 10,000 writes), so keep
+  each tick's work bounded, as `PER_TICK` does here and `MAX_RELEASES_PER_TICK`
+  does in `apps/rooms`.
+- A timer may write, emit events, send cross-app calls, make outbound
+  requests (`env::fetch`, recorded in the tick's entry; [Call an external service](/build/guides/outbound/)),
+  start compute runs ([Compute actions](/build/guides/compute-actions/)) and
+  start actions.
+
+The tick key is `tick:<method>:<slot>`, so a synchronous cross-app call a tick
+makes replays if the tick is re-run.
+
+## Actions
+
+```rust
+#[app::action]
+pub fn enrich(ctx: &mut ActionCtx, domain: String) -> app::Result<()> { /* ... */ }
+```
+
+An action takes no `self`; its first parameter is `ctx: &mut ActionCtx`, and
+the rest are its arguments, decoded from JSON like any method's.
+It cannot carry `confirm`, `public` or `allow(action)`.
+
+<SeqDiagram id="d-guide-action" title="A call starts an action; the leader runs it outside the log"
+  lanes={[
+    { label: 'Client', color: '#f0883e' },
+    { label: 'App leader', color: '#58a6ff' },
+    { label: 'App log', color: '#a371f7' },
+    { label: 'Action', color: '#3fb950' },
+    { label: 'Service', color: '#39d0d8' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'call watch { domain }' },
+    { from: 1, to: 2, label: 'entry: writes + action a.T.S.0 pending' },
+    { from: 1, to: 0, label: 'result: "a.T.S.0"', dashed: true },
+    { from: 1, to: 3, label: 'run enrich as the starter (10 s budget)' },
+    { from: 3, to: 1, label: 'ctx.view("industry")' },
+    { from: 3, to: 4, label: 'ctx.fetch (outbound gate, {{secret:..}})' },
+    { from: 4, to: 3, label: 'response', dashed: true },
+    { from: 3, to: 2, label: 'ctx.call("applyIndustry"): its own entry' },
+    { from: 1, to: 2, label: 'componentActionEnd: done' },
+  ]} />
+
+### Start one
+
+Three ways, each logged as a start in an entry, so an action is never lost to
+a leader change:
+
+- **From a call or a timer:** `env::start_action("enrich", &args)` returns the
+  action's key, `a.<term>.<seq>.<n>`.
+  The start is kept only if the run succeeds: a call that fails starts nothing.
+  A run may start at most 100 actions (`StartAction` error past that).
+- **From a client:** calling the action method itself through `/intents`
+  (`client.apps.call` in mero-js) logs the start and answers
+  `{ "actionId": "a.…" }` as the result.
+  An account or an API key may start one, as the app's access allows.
+- **From a test:** see [below](#test-it).
+
+An app keeps at most 1,000 pending actions (`MAX_PENDING_ACTIONS`); one started
+past that fails at once.
+
+### What it can do
+
+| `ctx.` | Does | Fails with |
+| --- | --- | --- |
+| `key()` | The action's key, the same on every attempt. Send it as the remote side's idempotency key. | |
+| `view::<T, _>(method, &args)` | Runs a view of this app on the leader's current state and decodes its JSON result. | `ActionView { message }`, or `BadOutput` |
+| `call::<T, _>(method, &args)` | Runs a method of this app as one logged call, as the action's starter. | `ActionCall { message }` (the method's own error included), or `BadOutput` |
+| `fetch(&Request)` | One HTTPS request over `wasi:http`, through the outbound gate; the response is read whole. | `Fetch { message }` |
+
+- Methods are named as the ABI names them: `applyIndustry`, not
+  `apply_industry`.
+- An action has **no storage**: every read is a `view`, every write a `call`.
+  Each call is its own log entry.
+- `#[app::allow(action)]` on a method makes it reachable only from the app's
+  own actions: a client that calls `applyIndustry` gets the app error
+  `Forbidden`.
+  Use it for the method an action writes its result through, so no client can
+  forge one.
+- `fetch` reaches only a URL under a prefix the signed release's manifest
+  declares under `outbound`, approved by the organization (or, per governance,
+  the operator) and allowed by the operator.
+  `{{secret:NAME}}` in a header or the body is filled in by the node and
+  redacted from the response.
+  Declaring and approving prefixes, and setting secrets, are in
+  [Call an external service](/build/guides/outbound/).
+  `Request::get(url)`, `Request::post(url, body)` and `.header(name, value)`
+  build a request; `Response` has `status`, `headers`, `body`, `json()` and
+  `text()`.
+
+### Retries and failure
+
+An action is **at least once**: only the leader runs it, and a new leader
+resumes every action that has not ended, with the same key.
+
+- A run that times out is retried with backoff (1 s, doubling), up to 5
+  attempts in all.
+- An app error, a trap or out-of-fuel ends it at once, as failed.
+  So does a method the app's current release no longer has.
+- A retried action's `ctx.call`s replay instead of applying twice: each call's
+  log key is derived from the action's key, the method, a hash of the
+  arguments and how many identical calls came before it in the run.
+  Your outbound requests are not replayed, so send `ctx.key()` as the remote
+  side's idempotency key, as `enrich` does.
+
+When an action fails for good, the node does two things for its starter:
+
+1. sends them an `ActionFailed { actionId, method, reason }` event (audience:
+   that account), which a client following the app's [events](/build/guides/events/)
+   receives;
+2. runs the app's `onActionFailed(actionId, method, reason)`, if it has a call
+   method of that name, as the starter (so it must accept that caller).
+   The reason is at most 512 bytes.
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Timer interval | `<n>s`, `<n>m` or `<n>h`, `n > 0` |
+| A tick's budget | 2 s wall clock, a call's fuel and memory |
+| An action run's budget | 10 s wall clock, a call's fuel and memory |
+| Attempts per action | 5 (timeouts only) |
+| Actions one run may start | 100 |
+| Pending actions per app | 1,000 |
+| Actions one node runs at once, across its apps | 8 |
+| `ctx.call`s per action run | 1,000 |
+| HTTP requests per run (action, call or tick) | 8, request bodies up to 1 MiB (`MAX_HTTP_REQUESTS`, `MAX_HTTP_BODY_BYTES`) |
+| One response in a call or tick (`env::fetch`) | awaited at most 1.5 s, inside the 2 s budget |
+
+The full table is in [Limits](/protocol/limits/), and the protocol in
+[Actions](/protocol/execution/#actions-component-apps).
+
+<Aside type="caution">
+  The leader sees an outbound response before anything is logged, and
+  attestation covers the code that made the request, not the remote server's
+  answer. Store from an action only what you would trust that service for.
+</Aside>
+
+## Test it
+
+The SDK's `TestApp` runs the real component. `t.tick(method)` runs a timer for
+the slot at the harness clock, `t.advance(ms)` moves the clock,
+`t.mock_http(host, handler)` answers an action's requests, and
+`t.run_started_actions()` runs every action started so far, each as its
+starter (`t.as_(a).action(method, args)` starts and runs one at once).
+Retries, the replay of sub-call keys and the 10 s budget are the node's, not
+the harness's.
+
+```rust
+use calimero_sdk::testing::{Failure, HttpResponse, Org, TestApp};
+use serde_json::json;
+
+#[test]
+fn a_tick_queues_lookups_that_fill_the_watchlist() {
+    let mut t = TestApp::new(component(), Org::new(), 1_700_000_000_000);
+    t.mock_http("enrich.example.com", |_req| HttpResponse {
+        status: 200,
+        headers: Vec::new(),
+        body: br#"{"industry":"retail"}"#.to_vec(),
+    });
+    let key = t
+        .as_("owner")
+        .call("watch", json!({ "domain": "acme.com" }))
+        .unwrap();
+    assert!(key.as_str().unwrap().starts_with("a."), "{key}");
+    let ran = t.run_started_actions();
+    assert!(ran.iter().all(Result::is_ok), "{ran:?}");
+    assert_eq!(
+        t.as_("owner")
+            .view("industry", json!({ "domain": "acme.com" }))
+            .unwrap(),
+        json!("retail")
+    );
+
+    t.advance(3_600_000);
+    t.tick("refresh").unwrap();
+    assert_eq!(t.run_started_actions().len(), 1);
+
+    let e = t
+        .as_("owner")
+        .call(
+            "applyIndustry",
+            json!({ "domain": "acme.com", "industry": "forged" }),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(e, Failure::App { ref code, .. } if code == "Forbidden"),
+        "{e:?}"
+    );
+}
+```
+
+`component()` builds the crate with `calimero_app_build::build_component`, as
+`apps/v2-fixtures/kv/tests/harness.rs` does. On a cluster,
+`actions_run_on_the_leader_and_reach_only_declared_approved_hosts`
+(`crates/node/tests`) covers the outbound gate, secrets and redaction.
+
+A scenario file ticks a timer with `{ "op": "tick", "method": "refresh" }` and
+moves the clock with `advance`
+([Testing](/build/testing/), [Testing strategy](/contribute/testing/#scenarios)).
