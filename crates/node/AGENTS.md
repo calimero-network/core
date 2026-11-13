@@ -761,7 +761,7 @@ is its command line.
   `StepState::is_cached` and `cached_items` feed `cached` and `cachedItems` in the run view; a start naming a file id the app does not hold answers `410 OUTPUT_EXPIRED`.
   Tests: `component/tests/pipelines.rs` (apply), `compute/pipelines.rs` (`plan` keys and hits), `pipeline_runs.rs` (`rerunning_with_one_changed_param_runs_only_the_steps_it_reaches`, `a_step_with_cache_false_always_runs`, `a_fan_out_reuses_its_cached_items`, `starting_with_an_expired_output_answers_output_expired`).
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
-- **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas (`payer_quotas`: its override, else the cluster's, with `MoveApp { org_quotas }`, which the API always sets; `Feature::MoveOrgQuotas`, rc.22; an entry without it replays judging the cluster's limits). `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`) and a target that approves none of the releases holding the app (`MOVE_RELEASES_DISJOINT`); clients see each as `400 REJECTED` with the reason as the message. `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs` (`a_move_is_judged_by_the_targets_own_quota`), `tests/move_app.rs`.
+- **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas (`payer_quotas`: its override, else the cluster's, with `MoveApp { org_quotas }`, which the API always sets; `Feature::MoveOrgQuotas`, rc.23; an entry without it replays judging the cluster's limits). `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`) and a target that approves none of the releases holding the app (`MOVE_RELEASES_DISJOINT`); clients see each as `400 REJECTED` with the reason as the message. `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs` (`a_move_is_judged_by_the_targets_own_quota`), `tests/move_app.rs`.
 - **Every app is in an organization** (`AppRecord::org`, required; hard
   cutover in 1.0.0-rc.20: a record or entry without one is not read, so
   clusters are recreated). **Personal organizations** (`Org::personal`,
@@ -932,7 +932,7 @@ is its command line.
   missing from the cluster is installed from the registry first (owner runs).
   From `SystemState::current_rules_from` on, `apply` derives the run's apps
   from the state and its consent's method (`SystemState::upgrade_run_apps`:
-  `org_run_apps`, `published_run_apps` (by the release each app runs, `app_release`, with `StartUpgradeRun { by_release }`, which a publisher's run sets; `Feature::PublishedRunByRelease`, rc.22; absent, by the bundle's first recorded package; regression `a_publishers_run_covers_the_instances_that_run_its_package`), or a retry's failed apps), clears its
+  `org_run_apps`, `published_run_apps` (by the release each app runs, `app_release`, with `StartUpgradeRun { by_release }`, which a publisher's run sets; `Feature::PublishedRunByRelease`, rc.23; absent, by the bundle's first recorded package; regression `a_publishers_run_covers_the_instances_that_run_its_package`), or a retry's failed apps), clears its
   progress and refuses a run id any organization holds; `UpgradeApp { run }`
   moves an app once, only while it runs the run's package and never to an
   older release (`SystemState::run_may_move`, which `api::start_run` asks
@@ -1241,8 +1241,17 @@ is its command line.
   invite's `token`, the `org` joined) is kept with the decision
   (`ConsentRequests::decide`, `Outcome`, redacted in `Debug` as
   `InviteToken` is) and answered as `/result`'s `outcome`, never in the
-  page's clear answer. Regression:
-  `an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page`.
+  page's clear answer. A `createOrg` from a package-bound session also makes
+  that package's app team (`Action::CreateOrg { app_team }`,
+  `consent_page::org_app_team`: the package installed and
+  `Feature::OrgAppTeam` active, else a bare organization), in the same
+  `CreateOrg { app_team }` entry: apply runs `SystemState::scope_apps` for
+  the package with no instances (`ScopeAsLogged::CURRENT`, standalone, nonce
+  `{org}/app-team`, so the team id is the same on every replica) and takes the
+  organization back on a refusal; `outcome` gains `teamId`, the model
+  `appTeam`, the step-up `appTeam`. Regressions:
+  `an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page`,
+  `system::tests::an_organization_made_from_an_app_starts_with_its_app_team`.
   Moderation and settings (`consent_page/orgs.rs`): `leaveOrg { org }`,
   `removeMember { org, account }`, `setMemberRole { org, account, role }`,
   `setMemberTeams { org, account, teams: [TeamRow] }`, `removeMemberTeams

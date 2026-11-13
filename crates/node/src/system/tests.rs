@@ -2212,6 +2212,7 @@ fn a_create_org_entry_from_before_takes_any_name() {
         at: 0,
         name_fits: true,
         personal: false,
+        app_team: None,
     };
     assert!(m.run_unproven(create("o2", " padded ")).is_err());
     assert!(!m.state.orgs.contains_key("o2"));
@@ -2259,6 +2260,7 @@ fn an_account_has_one_personal_organization_outside_its_quota() {
         at: 0,
         name_fits: true,
         personal,
+        app_team: None,
     };
     let entry = serde_json::to_value(create("team", "alice", false)).unwrap();
     assert!(entry.get("personal").is_none(), "{entry}");
@@ -6009,6 +6011,7 @@ fn a_deleted_organization_takes_its_publisher_bindings_with_it() {
             at: 0,
             name_fits: true,
             personal: false,
+            app_team: None,
         })
         .unwrap();
     assert_eq!(m.state.publisher_of_signer(&signer), None);
@@ -7524,6 +7527,7 @@ fn a_bound_publisher_manages_its_packages_origins() {
             at: 0,
             name_fits: true,
             personal: false,
+            app_team: None,
         })
         .unwrap();
     let _prev = m.state.publishers.insert(
@@ -8697,4 +8701,73 @@ fn a_removed_member_no_longer_sets_the_organizations_backup_key() {
         NOT_BACKUP_HOLDER
     );
     assert_eq!(m.state.backup_keys["org:org"].public_key, key);
+}
+
+/// A consent-page `createOrg` asked from an app's frontend: the organization
+/// and that package's app team in one entry, open (standalone), the creator
+/// its lead and its members able to make channels below it; the team's id
+/// comes from the org's, so every replica makes the same one.
+#[test]
+fn an_organization_made_from_an_app_starts_with_its_app_team() {
+    use crate::types::{caps, OrgMode};
+
+    let package = |m: &mut SystemMachine| {
+        let _prev = m.state.packages.insert(
+            "com.chat".into(),
+            serde_json::from_value(json!({
+                "name": "com.chat", "signerId": "did:key:z", "owner": "alice",
+                "versions": { "1.0.0": {
+                    "version": "1.0.0", "mpk": "m", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b" }, "installedBy": "alice", "installedAt": 0,
+                    "metadata": { "name": "Chat" }
+                } }
+            }))
+            .unwrap(),
+        );
+    };
+    let create = |id: &str, app_team: Option<&str>| SystemCmd::CreateOrg {
+        org_id: id.into(),
+        name: "Acme".into(),
+        actor: "alice".into(),
+        release: None,
+        recovery_key: None,
+        at: 0,
+        name_fits: true,
+        personal: false,
+        app_team: app_team.map(str::to_owned),
+    };
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let (mut other, _a, _b, _c) = proven_cluster();
+    package(&mut m);
+    package(&mut other);
+
+    let made = m.run_unproven(create("acme", Some("com.chat"))).unwrap();
+    let again = other
+        .run_unproven(create("acme", Some("com.chat")))
+        .unwrap();
+    assert_eq!(made, again, "every replica makes the same team");
+    let team_id = made["teamId"].as_str().unwrap().to_owned();
+    assert_eq!(made["orgId"], json!("acme"));
+    let o = &m.state.orgs["acme"];
+    assert_eq!(o.mode(), OrgMode::Standalone);
+    let t = o.app_team("com.chat").expect("the app team");
+    assert_eq!(t.team_id, team_id);
+    assert_eq!(t.name, "Chat");
+    assert_eq!(t.join, TeamJoin::Everyone);
+    assert_eq!(t.members.get("alice"), Some(&true), "the creator leads it");
+    assert_eq!(
+        t.default_capabilities,
+        Some(caps::INVITE_MEMBERS | caps::CREATE_CHILD_TEAM)
+    );
+
+    // An unknown package takes nothing: no organization either.
+    assert!(m.run_unproven(create("ghost", Some("com.ghost"))).is_err());
+    assert!(!m.state.orgs.contains_key("ghost"));
+
+    // Without it the entry and the organization are as before.
+    let plain = create("plain", None);
+    let entry = serde_json::to_value(&plain).unwrap();
+    assert!(entry.get("app_team").is_none(), "{entry}");
+    assert_eq!(m.run_unproven(plain).unwrap(), json!({ "orgId": "plain" }));
+    assert_eq!(m.state.orgs["plain"].mode(), OrgMode::Legacy);
 }

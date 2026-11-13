@@ -22,7 +22,7 @@
   checked the target's file bytes and compute runs against the cluster's limits,
   ignoring the organization's override (`POST /ops/quotas` with `org`), which
   every other charge and `TransferApp` use. `MoveApp { org_quotas }`
-  (`Feature::MoveOrgQuotas`, 1.0.0-rc.22) judges the override; an entry without
+  (`Feature::MoveOrgQuotas`, 1.0.0-rc.23) judges the override; an entry without
   the field replays as it applied. `POST /apps/{app}/move` answers
   `409 FEATURE_NOT_ACTIVE` until every node runs this release.
 - **A publisher's upgrade run covers the instances that run its package**
@@ -31,7 +31,7 @@
   another package shipped first was left out (and one running another package on
   the publisher's first component was listed, then refused `RUN_OTHER_PACKAGE`).
   `StartUpgradeRun { by_release }` (`Feature::PublishedRunByRelease`,
-  1.0.0-rc.22) picks them by the release they run, as organization runs do; an
+  1.0.0-rc.23) picks them by the release they run, as organization runs do; an
   entry without the field replays as it applied.
   `POST /orgs/{org}/packages/{package}/upgrade` answers `409 FEATURE_NOT_ACTIVE`
   until every node runs this release.
@@ -75,6 +75,21 @@
   `reqwest` or `tdx_workload_attestation`. `verify_evidence`, `EvidenceVerdict`,
   `quote_report_data` and the `QuoteCollateralV3` re-export stay: the `quote_parse`
   fuzz target calls them.
+
+## [1.0.0-rc.22] - 2026-11-13
+
+### Added
+
+- **An organization made on the consent page from an app comes with that app's
+  team** (`calimero-node`). A `createOrg` consent request from an app's frontend
+  (a package-bound session) now also makes the package's app team in the new
+  organization, open, with the creator its lead, in the same approval and the
+  same `CreateOrg` entry (`app_team`), so the app (Mero Chat's "Create
+  workspace") runs its channels there at once; before, the organization was bare
+  and the frontend could not add its team. `/consent/{id}/result`'s `outcome`
+  gains `teamId`, and the page names the app. Behind `Feature::OrgAppTeam`
+  (1.0.0-rc.22): below that cluster version the organization is made bare, as
+  before.
 
 ## [1.0.0-rc.21] - 2026-11-13
 

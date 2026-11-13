@@ -1370,6 +1370,9 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     assert_eq!(model["kind"], "createOrg", "{model}");
     assert_eq!(model["title"], "Create the organization calimero");
     assert_eq!(model["requestedBy"]["package"], PACKAGE);
+    // Asked from the app's frontend, the organization comes with the app's
+    // own team, and the page says so.
+    assert_eq!(model["appTeam"]["package"], PACKAGE, "{model}");
     let result = get(&in_app, &format!("consent/{id}/result")).await.unwrap();
     assert_eq!(result["status"], "pending");
     assert!(result.get("outcome").is_none(), "{result}");
@@ -1380,7 +1383,7 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     assert_eq!(code, 200, "{done}");
     assert_eq!(
         args,
-        json!({ "name": "calimero", "__method": "__create_org" })
+        json!({ "name": "calimero", "appTeam": PACKAGE, "__method": "__create_org" })
     );
     assert_eq!(
         done["redirect"],
@@ -1400,6 +1403,29 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
     // Decided once.
     let (code, again) = page.post("approve", json!({})).await;
     assert_eq!(code, 409, "{again}");
+    // One approval made the app's team too, open, with Alice its lead; the
+    // frontend runs its channels below it without another page.
+    let team = result["outcome"]["teamId"].as_str().unwrap().to_owned();
+    let t = &o["teams"][&team];
+    assert_eq!(t["metadata"]["app"]["package"], PACKAGE, "{o}");
+    assert_eq!(t["join"], "everyone", "{t}");
+    assert_eq!(t["members"][&alice_id], true, "{t}");
+    let channel = post(
+        &in_app,
+        &format!("orgs/{org}/teams"),
+        json!({ "name": "general", "join": "invite", "parent": team }),
+    )
+    .await
+    .unwrap();
+    assert!(channel["teamId"].is_string(), "{channel}");
+    let e = post(
+        &in_app,
+        &format!("orgs/{org}/teams"),
+        json!({ "name": "ops", "join": "invite" }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status(&e), 403, "not an org-wide team: {e}");
 
     // An invite: refused directly, made on the page, its token to the app only.
     let e = post(

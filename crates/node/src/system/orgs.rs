@@ -280,9 +280,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             at,
             name_fits,
             personal,
+            app_team,
         } => {
             if !s.accounts.contains_key(&actor) {
                 return Err("unknown account");
+            }
+            if app_team
+                .as_ref()
+                .is_some_and(|p| !s.packages.contains_key(p))
+            {
+                return Err("no such package");
             }
             if name_fits {
                 org_name_fits(&name)?;
@@ -305,10 +312,39 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                     return Err("quota exceeded: organizations");
                 }
             }
-            let mut org = new_org(org_id.clone(), name, actor, release, personal);
+            let mut org = new_org(org_id.clone(), name, actor.clone(), release, personal);
             org.recovery = recovery;
             let _prev = s.orgs.insert(org_id.clone(), org);
-            Ok(json!({ "orgId": org_id }))
+            let Some(package) = app_team else {
+                return Ok(json!({ "orgId": org_id }));
+            };
+            // The package's app team, as `ScopeApps` makes one for a package
+            // with no instances here yet: open (standalone), the creator its
+            // lead. Its id comes from the org's, so every replica agrees. A
+            // refusal takes the organization back with it: one entry, all or
+            // nothing.
+            let scoped = s.scope_apps(
+                &org_id,
+                Some(vec![ScopeApp {
+                    package,
+                    name: None,
+                    instances: Some(Vec::new()),
+                    join: None,
+                    keep: None,
+                    child_teams: None,
+                }]),
+                Some(false),
+                &format!("{org_id}/app-team"),
+                &actor,
+                ScopeAsLogged::CURRENT,
+            );
+            match scoped {
+                Ok(v) => Ok(json!({ "orgId": org_id, "teamId": v["teams"][0]["teamId"] })),
+                Err(why) => {
+                    let _gone = s.orgs.remove(&org_id);
+                    Err(why)
+                }
+            }
         }
         SystemCmd::DeleteOrg {
             org,

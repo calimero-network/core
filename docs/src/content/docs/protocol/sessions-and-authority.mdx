@@ -112,7 +112,7 @@ the same route as that person.
 | Rename or delete an organization | ✓ | `403` | `renameOrg`, `deleteOrg` |
 | Capabilities, a member's or a default | ✓ | `403` | `setCapabilities` |
 | Every app added later (`/orgs/{org}/all-apps`) | ✓ | `403` | `setAllApps` |
-| Give packages app teams (`POST /orgs/{org}/app-teams`) | ✓ | `403` | none: an admin, on an unbound session |
+| Give packages app teams (`POST /orgs/{org}/app-teams`) | ✓ | `403` | none for an existing organization (an admin, on an unbound session); a new one made with `createOrg` comes with the asking app's team |
 | A top-level team, or moving a team to the top | ✓ | `403` | none |
 | A team below its package's app team: create, rename, move within, members, delete | ✓ | ✓ (`within_team`) | — |
 | Delete, transfer or move an app | ✓ | `403` | none |
@@ -149,9 +149,11 @@ may call, and which check lets it through:
 | `POST /consent/requests`, `GET /consent/{id}/result` | signed in; `/result` answers only `chat`'s own requests | the route the page runs |
 
 Every other route answers `403` (or `404` for another package's app). The
-channel routes need an app team for `chat` in the organization. Without one,
-`within_team` finds no team of `chat`'s, so the frontend cannot make channels
-there (see the example below).
+channel routes need an app team for `chat` in the organization. An organization
+the frontend creates through the consent page comes with one (since
+1.0.0-rc.22); in one that has none, `within_team` finds no team of `chat`'s, so
+the frontend cannot make channels there until an admin adds it (see the example
+below).
 
 ## Worked example: Ann creates the workspace "Acme" from Chat
 
@@ -172,9 +174,9 @@ there (see the example below).
     { from: 0, to: 1, label: 'GET /consent/{id} on the node\'s origin; same code shown' },
     { from: 0, to: 1, label: 'POST /consent/{id}/approve → 412 over account:<ann> / __create_org' },
     { from: 0, to: 1, label: 'approve { confirm: user-verified assertion }' },
-    { from: 1, to: 2, label: 'CreateOrg { actor: ann } (as POST /orgs writes it)' },
+    { from: 1, to: 2, label: 'CreateOrg { actor: ann, app_team: chat }' },
     { from: 1, to: 0, label: 'redirect returnTo?request_id=…&result=approved', dashed: true },
-    { from: 0, to: 1, label: 'GET /consent/{id}/result → outcome { orgId }' },
+    { from: 0, to: 1, label: 'GET /consent/{id}/result → outcome { orgId, teamId }' },
     { from: 0, to: 1, label: "POST /apps { package: 'chat', org }" },
     { from: 1, to: 2, label: 'CreateApp (Ann: owner, CREATE_APP)' },
   ]}
@@ -194,35 +196,45 @@ there (see the example below).
 3. **The page.** Chat shows the confirmation `code` and sends Ann to `url`,
    `GET /consent/{id}` on the node's own origin. That page is static HTML
    compiled into `merod` and shows the same code. It reads
-   `/consent/{id}/model` and says "Create the organization Acme".
+   `/consent/{id}/model` and says "Create the organization Acme", and that
+   Chat's team comes with it (`appTeam { package, name }` in the model).
 4. **The passkey.** *Approve* posts `/consent/{id}/approve`. The node runs the
    approval as `Principal { consent_page: true }` for the request's account,
    with no session of its own. It answers `412 CONFIRM_REQUIRED` over
-   `account:<ann> / __create_org / { name }`, under the cluster's rp-id. The
-   page gets a user-verified assertion and posts it as `confirm`. The node
-   checks it is one of Ann's passkeys, then runs `api::create_org`. This
-   step-up is not logged: the log gets exactly the `CreateOrg` that `POST /orgs`
-   writes, with Ann as actor and owner. Where it applies, the log checks that
-   the account exists and that Ann's organization quota has room.
+   `account:<ann> / __create_org / { name, appTeam }`, under the cluster's
+   rp-id: one prompt for both. The page gets a user-verified assertion and
+   posts it as `confirm`. The node checks it is one of Ann's passkeys, then
+   runs `api::create_org`. This step-up is not logged: the log gets the
+   `CreateOrg` that `POST /orgs` writes, with Ann as actor and owner, plus
+   `app_team: chat`. Where it applies, the log checks that the account exists
+   and that Ann's organization quota has room, makes Acme, and in the same
+   entry makes Chat's app team as `ScopeApps` would for a package with no
+   instances yet: open, Ann its lead, its members able to make channels below
+   it (`CREATE_CHILD_TEAM`). The team's id comes from the organization's, so
+   every replica makes the same one; if the team cannot be made, the
+   organization is not made either.
 5. **Back.** The page redirects to `returnTo?request_id=…&result=approved`.
    Anyone can type that query, so Chat does not trust it. Chat asks
    `GET /consent/{id}/result` over the sealed channel (the same account and
-   package only) and reads `status: "approved"` and `outcome: { "orgId" }`.
+   package only) and reads `status: "approved"` and
+   `outcome: { "orgId", "teamId" }`.
 6. **The instance.** Chat's session may create instances of `chat`:
    `POST /apps { package: "chat", org: "<orgId>" }`. `CreateApp` applies
    because Ann is Acme's owner and holds `CREATE_APP`. The instance's access
    defaults to `org`.
-7. **Channels.** Acme has no app team yet. The frontend's `createOrg` makes the
-   organization only. So Chat's session cannot make channels:
-   `POST /orgs/{org}/teams` without a parent is `403`, and there is no app
-   team of `chat`'s to put one under. An admin gives Chat its app team from an
-   unbound session (the cluster's own page, or any client signed in on a
-   cluster origin), with `POST /orgs/{org}/app-teams` (`ScopeApps`, passkey
-   `__scope_apps`). That makes the team, moves the instance to
-   `access: team` and gives the members rows. No consent kind does this.
-   Once an organization has app teams, the first instance of a package that
-   has none is the admins' to create too (`ONLY_ADMINS_INSTALL`). After that,
-   Chat's session makes and manages channels below its app team.
+7. **Channels.** Chat's session makes channels at once, as teams below its
+   app team (`POST /orgs/{org}/teams { parent: teamId }`, `within_team`), and
+   manages their members, with Ann's authority as the team's lead.
+
+On a cluster whose version is below 1.0.0-rc.22 (`Feature::OrgAppTeam`), or
+when the asking app's package is not installed on the cluster, the approval
+makes Acme bare, as earlier releases did, and `outcome` has no `teamId`. Chat
+then cannot make channels: `POST /orgs/{org}/teams` without a parent is `403`,
+and there is no app team of `chat`'s to put one under. An admin gives Chat its
+app team from an unbound session (the cluster's own page, or any client signed
+in on a cluster origin) with `POST /orgs/{org}/app-teams` (`ScopeApps`, passkey
+`__scope_apps`). The same holds for an organization made before, or from an
+unbound session: no consent kind adds an app team to an existing organization.
 
 ## Worked example: Bob joins with an invite
 

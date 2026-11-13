@@ -163,6 +163,7 @@ async fn personal_org(node: &Node, owner: &str) -> Result<String, ApiError> {
             at: recovery_now(node),
             name_fits: true,
             personal: true,
+            app_team: None,
         })
         .await;
     match made {
