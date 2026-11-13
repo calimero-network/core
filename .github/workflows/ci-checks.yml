@@ -253,7 +253,7 @@ jobs:
       # PARTITION is unset in a local run (scripts/check-like-ci.py), which then runs them
       # all, and on a push to master, whose one shard runs every test.
       # Twice the cores: most slow tests wait on timers and the network, not the
-      # CPU. The node's integration tests, which do load it, take two or four of
+      # CPU. The node's integration tests, which do load it, take three or four of
       # these slots each (.config/nextest.toml).
       - name: Cargo test
         env:
