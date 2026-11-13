@@ -139,7 +139,7 @@ runs:
       if: inputs.sccache == 'true'
       uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       with:
-        version: v0.10.0
+        version: v0.19.0
 
     - name: Compile through sccache
       if: inputs.sccache == 'true'
@@ -148,6 +148,11 @@ runs:
         {
           echo "SCCACHE_GHA_ENABLED=true"
           echo "RUSTC_WRAPPER=sccache"
+          # sccache checks it can write by writing one fixed entry at start. The
+          # Actions cache never overwrites an entry, so once that entry exists the
+          # check fails and sccache runs read-only for the whole job (every miss a
+          # "cache write error"). Each compile writes a key of its own; skip it.
+          echo "SCCACHE_SKIP_CACHE_CHECK=true"
           # The server's warnings (a cache write the backend refused, and why); a job's
           # `sccache stats` step prints them.
           echo "SCCACHE_LOG=warn"
