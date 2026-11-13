@@ -625,14 +625,47 @@ change needs; the required `Rust` check waits on every job after it, and
 [`./scripts/check-like-ci.py`](/contribute/development/#before-a-pr) runs the
 same steps locally.
 
-`.github/workflows/e2e.yml` runs on every PR that touches code:
+Every job runs on a standard GitHub-hosted runner (4 cores). The Rust jobs of
+`ci-checks.yml` and `e2e.yml` restore their rust-cache group: the dependencies
+and the workspace's own crates as master last built them. setup-rust-ci then sets
+every tracked file's mtime to an old date and touches the files that differ from
+the commit that build was made from (`target/.ci-cache-commit`), so cargo
+rebuilds only the crates a change reaches; with no such commit, every file counts
+as changed. The test apps the tests build from source on first use (the
+engine's and app-build's guests in `target/tmp`, the node's fixtures in
+`target/app-components`) are cached apart, saved from master, whose single
+`Rust tests` shard runs every test. (sccache on the Actions cache was tried and dropped: with this many
+parallel jobs its writes hit the cache API's rate limit.) CI builds carry no debuginfo
+(`CARGO_PROFILE_DEV_DEBUG=0`): the cache restores faster and the test binaries
+link faster, and a failing test still names its file and line. The workspace
+tests run eight at a time per 4-core shard, since most slow ones wait on timers
+and the network; the node's integration tests, which start clusters and do load
+the CPU, take three slots each and `job_runs` four (`.config/nextest.toml`), so
+fewer of them share the cores and none misses its own deadline.
 
-- job `scenarios (K/4)` (`scenarios`): `cargo test -p calimero-node --test
-  scenarios` with `SCENARIO_SHARD=K/4`, every app-level and cluster scenario,
+`.github/workflows/e2e.yml` runs in the merge queue, on every entry whose change
+reaches code, and nightly on master with the long soak; a PR runs it only when
+labelled `ci:e2e`. Its `plan` job decides from the change (`scripts/ci-scope.py`):
+the builds and the scenarios for any code change, and the process suite, compute
+and the clients only for a change that reaches `merod`'s closure, the compute
+fixtures or the fault tests; `E2E result` gathers them into one check the queue
+can require. A push to master runs only what saves the caches (`Rust tests (1/4)`,
+the upgrade path) and what publishes: the queue already tested that tree.
+
+The jobs:
+
+- jobs `build merod and the fixtures` (`build-release`) and `build the
+  scenario runner` (`build-scenarios`) compile once what the jobs below run:
+  release `merod`, `meroctl` and `mero-sign`, `mero-app-build` and
+  `mero-compute`, the kv component and two signed releases of it; and the
+  scenario runner, whose discovery they check against the script's;
+- job `scenarios (K/4)` (`scenarios`): the runner (`cargo test -p
+  calimero-node --test scenarios`) with `SCENARIO_SHARD=K/4`, every app-level and cluster scenario,
   each on its own in-process cluster; the runner builds each app's component
   itself. A `fuzzy_test` runs 10 s, nightly 900 s;
-- job `process suite (merod processes)` (`process-suite`): a release build of
-  `merod` and `meroctl`, the kv component and two signed releases of it, then
+- job `process suite (merod processes)` (`process-suite`): `build-release`'s
+  `merod` and `meroctl` (on a PR without fat LTO, which only the nightly's soak
+  numbers need), the kv component and two signed releases of it, then
   `suite.py` (nightly `--nightly`, which also builds the Rooms component). The
   soak's latency and throughput ([below](#soak-latency-and-throughput)) go in
   the job summary; the artifact `process-suite` holds the results, the soak
@@ -647,8 +680,9 @@ same steps locally.
   38 MB CSV of invented people, a job node killed mid-run, then the shared parts
   downloaded through a grant and compared with `mero-compute`'s output (logs are
   the artifact `compute-e2e-logs` on failure);
-- job `clients against merod` (`clients`): mero-js's `test:cluster` and
-  calimero-client-py's cluster tests against this tree's `merod`. A change that
+- jobs `clients against merod (mero-js)` and `(calimero-client-py)`
+  (`clients`): mero-js's `test:cluster` and calimero-client-py's cluster tests
+  against `build-release`'s `merod`. A change that
   breaks a client goes green with the client's fix: a same-named branch there,
   or `sdk-ref: <ref>` (mero-js) / `py-ref: <ref>` (Python) in the PR body.
 
@@ -660,11 +694,17 @@ required `Rust` check waits on it. The job summary has the rollout's steps and
 each case's result; the artifact `upgrade-path` holds the results and, for a
 failed run, every node's log and data.
 
-`ci-checks.yml`'s `Rust tests` job runs each component app's own `cargo test`
-(its `tests/harness.rs` and its app-level scenarios on `TestApp`), then clippy
-with `-D warnings` on the host and on `wasm32-wasip2` and the app's release
-`wasm32-wasip2` build. The apps are found by their `calimero-sdk`
-dependency.
+`ci-checks.yml` runs its Rust checks as parallel jobs, every one behind
+`Rust quick checks` (format, naming, the scripts' tests; no build), so a
+formatting error fails a PR in about a minute. `Rust tests (K/4)` compile the
+workspace's tests and run a quarter of them each (a nextest archive built once
+was 8 GB, slower to download than to build); shard 1 also runs the doctests and
+shard 2 the previous release's app (below); `mero-compute end to end` and
+`Rust feature-gated tests` run beside them. `Rust standalone apps (K/3)` runs
+each component app's own `cargo test` (its `tests/harness.rs` and its app-level
+scenarios on `TestApp`), then clippy with `-D warnings` on the host and on
+`wasm32-wasip2` and the app's release `wasm32-wasip2` build, every third app
+each. The apps are found by their `calimero-sdk` dependency.
 
 Nothing has to list a scenario for it to run: the runner discovers every file
 on disk, and one it must not run yet is listed, with its reason, in
@@ -677,7 +717,8 @@ inside the Docker image (the suite starts processes, so it is copied out with
 - **A PR's own image** (`.github/workflows/release.yml`, job
   `E2E on the merod image`, on PRs and the merge queue whenever the PR builds
   the image). `Release Merod container` builds the amd64 image as it does for
-  master, loads it instead of pushing it, and hands it on as the artifact
+  master (from binaries built without fat LTO, which only a push to master
+  builds with), loads it instead of pushing it, and hands it on as the artifact
   `merod-image`; `Image E2E fixtures` builds a release `meroctl`, kv-store's
   WASM and two signed releases of it alongside the binaries. The job runs
   `suite.py --smoke` against the image's `merod`: `kv-failover`,
@@ -686,7 +727,7 @@ inside the Docker image (the suite starts processes, so it is copied out with
 - **The latest release's image, nightly** (`e2e.yml`, jobs
   `Latest release image` (`release-image`) and `process suite on release V`
   (`release-process-suite`); on demand with the `release_image` input:
-  `latest`, a tag of `ghcr.io/<owner>/merod` such as `release-v2-edge`, or an
+  `latest`, a tag of `ghcr.io/<owner>/merod` such as `edge`, or an
   image reference). It pulls `ghcr.io/calimero-network/merod:<version>` for the
   newest published release (a prerelease included) and runs the process suite
   of the commit the image was built from (its
@@ -694,8 +735,6 @@ inside the Docker image (the suite starts processes, so it is copied out with
   fixtures, so a test added after the release does not fail it: every test but
   the upgrade, with a 900 s soak. A release whose commit has no
   `crates/node/tests/fault/suite.py` is reported in the summary and not run.
-  On the release branch the nightly tests `release-v2-edge` instead, the image
-  of the branch's latest merge ([Release branch](#release-branch)).
   The same nightly runs every scenario at that commit, in four shards (jobs
   `scenario fixtures (release V)` (`release-fixtures`) and
   `scenarios on release V (K/4)` (`release-scenarios`)), with that commit's
@@ -708,7 +747,7 @@ To run the smoke set against a binary taken out of an image locally (with the
 fixtures built as in [Process suite](#process-suite)):
 
 ```bash
-docker create --name m ghcr.io/calimero-network/merod:release-v2-edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
+docker create --name m ghcr.io/calimero-network/merod:edge && docker cp m:/usr/local/bin/merod /tmp/merod && docker rm m
 python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 ```
 
@@ -737,37 +776,6 @@ does not match the running kernel; `PROFILE_DELAY`, `PROFILE_SECONDS` and
 `PROFILE_HZ` set when and how it samples, and a second argument names another
 node.
 
-## Release branch
-
-Calimero 1.0 was developed on `release-v2-parity`, which has since been merged
-into master (`1.0.0-rc.1`). CI still treats that branch as a release branch,
-with its own image tags:
-
-| When | What runs | What publishes |
-| --- | --- | --- |
-| PR into the branch | Every check a PR into master runs (no check's `pull_request` trigger leaves the branch out; `app-abi-clients.yml`, `app-abi-native-clients.yml` and `platforms.yml` name it) | Nothing; `Release Merod container` builds the PR's image and `E2E on the merod image` tests it |
-| Merge (push) into the branch | `ci-checks.yml`, `e2e.yml`, `release.yml`, `benchmarks.yml`, `docs-ci.yml`, `crypto-vectors.yml`, `workflow-lint.yml`, `codeql.yml`; ci-checks and E2E runs are never cancelled, and the `ci-checks` cache saves, as on master | The multi-arch `merod` image as `ghcr.io/calimero-network/merod:release-v2-edge` and `:release-v2-<short sha>`, labelled with the commit (`org.opencontainers.image.revision`); the release binaries as the run's `artifacts-<target>` artifacts, kept 14 days; the criterion, search and cluster benchmark reports as the base the branch's PRs compare against |
-| Nightly | `e2e.yml` with `nightly: true` (the 15-minute soak, the process suite on `release-v2-edge`, the flamegraph), `fuzz.yml` (30 minutes per target) and `platforms.yml` with `nightly: true` (macOS; a failure opens "Nightly platform build is failing on release-v2-parity") | Nothing |
-
-The branch never publishes a version: no `edge`, `latest`, `prerelease` or
-version tag, no GitHub Release, crates, App Bundle, Homebrew tap update or SDK
-bump PRs. `release.yml` gates each of those on master. The clients job tests
-the clients' own `release-v2-parity` branches when nothing is paired
-(`sdk-ref:`, `py-ref:` or a same-named branch), since their master has no
-cluster tests.
-
-GitHub runs `schedule` only from the default branch, so the branch's nightly
-runs only when dispatched. To run one by hand:
-
-```bash
-gh workflow run e2e.yml --ref release-v2-parity -f nightly=true
-gh workflow run e2e.yml --ref release-v2-parity -f release_image=release-v2-edge   # the 30 s soak, plus the process suite on that image
-```
-
-`docs-site.yml` stays master's: it deploys the public documentation site to
-GitHub Pages, which has one site per repository, so the branch's docs are
-built and link-checked (`docs-ci.yml`) but not deployed.
-
 ## What scenario tests cannot catch
 
 Every node in a scenario run is the same build on fresh state, and so is
@@ -780,8 +788,8 @@ wire format also needs its own migration test, as `calimero-log`'s
 path when it stores a kind of data none of its cases writes. What else tests
 across releases, and what a change that breaks one declares, is in
 [Compatibility](/operate/compatibility/): ci-checks' `Compatibility` job (no
-route, field, WIT or ABI version dropped) and `Apps of the previous release`
-(the last release's kv bundle on this tree's node).
+route, field, WIT or ABI version dropped) and `Rust tests (2/4)`'s
+previous-release step (the last release's kv bundle on this tree's node).
 
 Nor do they run two releases in one cluster, so they cannot catch an entry an
 older node skips. **A new command or field ships with a feature gate**
@@ -818,11 +826,11 @@ node leaves and the leader raises the cluster version.
 Scaling guards and criterion benches are described in
 [`docs/benchmarking.md`](https://github.com/calimero-network/core/blob/master/docs/benchmarking.md);
 none of them fails a PR (the storage cost gate went with SDK 0.12's storage crate).
-`.github/workflows/benchmarks.yml` runs them on every push to master or the
-release branch and on a PR labelled `run-benchmarks`: the criterion benches per
+`.github/workflows/benchmarks.yml` runs them nightly on master and on a PR
+labelled `run-benchmarks`: the criterion benches per
 crate (`calimero-log`'s append and commit, `calimero-sealed`'s request round
 trip), compared with `critcmp` against the
-base commit's push run on the PR's base branch, plus two
+base commit's run on the PR's base branch, or else that branch's newest one, plus two
 reports that are not criterion: `tools/search-bench` (the search engine) and
 the cluster throughput bench, whose JSON the comparison also diffs.
 

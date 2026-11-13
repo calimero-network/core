@@ -1,4 +1,5 @@
+# No self-hosted or larger-runner labels: every job runs on a standard
+# GitHub-hosted runner (free on a public repository), and actionlint flags a
+# label it does not know, so a paid runner cannot come back unnoticed.
 self-hosted-runner:
-  labels:
-    - big-machine
-    - ubuntu-24.04-8cpu
+  labels: []
