@@ -123,6 +123,22 @@ WORKFLOWS = {
 # ci-checks.yml job -> (package dirs it builds, whether their dev-dependencies count, extra
 # globs). A job that builds only part of the workspace goes here, scoped by what it compiles.
 JOBS: dict = {
+    # Rust standalone apps: every app under apps/ that depends on the component SDK, built,
+    # tested and linted against this tree's SDK. The apps reach the workspace only through
+    # these crates (path dependencies); the apps themselves are the rest.
+    "standalone_apps": (
+        lambda: [
+            "crates/sdk",
+            "crates/sdk-macros",
+            "crates/app-sdk",
+            "crates/app-wit",
+            "crates/app-build",
+            "crates/app-engine-wasmtime",
+            "crates/app-host",
+        ],
+        False,
+        ("apps/*",),
+    ),
     # The upgrade path: a cluster on the pinned release rolled onto this tree's merod.
     # merod's closure is every crate a node runs (node, storage, the log, the runtime,
     # sealed, attestation); the test and the scripts it runs are the rest. The old
