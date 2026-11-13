@@ -491,7 +491,8 @@ async fn dev(a: DevArgs, home: Home) -> eyre::Result<Value> {
         }
     }
 
-    let wasm = std::path::absolute(krate.join(crate::make::APP_FILE))?;
+    // The build's output stays in the target dir, not beside the sources.
+    let wasm = std::path::absolute(crate::make::target_dir(&krate).join(crate::make::APP_FILE))?;
     let nodes: Vec<String> = cluster["urls"]
         .as_array()
         .map(|a| {
@@ -569,7 +570,7 @@ impl Deploy {
         eprintln!("• building {}", self.krate.display());
         let (k, w) = (self.krate.clone(), self.wasm.clone());
         tokio::task::spawn_blocking(move || -> eyre::Result<()> {
-            let built = calimero_app_build::build_components(&k, &k.join("target"))?;
+            let built = calimero_app_build::build_components(&k, &crate::make::target_dir(&k))?;
             Ok(std::fs::write(&w, built.app.component)?)
         })
         .await??;
