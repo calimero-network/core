@@ -1,8 +1,8 @@
 # Gating the system group by release approval: design proposal
 
 Oct 29, 2026 · Status: **Phase 0 implemented** (peer identity on internal routes, proofs checked
-at apply, per-node session signing; `crates/node/tests/approval_bypasses.rs`). Phases 1 to 3 (realms,
-per-app encryption keys, clients) are a proposal, not implemented.
+at apply, per-node session signing; `crates/node/tests/approval_bypasses.rs`). Phases 1 to 3 (realms and realm keys,
+clients and mdma, hardening) are a proposal, not implemented.
 
 Release approvals keep an app's data off node images nobody approved: `Node::may_send`
 refuses an app group's Raft entries and snapshots to a peer whose attested mero-tee release
