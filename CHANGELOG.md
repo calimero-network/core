@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.22] - 2026-11-13
+
 ### Added
 
 - **An organization made on the consent page from an app comes with that app's
