@@ -469,7 +469,8 @@ impl AppMachine {
             files: blobs
                 .iter()
                 .filter_map(|(id, r)| {
-                    let sha256 = <[u8; 32]>::try_from(r.file.as_ref()?.sha256.0.as_slice());
+                    let seal = r.file.as_ref().filter(|f| !f.log)?;
+                    let sha256 = <[u8; 32]>::try_from(seal.sha256.0.as_slice());
                     Some((*id, r.size, sha256.ok()?))
                 })
                 .collect(),

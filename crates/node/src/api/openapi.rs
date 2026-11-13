@@ -1321,6 +1321,10 @@ fn operations() -> Vec<Op> {
             .about("Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.")
             .ok("#Run")
             .errors(&[(404, "NOT_FOUND")]),
+        get("/apps/{app}/runs/{run}/logs", "app_run_logs", SignedIn, "A compute run's attempt logs")
+            .about("Each attempt's module log, as a sealed file of the app: `{ attempt, id, size, sha256 }`. Only for those who may handle the app's files; the bytes are a files export.")
+            .ok("{ logs: { attempt: uint, id: string, size: uint, sha256: string }[] }")
+            .errors(&[(404, "NOT_FOUND")]),
         get("/apps/{app}/presence", "presence_get", AppAccess, "Who is present")
             .about("One entry per present device (a session's passkey, or an API key): its account, device and state (hex).")
             .ok("{ present: { account: string, device: string, state: string | null }[] }"),

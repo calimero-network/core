@@ -4,6 +4,7 @@
     clippy::wildcard_imports,
     reason = "the handlers moved here from `api.rs` read its items"
 )]
+use super::files::files_gate;
 use super::*;
 
 #[derive(Deserialize)]
@@ -501,6 +502,30 @@ async fn app_run(
     Ok(Json(answer.result))
 }
 
+/// The module log of each attempt of a run that kept one, as `{ logs: [{ attempt, id, size,
+/// sha256 }] }`, for those who may handle the app's files; the bytes are a files export.
+async fn app_run_logs(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, run)): Path<(String, String)>,
+) -> ApiResult {
+    let (app, account) = files_gate(&node, &headers, &app_id, false).await?;
+    let answer = node
+        .view(&ViewRequest {
+            app_id: app.app_id,
+            method: crate::node::RUN_VIEW.to_owned(),
+            args: json!({ "run": run, "files": true }),
+            caller: Caller::Account { account },
+            strong: true,
+            min_index: 0,
+        })
+        .await?;
+    if answer.result.is_null() {
+        return Err(ApiError::not_found("no such run"));
+    }
+    Ok(Json(json!({ "logs": answer.result["logs"] })))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RunsQuery {
@@ -550,6 +575,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/methods/{method}", post(app_method))
         .route("/apps/{app}/runs", get(app_runs))
         .route("/apps/{app}/runs/{run}", get(app_run))
+        .route("/apps/{app}/runs/{run}/logs", get(app_run_logs))
         .route("/pipelines/validate", post(pipelines::validate))
         .route("/apps/{app}/pipelines/{name}/runs", post(pipelines::start))
         .route(
