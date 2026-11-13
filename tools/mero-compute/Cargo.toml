@@ -1,6 +1,6 @@
 [package]
 name = "mero-compute"
-description = "Runs a compute component alone, on the compute engine a job node uses"
+description = "Runs a compute component alone, on the compute engine a job node uses (behind `meroctl local compute run`)"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -12,10 +12,6 @@ publish = false
 name = "mero_compute"
 path = "src/lib.rs"
 
-[[bin]]
-name = "mero-compute"
-path = "src/main.rs"
-
 [dependencies]
 base64.workspace = true
 calimero-app-engine-wasmtime.workspace = true
@@ -26,7 +22,3 @@ hex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
-[dev-dependencies]
-calimero-app-build.workspace = true
-rand_chacha.workspace = true
-tempfile.workspace = true

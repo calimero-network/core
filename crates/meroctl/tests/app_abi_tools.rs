@@ -1,4 +1,5 @@
-//! `mero-app-build codegen` and `mero-app-build abi-diff` on ABI files (no guest build).
+//! `meroctl app codegen` and `meroctl app abi diff` on ABI files (no guest build), as
+//! `mero-app-build`'s tests held them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,7 +8,9 @@ use std::process::Command;
 use serde_json::{json, Value};
 
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_mero-app-build"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_meroctl"));
+    let _ = cmd.arg("app");
+    cmd
 }
 
 fn kv_fixture() -> PathBuf {
@@ -131,7 +134,7 @@ fn abi_diff_exits_non_zero_on_a_breaking_change() {
     let old_path = write("old.json", &old);
 
     let same = bin()
-        .arg("abi-diff")
+        .args(["abi", "diff"])
         .arg(&old_path)
         .arg(&old_path)
         .output()
@@ -143,7 +146,7 @@ fn abi_diff_exits_non_zero_on_a_breaking_change() {
     added["methods"]["count"] = json!({ "kind": "view", "params": [], "returns": "u32" });
     let added_path = write("added.json", &added);
     let compatible = bin()
-        .arg("abi-diff")
+        .args(["abi", "diff"])
         .arg(&old_path)
         .arg(&added_path)
         .output()
@@ -155,7 +158,7 @@ fn abi_diff_exits_non_zero_on_a_breaking_change() {
     broken["methods"]["set"]["kind"] = json!("view");
     let broken_path = write("broken.json", &broken);
     let out = bin()
-        .arg("abi-diff")
+        .args(["abi", "diff"])
         .arg(&old_path)
         .arg(&broken_path)
         .arg("--json")
@@ -181,7 +184,7 @@ fn abi_diff_compares_record_and_enum_shapes() {
     let old_path = write("old.json", &old);
     let run = |new: &Value| {
         bin()
-            .arg("abi-diff")
+            .args(["abi", "diff"])
             .arg(&old_path)
             .arg(write("new.json", new))
             .output()
@@ -214,11 +217,14 @@ fn abi_diff_compares_record_and_enum_shapes() {
 #[test]
 fn version_prints_the_release() {
     for flag in ["--version", "-V"] {
-        let out = bin().arg(flag).output().unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_meroctl"))
+            .arg(flag)
+            .output()
+            .unwrap();
         assert!(out.status.success(), "{flag}: {out:?}");
         let text = String::from_utf8_lossy(&out.stdout);
         let rest = text
-            .strip_prefix("mero-app-build ")
+            .strip_prefix("meroctl ")
             .unwrap_or_default()
             .trim();
         let (version, build) = rest.split_once(' ').unwrap_or((rest, ""));
@@ -237,27 +243,16 @@ fn version_prints_the_release() {
 #[test]
 fn help_prints_usage_and_succeeds() {
     for (args, usage) in [
-        (&["--help"][..], "usage: mero-app-build"),
-        (&["-h"], "usage: mero-app-build"),
-        (&["codegen", "--help"], "usage: meroctl app codegen"),
+        (&["codegen", "--help"][..], "usage: meroctl app codegen"),
         (&["codegen", "-h"], "usage: meroctl app codegen"),
-        (
-            &["codegen", "--abi", "x.json", "--help"],
-            "usage: meroctl app codegen",
-        ),
-        (&["abi-diff", "--help"], "usage: meroctl app abi diff"),
+        (&["codegen", "--abi", "x.json", "--help"], "usage: meroctl app codegen"),
+        (&["abi", "diff", "--help"], "usage: meroctl app abi diff"),
     ] {
         let out = bin().args(args).output().unwrap();
         assert!(out.status.success(), "{args:?}: {out:?}");
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.starts_with(usage), "{args:?}: {text}");
-        // The one line on stderr is the shim's notice of what replaces it.
-        let err = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            err.lines()
-                .all(|l| l.starts_with("mero-app-build is deprecated")),
-            "{args:?}: {out:?}"
-        );
+        assert!(out.stderr.is_empty(), "{args:?}: {out:?}");
     }
 }
 
