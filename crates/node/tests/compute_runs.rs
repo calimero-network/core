@@ -313,6 +313,7 @@ impl Rig {
             message: String::new(),
             result: Vec::new(),
             outputs: Vec::new(),
+            log: None,
             usage: ReportUsage::default(),
         };
         let digest: [u8; 32] = hex::decode(&self.record(run).attempts[0].assignment_digest)
@@ -331,6 +332,7 @@ impl Rig {
             report: Some(report),
             signature: Some(signature),
             outputs: Vec::new(),
+            log: None,
             usage: ReportUsage::default(),
             result: Outcome::default(),
             base_index: g.read_local(|m, _| m.state.last_index),
@@ -529,6 +531,7 @@ async fn a_final_not_signed_by_the_assigned_job_node_changes_nothing() {
         message: String::new(),
         result: Vec::new(),
         outputs: Vec::new(),
+        log: None,
         usage: ReportUsage::default(),
     };
     let digest: [u8; 32] = hex::decode(&rig.record(&run).attempts[0].assignment_digest)
@@ -543,6 +546,7 @@ async fn a_final_not_signed_by_the_assigned_job_node_changes_nothing() {
         report: Some(report),
         signature: Some(signature),
         outputs: Vec::new(),
+        log: None,
         usage: ReportUsage::default(),
         result: Outcome::default(),
         base_index: g.read_local(|m, _| m.state.last_index),
@@ -2628,4 +2632,191 @@ async fn a_blob_stored_again_after_a_delete_survives_whichever_nodes_handle_it()
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+impl Rig {
+    /// A run of the argument-less compute method `method`, ended.
+    async fn ended(&self, method: &str) -> (String, Value) {
+        let run = self.begin("startRun", json!({ "method": method })).await;
+        let outcome = self.outcome(&run).await;
+        (run, outcome)
+    }
+
+    /// The logs of `run` as the owner lists them.
+    async fn logs(&self, run: &str) -> Vec<Value> {
+        let listed = self.alice.apps().run_logs(&self.app, run).await.unwrap();
+        let listed = serde_json::to_value(listed).unwrap();
+        listed["logs"].as_array().unwrap().clone()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_compute_run_s_log_reads_back_exactly() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (run, outcome) = rig.ended("chatter").await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    let logs = rig.logs(&run).await;
+    assert_eq!(logs.len(), 1, "{logs:?}");
+    let text = "first line\nsecond line";
+    assert_eq!(logs[0]["attempt"], 1);
+    assert_eq!(logs[0]["size"], text.len());
+    assert_eq!(logs[0]["sha256"], sha256_hex(text.as_bytes()));
+    let id = logs[0]["id"].as_str().unwrap();
+    assert_eq!(
+        rig.alice.export_file(&rig.app, id).await.unwrap(),
+        text.as_bytes()
+    );
+    assert_eq!(rig.record(&run).log.unwrap().id, id);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_failed_run_keeps_its_log() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (run, outcome) = rig.ended("failLoudly").await;
+    assert_eq!(outcome["status"], "failed", "{outcome}");
+    assert_eq!(outcome["reason"], "app-error", "{outcome}");
+    let logs = rig.logs(&run).await;
+    let id = logs[0]["id"].as_str().unwrap();
+    assert_eq!(
+        rig.alice.export_file(&rig.app, id).await.unwrap(),
+        b"about to fail"
+    );
+    assert_eq!(rig.record(&run).state, RunState::Failed);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_that_logs_nothing_has_no_log() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (run, outcome) = rig.ended("quiet").await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    assert!(rig.logs(&run).await.is_empty());
+    assert!(rig.record(&run).log.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_log_cannot_be_published() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let (run, _) = rig.ended("chatter").await;
+    let id = rig.logs(&run).await[0]["id"].as_str().unwrap().to_owned();
+    let e = rig
+        .alice
+        .apps()
+        .call(
+            &rig.app,
+            "publish",
+            Some(json!({ "output": id })),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(format!("{e:?}").contains("NOT_A_RUN_OUTPUT"), "{e:?}");
+    assert!(rig.blob(&id).is_some_and(|r| r.file.is_some_and(|f| f.log)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_stranger_cannot_list_a_run_s_logs() {
+    let rig = Rig::start_with(&[JOB_A], json!({ "access": { "kind": "public" } })).await;
+    let (run, _) = rig.ended("chatter").await;
+    let (bob, _pk) = signed_up(&rig.c, 1, "bob").await;
+    let e = bob.apps().run_logs(&rig.app, &run).await.unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let id = rig.logs(&run).await[0]["id"].as_str().unwrap().to_owned();
+    let e = bob.export_file(&rig.app, &id).await.unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let shown = serde_json::to_value(bob.apps().run(&rig.app, &run).await.unwrap()).unwrap();
+    assert!(shown.get("logs").is_none(), "{shown}");
+    let listed = bob.apps().runs(&rig.app, None, None).await.unwrap();
+    let listed = serde_json::to_string(&listed).unwrap();
+    assert!(!listed.contains(&id), "{listed}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_log_the_job_node_misreports_is_skipped_and_the_run_still_commits() {
+    let rig = Rig::start(&[JOB_A]).await;
+    rig.jobs[0].running.corrupt_logs();
+    let (run, outcome) = rig.ended("chatter").await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    assert_eq!(rig.record(&run).state, RunState::Done);
+    assert_eq!(rig.record(&run).attempts.len(), 1, "no attempt is lost");
+    assert!(rig.logs(&run).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_log_the_job_node_will_not_hand_over_is_skipped_and_the_run_still_commits() {
+    let rig = Rig::start(&[JOB_A]).await;
+    rig.jobs[0].running.fail_outputs();
+    let (run, outcome) = rig.ended("failLoudly").await;
+    assert_eq!(outcome["reason"], "app-error", "{outcome}");
+    assert_eq!(rig.record(&run).attempts.len(), 1, "no attempt is lost");
+    assert!(rig.logs(&run).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_started_while_a_replica_is_behind_keeps_no_log_and_still_commits() {
+    let rig = Rig::start(&[JOB_A]).await;
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.set_replica_behind(true);
+    }
+    let (run, outcome) = rig.ended("chatter").await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    assert!(rig.record(&run).log.is_none());
+    assert!(rig.logs(&run).await.is_empty());
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.set_replica_behind(false);
+    }
+    let (run, _) = rig.ended("chatter").await;
+    assert_eq!(
+        rig.logs(&run).await.len(),
+        1,
+        "logs return with the replicas"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_log_fetched_but_misreported_leaves_none_of_its_bytes_on_the_leader() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let stored = |rig: &Rig| rig.leader().engine.list_segments().unwrap().len();
+    let before = stored(&rig);
+    rig.jobs[0].running.misreport_logs();
+    let (run, outcome) = rig.ended("failLoudly").await;
+    assert_eq!(outcome["reason"], "app-error", "{outcome}");
+    assert!(rig.logs(&run).await.is_empty());
+    rig.until("the log's segment is deleted", || stored(&rig) == before)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_held_report_with_a_log_is_not_finished_with_it_once_a_replica_is_behind() {
+    let mut rig = Rig::start(&[JOB_A]).await;
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.conflict_finals(true);
+    }
+    let run = rig.begin("startRun", json!({ "method": "chatter" })).await;
+    let leader = rig.leader();
+    rig.until("the final conflicted with its log staged", || {
+        leader.conflicts.load(std::sync::atomic::Ordering::Relaxed) > 0
+    })
+    .await;
+    // A replica falls behind, and the job node restarts: only the held report is left.
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.set_replica_behind(true);
+    }
+    let old = rig.jobs.remove(0);
+    let listen = old
+        .url
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .parse()
+        .unwrap();
+    old.running.stop().await;
+    let new = rig.c.start_job_node(JOB_A, |c| c.listen = listen).await;
+    rig.jobs.push(new);
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.conflict_finals(false);
+    }
+    let outcome = rig.outcome_within(&run, 90).await;
+    assert_eq!(outcome["status"], "done", "{outcome}");
+    assert!(rig.record(&run).log.is_none(), "a log no replica may read");
 }

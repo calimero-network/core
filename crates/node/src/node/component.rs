@@ -633,6 +633,14 @@ impl Node {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = limits;
     }
 
+    /// Makes a replica count as running an older release than this node. Tests only.
+    #[cfg(feature = "testing")]
+    pub fn set_replica_behind(&self, behind: bool) {
+        self.probes
+            .replica_behind
+            .store(behind, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Makes this node's system reads fail as if the system group had no leader. Tests only.
     #[cfg(feature = "testing")]
     pub fn set_system_outage(&self, on: bool) {
@@ -3015,6 +3023,7 @@ mod tests {
             report: None,
             signature: None,
             outputs: vec![file(10), file(20)],
+            log: None,
             usage: ReportUsage::default(),
             result: Outcome {
                 files: vec![file(4)],
@@ -3051,6 +3060,7 @@ mod tests {
             report: None,
             signature: None,
             outputs: (0..outputs).map(file).collect(),
+            log: None,
             usage: ReportUsage::default(),
             result: Outcome {
                 diff: vec![crate::app::Write {
