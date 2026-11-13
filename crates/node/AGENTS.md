@@ -1063,8 +1063,8 @@ is its command line.
 - **Ids people type** (accounts, apps, organizations, teams, upgrade runs, API
   keys) are base64url that never starts with `-` (`api::typed_id`), which
   meroctl would read as a flag. Regression: `a_typed_id_never_starts_with_a_dash`.
-- **Context ids**: an app answers to its context id (`hex(SHA-256(app_id))`, what the app
-  sees as `env::context_id()`) wherever the API takes an app id (`Node::canonical_app_id`).
+- **Context ids**: an app answers to its context id (`hex(SHA-256(app_id))`, the id SDK
+  0.12 apps saw; a component reads its app id with `env::app_id()`) wherever the API takes an app id (`Node::canonical_app_id`).
 - **Blobs** (`POST/GET /apps/{app}/blobs[/{id}]`; how an app holds one: see
   "Component executor"): bytes live in the cluster's blob store (`hex(SHA-256)`, a
   majority before the answer, a missing one fetched from a peer). A download asks the
