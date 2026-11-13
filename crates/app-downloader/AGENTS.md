@@ -1,15 +1,18 @@
-# calimero-app-downloader - Application Bytecode Acquisition
+# calimero-app-downloader - Fetching Releases from a Registry
 
-One route from "a group named a `bytecode_id`" to an installed, executable
-application, from the single source `[registry] mode` selects - and no other.
+Fetches a signed release (`.mpk`) by `package@version` from the operator's
+package registry. The node uses one piece of it: `HttpRegistry`, behind
+`POST /packages/install` and the installs `POST /apps` and upgrade runs make
+(`crates/node/src/packages.rs`, `Node::registry` and `fetch_from_registry`).
+Verification, the install and the release record are the node's
+(`calimero_bundle::VerifiedBundle`, `InstallPackage`), not this crate's.
 
 ## Package Identity
 
 - **Crate**: `calimero-app-downloader`
 - **Entry**: `src/lib.rs`
-- **Consumers**: `calimero-node`, `calimero-node-primitives`,
-  `calimero-context`, `calimero-context-primitives`,
-  `calimero-governance-store`, `calimero-config`, `calimero-merod`
+- **Consumer**: `calimero-node` only (`packages.rs`: `HttpRegistry`, `AppRequest`, `AppSource`)
+- **Deps**: `reqwest`, `url`, `async-trait`, `calimero-primitives` (`ApplicationId`, `BlobId`, `ContextId`, `ApplicationSource`, `utils::loggable_url`)
 
 ## Commands
 
@@ -23,73 +26,69 @@ cargo test -p calimero-app-downloader
 ```
 src/
 ├── lib.rs          # Re-exports; the crate's public surface
-├── downloader.rs   # ApplicationDownloader::download - the one entry point
-├── port.rs         # ApplicationStore - the seam back into the node
-├── registry.rs     # [registry] config + mode, package@version coords
-├── source.rs       # AppSource + AppRequest + app_source - the one-source seam
-├── source/http.rs  # HttpRegistry - the configured registry, addressed by coordinates
-├── source/dht.rs   # DhtRegistry + PeerBlobs - peers, via blob share
-└── http.rs         # The artifact client and the capped body read
+├── source.rs       # AppSource + AppRequest + app_source
+├── source/http.rs  # HttpRegistry, its artifact client and the capped body read
+├── source/dht.rs   # DhtRegistry + PeerBlobs (unused, see below)
+├── registry.rs     # RegistryConfig/RegistryMode, RegistryCoords::artifact_url, is_safe_coord
+├── downloader.rs   # ApplicationDownloader::download (unused, see below)
+└── port.rs         # ApplicationStore (unused, see below)
 tests/
-├── single_source.rs   # The configured source is the only one contacted
+├── single_source.rs   # app_source + ApplicationDownloader: the configured source is the only one contacted
 └── source_contract.rs # What a source owes: bytes, Ok(None), or a real fault
 ```
 
-## The Contract
+## What the node uses
 
-`ApplicationDownloader::download` has ONE post-condition: on `Outcome::Installed`
-and `Outcome::AlreadyInstalled`, the application row for `req.application_id`
-names `req.bytecode_id` and that blob is local. Bytes on disk always mean an
-executable application - never a downloaded blob with nothing bound to it.
+The node builds an `HttpRegistry` from `--registry-url` (`Config::registry`;
+none answers `400 NO_REGISTRY`) and calls `AppSource::fetch` with an
+`AppRequest { package, version }` and no ids. The answer is the *unverified*
+bytes:
 
-- `Unavailable` is not a failure. The source had no bytes yet; the caller keeps
-  the version it runs and retries on next access.
-- `Err` is a real fault: the bytes would not verify, the bundle would not
-  install, or storage failed.
-- There is no second route. `app_source` picks one source at construction, and
-  an `Http` node with no `base_url` fails there rather than falling through.
+- `Ok(Some(bytes))`: the artifact at
+  `{base}/artifacts/{package}/{version}/{package}-{version}.mpk`.
+- `Ok(None)`: the registry answered `404` (not published there); the node
+  answers `404`.
+- `Err`: a real fault (unreachable, other status, too large, unaddressable
+  coordinates); the node answers `503`.
 
-## The Sources
+The node then verifies the publisher signature and every digest itself, and
+fetches a registry release again from the registry (never a peer) when it runs
+one it does not hold (`Node::release_wasm`).
 
-Each implements `AppSource::fetch`, which hands back *unverified* bytes:
-`Ok(None)` means it simply had nothing yet, `Err` is a real fault. The blob-id
-check, the install and the blob release stay in the downloader, so no source can
-bypass the post-condition above.
+## Unused (v1 leftovers)
 
-`[registry] mode` picks exactly one, and `Http` is the default - an unset
-`[registry]` section is an http node with no `base_url`, which fails at its first
-fetch rather than reaching for peers. `Http` reaches the configured registry and
-holds no peer handle at all; `Dht` reaches peers through `PeerBlobs` and never
-dials a registry. An `Http` node also refuses to serve or announce application
-bytecode, since it is not a source of it - see `NodeClient::may_share_blob`.
+Nothing outside this crate's own tests names these; they are the context-era
+download path (a group naming a `bytecode_id`, an application row, peers via
+blob share), and are candidates for deletion:
 
-`Dht` needs a context to authorize against, so a bare install by coordinates
-(`install_by_coords`, no context and no `bytecode_id`) yields `Ok(None)` there:
-a dht node gets applications from governance or a local `.mpk`, never by name.
+- `ApplicationDownloader`, `Outcome` (`downloader.rs`) and the
+  `ApplicationStore`/`InstalledApplication` port (`port.rs`): its one
+  implementation (`NodeClient` in `calimero-node-primitives`) is gone.
+- `DhtRegistry`, `PeerBlobs` (`source/dht.rs`), `app_source`, `RegistryConfig`,
+  `RegistryMode`, `RegistryCoordsBuf`, `stored_coords`,
+  `PENDING_BLOB_SHARE_SOURCE` (`registry.rs`): the node reads `--registry-url`
+  itself, and has no `[registry] mode` and no peer route.
+- `AppRequest::application_id`, `bytecode_id` and `context_id`: the node always
+  passes `None`.
 
-## The Port
-
-`ApplicationStore` is one trait with one implementation
-(`NodeClient`, in `calimero-node-primitives`). It exists only to keep this
-crate a leaf: the node client depends on the downloader, so the downloader
-cannot name the node client back. Do not grow it into a general node facade.
+Evidence: `grep -rn calimero_app_downloader crates tools` finds only
+`crates/node/src/packages.rs`, importing `source::http::HttpRegistry`,
+`AppRequest` and `AppSource`.
 
 ## Common Gotchas
 
-- `bytecode_id` is a `BlobId` (sha256 over chunk ids), never a `ContentHash`
-  (sha256 over raw bytes). Never pass one where the other is expected - the
-  content hash would reject every correct artifact.
-- The application-id rule lives behind `bind_application`: a signed bundle
-  **derives** `ApplicationId::for_bundle(package, signer_id)` and must equal
-  the id governance named. Raw wasm derives no id, so it is refused.
-- Every download is a remote request: any group can name any application id.
-  So a bundle that is not an equal or semver-newer release than the row's is
-  kept as a blob and leaves the row alone.
-- The only URL this crate ever fetches is the operator's own
-  `[registry] base_url` plus coordinates, so no host guard applies - private and
-  air-gapped registries are the point. Plain `http` is accepted only for
-  `localhost` or a loopback, private or link-local IP literal; anything else must
-  be `https`, and `HttpRegistry::new` refuses it. `is_safe_coord` is the boundary that
-  keeps a coordinate from walking out of that base.
-- Add a source by implementing `AppSource` and giving it a `RegistryMode`, never
-  by fetching inline at a call site or chaining a fallback behind an existing one.
+- `HttpRegistry::new` checks the base once: only `http`/`https`, and plain
+  `http` only for `localhost` or a loopback, private, unique-local or
+  link-local IP literal (`is_local_or_private`).
+- There is no host guard beyond that: the base is the operator's own,
+  routinely private or air-gapped. `is_safe_coord` (non-empty, at most
+  `MAX_COORD_LEN`, `[A-Za-z0-9._-]`, no `..`) is what keeps a coordinate from
+  walking out of the base; an unaddressable coordinate is an `Err`, never
+  `Ok(None)`.
+- The artifact client follows no redirect (`Policy::none()`), times out
+  (15 s connect, 300 s total) and caps the body at `MAX_ARTIFACT_BYTES`
+  (512 MiB) while reading, whatever `Content-Length` says.
+- URLs are logged through `calimero_primitives::utils::loggable_url`, which
+  drops credentials and the query.
+
+Part of [crates/](../AGENTS.md).

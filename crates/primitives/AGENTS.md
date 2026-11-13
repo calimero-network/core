@@ -1,97 +1,91 @@
-# calimero-primitives - Shared Foundational Types
+# calimero-primitives - Shared Ids and Wire Types
 
-The dependency-free vocabulary of IDs, keys, and wire types (`ContextId`, `ApplicationId`, `PublicKey`, `Hash`, `CrdtType`, ...) that every other Calimero crate builds on.
+A leaf crate (no other Calimero crate as a dependency) holding the 32-byte ids
+(`ApplicationId`, `BlobId`, `ContextId`, all over `Hash`), the outbound HTTPS
+wire (`outbound`), the search vocabulary (`search`) and `utils::loggable_url`.
+Much of the rest is left from the context-era node (libp2p sync, CRDT storage,
+WebSocket events) and nothing uses it; see "Unused (v1 leftovers)".
 
 ## Package Identity
 
 - **Crate**: `calimero-primitives`
-- **Entry**: `src/lib.rs`
-- **Key deps**: `ed25519-dalek` (signing/verification), `sha2` (SHA-256 for `Hash`), `bs58` (base58 text encoding), `zeroize` (key wiping), `borsh` (optional, feature-gated wire encoding), `serde`/`serde_json`, `multiaddr` + `url` (`common::multiaddr_to_url`)
+- **Entry**: `src/lib.rs` (`pub mod` declarations only: no re-exports, no prelude; callers import from the module, `calimero_primitives::blobs::BlobId`)
+- **Deps**: `sha2` (`Hash::new`), `hex` (the text form of every id), `serde`/`serde_json`, `borsh` (optional, feature `borsh`), `url` (`ApplicationSource`, `loggable_url`), `eyre`, `thiserror`; `ed25519-dalek`, `zeroize`, `multiaddr` and `rand` (optional) serve only unused modules
 
 ## Commands
 
 ```bash
-# Build (default features)
-cargo build -p calimero-primitives
-
-# Build with borsh enabled (most consumers use this)
 cargo build -p calimero-primitives --features borsh
-
-# Test (dev-deps reimport self with `borsh`, so tests exercise both encodings)
-cargo test -p calimero-primitives
-
-# Test a single module
-cargo test -p calimero-primitives hash::
-cargo test -p calimero-primitives crdt::tests -- --nocapture
+cargo test -p calimero-primitives     # dev-deps reimport the crate with `borsh`, so tests cover it
+cargo test -p calimero-primitives encoding_tests
 ```
 
-There is no `default` feature (`default = []`); `borsh` is opt-in. The dev-profile reimports `calimero-primitives` itself with `features = ["borsh"]` (see `Cargo.toml`), so `cargo test` always compiles the borsh paths regardless of what a downstream crate enables.
+There is no `default` feature; `borsh` is opt-in (`calimero-bundle`, `calimero-search` and `tools/search-bench` enable it). The optional `rand` dependency is never enabled by any crate.
 
-## Module Layout
+## Who uses what
 
-```
-src/
-├── lib.rs          # `pub mod` list only - no re-exports, no prelude
-├── hash.rs          # Hash - the 32-byte digest every ID newtype wraps
-├── identity.rs      # PrivateKey, PublicKey, AccountId, DeviceId
-├── context.rs        # ContextId, Context, ContextConfigParams, GroupMemberRole
-├── application.rs    # ApplicationId, SignerId, Application, ApplicationBlob, Version (semver), ApplicationSource
-├── blobs.rs           # BlobId, BlobInfo, BlobMetadata
-├── content_hash.rs     # ContentHash - digest of a file's bytes, distinct from BlobId
-├── crdt.rs             # CrdtType - merge-semantics tag shared by storage + sync
-├── alias.rs             # Alias<T> - fixed-size human-readable name, scoped by ScopedAlias
-├── metadata.rs           # MetadataRecord + validate_metadata_payload (group/context/member metadata)
-├── events.rs              # NodeEvent / ContextEvent / ContextEventPayload (WS event wire types)
-├── sync_status.rs          # SyncState (sync_status RPC + SyncStatus WS event)
-├── search.rs               # Full-text search wire: SearchIndexSchema/SearchDoc (app → node), SearchRequest/SearchResponse (view ↔ host), the reserved `__calimero_search_*` export names
-├── version.rs               # Version (build/release metadata, distinct from application::Version)
-├── common.rs                 # DIGEST_SIZE, ZERO_HASH, ResultAlt, multiaddr_to_url
-├── reflect.rs                 # Reflect/ReflectExt - non-'static TypeId + downcast helpers
-├── utils.rs                    # compact_path - shortens generic type-name paths for logging
-└── tests/                       # out-of-line #[path] test modules for hash/application/alias
-```
+Every use outside the crate goes through a full path, so this list is what
+`grep -rn calimero_primitives crates tools apps fuzz` finds (no app or fuzz
+target depends on the crate):
 
-`lib.rs` is 15 lines of `pub mod` declarations and nothing else - no facade re-exports, no prelude module. Callers import from the specific module (`calimero_primitives::context::ContextId`, not a flattened root).
+| Module | Items | Used by |
+| --- | --- | --- |
+| `outbound` | `OutboundMethod`, `OutboundRequest`, `OutboundResponse`, the `MAX_*`/`TIMEOUT_MS`/`SECRET_*` limits, `OutboundRefusal::{NotApproved, AwaitingApproval}`, `OutboundSelection` | `calimero-outbound` (the gate), `calimero-node` (`NodeHttp` encodes a component's request; `OutboundSelection` in `api/approvals.rs`, `api.rs`, `system.rs`, `consent_page.rs`) |
+| `search` | `SearchDoc`, `SearchFieldKind`, `SearchFieldSchema`, `SearchIndexSchema`, `SearchValue`, `SearchMode`, `SearchOrder`, `SearchFilter`, `SearchRequest`, `SearchResponse`, `SearchHit` | `calimero-search` (`index.rs`, its tests), `calimero-node` (`component/search.rs`), `tools/search-bench` |
+| `blobs` | `BlobId` | `calimero-node` (`api.rs`, `api/files.rs`: parse and print a blob id), `calimero-app-downloader` |
+| `application` | `ApplicationId`, `ApplicationSource`, `ApplicationId::for_bundle` | `calimero-app-downloader` (`ApplicationId` in `AppRequest`; `ApplicationSource` only in its unused downloader), `calimero-bundle` tests (`ApplicationId::for_bundle`) |
+| `context` | `ContextId` | `calimero-app-downloader` (`AppRequest::context_id`, always `None` from the node) |
+| `utils` | `loggable_url` | `calimero-kms-client`, `calimero-app-downloader` |
+| `hash`, `common` | `Hash`, `DIGEST_SIZE` | inside the crate only, under the id newtypes |
 
-## Type Inventory
+## Live types
 
-| Type | Module | Purpose | Bytes / Encoding |
+| Type | Module | Purpose | Encoding |
 | --- | --- | --- | --- |
-| `Hash` | `hash` | Generic 32-byte SHA-256 digest; base58 `Display`/`Serialize`, raw bytes for `borsh` | 32 bytes; `Copy`; base58 text over serde, raw bytes over borsh |
-| `ContextId` | `context` | Newtype over `Hash` identifying a context | 32 bytes, same encoding as `Hash` |
-| `ApplicationId` | `application` | Newtype over `Hash` identifying an application; `ZERO_APPLICATION_ID` sentinel | 32 bytes |
-| `BlobId` | `blobs` | Newtype over `Hash` identifying a stored blob | 32 bytes |
-| `ContentHash` | `content_hash` | `sha256(content)` over a file's raw bytes; no implicit conversion to/from `BlobId` | 32 bytes; `Copy`; hex text, raw bytes for `borsh` |
-| `PublicKey` | `identity` | Newtype over `Hash`; Ed25519 verifying key | 32 bytes |
-| `PrivateKey` | `identity` | Raw `[u8; 32]` Ed25519 signing key; `ZeroizeOnDrop`, no `Clone`/`Copy`/serde | 32 bytes, never serialized |
-| `SignerId` | `application` | Non-empty `did:key:...` string identifying MPK bundle signer | variable-length string; length-prefixed under borsh |
-| `Version` (application) | `application` | Validated `major.minor.patch[-pre][+build]` semver string | newtype `Box<str>`; no borsh impl |
-| `Version` (version) | `version` | Build/release metadata (version, build, commit, rustc) | serde/borsh; borsh decode caps each string at `MAX_VERSION_STRING_LEN` (256) |
-| `Alias<T>` | `alias` | Fixed-capacity human-readable name, phantom-scoped to a `ScopedAlias` type | fixed `[u8; 50]` buffer + `u8` len; text over serde, no borsh impl |
-| `CrdtType` | `crdt` | Merge-semantics tag shared by storage (persistence) and sync (wire classification) | enum; borsh discriminant pinned by explicit test, appended-only |
-| `MetadataRecord` | `metadata` | Group/member/context metadata (`name`, opaque `data` map, `updated_at`, `updated_by`) | serde (`camelCase`) + borsh |
-| `SyncState` | `sync_status` | Coarse sync phase for RPC + WS event | serde, internally tagged `state`; no borsh |
-| `NodeEvent`/`ContextEvent`/... | `events` | WebSocket event envelope and payloads | serde only, tagged JSON |
-| `Context` | `context` | Snapshot of a context's id/app/root-hash/DAG-heads/version/name | serde (`camelCase`), `#[non_exhaustive]` builder methods |
-| `GroupMemberRole` | `context` | `Admin`/`Member`/`ReadOnly`/`ReadOnlyTee`/`RelayTee` (append-only; `is_tee()`, `is_read_only()`) | serde + borsh, deliberately NOT `#[non_exhaustive]` |
-
-## Mental Model
-
-Every ID type in the workspace (`ContextId`, `ApplicationId`, `BlobId`, `PublicKey`) is the same 32-byte `Hash` wrapped in a distinct newtype, so the compiler - not a convention - stops a `BlobId` from being passed where an `ApplicationId` is expected. `Hash` itself stores only the raw bytes and computes its base58 form on demand (`Display`, `to_base58`, `encode_base58`), trading a cached string for a `Copy` struct that stays cheap on hot paths like delta-store iteration and RocksDB key parsing.
-
-This crate has no dependency on any other Calimero crate - it is the leaf that `calimero-node`, `calimero-bundle`, `calimero-search` and the rest of the workspace depend on for the IDs and keys that cross module boundaries. `CrdtType` living here (rather than in `calimero-storage`) is what lets both the storage merge dispatcher and the sync wire protocol agree on one enum without either depending on the other.
+| `Hash` | `hash` | 32-byte digest (`Hash::new` = SHA-256; `hash_json`, `hash_borsh`) | 64 lowercase hex over `Display`/`FromStr`/serde; raw 32 bytes over borsh; `Copy` |
+| `ApplicationId`, `BlobId`, `ContextId` | `application`, `blobs`, `context` | Newtypes over `Hash`, so one cannot be passed for another | as `Hash` |
+| `ApplicationSource` | `application` | A `Url` newtype | serde as a URL string |
+| `OutboundRequest`/`OutboundResponse`/`OutboundMethod` | `outbound` | What a run asks the node to send, and what it gets back (status and body only) | borsh between the node and `calimero-outbound`; `OutboundMethod`'s borsh tag is its index, append only |
+| `OutboundRefusal` | `outbound` | The words (`NotApproved`, `AwaitingApproval`) a refusal's reason starts with, which apps match on | text |
+| `OutboundSelection` | `outbound` | What an approver approves: `"manifest"` or an array of prefixes | hand-written serde |
+| `Search*` | `search` | Index schema, documents, query, hits | serde and borsh |
 
 ## Invariants and Gotchas
 
-- **`PublicKey::verify` uses `verify_strict`, not `verify`**: it rejects the malleable, non-canonical Ed25519 signature encodings that plain `verify` accepts (small-order/cofactored/non-strict-SUF-CMA edge cases). Do not swap this for `VerifyingKey::verify` - that reopens a signature-malleability hole.
-- **`PrivateKey` never derives serialization or `Clone`/`Copy`**: the only sanctioned way to reach the raw bytes is `as_bytes()`. Serializing or copying it would produce an untracked copy of the secret that `ZeroizeOnDrop` cannot wipe. The inner type is a plain `[u8; 32]` (not `Hash`) specifically so the derived `ZeroizeOnDrop` can zero it directly.
-- **All 32-byte digest newtypes (`Hash`, `ContextId`, `ApplicationId`, `BlobId`, `PublicKey`) share one text encoding**: base58 over Serde (`Display`/`FromStr`/`Serialize`), raw fixed bytes over borsh (only under the `borsh` feature). Do not mix - a base58 string is never valid input to a borsh decoder for these types.
-- **`CrdtType`'s borsh tags are pinned and append-only**: a dedicated test (`test_borsh_discriminant_tags_are_stable`) locks each variant's discriminant. New variants must be appended at the end, never inserted. `RotationLog` (tag 13) is a decode-only legacy marker: nothing writes it any more (a cell's writers come from the governance fold), but stores and snapshots from older nodes carry entities stamped with it, so it must keep decoding, and the tag is never reused.
-- **`CrdtType`'s borsh tags moved to `0x80+` in a declared lockstep upgrade**: the five payload strings (`inner_type`, `key_type`, `value_type`, `element_type`) held `std::any::type_name` output, whose rendering rustc does not guarantee, and reached persisted rows, `LeafMetadata` on the wire, and the `CausalDelta::compute_id` preimage. They are gone; `LwwRegister` now carries a declared `LwwKind` (`Value`/`Opaque`/`JsRoot`). `BorshDeserialize` still accepts the legacy `0x00-0x0D` tags so existing rows decode, while the new tags make a pre-upgrade binary fail the decode outright instead of reading the next field as a string length.
-- **`Alias<T>` is a fixed 50-byte buffer, not a `String`**: characters are restricted to `[A-Za-z0-9._-]` because aliases are interpolated into store keys and URL paths; `MAX_ALIAS_LEN` has a compile-time assertion that it fits in `u8`. `ScopedAlias` is a marker trait (`PublicKey`'s scope is `ContextId`; `ContextId`/`ApplicationId` are unscoped, `Scope = ()`) used purely as a phantom type parameter - there's no runtime scope check in this crate.
-- **`version::Version`'s `BorshDeserialize` is hand-written, not derived**: each string field is read through `read_capped_string`, which checks the length prefix against `MAX_VERSION_STRING_LEN` (256) *before* allocating, so a hostile peer can't force a multi-gigabyte allocation via a crafted length prefix during handshake. `BorshSerialize` is still derived.
-- **`application::Version` (semver) and `version::Version` (build metadata) are unrelated types that happen to share a name** - the former validates `major.minor.patch`, the latter carries release/build/commit/rustc strings; import the one you mean explicitly.
-- **`MetadataRecord` has no `Default`**: a record always carries a real `updated_by` signer; a `Default` would have to fabricate an all-zero `PublicKey` that looks like a valid signature authority.
-- **`reflect.rs`'s `non_static_type_id` uses an internal `transmute` + `unsafe`** to get a `TypeId` for non-`'static` types (ported from an unmerged `castaway` PR). Treat it as settled, audited code rather than a pattern to copy elsewhere.
+- **Every 32-byte id renders and parses as 64 hex**, and refuses base58 (`tests/encoding.rs`, a loop over the id types). Hex digits are a subset of base58's alphabet, so a parser taking both would decode some strings to the wrong id instead of failing. A new id type goes into that loop.
+- **`Hash` caches no string**: `Display` encodes on demand, keeping the struct 32 bytes and `Copy`.
+- **`ApplicationId::for_bundle(package, signer_id)`** is `Hash::hash_borsh(&(package, signer_id))` (feature `borsh`): the id is stable across versions of one package and key.
+- **Outbound limits are the wire's** (`MAX_REQUEST_BODY` 64 KiB, `MAX_URL` 2048, `MAX_HEADERS` 8, `MAX_HEADER_BYTES` 1024, `MAX_RESPONSE_BODY` 1 MiB, `TIMEOUT_MS` 10 s); a longer response is refused, never truncated. `OutboundRefusal::word` is stable: the outbound crate writes it (`NOT_APPROVED`, `AWAITING_APPROVAL`) and apps match on it.
+- **`loggable_url`** drops userinfo, the query (marked `?[redacted]`) and the fragment: use it for every URL logged at `info` and above.
+
+## Unused (v1 leftovers)
+
+Nothing outside the crate names these (the grep above), and no live module of
+the crate depends on them. They describe systems that are gone (libp2p sync,
+the causal DAG, CRDT merge storage, WebSocket events, namespaces with TEE
+roles, the 0.x SDK's search exports) and are candidates for deletion; their doc
+comments still describe those systems as current and were left as they are:
+
+| Module or item | What it was |
+| --- | --- |
+| `events` (`NodeEvent`, `ContextEvent`, `ContextEventPayload`, ...) | the WebSocket event envelope; events now stream over SSE from the node's own types |
+| `sync_status` (`SyncState`) | the `sync_status` RPC and its WS event |
+| `crdt` (`CrdtType`, `LwwKind`) | `calimero-storage`'s merge-semantics tag |
+| `alias` (`Alias<T>`, `ScopedAlias`) | context/application/member aliases; account aliases are the node's own (`Account::aliases`) |
+| `metadata` (`MetadataRecord`, `validate_metadata_payload`) | group/context/member metadata |
+| `identity` (`PrivateKey`, `PublicKey`, `AccountId`, `DeviceId`, `MemberIdentity`, `domain_hash`, ...) | context members, CRDT replica ids, namespace TEE authoring |
+| `content_hash` (`ContentHash`) | a file's `sha256(content)`, distinct from `BlobId` |
+| `version` (`Version`, `MAX_VERSION_STRING_LEN`) | build metadata sent in the libp2p handshake |
+| `reflect` (`Reflect`, `ReflectExt`) | type-erasure helpers for the actix actors (`calimero-utils-actix`, gone) |
+| `utils::compact_path`, `utils::prefix_upper_bound`, `utils::loggable_url_str` | logging and store-scan helpers |
+| `common::{ZERO_HASH, bool_true, ResultAlt, multiaddr_to_url}` | the only reason for the `multiaddr` dependency |
+| `context::{Context, ContextConfigParams, GroupMemberRole}`, `ContextId::from_seed` (feature `rand`, never enabled) | a context's DAG heads and root hash; namespace roles including `ReadOnlyTee`/`RelayTee` |
+| `application::{Application, ApplicationBlob, SignerId, Version, ZERO_APPLICATION_ID}` | the context node's application rows |
+| `blobs::{BlobInfo, BlobMetadata}` | the old blob API's answers |
+| `outbound::{SealedSecret, SealedSecretPayload, SEALED_PREFIX, MAX_SEALED_ENVELOPE, MAX_REQUESTS_PER_RUN}`, `OutboundRefusal::SealedUnavailable` | secrets sealed to a namespace TEE key; the one-request bound (the per-run bound is the component host's `MAX_HTTP_REQUESTS`, 8) |
+| `search::{SCHEMA_EXPORT, EXTRACT_EXPORT, SCAN_EXPORT, is_export, ExtractRequest, ExtractResponse, ScanRequest, ScanResponse}` | SDK 0.12's search exports; a component's search fields come from its ABI |
+
+Deleting `identity` also drops `ed25519-dalek`, `zeroize` and `rand`; deleting
+`common::multiaddr_to_url` drops `multiaddr`.
 
 Part of [crates/](../AGENTS.md).

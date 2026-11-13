@@ -1,22 +1,24 @@
-//! The wire between an app and the node for an outbound HTTPS request.
+//! The wire between a run and the node for an outbound HTTPS request.
 //!
-//! A run may ask its node to make **one** HTTPS request to an outside
-//! service, for what a contract cannot know by itself: whether a captcha was
-//! solved, whether a payment went through, what an API answers. The node makes it
-//! only if every gate holds, and refuses otherwise (see the runtime's
-//! `http_request` host function and `calimero-context`'s outbound policy):
+//! A run may ask its node for HTTPS requests to an outside service (at most
+//! the component host's `MAX_HTTP_REQUESTS` in one run), for what an app
+//! cannot know by itself: whether a captcha was solved, whether a payment went
+//! through, what an API answers. The component host passes the request
+//! (`wasi:http`, `calimero_app_host::HttpHost`) to the node, which encodes it
+//! as an [`OutboundRequest`] for `calimero-outbound`.
+//! The request is made only if every gate holds, and refused otherwise:
 //!
-//! - the node's operator turned outbound requests on (`[context.outbound]`,
-//!   off by default) and allows the request's host (listed, or `"*"` for any
-//!   host an app declares);
-//! - the app's signed bundle manifest declares a URL prefix that covers the
+//! - the node's operator turned outbound requests on (`[outbound]`, off by
+//!   default) and allows the request's host (listed, or `"*"` for any host an
+//!   app declares);
+//! - the app's signed release manifest declares a URL prefix that covers the
 //!   request's URL (`outbound`);
-//! - the namespace the run belongs to approved a prefix that covers it for the
-//!   app's publisher (`GroupOp::OutboundApprovalSet`), which an admin does in
-//!   the same call that installs or upgrades the app ([`OutboundSelection`]);
-//! - the run writes state and executes on this node (its own write, or one it
-//!   relays for an author): never a view, a migration, a check or a peer's
-//!   delta;
+//! - a prefix that covers it is approved for the app's publisher, by whoever
+//!   holds outbound approvals: the app's organization (`MANAGE_APPLICATION`
+//!   org-wide, `POST /orgs/{org}/outbound`) or the operator
+//!   (`--outbound-approvals operator`) ([`OutboundSelection`]);
+//! - the run writes (a call, a follow-up, a timer, a delivery) or is a
+//!   component's action: never a view, `init`, a migration or compute;
 //! - the request fits the limits below, and its host resolves only to public
 //!   addresses.
 //!
@@ -27,7 +29,7 @@
 //! is removed before the app sees the response.
 //!
 //! Like search, this is node-local: the request and the response are never
-//! part of a delta. Only the state the run writes because of them is.
+//! part of a log entry. Only the state the run writes because of them is.
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -54,7 +56,7 @@ pub const MAX_HEADER_BYTES: usize = 1024;
 pub const MAX_RESPONSE_BODY: usize = 1024 * 1024;
 
 /// How long the node waits for the whole request, in milliseconds. The run
-/// holds its context's write lock meanwhile.
+/// holds its app's proposal lock meanwhile.
 pub const TIMEOUT_MS: u64 = 10_000;
 
 /// How a request names a secret the node fills in: `{{secret:NAME}}`.
@@ -149,14 +151,14 @@ impl SealedSecret {
     }
 }
 
-/// A refusal an app can act on, read from the reason `env::http_request`
+/// A refusal an app can act on, read from the reason an outbound request
 /// returns. Every other refusal (a host the operator does not allow, a URL
 /// outside the manifest, a bound) is a bug in the app or its deployment, and
 /// reads as `None`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutboundRefusal {
-    /// The namespace has not approved the URL's prefix for the app's
-    /// publisher, or revoked it: a member should ask an admin.
+    /// Whoever holds outbound approvals has not approved the URL's prefix for
+    /// the app's publisher, or revoked it: a member should ask an admin.
     NotApproved,
     /// A newer version of the app declares the prefix and nobody has been
     /// asked about it yet: an admin should approve it from the upgrade.
@@ -196,7 +198,7 @@ impl OutboundRefusal {
     }
 }
 
-/// Which URL prefixes an admin approves for an app's publisher: exactly the
+/// Which URL prefixes an approver approves for an app's publisher: exactly the
 /// ones its manifest declares, or a list of their own (what an install screen
 /// showed, a subset of it, or a narrower prefix).
 ///

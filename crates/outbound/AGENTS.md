@@ -1,7 +1,9 @@
 # calimero-outbound
 
 Outbound HTTPS requests from a run, and the secrets they may carry: the
-`OutboundHost` the runtime's `http_request` host function calls.
+`OutboundHost` the node hands a run (`Node::outbound_for`), which the component
+host's outgoing HTTP (`wasi:http`, `calimero_app_host::HttpHost`, `NodeHttp` in
+`calimero-node`) calls with a borsh `calimero_primitives::outbound::OutboundRequest`.
 
 A request is made only when every gate holds:
 
@@ -13,9 +15,10 @@ A request is made only when every gate holds:
    a passkey assertion), or the operator where `--outbound-approvals operator`
    gives it the decision; every app is in an organization since 1.0.0-rc.20.
 4. The run writes (calls, follow-ups, timers; a component's actions and, D76, its calls,
-   timers and deliveries): never a view or a migration.
+   timers and deliveries): never a view, `init`, a migration or compute.
 5. `https` on 443 to a name resolving only to public addresses, size limits from
-   `calimero_primitives::outbound`, no redirects, one request per run.
+   `calimero_primitives::outbound`, no redirects; at most
+   `calimero_app_host::MAX_HTTP_REQUESTS` (8) per run, counted by the host.
 
 Secrets (`{{secret:NAME}}`) come from `EnvSecrets` or a loopback `SidecarSecrets`,
 scoped by package, signer and host, and are redacted from the response.
