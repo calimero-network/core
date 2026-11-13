@@ -34,7 +34,8 @@ echo "Processor Model: $(grep -m 1 'model name' /proc/cpuinfo | cut -d: -f2-)"
 
 ## How are you running the node?
 
-- [ ] merod binary _(obtained with homebrew or installation script)_
+- [ ] merod binary _(from a GitHub release)_
+- [ ] Docker image _(`ghcr.io/calimero-network/merod`)_
 - [ ] building source code _(cloned github repository)_
 
 > **Note:** If you are building from the source make sure you are using latest
@@ -53,7 +54,7 @@ A clear and concise description of what the bug is.
 
 Steps to reproduce the behavior:
 
-1. Node is stared with '...'
+1. Node is started with '...'
 2. I did '...'
 3. Then I did '...'
 4. See error

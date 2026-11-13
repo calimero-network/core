@@ -27,6 +27,10 @@ resolve, and cannot take the role back.
 - `status(name)`: `free`, `pending`, `owned` or `lost` as the caller sees it
 - `claimTally(name)`, `ownerOf(name)`, `displayOf(name)`, `me()`
 
+Errors: `BadName { name }` (a username is 3 to 32 of `a-z`, `0-9` and `_`),
+`Owned { name }`, `NotAdmin`, `NoAdmins`. Events: `NameClaimed { name }`,
+`ReleaseRequested { name }`, `NameResolved { name, owner }`, `AdminsChanged { admins }`.
+
 Gate every use of a name on `ownerOf`, never on having claimed it.
 
 ```bash
