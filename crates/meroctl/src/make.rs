@@ -130,6 +130,20 @@ pub struct PackArgs {
     /// The package id, e.g. `com.example.kv-store` (default: DIR's metadata).
     #[arg(long)]
     pub package: Option<String>,
+    /// The app's display name, `metadata.name` (default: DIR's `name`). A
+    /// registry needs it, with a description, icon and category, to list a new
+    /// package.
+    #[arg(long)]
+    pub name: Option<String>,
+    /// A one-line description (default: DIR's `description`).
+    #[arg(long)]
+    pub description: Option<String>,
+    /// A PNG icon, shipped as a data URI (default: DIR's `icon`, relative to DIR).
+    #[arg(long)]
+    pub icon: Option<PathBuf>,
+    /// The storefront category, from the registry's list (default: DIR's `category`).
+    #[arg(long)]
+    pub category: Option<String>,
     /// The release's version (default: DIR's crate version).
     #[arg(long)]
     pub app_version: Option<String>,
@@ -314,6 +328,10 @@ struct CrateMeta {
     package: Option<String>,
     min_runtime: Option<String>,
     frontend_dir: Option<PathBuf>,
+    /// `[package.metadata.calimero]` as written, for the display metadata,
+    /// links and the rest `pack` copies into the manifest (`manifest_extras`).
+    table: toml::Table,
+    dir: PathBuf,
 }
 
 fn crate_meta(dir: &Path) -> eyre::Result<CrateMeta> {
@@ -338,7 +356,109 @@ fn crate_meta(dir: &Path) -> eyre::Result<CrateMeta> {
         package: text_of(meta, "package"),
         min_runtime: text_of(meta, "min-runtime-version"),
         frontend_dir: text_of(meta, "frontend-dir").map(|d| dir.join(d)),
+        table: meta.cloned().unwrap_or_default(),
+        dir: dir.to_owned(),
     })
+}
+
+/// A PNG file as the data URI `metadata.icon` carries.
+fn icon_uri(path: &Path) -> eyre::Result<String> {
+    use base64::Engine as _;
+    let bytes = std::fs::read(path).wrap_err_with(|| format!("reading icon {}", path.display()))?;
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        bail!("icon {} is not a PNG", path.display());
+    }
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+/// What the manifest carries besides the artifacts, from the crate's
+/// `[package.metadata.calimero]` and the flags, the keys `mero-component bundle`
+/// (and `cargo mero` before it) read: `metadata` (`name`, `description`,
+/// `author`, `icon`, `tags`, `license`, `category`, `guide`), `handlers.slug`
+/// (default: the package), `links` (`frontend`, `github`, `docs`),
+/// `frontendAliases`, `outbound` and `upgrades`. A flag wins over the table.
+fn manifest_extras(
+    a: &PackArgs,
+    meta: &CrateMeta,
+    package: &str,
+    manifest: &mut Map<String, Value>,
+) -> eyre::Result<()> {
+    let t = &meta.table;
+    let text = |k: &str| t.get(k).and_then(toml::Value::as_str).map(str::to_owned);
+    let list = |k: &str| -> Vec<String> {
+        t.get(k)
+            .and_then(toml::Value::as_array)
+            .map(|v| {
+                v.iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let icon = match (&a.icon, text("icon")) {
+        (Some(p), _) => Some(icon_uri(p)?),
+        (None, Some(rel)) if rel == "default" => {
+            eprintln!(
+                "note: icon = \"default\" names cargo-mero's built-in mark; packed without an icon"
+            );
+            None
+        }
+        (None, Some(rel)) => Some(icon_uri(&meta.dir.join(rel))?),
+        (None, None) => None,
+    };
+    let guide = text("guide")
+        .map(|rel| {
+            let path = meta.dir.join(rel);
+            std::fs::read_to_string(&path)
+                .wrap_err_with(|| format!("reading guide {}", path.display()))
+        })
+        .transpose()?;
+    if let Some(name) = a.name.clone().or_else(|| text("name")) {
+        let mut m = Map::new();
+        let _ = m.insert("name".into(), json!(name));
+        let mut put = |k: &str, v: Option<String>| {
+            if let Some(v) = v {
+                let _ = m.insert(k.into(), json!(v));
+            }
+        };
+        put(
+            "description",
+            a.description.clone().or_else(|| text("description")),
+        );
+        put("author", text("author"));
+        put("icon", icon);
+        put("license", text("license"));
+        put("category", a.category.clone().or_else(|| text("category")));
+        put("guide", guide);
+        let _ = m.insert("tags".into(), json!(list("tags")));
+        let _ = manifest.insert("metadata".into(), Value::Object(m));
+    } else if a.description.is_some() || a.icon.is_some() || a.category.is_some() {
+        bail!("--description, --icon and --category describe the app under its --name: give --name too");
+    }
+    let _ = manifest.insert(
+        "handlers".into(),
+        json!({ "slug": text("slug").unwrap_or_else(|| package.to_owned()) }),
+    );
+    let mut links = Map::new();
+    for k in ["frontend", "github", "docs"] {
+        if let Some(v) = text(k) {
+            if !calimero_bundle::is_web_url(&v) {
+                bail!("{k} = {v:?} is not an http(s) URL");
+            }
+            let _ = links.insert(k.into(), json!(v));
+        }
+    }
+    if !links.is_empty() {
+        let _ = manifest.insert("links".into(), Value::Object(links));
+    }
+    let aliases = list("frontend-aliases");
+    if !aliases.is_empty() {
+        let _ = manifest.insert("frontendAliases".into(), json!(aliases));
+    }
+    Ok(())
 }
 
 fn artifact(path: &str, data: &[u8]) -> BundleArtifact {
@@ -413,18 +533,24 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
         .map(crate_meta)
         .transpose()?
         .unwrap_or_default();
-    let package = a.package.clone().or(meta.package).ok_or_else(|| {
-        eyre!("give --package, or a DIR whose Cargo.toml has [package.metadata.calimero] package")
-    })?;
+    let package = a
+        .package
+        .clone()
+        .or_else(|| meta.package.clone())
+        .ok_or_else(|| {
+            eyre!(
+                "give --package, or a DIR whose Cargo.toml has [package.metadata.calimero] package"
+            )
+        })?;
     let version = a
         .app_version
         .clone()
-        .or(meta.version)
+        .or_else(|| meta.version.clone())
         .ok_or_else(|| eyre!("give --app-version, or a DIR whose crate has a version"))?;
     let min_runtime = a
         .min_runtime_version
         .clone()
-        .or(meta.min_runtime)
+        .or_else(|| meta.min_runtime.clone())
         .unwrap_or_else(|| DEFAULT_MIN_RUNTIME.to_owned());
 
     // The components: named, or built from DIR.
@@ -464,7 +590,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
         bail!("two --pipeline files have the same name");
     }
 
-    let frontend_dir = match (&a.frontend, a.no_frontend, meta.frontend_dir) {
+    let frontend_dir = match (&a.frontend, a.no_frontend, meta.frontend_dir.clone()) {
         (Some(d), _, _) => Some(d.clone()),
         (None, false, Some(d)) if d.is_dir() => Some(d),
         (None, false, Some(d)) => {
@@ -501,17 +627,46 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     if let Some((f, _)) = &frontend {
         let _ = manifest.insert("frontend".into(), serde_json::to_value(f)?);
     }
-    if !a.outbound.is_empty() {
-        let _ = manifest.insert("outbound".into(), json!(a.outbound));
+    manifest_extras(a, &meta, &package, &mut manifest)?;
+    let mut outbound: Vec<String> = meta
+        .table
+        .get("outbound")
+        .and_then(toml::Value::as_array)
+        .map(|v| {
+            v.iter()
+                .filter_map(|x| x.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    for url in &a.outbound {
+        if !outbound.contains(url) {
+            outbound.push(url.clone());
+        }
     }
-    if let Some(u) = a.upgrades {
-        let _ = manifest.insert(
-            "upgrades".into(),
-            json!(match u {
-                Upgrades::Owner => "owner",
-                Upgrades::Publisher => "publisher",
-            }),
-        );
+    for url in &outbound {
+        if !is_outbound_url(url) {
+            bail!(
+                "outbound {url}: an https:// prefix with a host, no credentials, query or fragment"
+            );
+        }
+    }
+    if !outbound.is_empty() {
+        let _ = manifest.insert("outbound".into(), json!(outbound));
+    }
+    let upgrades = match a.upgrades {
+        Some(Upgrades::Owner) => Some("owner".to_owned()),
+        Some(Upgrades::Publisher) => Some("publisher".to_owned()),
+        None => meta
+            .table
+            .get("upgrades")
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned),
+    };
+    if let Some(u) = upgrades {
+        if u != "owner" && u != "publisher" {
+            bail!("upgrades = {u:?}: owner or publisher");
+        }
+        let _ = manifest.insert("upgrades".into(), json!(u));
     }
 
     let key = signing_key(a.key.as_deref())?;

@@ -448,3 +448,148 @@ async fn publish_pushes_the_bundle_to_the_registry() {
     .unwrap();
     assert!(String::from_utf8_lossy(&out.stderr).contains("https://"));
 }
+
+/// What a registry needs to list a new package: `metadata` (name, description,
+/// icon, category), plus the slug, links, outbound and upgrades, from the crate's
+/// `[package.metadata.calimero]` as `mero-component bundle` read them; flags win.
+#[test]
+fn pack_carries_the_display_metadata_a_registry_lists() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    std::fs::create_dir_all(d.join("logic")).unwrap();
+    std::fs::write(d.join("logic/icon.png"), b"\x89PNG\r\n\x1a\nrest").unwrap();
+    std::fs::write(d.join("logic/GUIDE.md"), "# Guide\n").unwrap();
+    std::fs::write(
+        d.join("logic/Cargo.toml"),
+        r#"[package]
+name = "x"
+version = "0.3.1"
+
+[package.metadata.calimero]
+package = "com.example.x"
+name = "X Store"
+description = "Keys and values"
+author = "Example"
+icon = "icon.png"
+guide = "GUIDE.md"
+category = "developer-tools"
+tags = ["kv", "example"]
+license = "MIT"
+github = "https://github.com/example/x"
+frontend = "https://x.example"
+frontend-aliases = ["https://old.x.example"]
+outbound = ["https://api.example.com/v1/"]
+upgrades = "publisher"
+"#,
+    )
+    .unwrap();
+    std::fs::write(d.join("app.wasm"), [COMPONENT, b"app"].concat()).unwrap();
+    let _ = ok(&meroctl(
+        d,
+        &[
+            "app",
+            "pack",
+            "logic",
+            "--wasm",
+            "app.wasm",
+            "--out",
+            "x.mpk",
+            "--outbound",
+            "https://more.example/",
+        ],
+    ));
+    let m = manifest(&untar(&d.join("x.mpk")));
+    assert_eq!(m["metadata"]["name"], "X Store");
+    assert_eq!(m["metadata"]["description"], "Keys and values");
+    assert_eq!(m["metadata"]["author"], "Example");
+    assert_eq!(m["metadata"]["category"], "developer-tools");
+    assert_eq!(m["metadata"]["tags"], serde_json::json!(["kv", "example"]));
+    assert_eq!(m["metadata"]["license"], "MIT");
+    assert_eq!(m["metadata"]["guide"], "# Guide\n");
+    assert!(m["metadata"]["icon"]
+        .as_str()
+        .unwrap()
+        .starts_with("data:image/png;base64,"));
+    assert_eq!(m["handlers"]["slug"], "com.example.x");
+    assert_eq!(m["links"]["github"], "https://github.com/example/x");
+    assert_eq!(m["links"]["frontend"], "https://x.example");
+    assert_eq!(m["frontendAliases"][0], "https://old.x.example");
+    assert_eq!(
+        m["outbound"],
+        serde_json::json!(["https://api.example.com/v1/", "https://more.example/"])
+    );
+    assert_eq!(m["upgrades"], "publisher");
+    // Signed over all of it.
+    assert_eq!(
+        ok(&meroctl(d, &["app", "inspect", "x.mpk"]))["verified"],
+        true
+    );
+
+    // Without a crate: the flags, and --name is what the rest describes.
+    let _ = ok(&meroctl(
+        d,
+        &[
+            "app",
+            "pack",
+            "--wasm",
+            "app.wasm",
+            "--package",
+            "p",
+            "--app-version",
+            "1.0.0",
+            "--out",
+            "f.mpk",
+            "--name",
+            "P",
+            "--description",
+            "d",
+            "--category",
+            "games",
+            "--icon",
+            "logic/icon.png",
+        ],
+    ));
+    let m = manifest(&untar(&d.join("f.mpk")));
+    assert_eq!(m["metadata"]["name"], "P");
+    assert_eq!(m["metadata"]["category"], "games");
+    assert_eq!(m["handlers"]["slug"], "p");
+    let out = meroctl(
+        d,
+        &[
+            "app",
+            "pack",
+            "--wasm",
+            "app.wasm",
+            "--package",
+            "p",
+            "--app-version",
+            "1.0.0",
+            "--out",
+            "g.mpk",
+            "--description",
+            "d",
+        ],
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("give --name too"));
+    // A file that is not a PNG is refused.
+    let out = meroctl(
+        d,
+        &[
+            "app",
+            "pack",
+            "--wasm",
+            "app.wasm",
+            "--package",
+            "p",
+            "--app-version",
+            "1.0.0",
+            "--out",
+            "h.mpk",
+            "--name",
+            "P",
+            "--icon",
+            "app.wasm",
+        ],
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("is not a PNG"));
+}

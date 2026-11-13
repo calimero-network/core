@@ -38,7 +38,7 @@ pub enum AppCmd {
     Signer(crate::make::SignerCmd),
     /// Write a signed `.mpk`: from the app's crate DIR (its
     /// `[package.metadata.calimero]`), or from `--wasm`/`--compute` and flags. No node.
-    Pack(crate::make::PackArgs),
+    Pack(Box<crate::make::PackArgs>),
     /// Sign a manifest.json in place. No node.
     Sign(crate::make::SignArgs),
     /// Open an `.mpk` as a node does (signature and every hash) and print its manifest. No node.

@@ -3720,6 +3720,7 @@ name = "meroctl"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "calimero-app-abi",
  "calimero-app-build",
  "calimero-build-utils",
