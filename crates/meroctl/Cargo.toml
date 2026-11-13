@@ -52,7 +52,6 @@ compute = ["dep:mero-compute"]
 calimero-build-utils.workspace = true
 
 [dev-dependencies]
-calimero-app-wit.workspace = true
 ed25519-dalek.workspace = true
 rand_chacha.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }

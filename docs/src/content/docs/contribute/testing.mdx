@@ -716,7 +716,7 @@ failed run, every node's log and data.
 formatting error fails a PR in about a minute. `Rust tests (K/4)` compile the
 workspace's tests and run a quarter of them each (a nextest archive built once
 was 8 GB, slower to download than to build); shard 1 also runs the doctests and
-shard 2 the previous release's app (below); `mero-compute end to end` and
+shard 2 the previous release's app (below); `Compute end to end (meroctl)` and
 `Rust feature-gated tests` run beside them. `Rust standalone apps (K/3)` runs
 each component app's own `cargo test` (its `tests/harness.rs` and its app-level
 scenarios on `TestApp`), then clippy with `-D warnings` on the host and on

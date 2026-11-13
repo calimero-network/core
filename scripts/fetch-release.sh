@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Fetches a published core release's Linux x86_64 artifacts, the ones a
-# Calimero Cloud node runs: merod, meroctl and mero-sign from the GitHub
-# release's tarballs, checked against its SHA256SUMS, and the release's
-# dev-signed kv fixture (kv-store-test-fixture.mpk).
+# Calimero Cloud node runs: merod and meroctl (and mero-sign, which releases
+# before meroctl signed apps shipped) from the GitHub release's tarballs,
+# checked against its SHA256SUMS, and the release's dev-signed kv fixture
+# (kv-store-test-fixture.mpk).
 #
 #   scripts/fetch-release.sh 1.0.0-rc.15 target/upgrade-from
 #   scripts/fetch-release.sh "$(cat .github/upgrade-from)" target/upgrade-from
 #
-# Lays out OUT/{merod,meroctl,mero-sign,kv-store-test-fixture.mpk,SHA256SUMS,VERSION}.
+# Lays out OUT/{merod,meroctl,[mero-sign,]kv-store-test-fixture.mpk,SHA256SUMS,VERSION}.
 # Exit status: 0 fetched; 3 the tag does not exist (yet); 1 anything else,
 # including a tag whose release lacks an artifact (never a silent pass).
 # REPO (default calimero-network/core) names another repository.
@@ -37,13 +38,18 @@ fetch() {
 }
 
 fetch SHA256SUMS
-for bin in merod meroctl mero-sign; do
+bins="merod meroctl"
+# A release that still shipped mero-sign: its own tools sign with it.
+if grep -q " mero-sign_${TRIPLE}.tar.gz\$" "$DL/SHA256SUMS"; then
+  bins="$bins mero-sign"
+fi
+for bin in $bins; do
   fetch "${bin}_${TRIPLE}.tar.gz"
 done
 fetch kv-store-test-fixture.mpk
 
 (cd "$DL" && sha256sum --check --ignore-missing --strict SHA256SUMS) >&2
-for bin in merod meroctl mero-sign; do
+for bin in $bins; do
   if ! grep -q " ${bin}_${TRIPLE}.tar.gz\$" "$DL/SHA256SUMS"; then
     echo "::error::fetch-release: SHA256SUMS of $TAG does not list ${bin}_${TRIPLE}.tar.gz" >&2
     exit 1

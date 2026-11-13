@@ -1,8 +1,8 @@
 name: Platforms
 
 # macOS, off the pull-request critical path: developers on a Mac run the node in
-# Docker and use `meroctl` and `mero-sign` natively, so release.yml ships
-# those for aarch64-apple-darwin (MACOS_BINARIES). This builds exactly that set
+# Docker and use `meroctl` natively, so release.yml ships it for
+# aarch64-apple-darwin (MACOS_BINARIES). This builds exactly that set
 # and runs each binary:
 #
 #   - nightly on master, opening (or updating) an issue on failure;
@@ -135,7 +135,7 @@ jobs:
           bin=target/aarch64-apple-darwin/release
           "$bin/meroctl" --version
           "$bin/meroctl" --help >/dev/null
-          "$bin/mero-sign" --version
+          "$bin/meroctl" app --help >/dev/null
 
       # meroctl's attestation check, sealed channel and sessions, on the platform.
       - name: Test the client

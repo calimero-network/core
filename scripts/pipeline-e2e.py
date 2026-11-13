@@ -11,8 +11,8 @@ Each step prints PASS or FAIL; the exit code is 1 if any failed.
 
 Credentials are meroctl's: CALIMERO_API_KEY in the environment (never an argument), or the session
 saved under `--home` by `meroctl login`. Binaries come from RV2_BIN_DIR (default target/release; build
-them with `cargo build --release -p merod -p meroctl -p mero-sign`); `mero-app-build` is on PATH
-(scripts/install-mero-app-build.sh). The cluster needs a job node, and a publisher key it trusts for `--key`.
+them with `cargo build --release -p merod -p meroctl`); that meroctl builds, signs and packs the
+fixture. The cluster needs a job node, and a publisher key it trusts for `--key`.
 """
 
 from __future__ import annotations
@@ -78,16 +78,16 @@ class Meroctl:
 
 def build_package(wd, key, version):
     """The fixture's compute component and pipeline, packed and signed; the package file."""
-    mero_sign = str(BIN / "mero-sign")
+    meroctl = str(BIN / "meroctl")
     if key is None:
         key = wd / "publisher.key"
-        subprocess.run([mero_sign, "generate-key", "--output", str(key)], check=True, capture_output=True)
+        subprocess.run([meroctl, "app", "signer", "new", str(key)], check=True, capture_output=True)
     wasm = wd / "compute.wasm"
-    subprocess.run(["mero-app-build", str(FIXTURE), "--out", str(wd / "app.wasm"), "--compute-out", str(wasm),
+    subprocess.run([meroctl, "app", "build", str(FIXTURE), "--out", str(wd / "app.wasm"), "--compute-out", str(wasm),
                     "--target-dir", str(wd / "build")], cwd=ROOT, check=True, capture_output=True)
     mpk = wd / "pipeline-e2e.mpk"
-    subprocess.run([sys.executable, "-I", "scripts/pack-component.py", "--compute", str(wasm),
-                    "--pipeline", str(FIXTURE / "pipelines" / "fanout.yaml"), "--mero-sign", mero_sign,
+    subprocess.run([meroctl, "app", "pack", "--compute", str(wasm),
+                    "--pipeline", str(FIXTURE / "pipelines" / "fanout.yaml"),
                     "--key", str(key), "--package", "com.calimero.pipeline-e2e", "--app-version", version,
                     "--out", str(mpk)], cwd=ROOT, check=True, capture_output=True)
     return mpk
