@@ -143,6 +143,7 @@ id).
 | `pipeline cancel APP RUN` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a run. |
 | `pipeline retry APP RUN [--limit STEP.FIELD=N]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipeline-runs/{run}/retry` | Start a new run of an ended run's pipeline, release, inputs and params with some step limits raised (`fuel`, `memoryMib`, `wallSecs`, each within the method's caps); what already succeeded is answered from the step cache. |
 | `pipeline receipt APP RUN [--verify] [--out FILE]` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | The node-signed receipt of an ended run; with `--verify`, check it under the node's attested key and compare each downloaded output with its hash. |
+| `pipeline logs APP RUN --step STEP [--index I]` | `GET /apps/{app}/pipeline-runs/{run}`, then `GET /apps/{app}/runs/{run}/logs` | Print the module log of a step's compute run (`--index`, default `0`, is its item's place), as `run logs` does. |
 | `pipeline download APP RUN [--out DIR]` | the file export routes | Download every output of every step of an ended run as `STEP-INDEX.bin`. |
 
 ```bash
@@ -153,6 +154,12 @@ meroctl pipeline run docs ingest --input pages=<file-id> --param lang=en --max-c
 meroctl pipeline receipt docs <run> --verify
 meroctl pipeline download docs <run> --out ./outputs
 ```
+
+## run
+
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `run logs APP RUN [--attempt N]` | `GET /apps/{app}/runs/{run}/logs`, then the file export routes | Print a compute run's module log (stdout, stderr and `log` lines) to standard output: attempt `N`, else the latest that kept a log. The app's owner and its organization's members only. |
 
 ## context
 
@@ -166,7 +173,7 @@ App instances.
 | `context delete CONTEXT` (`del`) | `DELETE /apps/{app}` | Delete a context (its owner or an org admin). |
 | `context move CONTEXT NAMESPACE [--bring-members] [--dev-passkey F]` | `POST /apps/{app}/move` | Move the context to another org, its data where it is (whoever manages it now, as an admin of the target org, with a passkey); `--bring-members` adds the members who reach it. |
 | `context transfer CONTEXT ACCOUNT [--dev-passkey F]` | `POST /apps/{app}/transfer` | Hand the context to another account (its owner, or for an org's context its owner while a member or an org admin, with a passkey; an org's context only to a member of the org). |
-| `context update CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /apps/{app}/upgrade` | Move to another release or bundle, migrating state where the ABIs say how. `--bundle` conflicts with `--version` and `--package`. The owner approves. |
+| `context update CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /apps/{app}/upgrade` | Move to another release or bundle; the state stays as it is and the new code reads it. `--migrate` is refused (`422 UPGRADE_FAILED`, `MigrationsNotSupported`: no migrations in this version). `--bundle` conflicts with `--version` and `--package`. The owner approves. |
 | `context watch CONTEXT [--from N] [--limit N]` (`ws`) | `GET /apps/{app}/events` | Print committed events from index `--from` (default `0`), then live ones, as JSON lines; stop after `--limit`. |
 | `context alias add ALIAS CONTEXT` (`new`, `create`) | `PUT /auth/aliases/{alias}` | Name a context for this account. |
 | `context alias remove ALIAS` (`rm`, `del`, `delete`) | `DELETE /auth/aliases/{alias}` | Remove an alias. |

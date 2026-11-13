@@ -635,10 +635,11 @@ Who upgrades depends on `--app-upgrades`.
   meroctl group upgrade status <org> <run>
   ```
 
-An upgrade plans its migration from the two bundles' embedded ABIs: one state
-version up runs the target's `#[app::migrate]` edge (or the export named with
-`--migrate`), the app's migration check must pass, and a downgrade, a jump or a
-missing edge is refused. A run upgrades its apps one at a time and records
+An upgrade is code only: the state stays as the old release wrote it and the
+new code reads it, whatever state versions the two releases declare. There are
+no migrations in this version, so a named `--migrate` is refused (`422
+UPGRADE_FAILED`, `MigrationsNotSupported`;
+[What an upgrade runs](/protocol/upgrades/#what-an-upgrade-runs)). A run upgrades its apps one at a time and records
 each failure; `POST /orgs/{org}/upgrades/{run}/retry` runs the failed ones
 again as a new run.
 
