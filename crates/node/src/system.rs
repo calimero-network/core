@@ -44,10 +44,11 @@ pub struct Quotas {
     /// ([`Governance::sign_up`]), this is what keeps it from growing without
     /// bound (Xil's review, issue 12).
     pub max_accounts: u32,
-    /// Plaintext bytes of the files an organization's (or a personal account's) apps hold.
+    /// Plaintext bytes of the files an organization's apps hold (a personal
+    /// organization's too).
     pub max_file_bytes_per_org: u64,
-    /// Compute runs an organization (a personal account's, for an app outside one) may have
-    /// granted to job nodes at once; the rest wait their turn.
+    /// Compute runs an organization (a personal one included) may have granted to job
+    /// nodes at once; the rest wait their turn.
     pub max_concurrent_runs_per_org: u32,
     /// The declared fuel of an organization's granted runs, summed.
     pub compute_fuel_per_org: u64,

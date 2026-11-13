@@ -1107,7 +1107,8 @@ fn validate_steps(steps: &Value, accounts: &[String], where_: &str) -> Result<()
     Ok(())
 }
 
-/// The id an app sees as `env::context_id()`; the node accepts it for the app.
+/// An app's context id (`SHA-256(app_id)`, the id SDK 0.12 apps saw); the node accepts
+/// it for the app.
 fn context_id(app: &str) -> String {
     hex::encode(sha2::Sha256::digest(app.as_bytes()))
 }

@@ -5244,9 +5244,9 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
 }
 
 /// A synchronous xcall: the forms app (kv) verifies a captcha answer with the captcha
-/// service, another app of the same owner, inside its own call, and writes only if it
-/// passed. The challenge is spent in the captcha app's own log; a second use fails; an
-/// app of another owner cannot reach the service.
+/// service, another app in the same organization, inside its own call, and writes only if
+/// it passed. The challenge is spent in the captcha app's own log; a second use fails; an
+/// app in another organization cannot reach the service.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
     let c = Cluster::start(3).await;
@@ -5341,7 +5341,7 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
         json!("v")
     );
 
-    // Another owner's app cannot reach the service.
+    // An app in another organization (Bob's personal one) cannot reach the service.
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let bobs_bundle = bob
         .packages()

@@ -42,7 +42,7 @@ impl Caller {
     /// The caller as 32 bytes: an account's id, an app's context id.
     #[must_use]
     pub fn account_bytes(&self) -> [u8; 32] {
-        // An app calls as its context id, what it sees as `env::context_id()`.
+        // An app calls as its context id (`SHA-256(app_id)`, the id SDK 0.12 apps saw).
         if let Self::App { app } = self {
             return calimero_identity::sha256(app.as_bytes());
         }

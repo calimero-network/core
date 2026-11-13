@@ -1908,9 +1908,9 @@ impl Node {
     }
 
     /// The app record, as applied here (waiting briefly for a fresh one).
-    /// An app's id from either its id or its context id: what the app itself
-    /// sees as `env::context_id()`, hex (`SHA-256(app_id)`). Apps hand context
-    /// ids to each other and to their users, so either names the app here.
+    /// An app's id from either its id or its context id, hex (`SHA-256(app_id)`):
+    /// the id SDK 0.12 apps saw and handed to each other and to their users, so
+    /// either names the app here. A component reads its id with `env::app_id()`.
     #[must_use]
     pub fn canonical_app_id(&self, id: &str) -> String {
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
