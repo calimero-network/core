@@ -193,6 +193,73 @@ opt-level = 3
 [profile.dev.package.ring]
 opt-level = 3
 
+# Every node a test starts compiles each component it runs (a fresh data dir has
+# no compiled artifact), and cranelift's own crates above are only part of that
+# path: wasmtime's compile pipeline around them, the parsers and the object
+# writer run at this level too. A compute run's seeded randomness (rand_chacha,
+# over ppv-lite86's SIMD) fills tens of MiB per run in the node's tests, and the
+# tests recompute it to check the output. Sampled stacks of the slowest tests
+# were in these crates.
+[profile.dev.package.cranelift-assembler-x64]
+opt-level = 3
+
+[profile.dev.package.cranelift-codegen-shared]
+opt-level = 3
+
+[profile.dev.package.cranelift-native]
+opt-level = 3
+
+[profile.dev.package.wasmtime]
+opt-level = 3
+
+[profile.dev.package.wasmtime-environ]
+opt-level = 3
+
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+
+[profile.dev.package.wasmtime-internal-core]
+opt-level = 3
+
+[profile.dev.package.wasmtime-internal-component-util]
+opt-level = 3
+
+[profile.dev.package.wasmtime-internal-fiber]
+opt-level = 3
+
+[profile.dev.package.wasmtime-internal-unwinder]
+opt-level = 3
+
+[profile.dev.package.wasmtime-wasi]
+opt-level = 3
+
+[profile.dev.package.wasmtime-wasi-io]
+opt-level = 3
+
+[profile.dev.package.wasmparser]
+opt-level = 3
+
+[profile.dev.package.wasm-encoder]
+opt-level = 3
+
+[profile.dev.package.gimli]
+opt-level = 3
+
+[profile.dev.package.object]
+opt-level = 3
+
+[profile.dev.package.postcard]
+opt-level = 3
+
+[profile.dev.package.rand_chacha]
+opt-level = 3
+
+[profile.dev.package.rand_core]
+opt-level = 3
+
+[profile.dev.package.ppv-lite86]
+opt-level = 3
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
