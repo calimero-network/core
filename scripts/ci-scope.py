@@ -79,6 +79,8 @@ WORKFLOWS = {
             "scripts/tests/ci-scope-test.py",
             "scripts/tests/ci-paths-test.py",
             "scripts/tests/path-dep-closure-test.py",
+            "scripts/install.sh",
+            "scripts/tests/install-test.sh",
             "scripts/pack-component.py",
             "scripts/install-mero-app-build.sh",
             "scripts/install-mero-compute.sh",

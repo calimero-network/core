@@ -1,6 +1,6 @@
 ---
 title: Install & First Run
-description: Build merod and meroctl from source or as a Docker image, start a development cluster, and reach it with meroctl — on Linux natively, on macOS through Docker.
+description: Install merod and meroctl from a release with one command, or build them from source or as a Docker image; start a development cluster and reach it with meroctl — on Linux natively, on macOS through Docker.
 sidebar:
   label: Install & first run
   order: 2
@@ -20,6 +20,25 @@ command line).
 Production nodes run in Intel TDX VMs, which are Linux only; on a laptop you
 run nodes in development mode (`--dev`, or `merod local`), with mock
 attestation.
+
+## Install a release
+
+`scripts/install.sh` downloads a release's archives, checks each against the
+release's `SHA256SUMS`, and puts the binaries in `~/.local/bin` (or
+`CALIMERO_INSTALL_DIR`, or `--dir DIR`). Without `--version` it takes the newest
+release, release candidates included.
+
+```bash
+# meroctl (Linux x86_64 and aarch64, macOS aarch64)
+curl -fsSL https://raw.githubusercontent.com/calimero-network/core/master/scripts/install.sh | sh
+
+# merod and meroctl, a pinned release (merod is Linux only)
+curl -fsSL https://raw.githubusercontent.com/calimero-network/core/master/scripts/install.sh \
+  | sh -s -- merod meroctl --version 1.0.0-rc.24
+```
+
+It replaces the `calimero-network/install-sh` repository's scripts. On macOS,
+`meroctl local up --docker` runs the node in the release's image.
 
 ## Build
 
@@ -117,6 +136,9 @@ docker run --rm -p 2501-2503:2501-2503 -v merod-local:/data \
   (`--fresh` starts over).
 - Use `:latest` for the newest stable release, or `:<version>` to pin one;
   match `meroctl`'s release to it.
+
+`meroctl local up --docker` does the same in the background, saves the node
+as `local` and waits until it serves (`meroctl local down` stops it).
 
 Then, from the host:
 

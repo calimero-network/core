@@ -27,8 +27,7 @@ The full list is in [`crates/AGENTS.md`](crates/AGENTS.md).
 ## Quick start
 
 ```bash
-cargo install --locked --path crates/merod
-cargo install --locked --path crates/meroctl
+curl -fsSL https://raw.githubusercontent.com/calimero-network/core/master/scripts/install.sh | sh -s -- merod meroctl
 meroctl local up                                            # 3 nodes on 127.0.0.1:2501-2503 in the background, saved as node local
 meroctl login --dev-passkey ./dev-passkey.json --name ada   # signs up: an account and its personal organization
 meroctl app build apps/kv-store --out kv_store.wasm
@@ -37,10 +36,14 @@ meroctl call --context kv set --args '{"key":"a","value":"1"}'
 meroctl call --context kv get --args '{"key":"a"}' --view
 ```
 
+From a checkout, `cargo install --locked --path crates/merod` (and
+`crates/meroctl`) builds them instead.
+
 The full walk-through, with the JavaScript and Python clients, is the
 [Quickstart](https://calimero-network.github.io/core/cloud/quickstart/).
 
-Nodes run on Linux; on macOS, run `merod` in Docker and `meroctl` natively.
+Nodes run on Linux; on macOS, install `meroctl` alone and run the node in
+Docker (`meroctl local up --docker`).
 See [Install & first run](https://calimero-network.github.io/core/operate/install/).
 
 ## Documentation

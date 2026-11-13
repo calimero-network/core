@@ -4,6 +4,11 @@
 
 ### Added
 
+- **`scripts/install.sh` installs `merod` and `meroctl` from a release**:
+  `curl -fsSL https://raw.githubusercontent.com/calimero-network/core/master/scripts/install.sh | sh -s -- merod meroctl [--version X]`.
+  Each archive is checked against the release's `SHA256SUMS`; without
+  `--version` it takes the newest release, release candidates included. It
+  replaces the `calimero-network/install-sh` repository.
 - **`merod local --bind ADDR`** (`merod`): the address the development cluster
   listens on (default `127.0.0.1`). `--bind 0.0.0.0` runs it in a container with
   its ports published, so the released image is a development cluster on macOS:
