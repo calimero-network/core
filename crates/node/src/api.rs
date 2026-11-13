@@ -570,7 +570,7 @@ impl Principal {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OwnTeam {
     /// The package's app team or a team below it: its rows (members), a
-    /// parent for a new channel, an app's team.
+    /// parent for a new channel, an app's team, its default capabilities.
     AppTeamOrBelow,
     /// A team below the app team, never the app team itself, whose name,
     /// mark, place and openness are the organization's admins'.
@@ -584,8 +584,9 @@ pub(crate) enum OwnTeam {
 /// the team its arguments name (`team`), as [`Principal::within_team`]
 /// judges it. The routes judge it first; [`step_up`] judges it again, so no
 /// other organization consent is ever asked of such a session.
-const BOUND_TEAM_STEP_UPS: [(&str, OwnTeam); 3] = [
+const BOUND_TEAM_STEP_UPS: [(&str, OwnTeam); 4] = [
     ("__set_team_member", OwnTeam::AppTeamOrBelow),
+    ("__set_default_capabilities", OwnTeam::AppTeamOrBelow),
     ("__remove_team_member", OwnTeam::AppTeamOrBelow),
     ("__delete_team", OwnTeam::BelowHoldingOwnApps),
 ];

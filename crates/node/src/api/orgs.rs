@@ -881,14 +881,19 @@ pub(crate) struct CapabilitiesBody {
 /// A member's capabilities (`account`, organization-wide or in `team`), or,
 /// without an account, the default: the organization's, or with `team` what
 /// everyone in that team holds there on top of their own (G6); approved with
-/// the actor's passkey (412 first).
+/// the actor's passkey (412 first). A package-bound session sets only a
+/// default of its package's app team or a team below it.
 async fn org_capabilities(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
     Json(body): Json<CapabilitiesBody>,
 ) -> ApiResult {
-    let p = holder(&node, &headers).await?;
+    let p = person(&node, &headers).await?;
+    match (&body.account, &body.team) {
+        (None, Some(team)) => p.within_team(&node, &org, team, OwnTeam::AppTeamOrBelow)?,
+        _ => p.unbound()?,
+    }
     set_capabilities(&node, &p, org, body).await
 }
 

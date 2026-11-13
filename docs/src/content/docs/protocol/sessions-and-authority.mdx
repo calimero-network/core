@@ -71,8 +71,9 @@ layers side by side; the detail of each is in the pages it links to.
    of the account. The consent `{ subject, method, args, nonce, assertion }`
    goes into the log entry. A package-bound session steps up from its own
    origin only, and only over one of its package's apps, or over
-   `org:<org>` for `__set_team_member`, `__remove_team_member` and
-   `__delete_team` on its own package's teams (`BOUND_TEAM_STEP_UPS`); any
+   `org:<org>` for `__set_team_member`, `__remove_team_member`,
+   `__set_default_capabilities` and `__delete_team` on its own package's
+   teams (`BOUND_TEAM_STEP_UPS`); any
    other subject is refused before a challenge is made. See
    [Authentication](/operate/auth/#confirmations).
 5. **What.** The system command names its actor. Where it applies, on every
@@ -110,7 +111,8 @@ the same route as that person.
 | Change a member's role | ✓ | `403` | `setMemberRole` |
 | A member's rows in several teams (`/orgs/{org}/members/{account}/teams`) | ✓ | `403` | `setMemberTeams`, `removeMemberTeams` |
 | Rename or delete an organization | ✓ | `403` | `renameOrg`, `deleteOrg` |
-| Capabilities, a member's or a default | ✓ | `403` | `setCapabilities` |
+| Capabilities, a member's or the organization's default | ✓ | `403` | `setCapabilities` |
+| A team's default capabilities, on its package's app team or below it | ✓ | ✓ (`within_team`) | — |
 | Every app added later (`/orgs/{org}/all-apps`) | ✓ | `403` | `setAllApps` |
 | Give packages app teams (`POST /orgs/{org}/app-teams`) | ✓ | `403` | none for an existing organization (an admin, on an unbound session); a new one made with `createOrg` comes with the asking app's team |
 | A top-level team, or moving a team to the top | ✓ | `403` | none |
@@ -146,6 +148,7 @@ may call, and which check lets it through:
 | `POST /orgs/{org}/teams/{team}` | a team below the app team, never the app team itself; a move only to `chat`'s teams | `UpdateTeam`'s rules |
 | `DELETE /orgs/{org}/teams/{team}` | below the app team, every app in its subtree `chat`'s | a manager of the team, or `DELETE_TEAM`; passkey `__delete_team` when apps go |
 | `POST /orgs/{org}/teams/{team}/members`, `DELETE .../members/{account}` | the app team or below it | a lead, or `MANAGE_MEMBERS`; passkey `__set_team_member` / `__remove_team_member` from `chat`'s origin |
+| `POST /orgs/{org}/capabilities { team }`, no `account` (the team's default) | the app team or below it; with `account` or without `team`: `403` | a manager of the team, or `MANAGE_MEMBERS`; passkey `__set_default_capabilities` from `chat`'s origin |
 | `POST /consent/requests`, `GET /consent/{id}/result` | signed in; `/result` answers only `chat`'s own requests | the route the page runs |
 
 Every other route answers `403` (or `404` for another package's app). The

@@ -238,7 +238,7 @@ How the session check and the account's authority combine for each request, with
 | Call and read apps it reaches | ✓ | that package's apps only | ✓ | within scope |
 | Install packages, create apps | ✓ | instances of its own package only | ✓ | — |
 | Manage passkeys, API keys, approvals, upgrades, uninstalls | ✓ | — | — | — |
-| Manage organizations, teams, members and invites; delete an app or change its access | ✓ | its own package's channels directly ([below](#package-bound-sessions)); everything else through the [consent page](/protocol/consent-page/#organizations-and-invites) only: create, rename or delete an organization; mint, accept or revoke an invite; leave; remove a member or change their role, teams, capabilities or all-apps grant; a team's or the organization's default capabilities | — | — |
+| Manage organizations, teams, members and invites; delete an app or change its access | ✓ | its own package's channels directly ([below](#package-bound-sessions)); everything else through the [consent page](/protocol/consent-page/#organizations-and-invites) only: create, rename or delete an organization; mint, accept or revoke an invite; leave; remove a member or change their role, teams, capabilities or all-apps grant; the organization's default capabilities, or a default of a team outside its package's | — | — |
 | Upgrade one app to signed releases of its package, without a step-up | — | — | — | an [upgrade key](#upgrade-keys), and nothing else |
 | Approve a confirm method | ✓ (with step-up) | from its own origin | only with `allowConfirm`, relaying an assertion | same |
 | Ask for an approval on the node's consent page | ✓ | ✓ (returns to its own origin) | — | — |
@@ -265,11 +265,13 @@ app's lifetime or access, with one exception below.
 teams below that app team (`Principal::within_team`; `Org::package_of_team`):
 create a team under it, rename or move a team below it (never the app team
 itself, and a move only within), add, change and remove members there, delete
-a team below it whose apps are all of the package, and move the package's apps
+a team below it whose apps are all of the package, set the default
+capabilities of the app team or a team below it, and move the package's apps
 between those teams (`POST /apps/{app}/access`). This is how a chat app runs
 its channels. The authority is still the person's, judged where each command
 applies as for any session; the step-ups these need (`__set_team_member`,
-`__remove_team_member`, `__delete_team`, over `org:<org>`) are accepted from the
+`__remove_team_member`, `__set_default_capabilities`, `__delete_team`, over
+`org:<org>`) are accepted from the
 package's own origin, and only over its own package's teams. Everything else in
 the organization stays refused to it.
 

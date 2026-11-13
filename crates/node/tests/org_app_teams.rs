@@ -1645,10 +1645,12 @@ async fn an_admin_gives_a_member_every_app_in_one_step() {
 /// the teams of its own package (its app team's channels) with the person's
 /// own authority there, no trip to the cluster's page: it creates a channel
 /// under its app team, renames it, adds and removes a member, makes one of
-/// its package's apps private to it, and deletes it with that app. It is
-/// refused (403) anything else: another package's teams, an org-wide team,
-/// the app team's mark and its deletion, a move out of its package, and the
-/// organization's roles.
+/// its package's apps private to it, sets the default capabilities of its
+/// app team and the channel, and deletes it with that app. It is refused
+/// (403) anything else: another package's teams, an org-wide team, the app
+/// team's mark and its deletion, a move out of its package, the
+/// organization's roles and default capabilities, and a member's
+/// capabilities.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_frontend_session_manages_its_own_packages_channels() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
@@ -1751,6 +1753,18 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
         alice.apps().get(&room).await.map(wire).unwrap()["access"]["team"],
         json!(channel)
     );
+
+    // The default capabilities of its app team and of a channel below it.
+    for (team, caps) in [(&chat_team, CREATE_CHILD_TEAM), (&channel, INVITE_MEMBERS)] {
+        let _ok = site
+            .orgs()
+            .capabilities(&org, caps.into(), None, Some(team), Some(&mut site_key))
+            .await
+            .map(wire)
+            .unwrap();
+        let t = alice.orgs().team_get(&org, team).await.map(wire).unwrap();
+        assert_eq!(t["defaultCapabilities"], caps, "{t}");
+    }
 
     let forbidden = |what: &str, r: Result<Value, Error>| {
         let e = r.expect_err(what);
@@ -1869,9 +1883,37 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
             .map(wire),
     );
     forbidden(
-        "set capabilities on its own channel",
+        "set the default capabilities of another package's app team",
         site.orgs()
-            .capabilities(&org, 0, None, Some(&channel), Some(&mut site_key))
+            .capabilities(&org, 0, None, Some(&blocks_team), Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "set the default capabilities of another package's channel",
+        site.orgs()
+            .capabilities(&org, 0, None, Some(&blocks_channel), Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "set the default capabilities of an org-wide team",
+        site.orgs()
+            .capabilities(&org, 0, None, Some(&org_wide), Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "set the organization's default capabilities",
+        site.orgs()
+            .capabilities(&org, 0, None, None, Some(&mut site_key))
+            .await
+            .map(wire),
+    );
+    forbidden(
+        "set a member's capabilities on its own channel",
+        site.orgs()
+            .capabilities(&org, 0, Some(&bob_id), Some(&channel), Some(&mut site_key))
             .await
             .map(wire),
     );
