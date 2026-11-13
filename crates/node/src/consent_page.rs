@@ -409,6 +409,10 @@ enum Action {
     },
     CreateOrg {
         name: String,
+        /// The package whose app team the organization starts with: the
+        /// asking session's own (an app's frontend), when the cluster
+        /// version takes it ([`crate::system::cluster_version::Feature::OrgAppTeam`]).
+        app_team: Option<String>,
     },
     CreateInvite {
         terms: InviteTerms,
@@ -904,7 +908,7 @@ pub async fn create(
         }
         CreateBody::CreateOrg { subject, return_to } => {
             let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
-            let (action, model) = create_org_request(subject)?;
+            let (action, model) = create_org_request(&node, subject, package.as_deref()).await?;
             (action, model, to)
         }
         CreateBody::CreateInvite { subject, return_to } => {
@@ -1834,21 +1838,58 @@ fn team_names(node: &Node, org: &str, account: Option<&str>, teams: &[String]) -
     })
 }
 
-fn create_org_request(subject: CreateOrgSubject) -> Result<(Action, Value), ApiError> {
+/// The app team a `createOrg` asked from `package`'s frontend starts with:
+/// that package and its display name, when it is installed and every node
+/// applies `CreateOrg { app_team }` alike; `None` (a bare organization) else.
+async fn org_app_team(node: &Node, package: Option<&str>) -> Option<(String, String)> {
+    let package = package?;
+    let name = node.sys(|s| {
+        let record = s.packages.get(package)?;
+        Some(
+            record
+                .latest()
+                .and_then(|v| v.metadata.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or(package)
+                .to_owned(),
+        )
+    })?;
+    node.require_features(&[crate::system::cluster_version::Feature::OrgAppTeam])
+        .await
+        .ok()?;
+    Some((package.to_owned(), name))
+}
+
+async fn create_org_request(
+    node: &Node,
+    subject: CreateOrgSubject,
+    package: Option<&str>,
+) -> Result<(Action, Value), ApiError> {
     let name = subject.name;
     crate::system::org_name_fits(&name).map_err(|why| ApiError::bad_request("BAD_REQUEST", why))?;
+    let team = org_app_team(node, package).await;
+    let mut points = vec![json!(format!(
+        "A new organization named {name} is created, and you are its owner."
+    ))];
+    if let Some((_, app)) = &team {
+        points.push(json!(format!(
+            "{app} is set up in it: its own team, open to everyone you add to the \
+             organization, with you as its lead."
+        )));
+    }
+    points.push(json!(
+        "The app that sent you here can then make its apps in it and use them. \
+         Adding people, teams or invites still asks you here first."
+    ));
+    points.push(json!("Nothing is created until you approve."));
     let model = json!({
         "kind": "createOrg",
         "headline": format!("Create the organization {name}"),
         "title": format!("Create the organization {name}"),
-        "points": [
-            format!("A new organization named {name} is created, and you are its owner."),
-            "The app that sent you here can then make its apps in it and use them. \
-             Adding people, teams or invites still asks you here first.",
-            "Nothing is created until you approve.",
-        ],
+        "points": points,
         "attention": [],
         "org": { "name": name },
+        "appTeam": team.as_ref().map(|(package, app)| json!({ "package": package, "name": app })),
         "before": "Until you approve, no organization is created.",
         "after": format!(
             "Once you approve, the organization {name} exists with you as its owner. You can \
@@ -1856,7 +1897,13 @@ fn create_org_request(subject: CreateOrgSubject) -> Result<(Action, Value), ApiE
         ),
         "notes": [],
     });
-    Ok((Action::CreateOrg { name }, model))
+    Ok((
+        Action::CreateOrg {
+            name,
+            app_team: team.map(|(package, _)| package),
+        },
+        model,
+    ))
 }
 
 fn create_invite_request(
@@ -2463,20 +2510,26 @@ async fn act(
     let account_subject = format!("account:{}", req.account);
     let Json(v) = match &req.action {
         Action::Org(a) => return orgs::act(node, &p, a, confirm).await,
-        Action::CreateOrg { name } => {
+        Action::CreateOrg { name, app_team } => {
             // `POST /orgs` takes no passkey; the page does, so the person
             // (not the app that sent them) creates it. Nothing is logged
-            // beyond what `POST /orgs` logs.
-            let _consent = consent(
+            // beyond what `POST /orgs` logs, and with an app team the same
+            // `CreateOrg` carries it: one approval, one entry.
+            let mut args = json!({ "name": name });
+            if let Some(package) = app_team {
+                args["appTeam"] = json!(package);
+            }
+            let _consent =
+                consent(node, &p, &account_subject, "__create_org", &args, confirm).await?;
+            let Json(v) = create_org(
                 node,
-                &p,
-                &account_subject,
-                "__create_org",
-                &json!({ "name": name }),
-                confirm,
+                req.account.clone(),
+                name.clone(),
+                None,
+                false,
+                app_team.clone(),
             )
             .await?;
-            let Json(v) = create_org(node, req.account.clone(), name.clone(), None, false).await?;
             return Ok(Acted {
                 shown: v.clone(),
                 outcome: Some(v),

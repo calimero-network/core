@@ -201,13 +201,24 @@ of 1 second to 90 days and at most 64 teams (`400`), and for
 when the approval is written.
 
 What the approval made reaches only the account and app that asked, through
-the sealed `/result`, as `outcome`: `{ "orgId" }` for `createOrg`,
+the sealed `/result`, as `outcome`: `{ "orgId" }` for `createOrg` (with
+`teamId`, see below),
 `{ "token" }` for `createInvite` (the page's own answer, which travels in the
 clear, never carries it), `{ "org" }` for `acceptInvite`, `{ "orgId", "name" }`
 for `renameOrg` and `{ "apps" }` (the apps deleted) for `deleteOrg`; the other
 kinds' routes answer nothing, and neither does `outcome`. The request is
 held in memory and never logged, so an invite token in an `acceptInvite`
 request, or minted by a `createInvite` one, leaves with it.
+
+A `createOrg` asked from an app's frontend (a session bound to its package)
+makes the organization with that app's own team in it, in the same approval
+and the same log entry (`CreateOrg { app_team }`): the team `ScopeApps` would
+make for the package (open, the creator its lead, its members able to make
+channels below it), so the frontend runs its channels there at once. The page
+says so (`appTeam { package, name }` in the model), the step-up states it
+(`{ name, appTeam }`), and `outcome` carries the team's `teamId`. On a cluster
+whose version is below 1.0.0-rc.22 (`Feature::OrgAppTeam`), or for a package
+not installed, the organization is made bare, as before.
 
 #### Moderation and settings
 
@@ -386,7 +397,7 @@ text only.
 | Release | `{ version, policyDigest }`: `policyDigest` is SHA-256 of the release's Sigstore-verified measurements as the node reads them when it writes the approval, so a release re-published under the same tag with other measurements is another approval. A node that cannot fetch them refuses (`503`); on mock attestation, where no node checks measurements, the digest is over none (`{ "profiles": {}, "version" }`) |
 | Upgrade | `{ bundle, migrate, manifest }`: the target WASM's hash and the target release's signed-manifest hash (`VerifiedBundle::manifest_hash`: SHA-256 of the canonical manifest, every artifact digest included; `null` only for a raw development bundle, which has no manifest) |
 | Outbound | `{ package, prefixes, replace }`, with the prefixes listed on the page, never `"manifest"` |
-| `createOrg` | `account:<a> / __create_org / { name }` (not logged; the log records `CreateOrg` as `POST /orgs` writes it) |
+| `createOrg` | `account:<a> / __create_org / { name }`, with `appTeam` (the package) when the asking app's team comes with it (not logged; the log records `CreateOrg` as `POST /orgs` writes it, with `app_team`) |
 | `createInvite` | `org:<org> / __create_invite / system::invite_args` (logged, as the route's) |
 | `acceptInvite` | `account:<a> / __accept_invite / { inviteKey }` (not logged; the log records `RedeemInvite`) |
 | `leaveOrg`, `removeMember` | `org:<org> / __remove_member / { account }` (oneself for `leaveOrg`) |

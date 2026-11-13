@@ -477,6 +477,10 @@ jobs:
       - name: Compute scenarios
         run: python3 -I crates/node/tests/fault/compute_e2e.py --skip-cargo-tests
 
+      # The one-command pipeline proof, against a fresh local cluster of the same build.
+      - name: Pipeline end to end
+        run: scripts/pipeline-e2e.py --local
+
       - name: Upload the logs
         if: ${{ failure() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
