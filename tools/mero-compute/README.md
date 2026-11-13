@@ -1,13 +1,11 @@
 # mero-compute
 
-> **Deprecated:** use `meroctl local compute run` (same flags). This binary is kept for
-> one release.
-
-Runs one compute method of a compute component on its own, the way a job node would.
+The library behind `meroctl local compute run`: one compute method of a compute
+component on its own, the way a job node would. (It was the `mero-compute` binary.)
 
 ## About
 
-`mero-compute run` loads `compute.wasm`, runs one `#[app::compute]` method on the compute engine a job node uses, and prints the result.
+`meroctl local compute run` loads `compute.wasm`, runs one `#[app::compute]` method on the compute engine a job node uses, and prints the result.
 It uses the method's declared fuel and memory caps, the fixed clock and the seeded randomness of a real run, and no network.
 Inputs are plain files and outputs are written as plain files, so no cluster, app or sealed file is needed.
 
@@ -16,12 +14,12 @@ It does not build anything.
 
 ## Installation
 
-```bash
-# Put it on PATH (cargo's bin directory)
-scripts/install-mero-compute.sh
+It ships in `meroctl` (feature `compute`, on by default):
 
-# Or run it from the workspace without installing
-cargo run -p mero-compute -- run <COMPONENT> --method <METHOD> --out <DIR>
+```bash
+curl -fsSL https://raw.githubusercontent.com/calimero-network/core/master/scripts/install.sh | sh
+# or, from a checkout
+cargo run -p meroctl -- local compute run <COMPONENT> --method <METHOD> --out <DIR>
 ```
 
 ## Usage
@@ -30,8 +28,8 @@ cargo run -p mero-compute -- run <COMPONENT> --method <METHOD> --out <DIR>
 This builds both components, then runs the `redact` method on its example file twice and compares the runs:
 
 ```bash
-mero-app-build apps/compute-redact --out app.wasm --compute-out compute.wasm
-mero-compute run compute.wasm --method redact \
+meroctl app build apps/compute-redact --out app.wasm --compute-out compute.wasm
+meroctl local compute run compute.wasm --method redact \
   --args @apps/compute-redact/example/redact.json \
   --input apps/compute-redact/example/people.csv \
   --out out --twice
@@ -49,7 +47,7 @@ A wall clock that runs out is `lost`, as on a job node.
 
 | Flag | Meaning |
 | --- | --- |
-| `<COMPONENT>` | The compute component, `compute.wasm` here, or `compute.component.wasm`, which `mero-app-build` writes beside `--out` when `--compute-out` is not given. An app component is refused. |
+| `<COMPONENT>` | The compute component, `compute.wasm` here, or `compute.component.wasm`, which `meroctl app build` writes beside `--out` when `--compute-out` is not given. An app component is refused. |
 | `--method <NAME>` | The compute method, by its ABI name (camelCase). Required. A name that is not a compute method lists the ones that are. |
 | `--args <JSON or @FILE>` | The method's arguments as JSON text, or `@` and a file holding it. |
 | `--input <FILE>` | An input file. Repeat it for several. |

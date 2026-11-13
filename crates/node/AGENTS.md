@@ -1888,8 +1888,8 @@ python3 -I crates/node/tests/fault/suite.py [--only NAME,..] [--iterations N] [-
 python3 -I crates/node/tests/fault/suite.py --smoke --merod PATH   # the release image's set
 python3 -I crates/node/tests/fault/suite.py --only kv-soak --soak-report soak.json   # soak.py report renders it
 # compute actions end to end: 3 replicas and 2 job nodes as processes, the fixture installed as a signed
-# .mpk with app and compute components, then apps/compute-redact end to end (same binaries plus
-# mero-sign, ports 7650-7655; mero-app-build and mero-compute on PATH)
+# .mpk with app and compute components, then apps/compute-redact end to end (the same merod and
+# meroctl, which builds, packs and runs compute locally; ports 7650-7655)
 python3 -I crates/node/tests/fault/compute_e2e.py
 # calls/s and p50/p99 through that cluster (harness: tests/harness/cluster.rs), as JSON:
 # (also session refreshes and the system log's entries/s they cost, exchanged and kept)
