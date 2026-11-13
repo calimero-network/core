@@ -1,7 +1,9 @@
-//! `meroctl app`: signed packages, v1's applications. An application is
-//! installed once on the cluster (verified on every node); contexts are its
-//! running instances (`meroctl context create --package`). `meroctl package`
-//! is the same command.
+//! `meroctl app`: signed packages, v1's applications, from start to install.
+//! Making one (`new`, `build`, `codegen`, `abi`) and shipping it (`key`,
+//! `pack`, `sign`, `inspect`, `publish`) need no node (`make.rs`); an
+//! application is then installed once on the cluster (verified on every
+//! node), and contexts are its running instances (`meroctl context create
+//! --package`). `meroctl package` is the same command.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -14,6 +16,35 @@ use crate::env::{load_dev_passkey, read_file, save_passkey, to_json, DevPasskey,
 
 #[derive(Debug, Subcommand)]
 pub enum AppCmd {
+    /// Start a project in DIR from an app of the apps repository (default:
+    /// the KV Store reference app, contract and frontend). Needs git; no node.
+    New(crate::make::NewArgs),
+    /// Build the app's crate into a `calimero:app` component (and its compute
+    /// component, when it has compute methods). No node.
+    Build(crate::make::BuildArgs),
+    /// Typed clients and the OpenAPI document from an ABI: `--abi FILE --lang
+    /// ts|python|swift|kotlin|openapi [-o DIR] [--name N]`; `-- --help` for every flag. No node.
+    #[command(disable_help_flag = true)]
+    Codegen {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
+    /// An app's ABI: print it, or compare two releases. No node.
+    #[command(subcommand)]
+    Abi(crate::make::AbiCmd),
+    /// Signing keys: a package's identity is its package id and its signer. No node.
+    #[command(subcommand)]
+    Key(crate::make::KeyCmd),
+    /// Write a signed `.mpk`: from the app's crate DIR (its
+    /// `[package.metadata.calimero]`), or from `--wasm`/`--compute` and flags. No node.
+    Pack(crate::make::PackArgs),
+    /// Sign a manifest.json in place. No node.
+    Sign(crate::make::SignArgs),
+    /// Open an `.mpk` as a node does (signature and every hash) and print its manifest. No node.
+    Inspect { mpk: PathBuf },
+    /// Publish a signed `.mpk` to the app registry, or to a Calimero Cloud
+    /// organization (`--org`). No node.
+    Publish(crate::make::PublishArgs),
     /// Install an application: `PACKAGE@VERSION` (or `PACKAGE --version V`)
     /// from the node's registry, or a local file with `--path` (a signed
     /// `.mpk`; on a development cluster also a raw `.wasm`, which uploads a
@@ -135,6 +166,41 @@ pub fn split_coords(coords: &str, version: Option<String>) -> eyre::Result<(Stri
     }
 }
 
+impl AppCmd {
+    /// Runs without a node: `main` dispatches it before connecting.
+    pub fn is_offline(&self) -> bool {
+        matches!(
+            self,
+            Self::New(_)
+                | Self::Build(_)
+                | Self::Codegen { .. }
+                | Self::Abi(_)
+                | Self::Key(_)
+                | Self::Pack(_)
+                | Self::Sign(_)
+                | Self::Inspect { .. }
+                | Self::Publish(_)
+        )
+    }
+}
+
+/// The subcommands [`AppCmd::is_offline`] names.
+pub async fn run_offline(cmd: AppCmd) -> eyre::Result<Value> {
+    use crate::make;
+    match cmd {
+        AppCmd::New(a) => make::new(&a),
+        AppCmd::Build(a) => make::build(&a),
+        AppCmd::Codegen { args } => make::codegen(&args),
+        AppCmd::Abi(c) => make::abi(&c),
+        AppCmd::Key(c) => make::key(&c),
+        AppCmd::Pack(a) => make::pack(&a),
+        AppCmd::Sign(a) => make::sign(&a),
+        AppCmd::Inspect { mpk } => make::inspect(&mpk),
+        AppCmd::Publish(a) => make::publish(&a).await,
+        _ => unreachable!("a node command"),
+    }
+}
+
 pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
     let packages = env.client.packages();
     Ok(match cmd {
@@ -180,6 +246,15 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
             return Ok(Value::Null);
         }
         AppCmd::Origins(cmd) => origins(cmd, env).await?,
+        AppCmd::New(_)
+        | AppCmd::Build(_)
+        | AppCmd::Codegen { .. }
+        | AppCmd::Abi(_)
+        | AppCmd::Key(_)
+        | AppCmd::Pack(_)
+        | AppCmd::Sign(_)
+        | AppCmd::Inspect { .. }
+        | AppCmd::Publish(_) => unreachable!("runs before connecting (main)"),
     })
 }
 

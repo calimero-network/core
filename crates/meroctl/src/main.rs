@@ -25,6 +25,7 @@ mod dev;
 mod env;
 mod file;
 mod group;
+mod make;
 mod namespace;
 mod node;
 mod ops;
@@ -43,6 +44,7 @@ use env::{
     version = env!("CALIMERO_RELEASE_VERSION"),
     about = "Command line for Calimero nodes",
     after_help = "Examples:\n  \
+        meroctl dev new my-app\n  \
         meroctl node add local http://127.0.0.1:2501 --allow-mock\n  \
         meroctl --node local login --dev-passkey ./dev-passkey.json\n  \
         meroctl --node local app install --path ./kv-store.mpk\n  \
@@ -137,8 +139,9 @@ enum Cmd {
         #[arg(long, requires = "file")]
         nonce: Option<String>,
     },
-    /// Signed packages (v1's applications): install, list, versions,
-    /// uninstall, watch, web origins. Also `meroctl package`.
+    /// Signed packages (v1's applications): make one (new, build, codegen,
+    /// abi), ship it (key, pack, sign, inspect, publish), and install, list,
+    /// uninstall, watch it on the node. Also `meroctl package`.
     #[command(subcommand, alias = "package")]
     App(app::AppCmd),
     /// App instances (v1's contexts): create, list, get, update, delete, aliases, access.
@@ -187,7 +190,7 @@ enum Cmd {
     /// This account: passkeys (devices), API keys, usage, approvals.
     #[command(subcommand)]
     Account(account::AccountCmd),
-    /// Development workflow: install, create and keep a build pushed.
+    /// Development workflow: start a project, install, create and keep a build pushed.
     #[command(subcommand)]
     Dev(dev::DevCmd),
     /// The node's health and the cluster's leader.
@@ -269,6 +272,22 @@ async fn main() -> eyre::Result<()> {
     };
     if let Cmd::Node(cmd) = &cli.cmd {
         return print(&node::run(cmd, &home)?);
+    }
+    if matches!(&cli.cmd, Cmd::App(c) if c.is_offline()) {
+        let Cmd::App(cmd) = cli.cmd else {
+            unreachable!()
+        };
+        return print(&app::run_offline(cmd).await?);
+    }
+    if let Cmd::Dev(dev::DevCmd::New {
+        dir,
+        template,
+        git_ref,
+        repo,
+        no_git,
+    }) = &cli.cmd
+    {
+        return print(&dev::new(dir, template, git_ref, repo, !no_git)?);
     }
 
     if let Cmd::AttestRelease {

@@ -5,12 +5,12 @@ use std::path::PathBuf;
 
 use calimero_app_abi::diff::diff;
 use calimero_app_abi::load::load_one;
-use calimero_app_build::codegen::{Codegen, Lang};
+use crate::codegen::{Codegen, Lang};
 use eyre::{bail, eyre, Result as EyreResult};
 
-pub const CODEGEN_USAGE: &str = "usage: mero-app-build codegen --abi <abi.json|app.wasm|app.mpk|manifest.json> --lang <ts|python|swift|kotlin|openapi> [-o <dir>] [--name <name>] [--package <kotlin package>] [--kotlin-serialization-plugin] [--service <name>] [--no-openapi]";
+pub const CODEGEN_USAGE: &str = "usage: meroctl app codegen --abi <abi.json|app.wasm|app.mpk|manifest.json> --lang <ts|python|swift|kotlin|openapi> [-o <dir>] [--name <name>] [--package <kotlin package>] [--kotlin-serialization-plugin] [--service <name>] [--no-openapi]";
 pub const DIFF_USAGE: &str =
-    "usage: mero-app-build abi-diff <old> <new> [--service <name>] [--json]";
+    "usage: meroctl app abi diff <old> <new> [--service <name>] [--json]";
 
 /// What `abi-diff` found: the caller exits non-zero on a breaking change.
 pub enum DiffOutcome {
