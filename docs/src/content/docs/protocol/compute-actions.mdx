@@ -46,14 +46,14 @@ The two worlds differ in who may start work.
 Neither world imports the other's interface, so the install-time import check is the sandbox, not a policy the host remembers to apply.
 
 **Building.**
-An author changes nothing: `#[app::compute]` and `#[app::compute_result]` mark the methods, and `mero-app-build <crate> --out app.wasm --compute-out compute.wasm` builds the crate twice.
+An author changes nothing: `#[app::compute]` and `#[app::compute_result]` mark the methods, and `meroctl app build <crate> --out app.wasm --compute-out compute.wasm` builds the crate twice.
 The second build sets `--cfg calimero_compute` in its own target directory, binds world `compute`, keeps only the compute methods and exports `run`.
 A crate with no compute methods builds one component and has no compute output.
 
 **The bundle.**
 The signed manifest carries the compute component as `compute` (per service as `services[].compute`), next to `wasm`.
 The manifest signature and the artifact digest cover it like every artifact, and an older node ignores the field.
-`scripts/pack-component.py --wasm app.wasm --compute compute.wasm` packs one.
+`meroctl app pack --wasm app.wasm --compute compute.wasm` packs one.
 
 **Install checks.**
 A node prepares the compute component on the compute engine only, never the replica engine, and refuses the release unless all of these hold:
@@ -228,7 +228,7 @@ A rollback to a release before logs shows a kept log as an ordinary sealed file.
 `GET /apps/{app}/runs/{run}/logs` answers `{ logs: [{ attempt, id, size, sha256 }] }`, at most one, to the app's owner and its organization's members only.
 The bytes are read with the files export.
 A log the leader cannot fetch as the job node signed it is left out, and the run still ends.
-`meroctl run logs APP RUN [--attempt N]` prints it, and `meroctl pipeline logs APP RUN --step STEP [--index I]` prints a step's.
+`meroctl cloud compute logs APP RUN [--attempt N]` prints it, and `meroctl cloud compute pipeline logs APP RUN --step STEP [--index I]` prints a step's.
 
 ## Restarts, cancel and caps
 
@@ -357,7 +357,7 @@ A node serves at most 64 subscribers per app (`429 TOO_MANY_SUBSCRIBERS`), and a
 Only those who may handle the app's files read it.
 
 An output leaves the cluster sealed to a key its requester holds: `POST /apps/{app}/files/{id}/export { recipient }` (an X25519 public key, 64 hex) answers `{ app, id, size, sha256, segments, ephemeral, wrapped }`, the file's data key wrapped to `recipient`, and the segments come from `GET /apps/{app}/files/{id}/segments/{k}`.
-The client checks every segment against the list and the plaintext's size and SHA-256 before it accepts the file (`meroctl pipeline download` writes `<target>.part` and moves it into place only then).
+The client checks every segment against the list and the plaintext's size and SHA-256 before it accepts the file (`meroctl cloud compute pipeline download` writes `<target>.part` and moves it into place only then).
 An account may export 30 times a minute per node (`429 TOO_MANY_EXPORTS`).
 
 ## Usage and billing
@@ -444,7 +444,7 @@ Each row is one decision and the reason for it.
 | CA29 | Assignments are deterministic: each wrap's ephemeral key and nonce derive from the file key and the run, attempt, kind, index and job key. The leader delivers an assignment before committing its attempt. A cancel bills the usage the job node signed when it stopped, and has none when the job node does not answer. | Any leader can rebuild the exact assignment an attempt's digest names, and a busy or unreachable job node costs no attempt. |
 | CA30 | A file is a sealed blob: it shares the blob id namespace, `BlobRef` replaces a separate file id, and there is no delete. Retention is R8: a file nothing refers to is forgotten `BLOB_IDLE_MS` after it was made, and the quota is released when it is collected. | One identifier and one retention rule for every byte an app holds, and a reference in state is the only thing that has to be kept honest. |
 | CA31 | A run's outputs are registered as sealed files by the final entry, before the result method applies, and are kept only if the result method stores their `BlobRef`. Inputs are pinned while the run is active. | An output the app never claims cannot linger or hold quota, and an input cannot be collected under a run that reads it. |
-| CA32 | One crate builds two components: the app component (world `app`, imports `runs`) and the compute component (world `compute`, imports `job`, export `run`). `mero-app-build` writes both, the compute one through `--cfg calimero_compute` in its own target directory, and the signed manifest carries it as `compute`. | The compute component has no state, `xcall`, events, blobs, `runs` or `wasi:http` to import, so what a job node can do is enforced by the import check, and authors write one crate. |
+| CA32 | One crate builds two components: the app component (world `app`, imports `runs`) and the compute component (world `compute`, imports `job`, export `run`). `meroctl app build` writes both, the compute one through `--cfg calimero_compute` in its own target directory, and the signed manifest carries it as `compute`. | The compute component has no state, `xcall`, events, blobs, `runs` or `wasi:http` to import, so what a job node can do is enforced by the import check, and authors write one crate. |
 | CA33 | Install prepares the compute component on the compute engine only and requires its ABI to be the compute world's and to list exactly the app ABI's compute methods with the same caps (`400 BAD_BUNDLE`, `400 COMPUTE_ABI_MISMATCH`). Both come from one signed release. | The two components cannot drift: the app's result methods, caps and the compute methods a job node runs always describe the same methods. |
 | CA34 | A run pins the compute component of the release the app was running when its start was logged (`RunRecord.compute_bundle`, filled by the leader into the entry, never read at apply). An app with no compute component cannot start a run (`no compute component`), so a raw single `.wasm` upload cannot start runs. | Every replica records the same hash, and a restart on another job node, or after an upgrade, runs the same component. |
 | CA35 | The leader sends a job node only the run's compute component as `Assignment.bundle`, and the job node refuses an app component. Billing and the result method stay on the app component, and the compute usage series carry `app`, `org` and `developer`. | A job node never receives code that could reach state, and the organization is billed against the release that started the run. |

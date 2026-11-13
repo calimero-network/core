@@ -93,11 +93,11 @@ Fixing a finding: the **calimero-security-fix** skill ([`.cursor/skills/calimero
 
 ## Commands in docs and CI
 
-Put a tool on PATH once, then call it by its plain name at every call site; `mero-sign` is the example:
+Put a tool on PATH once, then call it by its plain name at every call site; `meroctl` is the example:
 
 ```bash
-cargo build --release -p mero-sign && PATH="$PWD/target/release:$PATH"
-mero-sign sign manifest.json --dev
+cargo build --release -p meroctl && PATH="$PWD/target/release:$PATH"
+meroctl app sign manifest.json --dev
 ```
 
 Write a command bare where the working directory is already the app: a per-app README documents the command, not the path to itself.

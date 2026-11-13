@@ -1,14 +1,13 @@
+//! `mero-app-build`: kept for one release; the commands are `meroctl app build|codegen|abi diff`.
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use calimero_app_build::abi_tools::{self, DiffOutcome};
 use calimero_app_build::build_components;
 use eyre::Result as EyreResult;
-
-mod abi_tools;
-
-use abi_tools::DiffOutcome;
 
 const COMPUTE_FILE: &str = "compute.component.wasm"; // beside the app component unless --compute-out says otherwise
 
@@ -22,6 +21,9 @@ fn write(out: &Path, bytes: &[u8]) -> EyreResult<()> {
 }
 
 fn main() -> EyreResult<ExitCode> {
+    eprintln!(
+        "mero-app-build is deprecated: use `meroctl app build`, `meroctl app codegen` or `meroctl app abi diff`"
+    );
     let mut args = env::args().skip(1);
     let usage = "usage: mero-app-build <crate-dir> [--out <file>] [--compute-out <file>] [--target-dir <dir>]\n       mero-app-build codegen ...\n       mero-app-build abi-diff ...\n       mero-app-build --version";
     let first = args.next().ok_or_else(|| eyre::eyre!(usage))?;

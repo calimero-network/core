@@ -39,14 +39,18 @@ from code.
 
 ```bash
 # in core
-scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
-mero-app-build apps/kv-store --out kv_store.wasm
-cargo run -p merod -- local
+cargo install --locked --path crates/meroctl
+cargo install --locked --path crates/merod
+meroctl app build apps/kv-store --out kv_store.wasm
+meroctl local up
 ```
 
-`merod local` starts three nodes on `http://127.0.0.1:2501-2503/` in one
-process, with mock attestation and a development storage key, keeping state in
-`.merod-local/` (`--fresh` starts over). It prints an Ops token. Browser apps
+`meroctl local up` starts `merod local` in the background: three nodes on
+`http://127.0.0.1:2501-2503/` in one process, with mock attestation and a
+development storage key, keeping state in `.merod-local/` (`--fresh` starts
+over). It saves the cluster as the node `local`, trusting its mock attestation
+for this node only, so it cannot carry over to a real cluster; `meroctl local
+status` shows it and `meroctl local down` stops it. Browser apps
 on `http://localhost:3000` and `http://localhost:5173` may call it (`--origins`).
 On macOS, run the same cluster in Docker instead
 ([Install](/operate/install/#first-run-on-macos-a-cluster-in-docker)) and use its
@@ -55,11 +59,6 @@ URL below.
 ## 2. Sign up, deploy and call from the terminal
 
 ```bash
-cargo install --path crates/meroctl
-# --allow-mock trusts the local cluster's mock attestation; `node add` keeps it
-# for this node only, so it cannot carry over to a real cluster.
-meroctl node add local http://127.0.0.1:2501/ --allow-mock
-
 # A new passkey file signs up: an account and its personal organization.
 meroctl login --dev-passkey ./dev-passkey.json --name ada
 meroctl whoami            # orgs: [{ "name": "Personal", "personal": true, ... }]
@@ -162,7 +161,7 @@ within a time budget.
 ```bash
 cargo test -p calimero-node --test scenarios -- apps/kv-store/   # kv-store's scenarios
 cargo build --release -p merod -p meroctl
-mero-app-build apps/v2-fixtures/kv --out target/app-components/kv.wasm
+meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
 python3 -I crates/node/tests/fault/suite.py --only frozen-leader
 ```
 

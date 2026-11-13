@@ -67,8 +67,8 @@ The short list. Each item links to the page that explains it.
 - An SDK 0.12 app (a WASM core module, `wasm32-unknown-unknown`) is refused at
   upload and install (`400 UNSUPPORTED_BUNDLE`); one left over from before
   answers `410 UNSUPPORTED_ENGINE`. Rebuild on `calimero-sdk` for
-  `wasm32-wasip2` with `mero-app-build`.
+  `wasm32-wasip2` with `meroctl app build`.
 - Sign every release of a package with the same key: another key is another
   application, not an upgrade ([Packaging & signing](/build/packaging-signing/)).
-- Bump `#[app::state(version = N)]` with every state change; `mero-sign sign
-  --previous` refuses a removed or retyped state field without it.
+- Bump `#[app::state(version = N)]` with every state change; `meroctl app sign
+  --previous` (and `meroctl app pack --previous`) refuses a removed or retyped state field without it.

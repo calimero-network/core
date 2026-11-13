@@ -4,10 +4,32 @@
 
 ### Added
 
+- **`scripts/install.sh` installs `merod` and `meroctl` from a release**:
+  `curl -fsSL https://raw.githubusercontent.com/calimero-network/core/master/scripts/install.sh | sh -s -- merod meroctl [--version X]`.
+  Each archive is checked against the release's `SHA256SUMS`; without
+  `--version` it takes the newest release, release candidates included. It
+  replaces the `calimero-network/install-sh` repository.
 - **`merod local --bind ADDR`** (`merod`): the address the development cluster
   listens on (default `127.0.0.1`). `--bind 0.0.0.0` runs it in a container with
   its ports published, so the released image is a development cluster on macOS:
   `docker run -p 2501-2503:2501-2503 ghcr.io/calimero-network/merod:prerelease local --bind 0.0.0.0`.
+- **One command line: `meroctl` makes, ships and runs an app** (`meroctl`).
+  `app new DIR` starts a project from an app of calimero-network/apps (default
+  the KV Store); `app build`, `app codegen`, `app abi show|diff` are
+  `mero-app-build`'s; `app signer new|id` and `app sign` are `mero-sign`'s;
+  `app pack [DIR]` writes and signs the `.mpk` (the flags of
+  `scripts/pack-component.py`, or the crate's `[package.metadata.calimero]`),
+  checking a frontend with the node's rules and the HTML rules of its CSP;
+  `app inspect` verifies a bundle as a node does; `app publish` pushes it to the
+  app registry, or as a Calimero Cloud organization (`--org`). `local up|down|status`
+  runs `merod local` (or its image, `--docker`) in the background and saves it as
+  the node `local`; `local dev` builds, uploads, writes the frontend's
+  `.env.development.local`, runs the frontend and rebuilds on save; `local test`
+  runs the app's scenario harness; `local compute run` is `mero-compute run`.
+  `cloud login|orgs|clusters|use` reach Calimero Cloud with a console session, and
+  `cloud compute pipeline|logs` are a cluster's pipelines and run logs. `attest`
+  takes `node`, `app CONTEXT` and `release`. None of these needs a node except
+  `cloud compute` and `attest`.
 - **A follower answers a strong view itself** (`calimero-node`). The replica that
   takes a strong view asks the app's leader for its applied index
   (`POST /internal/app/index`: the leader confirms it leads and runs no WASM),
@@ -19,6 +41,16 @@
 - **`scripts/pack-component.py --frontend DIR`, `--outbound PREFIX`,
   `--upgrades owner|publisher`**: the manifest fields no tool wrote, each checked
   with the node's rules before signing.
+
+### Deprecated
+
+- **`mero-app-build`, `mero-sign`, `mero-compute` and `scripts/pack-component.py`**
+  run one more release as shims that print the `meroctl` command replacing them
+  (`app build|codegen|abi diff`, `app sign|key`, `local compute run`,
+  `app pack`), then go. `meroctl dev new`, `pipeline`, `run logs`,
+  `attest-release` and `attest --context` are hidden aliases of `app new`,
+  `cloud compute pipeline`, `cloud compute logs`, `attest release` and
+  `attest app`, for one release.
 
 ### Fixed
 

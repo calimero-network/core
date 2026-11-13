@@ -29,8 +29,8 @@ meet.
 ```bash
 cargo build -p merod -p meroctl          # the two binaries
 cargo check --workspace                  # everything
-scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
-mero-app-build apps/kv-store --out kv_store.wasm   # one app's component
+export PATH=$PWD/target/debug:$PATH      # the binaries just built
+meroctl app build apps/kv-store --out kv_store.wasm   # one app's component
 cargo test --manifest-path apps/kv-store/Cargo.toml   # an app's own tests, on the real engine
 ```
 
@@ -40,20 +40,23 @@ section. A WASM core module (an SDK 0.12 app) is refused.
 
 ## Run local nodes
 
-The quickest cluster is one process:
+The quickest cluster is one process. `meroctl local up` starts `merod local`
+(the `merod` on `PATH`, here the one just built) in the background and saves it
+as the node `local`, trusting its mock attestation:
 
 ```bash
-cargo run -p merod -- local            # 3 nodes on 127.0.0.1:2501-2503, state in .merod-local/
-cargo run -p merod -- local --fresh    # start over
+meroctl local up            # 3 nodes on 127.0.0.1:2501-2503, state in .merod-local/
+meroctl local status        # the node URLs, the ops token, the log file
+meroctl local down          # stop it; the state stays
+meroctl local up --fresh    # start over
 ```
 
-then, in another terminal:
+then:
 
 ```bash
-cargo run -p meroctl -- node add local http://127.0.0.1:2501/ --allow-mock
-cargo run -p meroctl -- login --dev-passkey ./dev-passkey.json --name dev
-cargo run -p meroctl -- context create --name kv --path kv_store.wasm --alias kv
-cargo run -p meroctl -- call --context kv set --args '{"key":"a","value":"1"}'
+meroctl login --dev-passkey ./dev-passkey.json --name dev
+meroctl context create --name kv --path kv_store.wasm --alias kv
+meroctl call --context kv set --args '{"key":"a","value":"1"}'
 ```
 
 The login signs up an account (with its personal organization, where the

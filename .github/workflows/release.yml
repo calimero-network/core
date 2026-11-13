@@ -370,9 +370,8 @@ jobs:
         run: |
           set -euo pipefail
           mero-app-build apps/v2-fixtures/kv --out dist/kv.wasm
-          cargo build --release -p mero-sign
-          python3 -I scripts/pack-component.py --wasm dist/kv.wasm \
-            --mero-sign "${CARGO_TARGET_DIR:-target}/release/mero-sign" \
+          cargo build --release -p meroctl
+          "${CARGO_TARGET_DIR:-target}/release/meroctl" app pack --wasm dist/kv.wasm \
             --package com.calimero.kv-store --app-version "${NEEDS_PREPARE_OUTPUTS_VERSION}" \
             --out dist/kv-store-test-fixture.mpk
         env:
@@ -556,8 +555,7 @@ jobs:
             apps/v2-fixtures/kv --out target/image-e2e/kv.wasm
           cp "$target_dir/release/meroctl" target/image-e2e/
           for v in 1.0.0 1.1.0; do
-            python3 -I scripts/pack-component.py --wasm target/image-e2e/kv.wasm \
-              --mero-sign "$target_dir/release/mero-sign" \
+            "$target_dir/release/meroctl" app pack --wasm target/image-e2e/kv.wasm \
               --package com.calimero.kv-store --app-version "$v" \
               --out "target/image-e2e/com.calimero.kv-store-$v.mpk"
           done

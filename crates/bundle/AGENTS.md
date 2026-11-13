@@ -34,19 +34,19 @@ cargo test -p calimero-bundle
 | `BundleArtifact`, `BundleMetadata`, `BundleInterfaces`, `BundleLinks`, `BundleHandlers`, `BundleSignature`, `BundleService` | structs | The manifest's nested shapes |
 | `WasmArtifact` | struct | Borrowed `(name, wasm)` pair, the common type `wasm_artifacts()` returns |
 | `BundleFrontend::validate()`, `verify_frontend_file()` | fn | What the node enforces at install: manifest-level (paths, case-insensitive duplicates, HTML entry, MIME allowlist, `MAX_FRONTEND_BYTES`), then per file size and hash |
-| `check_frontend_html()` | fn (feature `html`) | Build-time HTML feedback (UTF-8, no remote or bundle-escaping URL, no inline code) for a bundling tool; the node never calls it, and since `cargo mero` was removed no workspace crate does |
+| `check_frontend_html()` | fn (feature `html`) | Build-time HTML feedback (UTF-8, no remote or bundle-escaping URL, no inline code) for a bundling tool; the node never calls it, `meroctl app pack` does |
 | `FrontendError` | enum | Each refusal, with a stable `code()` (`FRONTEND_*`) that `Display` also prints, `FRONTEND_MISSING_FILE` included for the node and CLI to raise; tooling matches the code, never the message |
 | `FRONTEND_ROOT` | const | The `frontend/` prefix every frontend archive path starts with |
 | `mime_type()` | fn | The `Content-Type` a frontend file is served with; `None` outside the allowlist |
 | `MAX_MANIFEST_BYTES` | const | 1 MiB cap the node enforces on `manifest.json`, before any signature check |
 | `canonicalize_manifest`, `compute_bundle_hash`, `compute_signing_payload` | fn | RFC 8785 canonical bytes (signature and `_`-prefixed transient fields stripped first), then their SHA-256; the signing payload is that SHA-256 over `MANIFEST_SIGNING_DOMAIN` followed by the canonical bytes |
 | `sign_manifest_json`, `verify_manifest_signature`, `verify_ed25519` | fn | Sign/verify a manifest `Value` in place; `ManifestVerification` carries the result |
-| `DEV_SIGNER_ID` | const | The signerId of `mero-sign --dev`'s public key; a node without `--allow-unsigned-bundles` (on with `--dev`) refuses releases it signed |
+| `DEV_SIGNER_ID` | const | The signerId of the development key (`meroctl app sign --dev`, `meroctl app pack` without `--key`); a node without `--allow-unsigned-bundles` (on with `--dev`) refuses releases it signed |
 | `derive_signer_id_did_key`, `decode_public_key`, `decode_signature`, `format_bundle_hash` | fn | `did:key` derivation and base64url/hex codecs |
 
 ## Mental Model
 
-This crate is the single source of truth for the bundle schema: `mero-sign` re-exports the canonicalization/signing functions for its CLI, and `calimero-node` reads and verifies installed bundles against the same type (the node's tests build a `BundleManifest` directly, with no `..Default::default()`, so a new field must be handled there before the workspace compiles). `scripts/pack-component.py` writes the same manifest as JSON.
+This crate is the single source of truth for the bundle schema: `mero-sign` re-exports the canonicalization/signing functions for its CLI, and `calimero-node` reads and verifies installed bundles against the same type (the node's tests build a `BundleManifest` directly, with no `..Default::default()`, so a new field must be handled there before the workspace compiles). `meroctl app pack` (`crates/meroctl/src/make.rs`) writes the same manifest as JSON.
 
 `handlers` (the deep-link `slug`) is a sibling of `metadata`, not nested inside it, so it never reaches `to_metadata_json()` and never reaches the display metadata an install stores; only `package` + `signerId` decide a bundle's identity (see `ApplicationId::for_bundle` in `calimero-primitives`).
 
@@ -82,7 +82,7 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 - **HTML is checked with the spec tokenizer, never by substring and never with a tree build.** `check_html` reads `html5ever`'s decoded attributes, so entity-encoded schemes are caught; a tree build is quadratic on deep nesting.
   The tokenizer's duplicate-attribute scan is quadratic in one tag's attributes and `check_frontend_html` has no size cap, so it is for trusted build output only.
   Bound the input before running it on anything untrusted.
-- **The HTML lint is behind the `html` feature, which no workspace crate enables now (`cargo-mero` did).**
+- **The HTML lint is behind the `html` feature, which only `meroctl` enables.**
   `html5ever` is therefore absent from the node's dependency tree, so the node cannot parse HTML.
 - **Raw-text elements hide their content, except after an `svg`, `math` or `select`.** There everything is scanned as markup, and any tag or comment inside a raw-text element (or any CDATA comment) is refused, so a browser's text reading and ours cannot disagree.
 - **The static check mirrors the serving contract.** Each app is served from its own origin `{label}.{base_domain}` under `/{version}/`, so a root-absolute URL resolves outside that version's folder.

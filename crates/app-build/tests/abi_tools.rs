@@ -236,22 +236,28 @@ fn version_prints_the_release() {
 
 #[test]
 fn help_prints_usage_and_succeeds() {
-    for args in [
-        &["--help"][..],
-        &["-h"],
-        &["codegen", "--help"],
-        &["codegen", "-h"],
-        &["codegen", "--abi", "x.json", "--help"],
-        &["abi-diff", "--help"],
+    for (args, usage) in [
+        (&["--help"][..], "usage: mero-app-build"),
+        (&["-h"], "usage: mero-app-build"),
+        (&["codegen", "--help"], "usage: meroctl app codegen"),
+        (&["codegen", "-h"], "usage: meroctl app codegen"),
+        (
+            &["codegen", "--abi", "x.json", "--help"],
+            "usage: meroctl app codegen",
+        ),
+        (&["abi-diff", "--help"], "usage: meroctl app abi diff"),
     ] {
         let out = bin().args(args).output().unwrap();
         assert!(out.status.success(), "{args:?}: {out:?}");
         let text = String::from_utf8_lossy(&out.stdout);
+        assert!(text.starts_with(usage), "{args:?}: {text}");
+        // The one line on stderr is the shim's notice of what replaces it.
+        let err = String::from_utf8_lossy(&out.stderr);
         assert!(
-            text.starts_with("usage: mero-app-build"),
-            "{args:?}: {text}"
+            err.lines()
+                .all(|l| l.starts_with("mero-app-build is deprecated")),
+            "{args:?}: {out:?}"
         );
-        assert!(out.stderr.is_empty(), "{args:?}: {out:?}");
     }
 }
 

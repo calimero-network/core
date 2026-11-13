@@ -24,7 +24,7 @@ a `Counter`, the two state types most apps start from.
 <Aside type="note">
   The code on this page is complete: the crate, its test and its scenario
   build and pass as shown against `calimero-sdk` at 1.0.0-rc.20. The commands
-  are `crates/app-build`, `crates/merod` and the CLI definitions in
+  are `crates/merod` and the CLI definitions in
   `crates/meroctl/src`; every command is in the
   [meroctl reference](/operate/meroctl/).
 </Aside>
@@ -40,23 +40,24 @@ a `Counter`, the two state types most apps start from.
    ```sh
    rustup target add wasm32-wasip2
    git clone https://github.com/calimero-network/core && cd core
-   scripts/install-mero-app-build.sh              # puts mero-app-build on PATH
    cargo install --locked --path crates/meroctl
+   cargo install --locked --path crates/merod
    ```
 
-2. **A development cluster.** `merod local` runs three nodes in one process
-   on `127.0.0.1:2501`-`2503`, with mock attestation. Leave it running in its
-   own terminal:
+2. **A development cluster.** `meroctl local up` starts `merod local` in the
+   background: three nodes in one process on `127.0.0.1:2501`-`2503`, with
+   mock attestation. It saves the first node in `meroctl` as `local`:
 
    ```sh
-   cargo run -p merod -- local
+   meroctl local up
    ```
 
-3. **Sign in.** Save its first node in `meroctl` and sign up with a passkey
-   kept in a file (development clusters only):
+   `meroctl local down` stops it.
+
+3. **Sign in.** Sign up with a passkey kept in a file (development clusters
+   only):
 
    ```sh
-   meroctl node add local http://127.0.0.1:2501/ --allow-mock
    meroctl login --dev-passkey ./dev-passkey.json --name alice
    ```
 
@@ -323,7 +324,7 @@ so it takes a while; later runs reuse both.
 Build the component:
 
 ```sh
-mero-app-build path/to/kv-store --out kv_store.wasm
+meroctl app build path/to/kv-store --out kv_store.wasm
 ```
 
 It compiles the crate for `wasm32-wasip2`, wraps it as a `calimero:app`

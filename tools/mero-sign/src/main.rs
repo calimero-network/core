@@ -1,4 +1,5 @@
-//! mero-sign: CLI tool for signing Calimero bundle manifests
+//! mero-sign: CLI tool for signing Calimero bundle manifests. Kept for one release:
+//! the commands are `meroctl app sign`, `meroctl app signer new|id` (and `meroctl app pack`).
 //!
 //! This tool implements the signing flow:
 //! - Generate Ed25519 keypairs
@@ -61,6 +62,7 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    eprintln!("mero-sign is deprecated: use `meroctl app sign`, `meroctl app signer new` or `meroctl app signer id`");
 
     match cli.command {
         Commands::Sign {

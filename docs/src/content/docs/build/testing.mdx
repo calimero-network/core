@@ -106,6 +106,14 @@ fn every_scenario_passes() {
 }
 ```
 
+`meroctl local test [DIR]` runs the crate's `cargo test`, and with it these
+scenarios. `DIR` is the app (its crate under `logic/`, as `meroctl app new` lays
+it out) or the crate itself; arguments after `--` go to `cargo test`:
+
+```bash
+meroctl local test my-app -- every_scenario_passes
+```
+
 ## Upgrades: test against a shipped release's state
 
 An upgrade switches an app's code and keeps its state, so the code you ship

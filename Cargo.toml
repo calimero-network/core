@@ -155,6 +155,7 @@ calimero-search = { path = "./crates/search" }
 calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-tee-release = { path = "./crates/tee-release" }
 calimero-utils-fs = { path = "./crates/utils/fs" }
+mero-compute = { path = "./tools/mero-compute" }
 mero-sign = { path = "./tools/mero-sign" }
 
 [profile.dev]

@@ -8,6 +8,14 @@ repository.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+name = "mero_compute"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mero-compute"
+path = "src/main.rs"
+
 [dependencies]
 base64.workspace = true
 calimero-app-engine-wasmtime.workspace = true

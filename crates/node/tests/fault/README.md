@@ -40,10 +40,10 @@ one build) and no `rooms-fault`.
 
 ```bash
 cargo build --release -p merod -p meroctl
-scripts/install-mero-app-build.sh   # once: puts mero-app-build on PATH
-mero-app-build apps/v2-fixtures/kv --out target/app-components/kv.wasm
+export PATH=$PWD/target/release:$PATH
+meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
 for v in 1.0.0 1.1.0; do
-  python3 -I scripts/pack-component.py --wasm target/app-components/kv.wasm \
+  meroctl app pack --wasm target/app-components/kv.wasm \
     --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
 done
 cargo test --release -p calimero-node --test rooms    # the Rooms component, for rooms-fault only

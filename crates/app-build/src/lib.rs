@@ -15,6 +15,7 @@ use wasmparser::ComponentTypeRef;
 use wasmparser::Parser;
 use wasmparser::Payload;
 
+pub mod abi_tools;
 pub mod codegen;
 
 /// Name of the custom section carrying the app's ABI JSON.

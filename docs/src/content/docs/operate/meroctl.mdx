@@ -1,6 +1,6 @@
 ---
 title: meroctl CLI Reference
-description: Every meroctl command, argument and flag, taken from the clap definitions, with the node route each one calls.
+description: Every meroctl command, argument and flag, taken from the clap definitions, with the node route each one calls; and the commands that make, ship and run an app without a node.
 sidebar:
   label: meroctl reference
   order: 4
@@ -8,9 +8,15 @@ sidebar:
 
 import { Aside } from '@astrojs/starlight/components';
 
-`meroctl` is the command line for Calimero nodes, over the node API through
-`calimero-client`: before anything is sent it fetches the node's attestation
-and judges the quote, then every request travels in the sealed channel. Each
+`meroctl` is the one command line for Calimero: it starts an app
+(`app new`), builds, packs, signs and publishes it (`app build`, `app pack`,
+`app publish`), runs a development cluster around it (`local`), reaches
+Calimero Cloud (`cloud`), and talks to nodes. It replaces `mero-app-build`,
+`mero-sign`, `mero-compute` and `scripts/pack-component.py`, which stay one
+release as deprecated shims. The commands that talk to a node go through the
+node API with `calimero-client`: before anything is sent it fetches the node's
+attestation and judges the quote, then every request travels in the sealed
+channel. Each
 command calls the client's method for its route, generated from the node's
 [API document](/operate/api-reference/), so the route each one names below is
 the operation it calls. The source is `crates/meroctl/src`.
@@ -25,12 +31,18 @@ Its command names differ from the rest of these docs for a few objects
 | `namespace` | organizations |
 | `group` | an organization's teams |
 | `account` | the signed-in account; each passkey is one of its devices |
+| `local` | a development cluster on this machine, and the build loop around it |
+| `cloud` | Calimero Cloud (organizations, clusters), and a cluster's compute |
 
 Output is JSON, pretty-printed: the route's answer as the client reads it,
 with any field the client's types do not name kept as the node sent it.
-Commands that stream (`context watch`, `pipeline watch`,
+Commands that stream (`context watch`, `cloud compute pipeline watch`,
 `context presence stream`, `ops metrics`, `blob download` to stdout, `app
-watch`, `dev`) print their own lines.
+watch`, `local dev`) print their own lines, as do `app codegen`, `app abi
+diff` and `app signer`. The commands that need no node (`app new`, `app build`,
+`app codegen`, `app abi`, `app signer`, `app pack`, `app sign`, `app inspect`,
+`app publish`, `local`, `cloud` but `cloud compute`) never read `--node` or
+`--api`.
 
 ## Global arguments
 
@@ -70,7 +82,7 @@ That holds for `call` (a confirm method), `context update`, `context transfer`,
 `group members add`, `group members remove`, `group settings`, `group leave`,
 `group upgrade trigger`, `group upgrade retry`, `app origins add`,
 `app origins remove` and `raw`. `app watch`, `dev start` and `dev watch`
-require it. `account device add` takes `--approve-with FILE`, a passkey file
+require it; `local dev` signs up a deployer of its own. `account device add` takes `--approve-with FILE`, a passkey file
 the account already has.
 
 ## node
@@ -91,14 +103,31 @@ Saved nodes, in `{home}/meroctl/nodes.json` (mode `0600`). No network.
 | `login --dev-passkey FILE [--name NAME] [--origin URL]` | `/auth/passkey/register/*` or `/auth/passkey/login/*` | Sign in with a file passkey, or sign up when `FILE` does not exist (`--name`, default `developer`, names the account). `--origin` (default `http://localhost:3000`) must be one the cluster allows. Needs `--allow-mock`: on a real cluster use an API key. Saves the session for the node. |
 | `logout [--all]` | `/auth/logout-all` with `--all` | Forget the saved session; `--all` first ends every session of the account. |
 | `whoami` | `GET /auth/me` | Who the requests run as. |
-| `attest [-c CONTEXT]` | `GET /attestation`, `GET /apps/{app}/attestation` | The node's attestation document; with `--context`, every replica of that app verified, their receipt keys and the governance they attest. |
-| `attest-release [--file FILE --nonce HEX]` | `GET /attestation/release` | Verify a [release attestation](/operate/merod/#attest) (`merod attest`): fetched from the node's URL over a fresh nonce (a booting TD's `merod attest --serve`), or read from `FILE` with the nonce it was made over. Judged with `--allow-mock`, `--tee-profiles` and `--min-release` like any quote; needs no session. Prints the claim, the verified registers and the profile they matched. |
+| `attest` (`attest node`) | `GET /attestation` | The node's attestation document. |
+| `attest app CONTEXT` (was `attest --context`) | `GET /apps/{app}/attestation` | Every replica of that app verified, their receipt keys and the governance they attest. |
+| `attest release [--file FILE --nonce HEX]` (was `attest-release`) | `GET /attestation/release` | Verify a [release attestation](/operate/merod/#attest) (`merod attest`): fetched from the node's URL over a fresh nonce (a booting TD's `merod attest --serve`), or read from `FILE` with the nonce it was made over. Judged with `--allow-mock`, `--tee-profiles` and `--min-release` like any quote; needs no session. Prints the claim, the verified registers and the profile they matched. |
 
 ## app
 
-Signed packages. An application is installed once on the
-cluster and verified on every node that runs it. `meroctl package` is the
-same command (`meroctl package origins list PACKAGE`).
+Signed packages, from an empty directory to an install. Making and shipping
+one needs no node:
+
+| Command | Meaning |
+| --- | --- |
+| `app new DIR [--template T] [--ref R] [--no-git]` | Start a project from `apps/<T>` of [calimero-network/apps](https://github.com/calimero-network/apps) at branch or tag `R` (default `kv-store` at `main`): a sparse, shallow clone of the app, the shared `packages/` and `tools/` it builds with, and the root files that pin its versions, with the history dropped and a fresh `git init`. `DIR` must not exist or be empty. Needs `git`. The app's README says how to run it (`meroctl local dev apps/<T>`). |
+| `app build [DIR] [--out FILE] [--compute-out FILE] [--target-dir DIR]` | Build the crate (default `.`) into a `calimero:app` component (`wasm32-wasip2`, the ABI lifted where the node reads it), default `DIR/app.component.wasm`, and its compute component when it has compute methods (default `compute.component.wasm` beside it). |
+| `app codegen --abi FILE --lang ts\|python\|swift\|kotlin\|openapi [-o DIR] [--name N] [--package P] [--service S] [--kotlin-serialization-plugin] [--no-openapi]` | The app's OpenAPI document and a typed client ([Typed clients](/build/guides/typed-clients/)). `FILE` is a component, an `.mpk`, a `manifest.json` or ABI JSON. |
+| `app abi show FILE [--service S]` | The ABI as JSON. |
+| `app abi diff OLD NEW [--service S] [--json]` | What changed between two releases; exit code 1 when a change breaks existing callers ([App interface](/build/app-abi/)). |
+| `app signer new FILE [--force]` / `app signer id FILE` | A new Ed25519 signing key (written owner-only), and its `did:key` signer id. A package's identity is its package id and its signer. |
+| `app pack [DIR] [--wasm F] [--compute F] [--pipeline F]... [--frontend DIR] [--frontend-entry E] [--no-frontend] [--outbound URL]... [--upgrades owner\|publisher] [--package P] [--name N] [--description D] [--icon PNG] [--category C] [--app-version V] [--min-runtime-version V] [--key FILE] [--previous OLD] [--out FILE]` | Write the manifest the node reads, sign it, and write it with every file it names as an `.mpk`. With the crate `DIR`, its `[package.metadata.calimero]` and `version` fill what the flags leave out: `package`, `min-runtime-version`, `frontend-dir`, the display metadata a registry lists a new package by (`name`, `description`, `icon` (a PNG), `category`, `tags`, `author`, `license`, `guide`), `slug`, the links (`frontend`, `github`, `docs`, `frontend-aliases`), `outbound` and `upgrades`; `--name`, `--description`, `--icon` and `--category` set them without a crate, the components are built unless `--wasm`/`--compute` name them, and the default output is `DIR/dist/<package>-<version>.mpk`. A frontend is checked with the node's rules (paths, types, `MAX_FRONTEND_BYTES`, the entry) and the HTML rules its CSP enforces. Without `--key` the development key signs, which a public registry refuses. `--previous` reports ABI changes against the last release first. |
+| `app sign MANIFEST (--key FILE \| --dev) [--previous OLD]` | Sign a `manifest.json` in place. |
+| `app inspect FILE.mpk` | Open the bundle as a node does (signature, every artifact's hash) and print `verified`, `signerId`, `bundleHash` and the manifest. |
+| `app publish FILE.mpk [--registry URL] [--api-key KEY] [--org ORG] [--cloud URL] [--public]` | Publish to the app registry (`CALIMERO_REGISTRY_URL`, default `https://apps.calimero.network`; `POST /api/v2/bundles/push` with the signed manifest and the bundle, the key `CALIMERO_REGISTRY_API_KEY` as a bearer token, over `https` only). With `--org`, the key is a Calimero Cloud organization's (`ck_live_…`, scope `registry:publish`), traded at the Cloud (`CALIMERO_CLOUD_URL`) for a short publish token first. A new package is private unless `--public`. The registry's refusal comes back with its code (`version_not_allowed`, `invalid_signature`, ...). |
+
+An application is installed once on the cluster and verified on every node
+that runs it. `meroctl package` is the same command (`meroctl package origins
+list PACKAGE`).
 
 | Command | Route | Meaning |
 | --- | --- | --- |
@@ -126,7 +155,26 @@ a real cluster the manager makes the change in the console (Web addresses),
 where the browser holds their passkey. A frontend the cluster serves from the
 bundle needs no origin here.
 
-## pipeline
+## cloud
+
+Calimero Cloud's manager API (mdma). Its organizations and clusters take a
+console session (Google sign-in): `cloud login` checks and keeps the session
+token a signed-in console sends, in `{home}/meroctl/cloud.json` (mode `0600`),
+and saves the fresh one the manager sends back on each answer
+(`X-MDMA-Session-Refresh`). No node.
+
+| Command | Route | Meaning |
+| --- | --- | --- |
+| `cloud login --token TOKEN [--url URL]` | `GET /api/v2/orgs` | Check and keep the session. `CALIMERO_CLOUD_TOKEN` and `CALIMERO_CLOUD_URL` (default `https://cloud.calimero.network`) work too. |
+| `cloud logout` | | Forget the saved session. |
+| `cloud orgs` | `GET /api/v2/orgs` | Your organizations, the personal one first. |
+| `cloud clusters list` (`ls`) | `GET /api/v2/clusters` | Your dedicated clusters, each with its nodes' `public_url`. |
+| `cloud clusters create NAME --size SIZE [--org ORG] [--region R]` | `POST /api/v2/clusters` | A new dedicated cluster: an organization admin, within quota, with a payment method (`402` otherwise). |
+| `cloud use CLUSTER [--as NAME]` | `GET /api/v2/clusters` | Save the cluster's node as a meroctl node (default: named after the cluster) and make it the default, attested as a real node (no `--allow-mock`). |
+
+## cloud compute pipeline
+
+The old top-level `pipeline` is the same command.
 
 A context's pipeline runs: DAGs of compute steps over sealed files, which a
 package's release registers and job nodes run. `APP` is a context (alias or
@@ -134,32 +182,34 @@ id).
 
 | Command | Route | Meaning |
 | --- | --- | --- |
-| `pipeline validate FILE [--package P --version V]` | `POST /pipelines/validate` | Check a pipeline file and print every error with its path and code; exit code 1 when it is not valid. With a release, check it as that release would install it. Writes nothing. |
-| `pipeline estimate APP NAME [--input NAME=ID[,ID...]]... [--count NAME=N]...` | `POST /apps/{app}/pipelines/{name}/estimate` | Runs, fuel and cost per step for the given input file counts, `maxItems` for an input not given. Starts nothing. |
-| `pipeline run APP NAME [--input NAME=ID[,ID...]]... [--param NAME=VALUE]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipelines/{name}/runs` | Start a run of a pipeline the context's release registers; prints `{ run }`, or with `--wait` the run once it is no longer running. `--max-cost` caps what the run may owe under the operator's price table. |
-| `pipeline get APP RUN` | `GET /apps/{app}/pipeline-runs/{run}` | A run's state and each step's status, runs, outputs and reason. |
-| `pipeline runs APP` | `GET /apps/{app}/pipeline-runs` | The context's recent runs, newest first. |
-| `pipeline watch APP RUN` | `GET /apps/{app}/pipeline-runs/{run}/events` | One JSON line per `snapshot`, `run` and `step` event, then the `end` event as the answer. |
-| `pipeline cancel APP RUN` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a run. |
-| `pipeline retry APP RUN [--limit STEP.FIELD=N]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipeline-runs/{run}/retry` | Start a new run of an ended run's pipeline, release, inputs and params with some step limits raised (`fuel`, `memoryMib`, `wallSecs`, each within the method's caps); what already succeeded is answered from the step cache. |
-| `pipeline receipt APP RUN [--verify] [--out FILE]` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | The node-signed receipt of an ended run; with `--verify`, check it under the node's attested key and compare each downloaded output with its hash. |
-| `pipeline logs APP RUN --step STEP [--index I]` | `GET /apps/{app}/pipeline-runs/{run}`, then `GET /apps/{app}/runs/{run}/logs` | Print the module log of a step's compute run (`--index`, default `0`, is its item's place), as `run logs` does. |
-| `pipeline download APP RUN [--out DIR]` | the file export routes | Download every output of every step of an ended run as `STEP-INDEX.bin`. |
+| `cloud compute pipeline validate FILE [--package P --version V]` | `POST /pipelines/validate` | Check a pipeline file and print every error with its path and code; exit code 1 when it is not valid. With a release, check it as that release would install it. Writes nothing. |
+| `cloud compute pipeline estimate APP NAME [--input NAME=ID[,ID...]]... [--count NAME=N]...` | `POST /apps/{app}/pipelines/{name}/estimate` | Runs, fuel and cost per step for the given input file counts, `maxItems` for an input not given. Starts nothing. |
+| `cloud compute pipeline run APP NAME [--input NAME=ID[,ID...]]... [--param NAME=VALUE]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipelines/{name}/runs` | Start a run of a pipeline the context's release registers; prints `{ run }`, or with `--wait` the run once it is no longer running. `--max-cost` caps what the run may owe under the operator's price table. |
+| `cloud compute pipeline get APP RUN` | `GET /apps/{app}/pipeline-runs/{run}` | A run's state and each step's status, runs, outputs and reason. |
+| `cloud compute pipeline runs APP` | `GET /apps/{app}/pipeline-runs` | The context's recent runs, newest first. |
+| `cloud compute pipeline watch APP RUN` | `GET /apps/{app}/pipeline-runs/{run}/events` | One JSON line per `snapshot`, `run` and `step` event, then the `end` event as the answer. |
+| `cloud compute pipeline cancel APP RUN` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a run. |
+| `cloud compute pipeline retry APP RUN [--limit STEP.FIELD=N]... [--max-cost MICRO_UNITS] [--wait]` | `POST /apps/{app}/pipeline-runs/{run}/retry` | Start a new run of an ended run's pipeline, release, inputs and params with some step limits raised (`fuel`, `memoryMib`, `wallSecs`, each within the method's caps); what already succeeded is answered from the step cache. |
+| `cloud compute pipeline receipt APP RUN [--verify] [--out FILE]` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | The node-signed receipt of an ended run; with `--verify`, check it under the node's attested key and compare each downloaded output with its hash. |
+| `cloud compute pipeline logs APP RUN --step STEP [--index I]` | `GET /apps/{app}/pipeline-runs/{run}`, then `GET /apps/{app}/runs/{run}/logs` | Print the module log of a step's compute run (`--index`, default `0`, is its item's place), as `cloud compute logs` does. |
+| `cloud compute pipeline download APP RUN [--out DIR]` | the file export routes | Download every output of every step of an ended run as `STEP-INDEX.bin`. |
 
 ```bash
-meroctl pipeline validate ./pipelines/ingest.yaml --package com.example.docs --version 1.2.0
+meroctl cloud compute pipeline validate ./pipelines/ingest.yaml --package com.example.docs --version 1.2.0
 meroctl file upload ./report.pdf -c docs                     # prints { id, size, sha256, index }
-meroctl pipeline estimate docs ingest --input pages=<file-id>
-meroctl pipeline run docs ingest --input pages=<file-id> --param lang=en --max-cost 5000000 --wait
-meroctl pipeline receipt docs <run> --verify
-meroctl pipeline download docs <run> --out ./outputs
+meroctl cloud compute pipeline estimate docs ingest --input pages=<file-id>
+meroctl cloud compute pipeline run docs ingest --input pages=<file-id> --param lang=en --max-cost 5000000 --wait
+meroctl cloud compute pipeline receipt docs <run> --verify
+meroctl cloud compute pipeline download docs <run> --out ./outputs
 ```
 
-## run
+## cloud compute logs
+
+The old `run logs` is the same command.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
-| `run logs APP RUN [--attempt N]` | `GET /apps/{app}/runs/{run}/logs`, then the file export routes | Print a compute run's module log (stdout, stderr and `log` lines) to standard output: attempt `N`, else the latest that kept a log. The app's owner and its organization's members only. |
+| `cloud compute logs APP RUN [--attempt N]` | `GET /apps/{app}/runs/{run}/logs`, then the file export routes | Print a compute run's module log (stdout, stderr and `log` lines) to standard output: attempt `N`, else the latest that kept a log. The app's owner and its organization's members only. |
 
 ## context
 
@@ -316,7 +366,24 @@ The signed-in account.
 | `account approve-release VERSION [--dev-passkey FILE]` | `POST /orgs/{org}/releases` | Approve a mero-tee release to hold the account's own contexts (its personal organization's). |
 | `account outbound --package P [--prefix URL]... [--replace] [--dev-passkey FILE]` | `POST /orgs/{org}/outbound` | Approve outbound prefixes for the account's own contexts (its personal organization's). |
 
+## local
+
+A development cluster on this machine: `merod local` (mock attestation, a
+development storage key; never for real data) in the background, its state
+under `--dir` (default `.merod-local`) kept across restarts.
+
+| Command | Meaning |
+| --- | --- |
+| `local up [--nodes N] [--base-port P] [--dir DIR] [--fresh] [--docker [--image IMG]]` | Start the cluster (node `i` on `127.0.0.1:P+i`, default `2501`-`2503`) and wait until it serves, then save it as the node `local` (mock quotes trusted), the default when there is none. `merod` comes from `PATH` or `MEROD`; `--docker` runs the release's image (`ghcr.io/calimero-network/merod:<release>`, `merod local --bind 0.0.0.0` with its ports published on `127.0.0.1` and its state in the Docker volume `meroctl-local-<base port>`; macOS and Linux) instead. Its log is `DIR/merod.log`; it prints the URLs and the ops token. A cluster already running from `DIR` is answered as is. |
+| `local down [--dir DIR]` | Stop it; its state stays for the next `up`. |
+| `local status [--dir DIR]` | Whether it runs, its URLs and ops token. |
+| `local dev [DIR] [--no-frontend] [cluster flags]` | Develop an app (`DIR` holds `logic/` and `app/`, as `app new` lays it out, or is the crate): start the cluster unless it runs, sign up a deployer, build the crate and upload it as a raw bundle, write `DIR/app/.env.development.local` (`VITE_CALIMERO_TARGET`, `VITE_CALIMERO_NODES`, `VITE_CALIMERO_BUNDLE`), run the frontend's dev server on `http://localhost:5173` (`pnpm dev`, the origin the cluster trusts), then rebuild and upload on every save. Ctrl-C stops the frontend, and the cluster when `dev` started it. |
+| `local test [DIR] [-- CARGO_ARGS]` | `cargo test` of the app's crate, which runs every `scenarios/*.json` on core's engine (the apps template's harness). |
+| `local compute run COMPONENT --method M [--args JSON\|@FILE] [--input FILE]... --out DIR [--seed HEX] [--twice]` | Run one compute method of a compute component alone, with the engine, caps and determinism of a job node and plain files in place of sealed ones; `--twice` fails if two runs differ (`tools/mero-compute/README.md`). |
+
 ## dev
+
+`local dev`'s predecessor, for a build you push yourself.
 
 | Command | Meaning |
 | --- | --- |
@@ -433,13 +500,32 @@ meroctl raw delete /auth/aliases/notes
 
 ## Example session
 
+From an empty directory to a call, then a release:
+
 ```bash
-merod local                                         # in another terminal
-meroctl node add local http://127.0.0.1:2501/ --allow-mock
+meroctl app new my-app && cd my-app
+pnpm install
+meroctl local dev apps/kv-store                     # cluster, build, upload, frontend on :5173
+```
+
+By hand, against the same cluster:
+
+```bash
+meroctl local up                                    # saves the node `local`, the default
 meroctl login --dev-passkey ./dev-passkey.json --name ada
+meroctl app pack apps/kv-store/logic --app-version 0.1.0 --out kv-store.mpk
 meroctl app install --path ./kv-store.mpk
-meroctl context create --package com.example.kv --name notes --alias notes
+meroctl context create --package com.calimero.kv-store --name notes --alias notes
 meroctl call -c notes set --args '{"key":"a","value":"1"}'
 meroctl call -c notes get --args '{"key":"a"}' --view
-meroctl --ops-token "$TOKEN" ops status
+meroctl --ops-token "$TOKEN" ops status            # the token `local up` printed
+meroctl local down
+```
+
+A release:
+
+```bash
+meroctl app signer new release.key                  # once; keep it safe
+meroctl app pack apps/kv-store/logic --key release.key --previous last.mpk --out release.mpk
+meroctl app publish release.mpk --public            # CALIMERO_REGISTRY_API_KEY
 ```

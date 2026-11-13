@@ -1,8 +1,11 @@
 # meroctl
 
-The command line for Calimero nodes (`merod`): one command tree over the
-node's API, through `calimero-client` (every request attested and
-sealed; the node's quote is judged before anything is sent). Each command
+The one command line for Calimero: making an app and shipping it (`app new`,
+`build`, `codegen`, `abi`, `key`, `pack`, `sign`, `inspect`, `publish`; no node,
+`make.rs`), a development cluster and the loop around it (`local`, `local.rs`),
+Calimero Cloud (`cloud`, `cloud.rs`), and one command tree over a node's API
+through `calimero-client` (every request attested and sealed; the node's quote
+is judged before anything is sent). Each command
 calls the client's generated route methods (`client.orgs().invite_create(..)`,
 from the node's OpenAPI document; `crates/client/AGENTS.md`) and prints the
 typed answer serialized back to JSON; `raw` and `proxy` send any route through
@@ -22,10 +25,13 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | `namespace ...` | organizations: members, invites, groups, metadata, capabilities, outbound and release approvals | `/orgs*`, `/invites/*` |
 | `group ...` | teams: members, metadata, reparent, subgroups, settings; `group upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
 | `account ...` | the account: devices (passkeys), API keys, usage, approvals | `/auth/*` |
-| `dev start/watch` | install, create, keep pushing a build | |
+| `dev start/watch` | install, create, keep pushing a build (`dev new` is a hidden alias of `app new`) | |
+| (new) `app new/build/codegen/abi show\|diff/key new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone), `calimero-app-build`'s builder and `abi_tools`, `mero-sign`'s library, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), the registry's `POST /api/v2/bundles/push` (`--org`: the Cloud's `POST /api/v2/registry/token` first) | registry, Cloud |
+| (new) `local up/down/status/dev/test/compute run` | `merod local` (PATH, `MEROD`, or `--docker`) in the background, state in `--dir`/`meroctl-local.json`, saved as node `local`; `dev` builds, uploads a raw bundle as a fresh deployer, writes `app/.env.development.local`, runs `pnpm dev` on :5173 and rebuilds on save; `compute run` is `mero-compute` (feature `compute`, default on) | `/bundles` |
+| (new) `cloud login/logout/orgs/clusters list\|create/use`, `cloud compute pipeline\|logs` | the Cloud manager (mdma) with a console session in `{home}/meroctl/cloud.json` (refreshed from `X-MDMA-Session-Refresh`); `use` saves a cluster's node as the default; `cloud compute` is the old top-level `pipeline` and `run logs` (hidden aliases) | `/api/v2/orgs`, `/api/v2/clusters` |
 | `network status` | `/health` | |
-| (new) `login`, `logout [--all]`, `whoami`, `attest [--context]` | file passkeys on dev clusters; cluster verification | `/auth/*`, `/attestation` |
-| (new) `attest-release [--file F --nonce N]` | verify a `merod attest` release attestation (no session, no sealed channel) | `/attestation/release` |
+| (new) `login`, `logout [--all]`, `whoami`, `attest [node\|app CONTEXT]` | file passkeys on dev clusters; cluster verification | `/auth/*`, `/attestation` |
+| (new) `attest release [--file F --nonce N]` (`attest-release` hidden) | verify a `merod attest` release attestation (no session, no sealed channel) | `/attestation/release` |
 | (new) `proxy [--listen ADDR] [--allow-remote] [--openapi FILE]` | the API as plain HTTP on loopback, each request through the attested, sealed `Transport` (`proxy.rs`) | every route; `GET /openapi.json` |
 | (new) `ops ...` | the operator, `--ops-token`: status, cluster, metrics, placement, add-node, remove-node, move, backup, restore, backup-key, recovery-keygen, recover, pools/set-pools, prices/set-prices, quotas/set-quotas, release, outbound, packages/install/uninstall, upgrade, upgrade-namespace | `/ops/*` |
 
@@ -61,7 +67,18 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   stream, metrics, downloads) write their own and answer `null`, which is not
   printed.
 
+- `main` runs the commands that need no node (`node`, `local`, `cloud` but
+  `cloud compute`, `app`'s offline ones: `AppCmd::is_offline`) before it
+  resolves a node, so they never read `--node`/`--api`. The old spellings
+  (`dev new`, `pipeline`, `run logs`, `attest-release`, `attest --context`)
+  stay as hidden aliases for one release; `old_spellings_still_parse` and
+  `the_command_tree_is_consistent` (clap's `debug_assert`) pin the tree.
+- `local up` without ownership leaves the cluster running; `local dev` owns
+  what it started (`Started`, stopped on drop). Readiness is every port
+  listening and `merod local`'s `ops token` line in the log.
+
 ```bash
 cargo test -p meroctl        # every command group against an in-process 3-node cluster (builds apps/v2-fixtures/kv)
+cargo test -p meroctl --test app_offline --test cloud --test dev_new   # no node, no network
 cargo run -p meroctl -- --help
 ```

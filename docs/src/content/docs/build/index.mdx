@@ -12,7 +12,7 @@ import BuildAppPipeline from '../../../components/diagrams/BuildAppPipeline.astr
 A Calimero **application** is a sandboxed WebAssembly component that defines a
 shared, replicated state machine — its data types and the methods that mutate
 them. You write it in Rust against `calimero-sdk`, build it with
-`mero-app-build` into a component of the `calimero:app` world, and ship it as a
+`meroctl app build` into a component of the `calimero:app` world, and ship it as a
 signed `.mpk` package. Each instance of it (a *context*) lives in an
 organization and has its own Raft log: the cluster runs each call once on the
 instance's leader, on wasmtime, and replicates what it wrote.
