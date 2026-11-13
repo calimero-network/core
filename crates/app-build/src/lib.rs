@@ -250,7 +250,7 @@ pub fn build_components_cached(
 }
 
 /// The guest crate at `crate_dir` (a path in this repository) built through the repository's
-/// one component cache, `target/app-components`, for tests.
+/// one component cache, `target/app-components` (under `CARGO_TARGET_DIR` when set), for tests.
 ///
 /// Every test binary that builds a guest goes through it (the node's cluster tests, the
 /// engine's, the SDK's, mero-compute's), so a guest is compiled once per tree, by whichever
@@ -263,7 +263,10 @@ pub fn build_in_repo_cache(crate_dir: &Path) -> EyreResult<BuiltApp> {
     let crates = root.join("crates");
     let also = ["sdk", "sdk-macros", "app-sdk", "app-wit"].map(|c| crates.join(c));
     let also: Vec<&Path> = also.iter().map(PathBuf::as_path).collect();
-    let cached = build_components_cached(crate_dir, &also, &root.join("target/app-components"))?;
+    // The target dir cargo would use, as the node's test harness reads it.
+    let target =
+        std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
+    let cached = build_components_cached(crate_dir, &also, &target.join("app-components"))?;
     Ok(BuiltApp {
         app: Built::from_component(cached.app)?,
         compute: cached.compute.map(Built::from_component).transpose()?,

@@ -259,6 +259,12 @@ jobs:
           key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'apps/**') }}
           restore-keys: test-apps-v2-
 
+      # Every test app the tests build, compiled before them into the component cache, so a
+      # test only ever reads one: a compile is a build step's time, never a test's (the 15 s
+      # budget below). Seconds once the test-app cache is warm.
+      - name: Build the test apps
+        run: cargo run -p calimero-app-build --example build-test-apps
+
       # PARTITION is unset in a local run (scripts/check-like-ci.py), which then runs them
       # all.
       # Twice the cores: most slow tests wait on timers and the network, not the
@@ -268,6 +274,9 @@ jobs:
         env:
           PARTITION: ${{ format('count:{0}/4', matrix.shard) }}
           NEXTEST_TEST_THREADS: "8"
+          # No test may run past 15 s: .config/nextest.toml's ci profile kills it at 30 s,
+          # past its own listed limit for the tests over budget when the rule came in.
+          NEXTEST_PROFILE: ci
         run: |
           FIRST_HOST=$(hostname -I | awk '{print $1}')
           export TEST_HOSTS=$FIRST_HOST,127.0.0.1,0.0.0.0
