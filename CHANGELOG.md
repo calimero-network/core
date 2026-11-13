@@ -4,6 +4,10 @@
 
 ### Added
 
+- **`merod local --bind ADDR`** (`merod`): the address the development cluster
+  listens on (default `127.0.0.1`). `--bind 0.0.0.0` runs it in a container with
+  its ports published, so the released image is a development cluster on macOS:
+  `docker run -p 2501-2503:2501-2503 ghcr.io/calimero-network/merod:prerelease local --bind 0.0.0.0`.
 - **A follower answers a strong view itself** (`calimero-node`). The replica that
   takes a strong view asks the app's leader for its applied index
   (`POST /internal/app/index`: the leader confirms it leads and runs no WASM),
@@ -45,6 +49,10 @@
 
 ### Removed
 
+- **The `edge` and per-commit `merod` images, and `meroctl` in the image.**
+  Release binaries and the image are built only on a release cut (rc or stable),
+  which publishes the image as the version plus `prerelease` or `latest`. The
+  image holds `merod` only; `meroctl` ships in the release archives and Homebrew.
 - **`calimero-primitives`' v1 leftovers** (breaking). Nothing in this workspace,
   its apps, its fuzz targets, calimero-client-py, mero-tee or the apps repository
   named them; they described the context-era node (libp2p sync, CRDT storage,

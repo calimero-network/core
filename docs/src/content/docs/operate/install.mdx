@@ -45,16 +45,20 @@ run `merod` in Docker.
   </TabItem>
   <TabItem label="Docker">
 
-The root `Dockerfile` builds both binaries into a Debian image whose entrypoint
-is `merod`, running as an unprivileged user, with `CALIMERO_HOME=/data` and
-`/data` a volume:
+Every release publishes a `merod` image, for Linux amd64 and arm64:
+`ghcr.io/calimero-network/merod:<version>`, plus `latest` (the newest stable
+release) and `prerelease` (the newest release candidate). Its entrypoint is
+`merod`, running as an unprivileged user, with `CALIMERO_HOME=/data` and
+`/data` a volume. It holds `merod` only; install `meroctl` on the host.
 
 ```bash
-docker build -t merod .
-docker run --rm merod --help
+docker pull ghcr.io/calimero-network/merod:prerelease
+docker run --rm ghcr.io/calimero-network/merod:prerelease --help
 ```
 
-Arguments after the image name go to `merod`.
+Arguments after the image name go to `merod`. To run a node built from your
+own checkout, the root `Dockerfile` builds the same kind of image:
+`docker build -t merod .`.
 
   </TabItem>
 </Tabs>
@@ -93,40 +97,32 @@ Arguments after the image name go to `merod`.
 
 Then deploy an app: [Quickstart](/cloud/quickstart/).
 
-## First run on macOS: a node in Docker
+## First run on macOS: a cluster in Docker
 
-`merod local` binds `127.0.0.1` inside its container, so it is not reachable
-from the host. Run one development node that listens on all interfaces
-instead:
+The same `merod local` cluster runs in the published image. `--bind 0.0.0.0`
+makes its nodes listen on every interface of the container, so the published
+ports reach them, at the same URLs as on Linux:
 
 ```bash
-docker run --rm -p 2528:2528 -v merod-dev:/data merod \
-  --node dev run --dev --node-id 1 \
-  --public-url http://127.0.0.1:2528/ --peers 1=http://127.0.0.1:2528/ --bootstrap \
-  --ops-token devtoken
+docker run --rm -p 2501-2503:2501-2503 -v merod-local:/data \
+  ghcr.io/calimero-network/merod:prerelease \
+  local --bind 0.0.0.0 --ops-token devtoken
 ```
 
-- `--dev` gives mock attestation, a development storage key and raw WASM
-  uploads.
-- One node is a cluster of one: every app gets one replica.
-- `--public-url` is what the node calls itself; `127.0.0.1:2528` works because
-  the node reaches itself inside the container and you reach it through the
-  published port.
-- State is in the `merod-dev` volume, under `/data/dev/data`.
+- Mock attestation, a development storage key and raw WASM uploads, as
+  `merod local` on Linux; each app gets three replicas.
+- State is in the `merod-local` volume, under `/data/.merod-local`
+  (`--fresh` starts over).
+- Use `:latest` for the newest stable release, or `:<version>` to pin one;
+  match `meroctl`'s release to it.
 
 Then, from the host:
 
 ```bash
-meroctl node add docker http://127.0.0.1:2528/ --allow-mock
+meroctl node add local http://127.0.0.1:2501/ --allow-mock
 meroctl login --dev-passkey ./dev-passkey.json --name ada
 meroctl network status
 ```
-
-For a three-node cluster in Docker, run three containers on one Docker network,
-each with its own `--node-id` and a `--public-url` the others can reach (the
-container name), the same `--peers` list, and `--bootstrap` on one of them.
-The process suite starts such a cluster as three `merod run --dev` processes
-on one host; see [Testing](/contribute/testing/#process-suite).
 
 <Aside type="note">
   If the node cannot write `/data` (a bind mount owned by another user), mount

@@ -37,6 +37,31 @@ pub async fn start(
     origins: Vec<String>,
     registry: Option<String>,
 ) -> eyre::Result<LocalCluster> {
+    start_on(
+        [127, 0, 0, 1].into(),
+        n,
+        base_port,
+        dir,
+        ops_token,
+        origins,
+        registry,
+    )
+    .await
+}
+
+/// [`start`], listening on `bind` instead of `127.0.0.1`: `0.0.0.0` inside a container, so
+/// the host reaches the nodes through published ports. Each node still calls itself and its
+/// peers `http://127.0.0.1:<port>/`, which works inside the container and, with each port
+/// published as itself, from the host.
+pub async fn start_on(
+    bind: std::net::IpAddr,
+    n: u64,
+    base_port: u16,
+    dir: &Path,
+    ops_token: &str,
+    origins: Vec<String>,
+    registry: Option<String>,
+) -> eyre::Result<LocalCluster> {
     let ports: Vec<u16> = (1..=n)
         .map(|i| base_port + u16::try_from(i).unwrap_or(u16::MAX))
         .collect();
@@ -52,7 +77,7 @@ pub async fn start(
         let config = Config {
             node_id: i,
             public_url: urls[usize::try_from(i - 1)?].clone(),
-            listen: format!("127.0.0.1:{port}").parse()?,
+            listen: std::net::SocketAddr::new(bind, *port),
             data_dir,
             peers: peers.clone(),
             bootstrap: i == 1,

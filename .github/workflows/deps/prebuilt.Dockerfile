@@ -18,23 +18,25 @@ RUN useradd \
 
 ARG TARGETARCH
 
-# Copy the prebuilt binary from the CI workflow artifacts
-COPY \
-    bin/${TARGETARCH}/merod \
-    bin/${TARGETARCH}/meroctl \
-    /usr/local/bin/
+# Copy the prebuilt binary from the CI workflow artifacts. The image runs a node
+# and nothing else: meroctl and the other tools ship as release archives and
+# through Homebrew, and talk to the node from the host.
+COPY bin/${TARGETARCH}/merod /usr/local/bin/
 
-RUN chmod +x /usr/local/bin/merod /usr/local/bin/meroctl
+RUN chmod +x /usr/local/bin/merod
 
 USER user
 WORKDIR /data
 ENV CALIMERO_HOME=/data
 # `merod --node NAME init ...` then `merod --node NAME run`, or `merod run` with
-# MEROD_* variables only; `meroctl` is beside it.
+# MEROD_* variables only. For development, a three-node cluster reachable from the
+# host: `docker run -p 2501-2503:2501-2503 -v merod-local:/data <image> local --bind 0.0.0.0`.
 
 VOLUME /data
 # The API (sealed channel, `/attestation`, `/health`); peers use it too.
 EXPOSE 2528
+# `merod local`'s three nodes.
+EXPOSE 2501-2503
 
 ENTRYPOINT ["merod"]
 CMD ["--help"]

@@ -4,7 +4,7 @@ name: Tidy Docker
 #
 # 1. <sha> or <untagged> older than 2 days
 # 2. pr-<NUMBER> older than 5 days
-# 3. anything that isn't `latest`, `edge` or a release tag
+# 3. anything that isn't `latest`, `prerelease` or a release tag
 
 on:
   schedule:
@@ -17,7 +17,7 @@ on:
         default: false
         type: boolean
       force:
-        description: Remove all non-persistent images NOW (i.e not latest, edge, a release tag or one from an open PR)
+        description: Remove all non-persistent images NOW (i.e not latest, prerelease, a release tag or one from an open PR)
         required: false
         default: false
         type: boolean
@@ -30,7 +30,7 @@ permissions:
   packages: write
 
 env:
-  PERSIST: ^edge|latest|(\d+\.\d+\.\d+(-[a-z]+(\.\d+)?)?)$
+  PERSIST: ^prerelease|latest|(\d+\.\d+\.\d+(-[a-z]+(\.\d+)?)?)$
   PACKAGES: merod
   # ^~~ comma separated list of packages to clean
 

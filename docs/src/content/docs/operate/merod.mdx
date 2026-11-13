@@ -171,7 +171,7 @@ A boolean flag takes an optional value: `--dev` is `--dev true`, and
 ## local
 
 ```bash
-merod local [--nodes N] [--base-port P] [--dir DIR] [--fresh]
+merod local [--nodes N] [--bind ADDR] [--base-port P] [--dir DIR] [--fresh]
             [--ops-token TOKEN] [--registry-url URL] [--origins URL,...]
 ```
 
@@ -186,6 +186,7 @@ prints the node URLs, the state directory, the ops token and the two
 | Flag | Environment | Default | Meaning |
 | --- | --- | --- | --- |
 | `--nodes N` | | `3` | How many nodes. |
+| `--bind ADDR` | | `127.0.0.1` | The address the nodes listen on; `0.0.0.0` in a container, to publish their ports. Their URLs stay `http://127.0.0.1:{port}/`. |
 | `--base-port P` | | `2500` | Node `i` listens on `P + i`. |
 | `--dir DIR` | | `.merod-local` | Where the cluster keeps its state, across restarts. |
 | `--fresh` | | off | Delete `--dir` first. |
@@ -193,9 +194,9 @@ prints the node URLs, the state directory, the ops token and the two
 | `--registry-url URL` | `MEROD_REGISTRY_URL` | none | The package registry the cluster installs from. |
 | `--origins URL,...` | | `http://localhost:3000,http://localhost:5173` | Origins allowed to run passkey ceremonies. |
 
-The nodes listen on `127.0.0.1`, so `merod local` inside a container is not
-reachable from the host; see [Install](/operate/install/#first-run-on-macos-a-node-in-docker) for a
-container setup. The default log filter is `warn,openraft=off`.
+The nodes listen on `127.0.0.1` unless `--bind` says otherwise; in a container,
+`--bind 0.0.0.0` and publishing ports `P+1` to `P+N` make the cluster reachable
+from the host at the same URLs (see [Install](/operate/install/#first-run-on-macos-a-cluster-in-docker)). The default log filter is `warn,openraft=off`.
 
 ## inspect
 

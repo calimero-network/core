@@ -548,7 +548,7 @@ jobs:
 
       # wasm32-wasip2: this tree's kv and the release's compute fixture. The release
       # group: the same release build of merod and meroctl (without fat LTO) as
-      # e2e's process suite and a PR's Build Binaries. This job saves it, on master
+      # e2e's process suite. This job saves it, on master
       # only; it was dropped while the repository's cache
       # was capped at 10 GB, and every release build was then cold.
       - name: Setup Rust CI

@@ -34,8 +34,8 @@ name: E2E
 #   - a flamegraph of one node through the kv-store soak, by `perf record -g`
 #     and inferno (job `flamegraph`, scripts/soak-flamegraph.sh).
 #
-# A PR's own image is tested in release.yml (`E2E on the merod image`), which
-# builds it.
+# The image is tested in release.yml (`E2E on the merod image`), which builds it
+# on a release cut (or a manual dispatch) before publishing it.
 #
 # GitHub runs `schedule` only from the default branch (master); a nightly
 # dispatch (`nightly: true`) runs every job a scheduled run does.

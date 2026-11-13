@@ -159,6 +159,48 @@ fn path(p: &Path) -> &str {
     p.to_str().unwrap()
 }
 
+/// `merod local --bind 0.0.0.0` (what the Docker image runs for a developer): the nodes listen
+/// on every interface, so a container's published ports reach them, and still call each other
+/// on 127.0.0.1, which a node in the same container answers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_local_cluster_bound_to_every_interface_listens_on_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut attempt = 0;
+    let cluster = loop {
+        attempt += 1;
+        let started = calimero_node::local::start_on(
+            [0, 0, 0, 0].into(),
+            1,
+            free_base_port(),
+            &dir.path().join(format!("cluster{attempt}")),
+            "ops-token",
+            vec!["http://localhost:3000".into()],
+            None,
+        )
+        .await;
+        match started {
+            Ok(c) => break c,
+            Err(e) if attempt < 5 && port_taken(&e) => continue,
+            Err(e) => panic!("the local cluster did not start: {e:?}"),
+        }
+    };
+    let addr = cluster.nodes[0].addr;
+    assert!(addr.ip().is_unspecified(), "listening on {addr}");
+    assert!(
+        cluster.urls[0].starts_with("http://127.0.0.1:"),
+        "{}",
+        cluster.urls[0]
+    );
+    let health = format!("http://127.0.0.1:{}/health", addr.port());
+    let answer = tokio::task::spawn_blocking(move || {
+        std::net::TcpStream::connect(("127.0.0.1", addr.port()))
+    })
+    .await
+    .unwrap();
+    assert!(answer.is_ok(), "{health} refused: {answer:?}");
+    cluster.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn every_command_group_works_against_a_cluster() {
     let dir = tempfile::tempdir().unwrap();
