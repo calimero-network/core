@@ -87,7 +87,9 @@ jobs:
           crate_release=false
           docker_release=false
 
-          if [ "${GITHUB_REF}" == "refs/heads/master" ]; then
+          # Only the push of a cut releases: a run by hand (workflow_dispatch) builds and
+          # tests, and publishes nothing, on master too.
+          if [ "${GITHUB_REF}" == "refs/heads/master" ] && [ "${GITHUB_EVENT_NAME}" == "push" ]; then
             if [[ "$version" =~ -[a-z]+(\.[0-9]+)?$ ]]; then
               prerelease=true
             fi
