@@ -206,7 +206,7 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
     }
     let out = std::fs::File::create(&log)?;
     let (pid, container, child) = if a.docker {
-        // The image's merod writes as uid 10001 under /data, the mounted dir; it
+        // The image's merod writes as uid 10001 under /data, a named volume; it
         // listens on 0.0.0.0 inside the container and the ports are published on
         // loopback only, so this works on macOS and Linux alike.
         local.extend([
@@ -227,8 +227,10 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
         let _ = cmd
             .args(["run", "-d", "--name", &name, "-p"])
             .arg(format!("127.0.0.1:{first}-{last}:{first}-{last}"))
+            // A named volume: the image's user (uid 10001) cannot write a
+            // host directory owned by someone else.
             .arg("-v")
-            .arg(format!("{}:/data", dir.display()))
+            .arg(format!("{name}:/data"))
             .arg(&a.image)
             .args(&local);
         let status = cmd
