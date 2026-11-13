@@ -538,10 +538,11 @@ impl OutboundService {
             if approval.is_some_and(|a| !a.reviewed.iter().any(|r| r == under)) {
                 bail!(
                     "{AWAITING_APPROVAL}: {under} is a URL prefix this app declares that \
-                     the namespace has not been asked to approve yet"
+                     its approver (the app's organization, or the operator) has not \
+                     been asked to approve yet"
                 );
             }
-            bail!("{NOT_APPROVED}: the namespace has not approved {under} for this app");
+            bail!("{NOT_APPROVED}: {under} is not approved for this app");
         }
         if request.headers.len() > MAX_HEADERS {
             bail!("at most {MAX_HEADERS} headers");

@@ -42,7 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rv2 import BIN, MEROD, ORIGIN, ROOT, Client, Cluster, HttpError, PackageRegistry, http  # noqa: E402
 
-BASE_PORT = 7650
+BASE_PORT = 7660  # replicas 1-3, job nodes 4 and 5 (+ WORKFLOW_PORT_OFFSET); kv-soak holds 7650
 PACKAGE = "com.calimero.compute-fixture"
 VERSION = "1.0.0"
 JOBS = (4, 5)

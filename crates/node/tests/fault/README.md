@@ -17,7 +17,7 @@ latest release image's `merod`) and in `release.yml`'s `E2E on the merod image`
 | `upgrade_path.py`, `rollout.py`, `upgrade_cases/` | The upgrade path (ci-checks.yml's `Upgrade path`): a cluster on the release in `.github/upgrade-from`, rolled onto this tree's merod as mdma does (`rollout.py`'s `Fleet` and `roll_forward`, reusable), with the data its cases (`upgrade_cases/NN_*.py`: `seed`, `mixed`, `verify`, `extend`) write and read; run by `scripts/upgrade-path.sh` (docs: contribute/testing, "Upgrade path") |
 | `upgrade_deep.py`, `upgrade_cases/20_*.py`.. | The deep cases: one per user-visible functionality (`DeepCase`: `populate`, `check`, `during_mix`, `exercise`, `since`), their toolkit and the coverage matrix (`--matrix`, `--check-matrix`); fixtures from `scripts/build-upgrade-deep-fixtures.sh` |
 | `upgrade_fixture.py` | Writes a release's replay fixture (`../fixtures/upgrade/<release>/`: a data directory and the answers it gave) for `../upgrade_replay.rs` |
-| `compute_e2e.py` | Compute actions end to end, apart from the suite: 3 replicas and 2 job nodes (`merod run --job-node`), the compute fixture and `apps/compute-redact` installed from signed packages, a job node killed mid-run, cancel, the caps and the quota; base port 7650; `e2e.yml`'s `compute-e2e` (work dir `COMPUTE_E2E_DIR`, default `target/compute-e2e`) |
+| `compute_e2e.py` | Compute actions end to end, apart from the suite: 3 replicas and 2 job nodes (`merod run --job-node`), the compute fixture and `apps/compute-redact` installed from signed packages, a job node killed mid-run, cancel, the caps and the quota; base port 7660 (7661-7665); `e2e.yml`'s `compute-e2e` (work dir `COMPUTE_E2E_DIR`, default `target/compute-e2e`) |
 | `ed25519_sign.py` | Ed25519 signing in the standard library, for test keys (an organization's recovery key, a publisher binding) |
 
 ## Tests
@@ -70,7 +70,7 @@ with `nodeN.log`).
 
 Ports: test `T` uses its base (`suite.py --list` order: rooms-fault 7610,
 kv-failover 7620, frozen-leader 7625, orgs-and-keys 7630, packages 7635,
-rolling-upgrade 7640, kv-soak 7650; `upgrade_path.py` 7670, nodes 1-6 and job nodes 9 and 10) + node, plus `WORKFLOW_PORT_OFFSET`, so two
+rolling-upgrade 7640, kv-soak 7650; `compute_e2e.py` 7660; `upgrade_path.py` 7670, nodes 1-6 and job nodes 9 and 10) + node, plus `WORKFLOW_PORT_OFFSET`, so two
 checkouts can run at once. `scripts/soak-flamegraph.sh` finds kv-soak's node by
 that port.
 

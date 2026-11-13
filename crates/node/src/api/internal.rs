@@ -79,7 +79,7 @@ async fn peer(
 }
 
 /// The inbound twin of `Node::may_send`: refuse a caller whose verified
-/// release `app`'s owner has not approved to hold its data.
+/// release not approved to hold `app`'s data.
 fn caller_may_hold(
     node: &Node,
     caller: &PeerCaller,

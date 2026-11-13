@@ -92,14 +92,20 @@ detail.
    changes that break callers, and refuses a state change made without a state
    version bump ([App interface](/build/app-abi/#check-a-new-version-against-the-last)).
 
+   The other fields a release may carry:
+
+   | Flag | Manifest field | |
+   | --- | --- | --- |
+   | `--frontend <dir>`, `--frontend-entry <file>` | `frontend` | the app's static web build, served by the node ([Ship a frontend](/build/guides/frontends/)) |
+   | `--outbound <https prefix>` (repeatable) | `outbound` | URL prefixes a run may send requests under ([Call an external service](/build/guides/outbound/)) |
+   | `--upgrades owner\|publisher` | `upgrades` | who upgrades the package's instances; absent means `owner` |
+
+   The script checks each against the node's own rules before signing.
+
    <Aside type="caution">
-   The manifest has fields the script does not write: `outbound` (the URL
-   prefixes a run may call, [Call an external service](/build/guides/outbound/)),
-   `upgrades` (`owner`, the default, or `publisher`), `frontend`, `links` and
-   multi-service `services` (`calimero_bundle::BundleManifest`). A release that
-   needs them is packed by a tool that writes them before `mero-sign sign
-   manifest.json --key <file>`; check the one you use. [Ship a frontend](/build/guides/frontends/#put-it-in-the-release)
-   shows one for `frontend`.
+   `links`, `frontendAliases` and multi-service `services`
+   (`calimero_bundle::BundleManifest`) have no flag: a release that needs them
+   adds them to `manifest.json` before `mero-sign sign manifest.json --key <file>`.
    </Aside>
 
    An app with compute methods also builds a compute component

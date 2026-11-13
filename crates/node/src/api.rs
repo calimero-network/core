@@ -547,7 +547,7 @@ impl Principal {
         if let Some(release) = &self.issuer_release {
             if !node.sys(|s| s.release_may_hold(app, Some(release))) {
                 return Err(ApiError::unauthenticated(
-                    "this session was signed by a node whose release this app's owner has not approved; sign in again",
+                    "this session was signed by a node whose release is not approved for this app; sign in again",
                 ));
             }
         }

@@ -174,7 +174,7 @@ impl Node {
         let peer = self.job_attestation(id).await?;
         if !self.sys(|s| s.release_may_hold(app, Some(&peer.release))) {
             eyre::bail!(
-                "job node {id} runs release {}, which this app's owner has not approved",
+                "job node {id} runs release {}, which is not approved for this app",
                 peer.release
             );
         }

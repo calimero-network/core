@@ -1347,7 +1347,7 @@ fn operations() -> Vec<Op> {
             .query::<super::AppAttestQuery>("{ nonce: string }")
             .ok("{ appId: string, cluster: string, replicas: ({ node: uint, attestation: #AttestationDoc } | { node: uint, error: string })[] }"),
         post("/apps/{app}/views", "views", AppAccess, "Read with a view method")
-            .about("Read on a caught-up replica (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it), or (`\"stale\"`) on the one answering; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.")
+            .about("Read on the app's leader, once it has confirmed it still leads (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it; another replica forwards it there), or (`\"stale\"`) on the replica answering; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.")
             .json::<super::ViewBody>(r#"{ method: string, args?: any, consistency?: "strong" | "stale", minIndex?: uint }"#)
             .ok("{ index: uint, result: any, receipt: #Receipt }")
             .errors(&[(422, "APP_ERROR"), (422, "TRAP"), (503, "NOT_CAUGHT_UP"), (503, "TIMEOUT")])

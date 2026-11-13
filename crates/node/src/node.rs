@@ -686,7 +686,7 @@ impl Transport for PeerTransport {
                 .ok_or_else(|| format!("node {target} is not a node of this cluster"))?;
             if !node.may_send(&addr, group).await {
                 return Err(format!(
-                    "{addr} runs a release the app's owner has not approved; it gets none of the app's data"
+                    "{addr} runs a release not approved for the app; it gets none of the app's data"
                 ));
             }
             // The addressee, so a node that answers at `addr` but is not
@@ -2376,7 +2376,7 @@ impl Node {
 
     /// The outbound client for a writing run of `app_id` on `bundle`: `None`
     /// when the operator turned outbound off, or the bundle is no signed
-    /// release declaring a prefix. A declared prefix the owner has not approved
+    /// release declaring a prefix. A declared prefix not approved for the app
     /// still gets a client, whose refusal (`AWAITING_APPROVAL`, `NOT_APPROVED`)
     /// the app can show.
     fn outbound_for(

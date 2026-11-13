@@ -73,52 +73,19 @@ so the publisher's signature covers them; the archive carries them under
 }
 ```
 
-`scripts/pack-component.py` does not write `frontend` yet. This variant of it
-does, then signs with `mero-sign` and packs the archive:
-
-```python
-#!/usr/bin/env python3
-"""pack-with-frontend.py APP.wasm DIST_DIR PACKAGE VERSION KEY OUT.mpk"""
-import hashlib, io, json, subprocess, sys, tarfile
-from pathlib import Path
-
-wasm, dist, package, version, key, out = sys.argv[1:7]
-
-
-def artifact(path, data):
-    return {"path": path, "hash": hashlib.sha256(data).hexdigest(), "size": len(data)}
-
-
-app = Path(wasm).read_bytes()
-files = {f"frontend/{p.relative_to(dist).as_posix()}": p.read_bytes()
-         for p in sorted(Path(dist).rglob("*")) if p.is_file()}
-manifest = {
-    "version": "1.0",
-    "package": package,
-    "appVersion": version,
-    "minRuntimeVersion": "0.1.0",
-    "wasm": artifact("app.wasm", app),
-    "frontend": {
-        "entry": "frontend/index.html",
-        "files": [artifact(path, data) for path, data in files.items()],
-    },
-}
-Path("manifest.json").write_text(json.dumps(manifest))
-subprocess.run(["mero-sign", "sign", "manifest.json", "--key", key], check=True)
-with tarfile.open(out, "w:gz") as tar:
-    for name, data in [("manifest.json", Path("manifest.json").read_bytes()),
-                       ("app.wasm", app), *files.items()]:
-        info = tarfile.TarInfo(name)
-        info.size = len(data)
-        tar.addfile(info, io.BytesIO(data))
-```
+`scripts/pack-component.py --frontend <dir>` writes it: every file under the
+build directory goes into the archive as `frontend/<path>` with its SHA-256 and
+size, and `--frontend-entry` (default `index.html`) names the page served at
+`/`. The script refuses, before signing, what the node would refuse at install
+(the rules below), so a bad build fails on your machine, not on the cluster.
 
 ```bash
 npm run build                                    # writes dist/ with base './'
 mero-app-build apps/notes --out app.wasm
-python3 -I pack-with-frontend.py app.wasm dist com.example.notes 1.0.0 my-signing-key.json \
-  dist/com.example.notes-1.0.0.mpk
-meroctl app install --path dist/com.example.notes-1.0.0.mpk   # a development cluster
+python3 -I scripts/pack-component.py --wasm app.wasm --frontend dist \
+  --package com.example.notes --app-version 1.0.0 --key my-signing-key.json \
+  --out dist-mpk/com.example.notes-1.0.0.mpk
+meroctl app install --path dist-mpk/com.example.notes-1.0.0.mpk   # a development cluster
 ```
 
 At install the node refuses a frontend whose paths are not canonical paths
