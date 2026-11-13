@@ -90,7 +90,11 @@ detail.
    my-signing-key.json` reads `package`, `min-runtime-version` and `frontend-dir`
    from the crate's `[package.metadata.calimero]` and the release from its
    `version`, builds the components when `--wasm` and `--compute` are not given,
-   and writes `apps/my-app/dist/<package>-<version>.mpk`.
+   and writes `apps/my-app/dist/<package>-<version>.mpk`. The same table gives
+   the display `metadata` (`name`, `description`, `author`, `icon`, `tags`,
+   `license`, `category`, `guide`), `handlers.slug`, `links` (`frontend`,
+   `github`, `docs`) and `frontendAliases`, and the crate's `calimero-sdk` git
+   dependency gives `buildInfo` (`sdkSource`, `sdkVersion`: the SDK it was built with).
 
    `--min-runtime-version` (default `0.1.0`) is the oldest `merod`
    release the app needs; a cluster with an older replica refuses the upgrade
@@ -110,9 +114,9 @@ detail.
    `pack` checks each against the node's own rules before signing.
 
    <Aside type="caution">
-   `links`, `frontendAliases` and multi-service `services`
-   (`calimero_bundle::BundleManifest`) have no flag: a release that needs them
-   adds them to `manifest.json` before `meroctl app sign manifest.json --key <file>`.
+   Multi-service `services` (`calimero_bundle::BundleManifest`) has no flag
+   yet: a release that needs it adds it to `manifest.json` before
+   `meroctl app sign manifest.json --key <file>`.
    </Aside>
 
    An app with compute methods also builds a compute component

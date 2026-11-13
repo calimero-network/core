@@ -330,6 +330,45 @@ fn pack_reads_the_crate_metadata_of_dir() {
     assert!(untar(&d.join("with.mpk")).contains_key("frontend/index.html"));
 }
 
+/// `buildInfo` names the SDK the app was built with, from its `calimero-sdk`
+/// git dependency, as `mero-component bundle` wrote it: the registry compares
+/// whole manifests, so a bundle without it would read as a new release.
+#[test]
+fn pack_records_the_sdk_the_crate_builds_with() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    std::fs::write(
+        d.join("Cargo.toml"),
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[package.metadata.calimero]\npackage = \"com.example.x\"\n\n[dependencies]\ncalimero-sdk = { git = \"https://github.com/calimero-network/core\", tag = \"1.0.0-rc.23\" }\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("app.wasm"), [COMPONENT, b"app"].concat()).unwrap();
+    let _ = ok(&meroctl(
+        d,
+        &["app", "pack", ".", "--wasm", "app.wasm", "--out", "x.mpk"],
+    ));
+    assert_eq!(
+        manifest(&untar(&d.join("x.mpk")))["buildInfo"],
+        serde_json::json!({
+            "sdkSource": "https://github.com/calimero-network/core",
+            "sdkVersion": "1.0.0-rc.23"
+        })
+    );
+    // A crate that inherits the SDK from its workspace names no source.
+    std::fs::write(
+        d.join("Cargo.toml"),
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[package.metadata.calimero]\npackage = \"com.example.x\"\n\n[dependencies]\ncalimero-sdk = { workspace = true }\n",
+    )
+    .unwrap();
+    let _ = ok(&meroctl(
+        d,
+        &["app", "pack", ".", "--wasm", "app.wasm", "--out", "y.mpk"],
+    ));
+    assert!(manifest(&untar(&d.join("y.mpk")))
+        .get("buildInfo")
+        .is_none());
+}
+
 /// `publish` sends the signed manifest's own fields and the whole `.mpk` as hex,
 /// with the key as a bearer token; a refusal names the registry's code.
 #[tokio::test(flavor = "multi_thread")]
