@@ -2763,7 +2763,7 @@ impl calimero_app_host::HttpHost for TimedHttp {
 pub const SYNC_XCALL_WAIT: Duration = Duration::from_secs(3);
 
 /// What a component run reaches in other apps (`xcall.call`, `xcall.view`): views and
-/// calls of a component app in the same organization (or of the same owner), as
+/// calls of a component app in the same organization (`same_boundary`), as
 /// `Caller::App(source)`, run on the async runtime while the run's thread waits at most
 /// [`SYNC_XCALL_WAIT`]. The target runs a call as a delivery, so it reaches no further.
 ///

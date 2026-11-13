@@ -7,8 +7,8 @@
 //! - **Delivery**: the source's leader delivers the outbox head, one message at a time, so
 //!   messages leave each source in order (`Node::deliver_xcalls`). The target runs the
 //!   method as `kind = xcall-deliver` with `Caller::App(source)`; its ABI must allow the
-//!   source (`allowApps`, D13). Only within one organization, or between two personal apps
-//!   of one owner.
+//!   source (`allowApps`, D13). Only within one organization (`same_boundary`); every
+//!   app is in one since 1.0.0-rc.20.
 //! - **Deduplication** (D25): the target keeps, per source app, the highest sequence number
 //!   it applied (`ComponentHead::watermarks`); a message at or below it is answered as
 //!   delivered without running, so a leader change on either side never runs one twice.
