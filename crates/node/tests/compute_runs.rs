@@ -1452,9 +1452,7 @@ async fn a_held_report_waiting_on_the_leaders_push_is_not_replaced_by_a_zero_can
         node.set_peer_blobs(PeerBlobs::Refuse);
     }
     let pushes = rig.leader().file_pushes();
-    let run = rig
-        .begin("startDigestBrief", json!({ "inputs": [file] }))
-        .await;
+    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
     rig.until("the leader tried to push the output", || {
         rig.leader().file_pushes() > pushes
     })
@@ -1734,7 +1732,9 @@ async fn a_cancel_with_a_held_report_ends_at_the_ceiling_while_every_push_fails(
         node.set_peer_blobs(PeerBlobs::Refuse);
     }
     let pushes = rig.leader().file_pushes();
-    let run = rig.begin("startDigest", json!({ "inputs": [file] })).await;
+    let run = rig
+        .begin("startDigestBrief", json!({ "inputs": [file] }))
+        .await;
     rig.until("the leader tried to push the output", || {
         rig.leader().file_pushes() > pushes
     })

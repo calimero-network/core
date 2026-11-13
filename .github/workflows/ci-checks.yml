@@ -214,9 +214,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A push to master runs one shard of every test: the merge queue already
-        # ran them on this tree, and the push only refreshes the caches, the test
-        # apps' builds included, which every test then makes.
+        # A push to master runs shard 1 alone, the same quarter of the tests a PR's
+        # shard 1 runs: the merge queue already ran every test on this tree, and the
+        # push only refreshes the caches. The build it saves is the whole workspace's
+        # whatever the quarter, and the test apps it saves are those its tests build
+        # (the shared fixtures; a guest only another quarter uses is built on a miss).
+        # Running every test here took past the job's hour on four cores, so nothing
+        # was saved.
         shard: ${{ fromJSON(github.event_name == 'push' && '[1]' || '[1, 2, 3, 4]') }}
     steps:
       - name: Checkout code
@@ -253,13 +257,13 @@ jobs:
           restore-keys: test-apps-v2-
 
       # PARTITION is unset in a local run (scripts/check-like-ci.py), which then runs them
-      # all, and on a push to master, whose one shard runs every test.
+      # all.
       # Twice the cores: most slow tests wait on timers and the network, not the
       # CPU. The node's integration tests, which do load it, take three or four of
       # these slots each (.config/nextest.toml).
       - name: Cargo test
         env:
-          PARTITION: ${{ github.event_name != 'push' && format('count:{0}/4', matrix.shard) || '' }}
+          PARTITION: ${{ format('count:{0}/4', matrix.shard) }}
           NEXTEST_TEST_THREADS: "8"
         run: |
           FIRST_HOST=$(hostname -I | awk '{print $1}')
