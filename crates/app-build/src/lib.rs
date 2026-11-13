@@ -24,6 +24,7 @@ const TARGET: &str = "wasm32-wasip2";
 const COMPUTE_CFG: &str = "calimero_compute"; // selects the compute world in the SDK and macros
 const COMPUTE_TARGET_SUBDIR: &str = "compute"; // inside the target dir, so the two builds never invalidate each other
 const TARGET_LOCK: &str = ".calimero-app-build.lock"; // inside the target dir
+const SHARED_TARGET: &str = "shared"; // the cache's one cargo target dir, under `<cache>/target`
 const HEADER_LEN: usize = 8;
 const SECTION_CUSTOM: u8 = 0;
 const SECTION_MODULE: u8 = 1;
@@ -181,7 +182,7 @@ pub struct CachedApp {
 /// Builds `crate_dir` like [`build_component`], reusing a result cached under `cache_dir`.
 ///
 /// The component is `cache_dir/<crate dir name>-<key>.wasm` (key: see [`cache_key`]); cargo's
-/// own target directory is `cache_dir/target/<crate dir name>`. Use [`build_components_cached`]
+/// own target directory is `cache_dir/target/shared`, one for every crate built through the cache. Use [`build_components_cached`]
 /// to get the compute component too.
 pub fn build_component_cached(
     crate_dir: &Path,
@@ -213,11 +214,15 @@ pub fn build_components_cached(
     if let Some(hit) = read(&cache_key(crate_dir, also_hash)?) {
         return Ok(hit);
     }
-    // A miss builds under an exclusive lock per (crate, target dir), held across
+    // A miss builds under an exclusive lock per crate, held across
     // processes (nextest runs each test in its own): the first builds and writes the
     // cache, the others wait, find it, and reuse it. The key is computed again under
     // the lock, since the first build may have changed what it hashes.
-    let target_dir = cache_dir.join("target").join(name);
+    // One cargo target dir for every crate the cache builds: the guests share most of their
+    // dependencies (the SDK, wit-bindgen, serde), which then compile once instead of once per
+    // crate. `build` locks it, so builds of different crates take turns, each still using
+    // every core.
+    let target_dir = cache_dir.join("target").join(SHARED_TARGET);
     std::fs::create_dir_all(&target_dir)?;
     let lock = lock_exclusive(&cache_dir.join("target").join(format!("{name}.build.lock")))?;
     let key = cache_key(crate_dir, also_hash)?;

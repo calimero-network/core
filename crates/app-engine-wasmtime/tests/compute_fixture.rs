@@ -3,7 +3,7 @@
 //! outputs by `BlobRef`.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use calimero_app_build::build_in_repo_cache;

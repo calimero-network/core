@@ -236,10 +236,11 @@ jobs:
         with:
           tool: cargo-nextest@0.9.146,cargo-expand@1.0.127
 
-      # The test apps the tests build from source on first use: the engine's and
-      # app-build's guests (CARGO_TARGET_TMPDIR, target/tmp) and the node's fixtures
-      # (target/app-components, cached there by source hash). Most of the slowest
-      # tests' time was these builds. Restored after setup-rust-ci marked what changed,
+      # The test apps the tests build from source on first use: every guest and fixture
+      # (target/app-components, cached there by source hash, one cargo target dir for all;
+      # calimero_app_build::build_in_repo_cache), app-build's own test builds
+      # (CARGO_TARGET_TMPDIR, target/tmp) and the SDK's compile-fail cases (trybuild's
+      # target/tests/trybuild). Most of the slowest tests' time was these builds. Restored after setup-rust-ci marked what changed,
       # so cargo rebuilds a guest only if its sources did; saved from master below.
       - name: Restore the test apps' builds
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -247,8 +248,9 @@ jobs:
           path: |
             target/tmp
             target/app-components
-          key: test-apps-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'apps/**') }}
-          restore-keys: test-apps-v1-
+            target/tests/trybuild
+          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'apps/**') }}
+          restore-keys: test-apps-v2-
 
       # PARTITION is unset in a local run (scripts/check-like-ci.py), which then runs them
       # all, and on a push to master, whose one shard runs every test.
@@ -294,7 +296,8 @@ jobs:
           path: |
             target/tmp
             target/app-components
-          key: test-apps-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'apps/**') }}
+            target/tests/trybuild
+          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'apps/**') }}
 
 
   # Apps on the component SDK are workspaces of their own, so the workspace tests

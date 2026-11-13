@@ -4,7 +4,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 

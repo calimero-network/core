@@ -82,7 +82,9 @@ fn an_upgrade_switches_the_code_and_keeps_the_state() {
 }
 
 fn scenario(name: &str, steps: &serde_json::Value) -> PathBuf {
-    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(&dir).expect("the scratch dir");
+    let path = dir.join(name);
     std::fs::write(&path, steps.to_string()).expect("write scenario");
     path
 }
