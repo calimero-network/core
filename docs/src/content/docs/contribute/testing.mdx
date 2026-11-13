@@ -638,9 +638,16 @@ link faster, and a failing test still names its file and line. The workspace
 tests run eight at a time per 4-core shard, since the slowest of them wait on
 timers and the network.
 
-`.github/workflows/e2e.yml` runs on every PR that touches code, and nightly on
-master (a merge into master does not run it again: its PR did, and the nightly
-runs all of it with the long soak):
+`.github/workflows/e2e.yml` runs in the merge queue, on every entry whose change
+reaches code, and nightly on master with the long soak; a PR runs it only when
+labelled `ci:e2e`. Its `plan` job decides from the change (`scripts/ci-scope.py`):
+the builds and the scenarios for any code change, and the process suite, compute
+and the clients only for a change that reaches `merod`'s closure, the compute
+fixtures or the fault tests; `E2E result` gathers them into one check the queue
+can require. A push to master runs only what saves the caches (`Rust tests (1/4)`,
+the upgrade path) and what publishes: the queue already tested that tree.
+
+The jobs:
 
 - jobs `build merod and the fixtures` (`build-release`) and `build the
   scenario runner` (`build-scenarios`) compile once what the jobs below run:

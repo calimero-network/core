@@ -40,8 +40,12 @@ name: E2E
 # GitHub runs `schedule` only from the default branch (master); a nightly
 # dispatch (`nightly: true`) runs every job a scheduled run does.
 
+# A PR runs this only when labelled `ci:e2e`; the merge queue runs it on every
+# entry (the `E2E result` check gathers it), and the nightly runs all of it. The
+# `plan` job decides, by what the change reaches (scripts/ci-scope.py).
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -88,8 +92,9 @@ permissions:
 # A nightly (scheduled or dispatched) run has a group of its own, so a push to
 # the same branch neither cancels it nor waits behind it. Runs of master are
 # never cancelled.
+# Adding any label but `ci:e2e` gets a group of its own, so it never cancels a run.
 concurrency:
-  group: e2e-${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.nightly) && 'nightly' || 'run' }}
+  group: e2e-${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.nightly) && 'nightly' || 'run' }}-${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && github.event.label.name || 'run' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
@@ -101,6 +106,98 @@ env:
   INFERNO_VERSION: 0.12.8
 
 jobs:
+  # What this event runs: `e2e` (the builds and the scenarios) on a merge-queue
+  # entry, a nightly or a dispatch, or a PR labelled `ci:e2e`, when the change
+  # reaches code; `node` (the process suite, compute and the clients) when it also
+  # reaches merod's closure (ci-scope.py's `upgrade_path`) or the compute fixtures.
+  # A nightly or dispatch, or a change to this workflow, runs everything. Fails
+  # closed: files it cannot list run everything.
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      e2e: ${{ steps.plan.outputs.e2e }}
+      node: ${{ steps.plan.outputs.node }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Decide what runs
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:e2e') }}
+          FROM: ${{ github.event.merge_group.base_sha }}
+          TO: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -uo pipefail
+          files=""
+          case "$EVENT" in
+            pull_request)
+              if listed=$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename') \
+                && [ "$(grep -c . <<<"$listed")" -lt 3000 ]; then
+                files=$listed
+              fi
+              ;;
+            merge_group)
+              if [ -n "${FROM//0/}" ] \
+                && listed=$(gh api "repos/$REPO/compare/$FROM...$TO" --jq '.files[].filename') \
+                && [ "$(grep -c . <<<"$listed")" -lt 300 ]; then
+                files=$listed
+              fi
+              ;;
+          esac
+          scope=$(printf '%s\n' "$files" | python3 scripts/ci-scope.py) || scope="rust=true
+          upgrade_path=true"
+          rust=$(sed -n 's/^rust=//p' <<<"$scope")
+          node_closure=$(sed -n 's/^upgrade_path=//p' <<<"$scope")
+          all=false
+          case "$EVENT" in schedule | workflow_dispatch) all=true ;; esac
+          [ -n "$files" ] || all=true
+          grep -qE '^(\.github/workflows/e2e\.yml|\.github/actions/)' <<<"$files" && all=true
+          wanted=true
+          if [ "$EVENT" = pull_request ] && [ "$LABELLED" != true ]; then wanted=false; fi
+          e2e=false
+          if [ "$wanted" = true ] && { [ "$all" = true ] || [ "$rust" = true ] \
+               || grep -qE '^(workflows/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
+            e2e=true
+          fi
+          node=false
+          if [ "$e2e" = true ] && { [ "$all" = true ] || [ "$node_closure" = true ] \
+               || grep -qE '^(apps/v2-fixtures/compute/|apps/compute-redact/|tools/mero-compute/|crates/node/tests/fault/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
+            node=true
+          fi
+          echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
+          echo "node=$node" >> "$GITHUB_OUTPUT"
+          echo "event=$EVENT labelled=$LABELLED rust=$rust node_closure=$node_closure all=$all -> e2e=$e2e node=$node"
+          if [ "$EVENT" = pull_request ] && [ "$wanted" != true ]; then
+            echo "::notice::e2e runs in the merge queue; add the ci:e2e label to run it on this PR now"
+          fi
+
+  # The check to require: passes when every e2e job passed or was skipped by `plan`.
+  result:
+    name: E2E result
+    if: ${{ !cancelled() }}
+    needs: [plan, build-release, build-scenarios, scenarios, process-suite, compute-e2e, clients]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every e2e job to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -e '.plan.result == "success" and (to_entries | all(.value.result == "success" or .value.result == "skipped"))' <<<"$NEEDS"
+
   # The release build every process-level job runs, once: merod, meroctl and
   # mero-sign; mero-app-build and mero-compute; the kv component and two signed
   # releases of it (and, nightly, the Rooms component). A nightly builds as the
@@ -110,6 +207,8 @@ jobs:
   # what the release group's other jobs do.
   build-release:
     name: build merod and the fixtures
+    needs: plan
+    if: needs.plan.outputs.e2e == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -176,6 +275,8 @@ jobs:
   # a script; it must see what the runner sees.
   build-scenarios:
     name: build the scenario runner
+    needs: plan
+    if: needs.plan.outputs.e2e == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -268,7 +369,8 @@ jobs:
   # soak, rooms_fault.py's randomized nemesis for 50 iterations).
   process-suite:
     name: process suite (merod processes)
-    needs: build-release
+    needs: [plan, build-release]
+    if: needs.plan.outputs.node == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ (github.event_name == 'schedule' || inputs.nightly) && 180 || 60 }}
     steps:
@@ -409,7 +511,8 @@ jobs:
   # Compute actions on real processes (three replicas, two job nodes), which merobox cannot start.
   compute-e2e:
     name: compute actions, real processes
-    needs: build-release
+    needs: [plan, build-release]
+    if: needs.plan.outputs.node == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -745,7 +848,8 @@ jobs:
   # One job per client, on the release merod `build-release` built.
   clients:
     name: clients against merod (${{ matrix.client }})
-    needs: build-release
+    needs: [plan, build-release]
+    if: needs.plan.outputs.node == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:

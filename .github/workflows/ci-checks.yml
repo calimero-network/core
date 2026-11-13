@@ -110,14 +110,18 @@ jobs:
       - name: Require every Rust job to pass
         env:
           NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
           # job -> the `scope` output that decides whether it runs
           GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test":"rust","rust-apps":"rust","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","upgrade-path":"upgrade_path"}'
         run: |
-          jq -e --argjson gates "$GATES" '
+          # A push to master runs only the jobs that save caches (the merge queue ran
+          # the rest on this tree), so there a gated job may be skipped.
+          jq -e --argjson gates "$GATES" --arg event "$EVENT" '
             .scope.outputs as $scope
             | to_entries | all(
                 .value.result == "success"
-                or (.value.result == "skipped" and ($gates[.key] // "") != "" and $scope[$gates[.key]] == "false")
+                or (.value.result == "skipped" and ($gates[.key] // "") != ""
+                    and ($scope[$gates[.key]] == "false" or $event == "push"))
               )' <<<"$NEEDS"
 
   # The checks that need no build: they fail a PR in about a minute, before the
@@ -169,7 +173,7 @@ jobs:
   rust-lint:
     name: Rust lint
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true'
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -210,7 +214,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        # A push to master only refreshes the cache (shard 1 builds every test):
+        # the merge queue already ran all of it on exactly this tree.
+        shard: ${{ fromJSON(github.event_name == 'push' && '[1]' || '[1, 2, 3, 4]') }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -272,7 +278,7 @@ jobs:
   rust-apps:
     name: Rust standalone apps (${{ matrix.shard }}/3)
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true'
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -319,7 +325,7 @@ jobs:
   rust-compute-tools:
     name: mero-compute end to end
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true'
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -373,7 +379,7 @@ jobs:
   rust-features:
     name: Rust feature-gated tests
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true'
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -401,7 +407,7 @@ jobs:
   compat:
     name: Compatibility
     needs: scope
-    if: needs.scope.outputs.rust == 'true'
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -425,7 +431,7 @@ jobs:
   rust-supply-chain:
     name: Rust supply chain
     needs: scope
-    if: needs.scope.outputs.rust == 'true'
+    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
