@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.23] - 2026-11-13
+
+### Changed
+
+- **Re-cut of 1.0.0-rc.22 with its binaries.** rc.22's tag and crates are published,
+  but its GitHub release never got `merod`/`meroctl`: the upload job waited for a
+  `big-machine` runner that no longer exists. rc.23 carries the same code as rc.22
+  (plus CI only: every job runs on standard GitHub-hosted runners, #5025) and
+  publishes the binaries, so take rc.23 wherever rc.22 was meant.
+
 ## [1.0.0-rc.22] - 2026-11-13
 
 ### Added
