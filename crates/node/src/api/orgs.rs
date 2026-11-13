@@ -107,7 +107,7 @@ async fn org_create(
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
-    create_org(&node, account, body.name, body.recovery_key, false).await
+    create_org(&node, account, body.name, body.recovery_key, false, None).await
 }
 
 /// Create an organization `account` owns: `POST /orgs`, and the consent
@@ -118,6 +118,7 @@ pub(crate) async fn create_org(
     name: String,
     recovery_key: Option<String>,
     personal: bool,
+    app_team: Option<String>,
 ) -> ApiResult {
     crate::system::org_name_fits(&name).map_err(malformed)?;
     let org_id = typed_id::<16>();
@@ -131,6 +132,7 @@ pub(crate) async fn create_org(
             at: recovery_now(node),
             name_fits: true,
             personal,
+            app_team,
         })
         .await?;
     Ok(Json(v))
