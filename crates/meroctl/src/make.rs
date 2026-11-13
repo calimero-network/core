@@ -19,7 +19,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 /// The default component file names, as `mero-app-build` wrote them.
-const APP_FILE: &str = "app.component.wasm";
+pub const APP_FILE: &str = "app.component.wasm";
 const COMPUTE_FILE: &str = "compute.component.wasm";
 const WASM_MAGIC: &[u8] = b"\0asm\x0d\0\x01\0"; // a component; a core module is an SDK 0.12 app
 const DEFAULT_MIN_RUNTIME: &str = "0.1.0";

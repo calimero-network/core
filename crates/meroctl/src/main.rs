@@ -20,11 +20,13 @@ use serde_json::{json, Value};
 mod account;
 mod app;
 mod blob;
+mod cloud;
 mod context;
 mod dev;
 mod env;
 mod file;
 mod group;
+mod local;
 mod make;
 mod namespace;
 mod node;
@@ -122,16 +124,16 @@ enum Cmd {
     },
     /// Who the requests run as.
     Whoami,
-    /// The node's attestation; with `--context`, every replica of that app
-    /// verified, and the governance they attest.
+    /// Attestation: the node's (the default), an app's replicas, a release's.
     Attest {
-        #[arg(long, short)]
+        #[command(subcommand)]
+        cmd: Option<AttestCmd>,
+        /// `attest app CONTEXT`, under its old spelling.
+        #[arg(long, short, hide = true)]
         context: Option<String>,
     },
-    /// Verify a release attestation (`merod attest`), made before the node
-    /// holds any key: from `--file` with the `--nonce` it was made over, or
-    /// fetched from the node (`GET /attestation/release`) over a fresh nonce.
-    /// Judged like any quote (`--allow-mock`, `--tee-profiles`, `--min-release`).
+    /// `attest release`, under its old name.
+    #[command(hide = true)]
     AttestRelease {
         #[arg(long, requires = "nonce")]
         file: Option<PathBuf>,
@@ -175,12 +177,16 @@ enum Cmd {
     /// A context's sealed files: upload.
     #[command(subcommand)]
     File(file::FileCmd),
-    /// A context's pipeline runs: run, get, cancel, runs.
-    #[command(subcommand)]
+    /// `cloud compute pipeline`, under its old name.
+    #[command(subcommand, hide = true)]
     Pipeline(pipeline::PipelineCmd),
-    /// A context's compute runs: logs.
-    #[command(subcommand)]
+    /// `cloud compute logs`, under its old name (`run logs`).
+    #[command(subcommand, hide = true)]
     Run(run::RunCmd),
+    /// Calimero Cloud: sign in, organizations, clusters, `use` one as the
+    /// node; and a cluster's compute (pipelines, run logs).
+    #[command(subcommand)]
+    Cloud(cloud::CloudCmd),
     /// Organizations (v1's namespaces): members, invites, groups, metadata, approvals.
     #[command(subcommand, alias = "ns")]
     Namespace(namespace::NamespaceCmd),
@@ -190,7 +196,13 @@ enum Cmd {
     /// This account: passkeys (devices), API keys, usage, approvals.
     #[command(subcommand)]
     Account(account::AccountCmd),
-    /// Development workflow: start a project, install, create and keep a build pushed.
+    /// A development cluster on this machine (`merod local`, or its image with
+    /// `--docker`): up, down, status; and the loop around it: dev, test,
+    /// compute run.
+    #[command(subcommand)]
+    Local(local::LocalCmd),
+    /// `meroctl local dev`'s predecessor: install a build, create a context
+    /// from it and keep it pushed.
     #[command(subcommand)]
     Dev(dev::DevCmd),
     /// The node's health and the cluster's leader.
@@ -214,6 +226,25 @@ enum Cmd {
         /// passkey file (development clusters).
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AttestCmd {
+    /// The node's attestation, as the channel verified it.
+    Node,
+    /// Every replica of an app verified, and the governance they attest.
+    App { context: String },
+    /// Verify a release attestation (`merod attest`), made before the node
+    /// holds any key: from `--file` with the `--nonce` it was made over, or
+    /// fetched from the node (`GET /attestation/release`) over a fresh nonce.
+    /// Judged like any quote (`--allow-mock`, `--tee-profiles`, `--min-release`).
+    Release {
+        #[arg(long, requires = "nonce")]
+        file: Option<PathBuf>,
+        /// The nonce the file's attestation was made over, hex.
+        #[arg(long, requires = "file")]
+        nonce: Option<String>,
     },
 }
 
@@ -266,12 +297,41 @@ async fn verified_release(
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // `attest node|app|release` are the old `attest [--context]` and `attest-release`.
+    match &mut cli.cmd {
+        Cmd::Attest {
+            cmd: Some(AttestCmd::Release { file, nonce }),
+            ..
+        } => {
+            cli.cmd = Cmd::AttestRelease {
+                file: file.take(),
+                nonce: nonce.take(),
+            };
+        }
+        Cmd::Attest { cmd, context } => match cmd.take() {
+            Some(AttestCmd::App { context: c }) => *context = Some(c),
+            Some(AttestCmd::Node | AttestCmd::Release { .. }) | None => {}
+        },
+        _ => {}
+    }
     let home = Home {
         dir: cli.home.clone(),
     };
     if let Cmd::Node(cmd) = &cli.cmd {
         return print(&node::run(cmd, &home)?);
+    }
+    if matches!(&cli.cmd, Cmd::Cloud(c) if !c.needs_node()) {
+        let Cmd::Cloud(cmd) = cli.cmd else {
+            unreachable!()
+        };
+        return print(&cloud::run(cmd, &home).await?);
+    }
+    if matches!(cli.cmd, Cmd::Local(_)) {
+        let Cmd::Local(cmd) = cli.cmd else {
+            unreachable!()
+        };
+        return print(&local::run(cmd, home).await?);
     }
     if matches!(&cli.cmd, Cmd::App(c) if c.is_offline()) {
         let Cmd::App(cmd) = cli.cmd else {
@@ -373,7 +433,7 @@ async fn main() -> eyre::Result<()> {
     env.authenticate().await?;
     let out: Value = match cli.cmd {
         Cmd::Whoami => to_json(&env.client.auth().me().await?)?,
-        Cmd::Attest { context: None } => {
+        Cmd::Attest { context: None, .. } => {
             // For display: the channel attested the node already, under the policy.
             let nonce = hex::encode([7_u8; 32]);
             to_json(
@@ -385,6 +445,7 @@ async fn main() -> eyre::Result<()> {
         }
         Cmd::Attest {
             context: Some(context),
+            ..
         } => {
             let app = env.app(&context).await?;
             let proven = env.client.verify_app_cluster(&app).await?;
@@ -435,6 +496,12 @@ async fn main() -> eyre::Result<()> {
         Cmd::File(cmd) => file::run(cmd, &env).await?,
         Cmd::Pipeline(cmd) => pipeline::run(cmd, &env).await?,
         Cmd::Run(cmd) => run::run(cmd, &env).await?,
+        Cmd::Cloud(cloud::CloudCmd::Compute(cmd)) => match cmd {
+            cloud::ComputeCmd::Pipeline(cmd) => pipeline::run(cmd, &env).await?,
+            cloud::ComputeCmd::Logs { app, run, attempt } => {
+                run::run(run::RunCmd::Logs { app, run, attempt }, &env).await?
+            }
+        },
         Cmd::Namespace(cmd) => namespace::run(cmd, &env).await?,
         Cmd::Group(cmd) => group::run(cmd, &env).await?,
         Cmd::Account(cmd) => account::run(cmd, &env).await?,
@@ -468,6 +535,8 @@ async fn main() -> eyre::Result<()> {
             }
         }
         Cmd::Node(_)
+        | Cmd::Local(_)
+        | Cmd::Cloud(_)
         | Cmd::Ops(_)
         | Cmd::Login { .. }
         | Cmd::Logout { .. }
@@ -481,9 +550,37 @@ async fn main() -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use super::Cli;
+
+    /// Clap's own checks over the whole tree (unique names, valid defaults):
+    /// otherwise they fail only when that subcommand is run.
+    #[test]
+    fn the_command_tree_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    /// The old spellings still parse, to the commands that replaced them.
+    #[test]
+    fn old_spellings_still_parse() {
+        for args in [
+            &["meroctl", "dev", "new", "x"][..],
+            &["meroctl", "attest-release"],
+            &["meroctl", "attest", "--context", "c"],
+            &["meroctl", "run", "logs", "a", "r"],
+            &["meroctl", "pipeline", "runs", "a"],
+            &["meroctl", "attest", "release"],
+            &["meroctl", "attest", "app", "c"],
+            &["meroctl", "cloud", "compute", "logs", "a", "r"],
+            &["meroctl", "cloud", "compute", "pipeline", "runs", "a"],
+            &["meroctl", "local", "compute", "run", "c.wasm", "--method", "m", "--out", "o"],
+            &["meroctl", "app", "codegen", "--abi", "a.json", "--lang", "ts"],
+            &["meroctl", "app", "abi", "diff", "old.mpk", "new.wasm", "--json"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
+        }
+    }
 
     /// `package` is `app`: `meroctl package origins ...` reaches the same commands.
     #[test]
