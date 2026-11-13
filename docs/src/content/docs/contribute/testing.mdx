@@ -357,6 +357,25 @@ release build on a shared runner) are for comparing runs of the same job; the
 release image's runs measure the binary that ships. The pass rate (99 %)
 gates; latency gates nothing.
 
+## Proving a pipeline on a cluster
+
+`scripts/pipeline-e2e.py` proves a pipeline end to end on a real cluster in one command.
+It packs the compute fixture and its `fanout.yaml` into a package signed with `--key` (or a generated key), installs it and creates the compute-only app.
+It then uploads three sealed files, runs the fan-out and collect pipeline, and waits for it to end within `--timeout`.
+It checks the run succeeded, the `each` outputs byte for byte, the `all` output's size, `meroctl pipeline receipt --verify`, and that a re-run is answered from the step cache with the same bytes.
+Each step prints `PASS` or `FAIL`, and the exit code is 1 if any failed.
+
+```bash
+scripts/pipeline-e2e.py --local                          # 3 replicas and a job node of this tree's merod
+CALIMERO_API_KEY=... scripts/pipeline-e2e.py --api https://node.example --timeout 300
+```
+
+Credentials are meroctl's: `CALIMERO_API_KEY` in the environment, or the session saved under `--home`.
+The cluster needs a job node, and `--key` must be a publisher key it trusts.
+`--keep` leaves the app and the work directory; `--package-file` installs a built package.
+Binaries come from `RV2_BIN_DIR` as for the other process tests, and `mero-app-build` must be on `PATH`.
+CI runs the `--local` form in the `compute-e2e` job.
+
 ## Upgrade path
 
 Every Calimero Cloud cluster on a release must be able to roll forward to every
