@@ -101,6 +101,11 @@ jobs:
   # The required status check: passes only if every Rust job below passes, or was
   # skipped because `scope` found that the change cannot reach it. A failed or
   # skipped `scope` fails it.
+  #
+  # Each job runs unless its verdict is exactly `false`: `scope` runs a PR head's
+  # ci-scope.py under master's workflow, and a branch older than a verdict prints
+  # none for it, so a missing verdict runs the job rather than skipping it and
+  # failing this check.
   rust:
     name: Rust
     if: ${{ !cancelled() }}
@@ -130,7 +135,7 @@ jobs:
   rust-quick:
     name: Rust quick checks
     needs: scope
-    if: needs.scope.outputs.rust == 'true'
+    if: needs.scope.outputs.rust != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -176,7 +181,7 @@ jobs:
   rust-lint:
     name: Rust lint
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true'
+    if: needs.scope.outputs.rust != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -211,7 +216,7 @@ jobs:
   rust-test:
     name: Rust tests (${{ matrix.shard }}/4)
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true'
+    if: needs.scope.outputs.rust != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -316,7 +321,7 @@ jobs:
   rust-apps:
     name: Rust standalone apps (${{ matrix.shard }}/3)
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.standalone_apps == 'true'
+    if: needs.scope.outputs.standalone_apps != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -389,7 +394,7 @@ jobs:
   rust-compute-tools:
     name: mero-compute end to end
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -443,7 +448,7 @@ jobs:
   rust-features:
     name: Rust feature-gated tests
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -471,7 +476,7 @@ jobs:
   compat:
     name: Compatibility
     needs: scope
-    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -495,7 +500,7 @@ jobs:
   rust-supply-chain:
     name: Rust supply chain
     needs: scope
-    if: needs.scope.outputs.rust == 'true' && github.event_name != 'push'
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -536,7 +541,7 @@ jobs:
   upgrade-path:
     name: Upgrade path (from the pinned release)
     needs: [scope, rust-quick]
-    if: needs.scope.outputs.upgrade_path == 'true'
+    if: needs.scope.outputs.upgrade_path != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
