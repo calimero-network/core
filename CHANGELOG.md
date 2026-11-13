@@ -2,6 +2,80 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A follower answers a strong view itself** (`calimero-node`). The replica that
+  takes a strong view asks the app's leader for its applied index
+  (`POST /internal/app/index`: the leader confirms it leads and runs no WASM),
+  waits until it has applied that far, and runs the view locally: still
+  linearizable, and the leader no longer runs every strong view. A replica that
+  cannot catch up in `read_wait`, or whose leader runs an earlier release, sends
+  the view to the leader as before. `calimero_replica_strong_views_total` counts
+  the views a replica answered itself.
+- **`scripts/pack-component.py --frontend DIR`, `--outbound PREFIX`,
+  `--upgrades owner|publisher`**: the manifest fields no tool wrote, each checked
+  with the node's rules before signing.
+
+### Fixed
+
+- **A move is judged by the target's own quotas** (`calimero-node`). `MoveApp`
+  checked the target's file bytes and compute runs against the cluster's limits,
+  ignoring the organization's override (`POST /ops/quotas` with `org`), which
+  every other charge and `TransferApp` use. `MoveApp { org_quotas }`
+  (`Feature::MoveOrgQuotas`, 1.0.0-rc.24) judges the override; an entry without
+  the field replays as it applied. `POST /apps/{app}/move` answers
+  `409 FEATURE_NOT_ACTIVE` until every node runs this release.
+- **A publisher's upgrade run covers the instances that run its package**
+  (`calimero-node`). It chose apps by the package their bundle was first
+  recorded from, so an instance running the publisher's release on a component
+  another package shipped first was left out (and one running another package on
+  the publisher's first component was listed, then refused `RUN_OTHER_PACKAGE`).
+  `StartUpgradeRun { by_release }` (`Feature::PublishedRunByRelease`,
+  1.0.0-rc.24) picks them by the release they run, as organization runs do; an
+  entry without the field replays as it applied.
+  `POST /orgs/{org}/packages/{package}/upgrade` answers `409 FEATURE_NOT_ACTIVE`
+  until every node runs this release.
+- **Refusals name who approves**: outbound and release refusals no longer say "the
+  namespace" or "the app's owner" (approvals are the app's organization's, the
+  publisher's or the operator's since 1.0.0-rc.20); the `NotApproved:` and
+  `AwaitingApproval:` prefixes are unchanged.
+- `compute_e2e.py` uses base port 7660; it shared 7650 with the fault suite's
+  `kv-soak`. `calimero-outbound` builds on its own (it now enables
+  `calimero-primitives`' `borsh` feature).
+
+### Removed
+
+- **`calimero-primitives`' v1 leftovers** (breaking). Nothing in this workspace,
+  its apps, its fuzz targets, calimero-client-py, mero-tee or the apps repository
+  named them; they described the context-era node (libp2p sync, CRDT storage,
+  WebSocket events, namespaces with TEE roles, SDK 0.12's search exports):
+  - the modules `alias`, `content_hash`, `crdt`, `events`, `identity`, `metadata`,
+    `reflect`, `sync_status` and `version`;
+  - `common::{ZERO_HASH, bool_true, ResultAlt, multiaddr_to_url}`,
+    `utils::{compact_path, prefix_upper_bound, loggable_url_str}`;
+  - `context::{Context, ContextConfigParams, GroupMemberRole}`,
+    `ContextId::from_seed` and the `rand` feature-gated dependency it needed;
+  - `application::{Application, ApplicationBlob, SignerId, InvalidSignerId, Version,
+    InvalidVersion, ZERO_APPLICATION_ID}`, `blobs::{BlobInfo, BlobMetadata}`;
+  - `outbound::{SealedSecret, SealedSecretPayload, SEALED_PREFIX, MAX_SEALED_ENVELOPE,
+    MAX_REQUESTS_PER_RUN}` and `OutboundRefusal::SealedUnavailable`;
+  - `search::{SCHEMA_EXPORT, EXTRACT_EXPORT, SCAN_EXPORT, is_export, ExtractRequest,
+    ExtractResponse, ScanRequest, ScanResponse}`.
+
+  The crate no longer depends on `ed25519-dalek`, `zeroize`, `multiaddr` or `rand`.
+  What remains: `Hash`, `ApplicationId` (`for_bundle`), `ApplicationSource`, `BlobId`,
+  `ContextId`, `DIGEST_SIZE`, the `outbound` wire, the `search` vocabulary and
+  `utils::loggable_url`.
+- **`calimero-tee-attestation`'s unused bindings and host info** (breaking):
+  `admission_binding`, `admission_report_data`, `TEE_ADMISSION_BINDING_DOMAIN`,
+  `attest_key_binding`, `ATTEST_KEY_BINDING_DOMAIN`, `attest_registration_binding`,
+  `build_report_data`, `fetch_collateral`, `get_tee_info`, `TeeInfo` and
+  `AttestationError::InfoRetrievalFailed` (only `get_tee_info` returned it). Nothing in
+  this workspace or mero-tee called them. The crate no longer depends on `eyre`,
+  `reqwest` or `tdx_workload_attestation`. `verify_evidence`, `EvidenceVerdict`,
+  `quote_report_data` and the `QuoteCollateralV3` re-export stay: the `quote_parse`
+  fuzz target calls them.
+
 ## [1.0.0-rc.23] - 2026-11-13
 
 ### Changed

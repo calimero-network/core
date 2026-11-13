@@ -7,8 +7,9 @@ on wasmer, were removed with that engine).
 ## Package Identity
 
 - **Target**: `wasm32-wasip2`, built into a `calimero:app` component
-- **SDK**: `calimero-sdk` (by path); storage is `Table<Record>`,
-  `UnorderedMap`, `Cell` and `Counter`
+- **SDK**: `calimero-sdk` (by path); storage is `Table<Record>` and the
+  collections `UnorderedMap`, `Set`, `Vector`, `Cell`, `Counter`, `PerUser`,
+  `Frozen`, `Text` and `RichText`
 
 ## Commands
 
@@ -34,14 +35,14 @@ mero-compute run compute.component.wasm --method <name> [--args <json or @file>]
 
 It runs on the job node's engine and run setup with the method's caps from the compute ABI, a fixed clock and seeded randomness.
 Inputs are plain files and outputs are written to `<dir>/output-<i>` in the order the run finished them.
-It prints progress as the run reports it, then the result, each output and the usage, and exits non-zero with the reason (`fuel`, `memory`, `time`, `trap`, `app-error`) when the run fails.
+It prints progress as the run reports it, then the result, each output and the usage, and exits non-zero with the reason (`fuel`, `memory`, `trap`, `app-error`, or `lost` for a wall clock that ran out) when the run fails.
 `--twice` runs again and fails, naming what differs, if the result or an output differs.
 
 ## Available Apps
 
 | App                      | Purpose                | Good Example For       |
 | ------------------------ | ---------------------- | ---------------------- |
-| `kv-store`               | Simple key-value store | `Table` + `Counter`, events, a typed error; `TestApp` tests and `scenarios/*.json` |
+| `kv-store`               | Simple key-value store | `UnorderedMap`, events, a typed error; `TestApp` tests and `scenarios/*.json` |
 | `kv-store-init`          | KV with custom init | `#[app::init]` seeding the first state as the owner |
 | `org-gated`              | Org notes | `env::org_role` / `env::in_team`: gate methods on the caller's organization role and teams; `scenarios/cluster/` changes a team mid-run |
 | `sorted-kv-store`        | Ordered KV store | A `Table` read in key order: range / prefix / page / first / last through its cursor |
@@ -53,13 +54,14 @@ It prints progress as the run reports it, then the result, each output and the u
 | `name-registry-admin`    | Usernames | Claim, verdict and admin tables: one owner per name, decided by the admins (the first claim applied wins); the app owner is the first admin, `setAdmins` hands the role on, a lost claim is renewed with `rebid` after a release |
 | `components-demo`        | Access-control patterns | An owned cell, a writer set and a role registry, each a table plus a check against `env::caller()` |
 | `kv-store-with-shared-storage` | Writer-set KV | A writer set as table rows plus an explicit check, and its rotation; `crates/node/tests/shared_storage.rs` runs it on a cluster |
-| `kv-store-with-user-and-frozen-storage` | Per-user + immutable KV | Rows keyed by the caller's account, content-addressed rows hashed with `sha2` |
+| `kv-store-with-user-and-frozen-storage` | Per-user + immutable KV | `PerUser` values keyed by the caller's account, a `Frozen` content-addressed store with its own `ContentHash` (`sha2`) |
 | `custom-key-store`       | Custom key type | A `ToKeyPart` newtype key (`Slug` over a `String`, normalized), and why a struct without it does not compile |
 | `team-metrics`           | Team metrics with badges | Per-team counts and a bitmask as a plain record |
 | `rooms`                  | Room booking | The node's Rooms tests (`crates/node/tests/rooms.rs`) and the fault test |
 | `compute-redact`         | CSV redaction | `#[app::compute]` runs: a preview then one run per part, a queue of at most 4 active runs, the compute component (`mero-app-build --compute-out`) that may import only the compute world; the policy is set by an admin and copied into each job; `share` publishes a done job's outputs (`compute::publish`) and `link` grants a download (`blobs.grant`) |
 | `v2-fixtures/kv`         | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls, actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
 | `v2-fixtures/compute` | The compute fixture | Compute methods that stream files, report progress and break each cap; `crates/node/tests/job_runs.rs` and `tools/mero-compute/tests` |
+| `v2-fixtures/notes-v1`, `notes-v2` | Two releases of one app | The consent page's upgrade diff (`an_upgrades_page_names_what_the_components_abis_change` in `crates/node/tests/consent_page.rs`) |
 | `v2-fixtures/org-gated`, `captcha`, `files` | Node test fixtures | What `crates/node/tests` needs that the example apps do not show |
 
 ## Component apps

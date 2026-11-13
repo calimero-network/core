@@ -158,8 +158,8 @@ fn normalize_measurement(value: &str) -> EyreResult<String> {
 }
 
 /// Releases never change once published, so a verified one is kept for the
-/// life of the process. Bounded, because the version comes from whoever asks
-/// to be admitted.
+/// life of the process. Bounded, because the version comes from the node being
+/// checked.
 const CACHE_CAPACITY: usize = 32;
 
 fn cache() -> &'static Mutex<HashMap<String, Arc<NodeRelease>>> {

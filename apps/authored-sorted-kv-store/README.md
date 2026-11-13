@@ -34,6 +34,7 @@ demonstrate that.
 `ownerOf(key)`, `readTopic(topic)` (posting order), `verifiedNotes(topic)`,
 `myNotes(topic)` (the caller's keys, key order), `countAll`, `flood(topic, from, n)`.
 `seq`, `from` and `n` are decimal strings.
+Events: `Posted { key }`, `Edited { key }`, `Retracted { key }`.
 
 ## Running it
 

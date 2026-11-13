@@ -1,4 +1,4 @@
-# Docs improvement backlog (100)
+# Docs improvement backlog
 
 A living checklist for taking the Calimero docs from "complete first draft" to
 polished product. Grouped by theme; check items off as they land.
@@ -29,13 +29,12 @@ polished product. Grouped by theme; check items off as they land.
 
 ## C · Diagrams & interactivity
 - [ ] 21. Add play/pause/scrub controls to animated sequence diagrams.
-- [ ] 22. Unify all diagram palettes to shared CSS variables.
+- [x] 22. Unify all diagram palettes to shared CSS variables. (The "Diagrams" keys in `src/styles/theme.css`; contribute/docs "Diagrams".)
 - [ ] 23. Make diagrams scale/scroll gracefully on mobile.
 - [ ] 24. Add a reduced-motion static caption listing each diagram's steps.
-- [ ] 25. Apply the shared diagram-component pattern beyond the Protocol track.
-- [ ] 26. Add an interactive end-to-end "life of an operation" walkthrough.
+- [x] 25. Apply the shared diagram-component pattern beyond the Protocol track. (`src/components/diagrams/`: Build, Ops, Contrib and Org diagrams.)
+- [ ] 26. Add an interactive end-to-end "life of a call" walkthrough (leader run, log entry, followers applying the diff).
 - [ ] 27. Add alt text / aria descriptions to every diagram.
-- [ ] 28. Build a CRDT-merge convergence animated showpiece.
 
 ## D · Code & spec presentation
 - [x] 29. Copy-to-clipboard on all code blocks (Expressive Code default).
@@ -58,12 +57,12 @@ polished product. Grouped by theme; check items off as they land.
 ## F · Build track content
 - [ ] 43. Expand the quickstart into a full tutorial with expected output.
 - [x] 44. Add a "first app from scratch" tutorial (scaffold → state → method → test).
-- [x] 45. Document the TestHost testing harness with examples.
-- [x] 46. How-to: model data with the right CRDT collection.
+- [x] 45. Document the `TestApp` testing harness with examples (`build/testing`).
+- [x] 46. How-to: model data with the right collection or `Table` (`build/collections`).
 - [x] 47. How-to: emit & handle events.
 - [x] 48. How-to: cross-context calls (link `/protocol/xcall/`).
-- [x] 49. How-to: blobs (upload/announce/fetch).
-- [x] 50. Document access-controlled storage (Shared/User/Frozen) with examples.
+- [x] 49. How-to: blobs and sealed files (`build/guides/blobs`).
+- [x] 50. Document access control (explicit checks against the caller, `PerUser`, `Frozen`) with examples (`build/guides/access-control`).
 - [ ] 51. Generate an SDK API reference from rustdoc.
 - [x] 52. How-to: ship v2 (migrations) with troubleshooting. (`build/ship-v2`.)
 
@@ -72,35 +71,27 @@ polished product. Grouped by theme; check items off as they land.
 - [ ] 54. Generate the merod/meroctl CLI reference from `--help` (hand-written from the clap definitions).
 - [x] 55. Production deployment guide (TDX, mero-kms, forming the cluster, TLS front).
 - [x] 56. Networking guide (listener, peer URLs, CORS, app domains, egress); v1's NAT/relay/bootstrap guide retired.
-- [ ] 57. Metrics collection and dashboard guide for `/ops/metrics` (a sealing collector, Grafana examples).
+- [x] 57. Metrics collection and dashboard guide for `/ops/metrics`: `operate/observability` "Collecting metrics" (`--metrics-listen`, a sealing client, the fleet's Grafana dashboard and alert rules).
 - [x] 58. Restore runbook, once snapshot restore exists: `operate/runbooks` "Restore an app" (`POST /ops/apps/{app}/restore`).
 - [x] 59. Security guide (TDX vs --dev, quote policies, governance, ops token).
 - [ ] 60. Capacity & performance tuning guide.
-- [ ] 61. Multi-process cluster tutorial (separate `merod` processes; `merod local` covers one process).
+- [x] 61. Multi-process cluster tutorial (separate `merod` processes): `contribute/development` "Run local nodes".
 - [x] 62. Document authentication (passkeys, sessions, API keys, ops token); v1's auth service and JWT providers retired.
 
 ## H · Protocol track content
-- [x] 63. Identity & key-rotation chapter.
-- [x] 64. Divergence & partition-recovery deep-dive.
-- [x] 65. Governance edge cases (concurrent rotation, last-admin, cascades).
-- [x] 66. Capability-inheritance chapter (open/restricted subgroups).
-- [ ] 67. Conformance test vectors (op-id, scope_root).
-- [ ] 68. Worked numeric example for `compute_id` and `scope_root`.
+- [x] 63. Identity & key-rotation chapter (`protocol/identities`, `protocol/key-rotation`).
+- [x] 66. Teams and capabilities (open and restricted teams, inheritance): `protocol/organizations`.
 - [ ] 69. Normalize the whole spec to a consistent normative voice.
-- [ ] 70. Wire-format appendix (Borsh encoding rules + examples).
 - [ ] 71. Versioned spec snapshot mechanism.
-- [ ] 72. "Differences from the legacy model" note for context.
+- [x] 72. "Differences from the legacy model" note for context: `protocol/glossary` maps the peer-to-peer release's names.
 
 ## I · Contribute track content
 - [ ] 73. "Where to start / good first issue" guide.
 - [x] 74. Testing strategy page (unit, cluster, CLI, SDK harnesses, scenarios, the process suite).
 - [ ] 75. "Add a new X" cookbook (config option, collection, host fn).
-- [ ] 76. ~~ADR index page~~ (dropped — ADRs removed from the repo).
-- [ ] 77. Debugging guide (`merod inspect`, tracing, `ops status`).
-- [ ] 78. ~~Document the actor message contracts~~ (dropped — the actor-based node was deleted with v1).
+- [x] 77. Debugging guide (`merod inspect`, tracing, `ops status`): `operate/troubleshooting`, `operate/observability` "Logs", `operate/runbooks` "Inspect a stopped node".
 
 ## J · Accuracy & freshness
-- [x] 79. Fix the stale `TeeAttestationAnnounce.nonce` doc-comment in code. (The message is gone: the node now answers a challenge a member chose.)
 - [ ] 80. Reconcile `minRuntimeVersion` docs vs the bundle-manifest reality.
 - [ ] 81. Sweep remaining `:::caution` markers and resolve where possible.
 - [ ] 82. Cross-check every config default against a freshly generated config.
@@ -131,73 +122,60 @@ polished product. Grouped by theme; check items off as they land.
 
 # Round 2 — content & quality (post-restructure)
 
-A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
+A second round, reflecting the built-out site: depth, completeness, polish. Items about concepts the 1.0 node no longer has (CRDT merge, sync, the causal DAG, p2p networking) were removed.
 
 ## Build track — depth
 - [ ] R1. SDK API reference generated from rustdoc (every public type/fn).
 - [ ] R2. Per-collection reference pages with full method signatures + examples.
-- [ ] R3. Error-handling guide (`app::Result`, custom error enums, client propagation).
+- [x] R3. Error-handling guide (`app::Result`, custom error enums, client propagation): `build/error-handling`.
 - [ ] R4. Patterns & recipes: pagination, secondary indexes, per-user counters, soft-delete.
-- [ ] R5. State-modeling guide (designing `#[app::state]` for convergence).
 - [ ] R6. Multi-service app bundles (manifest, `service_name`, when to split).
-- [ ] R7. Frontend integration (subscribe over WS/SSE, optimistic UI, reading state).
-- [ ] R8. Local dev loop (`meroctl dev --watch`, hot reload, debugging an app).
+- [ ] R7. Frontend integration (events over SSE, optimistic UI, reading state).
+- [ ] R8. Local dev loop guide (`meroctl dev start --watch`, debugging an app); the commands are in `operate/meroctl`.
 - [ ] R9. "Coming from a traditional DB" pitfalls page.
 - [ ] R10. A real chat-app tutorial with a frontend (beyond kv-store).
 
 ## Protocol depth
-- [ ] R11. Conformance test vectors (compute_id, scope_root, HLC) as downloadable fixtures.
-- [ ] R12. Worked numeric example: one op through id → sign → fold → root.
-- [ ] R13. Wire-format appendix: Borsh encoding rules + a hexdump of a real StateDelta.
-- [ ] R14. Standalone HLC spec page (NTP64 layout, update rule, anti-drift).
-- [ ] R15. Sync protocol internals (HashComparison / LevelWise / Snapshot, message by message).
-- [ ] R16. The snapshot protocol (pages, compression, boundaries).
-- [ ] R17. Causal-auth deep-dive (`acl_view_at`, forward-only, generation tiebreak).
-- [ ] R18. Security / threat model page (trust assumptions, attacker capabilities, guarantees).
+- [x] R18. Security / threat model page (trust assumptions, attacker capabilities, guarantees): `protocol/security-model`.
 - [ ] R19. "How Calimero differs from blockchains / consensus systems" framing.
-- [ ] R20. Peer/connection state-machine diagram.
 
 ## Operate depth
 - [x] R21. Node API reference with request/response schemas (OpenAPI); requests must be sealed, so a collection needs a sealing client.
 - [ ] R22. CLI reference generated from `--help` (merod/meroctl), always current.
-- [ ] R23. Sample Grafana dashboard JSON (the metrics catalog is in `operate/observability`).
+- [x] R23. Sample Grafana dashboard JSON: `operate/observability` links the fleet's dashboard and alert rules (in the infrastructure repository).
 - [ ] R24. Kubernetes/Helm deployment guide + manifests.
 - [x] R25. Tested backup/restore with RPO/RTO guidance (`crates/node/tests/restore.rs`; `operate/runbooks` "Schedule, RPO and RTO").
 - [ ] R26. Capacity planning & sizing (disk per app, replicas per node, system group size).
-- [ ] R27. Cross-version upgrade runbook (node binary + app together).
+- [x] R27. Cross-version upgrade runbook (node binary + app together): `operate/runbooks` "Upgrade the cluster's release", "Upgrade apps".
 - [x] R28. Disaster recovery (losing a system-group majority; restoring an app from its snapshot): `operate/runbooks` "Disaster recovery", "Found a cluster again from its backups", "Restore an app".
-- [ ] R29. ~~Bootstrap-node / relay-node operator guide~~ (dropped — a cluster has no p2p network).
 - [ ] R30. Log reference (what each warn/error means, what to do).
 
 ## Reference completeness
 - [ ] R31. Config reference auto-generated from structs.
-- [ ] R32. Host-function ABI reference (every `env::*`) as a standalone page.
-- [ ] R33. Capability/role/permission matrix.
-- [ ] R34. Event catalog (NodeEvent variants + payloads).
-- [ ] R35. Error-code catalog (storage/runtime/sync/server).
+- [x] R32. Host-function ABI reference (every `env::*`) as a standalone page: `build/host-functions`.
+- [x] R33. Capability/role/permission matrix: `protocol/organizations` "Capabilities", `protocol/identities` "Which credential may do what", `protocol/limits` "Roles and capabilities".
+- [ ] R34. Event catalog (the SSE streams' event types and payloads).
+- [ ] R35. Error-code catalog (every API error code, with its route and fix).
 - [ ] R36. Inline-link key glossary terms across pages.
-- [ ] R37. Versioning & compatibility matrix (schema/protocol/runtime versions).
-- [ ] R38. One "limits & defaults" reference table (VMLimits + wire caps).
+- [x] R37. Versioning & compatibility matrix (schema/protocol/runtime versions): `operate/compatibility` "What has a version".
+- [x] R38. One "limits & defaults" reference table (execution limits + wire caps): `protocol/limits`.
 
 ## Diagrams & interactivity
 - [ ] R39. Interactive "life of an operation" stepper (play/pause/scrub).
-- [ ] R40. Animated CRDT-merge convergence visualization.
-- [ ] R41. Animated sync handshake + verdict decision.
-- [ ] R42. Clickable scope-tree explorer.
-- [ ] R43. One diagram palette + legend across all pages.
-- [ ] R44. State-machine diagrams (upgrade gate, sync session).
+- [ ] R43. A diagram legend across all pages (the palette is shared: item 22).
+- [ ] R44. State-machine diagrams (upgrade gate, compute run, upgrade run).
 - [ ] R45. Reduced-motion static fallbacks with step captions.
 - [ ] R46. Alt text / ARIA on every diagram.
 
 ## Examples & tutorials
 - [ ] R47. Example gallery with "what it teaches" tags.
-- [ ] R48. Collaborative text-editor tutorial (RGA, end to end).
-- [ ] R49. Access-controlled app tutorial (Shared / Owner).
+- [x] R48. Collaborative text-editor guide (`Text`, `RichText`): `build/guides/collaborative-text`.
+- [x] R49. Access-controlled app guide: `build/guides/access-control`.
 - [x] R50. Migration tutorial: ship v2 with a schema change. (`build/ship-v2`, tested with `run_migration` against the shipped `.mpk`.)
 - [ ] R51. xcall worked example (secondary-index pattern).
 - [ ] R52. Blob upload/download worked example with a frontend.
 - [ ] R53. "Deploy to a 3-node cluster" tutorial.
-- [ ] R54. Testing tutorial: unit (TestHost / TestApp) + e2e (scenario files).
+- [x] R54. Testing tutorial: unit (`TestApp`) + e2e (scenario files): `build/testing`.
 
 ## Design & UX polish
 - [ ] R55. Per-page OG/social-card images (auto-generated).
@@ -249,7 +227,7 @@ A fresh 100, reflecting the now-built-out site: depth, completeness, polish.
 
 ## Cross-cutting / meta
 - [ ] R93. Clear "Concepts vs Spec" split note in the Protocol track.
-- [ ] R94. Comparison page: Calimero vs other local-first / CRDT frameworks.
+- [ ] R94. Comparison page: Calimero vs other confidential-computing and app platforms.
 - [ ] R95. Performance benchmarks page (real numbers).
 - [ ] R96. Production-readiness checklist (app + node).
 - [ ] R97. Observability cookbook (alerts, SLOs).

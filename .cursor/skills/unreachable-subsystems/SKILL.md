@@ -99,9 +99,11 @@ Places where this class accumulates:
 3. **Routes with no caller**: a route in `router` that no client, no
    `meroctl` command, mero-js nor calimero-client-py calls may be dead, or a
    missing command.
-4. **v1 crates kept for the runtime** (`node/primitives`, `context/config`,
-   `network/primitives`, `governance-types`, `store`, `store/blobs`,
-   `utils/actix`, `crypto`): items in them only the deleted v1 node used.
+4. **Leftovers of removed subsystems** (SDK 0.12 on wasmer, JSON-RPC,
+   libp2p networking, the v1 context crates): items whose only callers went
+   with them. Some stay on purpose so old records still read
+   (`Executor::Wasmer`, the entry flags that name an earlier release's rule);
+   check `crates/node/AGENTS.md` before calling one dead.
 5. **Scenario files that never run**: one listed in
    `crates/node/tests/scenarios-skip.txt` (reported, not run), or a file outside
    the runner's globs (`apps/*/scenarios/*.json`, `apps/*/scenarios/cluster/**/*.json`,

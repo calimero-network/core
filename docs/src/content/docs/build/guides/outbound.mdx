@@ -69,11 +69,16 @@ secret into state, where it would replicate to every member.
 
    `https://api.stripe.com/v1/` covers every path below `/v1/`.
 
-   <Aside type="caution">
-   Core's `scripts/pack-component.py` has no flag for `outbound`, and nothing
-   in core reads it from `Cargo.toml`. Whatever writes your manifest must add
-   the field before `mero-sign sign`; check the packaging tool you use.
-   </Aside>
+   `scripts/pack-component.py` writes it from `--outbound`, once per prefix,
+   and refuses a prefix the node would (not `https://`, credentials, a query
+   or a fragment):
+
+   ```bash
+   python3 -I scripts/pack-component.py --wasm app.wasm --package com.example.shop \
+     --app-version 1.2.0 --key my-signing-key.json \
+     --outbound https://challenges.cloudflare.com/turnstile/v0/siteverify \
+     --outbound https://api.stripe.com/v1/ --out dist/com.example.shop-1.2.0.mpk
+   ```
 
 2. Make the request from a method that writes, and store the decision:
 
@@ -255,7 +260,8 @@ For work that needs several requests, or a request that should not hold up the
 call, an `#[app::action]` runs outside the log on the leader: it fetches with
 `ctx.fetch`, reads the app with `ctx.view` and writes through `ctx.call` to an
 `#[app::allow(action)]` method. A call or timer starts one with
-`env::start_action(method, &args)`.
+`env::start_action(method, &args)`
+([Timers and actions](/build/guides/timers-and-actions/)).
 
 <SeqDiagram id="d-build-outbound-fetch" title="A call that checks a token with an outside service"
   lanes={[

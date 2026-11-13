@@ -8,7 +8,7 @@
 //!   messages leave each source in order (`Node::deliver_xcalls`). The target runs the
 //!   method as `kind = xcall-deliver` with `Caller::App(source)`; its ABI must allow the
 //!   source (`allowApps`, D13). Only within one organization, or between two personal apps
-//!   of one owner, as wasmer's xcall.
+//!   of one owner.
 //! - **Deduplication** (D25): the target keeps, per source app, the highest sequence number
 //!   it applied (`ComponentHead::watermarks`); a message at or below it is answered as
 //!   delivered without running, so a leader change on either side never runs one twice.

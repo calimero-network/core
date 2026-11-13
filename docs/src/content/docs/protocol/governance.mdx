@@ -5,6 +5,8 @@ sidebar:
   order: 15
 ---
 
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
 Attestation proves a node runs a trusted image *today*. Three later decisions
 could still put an app's data in front of something new:
 
@@ -67,29 +69,128 @@ A package is identified by its name and its **pinned signer**, the publisher
 key (`did:key`) that signed its first release
 ([Packages](/protocol/applications/#installing-a-release)). Who installed a
 package first says nothing about who publishes it: anyone may install a
-registry package. An organization becomes the **publisher** of every package a
-key signs only by **binding** the key, with the key's own signature:
+registry package, and the first installer (`PackageRecord::owner`) is never
+the publisher. An organization becomes the **publisher** of every package a
+key signs only by **binding** the key, with the key's own signature. Until
+then the key is **unbound**, and each instance of its packages is governed by
+its own organization.
 
-- `GET /publishers/{signerId}` answers the cluster's name and the key's
-  binding **generation** (how many bindings it has had here).
-- The key signs `calimero-publisher-binding/v1\n{cluster}\n{org}\n{signerId}\n{generation}`
-  (`system::publisher_binding_message`), and a member of the organization
-  holding `APPROVE_RELEASES` sends it with a passkey step-up:
-  `POST /orgs/{org}/publishers { signerId, publicKey, signature }`
-  (`BindPublisher`).
-- `apply` verifies the signature itself (Ed25519, the key must derive the
-  `did:key`) over the cluster's own name (`--cluster`, never the name the
-  command carries), so no node, operator or member binds a key without its
-  holder. Each binding moves the generation on, so a signature binds once: it
-  cannot be replayed on this cluster or another, nor after the key moved on.
-- Binding again (to another organization) takes a new signature from the same
-  key; the organization it leaves cannot keep it. The pinned key never
-  changes, so a package's publisher is always whoever its key last signed for.
-- Deleting the organization unbinds its keys (`DeleteOrg`); each keeps its
-  generation (`SystemState::unbound_publishers`), so an organization created
-  later under the same id publishes nothing until the key signs for it anew.
+### Binding a key
+
+<SeqDiagram
+  id="d-bind-publisher"
+  title="Binding a package signing key to an organization"
+  lanes={[
+    { label: 'Key holder', color: '#f0883e' },
+    { label: 'Member (APPROVE_RELEASES)', color: '#58a6ff' },
+    { label: 'Node', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 1, to: 2, label: 'GET /publishers/{signerId}' },
+    { from: 2, to: 1, label: '{ signerId, cluster, generation: N, bound }', dashed: true },
+    { from: 1, to: 0, label: 'the binding message for (cluster, org, signerId, N)' },
+    { from: 0, to: 1, label: 'Ed25519 signature by the package key', dashed: true },
+    { from: 1, to: 2, label: 'POST /orgs/{org}/publishers { signerId, publicKey, signature }' },
+    { from: 2, to: 2, label: 'member? APPROVE_RELEASES? the key signed this binding?' },
+    { from: 2, to: 1, label: '412 over org:<org> / __bind_publisher / { signerId, generation: N }', dashed: true },
+    { from: 1, to: 2, label: 'the same request with confirm (passkey assertion)' },
+    { from: 2, to: 3, label: 'BindPublisher { signerId, org, cluster, proof, actor, consent }' },
+    { from: 3, to: 3, label: 'apply: this cluster, APPROVE_RELEASES, signature over N' },
+    { from: 2, to: 1, label: '{ generation: N + 1 }', dashed: true },
+  ]}
+/>
+
+1. **Read the generation.** `GET /publishers/{signerId}` (any signed-in
+   account) answers the cluster's name, the key's binding **generation** (how
+   many bindings it has had on this cluster) and whether it is bound now.
+2. **The key signs.** Its holder signs, with the package key's Ed25519 secret,
+   the bytes of `system::publisher_binding_message` (`\n` a newline):
+
+   ```text
+   calimero-publisher-binding/v1\n{cluster}\n{org}\n{signerId}\n{generation}
+   ```
+
+   `mero-sign` signs manifests only; any Ed25519 signer over these exact bytes
+   will do. `publicKey` is the key's 32 bytes and `signature` its 64, both
+   base64url; the key must derive the `did:key` it claims. The cluster name and
+   the signer id are at most 128 bytes each.
+3. **A member sends it.** A member of the organization holding
+   `APPROVE_RELEASES` (the owner and admins hold it) sends
+   `POST /orgs/{org}/publishers { signerId, publicKey, signature }` from an
+   unbound passkey session. The node checks membership, the capability and the
+   signature before anything else (`404` for a non-member, `403` for the rest),
+   then asks for a step-up over `org:<org> / __bind_publisher / { signerId,
+   generation }`.
+4. **The log decides.** `BindPublisher` applies on every node only when the
+   cluster it names is that node's own (`--cluster`: a binding signed for
+   another cluster binds nothing here), the actor still holds
+   `APPROVE_RELEASES`, and the signature verifies over the generation as it
+   stands at apply. The binding records the next generation and answers it.
+   So a signature binds once: it cannot be replayed on this cluster or
+   another, nor after the key moved on.
+
+**Rebinding.** Binding the key to another organization is the same flow with
+a new signature from the same key over the next generation. The organization
+it leaves can neither keep it nor stop it. The pinned key never changes, so a
+package's publisher is always whoever its key last signed for.
+
+**Unbinding.** Deleting the organization unbinds its keys (`DeleteOrg`); each
+keeps its generation (`SystemState::unbound_publishers`), so an organization
+created later under the same id publishes nothing until the key signs for it
+anew. There is no other way to unbind: a key moves to another organization or
+stays where it is.
 
 `GET /orgs/{org}` lists the keys an organization publishes (`publishes`).
+
+### What the publisher decides
+
+Binding moves decisions from each instance's organization to the publisher,
+for **every instance of every package the key signs**, customers' included.
+The package of an instance is the one of the release it runs
+(`AppRecord::release`), never merely of the first release that shipped the
+same WASM. A WASM belongs to one signer: a release of another signer's
+package that ships it is refused at install (`409`, `SHIPS_IN_OTHER_PACKAGE`).
+
+| Decision | Bound key: the publisher's | Unbound key, or a raw bundle (the fallback) |
+| --- | --- | --- |
+| Which mero-tee releases hold the instance ([Release approvals](#release-approvals)) | The publisher's `approvedReleases`, set by its `APPROVE_RELEASES` holders | The instance's own organization's set (an account's own apps: its personal organization's) |
+| Upgrades, for a package declaring `upgrades: publisher` ([App upgrades](#app-upgrades)) | The publisher's organization-wide `MANAGE_APPLICATION` holders, one instance at a time or all of them in a [publisher run](/protocol/upgrades/#upgrade-runs) | Nobody: `409` until the key is bound |
+| Upgrades, for a package declaring `upgrades: owner` (the default) | Unchanged: the instance's owner or its organization's managers | The same |
+| The package's registered origins ([Registered origins](/protocol/identities/#registered-origins)) | The publisher's organization-wide `MANAGE_APPLICATION` holders | The package's first installer |
+| Outbound approvals ([below](#outbound-approvals)) | Unchanged: always the instance's own organization, per publisher key | The same |
+
+Where governance gives release approvals or app upgrades to the operator, the
+operator decides those for every app, bound or not.
+
+### Worked example: Acme binds its key
+
+Acme publishes the package `chat`, signed by `did:key:z6Mk…acme`, whose
+manifest declares `upgrades: publisher` from its first release. Two customers
+run instances: Globex, in its organization, and Ann, in her personal
+organization.
+
+1. **Before binding.** Each instance's own organization approves the node
+   images that may hold it: Globex's set for Globex's instance, Ann's personal
+   organization's for hers. Nobody can upgrade either instance (`409`): the
+   package says its publisher upgrades, and no organization has proved it is
+   the publisher.
+2. **Binding.** An Acme admin reads `GET /publishers/did:key:z6Mk…acme`
+   (`generation: 0`), has the key's holder sign the message for Acme at
+   generation 0, and sends it with her passkey. The log records generation 1.
+   From that entry on, Acme's `approvedReleases` decide which nodes hold both
+   customers' instances: when the operator rolls out a new mero-tee release,
+   Acme approves it once (`POST /orgs/{acme}/releases`) and the replicas send
+   both instances' data to nodes on it. Globex's own set no longer governs its
+   instance of `chat`.
+3. **Shipping 1.1.** Acme publishes `chat` 1.1 to the registry and runs
+   `POST /orgs/{acme}/packages/chat/upgrade { version: "1.1.0" }` with one
+   passkey step-up: every instance moves, Globex's and Ann's included. Neither
+   customer can upgrade their own instance.
+4. **Moving the key.** Acme reorganizes into a new organization, Acme Labs.
+   The key signs again, for Acme Labs at generation 1, and an
+   `APPROVE_RELEASES` holder there sends it. Acme loses every decision above
+   at that entry, and its signature for generation 0 can never bind again.
 
 ## Release approvals
 
@@ -325,7 +426,9 @@ A **deployment** is an owner's list of the apps it offers on the cluster
 account, or an organization) and, per app name, the one installed release it
 offers (`package@version`). Customers create instances from its offers; the
 releases themselves are stored once and may be offered by several
-deployments, each independent of the others.
+deployments, each independent of the others. A developer's walk-through,
+from creating one to withdrawing an offer:
+[Offer your app to customers](/cloud/offer-your-app/).
 
 **Who manages it**: for an account owner, that account; for an organization,
 whoever holds `MANAGE_APPLICATION` there organization-wide (the owner and

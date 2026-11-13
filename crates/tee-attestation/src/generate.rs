@@ -188,36 +188,13 @@ pub fn create_mock_quote(report_data: &[u8; 64]) -> Quote {
     }
 }
 
-/// Domain separator for [`attest_key_binding`].
-pub const ATTEST_KEY_BINDING_DOMAIN: &[u8] = b"calimero.tee-attest.key-binding.v1";
-
-/// The value the attest endpoint puts in report data bytes `32..64` when a
-/// client asks it to bind the node's key: SHA-256 over the domain, the app's
-/// bytecode hash (32 zero bytes when none was requested), and the key.
-///
-/// Binding the key is what lets a client tie the quote to the node it talks to.
-/// Without it the quote proves some genuine TEE ran this image, and a relay
-/// could forward the attest call to that TEE while answering everything else
-/// itself. With it, anything later signed by `public_key` traces back to the
-/// attested machine. Client and node must compute this identically, so both
-/// use this function.
-#[must_use]
-pub fn attest_key_binding(app_hash: Option<&[u8; 32]>, public_key: &[u8; 32]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(ATTEST_KEY_BINDING_DOMAIN);
-    hasher.update(app_hash.unwrap_or(&[0u8; 32]));
-    hasher.update(public_key);
-    hasher.finalize().into()
-}
-
 /// Domain separator for [`attest_transport_binding`].
 pub const ATTEST_TRANSPORT_BINDING_DOMAIN: &[u8] = b"calimero.tee-attest.transport-key.v1";
 
 /// The value the attest endpoint puts in report data bytes `32..64` when a
 /// client asks it to bind the node's X25519 transport key: SHA-256 over the
-/// domain, the 32 bytes that would have been there otherwise (`inner`: the
-/// key binding, else the app hash, else zeros), and the transport key.
+/// domain, the 32 bytes that would have been there otherwise (`inner`: the app
+/// hash, else zeros), and the transport key.
 ///
 /// The transport key is what a client encrypts its requests to (the server's
 /// sealed transport). TLS in front of a node ends wherever the operator points
@@ -235,119 +212,14 @@ pub fn attest_transport_binding(inner: &[u8; 32], transport_key: &[u8; 32]) -> [
     hasher.finalize().into()
 }
 
-/// Domain separator for [`admission_binding`].
-pub const TEE_ADMISSION_BINDING_DOMAIN: &[u8] = b"calimero.tee.admission.v1";
-
-/// The value an admission quote carries in report data bytes `32..64`: SHA-256
-/// over the domain and every field of the credential being admitted, in the
-/// order of the parameters.
-///
-/// The quote then commits to the namespace, the group, the identity key, the
-/// account, the key wrapped secrets are delivered to and the device, so it
-/// cannot be presented for a different credential or key. All fields are fixed
-/// width, so the concatenation is unambiguous. The domain keeps it distinct from
-/// the `/admin-api/tee/attest` bindings above. Client and verifier must compute
-/// it identically, so both use this function.
-#[must_use]
-pub fn admission_binding(
-    namespace_id: &[u8; 32],
-    group_id: &[u8; 32],
-    identity_pk: &[u8; 32],
-    account: &[u8; 32],
-    kem_pk: &[u8; 32],
-    device_id: &[u8; 32],
-) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(TEE_ADMISSION_BINDING_DOMAIN);
-    hasher.update(namespace_id);
-    hasher.update(group_id);
-    hasher.update(identity_pk);
-    hasher.update(account);
-    hasher.update(kem_pk);
-    hasher.update(device_id);
-    hasher.finalize().into()
-}
-
-/// The report data of an admission quote: the verifier's `challenge` followed by
-/// the [`admission_binding`].
-#[must_use]
-pub fn admission_report_data(challenge: &[u8; 32], binding: &[u8; 32]) -> [u8; 64] {
-    build_report_data(challenge, Some(binding))
-}
-
-/// Domain separator for [`attest_registration_binding`].
-pub const ATTEST_REGISTRATION_BINDING_DOMAIN: &[u8] = b"calimero.tee-attest.registration.v1";
-
-/// The value the registration attest endpoint puts in report data bytes
-/// `32..64`: SHA-256 over the domain alone.
-///
-/// A fleet node registers with its manager by quoting over a nonce that
-/// commits to what it registers. The public attest endpoint quotes over any
-/// nonce a caller picks, so a registration quote needs a second half that
-/// endpoint never produces. It produces zeros, an app hash, or one of the
-/// domain-separated key bindings above; this is a fourth domain, served only on
-/// the protected router. A verifier recomputes it and requires it.
-#[must_use]
-pub fn attest_registration_binding() -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(ATTEST_REGISTRATION_BINDING_DOMAIN).into()
-}
-
-/// Build report data from nonce and optional application hash.
-///
-/// # Arguments
-/// * `nonce` - 32-byte nonce value.
-/// * `app_hash` - Optional 32-byte application bytecode hash.
-///
-/// # Returns
-/// A 64-byte array suitable for use as TDX report data.
-pub fn build_report_data(nonce: &[u8; 32], app_hash: Option<&[u8; 32]>) -> [u8; 64] {
-    let mut report_data = [0u8; 64];
-    report_data[..32].copy_from_slice(nonce);
-    if let Some(hash) = app_hash {
-        report_data[32..].copy_from_slice(hash);
-    }
-    report_data
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        admission_binding, admission_report_data, attest_key_binding, attest_registration_binding,
-        attest_transport_binding, build_report_data,
-    };
-
-    #[test]
-    fn the_key_binding_commits_to_the_key_and_the_app() {
-        let key = [0x11; 32];
-        let app = [0x22; 32];
-        let bound = attest_key_binding(Some(&app), &key);
-
-        assert_ne!(
-            bound,
-            attest_key_binding(Some(&app), &[0x12; 32]),
-            "another key"
-        );
-        assert_ne!(
-            bound,
-            attest_key_binding(Some(&[0x23; 32]), &key),
-            "another app"
-        );
-        assert_ne!(bound, attest_key_binding(None, &key), "no app at all");
-        assert_ne!(
-            bound, app,
-            "never the bare app hash an unbound quote carries"
-        );
-
-        let report_data = build_report_data(&[0x33; 32], Some(&bound));
-        assert_eq!(&report_data[32..], &bound);
-    }
+    use super::attest_transport_binding;
 
     #[test]
     fn the_transport_binding_commits_to_the_key_and_what_it_wraps() {
         let transport = [0x44; 32];
-        let inner = attest_key_binding(Some(&[0x22; 32]), &[0x11; 32]);
+        let inner = [0x22; 32];
         let bound = attest_transport_binding(&inner, &transport);
 
         assert_ne!(
@@ -358,30 +230,9 @@ mod tests {
         assert_ne!(
             bound,
             attest_transport_binding(&[0u8; 32], &transport),
-            "the key binding it wraps"
+            "the binding it wraps"
         );
         assert_ne!(bound, inner, "never the unwrapped binding");
-    }
-
-    #[test]
-    fn the_registration_binding_is_none_the_public_endpoint_produces() {
-        let registration = attest_registration_binding();
-        assert_ne!(registration, [0u8; 32], "never the unbound second half");
-        assert_ne!(registration, attest_key_binding(None, &[0u8; 32]));
-        assert_ne!(
-            registration,
-            attest_transport_binding(&[0u8; 32], &[0u8; 32])
-        );
-    }
-
-    /// Fixed vector: a verifier outside this workspace recomputes the binding
-    /// from the domain, and this keeps the two the same.
-    #[test]
-    fn the_registration_binding_matches_the_published_vector() {
-        assert_eq!(
-            hex::encode(attest_registration_binding()),
-            REGISTRATION_BINDING_VECTOR
-        );
     }
 
     /// Fixed vector, repeated verbatim in mero-js: the two sides are separate
@@ -393,62 +244,6 @@ mod tests {
             TRANSPORT_BINDING_VECTOR
         );
     }
-
-    fn fields() -> [[u8; 32]; 6] {
-        [
-            [0x01; 32], [0x02; 32], [0x03; 32], [0x04; 32], [0x05; 32], [0x06; 32],
-        ]
-    }
-
-    fn admission(fields: &[[u8; 32]; 6]) -> [u8; 32] {
-        admission_binding(
-            &fields[0], &fields[1], &fields[2], &fields[3], &fields[4], &fields[5],
-        )
-    }
-
-    #[test]
-    fn the_admission_binding_commits_to_every_field() {
-        let base = admission(&fields());
-        for index in 0..6 {
-            let mut changed = fields();
-            changed[index] = [0xEE; 32];
-            assert_ne!(
-                base,
-                admission(&changed),
-                "field {index} is not committed to"
-            );
-        }
-    }
-
-    #[test]
-    fn the_admission_binding_is_distinct_from_the_attest_endpoint_bindings() {
-        let key = [0x03; 32];
-        let admitted = admission(&fields());
-        assert_ne!(admitted, attest_key_binding(None, &key));
-        assert_ne!(admitted, attest_transport_binding(&[0u8; 32], &key));
-        assert_ne!(admitted, attest_registration_binding());
-    }
-
-    #[test]
-    fn the_admission_report_data_is_the_challenge_then_the_binding() {
-        let binding = admission(&fields());
-        let report_data = admission_report_data(&[0xAB; 32], &binding);
-        assert_eq!(report_data[..32], [0xAB; 32]);
-        assert_eq!(report_data[32..], binding);
-    }
-
-    /// Fixed vector, recomputed independently of this crate's hashing code: a
-    /// node image outside this workspace builds the same binding.
-    #[test]
-    fn the_admission_binding_matches_the_published_vector() {
-        assert_eq!(hex::encode(admission(&fields())), ADMISSION_BINDING_VECTOR);
-    }
-
-    const ADMISSION_BINDING_VECTOR: &str =
-        "022fb29f49a974379470a639b45ae8251f2d4b3c6653fae2ef5f79924b9cd58e";
-
-    const REGISTRATION_BINDING_VECTOR: &str =
-        "8a792de43625275167c058a10895de9c9303c56fe644903541b5f6b8656fb6b8";
 
     const TRANSPORT_BINDING_VECTOR: &str =
         "30274595433e8afc5d4035e30a2b599d93caf0d470867527f13dc6af92fa12a8";

@@ -155,7 +155,7 @@ async fn component_intents(
     {
         // The replica that runs it found a confirm method this node's ABI did not
         // know (it was stale): the step-up is the usual `412 CONFIRM_REQUIRED` with
-        // a challenge (SDK reference), as on the wasmer path.
+        // a challenge (SDK reference).
         Err(e) if unconfirmed && e.details["code"] == "ConfirmRequired" => {
             return Err(consent(node, &p, &app_id, &method_name, &args, None)
                 .await

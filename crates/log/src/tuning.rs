@@ -68,7 +68,7 @@ const DELETION_COMPACTION_RATIO: f64 = 0.5;
 /// cheap.
 ///
 /// Deletion-heavy files are compacted early so point deletes — tombstone GC,
-/// delta pruning, trie rows dropped on delete — release their space without
+/// purged log entries, state rows dropped on delete — release their space without
 /// waiting for the file to be picked up by size-triggered compaction.
 ///
 /// Public so `tools/state-disk-cost` and `tools/storage-compare` measure

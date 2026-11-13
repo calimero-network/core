@@ -68,7 +68,7 @@ moment.
 Clients follow `GET /apps/{app}/events?from=N`: server-sent events, the
 committed events from log index `N`, then live ones, each sent only to the
 accounts its audience names ([Node API](/operate/admin-api/)). mero-js and
-calimero-client-py wrap the stream, and a [typed client](/build/guides/typed-clients/)
+calimero-client-py wrap the stream ([Call your app from a client](/build/guides/calling-your-app/#follow-events)), and a [typed client](/build/guides/typed-clients/)
 types each event; `meroctl` prints it:
 
 ```sh

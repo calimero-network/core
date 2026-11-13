@@ -1,7 +1,7 @@
 //! Requests sealed end to end to a TEE node's attested transport key.
 //!
 //! For a node whose TLS ends outside the TD — at a proxy, a load balancer, a
-//! relay — where everything crossing that hop (bearer tokens, JSON-RPC
+//! relay — where everything crossing that hop (bearer tokens, call
 //! arguments, results) is readable. A [`SealedTransport`] opens a session with a
 //! Noise NK handshake to the X25519 key the node's quote commits to, seals each
 //! whole HTTP request under it, and opens the response frame by frame, so only

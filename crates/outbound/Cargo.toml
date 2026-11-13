@@ -20,7 +20,7 @@ url.workspace = true
 zeroize.workspace = true
 
 calimero-bundle.workspace = true
-calimero-primitives.workspace = true
+calimero-primitives = { workspace = true, features = ["borsh"] }
 
 [dev-dependencies]
 # A local TLS server with its own CA, for the transport's tests.

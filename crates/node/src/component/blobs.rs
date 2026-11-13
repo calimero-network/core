@@ -1,16 +1,15 @@
 //! A component app's blobs (R8): the host's record of each blob the app holds, kept by
 //! references in state (host-tracked retention), and the download grants runs hand out.
 //!
-//! The bytes live in the cluster's blob store, as a wasmer app's do (`Node::store_blob`,
-//! spread to a majority, fetched from a peer when missing). What differs is how long an app
-//! holds one: a wasmer app marks a blob for good until its owner deletes it; a component's
-//! blob is held while a stored value refers to it (a `BlobRef`, CBOR tag
-//! `calimero_app_host::BLOB_REF_TAG`), plus [`BLOB_IDLE_MS`] after its upload or after its
-//! last reference went, so a client can upload and then attach. Every replica counts the
-//! references from the diffs it applies and the values they replace, and forgets an idle
-//! blob against entry timestamps (never a node's clock), so all replicas agree. The leader
-//! then collects the bytes (`Node::collect_blob`, unless another app holds the same
-//! content) and logs that it did (`ComponentCmd::BlobsCollected`).
+//! The bytes live in the cluster's blob store (`Node::store_blob`, spread to a majority,
+//! fetched from a peer when missing). An app holds a blob while a stored value refers to it
+//! (a `BlobRef`, CBOR tag `calimero_app_host::BLOB_REF_TAG`), plus [`BLOB_IDLE_MS`] after
+//! its upload or after its last reference went, so a client can upload and then attach.
+//! Every replica counts the references from the diffs it applies and the values they
+//! replace, and forgets an idle blob against entry timestamps (never a node's clock), so
+//! all replicas agree. The leader then collects the bytes (`Node::collect_blob`, unless
+//! another app holds the same content) and logs that it did
+//! (`ComponentCmd::BlobsCollected`).
 //!
 //! The records are host-owned (D39): hidden rows of the group (`rows::CBLOB`) and, in
 //! memory, an ordered map shared with runs as their view of the app's blobs.

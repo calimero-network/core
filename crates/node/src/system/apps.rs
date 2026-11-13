@@ -88,7 +88,9 @@ pub(super) fn authorize(
             }
             Ok(None)
         }
-        SystemCmd::StartUpgradeRun { org, run, consent } => {
+        SystemCmd::StartUpgradeRun {
+            org, run, consent, ..
+        } => {
             let (st, used) = if run.by == OPERATOR {
                 proofs.fresh(proofs.operator(consent)?)?
             } else {
@@ -419,6 +421,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             org,
             mut run,
             consent,
+            by_release,
         } => {
             if s.holds_current_rules(index) {
                 // What the run covers and how far it got are the state's,
@@ -434,7 +437,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 {
                     return Err("that run exists");
                 }
-                run.apps = s.upgrade_run_apps(&org, &run, &consent);
+                run.apps = s.upgrade_run_apps(&org, &run, &consent, by_release);
                 run.done.clear();
                 run.failed.clear();
                 run.finished = false;
@@ -560,6 +563,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             nonce,
             all_apps_rows,
             accounts_in_app_team,
+            org_quotas,
             ..
         } => s.move_app(
             &app_id,
@@ -570,6 +574,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             MoveRows {
                 all_apps_rows,
                 accounts_in_app_team,
+                org_quotas,
             },
         ),
         SystemCmd::DeleteApp {

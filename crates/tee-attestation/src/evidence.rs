@@ -117,24 +117,6 @@ pub fn quote_report_data(quote_bytes: &[u8]) -> Result<[u8; 64], AttestationErro
     Ok(tdx_quote.report_input_data())
 }
 
-/// Fetch the collateral for `quote_bytes` from this node's configured source,
-/// so it can travel with the quote as evidence.
-///
-/// # Errors
-/// `CollateralFetchFailed` if the source is unusable or the fetch fails.
-pub async fn fetch_collateral(quote_bytes: &[u8]) -> Result<QuoteCollateralV3, AttestationError> {
-    let source = crate::verify::collateral_source();
-    let client = dcap_qvl::collateral::CollateralClient::with_default_http(source.clone())
-        .map_err(|err| {
-            AttestationError::CollateralFetchFailed(format!(
-                "collateral source {source:?}: {err:?}"
-            ))
-        })?;
-    client.fetch(quote_bytes).await.map_err(|err| {
-        AttestationError::CollateralFetchFailed(format!("collateral source {source:?}: {err:?}"))
-    })
-}
-
 fn check_binding(actual: &[u8], expected: &[u8; 32]) -> Result<(), AttestationError> {
     if actual == expected {
         Ok(())
@@ -288,10 +270,19 @@ mod tests {
         assert!(quote_report_data(&v5).is_err());
     }
 
+    /// `nonce || binding`, the 64 bytes a quote's report data holds.
+    #[cfg(feature = "mock-attestation")]
+    fn report_data(nonce: &[u8; 32], binding: &[u8; 32]) -> [u8; 64] {
+        let mut report_data = [0u8; 64];
+        report_data[..32].copy_from_slice(nonce);
+        report_data[32..].copy_from_slice(binding);
+        report_data
+    }
+
     #[cfg(feature = "mock-attestation")]
     #[test]
     fn the_report_data_of_a_mock_quote_is_what_it_was_built_with() {
-        let report_data = crate::build_report_data(&[0x01; 32], Some(&[0x02; 32]));
+        let report_data = report_data(&[0x01; 32], &[0x02; 32]);
         let quote = crate::generate_mock_attestation(report_data).quote_bytes;
         assert_eq!(quote_report_data(&quote).unwrap(), report_data);
         assert!(quote_report_data(&quote[..40]).is_err());
@@ -301,7 +292,7 @@ mod tests {
     #[test]
     fn mock_evidence_verifies_only_for_the_key_it_binds() {
         let key_hash = [0x5A; 32];
-        let report_data = crate::build_report_data(&[0x01; 32], Some(&key_hash));
+        let report_data = report_data(&[0x01; 32], &key_hash);
         let quote = crate::generate_mock_attestation(report_data).quote_bytes;
 
         let verdict = verify_evidence(&quote, None, ATTESTED_AT, &key_hash).unwrap();

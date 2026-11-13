@@ -450,6 +450,8 @@ struct MoveRows {
     all_apps_rows: bool,
     /// An `Accounts` instance's people get a row on its closed app team.
     accounts_in_app_team: bool,
+    /// The target's quotas are its override where it has one.
+    org_quotas: bool,
 }
 
 /// Semver order, falling back to the strings for a version that does not parse.
@@ -1865,15 +1867,23 @@ impl SystemState {
     /// The instances a publisher's run of `package` covers: every one whose
     /// bundle came out of `package` that `account` may upgrade.
     #[must_use]
-    pub fn published_run_apps(&self, package: &str, account: &str) -> Vec<AppId> {
+    pub fn published_run_apps(&self, package: &str, account: &str, by_release: bool) -> Vec<AppId> {
         self.apps
             .values()
             .filter(|a| {
-                self.bundles
-                    .get(&a.bundle)
-                    .and_then(|b| b.package.as_ref())
-                    .is_some_and(|at| at.package == package)
-                    && self.may_upgrade(a, account)
+                let runs = if by_release {
+                    // The release it runs, as `org_run_apps` and
+                    // `run_may_move` judge it.
+                    self.app_release(a).is_some_and(|r| r.package == package)
+                } else {
+                    // As an entry from before `by_release` applied: the
+                    // package the bundle was first recorded from.
+                    self.bundles
+                        .get(&a.bundle)
+                        .and_then(|b| b.package.as_ref())
+                        .is_some_and(|at| at.package == package)
+                };
+                runs && self.may_upgrade(a, account)
             })
             .map(|a| a.app_id.clone())
             .collect()
@@ -1888,10 +1898,13 @@ impl SystemState {
         org: &str,
         run: &crate::types::UpgradeRun,
         consent: &Value,
+        by_release: bool,
     ) -> Vec<AppId> {
         let st = serde_json::from_value::<crate::proof::Statement>(consent.clone()).ok();
         match st.as_ref().map(|st| st.method.as_str()) {
-            Some("__upgrade_published") => self.published_run_apps(&run.package, &run.by),
+            Some("__upgrade_published") => {
+                self.published_run_apps(&run.package, &run.by, by_release)
+            }
             Some("__upgrade_org_retry") => st
                 .and_then(|st| {
                     let prev = st.args()["run"].as_str().map(str::to_owned)?;
@@ -3169,6 +3182,7 @@ impl SystemState {
         let MoveRows {
             all_apps_rows,
             accounts_in_app_team,
+            org_quotas,
         } = rows;
 
         let app = self.apps.get(app_id).ok_or("no such app")?;
@@ -3240,8 +3254,19 @@ impl SystemState {
         }
 
         // The target pays from here on: its quotas hold what the app holds.
+        // Its own override where it has one; an entry from before
+        // `org_quotas` judged the cluster's limits, and replays so.
+        let (max_runs, max_fuel, max_bytes) = if org_quotas {
+            self.payer_quotas(to_org)
+        } else {
+            (
+                self.quotas.max_concurrent_runs_per_org,
+                self.quotas.compute_fuel_per_org,
+                self.quotas.max_file_bytes_per_org,
+            )
+        };
         let held = self.app_file_bytes.get(app_id).copied().unwrap_or(0);
-        if self.file_bytes(to_org).saturating_add(held) > self.quotas.max_file_bytes_per_org {
+        if self.file_bytes(to_org).saturating_add(held) > max_bytes {
             return Err("quota exceeded: file bytes");
         }
         let granted = |slots: &mut dyn Iterator<Item = &RunSlot>| {
@@ -3263,8 +3288,8 @@ impl SystemState {
                 .filter(|slot| slot.payer == to_org),
         );
         if runs > 0
-            && (target_runs.saturating_add(runs) > self.quotas.max_concurrent_runs_per_org
-                || target_fuel.saturating_add(fuel) > self.quotas.compute_fuel_per_org)
+            && (target_runs.saturating_add(runs) > max_runs
+                || target_fuel.saturating_add(fuel) > max_fuel)
         {
             return Err("quota exceeded: compute runs");
         }
@@ -4533,6 +4558,13 @@ pub enum SystemCmd {
         /// giving no such rows, as that release did.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         accounts_in_app_team: bool,
+        /// The target's quotas are its own override where it has one
+        /// ([`SystemState::payer_quotas`]), as every other charge judges
+        /// them. The API always sets it; absent (`false`) in an entry an
+        /// earlier release logged, which replays judging the cluster's
+        /// limits, as that release did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        org_quotas: bool,
     },
     DeleteApp {
         app_id: AppId,
@@ -5246,6 +5278,13 @@ pub enum SystemCmd {
         /// run is then judged by the run.
         #[serde(default)]
         consent: Value,
+        /// A publisher's run covers the instances that run a release of its
+        /// package ([`SystemState::published_run_apps`]). The API sets it on a
+        /// publisher's run; absent (`false`) in an entry an earlier release
+        /// logged, which replays judging each app by the package its bundle
+        /// was first recorded from, as that release did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        by_release: bool,
     },
     FinishUpgradeRun {
         org: OrgId,

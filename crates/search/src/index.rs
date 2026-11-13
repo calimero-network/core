@@ -71,10 +71,11 @@ impl Default for SchemaOptions {
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 struct CommitMeta {
     format: u32,
-    /// Every dirty-log row up to and including this seq is in the index.
+    /// Every change up to and including this seq is in the index (the node
+    /// passes the app's applied log index).
     seq: u64,
-    /// The context state root the index reflects: the `after` of the row at
-    /// `seq`, or the root a full build started from.
+    /// A state root the caller records with the commit (the node passes
+    /// zeros: its indexes live in memory and are rebuilt, never reopened).
     root: [u8; 32],
     tokenizer: u32,
     options: SchemaOptions,
@@ -273,7 +274,7 @@ impl ContextIndex {
         &self.def
     }
 
-    /// The dirty-log seq the last commit covers.
+    /// The seq the last commit covers.
     #[must_use]
     pub fn committed_seq(&self) -> u64 {
         self.committed
@@ -282,7 +283,7 @@ impl ContextIndex {
             .0
     }
 
-    /// The context state root the last commit reflects.
+    /// The state root the last commit recorded.
     #[must_use]
     pub fn committed_root(&self) -> [u8; 32] {
         self.committed
@@ -395,7 +396,7 @@ impl ContextIndex {
         })
     }
 
-    /// Commit, recording that it covers every dirty row through `seq` and
+    /// Commit, recording that it covers every change through `seq` and
     /// reflects state root `root`, and make it searchable.
     ///
     /// # Errors

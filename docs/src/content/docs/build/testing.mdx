@@ -1,6 +1,6 @@
 ---
 title: Testing apps
-description: Test a calimero-sdk app on the real engine with TestApp, and with shared JSON scenarios the Rust and TypeScript harnesses and the node's cluster runner all run.
+description: Test a calimero-sdk app on the real engine with TestApp, and with shared JSON scenarios the Rust harness, the node's cluster runner and the apps repository's merod-local all run.
 sidebar:
   order: 9
 ---
@@ -65,9 +65,10 @@ fn set_get_len_remove() {
 
 ## Scenarios
 
-A scenario is a JSON list of steps that the Rust harness, the TypeScript
-harness and the node's cluster runner all run, so one file tests the app
-everywhere. Each `scenarios/<name>.json` runs in the org its
+A scenario is a JSON list of steps that the Rust harness, the node's
+cluster runner and `merod-local e2e` (TypeScript, in the
+[apps repository](https://github.com/calimero-network/apps), against a local
+`merod local` cluster) all run, so one file tests the app everywhere. Each `scenarios/<name>.json` runs in the org its
 `<name>.org.json` names.
 
 ```json

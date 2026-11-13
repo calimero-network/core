@@ -453,7 +453,7 @@ async fn ops_restore_recovery(
         let release = node.release_of_node(*id).await;
         if !node.sys(|s| s.release_may_hold(&app, release.as_deref())) {
             return Err(ApiError::forbidden(&format!(
-                "node {id} runs release {}, which this app's owner has not approved",
+                "node {id} runs release {}, which is not approved for this app",
                 release.as_deref().unwrap_or("(not attested yet)")
             )));
         }
@@ -606,7 +606,7 @@ pub(super) async fn ops_restore(
         let release = node.release_of_node(*id).await;
         if !node.sys(|s| s.release_may_hold(&app, release.as_deref())) {
             return Err(ApiError::forbidden(&format!(
-                "node {id} runs release {}, which this app's owner has not approved",
+                "node {id} runs release {}, which is not approved for this app",
                 release.as_deref().unwrap_or("(not attested yet)")
             )));
         }

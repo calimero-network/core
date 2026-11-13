@@ -52,7 +52,7 @@ node refuses its bundles and answers `410 UNSUPPORTED_ENGINE` for an app it left
 
 ## Shared types
 
-- [primitives](primitives/AGENTS.md) (`calimero-primitives`) - ids, keys, hashes, wire types.
+- [primitives](primitives/AGENTS.md) (`calimero-primitives`) - ids, hashes, the outbound and search wire types.
 
 ## Build and development
 

@@ -547,7 +547,7 @@ impl Principal {
         if let Some(release) = &self.issuer_release {
             if !node.sys(|s| s.release_may_hold(app, Some(release))) {
                 return Err(ApiError::unauthenticated(
-                    "this session was signed by a node whose release this app's owner has not approved; sign in again",
+                    "this session was signed by a node whose release is not approved for this app; sign in again",
                 ));
             }
         }
@@ -1734,6 +1734,11 @@ fn metrics_response(node: &Node, disk: (u64, u64)) -> Response {
         out,
         "# HELP calimero_system_read_rounds_total Read-index rounds this node began on the system group (one per request that needs fresh system state, shared by requests that wait together).\n# TYPE calimero_system_read_rounds_total counter\ncalimero_system_read_rounds_total {}",
         node.sys_rounds.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    let _r = writeln!(
+        out,
+        "# HELP calimero_replica_strong_views_total Strong views this replica answered itself after a read index from the app's leader, instead of sending them to the leader.\n# TYPE calimero_replica_strong_views_total counter\ncalimero_replica_strong_views_total {}",
+        node.replica_strong_views.load(std::sync::atomic::Ordering::Relaxed)
     );
     let _r = writeln!(
         out,

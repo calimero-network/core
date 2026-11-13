@@ -186,6 +186,8 @@ Only the app's owner and members of its organization may export, even on a publi
 
 ## Pipeline run receipts
 
+Writing a pipeline, shipping it in a release and starting its runs: [Sealed files and pipelines](/build/guides/files-and-pipelines/).
+
 `GET /apps/{app}/pipeline-runs/{run}/receipt` answers `{ receipt, node, signature }` once the run has ended (`409 RUN_NOT_ENDED` before), for the app's owner and members of its organization.
 The receipt names the cluster identity, release, pipeline hash, the compute component of each module, the inputs and params, and per step the status and, for each run, the job node, job key, assignment digest, the hash and signature of the job's report and the files it made; a run answered from the step cache is listed as `cached` with its cache key.
 `signature` is the answering node's receipt key over `"calimero.pipeline.receipt.v1\0"` and the receipt's canonical JSON, and `Client::verify_receipt` checks it under the key `verify_app_cluster` attests.

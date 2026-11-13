@@ -815,6 +815,66 @@ async fn quotas_are_enforced_by_the_log() {
     assert_eq!(err.code(), Some("QUOTA_EXCEEDED"), "{err}");
 }
 
+/// A strong view on a follower runs there: the leader only names its
+/// applied index once it confirmed it leads (`internal/app/index`), and the
+/// follower answers once it has applied that far. It still sees every write
+/// committed before it was asked, whichever node took the write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_follower_answers_a_strong_view_after_a_read_index() {
+    use std::sync::atomic::Ordering;
+
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    all_applied(&c).await;
+    let leader = c.app_leader(&app).unwrap();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let on_leader = c.client(leader);
+    let _s = on_leader.sign_in(&mut pk).await.unwrap();
+    let on_follower = c.client(follower);
+    let _s = on_follower.sign_in(&mut pk).await.unwrap();
+    let served = |i: usize| {
+        c.nodes[i]
+            .as_ref()
+            .unwrap()
+            .node
+            .replica_strong_views
+            .load(Ordering::SeqCst)
+    };
+
+    for v in ["1", "2", "3"] {
+        let _r = on_leader
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "a", "value": v })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let before = served(follower);
+        assert_eq!(
+            strong_view(&on_follower, &app, "get", json!({ "key": "a" })).await,
+            json!(v),
+            "a write committed through the leader is seen at once"
+        );
+        assert_eq!(served(follower), before + 1, "the follower ran the view");
+    }
+}
+
 async fn strong_view(cl: &Client, app: &str, method: &str, args: Value) -> Value {
     cl.apps()
         .view(

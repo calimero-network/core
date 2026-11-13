@@ -298,7 +298,7 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pipelines: Vec<BundleArtifact>,
 
-    /// Named services. When present, each context specifies which service it runs.
+    /// Named services. When present, each app instance names the service it runs.
     /// If empty/absent, the bundle is single-service and uses `wasm`/`abi` above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub services: Option<Vec<BundleService>>,
@@ -325,12 +325,12 @@ pub struct BundleManifest {
     pub frontend_aliases: Vec<String>,
 
     /// The `https://` URL prefixes the app's runs may send an outbound request
-    /// under (the SDK's `env::http_request`): `https://api.example.com/v1/`
-    /// covers every path below it, with any query string. Signed with the
-    /// rest, shown at install, and stored with the application, where the
-    /// node reads it: a request no prefix covers is refused, and an app that
-    /// lists none never gets a client. A node still sends nothing unless its
-    /// operator turned outbound requests on and allows the URL's host.
+    /// under (a run's outgoing HTTP): `https://api.example.com/v1/` covers every
+    /// path below it, with any query string. Signed with the rest, shown at
+    /// install, and kept on the release record, where the node reads it: a request
+    /// no prefix covers is refused, and an app that lists none never gets a client.
+    /// A node still sends nothing unless its operator turned outbound requests on
+    /// and allows the URL's host.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outbound: Vec<String>,
 

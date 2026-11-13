@@ -73,7 +73,7 @@ Required when this PR touches a path in `TRUST_BOUNDARY_PATHS` in `scripts/check
 Tick exactly one box per line and keep the item text as is; "no" is the expected answer for items 2-4 and 6.
 The rules: [CODING_STANDARDS.md](https://github.com/calimero-network/core/blob/master/CODING_STANDARDS.md#security-trust-boundaries).
 
-- Adds input from peers, gossip, streams, HTTP callers or app guests: [ ] yes [ ] no
+- Adds input from peers, streams, HTTP callers or app guests: [ ] yes [ ] no
 - Some new input has no named limit constant: [ ] yes [ ] no
 - Takes an identity from a message field instead of a signature or the authenticated channel: [ ] yes [ ] no
 - A gated operation is untested for kicked, left, deny-listed, revoked, descoped, inherited or other-namespace actors: [ ] yes [ ] no

@@ -59,7 +59,7 @@ to hold it. See [Concepts](/protocol/concepts/) and
   are authorized when they apply, so every node reaches the same verdict.
 - **An app group's leader** runs a call against the app's WASM and appends the
   call with its resulting state diff; followers apply the diff. Calls are
-  linearized, strong reads go through the leader, stale reads any replica, and
+  linearized, strong reads are linearizable (any replica, at the leader's confirmed index), stale reads any replica as it stands, and
   the app keeps serving while a majority of its replicas run.
 - **One runtime.** An app is a `calimero:app` component, built with the Rust
   SDK (`calimero-sdk`), and runs on wasmtime.

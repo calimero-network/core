@@ -1,17 +1,18 @@
 # search-bench: what full-text search costs on a node
 
 Engine measurements of per-app full-text search (`crates/search`):
-`ContextIndex` over tantivy's `RamDirectory`, which is what the node's
-`services::Search` (`crates/node`) opens every app's index over, beside
+`ContextIndex` over tantivy's `RamDirectory`, which is what the node
+(`crates/node/src/component/search.rs`) opens every app's index over, beside
 tantivy's stock `MmapDirectory` as an on-disk baseline. No WASM, no cluster:
 index size, raw query latency, memory, many apps' indexes side by side, and the
-host-time fit behind search gas (`--only gas`). The full report of the run below
+host time of a query against the work it reports (`--only gas`). The full report of the run below
 is `results/engine.md`.
 
 How the feature works (opt-in, query API, how the index follows state) is on the
 docs site's *Full-text search* page and in `crates/search/AGENTS.md`. End to end
-(the real `search-chat` wasm in a 3-node cluster) it is tested, not benched, by
-`views_search_the_apps_own_index_as_it_changes` in `crates/node/tests/cluster.rs`.
+(the kv fixture component in a 3-node cluster) it is tested, not benched, by
+`views_search_a_components_tables_as_they_change` in
+`crates/node/tests/component_cluster.rs`.
 
 ## Reproduce
 
@@ -99,22 +100,23 @@ Rust heap, counting allocator, the `RamDirectory`'s bytes included:
   107 MiB of text): built in 35.6 s, 291 MiB in memory.
 - Peak RSS of the whole engine run, every section: 839 MiB.
 
-## Search gas
+## Host time of a query
 
-`search_query` charges `SEARCH_BASE_GAS + SEARCH_GAS_PER_MATCH·matched +
-SEARCH_GAS_PER_HIT·hits + SEARCH_GAS_PER_BYTE·response bytes`
-(`crates/runtime/src/logic/host_functions/search.rs`). The `gas` section times
-the host side of a call (the query and its borsh response) against the work it
-reports, over 2,608 queries of every mode at every size, and fits it by least
-squares:
+SDK 0.12's wasmer runtime charged `search_query` gas from a fit like this one
+(`SEARCH_BASE_GAS + SEARCH_GAS_PER_MATCH·matched + SEARCH_GAS_PER_HIT·hits +
+SEARCH_GAS_PER_BYTE·response bytes`); that runtime is gone. A component's query
+through the WIT `search` interface is bounded by `MAX_SEARCH_LIMIT` (100 hits) and
+`MAX_SEARCH_QUERY_BYTES` (256) in `crates/app-host/src/search.rs`, and no
+constant charges the host's time for it (fuel counts the guest's instructions).
+The `gas` section still times the host side of a call (the query and its
+response) against the work it reports, over 2,608 queries of every mode at every
+size, and fits it by least squares, for whoever prices search again:
 
 | run | per call | per matched document | per hit | per response byte |
 |---|---|---|---|---|
 | v1 first run (the constants are set from it) | 4.4 µs | 13.9 ns | 10.51 µs | 70.30 ns |
 | this run, `results/engine.md` | 0.1 µs | 5.8 ns | 5.72 µs | 33.27 ns |
 
-Every coefficient is lower in memory than over v1's RocksDB directory, so the
-constants (8,000 gas a call, 25 a match, 18,500 a hit and 125 a byte, at the
-guest's ~1.76 gas per ns) still over-charge the host's time; hits and response
-bytes move together (a hit carries its snippet), so the fit trades one against
-the other between runs.
+Every coefficient is lower in memory than over v1's RocksDB directory; hits and
+response bytes move together (a hit carries its snippet), so the fit trades one
+against the other between runs.
