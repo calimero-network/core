@@ -245,9 +245,11 @@ capabilities held, the all-apps grant), `/approve` answers
 ### Where the app may be sent back
 
 `returnTo` is never arbitrary: a node that redirects anywhere would lend its
-trusted page to phishing. For a package-bound session it must be the
-package's served frontend origin (`{label}.{apps-domain}`) or an origin the
-package's newest signed manifest names (`links.frontend`, `frontendAliases`);
+trusted page to phishing. For a package-bound session it must be one of
+the package's origins (`api::app_origin`: its served frontend origin
+`{label}.{apps-domain}`, a served custom domain, or a registered origin) or an
+origin the package's newest signed manifest names (`links.frontend`,
+`frontendAliases`);
 for an unbound session, one of the cluster's configured `--origins`. It must
 be `https` (`http` only for `localhost`), without credentials or a fragment,
 and at most 2 KiB. Otherwise `400 RETURN_TO_NOT_ALLOWED`.
