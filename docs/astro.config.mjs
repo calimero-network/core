@@ -94,7 +94,7 @@ export default defineConfig({
         {
           // Overview, quickstart and writing apps.
           label: 'Get started',
-          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps', 'cloud/deploy-from-ci'],
+          items: ['cloud/overview', 'cloud/quickstart', 'cloud/apps', 'cloud/deploy-from-ci', 'cloud/offer-your-app'],
         },
         {
           label: 'Build',
@@ -110,13 +110,18 @@ export default defineConfig({
                 'build/guides',
                 'build/guides/collaborative-text',
                 'build/guides/events',
+                'build/guides/presence',
                 'build/guides/cross-context',
                 'build/guides/blobs',
                 'build/guides/search',
                 'build/guides/outbound',
+                'build/guides/timers-and-actions',
                 'build/guides/compute-actions',
+                'build/guides/files-and-pipelines',
                 'build/guides/access-control',
                 'build/guides/typed-clients',
+                'build/guides/calling-your-app',
+                'build/guides/frontends',
                 'build/packaging-signing',
                 'build/examples',
                 'build/testing',
@@ -201,6 +206,7 @@ export default defineConfig({
               label: 'People & authority',
               items: [
                 'protocol/identities',
+                'protocol/sessions-and-authority',
                 'protocol/authorship',
                 'protocol/organizations',
                 'protocol/governance',

@@ -28,7 +28,7 @@ const BYTES_LEN: usize = 32;
 /// The string form is computed on demand rather than cached on construction.
 /// This makes `Hash::from([u8; 32])` a cheap memcpy and shrinks the struct from
 /// ~80 bytes to 32, which matters on hot paths that construct IDs just to
-/// compare or hash them (delta-store iteration, RocksDB key parsing, etc.).
+/// compare or hash them.
 ///
 /// Hex also makes that on-demand encoding trivial where base58 was not: it is a
 /// per-byte mapping rather than a bignum base conversion, so it needs no length

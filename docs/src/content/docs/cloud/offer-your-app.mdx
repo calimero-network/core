@@ -1,0 +1,225 @@
+---
+title: Offer your app to customers
+description: Offer a signed release of your app to other organizations through a deployment — create it, offer the release, share its frontend, let customers create their own instances, see who uses it, and know who is billed.
+sidebar:
+  order: 5
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+
+You built an app and want other organizations to run their own instances of
+it, each with its own data, without installing anything themselves. A
+**deployment** is how: your list of the apps you offer on a cluster, each
+pinned to one installed release. A customer creates an instance from your
+offer; the instance is theirs (their organization, their members, their
+data), and its usage is billed to you as its **developer**.
+
+This guide uses `meroctl raw` (`METHOD PATH [BODY]`): `meroctl` has no
+deployment commands yet. Every change below asks for a passkey step-up
+(`412 CONFIRM_REQUIRED` first). On a development cluster, `--dev-passkey FILE`
+answers it; on a production cluster the step-up is a passkey in a browser:
+call the same routes from mero-js with `{ confirm: passkeyConfirm(browserPasskey()) }`,
+as in [Deploy from CI](/cloud/deploy-from-ci/). The protocol behind each step
+is in [Deployments](/protocol/governance/#deployments).
+
+<SeqDiagram
+  id="d-offer-your-app"
+  title="A developer offers chat; a customer creates an instance"
+  lanes={[
+    { label: 'Developer', color: '#f0883e' },
+    { label: 'Node', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: 'Customer', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /packages/install { package: chat, version: 1.0.0 }' },
+    { from: 1, to: 2, label: 'InstallPackage (a deployer grant, where granted)' },
+    { from: 0, to: 1, label: 'POST /deployments { name, owner: { org } } + passkey' },
+    { from: 1, to: 2, label: 'CreateDeployment: id from the consent' },
+    { from: 1, to: 0, label: '{ id, deployment, host }', dashed: true },
+    { from: 0, to: 1, label: 'POST /deployments/{id}/apps { app, package, version } + passkey' },
+    { from: 1, to: 2, label: 'OfferApp' },
+    { from: 0, to: 3, label: 'shares https://{host}/' },
+    { from: 3, to: 1, label: 'GET / on the host → /1.0.0/?deployment={id}; passkey sign-in' },
+    { from: 3, to: 1, label: 'POST /apps { deployment, package: chat, org }' },
+    { from: 1, to: 2, label: 'CreateApp { deployment }: the offer checked again' },
+    { from: 1, to: 3, label: '{ appId, … }: the customer\'s instance', dashed: true },
+    { from: 0, to: 1, label: 'GET /deployments/{id}/orgs' },
+    { from: 1, to: 0, label: 'customer organizations, counts and releases only', dashed: true },
+  ]}
+/>
+
+## Before you start
+
+- **A signed release in the cluster's registry.** Build and sign it as in
+  [Packaging & signing](/build/packaging-signing/).
+- **Who owns the deployment.** Your account, or an organization in which you
+  hold `MANAGE_APPLICATION` organization-wide (its owner and admins do).
+  Whoever holds that capability there manages the deployment with you.
+- **On a granted cluster, a deployer grant.** Where the cluster's deployments
+  are `granted`, installing a release, creating a deployment and offering an
+  app each need a live [deployer grant](/protocol/governance/#deployers): your
+  account's, or your organization's. The operator (or the cluster's owner)
+  grants it; without it these answer `403 DEPLOY_NOT_GRANTED`. On an `open`
+  cluster nothing is needed.
+- **Bind your package's signing key** (recommended). Until you do, each
+  customer's organization approves which node images hold its instance, and a
+  package that declares `upgrades: publisher` cannot be upgraded at all.
+  Binding makes your organization the [publisher](/protocol/governance/#publishers)
+  for every customer's instance.
+
+## 1. Install the release
+
+```bash
+meroctl app install chat@1.0.0
+```
+
+The node fetches the release from the registry, verifies its signature and
+its pinned signer, and records it as installed by you.
+
+## 2. Create the deployment
+
+```bash
+meroctl raw post /deployments '{"name":"Chat","owner":{"org":"<org-id>"}}' --dev-passkey ./dev-passkey.json
+# { "id": "3f2a…", "deployment": { … }, "host": "lprf….apps.example.com" }
+```
+
+`owner` is `{"org": "<id>"}` or `{"account": "<id>"}`. The name is what
+customers see. The id comes from your passkey consent, and `host` is the
+deployment's own frontend host. An owner has at most 16 deployments.
+
+## 3. Offer a release
+
+```bash
+meroctl raw post /deployments/<id>/apps '{"app":"chat","package":"chat","version":"1.0.0"}' --dev-passkey ./dev-passkey.json
+```
+
+`app` is the name of the entry in your deployment; it offers exactly one
+release. Offering the same `app` again with another version of the same
+package moves the entry, and new instances get that release from then on.
+Instances already created keep the release they run (see
+[Shipping a new version](#shipping-a-new-version)). A deployment holds at most
+64 apps, and an offered release cannot be uninstalled.
+
+## 4. Share the frontend
+
+The release's frontend opens at your deployment's release on two addresses:
+
+- **The deployment's host**, `https://{host}/` (from step 2): `/` redirects to
+  `/{version}/?deployment={id}` of the release you offer. It serves a frontend
+  only while the deployment offers one package; with none or several, it
+  answers `404`.
+- **The package's own host**, `https://{label}.<apps-domain>/d/{id}/`, which
+  redirects the same way.
+
+Both keep the query string, so an invite link such as `/?invite=…` reaches
+the page. `GET /deployments/{id}` is public: your frontend reads it to show
+the deployment's name, its owner's name and what it offers, never its
+managers or customers. See [Deployment hosts](/protocol/applications/#deployment-hosts).
+
+## 5. A customer creates an instance
+
+On your frontend, the customer signs in (or signs up) with a passkey. The
+session is bound to your package, and may create instances of it. Your
+frontend sends:
+
+```json
+POST /apps
+{ "deployment": "<id>", "package": "chat", "org": "<their-org>", "name": "Support chat" }
+```
+
+The instance runs the
+release you offer (a `version`, if given, must be it), whether or not the
+customer could see that release otherwise, and without a deployer grant:
+nothing is installed. The customer needs what creating any instance in their
+organization needs (`CREATE_APP` there, or admin); with no `org`, it goes to
+their personal organization. The instance records the deployment, and the
+log checks again, where `CreateApp` applies, that the deployment exists and
+offers that release.
+
+From then on the instance is the customer's: its owner and organization
+decide who reaches it, and you have no path into its data.
+
+## 6. See who uses it
+
+```bash
+meroctl raw get /deployments/<id>/orgs
+```
+
+```json
+{
+  "deployment": "3f2a…",
+  "orgs": [{
+    "orgId": "…", "name": "Globex",
+    "memberCount": 14, "activeMembers30d": 9,
+    "instances": 2,
+    "apps": [{ "app": "chat", "version": "1.0.0" }],
+    "firstCreatedAt": "2026-11-02T09:12:44Z"
+  }],
+  "outsideOrgs": 3
+}
+```
+
+For the deployment's managers only, from an unbound session (your app's own
+frontend session cannot read it), on fresh state: each customer organization
+with instances from this deployment, how many, which of your apps and the
+releases they run, and two counts of people. Never who the members are,
+teams, instance names or data. Instances in personal organizations are only
+counted (`outsideOrgs`). Another deployment's customers never appear, even on
+the same release. `GET /deployments` lists the deployments you manage.
+
+## Who is billed
+
+Each instance's usage series carries two labels
+([Usage metering](/operate/observability/#usage-metering)):
+
+- **`org`**, the payer: the customer's organization. Its quotas count the
+  instance's files and compute runs, and the instance counts against its
+  owner's app quota.
+- **`developer`**: who Calimero Cloud bills, the deployment's owner (your
+  organization's id, or `account:<id>`). An instance created without a
+  deployment has its organization as developer.
+
+A cluster may cap a developer's fuel per day (`maxFuelPerDeveloperPerDay`),
+summed over every instance of your deployments: past it, client calls to
+them answer `429 QUOTA_EXCEEDED` until the next UTC day. `GET /auth/usage`
+(your account) and `GET /orgs/{org}/usage` (your organization, for its
+admins) show today's `developerFuelToday` and `developerWritesToday`.
+
+## Shipping a new version
+
+Offering a newer release (step 3 again) changes what **new** instances get.
+Existing ones move by an upgrade, and who upgrades them is what the release's
+manifest declares:
+
+- **`upgrades: owner`** (the default): each customer upgrades their own.
+- **`upgrades: publisher`**: your organization, once it has bound the
+  package's key, upgrades every customer's instance at once with a
+  [publisher run](/protocol/upgrades/#upgrade-runs):
+  `POST /orgs/{org}/packages/chat/upgrade { version }`, with one passkey
+  step-up, then `GET /orgs/{org}/upgrades/{run}` to follow it.
+
+## Withdrawing an offer
+
+```bash
+meroctl raw delete /deployments/<id>/apps/chat --dev-passkey ./dev-passkey.json
+meroctl raw delete /deployments/<id> --dev-passkey ./dev-passkey.json
+```
+
+Withdrawing is refused while any instance created from this deployment still
+runs a release of that app's package: a customer's instance is never left
+pointing at an offer that is gone. The release stays installed. A deployment
+is deleted once it offers nothing and no instance came from it, and an
+organization that owns a deployment cannot be deleted before it.
+
+## Not done yet
+
+- **Migration.** Releases installed before deployments existed are not moved
+  into a deployment; offer them in one yourself.
+- **Transfer.** A deployment cannot be handed to another owner yet: create a
+  new one under the new owner and offer the same releases.
+- **Lockout guard.** Nothing yet stops an organization-owned deployment from
+  being left with no manager able to sign (the design asks for at least two
+  managers). Keep more than one `MANAGE_APPLICATION` holder in the owning
+  organization, each with more than one passkey.
+- **The consent page** does not name the deployment an instance came from.

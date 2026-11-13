@@ -5,7 +5,7 @@
 //! - Mock attestation generation (non-Linux platforms, for development) —
 //!   compiled only under the default-off `mock-attestation` cargo feature
 //! - Verifying TDX attestation quotes (cross-platform)
-//! - Retrieving TEE host information
+//! - Checking a quote offline against collateral it carries (`verify_evidence`)
 //!
 //! # The `mock-attestation` feature
 //!
@@ -18,12 +18,15 @@
 //! # Example
 //!
 //! ```ignore
-//! use calimero_tee_attestation::{generate_attestation, verify_attestation, build_report_data};
+//! use calimero_tee_attestation::{generate_attestation, verify_attestation};
 //!
-//! // Generate an attestation, binding it to an application/identity hash
+//! // Generate an attestation over `nonce || app_hash`, binding it to an
+//! // application/identity hash
 //! let nonce = [0u8; 32];
 //! let app_hash = [1u8; 32];
-//! let report_data = build_report_data(&nonce, Some(&app_hash));
+//! let mut report_data = [0u8; 64];
+//! report_data[..32].copy_from_slice(&nonce);
+//! report_data[32..].copy_from_slice(&app_hash);
 //! let result = generate_attestation(report_data)?;
 //!
 //! // On non-Linux, result.is_mock will be true
@@ -55,7 +58,6 @@
 mod error;
 mod evidence;
 mod generate;
-mod info;
 mod kms_evidence;
 mod policy;
 pub mod quote;
@@ -63,15 +65,13 @@ mod verify;
 
 pub use dcap_qvl::QuoteCollateralV3;
 pub use error::AttestationError;
-pub use evidence::{fetch_collateral, quote_report_data, verify_evidence, EvidenceVerdict};
+pub use evidence::{quote_report_data, verify_evidence, EvidenceVerdict};
 pub use generate::{
-    admission_binding, admission_report_data, attest_key_binding, attest_registration_binding,
-    attest_transport_binding, build_report_data, generate_attestation, AttestationResult,
-    ATTEST_KEY_BINDING_DOMAIN, ATTEST_TRANSPORT_BINDING_DOMAIN, TEE_ADMISSION_BINDING_DOMAIN,
+    attest_transport_binding, generate_attestation, AttestationResult,
+    ATTEST_TRANSPORT_BINDING_DOMAIN,
 };
 #[cfg(feature = "mock-attestation")]
 pub use generate::{generate_mock_attestation, is_mock_quote};
-pub use info::{get_tee_info, TeeInfo};
 pub use kms_evidence::KmsEvidence;
 pub use policy::{
     MeasurementRegister, PolicyRejection, VerifierPolicy, DEFAULT_ALLOWED_TCB_STATUS,

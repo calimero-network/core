@@ -7,11 +7,10 @@
 //! `generation ‖ (table, "r", key..)` in the SDK's key encoding (`crates/sdk`, encoding
 //! contract); each becomes one document, its id the SHA-256 of the stored key, its fields
 //! the declared ones that hold text (a list of strings is joined). The indexes are
-//! `calimero-search`'s `ContextIndex` in memory, as for a wasmer app (`services::Search`):
-//! a view first brings them up to the state it reads, from the record keys the entries
-//! since touched (`AppMachine::touched_after`, kept for `TOUCHED_RING` entries), else by a
-//! full scan of the app's records. Derived data: never in the log or a snapshot, rebuilt
-//! after a restart.
+//! `calimero-search`'s `ContextIndex` in memory: a view first brings them up to the state
+//! it reads, from the record keys the entries since touched (`AppMachine::touched_after`,
+//! kept for `TOUCHED_RING` entries), else by a full scan of the app's records. Derived
+//! data: never in the log or a snapshot, rebuilt after a restart.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};

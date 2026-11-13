@@ -3,9 +3,9 @@
 //! mero-tee publishes its release trust assets keyless-signed with cosign
 //! under a GitHub Actions workflow identity. This crate downloads an asset
 //! with its detached signature and Sigstore bundle and verifies both against
-//! the expected workflow, for the two consumers core has: merod checking the
-//! KMS it takes its storage key from (`Release mero-kms`), and an admitter
-//! checking a joining TEE against the node release it runs
+//! the expected workflow, for the two uses core has: a node checking the KMS
+//! it takes its storage key from (`Release mero-kms`), and a client or peer
+//! checking a node's quote against the node release it names
 //! (`Release mero-tee`).
 
 mod fetch;

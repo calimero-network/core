@@ -18,6 +18,7 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | `file upload FILE -c CONTEXT` | a context's sealed files: one request up to 16 MiB, else resumable parts (`Client::upload_file`) | `/apps/{app}/files*` |
 | `file download CONTEXT ID -o OUT` | a sealed file's plaintext, streamed to `OUT.part` and renamed onto `OUT` only after every check passed (`Client::export_file_to`); `pipeline download` does the same per output | `/apps/{app}/files/{id}/export`, `.../segments/{k}` |
 | `run logs APP RUN [--attempt N]`, `pipeline logs APP RUN --step S [--index I]` | print a compute run's module log (stdout, stderr and `log` lines) read through the files export; the latest attempt unless `--attempt`; a pipeline step's run is its `--index`th | `/apps/{app}/runs/{run}/logs`, `/apps/{app}/files/{id}/export` |
+| (new) `pipeline validate/estimate/run/retry/get/cancel/watch/runs/receipt/logs/download` | a context's pipeline runs: check a pipeline source, estimate, start, follow (`watch`, SSE), the signed receipt (`receipt --verify`) | `/pipelines/validate`, `/apps/{app}/pipelines/*`, `/apps/{app}/pipeline-runs*` |
 | `namespace ...` | organizations: members, invites, groups, metadata, capabilities, outbound and release approvals | `/orgs*`, `/invites/*` |
 | `group ...` | teams: members, metadata, reparent, subgroups, settings; `group upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
 | `account ...` | the account: devices (passkeys), API keys, usage, approvals | `/auth/*` |

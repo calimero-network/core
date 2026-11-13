@@ -89,10 +89,16 @@ pub enum Feature {
     /// `CreateOrg` starting with an app team (`app_team`): an earlier
     /// release ignores the field and makes the organization without it.
     OrgAppTeam,
+    /// `MoveApp` with `org_quotas`: an earlier release ignores the field and
+    /// judges the target by the cluster's limits, not its own override.
+    MoveOrgQuotas,
+    /// `StartUpgradeRun` with `by_release`: an earlier release ignores the
+    /// field and judges a publisher's run by each bundle's first package.
+    PublishedRunByRelease,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 21] = [
+pub const FEATURES: [Feature; 23] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -114,6 +120,8 @@ pub const FEATURES: [Feature; 21] = [
     Feature::CurrentRules,
     Feature::BackupKeys,
     Feature::OrgAppTeam,
+    Feature::MoveOrgQuotas,
+    Feature::PublishedRunByRelease,
 ];
 
 impl Feature {
@@ -142,6 +150,8 @@ impl Feature {
             Self::CurrentRules => "currentRules",
             Self::BackupKeys => "backupKeys",
             Self::OrgAppTeam => "orgAppTeam",
+            Self::MoveOrgQuotas => "moveOrgQuotas",
+            Self::PublishedRunByRelease => "publishedRunByRelease",
         }
     }
 
@@ -170,6 +180,7 @@ impl Feature {
             | Self::CurrentRules => "1.0.0-rc.19",
             Self::BackupKeys => "1.0.0-rc.20",
             Self::OrgAppTeam => "1.0.0-rc.22",
+            Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
         }
     }
 }
@@ -352,13 +363,20 @@ impl SystemCmd {
     pub fn features(&self) -> Vec<Feature> {
         match self {
             Self::SetClusterVersion { .. } => vec![Feature::ClusterVersion],
+            Self::StartUpgradeRun {
+                by_release: true, ..
+            } => vec![Feature::PublishedRunByRelease],
             Self::MoveApp {
                 accounts_in_app_team,
+                org_quotas,
                 ..
             } => {
                 let mut f = vec![Feature::MoveApp];
                 if *accounts_in_app_team {
                     f.push(Feature::MoveAccountsAppTeam);
+                }
+                if *org_quotas {
+                    f.push(Feature::MoveOrgQuotas);
                 }
                 f
             }
@@ -461,7 +479,9 @@ impl SystemCmd {
             | Self::SetAppMetadata { .. }
             | Self::SetPasskeyLabel { .. }
             | Self::UpgradeFailed { .. }
-            | Self::StartUpgradeRun { .. }
+            | Self::StartUpgradeRun {
+                by_release: false, ..
+            }
             | Self::FinishUpgradeRun { .. }
             | Self::SetAlias { .. }
             | Self::SetOrgRole { .. }
@@ -530,6 +550,7 @@ mod tests {
     const RC19: &str = "1.0.0-rc.19";
     const RC20: &str = "1.0.0-rc.20";
     const RC22: &str = "1.0.0-rc.22";
+    const RC24: &str = "1.0.0-rc.24";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -565,6 +586,7 @@ mod tests {
                 nonce: "n".into(),
                 accounts_in_app_team: false,
                 all_apps_rows: false,
+                org_quotas: false,
             },
             Feature::MoveAccountsAppTeam => SystemCmd::MoveApp {
                 app_id: "app".into(),
@@ -575,6 +597,30 @@ mod tests {
                 nonce: "n".into(),
                 accounts_in_app_team: true,
                 all_apps_rows: false,
+                org_quotas: false,
+            },
+            Feature::MoveOrgQuotas => SystemCmd::MoveApp {
+                app_id: "app".into(),
+                to_org: "org-b".into(),
+                actor: "alice".into(),
+                consent: Value::Null,
+                bring_members: false,
+                nonce: "n".into(),
+                accounts_in_app_team: false,
+                all_apps_rows: false,
+                org_quotas: true,
+            },
+            Feature::PublishedRunByRelease => SystemCmd::StartUpgradeRun {
+                org: "org".into(),
+                run: Box::new(
+                    serde_json::from_value(serde_json::json!({
+                        "runId": "r", "package": "p", "version": "1.0.0", "by": "alice",
+                        "startedAt": 0, "apps": [], "done": [], "failed": {}, "finished": false,
+                    }))
+                    .unwrap(),
+                ),
+                consent: Value::Null,
+                by_release: true,
             },
             Feature::AppTeamJoin => SystemCmd::ScopeApps {
                 org: "org".into(),
@@ -867,7 +913,7 @@ mod tests {
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
             .iter()
-            .partition(|f| ![RC19, RC20, RC22].contains(&f.since()));
+            .partition(|f| ![RC19, RC20, RC22, RC24].contains(&f.since()));
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -931,7 +977,28 @@ mod tests {
             nodes: (1..=3).map(|id| (id, RC22.to_owned())).collect(),
         };
         propose(&mut nodes, &raise).unwrap();
-        for &feature in &last {
+        // rc.24's wait for every node on rc.24.
+        let (rc22, rc24): (Vec<Feature>, Vec<Feature>) =
+            last.into_iter().partition(|f| f.since() == RC22);
+        for &feature in &rc22 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        for &feature in &rc24 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC22))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC24;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC24.into(),
+            nodes: (1..=3).map(|id| (id, RC24.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc24 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

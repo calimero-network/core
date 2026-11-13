@@ -22,12 +22,15 @@ cargo test -p calimero-bundle
 
 | Item | Kind | Purpose |
 | --- | --- | --- |
-| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi`/`compute`/`pipelines` (single-service) or `services` (multi-service), `frontend`, `links`, `frontend_aliases`, `outbound`, `signature` |
+| `BundleManifest` | struct | The full `manifest.json` shape: `version`, `package`, `app_version`, `signer_id`, `min_runtime_version`, `upgrades`, `metadata`, `handlers`, `interfaces`, `wasm`/`abi`/`compute`/`pipelines` (single-service) or `services` (multi-service), `frontend`, `links`, `frontend_aliases`, `outbound`, `signature` |
 | `BundleManifest::artifacts()` | fn | Every artifact the manifest declares, paired with its field name; a `..`-free destructure, so a new `BundleManifest` field is a compile error here until classified |
 | `BundleManifest::wasm_artifacts()` | fn | Iterates wasm artifacts, each with its compute component, uniformly across single- and multi-service bundles |
 | `BundleManifest::service_names()` / `is_multi_service()` | fn | Shape queries over `services` |
-| `BundleManifest::to_metadata_json()` | fn | Flattens `package`/`app_version`/`metadata.*`/`links.*`/`frontendAliases`/`outbound` to JSON for on-disk storage, keeping only web URLs (`is_web_url`) and, under `outbound`, only `is_outbound_url` ones |
-| `is_outbound_url()` | fn | Whether a URL prefix may be declared under `outbound`: `https://` with a host, no credentials, query or fragment, no whitespace or control characters, at most `MAX_URL` bytes. the node refuses a bundle with any other; `to_metadata_json()` drops it |
+| `BundleManifest::to_metadata_json()` | fn | Flattens `package`/`app_version`/`metadata.*`/`links.*`/`frontendAliases`/`outbound` to JSON, keeping only web URLs (`is_web_url`) and, under `outbound`, only `is_outbound_url` ones. The context-era node stored it; nothing in the workspace calls it now |
+| `UpgradeAuthority` | enum | The manifest's `upgrades`: `owner` (default, omitted) or `publisher`; a later version may only move toward `owner` (the node keeps it on `PackageVersion::upgrades`) |
+| `VerifiedBundle` (`archive.rs`) | struct | An `.mpk` whose manifest signature verified (`open(data, runtime_version)`, which also refuses a `minRuntimeVersion` above it); every artifact accessor (`wasm`, `contents` → `VerifiedContents`/`VerifiedWasm`) checks the digest first, so unverified bytes have no representation. `manifest_hash`, `signer_id` |
+| `extract_bundle_manifest`, `is_bundle_blob`, `validate_artifact_path`, `MAX_ARCHIVE_BYTES` (`archive.rs`) | fn/const | Reading the archive: bounded, no path traversal; `fuzz_api` for `fuzz/fuzz_targets/bundle_open.rs` |
+| `is_outbound_url()` | fn | Whether a URL prefix may be declared under `outbound`: `https://` with a host, no credentials, query or fragment, no whitespace or control characters, at most `MAX_URL` bytes. `calimero-outbound` (`merge_approval`) refuses an approval of any other; `to_metadata_json()` drops it |
 | `BundleArtifact`, `BundleMetadata`, `BundleInterfaces`, `BundleLinks`, `BundleHandlers`, `BundleSignature`, `BundleService` | structs | The manifest's nested shapes |
 | `WasmArtifact` | struct | Borrowed `(name, wasm)` pair, the common type `wasm_artifacts()` returns |
 | `BundleFrontend::validate()`, `verify_frontend_file()` | fn | What the node enforces at install: manifest-level (paths, case-insensitive duplicates, HTML entry, MIME allowlist, `MAX_FRONTEND_BYTES`), then per file size and hash |
@@ -53,7 +56,9 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
 
 | Path | What's there |
 | --- | --- |
-| `src/lib.rs` | `BundleManifest` and its nested types, `MAX_MANIFEST_BYTES`, and the manifest-shape tests |
+| `src/lib.rs` | `BundleManifest` and its nested types, `UpgradeAuthority`, `MAX_MANIFEST_BYTES`, and the manifest-shape tests |
+| `src/archive.rs` | Reading an `.mpk`: `VerifiedBundle`, `extract_bundle_manifest`, path checks; tests in `src/archive/` (compute, pipelines, sparse entries) |
+| `src/html.rs` | `check_frontend_html` (feature `html`) |
 | `src/frontend.rs` | `BundleFrontend`, `FrontendError` and the shared frontend rules |
 | `src/signature.rs` | Canonicalization, hashing, Ed25519 sign/verify, `did:key` derivation, and their tests |
 
@@ -69,8 +74,8 @@ Signing is two SHA-256 hashes over the same canonical bytes (the signing payload
   At most `MAX_PIPELINES_PER_PACKAGE` (16) per package and `MAX_PIPELINE_BYTES` (64 KiB) each, refused when the manifest is read.
   What a pipeline may say is the pipeline crate's and the node's rule, not this crate's.
 - **`_`-prefixed fields never reach the signed bytes.** `canonicalize_manifest` strips them unconditionally; don't add a real (signed) field with a leading underscore.
-- **`outbound` is signed and is the app's half of the outbound gate.** A node reads it from the stored metadata (`calimero_context::outbound::app_outbound`) and lets a run send a request only to a URL under a prefix listed there (same host; the prefix's path, or one below it at a `/`; any query string), and only to a host its operator also allows. A prefix has no query or fragment. Empty is omitted from the manifest, so a bundle without it signs as before.
-- **`frontend_aliases` is a sibling of `links`, on purpose.** The registry refuses any `links` value that is not one URL string, and clients iterate `links` as one URL each. The aliases do reach `to_metadata_json()`: a node's sign-in page reads them there to trust a login callback to an app's old origin.
+- **`outbound` is signed and is the app's half of the outbound gate.** A node keeps it on the release record at install (`PackageVersion::outbound`) and hands it to `calimero-outbound` (`Node::outbound_for`), which lets a run send a request only to a URL under a prefix listed there (same host; the prefix's path, or one below it at a `/`; any query string), and only to a host its operator also allows. A prefix has no query or fragment. Empty is omitted from the manifest, so a bundle without it signs as before.
+- **`frontend_aliases` is a sibling of `links`, on purpose.** The registry refuses any `links` value that is not one URL string, and clients iterate `links` as one URL each. The node's consent page reads them from the verified manifest: with the frontend link they are the origins a sign-in callback may land on (`login_origins` in `consent_page/diff.rs`), and an upgrade's page shows a change to them.
 - **A frontend path has one spelling.** `frontend/` then non-empty components of only `A-Za-z0-9._~@+-` (no `.` or `..`), compared ASCII-case-insensitively, so the archive entry, the manifest and a served URL cannot name different files.
 - **The node enforces paths, sizes, hashes and the MIME allowlist.** The HTML rules are build-time feedback, not a security boundary.
   The serve-time boundary is the per-app origin (`{label}.{base_domain}`, serving only that app's files) plus the CSP below.

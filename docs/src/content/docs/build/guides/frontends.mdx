@@ -1,0 +1,300 @@
+---
+title: Ship a frontend
+description: Put your app's web frontend in its signed .mpk, find where the cluster serves it, sign people in from it with mero-js passkeys, send them to the node's consent page for what the page may not do itself, and serve it on your own domain.
+sidebar:
+  order: 11
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
+
+**Task:** give your app a web page that the cluster itself serves from the
+signed release, that signs people in with their passkey, and that calls the
+app as them, without ever getting more of their account than the app needs.
+
+The cluster serves a release's frontend from the `.mpk` it verified, on an
+origin of the package's own, so the page is exactly what the publisher signed.
+A passkey ceremony from that origin opens a session **bound to the package**:
+it reaches only instances of that package. What it may not do (approve an
+upgrade, create an organization, invite someone), the page asks the node's
+consent page for.
+The protocol is in [Packages & frontends](/protocol/applications/#frontends),
+[Package-bound sessions](/protocol/identities/#package-bound-sessions) and
+[The consent page](/protocol/consent-page/).
+
+## Build the page for the cluster
+
+The node serves each file with a fixed content security policy:
+
+```
+default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' data: blob:;
+font-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none';
+form-action 'self'; frame-ancestors 'self'; connect-src 'self' <the cluster's API origins> <the attestation mirror>
+```
+
+So the build must:
+
+- **ship everything it loads.** No script, style, font or image from another
+  origin; the page reaches only the cluster's API (and the attestation mirror
+  mero-js reads release measurements and Intel's collateral from).
+- **run no inline script.** Inline styles are allowed, inline `<script>` and
+  `on*=` handlers are not.
+- **use relative URLs.** The page is served under `/{version}/`, so an
+  absolute `/assets/app.js` misses; build with a relative base (Vite
+  `base: './'`) and no `<base>` element.
+- **use only these file types:** `html`, `js`, `mjs`, `css`, `json`,
+  `webmanifest`, `txt`, `svg`, `png`, `jpg`, `jpeg`, `gif`, `webp`, `ico`,
+  `woff`, `woff2`, `ttf`, `wasm`, `webm`, `xml`.
+- **stay under 32 MiB** for all files together (`MAX_FRONTEND_BYTES`).
+
+`calimero_bundle::check_frontend_html` is the lint a bundling tool can run on
+the build output for the first three rules (`FRONTEND_REMOTE_RESOURCE`,
+`FRONTEND_INLINE_SCRIPT`, `FRONTEND_ESCAPING_URL`); the node does not run it
+and relies on the policy above.
+
+## Put it in the release
+
+The manifest names the files under `frontend`, each with its SHA-256 and size,
+so the publisher's signature covers them; the archive carries them under
+`frontend/`:
+
+```json
+{
+  "package": "com.example.notes",
+  "appVersion": "1.0.0",
+  "wasm": { "path": "app.wasm", "hash": "…", "size": 48213 },
+  "frontend": {
+    "entry": "frontend/index.html",
+    "files": [
+      { "path": "frontend/index.html", "hash": "…", "size": 412 },
+      { "path": "frontend/assets/app.js", "hash": "…", "size": 90321 }
+    ]
+  }
+}
+```
+
+`scripts/pack-component.py --frontend <dir>` writes it: every file under the
+build directory goes into the archive as `frontend/<path>` with its SHA-256 and
+size, and `--frontend-entry` (default `index.html`) names the page served at
+`/`. The script refuses, before signing, what the node would refuse at install
+(the rules below), so a bad build fails on your machine, not on the cluster.
+
+```bash
+npm run build                                    # writes dist/ with base './'
+mero-app-build apps/notes --out app.wasm
+python3 -I scripts/pack-component.py --wasm app.wasm --frontend dist \
+  --package com.example.notes --app-version 1.0.0 --key my-signing-key.json \
+  --out dist-mpk/com.example.notes-1.0.0.mpk
+meroctl app install --path dist-mpk/com.example.notes-1.0.0.mpk   # a development cluster
+```
+
+At install the node refuses a frontend whose paths are not canonical paths
+under `frontend/` (`FRONTEND_UNSAFE_PATH`), listed twice
+(`FRONTEND_DUPLICATE_PATH`), of a type it does not serve
+(`FRONTEND_UNSUPPORTED_TYPE`), over 32 MiB (`FRONTEND_TOO_LARGE`), whose
+entry is missing or not HTML (`FRONTEND_NO_ENTRY`, `FRONTEND_ENTRY_NOT_HTML`),
+or whose bytes do not match the manifest (`FRONTEND_SIZE_MISMATCH`,
+`FRONTEND_HASH_MISMATCH`, `FRONTEND_MISSING_FILE`).
+
+A release that changes only the frontend is a release like any other: an
+instance moves to it with an upgrade ([Ship a new version](/build/ship-v2/)).
+
+## Where it is served
+
+Only on a cluster started with `--apps-domain D` (`merod local` uses
+`localhost`). Each package gets a host of its own, `{label}.D`, where the label
+is 52 base32 characters of the package's hashed name
+(`calimero_node::app_host::label`).
+
+| Path | Serves |
+| --- | --- |
+| `/` | redirects to `/{newest version}/` |
+| `/{version}/{path}` | that release's file; any other path under the version is the entry, for client-side routes |
+| `/app/{app}/{path}` | redirects to `/{version}/{path}` of the release that instance runs, so a link you give a customer keeps opening the frontend that matches their instance |
+| `/d/{deployment}/{path}` | redirects to `/{version}/{path}?deployment={id}`, the release that deployment offers |
+| `/.well-known/calimero.json` | `{ package, versions, deployments, api }`: the releases, the deployments offering the package and the cluster's API URLs |
+
+Every redirect keeps the query, so `/?invite=…` reaches the page with its token.
+Only `GET` and `HEAD` are served; an unknown label is a `404`, never a node
+route.
+The same site is also on the package's cluster host (for Calimero Cloud's
+resolver), on each deployment's own host, and on any custom domain you
+register ([below](#serve-it-on-your-own-domain)).
+
+## Sign people in from the page
+
+<SeqDiagram id="d-guide-frontend" title="A served frontend signs someone in and calls its app"
+  lanes={[
+    { label: 'Browser', color: '#f0883e' },
+    { label: '{label}.D', color: '#a371f7' },
+    { label: 'Node API (sealed)', color: '#3fb950' },
+    { label: 'Passkey', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'GET /app/{app}/ → /1.0.0/' },
+    { from: 1, to: 0, label: 'signed files, CSP', dashed: true },
+    { from: 0, to: 1, label: 'GET /.well-known/calimero.json' },
+    { from: 0, to: 2, label: 'attest the node, open the sealed channel' },
+    { from: 0, to: 2, label: 'sign in, origin = the page' },
+    { from: 0, to: 3, label: 'navigator.credentials.get' },
+    { from: 3, to: 0, label: 'assertion', dashed: true },
+    { from: 2, to: 0, label: 'session bound to com.example.notes', dashed: true },
+    { from: 0, to: 2, label: 'call notes app' },
+  ]} />
+
+```ts
+import {
+  CalimeroClient, browserPasskey, frontendManifest, pageDeployment, PasskeyUnknownHere,
+} from '@calimero-network/mero-js';
+
+const { package: pkg, api } = await frontendManifest();     // this page's /.well-known/calimero.json
+const client = new CalimeroClient({
+  baseUrl: api[0],
+  nodes: api.slice(1),
+  policy: { release: { minReleaseVersion: '2.3.109' } },  // { allowMock: true } on merod local
+});
+
+const saved = sessionStorage.getItem('calimero');
+if (saved) client.useSession(JSON.parse(saved));
+else {
+  try {
+    sessionStorage.setItem('calimero', JSON.stringify(await client.signIn(browserPasskey())));
+  } catch (e) {
+    if (e instanceof PasskeyUnknownHere) showSignUp(); // client.signUp(browserPasskey(), name)
+    else throw e;
+  }
+}
+
+// Opened through /d/{deployment}/: create the person's instance from that deployment.
+const deployment = pageDeployment();
+const { appId } = deployment
+  ? await client.apps.create({ name: 'My notes', deployment, package: pkg })
+  : { appId: appFromPath() };
+await client.apps.call({ app: appId, method: 'add', args: { text: 'hello' } });
+```
+
+- The well-known file is fetched in the clear and only says where the API is;
+  trust comes from the attestation the client checks before it sends
+  anything.
+- In a browser, `signIn` and `signUp` send the page's origin when it is not
+  one of the client's nodes, and the node answers with the relying-party id
+  to use. The session is bound to the package of that origin; `me()` answers
+  its `app` and `origin`.
+- A passkey made on another cluster, or removed, is `401 PASSKEY_UNKNOWN_HERE`
+  (`PasskeyUnknownHere`).
+- Keep the session in `sessionStorage` and `useSession` it after a reload, so
+  the person is not prompted again.
+
+## What a frontend session may do
+
+It acts as the person, but only within its package. [Sessions and authority](/protocol/sessions-and-authority/)
+explains why (the session gate and the account's authority are separate checks)
+and walks through a chat app creating a workspace and inviting someone.
+
+| May | May not |
+| --- | --- |
+| call and read instances of its package, and list them | reach any other app of the account |
+| create instances of its package (from a deployment, or by package) | manage passkeys, API keys, recovery or sessions |
+| upload blobs and files to its apps, follow their events and presence | approve releases, outbound hosts or upgrades; install or uninstall packages |
+| step up with a passkey for one of its apps' `confirm` methods, from its own origin | create, rename or delete organizations, invite, redeem invites, change members |
+| manage the teams **below** its package's app team (create, rename, move within, members, delete when all their apps are its package's), for apps such as a chat's channels | change the app team itself, an app's access outside those teams, or delete an app |
+
+Everything in the right column is refused (`403`) whatever the person's own
+rights. The person still has those rights; the page sends them to the node's
+consent page to use one.
+
+## Ask for consent
+
+For an upgrade, a release approval, outbound hosts, or an organization change,
+the page asks the node for a consent request and sends the person to the
+node's own page, where they see what they approve (from the node's state and
+the signed manifests, not from your page) and confirm with their passkey.
+
+```ts
+import { createOrgConsent, upgradeConsent } from '@calimero-network/mero-js';
+
+const returnTo = `${location.origin}${location.pathname}`;
+await client.openConsentPage(upgradeConsent(appId, '1.1.0', returnTo), {
+  confirm: async ({ code }) => code === undefined || window.confirm(`The next page shows ${code}. Continue?`),
+});
+
+// Back on returnTo?request_id=…&result=…: read the decision from the node, never the URL.
+const decision = await client.resumeConsent();
+if (decision?.status === 'approved' && decision.kind === 'createOrg') useOrg(decision.outcome);
+```
+
+`openConsentPage` posts `POST /consent/requests { kind, scope?, subject,
+returnTo }` (any session of the account, a bound one included) and navigates
+to the answer's `url`. The kinds are `release`, `upgrade`, `outbound`,
+`createOrg`, `createInvite`, `acceptInvite`, `leaveOrg`, `removeMember`,
+`setMemberRole`, `setMemberTeams`, `removeMemberTeams`, `revokeInvite`,
+`renameOrg`, `deleteOrg`, `setCapabilities` and `setAllApps`; mero-js has a
+builder for each (`releaseConsent`, `upgradeConsent`, `createOrgConsent`, ...).
+
+- For a package-bound session, `returnTo` must be on one of the package's
+  own origins (its `{label}.D` and other hosts, a registered or served
+  origin) or one its newest signed manifest names (`links.frontend`,
+  `frontendAliases`); for an unbound session, one of the cluster's
+  `--origins`. It is `https` (or `http` on `localhost`), without credentials
+  or a fragment, at most 2 KiB: else `400 RETURN_TO_NOT_ALLOWED`
+  (`allowed_return_to` in `crates/node/src/consent_page.rs`).
+- Show the person the answer's `code` before you send them; the node's page
+  shows the same code.
+- An account has one undecided request per node: a new one replaces the
+  older, whose result then answers `404` (`CONSENT_REPLACED` in mero-js). A
+  request lives 10 minutes; a page whose subject changed meanwhile is
+  `409 CONSENT_STALE`.
+- `resumeConsent` throws `CONSENT_NOT_STARTED`, `CONSENT_REQUEST_MISMATCH` or
+  `CONSENT_NOT_DECIDED` for a return it cannot vouch for: do not act on those.
+
+The full list of subjects and what the page shows is in
+[The consent page](/protocol/consent-page/); mero-js's
+[user approvals guide](https://calimero-network.github.io/mero-js/guides/user-approvals/)
+covers the client side.
+
+## Serve it on your own domain
+
+Two kinds of origin can sign people in to a package besides its `{label}.D`
+host, both registered by the package's manager (its publisher organization's
+org-wide `MANAGE_APPLICATION` holders, else the account that installed it
+first) with their passkey:
+
+- A **registered origin** (`https://notes.example.com`): your own hosting
+  serves the page, and passkey ceremonies there run under that domain's
+  relying-party id. Sessions opened there are bound to the package and name
+  the origin; removing the origin ends them.
+- A **served origin** (`served: true`): the cluster also serves the package's
+  frontend there from the signed bundle, the same site as `{label}.D`. It must
+  be `https` with no port, not under the apps domain or the cluster's rp-id;
+  browsers reach it once Calimero Cloud holds its certificate and route.
+
+```bash
+meroctl app origins add com.example.notes https://notes.example.com --served
+meroctl app origins list com.example.notes
+meroctl app origins remove com.example.notes https://notes.example.com
+```
+
+```ts
+import { browserPasskey, passkeyConfirm } from '@calimero-network/mero-js';
+
+// From a session on the cluster's own origin: a package-bound session cannot manage origins.
+await client.packages.originsAdd(
+  { package: 'com.example.notes', origin: 'https://notes.example.com', served: true },
+  { confirm: passkeyConfirm(browserPasskey()) },
+);
+```
+
+| Limit or refusal | When |
+| --- | --- |
+| 8 origins per package; 4 served per package, 64 per cluster | |
+| `403 ORIGIN_NOT_REGISTERED` | a sign-in or sign-up from an origin the package has not registered |
+| `400 NOT_SERVING` | `--served` on a cluster without `--apps-domain` |
+| `409 ORIGIN_TAKEN` | the origin is held with the other `served`; remove it first |
+| `409 CLUSTER_NOT_UPGRADED` | a served origin while a node runs an older release |
+| `http` origins | only `localhost` names, on a `--dev` node |
+
+<Aside type="tip">
+  Removing an origin ends every session opened there: their next request is
+  `401`. Move people to the new origin before you remove the old one, and list
+  the old one in `frontendAliases` while links to it are still around.
+</Aside>

@@ -1,22 +1,24 @@
-//! The wire between an app and the node for an outbound HTTPS request.
+//! The wire between a run and the node for an outbound HTTPS request.
 //!
-//! A run may ask its node to make **one** HTTPS request to an outside
-//! service, for what a contract cannot know by itself: whether a captcha was
-//! solved, whether a payment went through, what an API answers. The node makes it
-//! only if every gate holds, and refuses otherwise (see the runtime's
-//! `http_request` host function and `calimero-context`'s outbound policy):
+//! A run may ask its node for HTTPS requests to an outside service (at most
+//! the component host's `MAX_HTTP_REQUESTS` in one run), for what an app
+//! cannot know by itself: whether a captcha was solved, whether a payment went
+//! through, what an API answers. The component host passes the request
+//! (`wasi:http`, `calimero_app_host::HttpHost`) to the node, which encodes it
+//! as an [`OutboundRequest`] for `calimero-outbound`.
+//! The request is made only if every gate holds, and refused otherwise:
 //!
-//! - the node's operator turned outbound requests on (`[context.outbound]`,
-//!   off by default) and allows the request's host (listed, or `"*"` for any
-//!   host an app declares);
-//! - the app's signed bundle manifest declares a URL prefix that covers the
+//! - the node's operator turned outbound requests on (`[outbound]`, off by
+//!   default) and allows the request's host (listed, or `"*"` for any host an
+//!   app declares);
+//! - the app's signed release manifest declares a URL prefix that covers the
 //!   request's URL (`outbound`);
-//! - the namespace the run belongs to approved a prefix that covers it for the
-//!   app's publisher (`GroupOp::OutboundApprovalSet`), which an admin does in
-//!   the same call that installs or upgrades the app ([`OutboundSelection`]);
-//! - the run writes state and executes on this node (its own write, or one it
-//!   relays for an author): never a view, a migration, a check or a peer's
-//!   delta;
+//! - a prefix that covers it is approved for the app's publisher, by whoever
+//!   holds outbound approvals: the app's organization (`MANAGE_APPLICATION`
+//!   org-wide, `POST /orgs/{org}/outbound`) or the operator
+//!   (`--outbound-approvals operator`) ([`OutboundSelection`]);
+//! - the run writes (a call, a follow-up, a timer, a delivery) or is a
+//!   component's action: never a view, `init`, a migration or compute;
 //! - the request fits the limits below, and its host resolves only to public
 //!   addresses.
 //!
@@ -27,15 +29,11 @@
 //! is removed before the app sees the response.
 //!
 //! Like search, this is node-local: the request and the response are never
-//! part of a delta. Only the state the run writes because of them is.
+//! part of a log entry. Only the state the run writes because of them is.
 
 #[cfg(feature = "borsh")]
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
-
-/// Requests one run may make. One: enough to ask a service one question, and
-/// no loop a run could spend sending state out piece by piece.
-pub const MAX_REQUESTS_PER_RUN: u64 = 1;
 
 /// Largest request body, in bytes.
 pub const MAX_REQUEST_BODY: usize = 64 * 1024;
@@ -54,7 +52,7 @@ pub const MAX_HEADER_BYTES: usize = 1024;
 pub const MAX_RESPONSE_BODY: usize = 1024 * 1024;
 
 /// How long the node waits for the whole request, in milliseconds. The run
-/// holds its context's write lock meanwhile.
+/// holds its app's proposal lock meanwhile.
 pub const TIMEOUT_MS: u64 = 10_000;
 
 /// How a request names a secret the node fills in: `{{secret:NAME}}`.
@@ -104,67 +102,18 @@ pub struct OutboundResponse {
     pub body: Vec<u8>,
 }
 
-/// What starts a reference to a sealed secret in a header value or the body:
-/// `{{sealed:<hex envelope>}}`. See [`SealedSecret`].
-pub const SEALED_PREFIX: &str = "{{sealed:";
-
-/// The largest sealed envelope a request may name, in bytes.
-pub const MAX_SEALED_ENVELOPE: usize = 4 * 1024;
-
-/// What an app seals for the node to put in an outbound request: the value,
-/// and the only hosts it may ever be sent to. Sealed together, so the app
-/// cannot send the value anywhere the admin did not name when sealing it.
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
-pub struct SealedSecretPayload {
-    pub value: String,
-    pub hosts: Vec<String>,
-}
-
-/// A secret sealed to the namespace TEE key, which an app keeps in its state.
-///
-/// Every member replicates it; none can read it. A request names it with
-/// [`placeholder`](Self::placeholder), and only a node that is a TEE authority
-/// of the namespace opens it, fills it in for a host it names, and removes it
-/// from the response, so the app's code never holds the value. On any other
-/// node the request is refused `SealedUnavailable`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[cfg_attr(feature = "borsh", derive(BorshDeserialize, BorshSerialize))]
-pub struct SealedSecret {
-    /// The namespace TEE key it is sealed to. When the namespace's key
-    /// rotates it no longer is the current one, and the app seals it again.
-    pub key: [u8; 32],
-    /// The [`SealedSecretPayload`], sealed in the app's context.
-    pub envelope: Vec<u8>,
-}
-
-impl SealedSecret {
-    /// What to write in a header value or the body where the value goes.
-    #[must_use]
-    pub fn placeholder(&self) -> String {
-        format!(
-            "{SEALED_PREFIX}{}{SECRET_SUFFIX}",
-            hex::encode(&self.envelope)
-        )
-    }
-}
-
-/// A refusal an app can act on, read from the reason `env::http_request`
+/// A refusal an app can act on, read from the reason an outbound request
 /// returns. Every other refusal (a host the operator does not allow, a URL
 /// outside the manifest, a bound) is a bug in the app or its deployment, and
 /// reads as `None`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutboundRefusal {
-    /// The namespace has not approved the URL's prefix for the app's
-    /// publisher, or revoked it: a member should ask an admin.
+    /// Whoever holds outbound approvals has not approved the URL's prefix for
+    /// the app's publisher, or revoked it: a member should ask an admin.
     NotApproved,
     /// A newer version of the app declares the prefix and nobody has been
     /// asked about it yet: an admin should approve it from the upgrade.
     AwaitingApproval,
-    /// The request names a [`SealedSecret`] and this node is not a TEE
-    /// authority of the namespace, so it cannot open it: the request has to
-    /// run on one of the namespace's TEE nodes.
-    SealedUnavailable,
 }
 
 impl OutboundRefusal {
@@ -175,28 +124,23 @@ impl OutboundRefusal {
         match self {
             Self::NotApproved => "NotApproved",
             Self::AwaitingApproval => "AwaitingApproval",
-            Self::SealedUnavailable => "SealedUnavailable",
         }
     }
 
     /// The refusal a reason names, if it is one an app can act on.
     #[must_use]
     pub fn of(reason: &str) -> Option<Self> {
-        [
-            Self::NotApproved,
-            Self::AwaitingApproval,
-            Self::SealedUnavailable,
-        ]
-        .into_iter()
-        .find(|refusal| {
-            reason
-                .strip_prefix(refusal.word())
-                .is_some_and(|rest| rest.starts_with(':'))
-        })
+        [Self::NotApproved, Self::AwaitingApproval]
+            .into_iter()
+            .find(|refusal| {
+                reason
+                    .strip_prefix(refusal.word())
+                    .is_some_and(|rest| rest.starts_with(':'))
+            })
     }
 }
 
-/// Which URL prefixes an admin approves for an app's publisher: exactly the
+/// Which URL prefixes an approver approves for an app's publisher: exactly the
 /// ones its manifest declares, or a list of their own (what an install screen
 /// showed, a subset of it, or a narrower prefix).
 ///
@@ -256,20 +200,7 @@ mod selection_tests {
             OutboundRefusal::of("no URL prefix the app declares covers it"),
             None
         );
-        assert_eq!(
-            OutboundRefusal::of("SealedUnavailable: this node is not a TEE of the namespace"),
-            Some(OutboundRefusal::SealedUnavailable)
-        );
         assert_eq!(OutboundRefusal::of("NotApprovedYet: something else"), None);
-    }
-
-    #[test]
-    fn a_sealed_secret_is_named_by_its_envelope_in_hex() {
-        let sealed = super::SealedSecret {
-            key: [7; 32],
-            envelope: vec![0xab, 0x01],
-        };
-        assert_eq!(sealed.placeholder(), "{{sealed:ab01}}");
     }
 
     #[test]

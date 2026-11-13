@@ -5,6 +5,8 @@ sidebar:
   order: 16
 ---
 
+import FlowPlacement from '../../../components/diagrams/FlowPlacement.astro';
+
 The **operator** runs the machines: it starts nodes, gives them a network and
 disks, and keeps the cluster healthy. It is not trusted with app data. The
 **Ops API** (`/ops/*`) gives it what operating requires and nothing that opens
@@ -129,6 +131,105 @@ What it leaves out is deliberate:
 - Approved releases and governance are not secrets: every replica attests the
   governance, and the approved releases decide which nodes the operator can
   place an app on.
+
+## Placement
+
+Which nodes hold an app's data is decided twice: by the node that creates the
+app, once, and afterwards only by the operator's replica moves. Neither the
+log nor a node moves replicas on its own.
+
+### A new app's replicas
+
+`POST /apps` picks `--replicas` nodes (3 by default) before it proposes
+`CreateApp`, which records them (`Node::place`, `placement::choose`):
+
+<FlowPlacement />
+
+1. **Replica nodes only.** Of the registered nodes, only replica nodes
+   (`SystemState::replica_nodes`). A [job node](/protocol/system-group/#job-nodes-in-the-directory)
+   never holds an app: it never holds the cluster key.
+2. **Nodes that may hold it.** The set of mero-tee releases approved for the
+   app is that of the release the app will run: its publisher's for a bound
+   package, else the app's organization's, or the operator's where governance
+   gives it release approvals ([Release approvals](/protocol/governance/#release-approvals)).
+   A node stays only if its attested release is in that set and is not
+   [retired](/protocol/governance/#release-deadlines) by a deadline that has
+   passed. With no set recorded and no deadline passed, every replica node
+   stays and none is attested for this.
+3. **The runtime floor.** A node whose runtime is known to be older than the
+   release's `minRuntimeVersion` is left out; a node that does not say (an
+   older node, one that does not answer) is kept
+   ([The runtime a release needs](/protocol/upgrades/#the-runtime-a-release-needs)).
+4. **Zones first, then load.** The nodes left are sorted by load (the number
+   of apps they hold a replica of, then the lower id). The first pass takes
+   the first node of each zone not yet covered; the second fills the remaining
+   places by load alone. So the replicas span `min(replicas, zones)` zones,
+   and within that the least-loaded nodes. A node's zone is the one
+   `POST /ops/nodes` registered; nodes without one (every node from `--peers`
+   until it is registered with one) count as one unknown zone together, so a
+   cluster without zones is placed by load alone.
+
+Fewer nodes left than `--replicas` gives the app all of them. None left
+answers `503` ("no node runs a release this app's owner approved"), or `409
+RUNTIME_TOO_OLD` naming the nodes when the runtime floor emptied the list.
+
+**Worked example** (the figure). Seven nodes are registered: n1 to n4 in zones
+`a` and `b` with 4, 1, 3 and 2 apps, n5 without a zone and no apps, n6 a job
+node, n7 in zone `c` on a release the app's publisher has not approved. n6 and
+n7 drop out. By load the rest are n5, n2, n4, n3, n1. The first pass takes n5
+(the unknown zone), n2 (zone `a`) and n4 (zone `b`), which fills the three
+places: the app goes to `[2, 4, 5]`, sorted by id. Had n5 not been there, the
+second pass would have filled the third place with n3, the least-loaded node
+left, and the app would span two zones.
+
+### Moving replicas
+
+After creation only the operator moves an app, with `POST
+/ops/apps/{app}/replicas { replicas }` (`meroctl ops move <app> --replicas
+2,4,5`), signed with its key over `<app> / __set_replicas / { replicas }`
+(one signature for both writes of the move). The node refuses, before
+anything is written:
+
+- a node named twice (`DUPLICATE_REPLICA`), fewer than 3 nodes, or than
+  the cluster's replica nodes where it has fewer (`TOO_FEW`), an unregistered node (`UNKNOWN_NODE`) or a job
+  node (`JOB_NODE`);
+- a node whose attested release is not approved for the app (`403`): a move
+  is how data would reach a new image, so it obeys the same approvals as a
+  new app;
+- a joining node whose runtime is older than the app's release needs (`409
+  RUNTIME_TOO_OLD`; nodes the app is on already are not judged, so an app can
+  always be moved off one);
+- on a node that does not lead the app's group, `421 NOT_LEADER` with
+  `details.leaderUrl`; a second move of the same app while one runs, `409
+  MOVE_IN_PROGRESS`. A move to the set the app has writes nothing (`unchanged:
+  true`).
+
+The leader hands the joining nodes the app's bundle and the blobs its state
+marks, records the union of old and new nodes (`SetReplicas`), adds the new
+ones as learners, makes the target set the voters once they caught up, and
+records the target. The nodes that left stop the group and delete its data
+([Replica moves](/protocol/replication/#replica-moves)).
+
+### Reading placement
+
+`GET /ops/placement` (`meroctl ops placement`) is what a rebalancer (mdma's)
+reads before it moves anything:
+
+```json
+{
+  "fresh": true,
+  "apps":  [{ "app": "…", "group": 7, "replicas": [2, 4, 5] }],
+  "nodes": [{ "id": 2, "zone": "a", "role": "replica", "release": "2.3.131", "apps": 2 },
+            { "id": 6, "zone": "",  "role": "job",     "release": "2.3.131", "apps": 0 }],
+  "clusterVersion": "…"
+}
+```
+
+It is read after a read index (`fresh`: this node caught up with the system
+leader), and each node's release is its attested one, asked for at most
+`PLACEMENT_RELEASE_WAIT` (`null` when it did not answer). Ids and counts only:
+no app names, organizations or state. A job node is listed with its role and
+no apps.
 
 ## What it cannot do
 

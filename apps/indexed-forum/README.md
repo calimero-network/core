@@ -36,11 +36,13 @@ scores, counts) travel as decimal strings.
 
 Errors: `Exists`, `NoPost`, `NoComment`, `NotAuthor`, `NotModerator` (each with its id or
 key), `HasSeparator { value }`.
+Events: `Posted { id, board }`, `PostChanged { id }`, `PostDeleted { id }`,
+`Commented { post, key }`, `Voted { post }`.
 
 ## Tests
 
 `cargo test` runs `tests/harness.rs` (v1's tests, method for method) and
-`scenarios/indexed-forum.json`, the merobox workflow as a scenario with exact results, in
+`scenarios/indexed-forum.json`, the former merobox workflow as a scenario with exact results, in
 the org of `indexed-forum.org.json`. `scenarios/forged-writes.json` replays what v1's
 storage refused a patched peer (editing, retagging, pinning, deleting or moderating
 someone else's post, editing or deleting their comment, taking back their vote) as

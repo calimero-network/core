@@ -55,6 +55,7 @@ A few series keep conventional names (`http_requests_total`,
 | `calimero_system_learners` | | System group learners. |
 | `calimero_build_conflicts_total` | | Counter: entries this node appended as leader that applied as conflicts (built on state that changed first) and ran again. |
 | `calimero_system_read_rounds_total` | | Counter: read-index rounds this node began on the system group. A client's call or view makes one, wherever it enters and wherever the app's leader is; requests waiting together share one. |
+| `calimero_replica_strong_views_total` | | Counter: strong views this replica answered itself after a read index from the app's leader. A follower whose count stays flat while it takes strong views is forwarding them to the leader (it could not catch up within `read_wait`, or the leader runs an earlier release). |
 | `calimero_raft_misaddressed_total` | `reason` | Counter: Raft messages from peers whose addressee did not check out. `not_addressee`: addressed to another node, refused (`421 NOT_ADDRESSEE`; peers only); a steady rate means a peer reaches this node at an address the cluster has for another one. `no_target`: no addressee, from a peer on an earlier release; accepted this release (with a warning at most once a minute) and refused from the next, so it should fall to zero once every node runs this release. |
 | `calimero_log_undecodable_entries_total` | `log` | Counter: log entries this node could not decode and skipped (`system` or `app` log); its state then differs from the nodes that applied them. Every new command and field is gated on the [cluster version](/protocol/upgrades/#the-cluster-version), so anything above zero is a bug: alert on it. |
 | `calimero_group_applied` | `group` | An app group's applied index here, per hosted group (the label is the group number, not the app's name). |
@@ -137,7 +138,7 @@ app it runs or hosts (below), whatever the number of developers.
 - an app's calls, `init`, migrations, timers and follow-ups run on the app's
   leader, which counts them; followers apply the leader's diff and run nothing,
   so they count nothing for those entries;
-- a strong view runs on the leader, a stale view on the replica that answered
+- a strong view runs on the replica that answered once it applied the leader's read index (or on the leader, which it forwards to when it cannot catch up), a stale view on the replica that answered
   it;
 - a run whose result was thrown away (a leader race's entry that applied as a
   conflict and ran again, an entry a deposed leader built, a component's

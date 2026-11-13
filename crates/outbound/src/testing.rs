@@ -1,5 +1,5 @@
-//! `[outbound.testing]`: what merobox needs to drive outbound requests
-//! end to end without a real service. Compiled only with the `outbound-testing`
+//! `[outbound.testing]`: what cluster tests and scenarios need to drive
+//! outbound requests end to end without a real service. Compiled only with the `outbound-testing`
 //! feature, which merod's test image (`mock-attestation`) enables and a release
 //! build never does.
 //!
@@ -10,7 +10,7 @@
 //!   goes back through redaction like any answer. Any other host still goes out
 //!   over the real transport.
 //! - `secrets`: literal values, scoped by package, signer and host as
-//!   `env_secrets` are, because a merobox node's environment cannot carry them.
+//!   `env_secrets` are, because a test node's environment cannot carry them.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

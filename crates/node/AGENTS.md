@@ -47,7 +47,7 @@ is its command line.
   module's `apply`; `system.rs` keeps the state, the shared rules and the two
   dispatchers. A new command names its area there and gets an arm in both.
 - **Routing** (`node.rs`): system writes go to the system leader, calls and strong
-  views to the app's leader, over **peer sealed channels** (`internal/*`) whose key
+  views to the app's leader (a strong view runs on the replica that takes it once it applied the leader's read index, `internal/app/index`, `Node::app_read_index`; else on the leader; regression `a_follower_answers_a_strong_view_after_a_read_index`), over **peer sealed channels** (`internal/*`) whose key
   is attested like any client's, plus the cluster secret (HMAC of K_c).
 - **Peer identity and the inbound gate** (Phase 0 of
   `docs/specs/gate-system-group.md`): a node's channel to a peer is identified
@@ -761,7 +761,7 @@ is its command line.
   `StepState::is_cached` and `cached_items` feed `cached` and `cachedItems` in the run view; a start naming a file id the app does not hold answers `410 OUTPUT_EXPIRED`.
   Tests: `component/tests/pipelines.rs` (apply), `compute/pipelines.rs` (`plan` keys and hits), `pipeline_runs.rs` (`rerunning_with_one_changed_param_runs_only_the_steps_it_reaches`, `a_step_with_cache_false_always_runs`, `a_fan_out_reuses_its_cached_items`, `starting_with_an_expired_output_answers_output_expired`).
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
-- **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas. `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`). `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs`, `tests/move_app.rs`.
+- **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas (`payer_quotas`: its override, else the cluster's, with `MoveApp { org_quotas }`, which the API always sets; `Feature::MoveOrgQuotas`, rc.24; an entry without it replays judging the cluster's limits). `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`) and a target that approves none of the releases holding the app (`MOVE_RELEASES_DISJOINT`); clients see each as `400 REJECTED` with the reason as the message. `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs` (`a_move_is_judged_by_the_targets_own_quota`), `tests/move_app.rs`.
 - **Every app is in an organization** (`AppRecord::org`, required; hard
   cutover in 1.0.0-rc.20: a record or entry without one is not read, so
   clusters are recreated). **Personal organizations** (`Org::personal`,
@@ -922,8 +922,8 @@ is its command line.
   (`tests/component_packages.rs`),
   `the_newest_reachable_release_is_reported_with_why_the_latest_is_not`.
 - **Upgrade runs** (cascade, status, retry): `POST
-  /orgs/{org}/upgrade { package, version, team?, cascade? }` (the org owner, one
-  passkey assertion for the run) or `POST /ops/orgs/{org}/upgrade` (where the
+  /orgs/{org}/upgrade { package, version, team?, cascade? }` (whoever holds
+  `MANAGE_APPLICATION` there, `SystemState::manages_apps`; one passkey assertion for the run) or `POST /ops/orgs/{org}/upgrade` (where the
   operator holds app upgrades) records a `types::UpgradeRun` in the org
   (`StartUpgradeRun`, newest `UPGRADE_RUNS_KEPT`), then upgrades its apps one by
   one in a background task; each `UpgradeApp`/`UpgradeFailed` notes the app on
@@ -932,7 +932,7 @@ is its command line.
   missing from the cluster is installed from the registry first (owner runs).
   From `SystemState::current_rules_from` on, `apply` derives the run's apps
   from the state and its consent's method (`SystemState::upgrade_run_apps`:
-  `org_run_apps`, `published_run_apps`, or a retry's failed apps), clears its
+  `org_run_apps`, `published_run_apps` (by the release each app runs, `app_release`, with `StartUpgradeRun { by_release }`, which a publisher's run sets; `Feature::PublishedRunByRelease`, rc.24; absent, by the bundle's first recorded package; regression `a_publishers_run_covers_the_instances_that_run_its_package`), or a retry's failed apps), clears its
   progress and refuses a run id any organization holds; `UpgradeApp { run }`
   moves an app once, only while it runs the run's package and never to an
   older release (`SystemState::run_may_move`, which `api::start_run` asks
@@ -1063,8 +1063,8 @@ is its command line.
 - **Ids people type** (accounts, apps, organizations, teams, upgrade runs, API
   keys) are base64url that never starts with `-` (`api::typed_id`), which
   meroctl would read as a flag. Regression: `a_typed_id_never_starts_with_a_dash`.
-- **Context ids**: an app answers to its context id (`hex(SHA-256(app_id))`, what the app
-  sees as `env::context_id()`) wherever the API takes an app id (`Node::canonical_app_id`).
+- **Context ids**: an app answers to its context id (`hex(SHA-256(app_id))`, the id SDK
+  0.12 apps saw; a component reads its app id with `env::app_id()`) wherever the API takes an app id (`Node::canonical_app_id`).
 - **Blobs** (`POST/GET /apps/{app}/blobs[/{id}]`; how an app holds one: see
   "Component executor"): bytes live in the cluster's blob store (`hex(SHA-256)`, a
   majority before the answer, a missing one fetched from a peer). A download asks the
@@ -1748,7 +1748,7 @@ API and system group:
   D27 key and `CallRequest::action`, which alone reaches `allow(action)` methods), run on
   the runtime while the action's thread waits; `NodeHttp` sends through `outbound_for`
   (the signed release's prefixes, the owner's approval, the operator's hosts,
-  `{{secret:..}}`, one request per run). The end is logged as `componentActionEnd`: a
+  `{{secret:..}}`, at most `MAX_HTTP_REQUESTS` (8) per run). The end is logged as `componentActionEnd`: a
   timeout retries (`action_retry`, `retry_after_ms`) until `MAX_ATTEMPTS`, an app error,
   trap or removed method fails at once; a failure sends `ActionFailed { actionId,
   method, reason }` to the starter (an event with an `Accounts` audience) and runs

@@ -60,8 +60,9 @@ A cluster of attested nodes can afford coordination. With one leader per app
 and a log every replica applies in the same order:
 
 - **Calls are linearized.** Two writes to one instance never race; the second
-  runs against the state the first left. CRDT collections are the storage
-  format, but no merge is needed to converge.
+  runs against the state the first left. The SDK's collections are plain
+  data structures with nothing to merge (only `Text` stays a sequence CRDT,
+  for edits typed against a stale view).
 - **Authorization is one verdict.** A command is checked against the state it
   applies to, which is the same state on every replica.
 - **Execution need not be deterministic for convergence.** Followers apply the
@@ -130,6 +131,7 @@ and [Replication](/protocol/replication/).
    [Encryption](/protocol/encryption/), [Keys & their lifetimes](/protocol/key-rotation/),
    [Security & threat model](/protocol/security-model/).
 4. **People and authority.** [Accounts, passkeys & sessions](/protocol/identities/),
+   [Sessions & authority](/protocol/sessions-and-authority/),
    [Who a run acts as](/protocol/authorship/),
    [Organizations, teams & access](/protocol/organizations/),
    [Deployment governance](/protocol/governance/),

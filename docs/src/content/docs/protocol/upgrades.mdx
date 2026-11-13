@@ -216,45 +216,139 @@ and the kind of actor, in `GET /orgs/{org}/apps` or `GET /auth/apps`; the
 operator reads it without the account or the error in `GET /ops/apps`
 ([Deployment governance](/protocol/governance/#reading-the-approvals)).
 
-## Organization-wide upgrade runs
+## Upgrade runs
 
-An **upgrade run** moves every app of an
-organization that runs `package` — or only a team's apps, and with `cascade`
-the apps of the teams below it — to `version`.
+An **upgrade run** moves many instances of one package to one version with a
+single decision: one passkey step-up (or one operator signature) for the whole
+run, then each app upgraded in turn. There are three kinds, by who starts it:
 
-- **Start.** `POST /orgs/{org}/upgrade { package, version, team?, cascade?, migrate? }`
-  by a `MANAGE_APPLICATION` holder there, with one passkey step-up for the
-  whole run; `POST /orgs/{org}/packages/{package}/upgrade { version, migrate? }`
-  by a publisher's `MANAGE_APPLICATION` holder, over every instance of a
-  `publisher` package, its customers' included (the run is kept on the
-  publisher); or `POST /ops/orgs/{org}/upgrade` where the operator holds app
-  upgrades. An app the starter may not upgrade is recorded as failed without
-  running anything. A
-  release missing from the cluster is installed from the registry first (owner
-  runs).
-- **Record.** `StartUpgradeRun` stores an `UpgradeRun` on the organization (run id,
-  package, version, team, cascade, who started it, its apps, which are done and
-  which failed, and whether it finished); the organization keeps its newest 20
-  runs. Where it applies, the run's apps are derived from the state and what
-  the consent covers (the organization's apps of `package` in the scope, a
-  publisher's instances the starter may upgrade, or the apps the retried run
-  failed on), never taken from the entry, and it starts with nothing done.
-  Each app's `UpgradeApp` must be one the run names and has not moved yet,
-  still on a release of `package`, and not to an older version than it runs;
-  an app that fails this is recorded as failed without running anything.
-- **Progress.** A background task on the node that started it upgrades the apps
-  one by one; each `UpgradeApp` or `UpgradeFailed` notes the app on the run and
-  on the instance. An app already on the target bundle is recorded as done.
-  Each app is judged on its own: one with a replica on a node older than the
-  release's runtime is recorded as failed (`RUNTIME_TOO_OLD`) and the rest
-  move; a retry once those nodes run a newer runtime moves it.
-  `FinishUpgradeRun` marks the end.
-- **Follow and retry.** `GET /orgs/{org}/upgrades/{run}` shows the run;
-  `POST …/retry` starts a new run over the apps that failed.
+| Run | Route | Who | Apps it covers | Consent |
+| --- | --- | --- | --- | --- |
+| An organization's | `POST /orgs/{org}/upgrade { package, version, team?, cascade? }` | A holder of `MANAGE_APPLICATION` there (on `team`, or organization-wide), where owners hold app upgrades | The organization's apps that run a release of `package`; with `team`, only those with `team` access to it, and with `cascade` to the teams below it too | `org:<org> / __upgrade_org / { package, version, team, cascade, migrate }` |
+| A publisher's | `POST /orgs/{org}/packages/{package}/upgrade { version }` | An organization-wide `MANAGE_APPLICATION` holder of the [publisher](/protocol/governance/#publishers) of `package` | Every instance of `package`, in any organization, that the starter may upgrade (chiefly those whose release declares `upgrades: publisher`) | `org:<org> / __upgrade_published / { package, version, migrate }` |
+| The operator's | `POST /ops/orgs/{org}/upgrade { package, version, team?, cascade? }` | The operator, where governance gives it app upgrades | As an organization's run | The operator key's signature over `org:<org> / __upgrade_org / …` ([The operator](/protocol/operator/#the-credential)) |
 
-The task lives in the memory of the node that started it: if that node stops
-mid-run, the run stays unfinished and the remaining apps are not upgraded until
-a retry or a new run.
+`meroctl group upgrade trigger <org> --package P --version V [--group T
+[--cascade]]` starts an organization's run, `meroctl group upgrade status
+<org> <run>` follows it and `meroctl group upgrade retry <org> <run>` retries
+it; `meroctl ops upgrade-namespace` starts the operator's. A publisher's run
+has no command yet: `meroctl raw post /orgs/<org>/packages/<package>/upgrade
+'{"version":"V"}'`.
+
+A run is kept by the organization that started it: the apps' own for an
+organization's or the operator's run, the publisher for a publisher's run (so
+its customers' organizations never see it). Each keeps its newest 20
+(`UPGRADE_RUNS_KEPT`).
+
+### How a run goes
+
+<SeqDiagram
+  id="d-upgrade-run"
+  title="An organization's upgrade run"
+  lanes={[
+    { label: 'Manager', color: '#f0883e' },
+    { label: 'Node', color: '#3fb950' },
+    { label: 'Registry', color: '#a371f7' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: "Each app's leader", color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /orgs/{org}/upgrade { package, version, team?, cascade? }' },
+    { from: 1, to: 1, label: 'MANAGE_APPLICATION there? owners hold app upgrades?' },
+    { from: 1, to: 2, label: 'release missing here: install it from the registry first' },
+    { from: 1, to: 0, label: '412 over org:<org> / __upgrade_org / { package, version, team, cascade }', dashed: true },
+    { from: 0, to: 1, label: 'the same request with confirm' },
+    { from: 1, to: 3, label: 'StartUpgradeRun { run, consent }' },
+    { from: 3, to: 3, label: 'apply: verify and spend the consent; derive the apps from the state' },
+    { from: 1, to: 0, label: 'the run as it applied { runId, apps, done: [], failed: {} }', dashed: true },
+    { type: 'divider', label: 'in the background, one app at a time' },
+    { from: 1, to: 1, label: 'run_may_move? else noted failed: NOT_IN_RUN' },
+    { from: 1, to: 4, label: 'Upgrade { bundle, computeBundle } in the app log' },
+    { from: 1, to: 3, label: 'UpgradeApp { run } (or UpgradeFailed): noted on the run and the app' },
+    { from: 1, to: 3, label: 'FinishUpgradeRun' },
+    { from: 0, to: 1, label: 'GET /orgs/{org}/upgrades/{run}' },
+  ]}
+/>
+
+1. **Checks before the passkey.** The route checks who may start the run and
+   that owners (not the operator) hold app upgrades. If the cluster lacks the
+   release, the node installs it from the registry first, as the starter
+   (where deployments are `granted`, that install needs a
+   [deployer grant](/protocol/governance/#deployers)).
+2. **The one consent.** The step-up states the package, the version and the
+   scope (`team`, `cascade`), never the list of apps. That is what the passkey
+   approves, and what `StartUpgradeRun` carries.
+3. **What `apply` derives.** Where it applies, on every node,
+   `StartUpgradeRun` verifies and spends the consent, then sets the run's apps
+   from the state and the method the consent names
+   (`SystemState::upgrade_run_apps`), whatever list the proposing node sent:
+   - `__upgrade_org`: the organization's apps of `package` in the scope
+     (`org_run_apps`);
+   - `__upgrade_published`: every instance that runs a release of `package`
+     (the release it runs, `app_release`, as an organization's run and each
+     app's `UpgradeApp { run }` judge it) and that the starter may upgrade
+     (`published_run_apps`). An entry logged by a release before 1.0.0-rc.24
+     (no `by_release`) replays judging each app by the package its bundle was
+     first recorded from, which left out an instance whose component another
+     package's release shipped first; the `publishedRunByRelease` feature
+     keeps publisher runs refused until every node reads the field;
+   - `__upgrade_org_retry`: the apps the retried run failed on, still in the
+     directory.
+
+   It clears `done` and `failed`, and refuses a run id that any organization
+   already holds. So a node cannot widen a run past what the passkey approved,
+   and the answer to the request is the run as it applied. (Entries logged
+   before the cluster's `RequireCurrentRules` mark replay as they were
+   logged; [The system group](/protocol/system-group/).)
+4. **App by app.** A background task on the node that started the run takes
+   each app in turn and asks `SystemState::run_may_move` first. An app is
+   noted failed, with `{ code: "NOT_IN_RUN", message }` and without running
+   anything, when the run does not name it, has already moved or failed it,
+   the app no longer runs a release of the run's package, or the run's version
+   is older than the release the app runs (a run never downgrades). Otherwise
+   the app is upgraded as a single upgrade is ([Running it](#running-it)),
+   to the release of `version` with the app's own service. An app whose
+   current WASM is already the target's is only recorded (`UpgradeApp`, nothing
+   runs on its group). A release the starter cannot see, or one that ships
+   nothing for the app's service, is noted `NOT_INSTALLED`.
+5. **Judged again per app.** Each app's `UpgradeApp { run }` names the run,
+   and `apply` finds the run in whichever organization keeps it and checks:
+   the same starter, the run not finished, the app one the run names, and a
+   release of the run's package and version that ships the bundle. The
+   starter's authority over that app (`may_upgrade`), deadlines and the
+   runtime of every replica are judged as for any upgrade. A refusal at any
+   point is `UpgradeFailed`, noted on the run's `failed` and on the app's
+   `lastUpgrade`, and the run goes on with the next app.
+6. **The end.** `FinishUpgradeRun` marks it finished.
+
+### Status and retry
+
+`GET /orgs/{org}/upgrades/{run}` (any member of the organization that keeps
+it) answers the run:
+
+```json
+{
+  "runId": "k3J…", "package": "chat", "version": "1.4.0",
+  "team": "t_support", "cascade": true,
+  "by": "<account id, or operator>", "startedAt": 1762992000,
+  "apps": ["a1", "a2", "a3"],
+  "done": ["a1"],
+  "failed": { "a3": { "code": "RUNTIME_TOO_OLD", "message": "…" } },
+  "finished": true
+}
+```
+
+`POST /orgs/{org}/upgrades/{run}/retry` starts a **new** run over the old
+run's failed apps, under its terms (package, version, team, cascade), with a
+fresh step-up over `org:<org> / __upgrade_org_retry / { run }` (the operator
+signs the same statement for its own run). The usual reason to retry is a
+failure that has since cleared: a replica on a runtime older than the release
+needs (`RUNTIME_TOO_OLD`) once that node runs a newer one, or a release
+deadline once the release is approved.
+
+The task lives in the memory of the node that started the run: if that node
+stops mid-run, the run stays unfinished and the remaining apps are not
+upgraded until a retry or a new run.
 
 ## Upgrading the cluster itself
 
@@ -335,6 +429,9 @@ every feature gated it stays at zero.
 | `attributeByRelease` | `AttributeByRelease`, the system leader's one-time mark after which an app's upgrades, publisher and release approvals follow the release it runs; an earlier release cannot read it. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.19 |
 | `currentRules` | `RequireCurrentRules`, the system leader's one-time mark after which every entry applies under this release's rules; an earlier release cannot read it. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.19 |
 | `backupKeys` | `SetBackupKey` and `ImportHolder`, the recovery disk's backup keys and a holder's import; an earlier release cannot read them | 1.0.0-rc.20 |
+| `orgAppTeam` | `CreateOrg` with `app_team`: an organization made on the consent page from an app's frontend starts with that app's team; an earlier release ignores the field and makes the organization bare | 1.0.0-rc.22 |
+| `moveOrgQuotas` | `MoveApp` with `org_quotas`; an earlier release ignores it and judges the target by the cluster's limits instead of its own override | 1.0.0-rc.24 |
+| `publishedRunByRelease` | `StartUpgradeRun` with `by_release` (a publisher's run); an earlier release ignores it and picks instances by the package each bundle was first recorded from | 1.0.0-rc.24 |
 | `clusterVersion` | `SetClusterVersion` | 1.0.0-rc.16 |
 
 The rc.15 features were added before the gate: on a cluster whose every node

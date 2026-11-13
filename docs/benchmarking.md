@@ -24,7 +24,7 @@ Two benches are not criterion, and run as their own jobs of the same workflow:
     cargo run --release -p search-bench -- --sizes 10000,100000 --out search-bench.md     # tools/search-bench
     cargo bench -p calimero-node --bench cluster_throughput -- --secs 20 --out cluster-throughput.json
 
-- `tools/search-bench`: `calimero-search`'s engine (index size, query latency, memory, the search-gas fit) as a markdown report, uploaded as `search-bench-<sha>`. Its `README.md` holds the reference run.
+- `tools/search-bench`: `calimero-search`'s engine (index size, query latency, memory, a query's host time against the work it reports) as a markdown report, uploaded as `search-bench-<sha>`. Its `README.md` holds the reference run.
 - `crates/node/benches/cluster_throughput.rs`: calls per second and p50/p99 through a 3-node cluster in one process (the real node, sealed channels, the kv component, merod's Raft timing): 1 app with 1 and 64 calls in flight, and 2 apps with 64 each, led by one node and by two. It builds `apps/v2-fixtures/kv` on first use and writes JSON, uploaded as `cluster-throughput-<sha>`; the `compare` job adds a table of it against the base commit's to the PR comment. The [testing page](src/content/docs/contribute/testing.mdx#benchmarks-and-cost-gates) has a reference run.
 
 `master` saves a baseline nightly, and a PR compares against its base commit's (or else its base branch's newest) with `critcmp` (`.github/workflows/benchmarks.yml`): a PR benches only while it carries the `run-benchmarks` label, and then benches every crate, again on each push.

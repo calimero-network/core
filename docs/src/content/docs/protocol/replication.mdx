@@ -157,8 +157,9 @@ In a Raft group:
   compacted.
 - **A minority cannot write.** A node cut off from the majority cannot commit,
   so it refuses writes (`503`) instead of accepting ones the rest of the group
-  would later have to reconcile. Strong reads go through the leader for the
-  same reason ([Reads](/protocol/reads/)).
+  would later have to reconcile. A strong read takes its index from a
+  leader that has just confirmed it leads, for the same reason
+  ([Reads](/protocol/reads/)).
 
 There is therefore no divergence report, no sync handshake, no verdict and no
 merge on the replication path.
