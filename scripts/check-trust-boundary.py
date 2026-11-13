@@ -23,7 +23,6 @@ TRUST_BOUNDARY_PATHS = (  # a directory, or the `<path>.rs` module file beside i
     "crates/kms-client",
     "crates/merod",
     "crates/outbound",
-    "crates/runtime/src/logic/host_functions",
     "crates/sealed",
     "crates/tee-attestation",
     "crates/tee-release",
