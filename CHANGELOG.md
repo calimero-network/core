@@ -22,7 +22,7 @@
   checked the target's file bytes and compute runs against the cluster's limits,
   ignoring the organization's override (`POST /ops/quotas` with `org`), which
   every other charge and `TransferApp` use. `MoveApp { org_quotas }`
-  (`Feature::MoveOrgQuotas`, 1.0.0-rc.23) judges the override; an entry without
+  (`Feature::MoveOrgQuotas`, 1.0.0-rc.24) judges the override; an entry without
   the field replays as it applied. `POST /apps/{app}/move` answers
   `409 FEATURE_NOT_ACTIVE` until every node runs this release.
 - **A publisher's upgrade run covers the instances that run its package**
@@ -31,7 +31,7 @@
   another package shipped first was left out (and one running another package on
   the publisher's first component was listed, then refused `RUN_OTHER_PACKAGE`).
   `StartUpgradeRun { by_release }` (`Feature::PublishedRunByRelease`,
-  1.0.0-rc.23) picks them by the release they run, as organization runs do; an
+  1.0.0-rc.24) picks them by the release they run, as organization runs do; an
   entry without the field replays as it applied.
   `POST /orgs/{org}/packages/{package}/upgrade` answers `409 FEATURE_NOT_ACTIVE`
   until every node runs this release.
@@ -75,6 +75,16 @@
   `reqwest` or `tdx_workload_attestation`. `verify_evidence`, `EvidenceVerdict`,
   `quote_report_data` and the `QuoteCollateralV3` re-export stay: the `quote_parse`
   fuzz target calls them.
+
+## [1.0.0-rc.23] - 2026-11-13
+
+### Changed
+
+- **Re-cut of 1.0.0-rc.22 with its binaries.** rc.22's tag and crates are published,
+  but its GitHub release never got `merod`/`meroctl`: the upload job waited for a
+  `big-machine` runner that no longer exists. rc.23 carries the same code as rc.22
+  (plus CI only: every job runs on standard GitHub-hosted runners, #5025) and
+  publishes the binaries, so take rc.23 wherever rc.22 was meant.
 
 ## [1.0.0-rc.22] - 2026-11-13
 

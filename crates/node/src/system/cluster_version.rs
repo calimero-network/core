@@ -180,7 +180,7 @@ impl Feature {
             | Self::CurrentRules => "1.0.0-rc.19",
             Self::BackupKeys => "1.0.0-rc.20",
             Self::OrgAppTeam => "1.0.0-rc.22",
-            Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.23",
+            Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
         }
     }
 }
@@ -550,7 +550,7 @@ mod tests {
     const RC19: &str = "1.0.0-rc.19";
     const RC20: &str = "1.0.0-rc.20";
     const RC22: &str = "1.0.0-rc.22";
-    const RC23: &str = "1.0.0-rc.23";
+    const RC24: &str = "1.0.0-rc.24";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -913,7 +913,7 @@ mod tests {
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
             .iter()
-            .partition(|f| ![RC19, RC20, RC22, RC23].contains(&f.since()));
+            .partition(|f| ![RC19, RC20, RC22, RC24].contains(&f.since()));
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -977,13 +977,13 @@ mod tests {
             nodes: (1..=3).map(|id| (id, RC22.to_owned())).collect(),
         };
         propose(&mut nodes, &raise).unwrap();
-        // rc.23's wait for every node on rc.23.
-        let (rc22, rc23): (Vec<Feature>, Vec<Feature>) =
+        // rc.24's wait for every node on rc.24.
+        let (rc22, rc24): (Vec<Feature>, Vec<Feature>) =
             last.into_iter().partition(|f| f.since() == RC22);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in &rc23 {
+        for &feature in &rc24 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -991,14 +991,14 @@ mod tests {
             );
         }
         for n in &mut nodes {
-            n.release = RC23;
+            n.release = RC24;
         }
         let raise = SystemCmd::SetClusterVersion {
-            version: RC23.into(),
-            nodes: (1..=3).map(|id| (id, RC23.to_owned())).collect(),
+            version: RC24.into(),
+            nodes: (1..=3).map(|id| (id, RC24.to_owned())).collect(),
         };
         propose(&mut nodes, &raise).unwrap();
-        for &feature in &rc23 {
+        for &feature in &rc24 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

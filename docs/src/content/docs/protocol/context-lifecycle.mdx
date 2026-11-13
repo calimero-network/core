@@ -158,7 +158,7 @@ has each in full):
    and its granted compute runs count against the target's quotas (its own
    override where the operator set one with `POST /ops/quotas`, else the
    cluster's, as every other charge counts them), and a move past them is
-   refused (`429 QUOTA_EXCEEDED`). A move logged by a release before 1.0.0-rc.23
+   refused (`429 QUOTA_EXCEEDED`). A move logged by a release before 1.0.0-rc.24
    (no `org_quotas` on the entry) replays judging the cluster's limits, as it
    did then; the `moveOrgQuotas` feature keeps moves refused until every node
    reads the field.
