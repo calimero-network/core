@@ -172,6 +172,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/tests/path-dep-closure-test.py
 
+      # The installer people pipe into sh: checksums, the newest release, refusals.
+      - name: Test install.sh
+        if: ${{ !cancelled() }}
+        run: bash scripts/tests/install-test.sh
+
   # Clippy builds in check mode, which the test build's cache does not hold, so lint
   # keeps a group of its own, saved by a push to master (the one push job that lints).
   rust-lint:
