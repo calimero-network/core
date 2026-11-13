@@ -269,48 +269,57 @@ and at most 2 KiB. Otherwise `400 RETURN_TO_NOT_ALLOWED`.
 
 ## What the page shows
 
-The page is written for the person who approves, not for an engineer. From
+The page is written for the person who approves, not for an engineer. The
+main view is short; everything else is one click away under *Details*. From
 top to bottom:
 
-1. **Trust strip.** "Secure approval page from your Calimero cluster", with
-   the page's own host and "Check that your browser's address bar shows
-   *host*".
+1. **Header.** The Calimero logo and "Check your address bar shows *host*",
+   the page's own host, always in view.
 2. **Who is asking.** The app and its publisher in plain words ("Team notes
    by Acme Inc.": the signed manifest's `metadata.name` and `author`), and the
    account approving ("Signed in as …").
 3. **The headline**, the model's `title`: "Update Team notes to version
    1.5.0", "Allow a new secure server version (2.3.131) to hold Acme's data",
    "Stop server version 2.3.128 from receiving Acme's data", "Allow Team notes
-   to send data to api.openai.com".
-4. **What this means**: the model's `points`, two to five plain sentences
-   (what approving allows, that nothing changes until they approve, what a
-   withdrawal stops and that nothing is deleted), then `attention`, the things
-   not to miss. For an upgrade that is the "Needs your attention" list, each
-   entry present only when it applies: sends data to new addresses (hosts
-   only), adds a new sign-in address, lets anyone use methods without signing
-   in (methods added or newly public), declares its stored data at another
-   state version although an update runs no migration, removes features
-   (methods removed), another publisher key; with none, "No new permissions."
-   A withdrawal of the last approved release is flagged too.
-5. **How you know this is legit**: checks a person can make. The page is
-   served by their node at *host*, not by the app; the passkey will ask to
-   sign in to `rpId`, and any other site means cancel; for an upgrade or
-   outbound request, published and signed by the publisher (the
-   organization its key is bound to on the cluster, when there is one), with whether the
-   key is the one the running version (or every release of the package) was
-   signed with; for a release, built by Calimero's public release process and
-   its signature verified by the node, or, on mock attestation, "Test
-   cluster: no hardware checks". When the node is configured with an
-   [independent verifier](#the-independent-verifier), every kind gets a
-   line "Check this server's hardware and software on *verifier host* ↗",
-   a link that opens in a new tab, with the host shown as text and the ask
-   to check that the page opens there (on mock attestation it says there is
-   nothing to verify instead of linking). Last, the confirmation code, large.
+   to send data to api.openai.com"; below it one sentence of what happens,
+   the model's `after`.
+4. **What needs care**, only when there is some: `attention`, the things not
+   to miss, as "Needs your attention". For an upgrade each entry is present
+   only when it applies: sends data to new addresses (hosts only), adds a new
+   sign-in address, lets anyone use methods without signing in (methods added
+   or newly public), declares its stored data at another state version
+   although an update runs no migration, removes features (methods removed),
+   another publisher key; with none, "No new permissions." A withdrawal of the
+   last approved release is flagged too. A check below that calls for care (a
+   new publisher key, a test cluster) is repeated here as "Check before you
+   approve".
+5. **The confirmation code**, large: the app or console that sent the person
+   here shows the same one.
 6. **Approve with passkey** (*Withdraw approval* for a withdrawal) and
-   **Decline**, right after these, with the status line below.
-7. **Technical details**, collapsed: everything below, long values cut to one
-   line with the full value as their title and selectable, and every empty
-   list left out.
+   **Decline**, with the status line and the expiry below.
+7. **Details**, collapsed:
+   - **What happens**: the model's `points`, two to five plain sentences
+     (what approving allows, that nothing changes until they approve, what a
+     withdrawal stops and that nothing is deleted).
+   - **How you know this is legit**: checks a person can make. The page is
+     served by their node at *host*, not by the app; the passkey will ask to
+     sign in to `rpId`, and any other site means cancel; for an upgrade or
+     outbound request, published and signed by the publisher (the
+     organization its key is bound to on the cluster, when there is one), with whether the
+     key is the one the running version (or every release of the package) was
+     signed with; for a release, built by Calimero's public release process and
+     its signature verified by the node, or, on mock attestation, "Test
+     cluster: no hardware checks". When the node is configured with an
+     [independent verifier](#the-independent-verifier), every kind gets a
+     line "Check this server's hardware and software on *verifier host* ↗",
+     a link that opens in a new tab, with the host shown as text and the ask
+     to check that the page opens there (on mock attestation it says there is
+     nothing to verify instead of linking).
+   - **Why you approve here, not in the app**: the node serves the page, so
+     an app can ask but cannot change what is shown or approve for the person.
+   - **Technical details**: everything below, long values cut to one line
+     with the full value as their title and selectable, and every empty list
+     left out.
 
 | Kind | Technical details, from node-side data only |
 | --- | --- |
