@@ -1,4 +1,4 @@
-//! `mero-app-build codegen` and `mero-app-build abi-diff`: an app's OpenAPI document and typed
+//! `meroctl app codegen` and `meroctl app abi diff`: an app's OpenAPI document and typed
 //! clients from its ABI, and what changed between two of its ABIs.
 
 use std::path::PathBuf;

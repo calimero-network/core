@@ -3719,7 +3719,6 @@ dependencies = [
  "base64 0.23.1",
  "calimero-app-abi",
  "calimero-app-build",
- "calimero-app-wit",
  "calimero-build-utils",
  "calimero-bundle",
  "calimero-client",

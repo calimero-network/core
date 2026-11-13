@@ -22,7 +22,7 @@ mod harness;
 
 use harness::{kv_wasm, signed_up, typed, wire, Cluster};
 
-/// A signed single-service `.mpk`, the shape `mero-sign` signs.
+/// A signed single-service `.mpk`, the shape `meroctl app pack` signs.
 fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
     use sha2::Digest;
     let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {

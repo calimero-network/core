@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile the Swift and Kotlin clients `mero-app-build codegen` writes, warnings as errors,
+"""Compile the Swift and Kotlin clients `meroctl app codegen` writes, warnings as errors,
 against the SDK releases they are written for, and run their round-trip tests.
 
 The golden files (crates/app-abi/tests/golden/*.swift, *.kt) pin what the generator writes;

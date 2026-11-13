@@ -22,7 +22,7 @@
 # sets -1), inferno-collapse-perf and inferno-flamegraph on PATH, meroctl
 # (MEROCTL_BINARY, default target/release/meroctl) and the kv component
 # (KV_STORE_WASM, default target/app-components/kv.wasm, which
-# `mero-app-build apps/v2-fixtures/kv --out ...` builds). Build merod
+# `meroctl app build apps/v2-fixtures/kv --out ...` builds). Build merod
 # with `--profile profiling` and `-C force-frame-pointers=yes` for whole stacks;
 # `-g` walks frame pointers. Exits with the suite's status.
 

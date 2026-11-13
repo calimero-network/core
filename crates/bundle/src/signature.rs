@@ -15,7 +15,8 @@ use sha2::{Digest, Sha256};
 /// Multicodec indicator for ed25519-pub (0xed01, varint encoded).
 const ED25519_PUB_MULTICODEC: [u8; 2] = [0xed, 0x01];
 
-/// The signerId of `mero-sign --dev`'s well-known key. Its seed is public, so
+/// The signerId of the well-known development key (`meroctl app sign --dev`, `meroctl app pack`
+/// without `--key`). Its seed is public, so
 /// anyone can sign as it: a production node refuses packages it signed.
 pub const DEV_SIGNER_ID: &str = "did:key:z6MknF3p5L5FDHJQ7FREUapuX4Wmp4MtF6WrHYaXS2B3eZQd";
 
@@ -316,7 +317,7 @@ pub fn sign_manifest_json(
     let signer_id = derive_signer_id_did_key(verifying_key.as_bytes());
 
     // Always set signerId to match the signing key (overwrites any existing value).
-    // This ensures the signed manifest is always valid and consistent with mero-sign CLI.
+    // This ensures the signed manifest is always valid and consistent with `meroctl app sign`.
     if let Some(obj) = manifest_json.as_object_mut() {
         obj.insert(
             "signerId".to_string(),

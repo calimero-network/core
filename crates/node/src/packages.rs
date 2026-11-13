@@ -274,7 +274,7 @@ impl Node {
                 403,
                 "DEV_SIGNED_PACKAGE",
                 &format!(
-                    "{package} is signed with the public development key (mero-sign --dev); \
+                    "{package} is signed with the public development key (`meroctl app pack` without --key); \
                      this node takes it only with --dev or --allow-unsigned-bundles"
                 ),
             ));

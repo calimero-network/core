@@ -102,7 +102,7 @@ fn read_capped(path: &Path) -> EyreResult<Vec<u8>> {
     Ok(bytes)
 }
 
-/// The `calimero:abi` section of a component: its top level, where `mero-app-build` puts it,
+/// The `calimero:abi` section of a component: its top level, where `meroctl app build` puts it,
 /// or the core module inside, where a plain `cargo build` leaves it.
 pub fn wasm_abi(bytes: &[u8]) -> EyreResult<Value> {
     for payload in wasmparser::Parser::new(0).parse_all(bytes) {

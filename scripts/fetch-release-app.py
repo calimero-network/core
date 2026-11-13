@@ -2,7 +2,7 @@
 """Fetch the kv app bundle a published core release shipped, for running it on this tree's node.
 
 Every release uploads `kv-store-test-fixture.mpk` (release.yml's `Release App Bundle`): the kv
-fixture built with that release's SDK and WIT and signed with its mero-sign. This downloads it,
+fixture built with that release's SDK and WIT and signed with its own tools (mero-sign, or meroctl). This downloads it,
 checks it against the SHA-256 GitHub records for the asset, and checks the component inside
 against the hash its own manifest names, then writes into OUT:
 
