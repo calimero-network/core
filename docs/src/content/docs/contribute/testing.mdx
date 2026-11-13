@@ -638,8 +638,10 @@ engine's and app-build's guests in `target/tmp`, the node's fixtures in
 parallel jobs its writes hit the cache API's rate limit.) CI builds carry no debuginfo
 (`CARGO_PROFILE_DEV_DEBUG=0`): the cache restores faster and the test binaries
 link faster, and a failing test still names its file and line. The workspace
-tests run eight at a time per 4-core shard, since the slowest of them wait on
-timers and the network.
+tests run eight at a time per 4-core shard, since most slow ones wait on timers
+and the network; the node's integration tests, which start clusters and do load
+the CPU, take two slots each and `job_runs` four (`.config/nextest.toml`), so
+fewer of them share the cores and none misses its own deadline.
 
 `.github/workflows/e2e.yml` runs in the merge queue, on every entry whose change
 reaches code, and nightly on master with the long soak; a PR runs it only when

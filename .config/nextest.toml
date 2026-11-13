@@ -1,0 +1,20 @@
+# cargo-nextest settings, read by every `cargo nextest run` in this workspace.
+#
+# CI runs a shard with more test threads than the runner has cores
+# (NEXTEST_TEST_THREADS in ci-checks.yml), because most slow tests wait on timers
+# and the network. The node's integration tests do not: each starts a cluster of
+# debug-built nodes (and job_runs a job node too), and eight of them at once on
+# four cores miss their own deadlines (`503 TIMEOUT` on an app call, a sealed
+# request that times out). Each takes more than one thread's slot instead, so
+# fewer of them run at once while the light tests fill the rest. The first
+# override that matches a test applies.
+
+[[profile.default.overrides]]
+# Cluster plus job node, and multi-MiB sealed inputs written through an app.
+filter = 'package(calimero-node) & binary(job_runs)'
+threads-required = 4
+
+[[profile.default.overrides]]
+# An in-process cluster per test.
+filter = 'package(calimero-node) & kind(test)'
+threads-required = 2

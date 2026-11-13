@@ -252,8 +252,9 @@ jobs:
 
       # PARTITION is unset in a local run (scripts/check-like-ci.py), which then runs them
       # all, and on a push to master, whose one shard runs every test.
-      # Twice the cores: the slowest tests (the in-process clusters) mostly wait on
-      # timers and the network, not the CPU.
+      # Twice the cores: most slow tests wait on timers and the network, not the
+      # CPU. The node's integration tests, which do load it, take two or four of
+      # these slots each (.config/nextest.toml).
       - name: Cargo test
         env:
           PARTITION: ${{ github.event_name != 'push' && format('count:{0}/4', matrix.shard) || '' }}
