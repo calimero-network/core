@@ -10,26 +10,20 @@
 //! acceptance decision, the measurement allowlists, and the app-hash binding,
 //! and fails closed on every under-specified input.
 //!
-//! # Relationship to existing enforcement sites
-//! Three call sites already implement equivalent enforcement inline and keep it
-//! by design (they emit richer, mode-specific errors this crate cannot):
-//! - `crates/context/src/handlers/admit_tee_node.rs` — per-group
-//!   `TeeAdmissionPolicy`;
-//! - `crates/merod/src/kms/mod.rs` — `enforce_attestation_policy`
-//!   (ReleaseStrict/Config split);
+//! # Relationship to other enforcement sites
+//! `calimero-client`'s `attest::verify` (the one quote check clients and peers
+//! share) uses `policy_valid`. Two sites implement equivalent enforcement
+//! inline and keep it by design (they emit richer, mode-specific errors this
+//! crate cannot):
+//! - `calimero-kms-client`'s `kms/mod.rs` — `enforce_attestation_policy`
+//!   (ReleaseStrict/Config split), over `is_valid`;
 //! - the mero-tee KMS `get_key.rs` — key-release side (external consumer).
 //!
-//! `policy_valid` does not replace them; it exists so that *future* callers
-//! cannot accidentally trust crypto-only validity.
-//!
-//! # Intentional duplication
-//! The TCB rules below deliberately mirror
-//! `calimero_governance_store::membership::policy_rules::tcb_status_allowed`
-//! rather than importing it: this is a leaf crate (`publish = true`, consumed
-//! externally by mero-tee's KMS at a pinned git rev) and must not take a
-//! dependency on the governance store. The two implementations MUST stay in
-//! sync — the constants and rule order here are a by-value copy of that
-//! function's contract.
+//! # Keep in step with mero-kms
+//! This is a leaf crate (`publish = true`, consumed externally by mero-tee's
+//! KMS at a pinned git rev). The TCB rules below (the constants and their
+//! order) are the contract a node's admission and the KMS's key release must
+//! agree on: a change here is a change there.
 
 use crate::verify::VerificationResult;
 
@@ -37,13 +31,10 @@ use crate::verify::VerificationResult;
 /// is empty. An empty allowlist must NOT skip the TCB-status check (that would be
 /// fail-open); it enforces against this single status instead.
 ///
-/// Mirrors `calimero_governance_store::membership::policy_rules::DEFAULT_ALLOWED_TCB_STATUS`.
 /// Must stay the exact PascalCase value dcap-qvl emits. Do not broaden.
 pub const DEFAULT_ALLOWED_TCB_STATUS: &str = "UpToDate";
 
 /// TCB status rejected unconditionally, regardless of policy (defense in depth).
-///
-/// Mirrors `calimero_governance_store::membership::policy_rules::TCB_STATUS_REVOKED`.
 pub const TCB_STATUS_REVOKED: &str = "Revoked";
 
 /// TCB status set by `verify_mock_attestation` (behind the default-off
@@ -55,8 +46,6 @@ pub const TCB_STATUS_REVOKED: &str = "Revoked";
 /// *not* feature-gated: `policy_valid` only ever compares this status *string*
 /// and never calls into the gated mock code, so the check must stay available
 /// to production builds to reject mock quotes.
-///
-/// Mirrors `calimero_governance_store::membership::policy_rules::TCB_STATUS_MOCK`.
 pub const TCB_STATUS_MOCK: &str = "Mock";
 
 /// Measurement register named by [`PolicyRejection::MeasurementMismatch`].
@@ -160,9 +149,9 @@ impl std::error::Error for PolicyRejection {}
 
 /// The policy [`VerificationResult::policy_valid`] enforces.
 ///
-/// Owned by this crate on purpose: this is a leaf crate, so it must not depend
-/// on `calimero-governance-store`'s `TeeAdmissionPolicy`. It is a lean
-/// duplicate-by-value that richer callers convert *into*.
+/// Owned by this crate on purpose: this is a leaf crate, so it depends on no
+/// caller's policy type. It is lean, and richer callers convert *into* it
+/// (`calimero-client`'s `attest::verifier_policy`, from a release profile).
 ///
 /// Every field fails closed:
 /// - an empty `allowed_tcb_statuses` enforces [`DEFAULT_ALLOWED_TCB_STATUS`],
@@ -268,8 +257,7 @@ impl VerificationResult {
     ///    `require_app_hash` is set, so callers get the specific reason; either
     ///    way `policy_valid` is never weaker than [`Self::is_valid`] (clearing
     ///    `require_app_hash` still cannot admit an unbound quote).
-    /// 2. **TCB status** (fail-closed, mirroring
-    ///    `calimero_governance_store::membership::policy_rules::tcb_status_allowed`):
+    /// 2. **TCB status** (fail-closed):
     ///    `Revoked` (case-insensitive) is rejected unconditionally; a mock quote
     ///    passes the status check only under `accept_mock`; an empty
     ///    `allowed_tcb_statuses` enforces [`DEFAULT_ALLOWED_TCB_STATUS`] rather

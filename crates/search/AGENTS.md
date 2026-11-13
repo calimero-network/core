@@ -11,14 +11,14 @@ The user-facing guide is the docs site's
 
 - **Crate**: `calimero-search`
 - **Entry**: `src/lib.rs`
-- **Key deps**: `tantivy` (index, BM25, fuzzy/prefix queries, snippets), `calimero-primitives` (`search` wire types shared with the SDK and the runtime), `unicode-normalization` / `unicode-segmentation` (the tokenizer)
+- **Key deps**: `tantivy` (index, BM25, fuzzy/prefix queries, snippets), `calimero-primitives` (the `search` types the node builds: `SearchIndexSchema`, `SearchDoc`, `SearchRequest`, `SearchResponse`), `unicode-normalization` / `unicode-segmentation` (the tokenizer)
 
 ## Commands
 
 ```bash
 cargo test -p calimero-search
-# End to end (3-node cluster, the real search-chat wasm):
-cargo test -p calimero-node --test cluster views_search_the_apps_own_index_as_it_changes
+# End to end (3-node cluster, the kv component):
+cargo test -p calimero-node --test component_cluster views_search_a_components_tables_as_they_change
 # Engine numbers (size, latency, memory, the search-gas fit): tools/search-bench
 cargo run --release -p search-bench -- --sizes 10000,100000
 ```
@@ -27,15 +27,16 @@ cargo run --release -p search-bench -- --sizes 10000,100000
 
 | File | What's there |
 | --- | --- |
-| `src/index.rs` | `ContextIndex`: opened over any tantivy `Directory` (merod uses one in memory), schema from the app's `SearchIndexSchema`, idempotent delete-then-add `apply`, `commit(seq, root)` recording what it covers, `search` (words / prefix / substring on trigrams / fuzzy, keyword and range filters, relevance or a `u64` field order, a snippet from the field that matched). Limits: `MAX_LIMIT` 100 hits, `MAX_CURSOR` 10,000, `MAX_QUERY_LEN` 256 bytes |
+| `src/index.rs` | `ContextIndex`: opened over any tantivy `Directory` (merod uses one in memory), schema from a `SearchIndexSchema` (the node makes one per table: its declared fields as `Text`), idempotent delete-then-add `apply`, `commit(seq, root)` recording what it covers, `search` (words / prefix / substring on trigrams / fuzzy, keyword and range filters, relevance or a `u64` field order, a snippet from the field that matched). Limits: `MAX_LIMIT` 100 hits, `MAX_CURSOR` 10,000, `MAX_QUERY_LEN` 256 bytes |
 | `src/tokenize.rs` | Words (Unicode segmentation, NFKD accent folding, lowercase, CJK bigrams) and trigrams; `TOKENIZER_VERSION` |
 
 ## How the index stays equal to state (in the node)
 
 - A view brings the app's indexes up to the very state it reads before it runs:
-  from the entities the entries since the last update touched
-  (`Outcome::touched`, kept for the last `TOUCHED_RING` entries), else a full
-  scan of the app's state.
+  from the record keys the entries since the last update touched
+  (`AppMachine::touched_after`, kept for the last `TOUCHED_RING` entries), else
+  a full scan of the app's records. A document's id is the SHA-256 of the
+  record's stored key.
 - Indexes live in memory: a restart rebuilds them from state on first use.
 - A changed schema, tokenizer, schema option or `FORMAT_VERSION` makes the
   index stale; it is wiped and rebuilt. It never enters the log or a snapshot.

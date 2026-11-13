@@ -1,0 +1,74 @@
+---
+import Figure from '../Figure.astro';
+---
+<Figure id="d-request-layers">
+<svg viewBox="0 0 760 520" role="img" aria-label="Every request passes five layers. Who: an account, its passkeys (each a device) and its personal organization. Session: the ceremony's origin decides its kind, unbound on the cluster's own origins, package-bound on a package's frontend origin, stamped into the token and kept by refresh. Where: each route's session check answers whether this session may call this route, before anything is logged. Step-up: 412 CONFIRM_REQUIRED and a user-verified passkey assertion over subject, method, arguments and nonce. What: the system log, on every node where the command applies, verifies and spends the proof and judges the account's authority: org role, capabilities, team rows, the app's access rule." xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="760" height="520" rx="10" fill="#0f0f16"/>
+  <text x="380" y="24" text-anchor="middle" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="700">every request, layer by layer</text>
+
+  <!-- WHO -->
+  <g class="seq-step" style="--step-i:0">
+    <rect x="20" y="40" width="540" height="62" rx="6" fill="#161b22" stroke="#444c56"/>
+    <text x="36" y="60" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">1 · WHO</text>
+    <text x="36" y="78" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">account · its passkeys (each one a device) · its personal org</text>
+    <text x="36" y="93" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">CreateAccount &#123; personalOrg &#125; at sign-up</text>
+    <line x1="290" y1="102" x2="290" y2="118" stroke="#444c56" stroke-width="1.2"/>
+  </g>
+
+  <!-- SESSION -->
+  <g class="seq-step" style="--step-i:1">
+    <rect x="20" y="118" width="540" height="112" rx="6" fill="#161b22" stroke="#444c56"/>
+    <text x="36" y="138" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">2 · SESSION</text>
+    <text x="36" y="153" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">kind set by the ceremony's origin, stamped in the token, kept by refresh</text>
+    <rect x="34" y="162" width="250" height="58" rx="5" fill="#10210f" stroke="#3fb950"/>
+    <text x="159" y="180" text-anchor="middle" fill="#3fb950" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">unbound</text>
+    <text x="159" y="196" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">the cluster's --origins:</text>
+    <text x="159" y="210" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">console, meroctl login, own page</text>
+    <rect x="296" y="162" width="250" height="58" rx="5" fill="#231708" stroke="#f0883e"/>
+    <text x="421" y="180" text-anchor="middle" fill="#f0883e" font-family="'JetBrains Mono', monospace" font-size="9.5" font-weight="700">package-bound (claims.app)</text>
+    <text x="421" y="196" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">&#123;label&#125;.&lt;apps-domain&gt;, a served</text>
+    <text x="421" y="210" text-anchor="middle" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="8.5">or registered origin (claims.origin)</text>
+    <line x1="290" y1="230" x2="290" y2="246" stroke="#444c56" stroke-width="1.2"/>
+  </g>
+
+  <!-- WHERE -->
+  <g class="seq-step" style="--step-i:2">
+    <rect x="20" y="246" width="540" height="72" rx="6" fill="#161b22" stroke="#58a6ff"/>
+    <text x="36" y="266" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">3 · WHERE: the route's session check (API node)</text>
+    <text x="36" y="284" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">holder / unbound · within(app) · within_team(org, team)</text>
+    <text x="36" y="300" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">refused: 403 (404 for an app of another package), nothing logged</text>
+    <line x1="290" y1="318" x2="290" y2="334" stroke="#444c56" stroke-width="1.2"/>
+  </g>
+
+  <!-- STEP-UP -->
+  <g class="seq-step" style="--step-i:3">
+    <rect x="20" y="334" width="540" height="72" rx="6" fill="#161b22" stroke="#a371f7"/>
+    <text x="36" y="354" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">4 · STEP-UP (where the route asks one)</text>
+    <text x="36" y="372" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">412 CONFIRM_REQUIRED → user-verified passkey over</text>
+    <text x="36" y="388" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">confirm_challenge(subject, method, args, nonce) → consent</text>
+    <line x1="290" y1="406" x2="290" y2="422" stroke="#444c56" stroke-width="1.2"/>
+  </g>
+
+  <!-- WHAT -->
+  <g class="seq-step" style="--step-i:4">
+    <rect x="20" y="422" width="540" height="82" rx="6" fill="#13160f" stroke="#a5ff11" stroke-width="1.4"/>
+    <text x="36" y="442" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">5 · WHAT: the system log, at apply, on every node</text>
+    <text x="36" y="460" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">authorize: verify the consent under the actor's passkeys, spend it</text>
+    <text x="36" y="476" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">then the command's rules: org role · capabilities · team rows</text>
+    <text x="36" y="492" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8.5">(an app call: the access rule, judged on fresh system state)</text>
+  </g>
+
+  <!-- the two questions -->
+  <g class="seq-step" style="--step-i:5">
+    <rect x="578" y="246" width="166" height="72" rx="6" fill="#10151c" stroke="#58a6ff" stroke-dasharray="4 3"/>
+    <text x="661" y="266" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">may this SESSION</text>
+    <text x="661" y="282" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">call this route?</text>
+    <text x="661" y="304" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">bound: fewer routes</text>
+    <rect x="578" y="422" width="166" height="82" rx="6" fill="#10151c" stroke="#a5ff11" stroke-dasharray="4 3"/>
+    <text x="661" y="446" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">may this ACCOUNT</text>
+    <text x="661" y="462" text-anchor="middle" fill="#a5ff11" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">do this?</text>
+    <text x="661" y="484" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">same answer for</text>
+    <text x="661" y="496" text-anchor="middle" fill="#6b6b80" font-family="'JetBrains Mono', monospace" font-size="8">every session</text>
+  </g>
+</svg>
+</Figure>

@@ -6,15 +6,14 @@ use serde::{Deserialize, Serialize};
 
 /// The operator's knobs for outbound HTTPS requests (`[outbound]`).
 ///
-/// Off by default. When on, a run may make one request, only under a URL
-/// prefix its app's signed manifest declares, only to a host allowed here,
-/// and only with
-/// secrets this node can supply for that app. See [`crate`].
+/// Off by default. When on, a run may make requests only under a URL prefix
+/// its app's signed manifest declares, only to a host allowed here, and only
+/// with secrets this node can supply for that app. See [`crate`].
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct OutboundSettings {
-    /// Make outbound requests at all. `false` (the default): `http_request`
-    /// traps in every run.
+    /// Make outbound requests at all. `false` (the default): no run gets a
+    /// client, and every outbound request is refused.
     pub enabled: bool,
     /// The hosts requests may go to, as DNS names; `"*"` allows any host an
     /// installed app's signed manifest declares. A request to any other host

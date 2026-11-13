@@ -16,32 +16,36 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "ci-scope.py"
 sys.dont_write_bytecode = True  # imports a sibling script; leave no __pycache__ in the tree
-ALL = {"rust", "upgrade_path"}
+ALL = {"rust", "upgrade_path", "standalone_apps"}
 R = {"rust"}
+RU = {"rust", "upgrade_path"}
+RA = {"rust", "standalone_apps"}
 
 CASES = [
     # (name, changed paths, ci-checks jobs that must run; every other job must skip)
-    ("a node-only change runs every job", ["crates/node/src/lib.rs"], ALL),
-    ("merod runs every job", ["crates/merod/src/main.rs", "crates/server/src/lib.rs"], ALL),
-    ("the upgrade path's test runs every job", ["crates/node/tests/fault/upgrade_path.py"], ALL),
-    ("the pinned release runs every job (Apps of the previous release fetches its kv)", [".github/upgrade-from"], ALL),
-    ("the release fetcher runs every job (ci-checks.yml runs it)", ["scripts/fetch-release.sh"], ALL),
+    ("a node-only change skips the standalone apps", ["crates/node/src/lib.rs"], RU),
+    ("merod runs the upgrade path, not the standalone apps", ["crates/merod/src/main.rs", "crates/server/src/lib.rs"], RU),
+    ("the upgrade path's test runs the upgrade path", ["crates/node/tests/fault/upgrade_path.py"], RU),
+    ("the pinned release runs the upgrade path (Apps of the previous release fetches its kv)", [".github/upgrade-from"], RU),
+    ("the release fetcher runs the upgrade path (ci-checks.yml runs it)", ["scripts/fetch-release.sh"], RU),
     ("a tool no node links skips the upgrade path", ["tools/search-bench/src/main.rs"], R),
     ("the component SDK runs the workspace jobs and the upgrade path (this tree's kv)", ["crates/sdk/src/lib.rs"], ALL),
-    ("a component app runs the workspace jobs", ["apps/kv-store/src/lib.rs"], R),
+    ("a component app runs the workspace jobs and the standalone apps", ["apps/kv-store/src/lib.rs"], RA),
     ("a lint script runs the workspace jobs", ["scripts/check-naming.sh"], R),
+    ("the guest builder runs every job (the apps' tests build with it)", ["crates/app-build/src/lib.rs"], ALL),
+    ("the app engine runs the standalone apps (their harness runs on it)", ["crates/app-engine-wasmtime/src/lib.rs"], ALL),
     ("a file no job reads runs nothing", ["scripts/profiling/collect.sh", ".github/workflows/fuzz.yml"], set()),
     ("a crate README is inert", ["crates/meroctl/README.md"], set()),
     ("AGENTS.md and its CLAUDE.md link are inert", ["crates/log/AGENTS.md", "crates/node/CLAUDE.md"], set()),
     ("site docs are inert", ["docs/src/content/docs/protocol/sync.mdx"], set()),
     ("the OpenAPI document a node test checks runs the workspace jobs", ["docs/public/openapi.json"], R),
     ("an app's guide is inert unless code reads it", ["apps/kv-store/GUIDE.md"], set()),
-    ("docs beside code do not hide the code", ["crates/log/AGENTS.md", "crates/log/src/lib.rs"], ALL),
+    ("docs beside code do not hide the code", ["crates/log/AGENTS.md", "crates/log/src/lib.rs"], RU),
     ("the lockfile reaches every job", ["Cargo.lock"], ALL),
     ("the root manifest reaches every job", ["Cargo.toml"], ALL),
     ("the workflow reaches every job", [".github/workflows/ci-checks.yml"], ALL),
     ("this script reaches every job", ["scripts/ci-scope.py"], ALL),
-    ("a deleted file in a crate still counts", ["crates/log/src/this-file-was-deleted.rs"], ALL),
+    ("a deleted file in a crate still counts", ["crates/log/src/this-file-was-deleted.rs"], RU),
     ("no input fails closed", [], ALL),
 ]
 

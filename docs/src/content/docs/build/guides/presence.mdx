@@ -1,0 +1,152 @@
+---
+title: Show who is here
+description: Publish each device's live state (online, a cursor, a selection) on the presence channel and follow everyone else's over SSE from mero-js, Python or meroctl - sequence numbers, heartbeats, the 7-second expiry and the limits.
+sidebar:
+  order: 3.5
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import SeqDiagram from '../../../../components/SeqDiagram.astro';
+
+**Task:** show who has the document open and where their cursor is, updated
+many times a second, without writing any of it to the app's log.
+
+That is **presence**: each device says what it is doing now, every node keeps
+the latest word from each device in memory and passes it to the others, and
+clients follow the changes as a stream.
+It is not app state: nothing is logged, sealed to disk or seen by your app's
+code, and a node that restarts starts with an empty table.
+Anything that must survive goes through a call.
+The rules are in [Presence](/protocol/presence/); this page is how to use it.
+
+<SeqDiagram id="d-guide-presence" title="Two editors on different nodes see each other's cursor"
+  lanes={[
+    { label: 'Alice (browser)', color: '#f0883e' },
+    { label: 'Node 1', color: '#3fb950' },
+    { label: 'Node 2', color: '#3fb950' },
+    { label: 'Bob (browser)', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 3, to: 2, label: 'GET /apps/{app}/presence/stream' },
+    { from: 2, to: 3, label: 'event: snapshot [ ...who is here ]', dashed: true },
+    { from: 0, to: 1, label: 'POST /apps/{app}/presence { seq, state }' },
+    { from: 1, to: 2, label: 'passed on, not logged' },
+    { from: 2, to: 3, label: 'event: presence { account, device, state }', dashed: true },
+    { from: 0, to: 1, label: 'heartbeat: the same seq and state, every few seconds' },
+    { type: 'divider', label: 'Alice closes the tab: no heartbeat for 7 s' },
+    { from: 2, to: 3, label: 'event: presence { ..., state: null }', dashed: true },
+  ]} />
+
+## Publish this device's state
+
+`POST /apps/{app}/presence { seq, state }`:
+
+- `state` is hex, at most 4 KiB of bytes once decoded. What the bytes mean is
+  up to your frontend (JSON of a cursor is common). `null`, or no `state`,
+  retracts this device's entry.
+- `seq` is a number that must grow with every new state of this device.
+  The node keeps the highest `seq` it has seen and ignores an update with a
+  lower one, because updates reach the nodes in any order.
+  Use the clock in milliseconds (`Date.now()`), so a reloaded page, which
+  forgets its counter, still moves forward.
+- The **same `seq` and the same state again is a heartbeat**: it keeps the
+  entry alive and changes nothing else. The same `seq` with a different state
+  is ignored.
+- The author is whoever the node authenticated: the account, and as the device,
+  the session's passkey (or the API key). One person on two devices is two
+  entries. Anyone the app's access admits may publish; an anonymous caller
+  cannot (`401`).
+
+With mero-js (`presenceState` turns bytes into the hex the route takes):
+
+```ts
+import { presenceState } from '@calimero-network/mero-js';
+
+const encode = (v: unknown) => presenceState(new TextEncoder().encode(JSON.stringify(v)));
+
+let seq = Date.now();
+let state = encode({ cursor: 0 });
+
+async function moveCursor(cursor: number) {
+  seq = Math.max(seq + 1, Date.now());
+  state = encode({ cursor });
+  await client.apps.presencePublish({ app, seq, state });
+}
+
+// Stay present: an entry no one refreshes for 7 s is dropped.
+const heartbeat = setInterval(() => client.apps.presencePublish({ app, seq, state }), 3000);
+
+// Leave on purpose (a closed tab simply stops heartbeating).
+async function leave() {
+  clearInterval(heartbeat);
+  await client.apps.presencePublish({ app, seq: seq + 1, state: presenceState(null) });
+}
+```
+
+## Follow everyone else
+
+`GET /apps/{app}/presence` answers `{ present: [{ account, device, state }] }`,
+the devices present now on the node you ask (and so the whole cluster, give or
+take an update in flight).
+`GET /apps/{app}/presence/stream` is a server-sent event stream: one
+`snapshot` event (the same list), then a `presence` event per change,
+`{ account, device, state }`, with `state: null` when a device left or expired.
+
+```ts
+const decode = (hex: string) =>
+  JSON.parse(new TextDecoder().decode(Uint8Array.from(hex.match(/../g)!, (b) => parseInt(b, 16))));
+
+const here = new Map<string, unknown>();               // `${account}/${device}` -> state
+const stop = new AbortController();
+
+for await (const event of client.presenceStream(app, stop.signal)) {
+  const entries = event.kind === 'snapshot' ? (event.data as PresenceEntry[]) : [event.data as PresenceEntry];
+  if (event.kind === 'snapshot') here.clear();
+  for (const { account, device, state } of entries) {
+    const key = `${account}/${device}`;
+    if (state === null) here.delete(key);
+    else here.set(key, decode(state));
+  }
+  render(here);
+}
+```
+
+`PresenceEntry` is exported by mero-js. Skip your own entry by comparing
+`account` with the signed-in account (`(await client.auth.me()).accountId`).
+
+The other clients:
+
+```python
+client.apps.presence_publish(app=app_id, seq=1, state="7b7d")   # hex
+print(client.apps.presence_get(app=app_id).to_dict()["present"])
+for e in client.presence_stream(app_id, limit=10, timeout=5):   # snapshot first, then changes
+    print(e["kind"], e["data"])
+```
+
+```bash
+meroctl context presence publish my-doc --seq 1 --state 7b7d   # no --state retracts
+meroctl context presence list my-doc
+meroctl context presence stream my-doc --limit 10
+```
+
+Rust: `client.apps().presence_publish(..)`, `presence_get(..)` and
+`Client::presence_stream(app)`, which yields `(id, kind, data)`.
+
+## Limits
+
+| Limit | Value | What happens past it |
+| --- | --- | --- |
+| State | 4 KiB of bytes (8,192 hex characters) | `400 BAD_STATE` (also for state that is not hex) |
+| Expiry (`PRESENCE_TTL_MS`) | 7 s without a heartbeat, swept every second | the entry is dropped and streams see `state: null` |
+| Entries per app (`MAX_AUTHORS_PER_APP`) | 512 devices | a new device evicts the one heard from longest ago |
+| Event and presence streams per node (`MAX_EVENT_STREAMS`) | 4,096 | `429 RATE_LIMITED`: try another node or later |
+
+The stream holds a short buffer per app (256 changes). A client too slow to
+read it loses the changes it missed without a sign, so reconnect (a new
+`snapshot`) when a view looks stale, and on any disconnect.
+
+<Aside type="caution">
+  Presence is best effort and unverified history: it is not in any log or
+  receipt, and a node passes on what an authenticated device said. Use it for
+  what is on screen now, never for a decision your app stores.
+</Aside>

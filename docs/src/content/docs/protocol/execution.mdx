@@ -114,7 +114,7 @@ The `calimero:app` world (`crates/app-wit/wit/calimero-app.wit`):
 | `rebuild` | A migration's new key space; migrations are refused today (`MigrationsNotSupported`), so no run gets it |
 | `action` | Inside an action: its key, and views and calls of the app |
 | `wasi:clocks`, `wasi:random` | The leader's wall clock and randomness, read once: followers apply the result |
-| `wasi:http` | Outbound HTTPS, from actions and as one recorded request of a call (below) |
+| `wasi:http` | Outbound HTTPS, from actions and as recorded requests of a call (below) |
 
 A package may also ship a **compute component** (world `compute`: `files`,
 `job` and WASI's clocks and randomness, no storage, no network), which job
@@ -144,8 +144,8 @@ rules:
 
 ## Outbound HTTPS
 
-A component sends HTTPS from an action, or as one recorded request of a call
-(both below). Either way the request leaves only when every gate holds:
+A component sends HTTPS from an action, or as recorded requests of a call
+(both below), at most `MAX_HTTP_REQUESTS` (8) per run either way. Either way the request leaves only when every gate holds:
 
 1. the operator turned outbound on and allows the host (`[outbound]` in the
    node's configuration);
@@ -161,7 +161,7 @@ A component sends HTTPS from an action, or as one recorded request of a call
 
 A `calimero:app` component calls out from an **action** (spec
 `app-runtime-v0.14` D12, S9): an `#[app::action]` method that runs outside the
-log, on the app's leader. A call can also make one recorded request itself
+log, on the app's leader. A call can also make recorded requests itself
 (below), never a view.
 
 - **Start** (D17). A client calls the action's method through `/intents`, or a
@@ -189,7 +189,7 @@ log, on the app's leader. A call can also make one recorded request itself
 
 ## Outbound HTTP from component calls
 
-A component's call, timer or xcall delivery may send one request itself
+A component's call, timer or xcall delivery may send requests itself (up to 8 per run)
 (`env::fetch`; spec D76), for a check that belongs in the same request as the
 write it guards, such as a captcha service verifying a Turnstile token:
 

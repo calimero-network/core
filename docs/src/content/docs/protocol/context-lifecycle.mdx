@@ -1,6 +1,6 @@
 ---
 title: App instance lifecycle
-description: The life of one app instance — placement, init, access, names and metadata, replica moves, and deletion.
+description: The life of one app instance — placement, init, access, names and metadata, transfers, moves to another organization, aliases, replica moves, and deletion.
 sidebar:
   label: App instance lifecycle
   order: 18
@@ -26,7 +26,7 @@ lives in the system group; its state lives only on its replicas.
   steps={[
     { from: 0, to: 1, label: 'sealed POST /apps { package, version, initArgs, org?, access? }' },
     { from: 1, to: 1, label: 'passkey session or API key; resolve the release' },
-    { from: 1, to: 1, label: 'place: least-loaded nodes on an approved release' },
+    { from: 1, to: 1, label: 'place: approved nodes, a zone each first, least loaded' },
     { from: 1, to: 2, label: 'CreateApp { replicas } (internal/system)' },
     { from: 2, to: 2, label: 'apply: quota, membership, team writer → group number' },
     { from: 2, to: 3, label: 'directory entry reaches every node', dashed: true },
@@ -50,19 +50,13 @@ package-bound session:
 1. **Resolve the bundle.** A package release (installed from the registry
    first if the cluster lacks it) or, on a development cluster, a raw bundle
    hash.
-2. **Place.** The node picks `--replicas` nodes (3 by default) among those
-   whose attested mero-tee release is approved to hold the organization's apps (its publisher's, for a
-   bound package; [Release
-   approvals](/protocol/governance/#release-approvals)). No such node: `503`.
-   The replicas span as many zones as those nodes are in (the `zone` that
-   `POST /ops/nodes` registered), so an app outlives the loss of a zone
-   whenever the cluster has three: the least-loaded node (fewest replicas,
-   then the lower id) of each zone first, least-loaded zones first, and once
-   every zone holds one, the remaining replicas by load alone. Nodes without a
-   zone (every node from `--peers` until it is registered with one) count as
-   one unknown zone together, since nothing says they are apart; a cluster
-   with no zones is placed by load alone. Moves (`/ops/apps/{app}/replicas`)
-   go where the operator says.
+2. **Place.** The node picks `--replicas` nodes (3 by default) among the
+   replica nodes on a mero-tee release approved to hold the app (its
+   publisher's, for a bound package; [Release
+   approvals](/protocol/governance/#release-approvals)) and not below the
+   release's runtime floor: one per zone first, least loaded first, then by
+   load. Job nodes are never placed. No such node: `503`. The full rule and a
+   worked example: [Placement](/protocol/operator/#placement).
 3. **Record.** `CreateApp` applies in the system group: the bundle must be
    known, the owner within their app quota, a member (at least `member`) of its
    organization, and a writer of the team for `access: team`.
@@ -89,10 +83,147 @@ Calls, views and events go through any node ([The write path](/protocol/write-pa
 | Change | Route | Who |
 | --- | --- | --- |
 | Access rule | `POST /apps/{app}/access` | The owner while a member, an admin, or whoever holds `MANAGE_APPLICATION` on its team (and on the team it moves to; org-wide for any access but `team`); a frontend session moves its own package's apps between its channels ([App access](/protocol/organizations/#app-access)) |
-| Owner | `POST /apps/{app}/transfer { to }` | The owner while a member, or an admin, with a passkey; to a member of the organization. An app in a personal organization handed to someone outside it goes to their personal organization |
+| Owner | `POST /apps/{app}/transfer { to }` | The owner while a member, or an admin, with a passkey; to a member of the organization. An app in a personal organization handed to someone outside it goes to their personal organization ([below](#transferring-an-app)) |
 | Organization | `POST /apps/{app}/move { toOrg, bringMembers? }` | Its manager where it is, as an admin of the target, with a passkey; data stays put ([Moving an app](/protocol/organizations/#moving-an-app)) |
 | Metadata (a title, an icon; at most 16 KiB) | `POST /apps/{app}/metadata` | The owner while a member, or an admin of its organization |
-| An alias for the app | `PUT /auth/aliases/{alias}` | Any account, for an app it reaches; aliases are the account's own |
+| An alias for the app | `PUT /auth/aliases/{alias}` | Any account, for an app it reaches; aliases are the account's own ([below](#aliases)) |
+
+## Transfer, move and aliases
+
+Three changes look alike and are not. A **transfer** changes who owns the
+instance; a **move** changes which organization it is in; an **alias** is a
+name one account gives it. None of them touches the instance's data: the
+group, its replicas and its state stay where they are, and only the directory
+record in the system group changes.
+
+| | Transfer | Move | Alias |
+| --- | --- | --- | --- |
+| Route | `POST /apps/{app}/transfer { to }` | `POST /apps/{app}/move { toOrg, bringMembers? }` | `PUT /auth/aliases/{alias} { app }` |
+| `meroctl` | `context transfer <app> <account>` | `context move <app> <org> [--bring-members]` | `context alias add <alias> <app>`, `context use <app>` |
+| Changes | `owner` (and the organization, out of a personal one) | `org`, the access rule, the payer | The caller's own names |
+| Who | The app's manager | Its manager where it is, as an admin of the target | Any account that reaches the app |
+| Passkey | `<app> / __transfer / { to }` | `<app> / __move / { toOrg, bringMembers }` | None |
+
+The transfer and the move need an unbound passkey session: a session opened on
+an app's frontend is refused both (`403`; [Sessions &
+authority](/protocol/sessions-and-authority/)). Each answers `412
+CONFIRM_REQUIRED` first, and the log judges the actor again where the command
+applies. A refusal there is answered `400 REJECTED` with the reason (the names
+below are the node's constants for those reasons), or `429 QUOTA_EXCEEDED`
+for a quota.
+
+### Transferring an app
+
+`POST /apps/{app}/transfer { to }` hands the instance to another account.
+
+- **Who**: its manager (`SystemState::manages_app`): the owner while a member
+  of the app's organization (and, for an app on a team, while in that team),
+  or an admin of the organization. Otherwise `403`.
+- **To whom**: a member (at least `member`, not a guest) of the app's
+  organization. A transfer never moves an organization's app out of it.
+- **The personal-organization rule.** An app in a personal organization
+  handed to someone outside it goes to the new owner's **personal
+  organization**: the node makes it first if they have none, and the log
+  refuses the transfer if they still have none (`NO_PERSONAL_ORG`). The app's
+  `team` access, which names a team of the organization it left, becomes
+  `org`. Its file bytes are charged to the new organization, within its
+  quota, and its compute runs' payer moves with it.
+- **What it means.** Who upgrades the app is now the new owner's (for an
+  `owner` package), and with it which code reads the data.
+
+### Moving an app to another organization
+
+`POST /apps/{app}/move { toOrg, bringMembers }` moves the instance into
+another organization in one log entry (`SystemCmd::MoveApp`). The rules, in
+the order the log judges them ([Moving an app](/protocol/organizations/#moving-an-app)
+has each in full):
+
+1. **Who.** The actor manages the app where it is now and is an admin or the
+   owner of `toOrg`. The API refuses both first (`403`), and refuses with
+   `409 FEATURE_NOT_ACTIVE` before the step-up while the cluster version
+   lacks moves.
+2. **Access.** `org` access, or `team` access on its package's app team,
+   becomes `team` access on the target's app team of the package, made when
+   missing. Any other team is refused (`MOVE_NEEDS_APP_TEAM`): its leads, rows
+   and capabilities are grants of the source the target's admins never saw.
+   Give the app `org` or app-team access first. `owner`, `accounts` and
+   `public` access stay.
+3. **Owner.** The owner stays the owner and must be a member of the target
+   once the move is done (`MOVE_OWNER_NOT_IN_TARGET`): invite them first,
+   transfer the app to a member, or bring the members along.
+4. **Releases.** Refused when the release sets that govern the app before
+   and after the move are both recorded and have no release in common (`MOVE_RELEASES_DISJOINT`): the nodes holding the app
+   would hold it unapproved.
+5. **Payer and quotas.** The target pays from here on: the app's file bytes
+   and its granted compute runs count against the target's quotas (its own
+   override where the operator set one with `POST /ops/quotas`, else the
+   cluster's, as every other charge counts them), and a move past them is
+   refused (`429 QUOTA_EXCEEDED`). A move logged by a release before 1.0.0-rc.24
+   (no `org_quotas` on the entry) replays judging the cluster's limits, as it
+   did then; the `moveOrgQuotas` feature keeps moves refused until every node
+   reads the field.
+6. **`bringMembers`.** Every member of the source who reaches the app joins
+   the target at their role there, capped at `member`, and gets a row on the
+   target's app team.
+
+The answer is `{ appId, from, org, access, created, added, revokedInvites }`:
+where it went, its access there, whether an app team was made, who was
+brought in, and the source's invites revoked because no app of the source is
+left on the team they named.
+
+<SeqDiagram
+  id="d-app-move"
+  title="Moving an app into another organization"
+  lanes={[
+    { label: 'Manager', color: '#f0883e' },
+    { label: 'Node', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+    { label: 'Replicas', color: '#58a6ff' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'POST /apps/{app}/move { toOrg, bringMembers }' },
+    { from: 1, to: 1, label: 'manages the app? admin of toOrg? moves active?' },
+    { from: 1, to: 0, label: '412 over <app> / __move / { toOrg, bringMembers }', dashed: true },
+    { from: 0, to: 1, label: 'the same request with confirm' },
+    { from: 1, to: 2, label: 'MoveApp { app, toOrg, bringMembers, consent }' },
+    { from: 2, to: 2, label: 'judge every rule, then: org, access, app team, members, payer' },
+    { from: 1, to: 0, label: '{ appId, from, org, access, created, added, revokedInvites }', dashed: true },
+    { type: 'divider', label: 'the group, its replicas and its state do not move' },
+    { from: 3, to: 3, label: 'next request: access judged against the new organization' },
+  ]}
+/>
+
+**Worked example.** Ann made a notes instance in her personal organization
+before Acme existed; it has `org` access there. She is now an admin of Acme
+and moves it in: `POST /apps/{notes}/move { toOrg: "<acme>" }`. She manages
+the app (its owner, in her own organization) and is an admin of the target.
+Acme has app teams, so the instance gets `team` access on Acme's app team for
+`notes`, made now if missing, with Ann leading it. Ann is a member of Acme, so
+the owner rule holds. Acme's approved releases share one with her personal
+organization's (the release the replicas run), so the releases rule holds. Acme pays for the instance's files from this entry on.
+Had the instance been on a restricted team of her personal organization, the
+move would have been refused `MOVE_NEEDS_APP_TEAM` until she set its access to
+`org`.
+
+### Aliases
+
+An alias is an account's own name for an instance (`Account::aliases`): it
+names nothing for anyone else and grants nothing.
+
+- `PUT /auth/aliases/{alias} { app }` sets it, for an app the caller reaches
+  (`404` otherwise; a session bound to an app's frontend, only for its own
+  package's apps). The app may be named by its id or its context id; the
+  alias keeps the id. An alias is 1 to 64 characters, at most 1,000 per
+  account; setting one again repoints it.
+- `GET /auth/aliases` answers `{ aliases: { alias: appId } }`,
+  `GET /auth/aliases/{alias}` answers `{ alias, appId }`, and `DELETE
+  /auth/aliases/{alias}` drops it.
+- Reaching the app is judged when the alias is used, not kept with it: an
+  alias of an app the account no longer reaches leads to the same `404` as
+  its id would.
+
+`meroctl` resolves an alias wherever it takes a context, and `meroctl context
+use <app>` sets the alias `default`.
 
 ## Replica moves
 
@@ -100,7 +231,8 @@ The operator can move an instance to another replica set
 (`POST /ops/apps/{app}/replicas`): new nodes join the group as learners, catch
 up, and become voters, and nodes that left stop the group and delete its data
 ([Replica moves](/protocol/replication/#replica-moves)). A move only lands on
-nodes whose release the app's approver has approved.
+nodes whose release the app's approver has approved; every refusal is in
+[Moving replicas](/protocol/operator/#moving-replicas).
 
 ## Upgrade
 

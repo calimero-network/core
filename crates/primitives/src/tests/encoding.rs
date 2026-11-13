@@ -19,7 +19,6 @@ use crate::application::ApplicationId;
 use crate::blobs::BlobId;
 use crate::context::ContextId;
 use crate::hash::Hash;
-use crate::identity::{AccountId, DeviceId, PublicKey};
 
 /// The 32 bytes every type below is asked to spell.
 const BYTES: [u8; 32] = [0xAB; 32];
@@ -38,9 +37,6 @@ fn every_id_type_spells_the_same_bytes_the_same_way() {
         ("ContextId", ContextId::from(BYTES).to_string()),
         ("ApplicationId", ApplicationId::from(BYTES).to_string()),
         ("BlobId", BlobId::from(BYTES).to_string()),
-        ("PublicKey", PublicKey::from(BYTES).to_string()),
-        ("AccountId", AccountId::from(BYTES).to_string()),
-        ("DeviceId", DeviceId::from(BYTES).to_string()),
     ];
 
     for (name, rendered) in &spellings {
@@ -61,9 +57,6 @@ fn every_id_type_parses_the_one_spelling() {
         ApplicationId::from(BYTES)
     );
     assert_eq!(HEX.parse::<BlobId>().unwrap(), BlobId::from(BYTES));
-    assert_eq!(HEX.parse::<PublicKey>().unwrap(), PublicKey::from(BYTES));
-    assert_eq!(HEX.parse::<AccountId>().unwrap(), AccountId::from(BYTES));
-    assert_eq!(HEX.parse::<DeviceId>().unwrap(), DeviceId::from(BYTES));
 }
 
 /// Base58 is refused everywhere, rather than quietly decoded.
@@ -73,9 +66,6 @@ fn no_id_type_still_accepts_base58() {
     assert!(BS58.parse::<ContextId>().is_err(), "ContextId");
     assert!(BS58.parse::<ApplicationId>().is_err(), "ApplicationId");
     assert!(BS58.parse::<BlobId>().is_err(), "BlobId");
-    assert!(BS58.parse::<PublicKey>().is_err(), "PublicKey");
-    assert!(BS58.parse::<AccountId>().is_err(), "AccountId");
-    assert!(BS58.parse::<DeviceId>().is_err(), "DeviceId");
 }
 
 /// JSON agrees with `Display` — the wire is the surface clients actually see.
@@ -93,16 +83,4 @@ fn json_uses_the_same_spelling_as_display() {
         quoted
     );
     assert_eq!(serde_json::to_string(&BlobId::from(BYTES)).unwrap(), quoted);
-    assert_eq!(
-        serde_json::to_string(&PublicKey::from(BYTES)).unwrap(),
-        quoted
-    );
-    assert_eq!(
-        serde_json::to_string(&AccountId::from(BYTES)).unwrap(),
-        quoted
-    );
-    assert_eq!(
-        serde_json::to_string(&DeviceId::from(BYTES)).unwrap(),
-        quoted
-    );
 }

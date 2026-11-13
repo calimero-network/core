@@ -1,0 +1,301 @@
+---
+title: Sessions & authority
+description: How every request is judged, in one place — who the account is, which kind of session it holds, which routes that session may call, when a passkey step-up is asked, and the authority the system log judges where the command applies.
+sidebar:
+  order: 12.5
+---
+
+import SeqDiagram from '../../../components/SeqDiagram.astro';
+import ProtoRequestLayers from '../../../components/diagrams/ProtoRequestLayers.astro';
+
+Every request a node takes is judged twice, by two different questions:
+
+- **The session check** asks *may this session call this route?* It runs in
+  the API, on the node the request reached, before anything is written to a
+  log. It depends on where the session was opened.
+- **Authority** asks *may this account do this?* It is judged from the system
+  log's state: for a system command, where the command applies, on every node;
+  for an app call, by the app's leader on fresh system state before the call
+  runs. It depends only on the account.
+
+A session opened on an app's frontend has the same authority as any other
+session of the same account. It may only call fewer routes. This page puts the
+layers side by side; the detail of each is in the pages it links to.
+
+## The layers every request passes through
+
+<ProtoRequestLayers />
+
+1. **Who.** A person is an **account**. Each of its passkeys is one of its
+   **devices**, and the account owns a **personal organization**, made in the
+   same log entry as the account (`CreateAccount { personalOrg }`). See
+   [Accounts, passkeys & sessions](/protocol/identities/).
+2. **Session.** Signing in (or signing up) with a passkey opens a **session**.
+   Its kind is set by the origin the ceremony ran on, as the passkey's
+   `clientDataJSON` names it and the node checks it:
+   - **Unbound**: one of the cluster's own origins (`--origins`): its console
+     or own page, `meroctl login` with a development file passkey (its
+     `--origin` must be one the cluster allows), any client that runs the
+     ceremony under one of those origins.
+   - **Package-bound**: a package's frontend origin. That is the origin the
+     node serves the package on (`{label}.<apps-domain>`, its cluster host, a
+     deployment's host), or an origin the package's manager
+     [registered](/protocol/identities/#registered-origins), served or not.
+     The token names the package (`SessionClaims::app`) and, for a registered
+     origin, the origin (`SessionClaims::origin`). The session ends when that
+     origin is removed.
+
+   The kind is stamped into the token, signed by the issuing node, and the
+   refresh record keeps it, so `POST /auth/refresh` never changes it. An API
+   key is no session: it is refused every route that needs a passkey session
+   (`api::person`), whatever its scope.
+3. **Where.** Each route checks the session first (`api::Principal`, in
+   `crates/node/src/api.rs`):
+   - `holder` (`person` + `unbound`) refuses a package-bound session outright
+     (`403`, "a session opened on an app's frontend can use that app only").
+   - `within(app)` keeps a package-bound session to the apps that run a
+     release of its package (`404 no such app` for any other). It also
+     refuses a session whose issuing node runs a release the app's owner has
+     not approved.
+   - `within_team(org, team, reach)` keeps a package-bound session to its own
+     package's teams: the organization's
+     [app team](/protocol/organizations/#app-teams) for the package, or a team
+     below it (`Org::package_of_team`).
+
+   An unbound session passes all three. A refusal here writes nothing.
+4. **Step-up.** A route that needs the person's consent answers
+   `412 CONFIRM_REQUIRED` with a challenge,
+   `confirm_challenge(subject, method, args, nonce)`. The client asks the
+   authenticator for a user-verified assertion over it and sends the same
+   request again with `confirm`. The node checks the assertion is a passkey
+   of the account. The consent `{ subject, method, args, nonce, assertion }`
+   goes into the log entry. A package-bound session steps up from its own
+   origin only, and only over one of its package's apps, or over
+   `org:<org>` for `__set_team_member`, `__remove_team_member` and
+   `__delete_team` on its own package's teams (`BOUND_TEAM_STEP_UPS`); any
+   other subject is refused before a challenge is made. See
+   [Authentication](/operate/auth/#confirmations).
+5. **What.** The system command names its actor. Where it applies, on every
+   node, `system::authorize` rebuilds the challenge, verifies the consent
+   under a passkey the actor holds now, checks it states exactly this change,
+   and spends it (`used_proofs`), so it cannot be replayed. Then the command's
+   own rules judge the actor: org role, capabilities (`caps`), team rows and
+   roles, the app's access rule. A node that proposes a command the actor may
+   not make has it refused by every replica. See
+   [The system group](/protocol/system-group/) and
+   [Organizations, teams & access](/protocol/organizations/).
+
+## Unbound and package-bound sessions, side by side
+
+A package-bound session is refused most account and organization routes. For
+most organization changes, the app asks the node's
+[consent page](/protocol/consent-page/) instead. The person approves the
+change there with their passkey, on the node's origin, and the node then runs
+the same route as that person.
+
+| Action | Unbound session | Package-bound session | From a frontend, instead |
+| --- | --- | --- | --- |
+| Call, read, upload to an app it reaches | ✓ | that package's apps only (`within`) | — |
+| Create an instance (`POST /apps`) | any installed package, or a bundle | its own package, installed, named by `package` | — |
+| Install, upload or uninstall packages | ✓ | `403` | — |
+| Passkeys, API keys, session list and revocation, activity, sign out everywhere, recovery, backup keys, account proofs | ✓ | `403` (signing out its own session is allowed) | — |
+| Approve a mero-tee release (`POST /orgs/{org}/releases`) | ✓ | `403` | `release` |
+| Approve outbound hosts (`POST /orgs/{org}/outbound`) | ✓ | `403` | `outbound` |
+| Upgrade an app (`POST /apps/{app}/upgrade`) | ✓ | `403` | `upgrade` |
+| Create an organization (`POST /orgs`) | ✓ | `403` | `createOrg` |
+| Mint an invite (`POST /orgs/{org}/invites`) | ✓ | `403` | `createInvite` |
+| Redeem an invite (`POST /invites/{token}/redeem`) | ✓ | `403` | `acceptInvite` |
+| Revoke an invite | ✓ | `403` | `revokeInvite` |
+| Leave, or remove a member | ✓ | `403` | `leaveOrg`, `removeMember` |
+| Change a member's role | ✓ | `403` | `setMemberRole` |
+| A member's rows in several teams (`/orgs/{org}/members/{account}/teams`) | ✓ | `403` | `setMemberTeams`, `removeMemberTeams` |
+| Rename or delete an organization | ✓ | `403` | `renameOrg`, `deleteOrg` |
+| Capabilities, a member's or a default | ✓ | `403` | `setCapabilities` |
+| Every app added later (`/orgs/{org}/all-apps`) | ✓ | `403` | `setAllApps` |
+| Give packages app teams (`POST /orgs/{org}/app-teams`) | ✓ | `403` | none for an existing organization (an admin, on an unbound session); a new one made with `createOrg` comes with the asking app's team |
+| A top-level team, or moving a team to the top | ✓ | `403` | none |
+| A team below its package's app team: create, rename, move within, members, delete | ✓ | ✓ (`within_team`) | — |
+| Delete, transfer or move an app | ✓ | `403` | none |
+| Change an app's access | ✓ | only between its own package's teams | none |
+| The members' security listing (`GET /orgs/{org}/members`) | ✓ | `403` | none |
+| Registered origins, deployments, publishers, deployers, sign-up | ✓ | `403` | none |
+| Ask the consent page (`POST /consent/requests`) | ✓ (`returnTo`: a cluster origin) | ✓ (`returnTo`: its own origin) | — |
+
+"✓" means the route is open to the session. The account's authority is still
+judged where the command applies: an unbound session of a plain member cannot
+rename an organization either.
+
+## What an app's frontend session may call
+
+Take a chat app, package `chat`, served at `{label}.<apps-domain>`. A person
+who signs in there holds a session bound to `chat`. This is what that session
+may call, and which check lets it through:
+
+| Route | Session check | Judged where it applies |
+| --- | --- | --- |
+| `GET /auth/me`, `GET /auth/apps`, `POST /auth/logout` | signed in (`GET /auth/apps` lists `chat`'s apps only) | — |
+| `GET /apps`, `GET /apps/{app}` | `chat`'s apps only | the access rule |
+| `POST /apps/{app}/intents`, `/views`, `GET .../events`, presence, blobs, files, runs | `within` (other apps: `404`) | the access rule; a read-only row runs views only |
+| `POST /apps { package: "chat", org? }` | its own package, installed; no bundle | `CREATE_APP` in the org; in an org with app teams, a package without one is an admin's to add |
+| `POST /apps/{app}/metadata` | `within` | the owner or an org admin |
+| `POST /apps/{app}/access` | `within`, and both teams `chat`'s | `SetAccess`'s rules |
+| `GET /orgs/{org}`, `GET /orgs/{org}/teams/{team}`, `GET /orgs/{org}/app-teams`, `GET /orgs/{org}/apps`, `GET /orgs/{org}/invites` | signed in | membership; what the member sees (`sees_team`, `sees_member`, `sees_invite`) |
+| `POST /orgs/{org}/metadata` | signed in | an admin, or `MANAGE_METADATA` |
+| `POST /orgs/{org}/members/{account}/metadata` | signed in | the member themself, or an admin |
+| `POST /orgs/{org}/teams { parent }` | `parent` is `chat`'s app team or below it; no `parent`: `403` | `CreateTeam`'s rules (`CREATE_CHILD_TEAM` below a team one writes) |
+| `POST /orgs/{org}/teams/{team}` | a team below the app team, never the app team itself; a move only to `chat`'s teams | `UpdateTeam`'s rules |
+| `DELETE /orgs/{org}/teams/{team}` | below the app team, every app in its subtree `chat`'s | a manager of the team, or `DELETE_TEAM`; passkey `__delete_team` when apps go |
+| `POST /orgs/{org}/teams/{team}/members`, `DELETE .../members/{account}` | the app team or below it | a lead, or `MANAGE_MEMBERS`; passkey `__set_team_member` / `__remove_team_member` from `chat`'s origin |
+| `POST /consent/requests`, `GET /consent/{id}/result` | signed in; `/result` answers only `chat`'s own requests | the route the page runs |
+
+Every other route answers `403` (or `404` for another package's app). The
+channel routes need an app team for `chat` in the organization. An organization
+the frontend creates through the consent page comes with one (since
+1.0.0-rc.22); in one that has none, `within_team` finds no team of `chat`'s, so
+the frontend cannot make channels there until an admin adds it (see the example
+below).
+
+## Worked example: Ann creates the workspace "Acme" from Chat
+
+<SeqDiagram
+  id="d-sessions-create-org"
+  title="Ann creates Acme from Chat's frontend"
+  lanes={[
+    { label: "Ann's browser (Chat)", color: '#f0883e' },
+    { label: 'Node', color: '#3fb950' },
+    { label: 'System log', color: '#a5ff11' },
+  ]}
+  steps={[
+    { from: 0, to: 1, label: 'passkey sign-in on {label}.<apps-domain>' },
+    { from: 1, to: 0, label: 'session { account, app: chat }', dashed: true },
+    { from: 0, to: 1, label: 'POST /orgs → 403 (holder)' },
+    { from: 0, to: 1, label: "POST /consent/requests { kind: 'createOrg', subject: { name: 'Acme' }, returnTo }" },
+    { from: 1, to: 0, label: '{ requestId, url, expiresAt, code }', dashed: true },
+    { from: 0, to: 1, label: 'GET /consent/{id} on the node\'s origin; same code shown' },
+    { from: 0, to: 1, label: 'POST /consent/{id}/approve → 412 over account:<ann> / __create_org' },
+    { from: 0, to: 1, label: 'approve { confirm: user-verified assertion }' },
+    { from: 1, to: 2, label: 'CreateOrg { actor: ann, app_team: chat }' },
+    { from: 1, to: 0, label: 'redirect returnTo?request_id=…&result=approved', dashed: true },
+    { from: 0, to: 1, label: 'GET /consent/{id}/result → outcome { orgId, teamId }' },
+    { from: 0, to: 1, label: "POST /apps { package: 'chat', org }" },
+    { from: 1, to: 2, label: 'CreateApp (Ann: owner, CREATE_APP)' },
+  ]}
+/>
+
+1. **Sign-in.** Ann opens Chat at its served origin and signs in with her
+   passkey. The ceremony's origin is Chat's, so her session is bound to the
+   `chat` package.
+2. **Refused, then asked.** `POST /orgs` is a `holder` route: `403`. Chat asks
+   the node instead, `POST /consent/requests { kind: "createOrg", subject:
+   { name: "Acme" }, returnTo }`. `returnTo` must be Chat's own frontend
+   origin (served or registered) or one its newest signed manifest names, else
+   `400 RETURN_TO_NOT_ALLOWED`. The node checks the name, freezes what the page
+   will show, and answers `{ requestId, url, expiresAt, code }`. The request
+   lives in this node's memory for 10 minutes. An account has one undecided
+   request per node, so a new one replaces it.
+3. **The page.** Chat shows the confirmation `code` and sends Ann to `url`,
+   `GET /consent/{id}` on the node's own origin. That page is static HTML
+   compiled into `merod` and shows the same code. It reads
+   `/consent/{id}/model` and says "Create the organization Acme", and that
+   Chat's team comes with it (`appTeam { package, name }` in the model).
+4. **The passkey.** *Approve* posts `/consent/{id}/approve`. The node runs the
+   approval as `Principal { consent_page: true }` for the request's account,
+   with no session of its own. It answers `412 CONFIRM_REQUIRED` over
+   `account:<ann> / __create_org / { name, appTeam }`, under the cluster's
+   rp-id: one prompt for both. The page gets a user-verified assertion and
+   posts it as `confirm`. The node checks it is one of Ann's passkeys, then
+   runs `api::create_org`. This step-up is not logged: the log gets the
+   `CreateOrg` that `POST /orgs` writes, with Ann as actor and owner, plus
+   `app_team: chat`. Where it applies, the log checks that the account exists
+   and that Ann's organization quota has room, makes Acme, and in the same
+   entry makes Chat's app team as `ScopeApps` would for a package with no
+   instances yet: open, Ann its lead, its members able to make channels below
+   it (`CREATE_CHILD_TEAM`). The team's id comes from the organization's, so
+   every replica makes the same one; if the team cannot be made, the
+   organization is not made either.
+5. **Back.** The page redirects to `returnTo?request_id=…&result=approved`.
+   Anyone can type that query, so Chat does not trust it. Chat asks
+   `GET /consent/{id}/result` over the sealed channel (the same account and
+   package only) and reads `status: "approved"` and
+   `outcome: { "orgId", "teamId" }`.
+6. **The instance.** Chat's session may create instances of `chat`:
+   `POST /apps { package: "chat", org: "<orgId>" }`. `CreateApp` applies
+   because Ann is Acme's owner and holds `CREATE_APP`. The instance's access
+   defaults to `org`.
+7. **Channels.** Chat's session makes channels at once, as teams below its
+   app team (`POST /orgs/{org}/teams { parent: teamId }`, `within_team`), and
+   manages their members, with Ann's authority as the team's lead.
+
+On a cluster whose version is below 1.0.0-rc.22 (`Feature::OrgAppTeam`), or
+when the asking app's package is not installed on the cluster, the approval
+makes Acme bare, as earlier releases did, and `outcome` has no `teamId`. Chat
+then cannot make channels: `POST /orgs/{org}/teams` without a parent is `403`,
+and there is no app team of `chat`'s to put one under. An admin gives Chat its
+app team from an unbound session (the cluster's own page, or any client signed
+in on a cluster origin) with `POST /orgs/{org}/app-teams` (`ScopeApps`, passkey
+`__scope_apps`). The same holds for an organization made before, or from an
+unbound session: no consent kind adds an app team to an existing organization.
+
+## Worked example: Bob joins with an invite
+
+1. **The invite.** In Chat, Ann asks for one: `POST /consent/requests
+   { kind: "createInvite", subject: { org, role: "member" }, returnTo }`. The
+   node first checks what the log will check: Ann is in Acme, the invite is not
+   above her role or for an owner, and an `allApps` invite needs an admin.
+   On the page she approves with her passkey. The node runs
+   `POST /orgs/{org}/invites` as her, so the step-up is the route's own:
+   `org:<org> / __create_invite`, logged with `CreateInvite`, where the log
+   judges `INVITE_MEMBERS` and the teams she sees. The token never travels on
+   the page: Chat reads it from the sealed `/result` as `outcome: { "token" }`.
+   The log keeps the invite under the token's public key (`proof::invite_key`),
+   never the token itself.
+2. **The link.** Chat shares a link to its own frontend with the token, for
+   example `https://{label}.<apps-domain>/?invite=inv_…`. The frontend's
+   redirects keep the query, so the token reaches the page.
+3. **Sign-up.** Bob opens it and signs up with a passkey there. That makes his
+   account and personal organization, as the cluster's
+   [sign-up policy](/protocol/governance/#sign-up) allows. Under `invite`
+   that needs a sign-up invite, which an organization invite is not. His
+   session is bound to `chat`.
+4. **Joining.** `POST /invites/{token}/redeem` is a `holder` route, so Chat
+   asks `POST /consent/requests { kind: "acceptInvite", subject: { token } }`.
+   The node checks that the invite exists, is unexpired and has uses left.
+   The page shows "Join Acme as a member". Bob approves with his passkey. The
+   step-up, `account:<bob> / __accept_invite / { inviteKey }`, is not logged.
+   The node then runs `api::redeem_invite`, which writes `RedeemInvite` signed
+   with the token's key (`proof::sign_invite_redeem`). Only a node that was
+   given the token can make that entry; one that only read the log cannot.
+   The log verifies the signature and spends it, and adds Bob at the invite's
+   role and teams.
+5. **In.** Chat reads `/result`: `outcome: { "org" }`. Bob is a member of
+   Acme, so he reaches its instance of Chat (`access: org`). His Chat session
+   still reaches only `chat`'s apps.
+
+## Why the boundary sits there
+
+A passkey assertion is blind. The authenticator shows a site name, never what
+the challenge commits to. So whichever page runs the ceremony decides what the
+person believes they approve. An app's frontend is the publisher's code. If it
+could run an account-level step-up, it could show one thing and have the
+passkey sign another. The design gives the app no such page:
+
+- **The consent page is the node's.** It is served on the node's own origin
+  and compiled into `merod`. Its inline script and style are allowed by hash
+  only (`default-src 'none'`, `connect-src 'self'`), and it cannot be framed
+  (`frame-ancestors 'none'`, `X-Frame-Options: DENY`). No app code runs
+  there, and what it shows was frozen from node state and signed manifests,
+  not from the app.
+- **The passkey signs the exact action.** The challenge is over the subject,
+  method, frozen arguments and a nonce, under the cluster's rp-id. The node
+  accepts it only from the cluster's and its nodes' own origins, never from an
+  app's origin.
+- **The log checks again.** A logged consent is verified and spent where the
+  command applies, on every node. The command's rules judge the account's
+  authority there, whichever node or page proposed it.
+- **The app can only ask.** A package-bound session reaches its own package's
+  apps and its own package's teams. Anything else it asks for is shown to the
+  person on the node's page and approved there, or not at all.
+
+The limits of the page itself (TLS outside the sealed channel, a forged page on
+the node's host, the one-undecided-request rule) are in
+[What it does not protect](/protocol/consent-page/#what-it-does-not-protect).

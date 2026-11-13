@@ -96,6 +96,59 @@ class PackComponent(unittest.TestCase):
             with self.assertRaises(subprocess.CalledProcessError):
                 pack(tmp, "--compute", str(bad))
 
+    def test_a_frontend_build_is_declared_and_shipped_under_frontend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dist = Path(tmp) / "dist"
+            (dist / "assets").mkdir(parents=True)
+            (dist / "index.html").write_text("<!doctype html><title>x</title>")
+            (dist / "assets" / "app.js").write_text("export {}")
+            files = pack(tmp, "--frontend", str(dist))
+        self.assertEqual(sorted(files), ["app.wasm", "frontend/assets/app.js", "frontend/index.html",
+                                         "manifest.json"])
+        declared = json.loads(files["manifest.json"])["frontend"]
+        self.assertEqual(declared["entry"], "frontend/index.html")
+        self.assertEqual([f["path"] for f in declared["files"]],
+                         ["frontend/assets/app.js", "frontend/index.html"])
+        self.assertEqual(declared["files"][1]["size"], len(files["frontend/index.html"]))
+
+    def test_a_frontend_file_the_node_would_refuse_is_refused(self):
+        for name in ["bad name.html", "tool.exe"]:
+            with tempfile.TemporaryDirectory() as tmp:
+                dist = Path(tmp) / "dist"
+                dist.mkdir()
+                (dist / "index.html").write_text("<p>")
+                (dist / name).write_text("x")
+                with self.assertRaises(subprocess.CalledProcessError, msg=name):
+                    pack(tmp, "--frontend", str(dist))
+
+    def test_a_frontend_without_its_entry_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dist = Path(tmp) / "dist"
+            dist.mkdir()
+            (dist / "app.js").write_text("x")
+            with self.assertRaises(subprocess.CalledProcessError):
+                pack(tmp, "--frontend", str(dist))
+
+    def test_outbound_prefixes_and_upgrades_are_declared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            files = pack(tmp, "--outbound", "https://api.example.com/v1/", "--outbound",
+                         "https://captcha.example/", "--upgrades", "publisher")
+        manifest = json.loads(files["manifest.json"])
+        self.assertEqual(manifest["outbound"], ["https://api.example.com/v1/", "https://captcha.example/"])
+        self.assertEqual(manifest["upgrades"], "publisher")
+
+    def test_without_them_the_manifest_has_no_frontend_outbound_or_upgrades(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = json.loads(pack(tmp)["manifest.json"])
+        for field in ("frontend", "outbound", "upgrades"):
+            self.assertNotIn(field, manifest)
+
+    def test_an_outbound_prefix_the_node_would_refuse_is_refused(self):
+        for url in ["http://api.example.com/", "https://user@api.example.com/", "https://a/?q=1", "https://"]:
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(subprocess.CalledProcessError, msg=url):
+                    pack(tmp, "--outbound", url)
+
     def test_previous_reaches_the_signer_with_the_component_beside_the_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             seen = Path(tmp) / "seen.json"

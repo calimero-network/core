@@ -718,7 +718,15 @@ shard 2 the previous release's app (below); `mero-compute end to end` and
 each component app's own `cargo test` (its `tests/harness.rs` and its app-level
 scenarios on `TestApp`), then clippy with `-D warnings` on the host and on
 `wasm32-wasip2` and the app's release `wasm32-wasip2` build, every third app
-each. The apps are found by their `calimero-sdk` dependency.
+each. The apps are found by their `calimero-sdk` dependency. It runs only when
+the change reaches an app: `apps/`, or the SDK crates the apps build against
+and what those depend on (`scripts/ci-scope.py`, `standalone_apps`); each
+shard caches its apps' target dir and the cargo registry, saved from master.
+`Rust lint` keeps a cache group of its own (`ci-lint`; clippy's check-mode
+build is not the test build), saved by the push to master, which lints too.
+The release build keeps two: a PR's and the queue's builds restore `release`
+(saved by the upgrade path, without fat LTO), and a push's fat-LTO build
+restores and saves `release-lto`.
 
 Nothing has to list a scenario for it to run: the runner discovers every file
 on disk, and one it must not run yet is listed, with its reason, in

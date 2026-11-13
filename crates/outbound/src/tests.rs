@@ -19,7 +19,7 @@ fn forms() -> AppIdentity {
     }
 }
 
-/// A namespace approval of exactly what `declared` declares, so a test of
+/// An approval of exactly what `declared` declares, so a test of
 /// another gate is not refused by this one.
 fn approving(declared: &BTreeSet<String>) -> Approval {
     Approval {
@@ -495,7 +495,7 @@ fn no_debug_output_carries_a_secret() {
     assert!(!format!("{prepared:?}").contains(SECRET));
 }
 
-/// The namespace is the third party: an operator who allows every host and a
+/// The approver is the third party: an operator who allows every host and a
 /// manifest that declares the URL are not enough without its approval.
 #[test]
 fn a_namespace_that_approved_nothing_refuses_with_not_approved() {
@@ -568,7 +568,7 @@ fn an_approved_prefix_lets_its_urls_through_and_no_others() {
 }
 
 /// An approval wider than the manifest does not widen what the app may reach:
-/// all three of operator, manifest and namespace must agree.
+/// all three of operator, manifest and approver must agree.
 #[test]
 fn an_approval_cannot_reach_past_the_manifest() {
     let s = service(&Arc::new(Fake::default()));

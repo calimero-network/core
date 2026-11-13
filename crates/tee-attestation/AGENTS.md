@@ -6,7 +6,7 @@ Generates and verifies Intel TDX attestation quotes, binding them to a nonce and
 
 - **Crate**: `calimero-tee-attestation`
 - **Entry**: `src/lib.rs`; the serializable `Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData` types are this crate's own (`src/quote.rs`)
-- **Key deps**: `tdx-quote` (parses raw TDX quote bytes), `dcap-qvl` (Intel DCAP collateral fetch + cryptographic quote verification), `base64`/`hex` (encoding), `eyre` (internal error plumbing), `tracing`. Linux-only: `configfs-tsm` (real quote generation via the kernel TSM configfs interface), `tdx_workload_attestation` (MRTD/launch-measurement retrieval), `reqwest` (cloud metadata detection)
+- **Key deps**: `tdx-quote` (parses raw TDX quote bytes), `dcap-qvl` (Intel DCAP collateral fetch + cryptographic quote verification), `base64`/`hex` (encoding), `sha2` (`attest_transport_binding`, `KmsEvidence`), `serde`/`serde_json`, `tracing`. Linux-only: `configfs-tsm` (real quote generation via the kernel TSM configfs interface)
 
 ## Commands
 
@@ -14,8 +14,8 @@ Generates and verifies Intel TDX attestation quotes, binding them to a nonce and
 # Build
 cargo build -p calimero-tee-attestation
 
-# Test (the `policy` module has unit tests; the rest is exercised via callers,
-# except the CLI's exit-code contract — see the `cli` feature below)
+# Test (unit tests in `generate`, `evidence`, `verify`, `policy` and
+# `kms_evidence`; the CLI's exit-code contract — see the `cli` feature below)
 cargo test -p calimero-tee-attestation
 ```
 
@@ -80,13 +80,11 @@ Two properties carry over from the library and matter more here, because the con
 - **`valid` mirrors `is_valid()`, so it is crypto/structural only** — it ignores `tcb_status` and the measurement registers, both of which are *reported* for the caller to enforce. A `Revoked` platform still produces `valid: true`. A caller that admits on `valid` alone has built the same trap `policy_valid` exists to avoid.
 - **There is no mock path in this binary at all**, under any feature combination: it only ever calls `verify_attestation`, so a mock quote fails the real DCAP parse and exits non-zero rather than producing a verdict. That is deliberate — a mock quote is valid by construction, so accepting one would let an untrusted caller present something that verifies with no hardware behind it.
 
-
+## Public API
 
 | Item | Kind | Purpose |
 | --- | --- | --- |
-| `build_report_data(nonce, app_hash)` | fn | Packs `nonce[32] \|\| app_hash[32]` (zero-filled if `app_hash` is `None`) into the 64-byte TDX report data field |
-| `admission_binding(namespace, group, identity_pk, account, kem_pk, device)` / `admission_report_data(challenge, binding)` | fn | The report data of a fleet admission quote: `challenge[32] \|\| SHA-256("calimero.tee.admission.v1" \|\| namespace \|\| group \|\| identity_pk \|\| account \|\| kem_pk \|\| device)`. The challenge is the admitting member's; the binding commits the quote to one credential in one namespace. Domain-tagged like `attest_key_binding`, so it never equals a `/tee/attest` quote's second half. `calimero_op_adapter::tee_admission_binding` applies it to a credential |
-| `quote_report_data(quote_bytes)` | fn | The 64 report data bytes a quote carries, read **without verifying anything** (mock quotes under `mock-attestation`). What every peer can repeat at apply, where the signature is the admitting node's check |
+| `attest_transport_binding(inner, transport_key)` | fn | `SHA-256("calimero.tee-attest.transport-key.v1" \|\| inner \|\| transport_key)`: the second half of report data that commits a quote to the node's X25519 sealed-transport key. `calimero-sealed`'s server and `calimero-client`'s `attest` both call it |
 | `generate_attestation(report_data)` | fn | Linux+TDX: calls `configfs_tsm::create_tdx_quote`, parses with `tdx_quote::Quote`, converts to `Quote`. Non-Linux: falls back to `generate_mock_attestation` with a `warn!` **only under `mock-attestation`**; without the feature it returns `QuoteGenerationFailed` |
 | `generate_mock_attestation(report_data)` | fn | **`mock-attestation` only.** Builds a syntactically valid but cryptographically invalid quote on any platform; `is_mock: true` |
 | `is_mock_quote(quote_bytes)` | fn | **`mock-attestation` only.** Checks for the `MOCK_QUOTE_HEADER` magic prefix |
@@ -100,11 +98,22 @@ Two properties carry over from the library and matter more here, because the con
 | `PolicyRejection` | enum | Typed reason: `NotCryptoValid`, `TcbRevoked`, `TcbNotAllowed { status }`, `MockNotAccepted`, `EmptyMrtdAllowlist`, `MeasurementMismatch { register }`, `AppHashNotBound` |
 | `MeasurementRegister` | enum | `Mrtd`, `Rtmr0..3` — names the register in `MeasurementMismatch` |
 | `DEFAULT_ALLOWED_TCB_STATUS` / `TCB_STATUS_REVOKED` / `TCB_STATUS_MOCK` | const | `"UpToDate"` / `"Revoked"` / `"Mock"`. **Not** gated by `mock-attestation`: `policy_valid` only compares the `tcb_status` *string*, so production builds must keep the ability to reject a mock quote |
-| `get_tee_info()` | async fn | Returns `TeeInfo { cloud_provider, os_image, mrtd }`; on Linux reads MRTD via `tdx_workload_attestation` and probes the GCP metadata server for the OS image |
-| `TeeInfo` | struct | `cloud_provider: String`, `os_image: String`, `mrtd: String` (hex) |
-| `AttestationError` | enum | `NotSupported`, `QuoteGenerationFailed`, `QuoteParsingFailed`, `QuoteConversionFailed`, `QuoteVerificationFailed`, `CollateralFetchFailed`, `InvalidNonce`, `InvalidApplicationHash`, `NonceMismatch { expected, actual }`, `ApplicationHashMismatch { expected, actual }`, `InfoRetrievalFailed`, `SystemTimeError` - all carry `String` context, no source-error chaining |
+| `verify_evidence(quote_bytes, collateral, attested_at, bound_key_hash)` / `EvidenceVerdict` | fn / struct | Offline check: DCAP against collateral passed in (`QuoteCollateralV3`, re-exported) at a given time, plus the debug-TD check and the binding in report data bytes `32..64`. No network; a real quote without collateral is refused. Mock quotes only under `mock-attestation` |
+| `quote_report_data(quote_bytes)` | fn | The 64 report data bytes a quote carries, read **without verifying anything** (mock quotes under `mock-attestation`) |
+| `KmsEvidence` | struct | What a TD saw of the mero-kms replica it took a key from (host, release, profile, registers, TCB status, quote hash, time): recorded by `calimero-kms-client`, reported by the node at `GET /attestation?purpose=kms` (`kms_evidence.rs`) |
+| `AttestationError` | enum | `NotSupported`, `QuoteGenerationFailed`, `QuoteParsingFailed`, `QuoteConversionFailed`, `QuoteVerificationFailed`, `CollateralFetchFailed`, `InvalidNonce`, `InvalidApplicationHash`, `NonceMismatch { expected, actual }`, `ApplicationHashMismatch { expected, actual }`, `SystemTimeError` - all carry `String` context, no source-error chaining |
 
 `Quote`/`QuoteHeader`/`QuoteBody`/`CertificationData`/`QeReportCertificationDataInfo` are defined here (`quote.rs`) with `Quote: TryFrom<tdx_quote::Quote>`; mero-kms and the gates in mero-tee import them from `calimero_tee_attestation` once they move past core rev 23cf02c.
+
+### Consumers in this workspace
+
+`calimero-node` (`attest.rs`, `kms.rs`: `generate_attestation`, the mock pair, `KmsEvidence`), `calimero-sealed` (`attest_transport_binding`), `calimero-client` (`attest.rs`: `verify_attestation`, `policy_valid`, `VerifierPolicy`), `calimero-kms-client` (`generate_attestation`, `verify_attestation`, `is_valid`, `KmsEvidence`).
+
+### Used only by the fuzz target
+
+`verify_evidence`, `EvidenceVerdict`, `quote_report_data` and the `QuoteCollateralV3` re-export (`evidence.rs`) are called by nothing in the workspace's crates, mero-tee or the apps; the `quote_parse` fuzz target (`fuzz/`) drives them on arbitrary bytes. They are kept for it: removing them means retargeting that fuzz target first.
+
+`PolicyRejection`, `MeasurementRegister` and the TCB constants are used only through `policy_valid`.
 
 ## Mental Model: Generate vs Verify
 
@@ -127,18 +136,19 @@ This crate has no KMS-specific code - it is a generic TDX quote generate/verify 
 
 | Path | What's there |
 | --- | --- |
-| `src/lib.rs` | Public re-exports and module-level docs; the module boundary is intentional (generate/verify/info/error are independently testable and have different platform `cfg`s) |
-| `src/generate.rs` | `generate_attestation`, `generate_mock_attestation`, `is_mock_quote`, `create_mock_quote`, `build_report_data`, `MOCK_QUOTE_HEADER`, `AttestationResult` |
+| `src/lib.rs` | Public re-exports and module-level docs; the module boundary is intentional (generate/verify/evidence/error are independently testable and have different platform `cfg`s) |
+| `src/generate.rs` | `generate_attestation`, `generate_mock_attestation`, `is_mock_quote`, `create_mock_quote`, `MOCK_QUOTE_HEADER`, `AttestationResult`, `attest_transport_binding` |
+| `src/kms_evidence.rs` | `KmsEvidence` |
+| `src/evidence.rs` | `verify_evidence`, `EvidenceVerdict`, `quote_report_data` (the fuzz target's entry points, above) |
 | `src/verify.rs` | `verify_attestation`, `verify_mock_attestation`, `VerificationResult` |
-| `src/policy.rs` | `VerificationResult::policy_valid`, `VerifierPolicy`, `PolicyRejection`, `MeasurementRegister`, the TCB constants, and the policy unit tests. Deliberately mirrors `calimero_governance_store::membership::policy_rules::tcb_status_allowed` by value rather than importing it — this is a leaf `publish = true` crate and must not depend on the governance store, so the two MUST stay in sync |
-| `src/info.rs` | `get_tee_info`, `TeeInfo`; MRTD retrieval and cloud-provider detection |
+| `src/policy.rs` | `VerificationResult::policy_valid`, `VerifierPolicy`, `PolicyRejection`, `MeasurementRegister`, the TCB constants, and the policy unit tests. The TCB rules are the contract a node's admission and mero-kms's key release must agree on (`policy_core ⊆ policy_kms`, see `verify.rs`) |
 | `src/error.rs` | `AttestationError` |
 | `src/bin/verify_cli.rs` | **`cli` feature only.** `calimero-tee-verify`: stdin/stdout JSON over `verify_attestation`, for verifiers that are not Rust. Module docs carry the full interface and the exit-code contract |
 | `tests/verify_cli.rs` | Pins that exit-code contract: unusable input exits 1, an unjudgeable quote exits 2 rather than reporting invalid, and a mock quote never produces a verdict |
 
 ## Invariants and Gotchas
 
-- **A debug TD is never crypto-valid**: `TDATTRIBUTES.DEBUG` leaves MRTD and RTMRs unchanged but lets the host read the TD's memory, so no measurement allowlist can catch it. `verify_attestation` folds the check into `quote_verified`, which is what every caller builds on. Do not move it into `policy_valid` alone: the enforcement layers that use `is_valid()` directly (admission, merod's KMS check, mero-kms) would lose it.
+- **A debug TD is never crypto-valid**: `TDATTRIBUTES.DEBUG` leaves MRTD and RTMRs unchanged but lets the host read the TD's memory, so no measurement allowlist can catch it. `verify_attestation` folds the check into `quote_verified`, which is what every caller builds on. Do not move it into `policy_valid` alone: the enforcement layers that use `is_valid()` directly (`calimero-kms-client`'s KMS check, mero-kms) would lose it.
 - **App hash binding is not optional at verify time**: both `verify_attestation` and `verify_mock_attestation` take `expected_app_hash: &[u8; 32]` as a required argument, never `Option`. If you're tempted to add a "verify without app hash" convenience function, don't - that would let an attestation for one application be replayed to authorize a different one.
 - **`is_mock` must be checked by every caller of `generate_attestation`**: *under the `mock-attestation` feature* the function silently returns a mock result on non-Linux instead of erroring, so code that assumes "if this returned Ok, it's a real TDX quote" is wrong on any non-Linux build with that feature on (dev laptops, the mock harness). Without the feature (the default, and every release build) the non-Linux body errors instead, so `is_mock` can never be `true` there - but keep the check: it is what makes the caller correct in both configurations.
 - **Mock quotes are format-tagged, not crypto-tagged**: `is_mock_quote` only checks for a 17-byte magic prefix (`MOCK_TDX_QUOTE_V1`). There is no signature distinguishing a mock from a real quote beyond this header - do not rely on it as a security boundary, only as a routing signal for which verify function to call.
@@ -146,7 +156,7 @@ This crate has no KMS-specific code - it is a generic TDX quote generate/verify 
 - **The collateral endpoint is configurable, and it decides the TCB verdict**: `CALIMERO_TEE_COLLATERAL_URL` overrides it; unset (or blank) means Intel PCS, which is what this crate has always used. This is not cosmetic — `tcb_status` is only meaningful against the TCB evaluation data that produced it, dcap-qvl 0.5.3 sends no `update` parameter on the TCB request, and Intel publishes several baselines concurrently. Pointing a fleet at one PCCS is the supported way to make every node evaluate against the *same* collateral; the resulting `tcb_evaluation_data_number` on `VerificationResult` records which. Note a PCCS also changes one thing inside dcap-qvl: the root CA CRL is fetched from `rootcacrl` and hex-decoded rather than read as binary DER (it falls back cleanly). Do **not** switch to dcap-qvl's `CollateralClient::from_env` to get this — it reads the same class of setting but defaults to Phala's PCCS, which would silently redirect every node's collateral source and therefore its admission decisions.
 - **`AttestationError` variants carry only `String`, not `Box<dyn Error>`**: underlying errors from `dcap_qvl`, `tdx_quote`, `configfs_tsm`, etc. are stringified with `{err:?}` at the call site and lose their original type; don't try to `downcast` an `AttestationError` to find a specific upstream failure.
 - **`create_mock_quote` produces all-zero measurements**: `mrtd`, `mrseam`, RTMRs, etc. are all `"00..00"` hex strings, not derived from anything - a mock quote's measurement fields carry no information, only `reportdata` (the actual nonce/app_hash) is real.
-- **Linux-only deps gate real generation and MRTD**: `configfs-tsm`, `tdx_workload_attestation`, and `reqwest` are only pulled in `cfg(target_os = "linux")`; `get_tee_info` and `generate_attestation` have entirely separate non-Linux bodies. The non-Linux `generate_attestation` splits again on `mock-attestation`: mock fallback with the feature, hard `QuoteGenerationFailed` without it.
+- **A Linux-only dep gates real generation**: `configfs-tsm` is only pulled in `cfg(target_os = "linux")`; `generate_attestation` has an entirely separate non-Linux body. The non-Linux `generate_attestation` splits again on `mock-attestation`: mock fallback with the feature, hard `QuoteGenerationFailed` without it.
 - **Do not reintroduce an ungated reference to a mock symbol**: `is_mock_quote` / `verify_mock_attestation` / `generate_mock_attestation` / `MOCK_QUOTE_HEADER` only exist under `mock-attestation`. Every call site must sit under `#[cfg(feature = "mock-attestation")]` with a real-only counterpart under `#[cfg(not(...))]`, and the crate must stay clippy-clean in **both** configurations (that is the CI gate).
 
 Part of [crates/](../AGENTS.md).

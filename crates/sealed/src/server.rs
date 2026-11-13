@@ -2,7 +2,7 @@
 //!
 //! The HTTP server speaks plain HTTP, and whatever TLS sits in front of it ends
 //! outside the TD — at a reverse proxy, a load balancer, a relay — wherever the
-//! operator points it. Everything that crosses that hop (bearer tokens, JSON-RPC
+//! operator points it. Everything that crosses that hop (bearer tokens, call
 //! arguments, results) is readable there, attestation or not: a genuine quote
 //! says what runs inside the TD and nothing about who reads the bytes on the way
 //! in.
@@ -12,8 +12,8 @@
 //! * At startup the server makes an X25519 **transport key**. It lives only in
 //!   this process's memory — inside the TD on a TEE node — and is never written
 //!   anywhere, so a restart replaces it.
-//! * `POST /admin-api/tee/attest` with `bindTransportKey` returns its public half
-//!   and commits to it in the quote's report data
+//! * The node's `GET /attestation` returns its public half and commits to it in
+//!   the quote's report data
 //!   ([`calimero_tee_attestation::attest_transport_binding`]). A client that
 //!   verifies the quote knows the key belongs to the attested TD.
 //! * The client opens a **session** with a Noise NK handshake to that key
@@ -60,7 +60,7 @@
 //!             kind 0 = head (JSON, first frame only), 1 = body bytes, 2 = end (empty)
 //!             a response that stops without an end frame was cut short
 //!   inner     u32 BE head length || head (JSON) || body
-//!   req head  {"method": "POST", "path": "/jsonrpc?x=y", "headers": [[name, value], ..]}
+//!   req head  {"method": "POST", "path": "/apps/{app}/views?x=y", "headers": [[name, value], ..]}
 //!   resp head {"status": 200, "headers": [[name, value], ..]}
 //! ```
 

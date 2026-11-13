@@ -10,11 +10,13 @@
 //! 2. **The app declared a prefix covering the URL** in its signed bundle
 //!    manifest (`outbound`): same host, and a path at or below the prefix's
 //!    at a `/`. A run gets a client only when its app declares one.
-//! 3. **The run writes on this node**: never a view, a peer's delta, a state
-//!    op, a search export or a migration. The node decides that.
+//! 3. **The run writes on this node** (a call, a follow-up, a timer, a
+//!    delivery) or is a component's action: never a view, `init`, a migration
+//!    or a compute run. The node and its component host decide that.
 //! 4. **The request fits**: `https` on port 443 to a DNS name that resolves
 //!    only to public addresses, no fragment, the size limits in
-//!    `calimero_primitives::outbound`, no redirect followed, one per run.
+//!    `calimero_primitives::outbound`, no redirect followed. How many one run
+//!    may send is the component host's bound (`MAX_HTTP_REQUESTS`).
 //!
 //! # Secrets
 //!
@@ -32,7 +34,7 @@
 //! [`SidecarSecrets`], a loopback endpoint the node asks. The sidecar is the
 //! seam for a managed deployment: a secrets service next to the node (inside
 //! the same TEE, say) answers for the secrets a deployer set for their app,
-//! for every namespace that runs it.
+//! for every organization that runs it.
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -100,8 +102,9 @@ pub struct AppIdentity {
     pub signer: String,
 }
 
-/// What a run's namespace approved for the app's publisher, from the last
-/// `GroupOp::OutboundApprovalSet` for that signer at the namespace root.
+/// What the approver (the app's organization, or the operator where it holds
+/// outbound approvals) approved for the app's publisher, as the system group
+/// keeps it for that signer (`SystemState::outbound_approval` in merod).
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Approval {
     /// The approved URL prefixes.
@@ -110,11 +113,11 @@ pub struct Approval {
     pub reviewed: Vec<String>,
 }
 
-/// The start of every refusal for a prefix the namespace has not approved.
+/// The start of every refusal for a prefix the approver has not approved.
 /// Stable: an app matches on it to tell a member to ask an admin.
 pub const NOT_APPROVED: &str = calimero_primitives::outbound::OutboundRefusal::NotApproved.word();
 
-/// The start of every refusal for a prefix the namespace has never been asked
+/// The start of every refusal for a prefix the approver has never been asked
 /// about, because a later version of the app declared it. Stable: an app
 /// matches on it to show an admin what to approve.
 pub const AWAITING_APPROVAL: &str =
@@ -434,7 +437,7 @@ impl OutboundService {
     }
 
     /// The client for one run of `app`, which declared the URL prefixes
-    /// `declared`, in a namespace that approved `approval` for its publisher
+    /// `declared`, whose approver approved `approval` for its publisher
     /// (`None`: nothing yet); `None` when it declared none this node can use.
     ///
     /// A run gets a client even with no approval, so a request is refused with
@@ -531,14 +534,15 @@ impl OutboundService {
         if !approved {
             // Reviewed means the approver saw this prefix: left out of the set,
             // it was declined or revoked. Never reviewed, under an approval the
-            // namespace did make, it is new in a later version of the app.
+            // approver did make, it is new in a later version of the app.
             if approval.is_some_and(|a| !a.reviewed.iter().any(|r| r == under)) {
                 bail!(
                     "{AWAITING_APPROVAL}: {under} is a URL prefix this app declares that \
-                     the namespace has not been asked to approve yet"
+                     its approver (the app's organization, or the operator) has not \
+                     been asked to approve yet"
                 );
             }
-            bail!("{NOT_APPROVED}: the namespace has not approved {under} for this app");
+            bail!("{NOT_APPROVED}: {under} is not approved for this app");
         }
         if request.headers.len() > MAX_HEADERS {
             bail!("at most {MAX_HEADERS} headers");
@@ -942,7 +946,7 @@ fn normalize_hosts(hosts: &[String]) -> EyreResult<Vec<String>> {
         .collect()
 }
 
-/// The prefixes and the reviewed list a namespace approval holds after an admin
+/// The prefixes and the reviewed list an approval holds after an approver
 /// approves `selection` of an app declaring `declared`.
 ///
 /// Adding (`replace = false`, an install or upgrade) keeps every prefix already

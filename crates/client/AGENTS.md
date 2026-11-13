@@ -13,7 +13,7 @@ A real quote also needs a measurement policy (`Measurements`): `None` (the defau
 refuses every real quote, `Pinned` checks fixed allowlists, `Release` fetches the
 Sigstore-verified `published-mrtds.json` of the release the node names and requires a
 matching allowed profile; then `policy_valid` (TCB status, debug TD, app-hash binding).
-mero-js `src/cloud-v2/attestation.ts` implements the same check; change both or neither.
+mero-js `src/runtime/attestation.ts` implements the same check; change both or neither.
 Node-only helpers beside it (no client or mero-js counterpart): `configured_min_release`
 refuses a node's `--peer-min-release` below `DEFAULT_MIN_RELEASE`, and `check_own_profile` /
 `verify_own_profile` check that a TD's own registers match its declared profile in its signed
@@ -75,8 +75,8 @@ the request to another node.
 
 Sessions refresh on their own: a `401` to a request sent with a session token this
 client holds the refresh token of is refreshed once (`Client::refresh`, which any
-node takes) and the request sent once more (`send_payload`; bodies are kept as a
-`Payload` for that). Requests that get a `401` together refresh once
+node takes) and the request sent once more (`Transport::send`: `send_once`, then
+`refreshed_after`; the `Request` keeps its `Body` for that). Requests that get a `401` together refresh once
 (`refreshing`): a refresh token presented twice ends the session. A `401` to
 `auth/refresh` itself, an API key, or a session held without its refresh token is
 returned as it is. Why a `401` can need it: the node that issued the session was
@@ -130,7 +130,7 @@ where `Request` is method, path, query, headers, `Body` (`Empty`, `Json`, `Bytes
 and `Credential` (`Held`, the transport's own and refreshed; `Authorization`, a
 caller's value passed as given; `Anonymous`). `meroctl proxy` forwards plain HTTP
 through `Transport::send`. mero-js (`src/runtime/`) and calimero-client-py
-(`calimero/transport.py`) have the same split.
+(`calimero_client_py/sealed.py`, an httpx `SealedTransport`) have the same split.
 
 The route layer is generated from the node's OpenAPI document
 (`docs/public/openapi.json`) by `calimero-client-gen` (`tools/client-gen`), as

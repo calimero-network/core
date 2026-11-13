@@ -2,16 +2,23 @@
 
 Downloads a mero-tee release asset with its detached cosign signature and
 Sigstore bundle, and verifies both against the GitHub Actions workflow that must
-have signed it. Two consumers:
+have signed it. Consumers:
 
-- **merod** checks the KMS it takes its storage key from against the
+- **The KMS check** (`calimero-kms-client`, `policy.rs`, which merod runs in
+  process) checks the KMS a node takes its storage key from against the
   `Release mero-kms` workflow's `kms-attestation-policy.<profile>.json`,
   falling back to the generic `kms-attestation-policy.json` for releases
-  without one (`fetch_verified_asset_if_published` + `KMS_RELEASE_IDENTITY`, in
-  `merod/src/kms_policy.rs`).
-- **`admit_tee_node`** (calimero-context) checks a joining TEE under a
-  signed-release admission policy against the `Release mero-tee` workflow's
-  `published-mrtds.json` for the release the TEE names (`fetch_node_release`).
+  without one (`fetch_verified_asset_if_published` + `KMS_RELEASE_IDENTITY`).
+- **The quote check** (`calimero-client`'s `attest`, a `Measurements::Release`
+  policy, which clients and peers share) checks a node's quote against the
+  `Release mero-tee` workflow's `published-mrtds.json` for the release the node
+  names (`fetch_node_release`, `NodeRelease`, `ProfileMeasurements`), and refuses
+  a release below a floor (`normalize_release_version`,
+  `compare_release_versions`).
+- **The node**: the consent page binds a release approval to its
+  measurements (`consent_page.rs`: `fetch_node_release`,
+  `MERO_TEE_RELEASE_BASE`, `PUBLISHED_MRTDS_ASSET`), and a leader compares a
+  job node's release (`node/job.rs`: `compare_release_versions`).
 
 ## Package Identity
 
@@ -55,5 +62,5 @@ GitHub under test.
 - **Releases without a `.bundle.json` cannot be verified.** mero-tee started
   publishing bundles for node releases after 2.3.71.
 - **The cache is bounded (32) and holds only successes**: the version comes
-  from whoever asks to be admitted, and a GitHub outage is not a property of a
+  from the node being checked, and a GitHub outage is not a property of a
   release.

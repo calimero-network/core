@@ -31,7 +31,7 @@ node. Use a trailing slash (`https://n1.example.com/`) as `merod local` does.
 
 | From | To | What |
 | --- | --- | --- |
-| Clients | any node | The client API (`/auth`, `/packages`, `/apps`, `/orgs`, …), sealed. Any node answers; writes and strong reads are forwarded to the leader of the group concerned. |
+| Clients | any node | The client API (`/auth`, `/packages`, `/apps`, `/orgs`, …), sealed. Any node answers; writes are forwarded to the leader of the group concerned, and a strong read asks that leader for its read index, then answers on the replica that took it. |
 | Peers | every node | `/internal/*`, sealed and carrying the cluster secret. |
 | The operator | any node | `/ops/*`, sealed, with the ops token. Replica moves must reach the app group's leader; others answer `421 NOT_LEADER` with its URL. |
 | Anyone | any node | `/health` and `/attestation`, in the clear. |

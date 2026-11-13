@@ -17,10 +17,19 @@ Two accounts using one message, announcement or page id hold two independent row
 listings show one row per author. `u64` values (`sentAt`, `quorum`) travel as decimal
 strings.
 
+Methods: `me`, `founding`, `quorum`, `founder`; `postMessage`, `channel`; `announce`,
+`removeAnnouncement`, `announcements`, `moderators`, `addModerator`; `createPage`,
+`renamePage`, `addRevision`, `deletePage`, `page`; `fileEvidence`, `evidence`,
+`evidenceOfKind`. Listings return at most 1000 rows.
+
+Errors: `AlreadyWritten { key }`, `NoPage { id }`, `HasSeparator { value }`,
+`BadHash { hash }`, `NotModerator`. Events: `MessagePosted { key }`, `Announced { id }`,
+`AnnouncementRemoved { id }`, `PageChanged { id }`, `EvidenceFiled { hash }`.
+
 ## Tests
 
 `cargo test` runs `tests/harness.rs` (v1's tests, method for method) and
-`scenarios/permissions-showcase.json`, the merobox workflow as a scenario with exact
+`scenarios/permissions-showcase.json`, the former merobox workflow as a scenario with exact
 results, in the org of `permissions-showcase.org.json`. `scenarios/forged-writes.json`
 replays what v1's storage refused on apply (rewriting a written-once message or
 announcement, removing an announcement or appointing a moderator without being one,

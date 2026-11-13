@@ -1109,6 +1109,7 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
             org: "org".into(),
             run: Box::new(run),
             consent: c,
+            by_release: false,
         }
     };
     let upgrade = |app: &str, bundle: &str, version: &str| SystemCmd::UpgradeApp {
@@ -1165,6 +1166,85 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
     assert_eq!(
         m.run(start(&mut alice, "r1")).unwrap_err(),
         "that run exists"
+    );
+}
+
+/// A publisher's run covers the instances that run a release of its package
+/// (`SystemState::app_release`), as an organization's run and each app's
+/// `UpgradeApp { run }` judge it: not the instances whose WASM another
+/// package's release shipped first. An entry logged before `by_release`
+/// (absent) replays judging each app by the package its bundle was first
+/// recorded from, as it did then.
+#[test]
+fn a_publishers_run_covers_the_instances_that_run_its_package() {
+    let (mut m, mut alice) = org_with_package_apps();
+    // `x` 1.0.0 ships p's 2.0.0 component, and `bx` was recorded from `x`.
+    let _prev = m.state.packages.insert(
+        "x".into(),
+        serde_json::from_value(json!({
+            "name": "x", "signerId": "did:key:zx", "owner": "alice", "versions": { "1.0.0": {
+                "version": "1.0.0", "mpk": "x1", "mpkSize": 1, "source": "upload",
+                "services": { "": "b-2.0.0" }, "installedBy": "alice", "installedAt": 0
+            } }
+        }))
+        .unwrap(),
+    );
+    let _prev = m.state.bundles.insert(
+        "bx".into(),
+        serde_json::from_value(json!({
+            "hash": "bx", "size": 1, "uploadedBy": "alice",
+            "package": { "package": "x", "version": "1.0.0" }
+        }))
+        .unwrap(),
+    );
+    for (id, bundle, package, version) in [
+        // Runs `x`, on a component first recorded from `p`.
+        ("xa", "b-2.0.0", "x", "1.0.0"),
+        // Runs `p`, on a component first recorded from `x`.
+        ("pb", "bx", "p", "1.0.0"),
+    ] {
+        let _prev = m.state.apps.insert(
+            id.into(),
+            serde_json::from_value(json!({
+                "appId": id, "name": id, "group": 7, "bundle": bundle, "owner": "alice",
+                "org": "org", "access": { "kind": "org" }, "replicas": [1, 2, 3],
+                "createdAt": 0, "release": { "package": package, "version": version },
+            }))
+            .unwrap(),
+        );
+    }
+    m.index = 10;
+    let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+    let mut start = |run_id: &str, by_release: bool| {
+        let c = consent(
+            &mut alice,
+            "org:org",
+            "__upgrade_published",
+            &json!({ "package": "p", "version": "3.0.0", "migrate": null }),
+        );
+        let run: crate::types::UpgradeRun = serde_json::from_value(json!({
+            "runId": run_id, "package": "p", "version": "3.0.0", "by": "alice",
+            "startedAt": 0, "apps": [], "done": [], "failed": {}, "finished": false,
+        }))
+        .unwrap();
+        m.index += 1;
+        let _ok = m
+            .run(SystemCmd::StartUpgradeRun {
+                org: "org".into(),
+                run: Box::new(run),
+                consent: c,
+                by_release,
+            })
+            .unwrap();
+        let mut apps = m.state.orgs["org"].upgrade_runs[run_id].apps.clone();
+        apps.sort();
+        apps
+    };
+    assert_eq!(start("now", true), ["p1", "p3", "pb"]);
+    assert_eq!(
+        start("before", false),
+        ["p1", "p3", "xa"],
+        "an entry from before replays by the bundle's first release"
     );
 }
 
@@ -3840,6 +3920,7 @@ fn move_app(app: &str, to: &str, actor: &str, bring: bool, consent: Value) -> Sy
         nonce: "n".into(),
         all_apps_rows: true,
         accounts_in_app_team: true,
+        org_quotas: true,
     }
 }
 
@@ -4070,6 +4151,71 @@ fn a_move_past_the_targets_quota_is_refused() {
         .run_unproven(move_app("oa", "new", "alice", true, Value::Null))
         .unwrap();
     assert_eq!(m.state.file_bytes("new"), 150);
+}
+
+/// A move judges the target's quotas as every other charge does: its own
+/// override where the operator set one (`SetOrgQuotas`), else the cluster's.
+/// An entry logged before the target's override counted (`org_quotas`
+/// absent) replays judging the cluster's limits, as it did then.
+#[test]
+fn a_move_is_judged_by_the_targets_own_quota() {
+    let setup = |org_quotas: bool| {
+        let (mut m, _alice, _bob) = moving();
+        m.state.quotas.max_file_bytes_per_org = 150;
+        m.state.quotas.max_concurrent_runs_per_org = 1;
+        m.state.set_app_file_bytes("oa", 100);
+        let _prev = m.state.compute.insert("oa".into(), granted_run("org"));
+        let mut cmd = move_app("oa", "new", "alice", true, Value::Null);
+        if let SystemCmd::MoveApp { org_quotas: f, .. } = &mut cmd {
+            *f = org_quotas;
+        }
+        (m, cmd)
+    };
+
+    // The target may hold more than the cluster's default: the move fits.
+    let (mut m, cmd) = setup(true);
+    let _prev = m.state.org_quotas.insert(
+        "new".into(),
+        super::OrgQuotas {
+            max_concurrent_runs: Some(4),
+            compute_fuel: None,
+            max_file_bytes: Some(1_000),
+        },
+    );
+    m.state.set_app_file_bytes("na", 0);
+    let _prev = m.state.compute.insert("na".into(), granted_run("new"));
+    let _ok = m.run_unproven(cmd).unwrap();
+    assert_eq!(m.state.apps["oa"].org.as_str(), "new");
+    assert_eq!(m.state.file_bytes("new"), 100);
+
+    // The target may hold less: the move that fits the default is refused.
+    let (mut m, cmd) = setup(true);
+    let _prev = m.state.compute.remove("oa");
+    let _prev = m.state.org_quotas.insert(
+        "new".into(),
+        super::OrgQuotas {
+            max_concurrent_runs: None,
+            compute_fuel: None,
+            max_file_bytes: Some(50),
+        },
+    );
+    let e = m.run_unproven(cmd).unwrap_err();
+    assert!(e.starts_with(QUOTA_PREFIX), "{e}");
+    assert_eq!(m.state.apps["oa"].org.as_str(), "org");
+
+    // An entry from before the flag replays judging the cluster's limits.
+    let (mut m, cmd) = setup(false);
+    let _prev = m.state.compute.remove("oa");
+    let _prev = m.state.org_quotas.insert(
+        "new".into(),
+        super::OrgQuotas {
+            max_concurrent_runs: None,
+            compute_fuel: None,
+            max_file_bytes: Some(50),
+        },
+    );
+    let _ok = m.run_unproven(cmd).unwrap();
+    assert_eq!(m.state.apps["oa"].org.as_str(), "new");
 }
 
 /// An app on a team other than its package's app team (a team below it,

@@ -7,15 +7,19 @@ of state beside the shared items, each a collection that holds a rule (v1 used
 - **Per-account values**: `setUserSimple` writes the caller's own value in a
   `PerUser<String>` and `setUserNested` a map keyed by `(account, key)`; both
   take the account from `env::caller()`, never as an argument, so an account
-  writes only its own. `getUserSimpleFor(userKey)` reads anyone's.
+  writes only its own. `getUserSimple` and `getUserNested(key)` read the
+  caller's own, `getUserSimpleFor(userKey)` anyone's simple value, and
+  `myAccount` names the caller's account.
 - **Frozen values**: `addFrozen(value)` stores the value in a
   `Frozen<String, BorshSha256>` under the hex SHA-256 of its borsh encoding (as
   v1 did, so the hashes are v1's; `BorshSha256` computes it in the guest with
   `sha2`); nothing ever changes or removes one, and the same content again
-  returns the same hash. `getFrozen(hashHex)` reads it.
+  returns the same hash. `getFrozen(hashHex)` reads it (`FrozenNotFound { hash }`,
+  `BadHash` for a malformed hash).
 
 Shared items: `set`, `get`, `entries`, `len`, `getResult`, `getUnchecked` (traps
-on a missing key, on purpose), `remove`, `clear`. Every method needs an org
+on a missing key, on purpose), `remove`, `clear`; `getResult` fails with
+`NotFound { key }`. Every method needs an org
 member (or above).
 
 Events: `Inserted`, `Updated`, `Removed`, `Cleared` for the shared items;

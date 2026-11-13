@@ -108,9 +108,9 @@ python3 -I scripts/pack-component.py --wasm my-app.wasm --package com.example.my
 ## Security notes
 
 1. **Never commit signing keys** to version control.
-2. **Use `--dev` only for local development and CI** - it relies on a public, well-known key, so bundles signed with it are refused by the registry.
+2. **Use `--dev` only for local development and CI** - it relies on a public, well-known key, so bundles signed with it are refused by the registry, and a node takes them only with `--dev` or `--allow-unsigned-bundles` (`403 DEV_SIGNED_PACKAGE` otherwise).
 3. **Generate a unique production key** for anything you publish, and store it outside the repository.
-4. **The signer is part of the app identity.** The `ApplicationId` is derived from `(package, signerId)`, so changing the signing key forks the app for every node.
+4. **The signer is pinned to the package.** The first release of a package a cluster installs pins its `signerId`; a later release of that package signed with another key is refused, and the organization a key is bound to as publisher (`POST /orgs/{org}/publishers`) approves releases for every instance of the packages it signs. Losing the key means publishing under a new package id.
 
 ## Key file format
 

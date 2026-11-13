@@ -280,12 +280,12 @@ upgrade with `meroctl ops upgrade-namespace` where it holds app upgrades.
 
 ## Troubleshooting
 
-[Upgrades & migrations](/protocol/upgrades/#planning-the-migration)
-describes a migration plan made from the two releases' ABIs. In this version
-the node makes no plan: every upgrade is code only, so each row of that table
-ends as follows.
+In this version the node plans no migration from the two releases' ABIs:
+every upgrade is code only
+([What an upgrade runs](/protocol/upgrades/#what-an-upgrade-runs)). Each case
+a migration plan would tell apart ends as follows.
 
-| Plan-table row | What happens now | What to do |
+| Case | What happens now | What to do |
 | --- | --- | --- |
 | Same state version | Code-only switch | Nothing |
 | One version up | Code-only switch: no `#[app::migrate]` edge runs | Make the change additive (step 2) and prove it (step 3) |
