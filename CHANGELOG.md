@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.23] - 2026-11-13
+
+The node is 1.0.0-rc.22's: this release publishes what rc.22's could not.
+
+### Fixed
+
+- **Release binaries are published again** (CI, #5025). 1.0.0-rc.22's
+  `Release Binaries` job asked for the `big-machine` runners, which no longer
+  exist, so that release has its `merod` image and crates but no `merod`,
+  `meroctl`, `mero-sign` or `mero-app-build` archives and no `SHA256SUMS`. Every
+  release job now runs on GitHub's standard runners. Download 1.0.0-rc.23, not
+  rc.22, for binaries; the upgrade path is pinned to it once its assets are up.
+
 ## [1.0.0-rc.22] - 2026-11-13
 
 ### Added
