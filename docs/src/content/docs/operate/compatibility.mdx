@@ -137,7 +137,7 @@ test>`. A shape with no reader is a hard cutover.
 | --- | --- | --- |
 | Format markers | the node, at start and at apply | A store, snapshot or app entry of a later format: refused by its version, never misread |
 | `Compatibility` | `ci-checks.yml` (part of the required `Rust` check), `scripts/check-api-compat.py` | A route or JSON field removed without a deprecation past its `remove_after` or a `[[cutover]]`; the WIT changed without a version bump, or a non-additive WIT change without a cutover; an ABI version dropped |
-| `Apps of the previous release` | `ci-checks.yml` (part of `Rust`) | The last published release's `kv-store-test-fixture.mpk` failing to install, run or upgrade to this tree's build on this tree's node (`crates/node/tests/previous-release/kv-store.json`) |
+| `Rust tests (2/4)`: "Apps of the previous release, on this tree's node" | `ci-checks.yml` (part of `Rust`) | The last published release's `kv-store-test-fixture.mpk` failing to install, run or upgrade to this tree's build on this tree's node (`crates/node/tests/previous-release/kv-store.json`) |
 | `Compatibility door` | `pr-description.yml`, `scripts/check-compat-door.py` | `Door: one-way` with neither `Reader:` nor `Hard cutover:` (and its CHANGELOG line); a format version moved with no door stated |
 | `Upgrade path` | `ci-checks.yml` (required through `Rust`), `crates/node/tests/fault/upgrade_path.py` | A cluster started on the release in `.github/upgrade-from`, written to, rolled onto this tree's `merod` as mdma rolls a Cloud cluster, then read back: anything lost fails it; a `hard-cutover:` line there reports the cutover instead of running |
 | `clients against merod` | `e2e.yml` | mero-js's or calimero-client-py's tests failing against this tree's `merod` |

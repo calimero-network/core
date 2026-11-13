@@ -2,7 +2,7 @@ name: CodeQL
 
 on:
   push:
-    branches: ["master", "release-v2-parity"]
+    branches: ["master"]
     paths:
       - Cargo.toml
       - Cargo.lock
@@ -17,8 +17,7 @@ on:
       - "!**/*.mdx"
       - "tools/mero-sign/README.md"
 
-# One analysis per branch at a time: master's and the release branch's
-# results are kept apart, so a push to one never queues behind the other.
+# One analysis per branch at a time; a push queues behind the run before it.
 concurrency:
   group: codeql-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: false
@@ -31,7 +30,10 @@ permissions:
 jobs:
   analyze:
     name: Analyze (CodeQL)
-    runs-on: big-machine
+    # A standard runner, free on a public repository: CodeQL's Rust extraction
+    # builds nothing (build-mode none), and nothing waits on this job.
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

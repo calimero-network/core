@@ -40,24 +40,17 @@ name: E2E
 # GitHub runs `schedule` only from the default branch (master); a nightly
 # dispatch (`nightly: true`) runs every job a scheduled run does.
 
+# A PR runs this only when labelled `ci:e2e`; the merge queue runs it on every
+# entry (the `E2E result` check gathers it), and the nightly runs all of it. The
+# `plan` job decides, by what the change reaches (scripts/ci-scope.py).
 on:
+  # Every PR, with no `paths:` filter: `E2E result` is a required check and must
+  # report on every PR (a docs-only one too); `plan` skips everything a change
+  # cannot reach, and on a PR everything unless it is labelled `ci:e2e`.
   pull_request:
-    paths:
-      - Cargo.toml
-      - Cargo.lock
-      - "crates/**"
-      - "apps/**"
-      - "workflows/**"
-      - "scripts/soak-summary.sh"
-      - "scripts/soak-flamegraph.sh"
-      - "scripts/pack-component.py"
-      - "scripts/resolve-paired-ref.sh"
-      - ".github/workflows/e2e.yml"
-      # Documentation builds nothing (scripts/tests/ci-paths-test.py).
-      - "!**/*.md"
-      - "!**/*.mdx"
-  push:
-    branches: ["master", "release-v2-parity"]
+    types: [opened, synchronize, reopened, labeled]
+  # No push trigger: every PR into master ran this already, and the nightly
+  # (schedule) runs all of it again on master, with the long soak.
   merge_group:
   schedule:
     - cron: "23 3 * * *" # nightly soak, off the hour
@@ -73,7 +66,7 @@ on:
         required: false
         default: ""
       release_image:
-        description: Also run the process suite against a release image's merod ("latest" for the newest release, a tag of ghcr.io/<owner>/merod such as release-v2-edge, or an image reference); empty skips it, except on a nightly run
+        description: Also run the process suite against a release image's merod ("latest" for the newest release, a tag of ghcr.io/<owner>/merod such as 1.0.0-rc.18, or an image reference); empty skips it, except on a nightly run
         required: false
         default: ""
       flamegraph:
@@ -86,27 +79,241 @@ permissions:
   contents: read
 
 # A nightly (scheduled or dispatched) run has a group of its own, so a push to
-# the same branch neither cancels it nor waits behind it. Runs of master and the
-# release branch are never cancelled.
+# the same branch neither cancels it nor waits behind it. Runs of master are
+# never cancelled.
+# Adding any label but `ci:e2e` gets a group of its own, so it never cancels a run.
 concurrency:
-  group: e2e-${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.nightly) && 'nightly' || 'run' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/release-v2-parity' }}
+  group: e2e-${{ github.workflow }}-${{ github.ref }}-${{ (github.event_name == 'schedule' || inputs.nightly) && 'nightly' || 'run' }}-${{ github.event.action == 'labeled' && github.event.label.name != 'ci:e2e' && github.event.label.name || 'run' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # As ci-checks.yml compiles with, so the ci-checks cache it restores is reusable.
+  CARGO_PROFILE_DEV_DEBUG: "0"
   # The flamegraph job's renderer (`cargo install inferno`, cached).
   INFERNO_VERSION: 0.12.8
 
 jobs:
-  # Every scenario, app-level and cluster, split into four shards by
-  # SCENARIO_SHARD. Each runs on an in-process 3-node cluster
-  # (crates/node/tests/harness/scenario.rs); no merod process. The runner builds
-  # each app component it installs, in its own crate.
+  # What this event runs: `e2e` (the builds and the scenarios) on a merge-queue
+  # entry, a nightly or a dispatch, or a PR labelled `ci:e2e`, when the change
+  # reaches code; `node` (the process suite, compute and the clients) when it also
+  # reaches merod's closure (ci-scope.py's `upgrade_path`) or the compute fixtures.
+  # A nightly or dispatch, or a change to this workflow, runs everything. Fails
+  # closed: files it cannot list run everything.
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      e2e: ${{ steps.plan.outputs.e2e }}
+      node: ${{ steps.plan.outputs.node }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Decide what runs
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:e2e') }}
+          FROM: ${{ github.event.merge_group.base_sha }}
+          TO: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -uo pipefail
+          files=""
+          case "$EVENT" in
+            pull_request)
+              if listed=$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename') \
+                && [ "$(grep -c . <<<"$listed")" -lt 3000 ]; then
+                files=$listed
+              fi
+              ;;
+            merge_group)
+              if [ -n "${FROM//0/}" ] \
+                && listed=$(gh api "repos/$REPO/compare/$FROM...$TO" --jq '.files[].filename') \
+                && [ "$(grep -c . <<<"$listed")" -lt 300 ]; then
+                files=$listed
+              fi
+              ;;
+          esac
+          scope=$(printf '%s\n' "$files" | python3 scripts/ci-scope.py) || scope="rust=true
+          upgrade_path=true"
+          rust=$(sed -n 's/^rust=//p' <<<"$scope")
+          node_closure=$(sed -n 's/^upgrade_path=//p' <<<"$scope")
+          all=false
+          case "$EVENT" in schedule | workflow_dispatch) all=true ;; esac
+          [ -n "$files" ] || all=true
+          grep -qE '^(\.github/workflows/e2e\.yml|\.github/actions/)' <<<"$files" && all=true
+          wanted=true
+          if [ "$EVENT" = pull_request ] && [ "$LABELLED" != true ]; then wanted=false; fi
+          e2e=false
+          if [ "$wanted" = true ] && { [ "$all" = true ] || [ "$rust" = true ] \
+               || grep -qE '^(workflows/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
+            e2e=true
+          fi
+          node=false
+          if [ "$e2e" = true ] && { [ "$all" = true ] || [ "$node_closure" = true ] \
+               || grep -qE '^(apps/v2-fixtures/compute/|apps/compute-redact/|tools/mero-compute/|crates/node/tests/fault/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
+            node=true
+          fi
+          echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
+          echo "node=$node" >> "$GITHUB_OUTPUT"
+          echo "event=$EVENT labelled=$LABELLED rust=$rust node_closure=$node_closure all=$all -> e2e=$e2e node=$node"
+          if [ "$EVENT" = pull_request ] && [ "$wanted" != true ]; then
+            echo "::notice::e2e runs in the merge queue; add the ci:e2e label to run it on this PR now"
+          fi
+
+  # The check to require: passes when every e2e job passed or was skipped by `plan`.
+  result:
+    name: E2E result
+    if: ${{ !cancelled() }}
+    needs: [plan, build-release, build-scenarios, scenarios, process-suite, compute-e2e, clients]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every e2e job to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -e '.plan.result == "success" and (to_entries | all(.value.result == "success" or .value.result == "skipped"))' <<<"$NEEDS"
+
+  # The release build every process-level job runs, once: merod, meroctl and
+  # mero-sign; mero-app-build and mero-compute; the kv component and two signed
+  # releases of it (and, nightly, the Rooms component). A nightly builds as the
+  # product ships (fat LTO, one codegen unit), so its soak numbers are the
+  # release's; any other run builds optimized without fat LTO, which links in a
+  # fraction of the time. Set on the build steps only, so the cache step hashes
+  # what the release group's other jobs do.
+  build-release:
+    name: build merod and the fixtures
+    needs: plan
+    if: needs.plan.outputs.e2e == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-wasip2
+          shared-key: release
+          save-if: false
+
+      - name: Install mero-app-build and mero-compute
+        env:
+          CARGO_INSTALL_ROOT: ${{ github.workspace }}/target/e2e-tools
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: |
+          scripts/install-mero-app-build.sh
+          scripts/install-mero-compute.sh
+          echo "$CARGO_INSTALL_ROOT/bin" >> "$GITHUB_PATH"
+
+      - name: Build merod, meroctl and the fixtures
+        env:
+          NIGHTLY: ${{ (github.event_name == 'schedule' || inputs.nightly) && 'true' || 'false' }}
+          CARGO_PROFILE_RELEASE_LTO: ${{ (github.event_name == 'schedule' || inputs.nightly) && 'fat' || 'false' }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '1' || '16' }}
+        run: |
+          set -euo pipefail
+          cargo build --release -p merod -p meroctl -p mero-sign
+          mero-app-build \
+            apps/v2-fixtures/kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
+          for v in 1.0.0 1.1.0; do
+            python3 -I scripts/pack-component.py --wasm "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm" \
+              --mero-sign "${CARGO_TARGET_DIR:-target}/release/mero-sign" \
+              --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
+          done
+          if [ "$NIGHTLY" = true ]; then
+            # Builds the Rooms component into target/app-components (tests/common/mod.rs).
+            cargo test --release -p calimero-node --test rooms
+          fi
+
+      - name: Upload them
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-release
+          path: |
+            target/release/merod
+            target/release/meroctl
+            target/release/mero-sign
+            target/app-components/*.wasm
+            target/e2e-tools/bin
+            dist
+          if-no-files-found: error
+          retention-days: 1
+
+
+  # The scenario runner (crates/node/tests/scenarios.rs), compiled once; the
+  # shards run the binary. ci-checks' required `scope` job checks discovery with
+  # a script; it must see what the runner sees.
+  build-scenarios:
+    name: build the scenario runner
+    needs: plan
+    if: needs.plan.outputs.e2e == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          targets: wasm32-wasip2
+          shared-key: ci-checks
+          save-if: false
+
+      - name: Build the runner
+        run: |
+          set -euo pipefail
+          bin=$(cargo test -p calimero-node --test scenarios --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "scenarios" and .executable != null) | .executable')
+          mkdir -p target/scenario-runner
+          cp "$bin" target/scenario-runner/scenarios
+
+      - name: The discovery check lists what the runner discovers
+        working-directory: crates/node
+        run: |
+          set -euo pipefail
+          diff <(python3 ../../scripts/check-scenario-discovery.py --list) \
+            <(../../target/scenario-runner/scenarios --list | sed -n 's/: test$//p')
+
+      - name: Upload it
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scenario-runner
+          path: target/scenario-runner/scenarios
+          if-no-files-found: error
+          retention-days: 1
+
+
+  # Every scenario, app-level and cluster, in four shards (SCENARIO_SHARD), each
+  # on an in-process 3-node cluster (crates/node/tests/harness/scenario.rs); no
+  # merod process. Run as cargo would, from the package's directory. The runner
+  # builds each app component it installs (target/app-components).
   scenarios:
     name: scenarios (${{ matrix.shard }}/4)
-    runs-on: big-machine
+    needs: build-scenarios
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -125,21 +332,23 @@ jobs:
         with:
           targets: wasm32-wasip2
           shared-key: ci-checks
-          save-if: false
+          rust-cache: false
 
-      # ci-checks' required `scope` job checks discovery with a script; it must see what
-      # the runner sees.
-      - name: The discovery check lists what the runner discovers
-        run: |
-          set -euo pipefail
-          diff <(python3 scripts/check-scenario-discovery.py --list) \
-            <(cargo test -p calimero-node --test scenarios -- --list | sed -n 's/: test$//p')
+      - name: Download the runner
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scenario-runner
+          path: target/scenario-runner
 
       - name: Scenarios of shard ${{ matrix.shard }}
+        working-directory: crates/node
         env:
           SCENARIO_SHARD: ${{ matrix.shard }}/4
           SCENARIO_FUZZY_SECONDS: ${{ (github.event_name == 'schedule' || inputs.nightly) && '900' || inputs.soak_seconds || '10' }}
-        run: cargo test -p calimero-node --test scenarios -- --test-threads 2
+        run: |
+          chmod +x ../../target/scenario-runner/scenarios
+          ../../target/scenario-runner/scenarios --test-threads 2
+
 
   # Process-level tests on real `merod run --dev` processes, one per node: a crash,
   # a frozen node and a restart; a frozen leader under a 10 s budget; organizations
@@ -149,8 +358,10 @@ jobs:
   # soak, rooms_fault.py's randomized nemesis for 50 iterations).
   process-suite:
     name: process suite (merod processes)
-    runs-on: big-machine
-    timeout-minutes: ${{ (github.event_name == 'schedule' || inputs.nightly) && 150 || 45 }}
+    needs: [plan, build-release]
+    if: needs.plan.outputs.node == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ (github.event_name == 'schedule' || inputs.nightly) && 180 || 60 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -158,40 +369,21 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
-      - name: Setup Rust CI
-        uses: ./.github/actions/setup-rust-ci
-        with:
-          # wasm32-wasip2: the kv component, and the Rooms component the nightly's
-          # rooms-fault builds.
-          targets: wasm32-wasip2
-          shared-key: release
-          save-if: false
-
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
-      - name: Install mero-app-build
-        run: scripts/install-mero-app-build.sh
+      - name: Download merod, meroctl, the tools and the fixtures
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-release
+          path: .
 
-      - name: Build merod, meroctl and the fixtures
-        env:
-          NIGHTLY: ${{ (github.event_name == 'schedule' || inputs.nightly) && 'true' || 'false' }}
+      # An artifact keeps no file modes.
+      - name: Put the tools on PATH
         run: |
-          set -euo pipefail
-          cargo build --release -p merod -p meroctl
-          mero-app-build \
-            apps/v2-fixtures/kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
-          cargo build --release -p mero-sign
-          for v in 1.0.0 1.1.0; do
-            python3 -I scripts/pack-component.py --wasm "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm" \
-              --mero-sign "${CARGO_TARGET_DIR:-target}/release/mero-sign" \
-              --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
-          done
-          if [ "$NIGHTLY" = true ]; then
-            # Builds the Rooms component into target/app-components (tests/common/mod.rs).
-            cargo test --release -p calimero-node --test rooms
-          fi
+          chmod +x target/release/merod target/release/meroctl target/release/mero-sign target/e2e-tools/bin/*
+          echo "$PWD/target/e2e-tools/bin" >> "$GITHUB_PATH"
 
       - name: Process suite
         env:
@@ -203,7 +395,9 @@ jobs:
 
       - name: Soak latency and throughput
         if: ${{ !cancelled() }}
-        run: bash scripts/soak-summary.sh target/process-suite/soak.json "Soak, kv-store (this tree's merod, release build)"
+        run: bash scripts/soak-summary.sh target/process-suite/soak.json "Soak, kv-store (this tree's merod, ${BUILD})"
+        env:
+          BUILD: ${{ (github.event_name == 'schedule' || inputs.nightly) && 'release build' || 'release build without fat LTO' }}
 
       - name: Upload the results
         if: ${{ !cancelled() }}
@@ -221,8 +415,8 @@ jobs:
   flamegraph:
     name: merod flamegraph (kv-store soak)
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.flamegraph))
-    runs-on: big-machine
-    timeout-minutes: 75
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -306,8 +500,10 @@ jobs:
   # Compute actions on real processes (three replicas, two job nodes), which merobox cannot start.
   compute-e2e:
     name: compute actions, real processes
-    runs-on: big-machine
-    timeout-minutes: 30
+    needs: [plan, build-release]
+    if: needs.plan.outputs.node == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     env:
       COMPUTE_E2E_DIR: ${{ github.workspace }}/target/compute-e2e
     steps:
@@ -323,20 +519,22 @@ jobs:
           # The compute fixture's two components, built from this checkout.
           targets: wasm32-wasip2
           shared-key: ci-checks
-          save-if: false
+          rust-cache: false
 
-      # The fixtures' builder, and the local runner compute-redact's output is checked against.
-      - name: Install mero-app-build and mero-compute
+      # merod, meroctl and mero-sign optimized like the product (sealing 47 MiB files in a
+      # debug build misses the push deadline); mero-app-build builds the fixtures and
+      # mero-compute is the local runner compute-redact's output is checked against.
+      - name: Download merod, meroctl, the tools and the fixtures
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-release
+          path: .
+
+      # An artifact keeps no file modes.
+      - name: Put the tools on PATH
         run: |
-          scripts/install-mero-app-build.sh
-          scripts/install-mero-compute.sh
-
-      # Optimized like the product (sealing 47 MiB files in a debug build misses the push deadline), without fat LTO.
-      - name: Build merod, meroctl and the signer
-        env:
-          CARGO_PROFILE_RELEASE_LTO: "false"
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-        run: cargo build --release -p merod -p meroctl -p mero-sign
+          chmod +x target/release/merod target/release/meroctl target/release/mero-sign target/e2e-tools/bin/*
+          echo "$PWD/target/e2e-tools/bin" >> "$GITHUB_PATH"
 
       # Builds app.wasm and compute.wasm, packs and signs them as one .mpk, and installs that.
       - name: Compute scenarios
@@ -360,9 +558,7 @@ jobs:
   # runs the process suite of the commit the image was built from (its
   # org.opencontainers.image.revision label), with that commit's meroctl and
   # fixtures, so a test added after the release cannot fail it. A release
-  # whose commit has no process suite is reported and not run. On the release
-  # branch, until a release with this node ships, a nightly tests the branch's own
-  # image instead: release-v2-edge, which release.yml pushes on every merge.
+  # whose commit has no process suite is reported and not run.
   release-image:
     name: Latest release image
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.nightly || inputs.release_image != ''))
@@ -394,15 +590,10 @@ jobs:
           REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
           REQUESTED: ${{ inputs.release_image }}
-          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          # The release branch's nightly default: its own published image.
-          if [ -z "$REQUESTED" ] && [ "$REF" = refs/heads/release-v2-parity ]; then
-            REQUESTED=release-v2-edge
-          fi
           if [ -n "$REQUESTED" ] && [ "$REQUESTED" != latest ]; then
-            # A bare tag (release-v2-edge, 0.12.0) names ghcr.io/<owner>/merod:<tag>.
+            # A bare tag (1.0.0-rc.18) names ghcr.io/<owner>/merod:<tag>.
             case "$REQUESTED" in
               */* | *:* | *@*) image=$REQUESTED ;;
               *) image="ghcr.io/${OWNER,,}/merod:$REQUESTED" ;;
@@ -476,7 +667,7 @@ jobs:
     name: scenario fixtures (release ${{ needs.release-image.outputs.version }})
     needs: release-image
     if: needs.release-image.outputs.scenarios == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: Checkout the release's commit
@@ -517,7 +708,7 @@ jobs:
   release-scenarios:
     name: scenarios on release ${{ needs.release-image.outputs.version }} (${{ matrix.shard }}/4)
     needs: [release-image, release-fixtures]
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -558,7 +749,7 @@ jobs:
     name: process suite on release ${{ needs.release-image.outputs.version }}
     needs: release-image
     if: needs.release-image.outputs.testable == 'true'
-    runs-on: big-machine
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - name: Checkout the release's commit
@@ -643,10 +834,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # One job per client, on the release merod `build-release` built.
   clients:
-    name: clients against merod
+    name: clients against merod (${{ matrix.client }})
+    needs: [plan, build-release]
+    if: needs.plan.outputs.node == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        client: [mero-js, calimero-client-py]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -657,15 +855,12 @@ jobs:
       - name: Test the ref pairing
         run: bash scripts/tests/resolve-paired-ref.test.sh
 
-      # Unpaired, a change on the release branch (a push to it, or a PR into it)
-      # tests the clients' release-v2-parity branches, which have the cloud-v2
-      # tests; their master has none.
       - name: Resolve the client refs (paired)
         id: refs
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-          DEFAULT_REF: ${{ (github.base_ref || github.ref_name) == 'release-v2-parity' && 'release-v2-parity' || 'master' }}
+          DEFAULT_REF: master
         run: |
           set -euo pipefail
           js="$(scripts/resolve-paired-ref.sh "$DEFAULT_REF")"
@@ -676,6 +871,7 @@ jobs:
           echo "mero-js@$js, calimero-client-py@$py"
 
       - name: Checkout mero-js
+        if: matrix.client == 'mero-js'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: calimero-network/mero-js
@@ -684,6 +880,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout calimero-client-py
+        if: matrix.client == 'calimero-client-py'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: calimero-network/calimero-client-py
@@ -691,28 +888,30 @@ jobs:
           path: _client-py
           persist-credentials: false
 
+      # The client's extension (calimero-client-py) builds with the pinned toolchain.
       - name: Setup Rust CI
+        if: matrix.client == 'calimero-client-py'
         uses: ./.github/actions/setup-rust-ci
         with:
-          targets: wasm32-wasip2
           shared-key: ci-checks
-          save-if: false
+          rust-cache: false
 
       # KV_STORE_WASM is the kv component (apps/v2-fixtures/kv: set, get, len,
       # and `clear`, a confirm method it declares itself).
-      - name: Install mero-app-build
-        run: scripts/install-mero-app-build.sh
+      - name: Download merod and the kv fixture
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-release
+          path: .
 
-      - name: Build merod and the kv fixture
+      - name: Point the clients at them
         run: |
-          set -euo pipefail
-          cargo build -p merod
-          mero-app-build \
-            apps/v2-fixtures/kv --out "$CARGO_TARGET_DIR/app-components/kv.wasm"
-          echo "MEROD_BINARY=$CARGO_TARGET_DIR/debug/merod" >> "$GITHUB_ENV"
-          echo "KV_STORE_WASM=$CARGO_TARGET_DIR/app-components/kv.wasm" >> "$GITHUB_ENV"
+          chmod +x target/release/merod
+          echo "MEROD_BINARY=$PWD/target/release/merod" >> "$GITHUB_ENV"
+          echo "KV_STORE_WASM=$PWD/target/app-components/kv.wasm" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: matrix.client == 'mero-js'
         with:
           node-version: "22"
           # No package-manager cache: this workflow also publishes, and a cache
@@ -720,6 +919,7 @@ jobs:
           package-manager-cache: false
 
       - name: mero-js cluster tests
+        if: matrix.client == 'mero-js'
         working-directory: _mero-js
         run: |
           npm install -g pnpm
@@ -727,14 +927,14 @@ jobs:
           pnpm test:cluster
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        if: ${{ !cancelled() }}
+        if: matrix.client == 'calimero-client-py'
         with:
           python-version: "3.12"
 
       # The client builds against the core its Cargo.toml pins; what this job
       # tests is that client against this tree's node.
       - name: calimero-client-py cluster tests
-        if: ${{ !cancelled() }}
+        if: matrix.client == 'calimero-client-py'
         working-directory: _client-py
         run: |
           set -euo pipefail
