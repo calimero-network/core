@@ -1,16 +1,24 @@
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use calimero_app_build::{
     abi_of, build_component, build_components, build_components_cached, imports_of,
 };
 use calimero_app_wit::{allowed_imports, compute_allowed_imports, stubbed_imports, COMPUTE_WORLD};
 
+/// The target dir every test here builds into: one that outlives the run (CI caches
+/// `target/tmp`), so a test runs the real `cargo build` without compiling the SDK and its
+/// dependencies from nothing each time. `build_component` locks it, so tests share it safely.
+/// `the_cache_keeps_both_components_and_whether_there_is_a_compute_one` keeps a fresh cache
+/// dir of its own, since an empty cache is what it tests.
+fn target() -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("app-build-tests")
+}
+
 #[test]
 fn echo_guest_builds_into_a_component_with_only_world_imports() {
-    let target = tempfile::tempdir().expect("tempdir");
     let guest = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/echo");
-    let built = build_component(&guest, target.path()).expect("build");
+    let built = build_component(&guest, &target()).expect("build");
 
     let known: BTreeSet<String> = allowed_imports()
         .iter()
@@ -43,8 +51,7 @@ fn fixtures_build_with_world_imports_only() {
         .collect();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures");
     for name in ["kv", "org-gated"] {
-        let target = tempfile::tempdir().expect("tempdir");
-        let built = build_component(&root.join(name), target.path())
+        let built = build_component(&root.join(name), &target())
             .unwrap_or_else(|e| panic!("build {name}: {e}"));
         assert!(!built.imports.is_empty(), "{name}");
         for import in &built.imports {
@@ -80,9 +87,8 @@ fn pinned(import: &str) -> String {
 
 #[test]
 fn a_crate_with_compute_methods_builds_a_second_component_that_cannot_reach_state_or_http() {
-    let target = tempfile::tempdir().expect("tempdir");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
-    let built = build_components(&fixture, target.path()).expect("build");
+    let built = build_components(&fixture, &target()).expect("build");
     let compute = built.compute.expect("a compute component");
 
     let known: BTreeSet<String> = compute_allowed_imports()
@@ -135,9 +141,8 @@ fn a_crate_with_compute_methods_builds_a_second_component_that_cannot_reach_stat
 
 #[test]
 fn a_crate_without_compute_methods_builds_one_component() {
-    let target = tempfile::tempdir().expect("tempdir");
     let guest = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/echo");
-    let built = build_components(&guest, target.path()).expect("build");
+    let built = build_components(&guest, &target()).expect("build");
     assert!(built.compute.is_none());
     assert!(!built.app.component.is_empty());
 }
@@ -145,13 +150,12 @@ fn a_crate_without_compute_methods_builds_one_component() {
 #[test]
 fn the_cli_writes_the_compute_component_beside_the_app_component() {
     let out = tempfile::tempdir().expect("tempdir");
-    let target = tempfile::tempdir().expect("tempdir");
     let app = out.path().join("fixture.wasm");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
     let run = std::process::Command::new(env!("CARGO_BIN_EXE_mero-app-build"))
         .arg(&fixture)
         .arg("--target-dir")
-        .arg(target.path())
+        .arg(&target())
         .arg("--out")
         .arg(&app)
         .output()
@@ -170,7 +174,7 @@ fn the_cli_writes_the_compute_component_beside_the_app_component() {
     let refused = std::process::Command::new(env!("CARGO_BIN_EXE_mero-app-build"))
         .arg(&echo)
         .arg("--target-dir")
-        .arg(target.path())
+        .arg(&target())
         .arg("--out")
         .arg(out.path().join("echo.wasm"))
         .arg("--compute-out")
@@ -205,9 +209,8 @@ fn the_cache_keeps_both_components_and_whether_there_is_a_compute_one() {
 
 #[test]
 fn a_crate_with_a_cdylib_dependency_packages_its_own_component() {
-    let target = tempfile::tempdir().expect("tempdir");
     let top = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/chain/top");
-    let built = build_component(&top, target.path()).expect("build");
+    let built = build_component(&top, &target()).expect("build");
     let abi = built.abi.expect("an ABI");
     let methods = abi["methods"].as_object().expect("methods");
     assert_eq!(methods.keys().collect::<Vec<_>>(), ["top_only"]);
@@ -216,9 +219,8 @@ fn a_crate_with_a_cdylib_dependency_packages_its_own_component() {
 /// A crate that builds only an rlib makes no component, whatever its dependencies made.
 #[test]
 fn a_crate_that_builds_no_wasm_is_refused_by_name() {
-    let target = tempfile::tempdir().expect("tempdir");
     let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/chain/no-wasm");
-    let Err(e) = build_component(&crate_dir, target.path()) else {
+    let Err(e) = build_component(&crate_dir, &target()) else {
         panic!("a crate with no wasm artifact built a component");
     };
     assert!(e.to_string().contains("produced no .wasm artifact"), "{e}");

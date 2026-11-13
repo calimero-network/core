@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use calimero_app_build::{build_component, build_compute_component, Built};
+use calimero_app_build::{build_in_repo_cache, Built};
 use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::{
     Abi, Budget, Caller, ComputeCaps, ComputeCtx, Directory, Engine, HostCore, Invocation,
@@ -22,8 +22,9 @@ fn built() -> &'static Built {
     static BUILT: OnceLock<Built> = OnceLock::new();
     BUILT.get_or_init(|| {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/sample");
-        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guests");
-        build_component(&dir, &target).unwrap_or_else(|e| panic!("build sample: {e}"))
+        build_in_repo_cache(&dir)
+            .unwrap_or_else(|e| panic!("build sample: {e}"))
+            .app
     })
 }
 
@@ -31,9 +32,10 @@ fn built_compute() -> &'static Built {
     static BUILT: OnceLock<Built> = OnceLock::new();
     BUILT.get_or_init(|| {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/sample");
-        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("guests");
-        build_compute_component(&dir, &target)
+        build_in_repo_cache(&dir)
             .unwrap_or_else(|e| panic!("build sample compute: {e}"))
+            .compute
+            .expect("the sample declares compute methods")
     })
 }
 

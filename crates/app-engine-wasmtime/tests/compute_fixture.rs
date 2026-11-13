@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use calimero_app_build::build_component;
+use calimero_app_build::build_in_repo_cache;
 use calimero_app_engine_wasmtime::WasmtimeEngine;
 use calimero_app_host::{
     blob_refs, Budget, Caller, Directory, Engine, HostCore, Invocation, InvocationKind,
@@ -43,9 +43,9 @@ fn on_done(
     outcome: &serde_json::Value,
 ) -> calimero_app_host::Outcome {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
-    let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("compute-fixture");
-    let component = build_component(&dir, &target)
+    let component = build_in_repo_cache(&dir)
         .unwrap_or_else(|e| panic!("build compute fixture: {e}"))
+        .app
         .component;
     let app = engine.prepare("compute-hash", &component).expect("prepare");
     let inv = Invocation {

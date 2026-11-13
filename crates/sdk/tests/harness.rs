@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use calimero_app_build::build_component;
+use calimero_app_build::build_in_repo_cache;
 use calimero_sdk::testing::{run_scenario, Failure, Org, TestApp};
 use calimero_sdk::BlobRef;
 use serde_json::{json, Value};
@@ -24,9 +24,9 @@ fn component() -> &'static [u8] {
     static BUILT: OnceLock<Vec<u8>> = OnceLock::new();
     BUILT.get_or_init(|| {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/guests/sample");
-        let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("harness-guests");
-        build_component(&dir, &target)
+        build_in_repo_cache(&dir)
             .unwrap_or_else(|e| panic!("build sample: {e}"))
+            .app
             .component
     })
 }

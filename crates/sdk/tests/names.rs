@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use calimero_app_build::build_component;
+use calimero_app_build::build_in_repo_cache;
 use calimero_sdk::testing::{run_migration, run_scenario, Failure, Org, TestApp};
 use serde_json::json;
 
@@ -16,9 +16,9 @@ fn build(guest: &str) -> Vec<u8> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/guests")
         .join(guest);
-    let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("name-guests");
-    build_component(&dir, &target)
+    build_in_repo_cache(&dir)
         .unwrap_or_else(|e| panic!("build {guest}: {e}"))
+        .app
         .component
 }
 

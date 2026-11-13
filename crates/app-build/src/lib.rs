@@ -50,6 +50,19 @@ pub struct Built {
     pub imports: Vec<String>,
 }
 
+impl Built {
+    /// A component as [`build_component`] answers it, read back from its bytes (a cached one).
+    pub fn from_component(component: Vec<u8>) -> EyreResult<Self> {
+        let abi = abi_of(&component)?;
+        let imports = imports_of(&component)?;
+        Ok(Self {
+            component,
+            abi,
+            imports,
+        })
+    }
+}
+
 /// An app's components: the one replicas run and, when it declares compute methods, the one
 /// job nodes run.
 #[derive(Debug)]
@@ -228,6 +241,27 @@ pub fn build_components_cached(
     Ok(CachedApp {
         app: built.app.component,
         compute: built.compute.map(|c| c.component),
+    })
+}
+
+/// The guest crate at `crate_dir` (a path in this repository) built through the repository's
+/// one component cache, `target/app-components`, for tests.
+///
+/// Every test binary that builds a guest goes through it (the node's cluster tests, the
+/// engine's, the SDK's, mero-compute's), so a guest is compiled once per tree, by whichever
+/// test process gets there first, rather than once per test binary into its own target dir,
+/// and every other process reads the result instead of running cargo again. The key hashes
+/// the crate and the SDK, its macros, its old name and the WIT (`calimero:app`), which are
+/// every path a guest here reaches outside its own directory; see [`cache_key`].
+pub fn build_in_repo_cache(crate_dir: &Path) -> EyreResult<BuiltApp> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let crates = root.join("crates");
+    let also = ["sdk", "sdk-macros", "app-sdk", "app-wit"].map(|c| crates.join(c));
+    let also: Vec<&Path> = also.iter().map(PathBuf::as_path).collect();
+    let cached = build_components_cached(crate_dir, &also, &root.join("target/app-components"))?;
+    Ok(BuiltApp {
+        app: Built::from_component(cached.app)?,
+        compute: cached.compute.map(Built::from_component).transpose()?,
     })
 }
 
