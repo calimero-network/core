@@ -52,9 +52,10 @@ over). It saves the cluster as the node `local`, trusting its mock attestation
 for this node only, so it cannot carry over to a real cluster; `meroctl local
 status` shows it and `meroctl local down` stops it. Browser apps
 on `http://localhost:3000` and `http://localhost:5173` may call it (`--origins`).
-On macOS, run the same cluster in Docker instead
-([Install](/operate/install/#first-run-on-macos-a-cluster-in-docker)) and use its
-URL below.
+On macOS (Apple silicon) the same command runs the released `merod`; with a
+release before 1.0.0-rc.25, which shipped none for macOS, it runs the cluster in
+the release's Docker image instead
+([Install](/operate/install/#first-run-on-macos-a-cluster-in-docker)).
 
 ## 2. Sign up, deploy and call from the terminal
 

@@ -1,6 +1,7 @@
 //! `meroctl local`: a development cluster on this machine and the loop around
 //! it. `up` starts `merod local` in the background (the binary on PATH, or the
-//! release's container image with `--docker`) and saves it as the node
+//! release's container image with `--docker`, and on macOS whenever none is
+//! on PATH, as with a release that shipped no macOS `merod`) and saves it as the node
 //! `local`; `dev` builds an app, uploads it, writes its frontend's
 //! `.env.development.local`, runs the frontend's dev server and rebuilds on
 //! every save; `test` runs the app's tests and scenarios on core's engine;
@@ -42,7 +43,8 @@ pub struct ClusterArgs {
     #[arg(long)]
     pub fresh: bool,
     /// Run the release's container image instead of `merod` from PATH (`merod
-    /// local --bind 0.0.0.0`, its ports published on 127.0.0.1).
+    /// local --bind 0.0.0.0`, its ports published on 127.0.0.1). On macOS this
+    /// is the default when no `merod` is on PATH and `MEROD` is unset.
     #[arg(long)]
     pub docker: bool,
     /// The image for `--docker`.
@@ -205,7 +207,16 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
         local.push("--fresh".into());
     }
     let out = std::fs::File::create(&log)?;
-    let (pid, container, child) = if a.docker {
+    // Releases before 1.0.0-rc.25 shipped no `merod` for macOS: there, with
+    // none on PATH and no MEROD, the node runs in the release's image.
+    let docker = a.docker || no_native_merod();
+    if docker && !a.docker {
+        eprintln!(
+            "• no merod on PATH: running the node in Docker ({})",
+            a.image
+        );
+    }
+    let (pid, container, child) = if docker {
         // The image's merod writes as uid 10001 under /data, a named volume; it
         // listens on 0.0.0.0 inside the container and the ports are published on
         // loopback only, so this works on macOS and Linux alike.
@@ -589,4 +600,13 @@ impl Deploy {
         }
         Ok(bundle)
     }
+}
+
+/// On macOS, when neither `MEROD` nor a `merod` on PATH names a node binary
+/// (a release before 1.0.0-rc.25 shipped none for macOS): `local up` uses the image.
+fn no_native_merod() -> bool {
+    cfg!(target_os = "macos")
+        && std::env::var_os("MEROD").is_none()
+        && !std::env::var_os("PATH")
+            .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("merod").is_file()))
 }

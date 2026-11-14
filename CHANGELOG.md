@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`merod` for macOS (Apple silicon), and the quickstart works there as on
+  Linux** (`release`, `install.sh`, `meroctl`): releases publish
+  `merod_aarch64-apple-darwin.tar.gz`, so on a Mac `install.sh merod meroctl`
+  and `meroctl local up` start a development cluster natively; production
+  nodes still run in Linux TDX VMs. For a release without a macOS `merod`
+  (1.0.0-rc.24 and older) `install.sh` installs `meroctl` and skips `merod` with a
+  note (it stopped with an error), and `meroctl local up` on macOS, finding no
+  `merod` on PATH and no `MEROD`, runs the node in the release's Docker image.
+- **Homebrew carries `merod` and `meroctl` again**: each release opens its own
+  bump PR in calimero-network/homebrew-tap (`chore/bump-formulas-<version>`) and
+  asks for auto-merge. One shared branch let a stalled PR swallow every bump
+  from 1.0.0-rc.19 on, and `gh pr create ... || true` hid it; the job now fails
+  when the formulas do not change or the PR cannot be opened.
+
 ### Added
 
 - **`meroctl app pack` records the SDK in `buildInfo`**: from the crate's
