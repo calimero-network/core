@@ -142,6 +142,8 @@ serves the one of the bundle an app runs at `GET /apps/{app}/openapi.json`
   documents the `412 CONFIRM_REQUIRED` step-up and its retry with `confirm`;
   a `public` one may be called without a session (`security: [{}, ...]`), and its
   `rate` is in `x-calimero-method`.
+  The method's `doc` is the operation's `x-calimero-publisher-description`, kept apart
+  from `description`, which states only what the node enforces.
 - **Events**: `GET /apps/{app}/events` answers `text/event-stream`; each frame's
   `event` is an event's name and `data` its fields (`<Name>Event`). An app with
   actions also gets the node's `ActionFailed { actionId, method, reason }`.

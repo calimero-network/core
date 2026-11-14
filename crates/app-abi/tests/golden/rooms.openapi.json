@@ -1395,7 +1395,8 @@
           "confirm": false,
           "kind": "call",
           "public": false
-        }
+        },
+        "x-calimero-publisher-description": "Adds a room (admin); `Duplicate` when the id exists."
       }
     },
     "/apps/{app}/methods/adminRelease": {
@@ -1464,7 +1465,8 @@
           "confirm": true,
           "kind": "call",
           "public": false
-        }
+        },
+        "x-calimero-publisher-description": "Frees any booking; the holder is told why. Needs a fresh passkey confirmation."
       }
     },
     "/apps/{app}/methods/availability": {
@@ -1530,12 +1532,13 @@
           "confirm": false,
           "kind": "view",
           "public": false
-        }
+        },
+        "x-calimero-publisher-description": "The held slots of `room_id` in the 24 hours from `day_start`; titles only for the\nholder and org admins."
       }
     },
     "/apps/{app}/methods/book": {
       "post": {
-        "description": "A call: runs as `POST /apps/{app}/intents` with `method: \"book\"`.\n\nPublisher's description: Books `room_id` at `start`; `Taken` when the slot is held.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "description": "A call: runs as `POST /apps/{app}/intents` with `method: \"book\"`.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
         "operationId": "book",
         "parameters": [
           {
@@ -1596,7 +1599,8 @@
           "confirm": false,
           "kind": "call",
           "public": false
-        }
+        },
+        "x-calimero-publisher-description": "Books `slot_count` consecutive slots from `start` (member); returns the booking id."
       }
     },
     "/apps/{app}/methods/booking": {
@@ -1662,7 +1666,8 @@
           "confirm": false,
           "kind": "view",
           "public": false
-        }
+        },
+        "x-calimero-publisher-description": "One booking; `NotFound` unless the caller holds it or is an admin."
       }
     },
     "/apps/{app}/methods/cancel": {
@@ -1728,7 +1733,8 @@
           "confirm": false,
           "kind": "call",
           "public": false
-        }
+        },
+        "x-calimero-publisher-description": "Frees the booking's slots (holder only)."
       }
     },
     "/apps/{app}/methods/checkIn": {
@@ -1794,7 +1800,8 @@
           "confirm": false,
           "kind": "call",
           "public": false
-        }
+        },
+        "x-calimero-publisher-description": "Marks the booking as used, so the timer keeps it (holder only)."
       }
     },
     "/apps/{app}/methods/myBookings": {
@@ -1860,7 +1867,8 @@
           "confirm": false,
           "kind": "view",
           "public": false
-        }
+        },
+        "x-calimero-publisher-description": "The caller's bookings, earliest first."
       }
     }
   },
