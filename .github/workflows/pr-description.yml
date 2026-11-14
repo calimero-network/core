@@ -52,3 +52,19 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: git diff HEAD^1 HEAD | python3 scripts/check-compat-door.py
+
+  app-lockfiles:
+    name: App lockfiles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Test the check
+        run: python3 scripts/tests/check-app-lockfiles-test.py
+
+      # HEAD is the PR merge commit, so its first parent is the base it merges into.
+      - name: Check app lockfile changes
+        run: git diff --name-only --no-renames HEAD^1 HEAD | python3 scripts/check-app-lockfiles.py

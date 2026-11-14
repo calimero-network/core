@@ -23,6 +23,8 @@ meroctl app pack --wasm <app>.wasm --package <id> --app-version 1.0.0 \
 meroctl app inspect dist/<id>-1.0.0.mpk               # verify it as a node does
 ```
 
+Test builds rewrite `apps/**/Cargo.lock`; commit one only with a `Cargo.toml` change it resolves, else `git checkout origin/master -- <lockfile>` (CI's "App lockfiles" check).
+
 ## Testing a compute method locally
 
 A compute method (`#[app::compute]`) is tested alone, with no app component, cluster or job node.
