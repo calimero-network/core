@@ -1066,6 +1066,7 @@ dependencies = [
 name = "calimero-tee-attestation"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "base64 0.23.1",
  "configfs-tsm",
  "dcap-qvl",

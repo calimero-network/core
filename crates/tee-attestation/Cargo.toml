@@ -20,6 +20,8 @@ mock-attestation = []
 cli = ["dep:tokio"]
 
 [dependencies]
+# Names dcap-qvl's `HttpClient` return type for `NoNetwork`.
+anyhow.workspace = true
 hex.workspace = true
 tracing.workspace = true
 base64.workspace = true
@@ -49,3 +51,5 @@ required-features = ["cli"]
 [target.'cfg(target_os = "linux")'.dependencies]
 configfs-tsm.workspace = true
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

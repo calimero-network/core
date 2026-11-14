@@ -1,7 +1,11 @@
 //! TDX quote verification.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::quote::Quote;
 use dcap_qvl::collateral::{CollateralClient, INTEL_PCS_URL};
+use dcap_qvl::configs::DefaultConfig;
+use dcap_qvl::http::{HttpClient, HttpResponse};
 use dcap_qvl::tcb_info::TcbInfo as DcapTcbInfo;
 use dcap_qvl::verify::verify;
 use tdx_quote::Quote as TdxQuote;
@@ -201,6 +205,34 @@ pub(crate) fn collateral_source() -> String {
     collateral_source_from(std::env::var(COLLATERAL_URL_ENV).ok().as_deref())
 }
 
+/// Transport that refuses every request and records that one was attempted.
+struct NoNetwork<'a>(&'a AtomicBool);
+
+impl HttpClient for NoNetwork<'_> {
+    async fn get(&self, url: &str) -> anyhow::Result<HttpResponse> {
+        self.0.store(true, Ordering::Relaxed);
+        anyhow::bail!("no network in a dry run: {url}")
+    }
+}
+
+/// dcap-qvl decodes the quote and reads its PCK chain before its first request,
+/// all on the node's own bytes. Dry-run `fetch` with no network: a failure
+/// before any request is a malformed quote, not a collateral outage.
+async fn reject_unparseable_certification_data(
+    quote_bytes: &[u8],
+    source: &str,
+) -> Result<(), AttestationError> {
+    let requested = AtomicBool::new(false);
+    let probe: CollateralClient<DefaultConfig, _> =
+        CollateralClient::new(NoNetwork(&requested), source);
+    match probe.fetch(quote_bytes).await {
+        Err(err) if !requested.load(Ordering::Relaxed) => Err(
+            AttestationError::QuoteParsingFailed(format!("certification data: {err:?}")),
+        ),
+        _ => Ok(()),
+    }
+}
+
 /// Read Intel's `tcbEvaluationDataNumber` out of fetched collateral.
 ///
 /// Parses the same string dcap-qvl itself deserializes: the collateral carries
@@ -284,6 +316,7 @@ pub async fn verify_attestation(
             "collateral source {collateral_source:?}: {err:?}"
         ))
     })?;
+    reject_unparseable_certification_data(quote_bytes, &collateral_source).await?;
     let collateral = client.fetch(quote_bytes).await.map_err(|err| {
         error!(error=?err, source=%collateral_source, "Failed to fetch collateral");
         AttestationError::CollateralFetchFailed(format!(
@@ -496,7 +529,10 @@ pub fn verify_mock_attestation(
 mod tests {
     use dcap_qvl::collateral::INTEL_PCS_URL;
 
-    use super::{collateral_source_from, is_debug_td, tcb_evaluation_data_number_of};
+    use super::{
+        collateral_source_from, is_debug_td, tcb_evaluation_data_number_of, verify_attestation,
+    };
+    use crate::AttestationError;
 
     #[test]
     fn a_td_with_the_debug_bit_set_is_a_debug_td() {
@@ -620,5 +656,35 @@ mod tests {
     fn does_not_accept_the_signed_envelope() {
         let envelope = format!(r#"{{"tcbInfo": {}, "signature": "ab"}}"#, tcb_info_json(22));
         assert_eq!(tcb_evaluation_data_number_of(&envelope), None);
+    }
+
+    /// The PCK chain is the node's own bytes: when it is garbage the quote is
+    /// malformed, which is a refusal and never a collateral outage.
+    #[tokio::test]
+    async fn a_quote_with_garbage_certification_data_is_a_parse_failure_not_a_fetch_failure() {
+        const BEGIN: &[u8] = b"-----BEGIN CERTIFICATE-----\n";
+        let mut quote = include_bytes!("../tests/fixtures/tdx_quote").to_vec();
+        let start = quote
+            .windows(BEGIN.len())
+            .position(|w| w == BEGIN)
+            .expect("fixture embeds a PCK chain")
+            + BEGIN.len();
+        quote[start..start + 64].fill(b'!');
+
+        let err = verify_attestation(&quote, &[0; 32], &[0; 32])
+            .await
+            .expect_err("a quote with a garbage PCK chain must not verify");
+        assert!(
+            matches!(err, AttestationError::QuoteParsingFailed(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_well_formed_quote_passes_the_dry_run_and_reaches_the_network_step() {
+        let quote = include_bytes!("../tests/fixtures/tdx_quote");
+        super::reject_unparseable_certification_data(quote, INTEL_PCS_URL)
+            .await
+            .expect("the fixture's certification data parses");
     }
 }
