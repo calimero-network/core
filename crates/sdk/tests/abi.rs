@@ -215,6 +215,14 @@ fn abi_lists_every_method_with_its_attributes() {
     assert_eq!(abi_json["methods"]["adminRelease"]["returns"], Value::Null);
     assert_eq!(abi_json["methods"]["releaseNoShows"]["every"], "1m");
     assert_eq!(
+        abi_json["methods"]["adminRelease"]["doc"],
+        "Removes a booking; needs a fresh passkey confirmation."
+    );
+    assert_eq!(
+        abi_json["methods"]["init"]["doc"],
+        "`init` takes arguments by name, like a call: the node's `initArgs` (`--params`). Both\nare optional, so an app created with none, as `TestApp::new` creates it, still starts."
+    );
+    assert_eq!(
         abi_json["errors"],
         json!({ "NotFound": {}, "Taken": { "start": "u64" }, "Invalid": { "reason": "string" } })
     );

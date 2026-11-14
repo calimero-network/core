@@ -70,6 +70,8 @@ struct Method {
     /// The success type; `None` when the method returns `Result<T>`-less `()`.
     ok: Type,
     returns_result: bool,
+    /// The method's `///` comment, for the people reading the ABI.
+    doc: Option<String>,
 }
 
 /// The `app::<name>` attribute name, if `attr` is one (`app::x`, or `<sdk>::app::x` for the
@@ -86,6 +88,28 @@ fn app_attr(attr: &Attribute) -> Option<String> {
         [sdk, app, name] if crate::sdk::is_sdk(sdk) && app == "app" => Some(name.clone()),
         _ => None,
     }
+}
+
+/// The `///` lines on `attrs`, one leading space each removed; `None` when there are none.
+fn doc_comment(attrs: &[Attribute]) -> Option<String> {
+    let lines: Vec<String> = attrs
+        .iter()
+        .filter(|a| a.path().is_ident("doc"))
+        .filter_map(|a| match &a.meta {
+            syn::Meta::NameValue(syn::MetaNameValue {
+                value:
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    }),
+                ..
+            }) => Some(s.value()),
+            _ => None,
+        })
+        .map(|line| line.strip_prefix(' ').map_or(line.clone(), str::to_owned))
+        .collect();
+    let doc = lines.join("\n").trim().to_owned();
+    (!doc.is_empty()).then_some(doc)
 }
 
 /// `"<n>s"`, `"<n>m"` or `"<n>h"` with `n > 0`, as the host reads it.
@@ -337,6 +361,7 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
         params,
         ok,
         returns_result,
+        doc: doc_comment(&f.attrs),
     }))
 }
 
@@ -366,6 +391,9 @@ fn abi_entry(m: &Method) -> Value {
     let _ = entry.insert("confirm".into(), m.attrs.confirm.into());
     let _ = entry.insert("public".into(), m.attrs.public.into());
     let _ = entry.insert("allowSystem".into(), m.attrs.allow_system.into());
+    if let Some(doc) = &m.doc {
+        let _ = entry.insert("doc".into(), doc.clone().into());
+    }
     if let Some(compute) = &m.attrs.compute {
         let mut caps = Map::new();
         let _ = caps.insert("fuel".into(), compute.fuel.into());
@@ -711,6 +739,28 @@ mod tests {
         );
         let methods = methods.replace(r#"\""#, "\"");
         assert!(out.contains(&lit(&methods)), "{out}");
+    }
+
+    #[test]
+    fn method_doc_comments_reach_the_abi() {
+        let item: ItemImpl = parse_quote! {
+            impl S {
+                /// Deletes the workspace.
+                ///
+                /// Everyone loses access.
+                #[doc(hidden)]
+                pub fn delete_workspace(&mut self) -> Result<()> { Ok(()) }
+                #[app::view]
+                pub fn bare(&self) -> Result<u32> { Ok(1) }
+            }
+        };
+        let out = expand(item).unwrap().to_string().replace(r#"\""#, "\"");
+        let documented = r#""deleteWorkspace":{"allowSystem":false,"confirm":false,"doc":"Deletes the workspace.\\n\\nEveryone loses access.","kind":"call""#;
+        assert!(out.contains(documented), "{out}");
+        assert!(
+            out.contains(r#""bare":{"allowSystem":false,"confirm":false,"kind":"view""#),
+            "{out}"
+        );
     }
 
     fn refused(item: ItemImpl) -> String {
