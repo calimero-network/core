@@ -53,10 +53,26 @@ fn apps_repo(root: &Path) -> String {
     format!("file://{}", root.display())
 }
 
+/// `meroctl` with a git identity of its own, whatever the machine has (CI has
+/// none): `dev new` commits what the template gave.
 fn meroctl(cwd: &Path, args: &[&str]) -> std::process::Output {
+    meroctl_with(
+        cwd,
+        args,
+        &[
+            ("GIT_AUTHOR_NAME", "t"),
+            ("GIT_AUTHOR_EMAIL", "t@t"),
+            ("GIT_COMMITTER_NAME", "t"),
+            ("GIT_COMMITTER_EMAIL", "t@t"),
+        ],
+    )
+}
+
+fn meroctl_with(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_meroctl"))
         .current_dir(cwd)
         .env("CALIMERO_HOME", cwd.join("home"))
+        .envs(env.iter().copied())
         .args(args)
         .output()
         .unwrap()
@@ -128,4 +144,44 @@ fn dev_new_starts_a_project_from_an_app_of_the_apps_repo() {
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("has no app apps/nope"));
     assert!(!tmp.path().join("other").exists());
+}
+
+// With no git identity there is no one to commit as: the project is still made,
+// its files left untracked, and `dev new` says how to get the commit.
+#[test]
+fn dev_new_without_a_git_identity_makes_the_project_and_says_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = apps_repo(&tmp.path().join("apps-repo"));
+    let empty = tmp.path().join("no-git-home");
+    std::fs::create_dir_all(&empty).unwrap();
+    let empty = empty.to_str().unwrap();
+
+    let out = meroctl_with(
+        tmp.path(),
+        &["dev", "new", "my-app", "--repo", &repo],
+        &[
+            ("HOME", empty),
+            ("XDG_CONFIG_HOME", empty),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_NOSYSTEM", "1"),
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no first commit"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let p = tmp.path().join("my-app");
+    assert!(p.join("apps/kv-store/logic/Cargo.toml").is_file());
+    let log = Command::new("git")
+        .current_dir(&p)
+        .args(["log", "--oneline"])
+        .output()
+        .unwrap();
+    assert!(!log.status.success(), "no commit without an identity");
 }
