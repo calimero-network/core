@@ -1,6 +1,8 @@
 //! TDX quote verification.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::time::Duration;
 
 use crate::quote::Quote;
 use dcap_qvl::collateral::{CollateralClient, INTEL_PCS_URL};
@@ -8,12 +10,15 @@ use dcap_qvl::configs::DefaultConfig;
 use dcap_qvl::http::{HttpClient, HttpResponse};
 use dcap_qvl::tcb_info::TcbInfo as DcapTcbInfo;
 use dcap_qvl::verify::verify;
+use dcap_qvl::QuoteCollateralV3;
 use tdx_quote::Quote as TdxQuote;
 use tracing::{error, info, warn};
 
 use crate::error::AttestationError;
 #[cfg(feature = "mock-attestation")]
 use crate::generate::{is_mock_quote, MOCK_QUOTE_HEADER};
+
+const COLLATERAL_TIMEOUT: Duration = Duration::from_secs(180); // dcap-qvl's own default
 
 /// Parse a TDX quote from bytes a peer chose.
 ///
@@ -233,6 +238,78 @@ async fn reject_unparseable_certification_data(
     }
 }
 
+/// Reqwest transport that records the last response status (0: none, or a
+/// transport error), since dcap-qvl reports failures as untyped errors.
+struct RecordingHttp<'a> {
+    client: reqwest::Client,
+    last_status: &'a AtomicU16,
+}
+
+impl HttpClient for RecordingHttp<'_> {
+    async fn get(&self, url: &str) -> anyhow::Result<HttpResponse> {
+        self.last_status.store(0, Ordering::Relaxed);
+        let resp = self.client.get(url).send().await?;
+        let status = resp.status().as_u16();
+        self.last_status.store(status, Ordering::Relaxed);
+        let headers = resp
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                let value = value
+                    .to_str()
+                    .map_err(|e| anyhow::anyhow!("header {name} is not ASCII: {e}"))?;
+                Ok::<_, anyhow::Error>((name.as_str().to_owned(), value.to_owned()))
+            })
+            .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+        let body = resp.bytes().await?.to_vec();
+        Ok(HttpResponse {
+            status,
+            headers,
+            body,
+        })
+    }
+}
+
+/// A 4xx other than request timeout, too early and rate limiting means the
+/// source rejected what the quote carries; anything else is the source failing.
+fn source_rejected_request(status: u16) -> bool {
+    (400..500).contains(&status) && !matches!(status, 408 | 425 | 429)
+}
+
+/// Fetch collateral for `quote_bytes` from `source`.
+async fn fetch_collateral(
+    quote_bytes: &[u8],
+    source: &str,
+) -> Result<QuoteCollateralV3, AttestationError> {
+    let unusable = |err: &dyn std::fmt::Debug| {
+        error!(error=?err, source=%source, "Collateral endpoint is not usable");
+        AttestationError::CollateralFetchFailed(format!("collateral source {source:?}: {err:?}"))
+    };
+    let client = reqwest::Client::builder()
+        .timeout(COLLATERAL_TIMEOUT)
+        .build()
+        .map_err(|err| unusable(&err))?;
+    reject_unparseable_certification_data(quote_bytes, source).await?;
+    let last_status = AtomicU16::new(0);
+    let collateral_client: CollateralClient<DefaultConfig, _> = CollateralClient::new(
+        RecordingHttp {
+            client,
+            last_status: &last_status,
+        },
+        source,
+    );
+    collateral_client.fetch(quote_bytes).await.map_err(|err| {
+        error!(error=?err, source=%source, "Failed to fetch collateral");
+        let status = last_status.load(Ordering::Relaxed);
+        let detail = format!("collateral source {source:?}: {err:?}");
+        if source_rejected_request(status) {
+            AttestationError::QuoteVerificationFailed(detail)
+        } else {
+            AttestationError::CollateralFetchFailed(detail)
+        }
+    })
+}
+
 /// Read Intel's `tcbEvaluationDataNumber` out of fetched collateral.
 ///
 /// Parses the same string dcap-qvl itself deserializes: the collateral carries
@@ -310,19 +387,7 @@ pub async fn verify_attestation(
 
     // Fetch collateral from the configured source (Intel PCS unless overridden).
     let collateral_source = collateral_source();
-    let client = CollateralClient::with_default_http(collateral_source.clone()).map_err(|err| {
-        error!(error=?err, source=%collateral_source, "Collateral endpoint is not usable");
-        AttestationError::CollateralFetchFailed(format!(
-            "collateral source {collateral_source:?}: {err:?}"
-        ))
-    })?;
-    reject_unparseable_certification_data(quote_bytes, &collateral_source).await?;
-    let collateral = client.fetch(quote_bytes).await.map_err(|err| {
-        error!(error=?err, source=%collateral_source, "Failed to fetch collateral");
-        AttestationError::CollateralFetchFailed(format!(
-            "collateral source {collateral_source:?}: {err:?}"
-        ))
-    })?;
+    let collateral = fetch_collateral(quote_bytes, &collateral_source).await?;
 
     // Named, because which endpoint served the collateral decides `tcb_status`
     // and `tcb_evaluation_data_number` below.
@@ -527,12 +592,17 @@ pub fn verify_mock_attestation(
 
 #[cfg(test)]
 mod tests {
+    use axum::http::StatusCode;
+    use axum::Router;
     use dcap_qvl::collateral::INTEL_PCS_URL;
 
     use super::{
-        collateral_source_from, is_debug_td, tcb_evaluation_data_number_of, verify_attestation,
+        collateral_source_from, fetch_collateral, is_debug_td, tcb_evaluation_data_number_of,
+        verify_attestation,
     };
     use crate::AttestationError;
+
+    const BEGIN: &[u8] = b"-----BEGIN CERTIFICATE-----\n";
 
     #[test]
     fn a_td_with_the_debug_bit_set_is_a_debug_td() {
@@ -662,7 +732,6 @@ mod tests {
     /// malformed, which is a refusal and never a collateral outage.
     #[tokio::test]
     async fn a_quote_with_garbage_certification_data_is_a_parse_failure_not_a_fetch_failure() {
-        const BEGIN: &[u8] = b"-----BEGIN CERTIFICATE-----\n";
         let mut quote = include_bytes!("../tests/fixtures/tdx_quote").to_vec();
         let start = quote
             .windows(BEGIN.len())
@@ -686,5 +755,61 @@ mod tests {
         super::reject_unparseable_certification_data(quote, INTEL_PCS_URL)
             .await
             .expect("the fixture's certification data parses");
+    }
+
+    /// Serves `status` for every request and returns the base URL.
+    async fn collateral_source_answering(status: StatusCode) -> String {
+        let app = Router::new().fallback(move || async move { status });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        url
+    }
+
+    /// The source rejecting what the quote carries is a verdict on the quote.
+    #[tokio::test]
+    async fn a_collateral_source_rejecting_the_quote_with_a_4xx_is_not_an_outage() {
+        let quote = include_bytes!("../tests/fixtures/tdx_quote");
+        for status in [StatusCode::NOT_FOUND, StatusCode::BAD_REQUEST] {
+            let source = collateral_source_answering(status).await;
+            let err = fetch_collateral(quote, &source)
+                .await
+                .expect_err("rejected");
+            assert!(
+                matches!(err, AttestationError::QuoteVerificationFailed(_)),
+                "{status}: got {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_collateral_source_that_is_down_or_throttling_is_an_outage() {
+        let quote = include_bytes!("../tests/fixtures/tdx_quote");
+        for status in [
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::REQUEST_TIMEOUT,
+            StatusCode::TOO_EARLY,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            let source = collateral_source_answering(status).await;
+            let err = fetch_collateral(quote, &source).await.expect_err("down");
+            assert!(
+                matches!(err, AttestationError::CollateralFetchFailed(_)),
+                "{status}: got {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_collateral_source_is_an_outage() {
+        let quote = include_bytes!("../tests/fixtures/tdx_quote");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let source = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let err = fetch_collateral(quote, &source).await.expect_err("refused");
+        assert!(
+            matches!(err, AttestationError::CollateralFetchFailed(_)),
+            "got {err:?}"
+        );
     }
 }

@@ -35,6 +35,7 @@ sha2.workspace = true
 
 # Quote verification dependencies (cross-platform)
 dcap-qvl.workspace = true
+reqwest.workspace = true
 tdx-quote.workspace = true
 
 # Server primitives for Quote type
@@ -52,4 +53,5 @@ required-features = ["cli"]
 configfs-tsm.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros"] }
+axum.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "net"] }

@@ -1067,10 +1067,12 @@ name = "calimero-tee-attestation"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64 0.23.1",
  "configfs-tsm",
  "dcap-qvl",
  "hex",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.11.1",
