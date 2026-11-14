@@ -40,7 +40,7 @@ class Pipelines(DeepCase):
              "three sealed input files; a run to completion and a re-run of the same inputs; the cluster's job "
              "node stopped, then a run over three new files that waits unplaced across the roll")
     verifies = ("the finished run's state, step states, runs and outputs; its receipt verifies against its outputs "
-                "on the old release, and on the new one is refused as carrying no job evidence; "
+                "on the old release, and on the new one is refused for its jobs (no attestation was logged); "
                 "its outputs download byte for byte; the re-run's steps came from the step cache; a stranger is "
                 "refused starting a run, the receipt and the events; the run left in flight is still running "
                 "mid-roll, then ends succeeded on the new release with each item run once, its outputs byte for "
@@ -127,11 +127,13 @@ class Pipelines(DeepCase):
             check(got["verified"] is True and len(got["outputs"]) == 3 and all(o["matches"] for o in got["outputs"]),
                   f"the receipt of {first['id']}: {got}")
         else:
-            # The old release kept no record of what its jobs signed, so this tree's meroctl will not call it verified.
+            # The old release logged no job attestation, so this tree's meroctl will not call it verified. A replica
+            # that replayed the log rebuilt the job evidence (the final carries the report); one from a snapshot did not.
             try:
                 got = pat.cli("pipeline", "receipt", s["app"], first["id"], "--verify")
             except CliError as e:
-                check("no job evidence" in e.stderr, f"the receipt of {first['id']} is refused for its jobs: {e.stderr}")
+                check(any(why in e.stderr for why in ("carries no attestation", "no job evidence")),
+                      f"the receipt of {first['id']} is refused for its jobs: {e.stderr}")
             else:
                 raise Failed(f"the receipt of {first['id']}, with no job evidence, verified: {got}")
         eq(self._outputs(w, pat, s, first), s["out"], "the collect step's output")
