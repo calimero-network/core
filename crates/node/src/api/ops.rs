@@ -31,6 +31,41 @@ async fn ops_cluster(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRe
     })))
 }
 
+/// `GET /ops/job-nodes/{id}/attestation`: the leader's check of job node `id` before it sends
+/// work, as `admitted`, `refused` (final: 400, 404 or an unreadable 2xx from the node, a failed
+/// verification, or a 400 or 404 on the collateral PCK certificate or TCB info request) or
+/// `unreachable` (anything else); `503` when the directory is stale. The per-app approval is left out.
+async fn ops_job_node_attestation(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<u64>,
+) -> ApiResult {
+    operator(&node, &headers)?;
+    let verdict = match node.job_attestation(id).await {
+        Ok(peer) => node.check_not_retired(&peer).map(|()| peer.release),
+        Err(e) => Err(e
+            .downcast::<JobAttestError>()
+            .map_err(|e| ApiError::internal(&format!("{e:#}")))?),
+    };
+    match verdict {
+        Ok(release) => Ok(Json(
+            json!({ "state": "admitted", "node": id, "release": release }),
+        )),
+        Err(JobAttestError::NotRegistered(_)) => Err(ApiError::not_found(&format!(
+            "node {id} is not a registered job node"
+        ))),
+        Err(JobAttestError::Stale) => Err(ApiError::unavailable(
+            "this node's directory could not be brought up to date",
+        )),
+        Err(JobAttestError::Unreachable(reason)) => Ok(Json(
+            json!({ "state": "unreachable", "node": id, "reason": reason }),
+        )),
+        Err(JobAttestError::Refused(reason)) => Ok(Json(
+            json!({ "state": "refused", "node": id, "reason": reason }),
+        )),
+    }
+}
+
 async fn ops_status(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
     operator(&node, &headers)?;
     let groups: Vec<Value> = node
@@ -797,6 +832,10 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/ops/orgs", get(ops_orgs))
         .route("/ops/nodes", post(ops_register_node))
         .route("/ops/nodes/{id}", delete(ops_remove_node))
+        .route(
+            "/ops/job-nodes/{id}/attestation",
+            get(ops_job_node_attestation),
+        )
         .route("/ops/apps/{app}/replicas", post(ops_set_replicas))
         .route("/ops/backup", post(ops_backup))
         .route("/ops/quotas", get(ops_quotas_get).post(ops_quotas_set))

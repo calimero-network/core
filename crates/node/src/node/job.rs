@@ -15,7 +15,7 @@ use url::Url;
 
 use super::Node;
 use crate::api::PLACEMENT_RELEASE_WAIT;
-use crate::attest::{verify_job_key, AttestationDoc};
+use crate::attest::{verify_job_key, AttestationDoc, VerifierUnavailable};
 use crate::error::ApiError;
 use crate::job_node::CANCEL_WAIT;
 use crate::job_wire::{self, Assignment};
@@ -88,6 +88,31 @@ pub(crate) fn timed_out(e: &eyre::Report) -> bool {
     e.downcast_ref::<TimedOut>().is_some()
 }
 
+/// Why a job node is not attested: the callers that act on the kind match it, never its text.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum JobAttestError {
+    #[error("node {0} is not a registered job node")]
+    NotRegistered(NodeId),
+    #[error("this node's directory could not be brought up to date")]
+    Stale,
+    /// The request failed: no answer or a non-2xx status.
+    #[error("{0}")]
+    Unreachable(String),
+    /// The node answered and what it showed does not pass.
+    #[error("{0}")]
+    Refused(String),
+}
+
+/// A failed verification: unreachable when it could not reach a service it needs, else refused.
+fn verification_failure(e: eyre::Report) -> JobAttestError {
+    if e.chain().any(|c| c.is::<VerifierUnavailable>()) {
+        return JobAttestError::Unreachable(format!(
+            "verification could not reach a service it needs: {e:#}"
+        ));
+    }
+    JobAttestError::Refused(format!("{e:#}"))
+}
+
 /// What a job node with no room answers.
 const BUSY_STATUS: u16 = 503;
 
@@ -140,14 +165,6 @@ async fn bounded_body(mut response: reqwest::Response, max: usize) -> eyre::Resu
     Ok(body)
 }
 
-async fn bounded_json<T: serde::de::DeserializeOwned>(
-    response: reqwest::Response,
-) -> eyre::Result<T> {
-    Ok(serde_json::from_slice(
-        &bounded_body(response, MAX_JOB_RESPONSE_BYTES).await?,
-    )?)
-}
-
 /// A job node whose transport and job signing keys one quote bound.
 #[derive(Clone, Debug)]
 pub struct JobPeer {
@@ -178,28 +195,34 @@ impl Node {
                 peer.release
             );
         }
+        self.check_not_retired(&peer)?;
+        Ok(peer)
+    }
+
+    /// Refuses `peer` when its release is past an operator's deadline.
+    pub(crate) fn check_not_retired(&self, peer: &JobPeer) -> Result<(), JobAttestError> {
         let now = self.clock.now_ms() / 1000;
         if self.sys(|s| s.retired(&peer.release, now)) {
-            eyre::bail!(
-                "job node {id} runs release {}, which is retired by a deadline",
-                peer.release
-            );
+            return Err(JobAttestError::Refused(format!(
+                "job node {} runs release {}, which is retired by a deadline",
+                peer.id, peer.release
+            )));
         }
-        Ok(peer)
+        Ok(())
     }
 
     /// Job node `id` as its attestation shows it, kept for [`JOB_ATTEST_TTL`]
     /// and only while the directory still holds the registration it was made for.
     pub(crate) async fn job_attestation(&self, id: NodeId) -> eyre::Result<JobPeer> {
         if !self.sys_fresh().await {
-            eyre::bail!("this node's directory could not be brought up to date");
+            return Err(JobAttestError::Stale.into());
         }
         let (url, epoch) = self
             .sys(|s| {
                 let url = s.job_nodes().find(|n| n.id == id)?.addr.clone();
                 Some((url, s.node_epoch.get(&id).copied().unwrap_or(0)))
             })
-            .ok_or_else(|| eyre::eyre!("node {id} is not a registered job node"))?;
+            .ok_or(JobAttestError::NotRegistered(id))?;
         let cached = self
             .job_peers
             .lock()
@@ -253,32 +276,23 @@ impl Node {
 
     async fn fetch_job_attestation(&self, id: NodeId, url: &str) -> eyre::Result<JobPeer> {
         let nonce: [u8; 32] = calimero_identity::random();
-        let mut at = resolve_path(&url.parse::<Url>()?, "attestation")?;
-        let _q = at
-            .query_pairs_mut()
-            .append_pair("nonce", &hex::encode(nonce))
-            .append_pair("purpose", "jobs");
-        let doc: AttestationDoc = bounded_json(
-            self.http
-                .get(at)
-                .timeout(JOB_ATTEST_TIMEOUT)
-                .send()
-                .await?
-                .error_for_status()?,
-        )
-        .await?;
+        let doc = self.fetch_attestation_doc(url, &nonce).await?;
         if doc.cluster != self.config.cluster || doc.node != id {
-            eyre::bail!(
+            return Err(JobAttestError::Refused(format!(
                 "job node {id} attests as node {} of cluster {}",
-                doc.node,
-                doc.cluster
-            );
+                doc.node, doc.cluster
+            ))
+            .into());
         }
-        let (transport_key, job_key) =
-            verify_job_key(&doc, &nonce, &self.config.peer_policy()).await?;
+        let (transport_key, job_key) = verify_job_key(&doc, &nonce, &self.config.peer_policy())
+            .await
+            .map_err(verification_failure)?;
         // The quote binds the identity the job node takes work from: not this cluster's, no work.
         if doc.cluster_identity.as_deref() != Some(hex::encode(self.cluster_identity()).as_str()) {
-            eyre::bail!("job node {id} takes work from another cluster");
+            return Err(JobAttestError::Refused(format!(
+                "job node {id} takes work from another cluster"
+            ))
+            .into());
         }
         Ok(JobPeer {
             id,
@@ -293,6 +307,50 @@ impl Node {
                 transport_key,
             )),
         })
+    }
+
+    /// The document a job node answers to `nonce` for `purpose=jobs`: a 400, a 404 or an
+    /// unreadable 2xx is refused; no answer or any other status is unreachable.
+    async fn fetch_attestation_doc(
+        &self,
+        url: &str,
+        nonce: &[u8; 32],
+    ) -> Result<AttestationDoc, JobAttestError> {
+        let unreachable = |e: &dyn std::fmt::Display| JobAttestError::Unreachable(format!("{e:#}"));
+        let mut at = resolve_path(
+            &url.parse::<Url>().map_err(|e| unreachable(&e))?,
+            "attestation",
+        )
+        .map_err(|e| unreachable(&e))?;
+        let _q = at
+            .query_pairs_mut()
+            .append_pair("nonce", &hex::encode(nonce))
+            .append_pair("purpose", "jobs");
+        let response = self
+            .http
+            .get(at)
+            .timeout(JOB_ATTEST_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| unreachable(&e))?;
+        let status = response.status();
+        if matches!(status.as_u16(), 400 | 404) {
+            return Err(JobAttestError::Refused(format!(
+                "the job node answers {status} to an attestation for jobs"
+            )));
+        }
+        if !status.is_success() {
+            return Err(unreachable(&format!("the job node answers {status}")));
+        }
+        let body = match bounded_body(response, MAX_JOB_RESPONSE_BYTES).await {
+            Ok(body) => body,
+            Err(e) if e.is::<AnswerTooLarge>() => {
+                return Err(JobAttestError::Refused(e.to_string()))
+            }
+            Err(e) => return Err(unreachable(&e)),
+        };
+        serde_json::from_slice(&body)
+            .map_err(|e| JobAttestError::Refused(format!("the attestation does not decode: {e}")))
     }
 
     /// How many runs `peer` has and how many it takes, asked over a sealed
@@ -513,8 +571,22 @@ impl Node {
 
 #[cfg(test)]
 mod tests {
-    use super::{release_at_least, TtlFlag};
+    use super::{release_at_least, verification_failure, JobAttestError, TtlFlag};
+    use crate::attest::VerifierUnavailable;
     use std::time::Duration;
+
+    #[test]
+    fn only_an_unavailable_verifier_makes_a_job_node_unreachable() {
+        let down = eyre::Report::new(VerifierUnavailable("pcs".into())).wrap_err("verify");
+        assert!(matches!(
+            verification_failure(down),
+            JobAttestError::Unreachable(_)
+        ));
+        assert!(matches!(
+            verification_failure(eyre::eyre!("quote refused")),
+            JobAttestError::Refused(_)
+        ));
+    }
 
     #[test]
     fn a_flag_answers_only_while_fresh() {

@@ -131,6 +131,23 @@ A replica answers `404` to the same request.
 The leader verifies the quote with the same code clients use (`verify_job_key`, sharing `verify_report` and the peer policy), then checks that the attested release is approved for the app's organization, as `Node::may_send` does for replicas.
 Because a job node attests only for jobs, no channel that carries the cluster secret, the cluster key, Raft or blob traffic can open to it.
 
+### Who attests a job node
+
+The leader does, whenever it needs a job node, with a fresh nonce.
+It checks the quote against the peer policy and the release the job node names, that the document names this cluster and this node, and that the quote binds the cluster identity this cluster signs with.
+A release past an operator's deadline is refused, and so is a release the app's organization has not approved for that app.
+A verified answer is reused for up to a minute, until the directory registers or removes the node, or until a channel to it fails; a refused or unreachable answer is never kept.
+A job node never receives the cluster's KMS key or the cluster key: it attests only its job key, so no channel that carries them opens to it.
+
+Operators read the verdict from `GET /ops/job-nodes/{id}/attestation`.
+It runs the leader's check, without the per-app approval, and answers one of three states with HTTP 200.
+`admitted` carries the attested `release`.
+`refused` is final: the node answered and its attestation does not pass, with the reason.
+It covers a `400` or `404` from the node (the only statuses a job node answers on its own; a replica registered as a job node answers `404`), a 2xx answer that is oversized or does not decode, a quote that fails the verification checks, and a collateral source answering `400` or `404` to the PCK certificate or TCB info request, the two requests that carry values the node chose.
+`unreachable` is transient, so ask again later: no answer (connect, timeout, TLS or redirect failure, a connection cut mid-body), any other status from the node (a proxy or load balancer in front of a booting node can answer a 3xx, 401, 403, 421, 5xx, 408, 425 or 429), or an outage of a service verification needs: any other collateral failure, including a `401` or `403`, or a `404` on a CRL or QE identity, and the release host.
+An id that is not a registered job node answers `404`.
+The route answers `503` when this node's directory could not be brought up to date.
+
 **Only compute components.** A job node prepares what it is given on the compute world, so an app component, which imports state and `runs`, is refused with `BAD_BUNDLE` even when the cluster signed it.
 The leader never offers one: it sends the run's pinned compute component, and the job node logs each component it prepares by hash.
 

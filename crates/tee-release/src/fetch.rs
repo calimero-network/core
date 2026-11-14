@@ -15,11 +15,17 @@ const FETCH_RETRIES: usize = 3;
 /// ceiling.
 const FETCH_MAX_BACKOFF_MS: u64 = 60_000;
 
+/// The release host could not be reached (5xx, 408, 425, 429, a rate-limited 403, network)
+/// after every retry: unlike a 404 or a bad signature, this says nothing about the release.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct ReleaseUnreachable(pub String);
+
 /// Fetch `asset` from release `tag` together with its `.sig` and
 /// `.bundle.json`, verify it was signed by `identity`, and return its body.
 ///
-/// Transient failures (5xx, 429, network) are retried with backoff; a 404 or
-/// any other client error is final, and so is a failed verification, which is
+/// Transient failures (5xx, 408, 425, 429, a rate-limited 403, network) are retried with
+/// backoff; a 404 or any other client error is final, and so is a failed verification, which is
 /// never retried because a bad signature does not become good.
 pub async fn fetch_verified_asset(
     tag: &str,
@@ -79,7 +85,12 @@ impl SignedBodies {
             identity,
         )
         .await
-        .map_err(|e| eyre::eyre!("{asset} from {tag} failed signature verification: {e}"))?;
+        .map_err(|e| {
+            if e.is::<ReleaseUnreachable>() {
+                return e;
+            }
+            eyre::eyre!("{asset} from {tag} failed signature verification: {e}")
+        })?;
         Ok(self.body)
     }
 }
@@ -102,6 +113,7 @@ async fn fetch_signed(
     let names = [asset, signature_name.as_str(), bundle_name.as_str()];
 
     let mut last_error = String::new();
+    let mut unreachable = false;
     'attempts: for attempt in 1..=FETCH_RETRIES {
         let mut bodies = Vec::with_capacity(names.len());
         for (index, name) in names.into_iter().enumerate() {
@@ -113,6 +125,7 @@ async fn fetch_signed(
                 }
                 AssetFetchResult::Transient(error) => {
                     last_error = error;
+                    unreachable = true;
                     if attempt < FETCH_RETRIES {
                         warn!(attempt, retries = FETCH_RETRIES, error = %last_error, "transient release asset fetch failure, retrying");
                         tokio::time::sleep(fetch_backoff(attempt)).await;
@@ -122,6 +135,7 @@ async fn fetch_signed(
                 }
                 AssetFetchResult::NotFound(error) | AssetFetchResult::Permanent(error) => {
                     last_error = error;
+                    unreachable = false;
                     break 'attempts;
                 }
             }
@@ -136,6 +150,9 @@ async fn fetch_signed(
         }));
     }
 
+    if unreachable {
+        return Err(ReleaseUnreachable(last_error).into());
+    }
     bail!("{last_error}")
 }
 
@@ -145,6 +162,16 @@ enum AssetFetchResult {
     NotFound(String),
     Transient(String),
     Permanent(String),
+}
+
+/// Statuses a healthy host answers while busy or rate limiting; GitHub limits with a 403.
+fn is_transient(status: reqwest::StatusCode, headers: &reqwest::header::HeaderMap) -> bool {
+    let rate_limited = status == reqwest::StatusCode::FORBIDDEN
+        && (headers.contains_key(reqwest::header::RETRY_AFTER)
+            || headers
+                .get("x-ratelimit-remaining")
+                .is_some_and(|remaining| remaining.as_bytes() == b"0"));
+    status.is_server_error() || matches!(status.as_u16(), 408 | 425 | 429) || rate_limited
 }
 
 async fn fetch_release_asset(
@@ -161,11 +188,12 @@ async fn fetch_release_asset(
         },
         Ok(resp) => {
             let status = resp.status();
+            let transient = is_transient(status, resp.headers());
             let body = resp.text().await.unwrap_or_default();
             let error = format!("Failed to fetch {asset_name}: {status} {url} {body}");
             if status == reqwest::StatusCode::NOT_FOUND {
                 AssetFetchResult::NotFound(error)
-            } else if status.is_server_error() || status.as_u16() == 429 {
+            } else if transient {
                 AssetFetchResult::Transient(error)
             } else {
                 AssetFetchResult::Permanent(error)
@@ -193,7 +221,7 @@ mod tests {
     use axum::http::StatusCode;
     use axum::routing::get;
 
-    use super::{fetch_backoff, fetch_signed, Signed, FETCH_MAX_BACKOFF_MS};
+    use super::{fetch_backoff, fetch_signed, ReleaseUnreachable, Signed, FETCH_MAX_BACKOFF_MS};
 
     #[test]
     fn fetch_backoff_grows_then_caps() {
@@ -285,5 +313,135 @@ mod tests {
             .err()
             .expect("a half-published asset is a broken release, not an absent one");
         assert!(err.to_string().contains("policy.json.sig"), "{err}");
+        assert!(
+            !err.chain().any(|e| e.is::<ReleaseUnreachable>()),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_release_host_that_cannot_be_reached_is_unreachable_not_refused() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        drop(listener);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        let err = fetch_signed(&client, &base, "v1", "policy.json")
+            .await
+            .err()
+            .expect("nothing listens");
+        assert!(err.chain().any(|e| e.is::<ReleaseUnreachable>()), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn a_release_host_answering_503_is_unreachable() {
+        let app = axum::Router::new().fallback(|| async { StatusCode::SERVICE_UNAVAILABLE });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        drop(tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server");
+        }));
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        let err = fetch_signed(&client, &base, "v1", "policy.json")
+            .await
+            .err()
+            .expect("503 every time");
+        assert!(err.chain().any(|e| e.is::<ReleaseUnreachable>()), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn a_client_error_on_the_asset_is_a_refusal_not_unreachable() {
+        let app = axum::Router::new().fallback(|| async { StatusCode::FORBIDDEN });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        drop(tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server");
+        }));
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        let err = fetch_signed(&client, &base, "v1", "policy.json")
+            .await
+            .err()
+            .expect("403 is final");
+        assert!(
+            !err.chain().any(|e| e.is::<ReleaseUnreachable>()),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_timeout_or_rate_limit_answer_is_unreachable_not_refused() {
+        let answers: [(StatusCode, Option<(&str, &str)>); 4] = [
+            (StatusCode::REQUEST_TIMEOUT, None),
+            (StatusCode::from_u16(425).expect("425"), None),
+            (StatusCode::FORBIDDEN, Some(("x-ratelimit-remaining", "0"))),
+            (StatusCode::FORBIDDEN, Some(("retry-after", "60"))),
+        ];
+        for (status, header) in answers {
+            let app = axum::Router::new().fallback(move || async move {
+                let mut headers = axum::http::HeaderMap::new();
+                if let Some((name, value)) = header {
+                    let _prev = headers.insert(name, value.parse().expect("header value"));
+                }
+                (status, headers)
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener should bind");
+            let base = format!("http://{}", listener.local_addr().expect("addr"));
+            drop(tokio::spawn(async move {
+                axum::serve(listener, app).await.expect("server");
+            }));
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("client");
+            let err = fetch_signed(&client, &base, "v1", "policy.json")
+                .await
+                .err()
+                .expect("answered every time");
+            assert!(
+                err.chain().any(|e| e.is::<ReleaseUnreachable>()),
+                "{status} {header:?}: {err:#}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_forbidden_with_quota_left_is_still_a_refusal() {
+        let app = axum::Router::new()
+            .fallback(|| async { (StatusCode::FORBIDDEN, [("x-ratelimit-remaining", "4999")]) });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        drop(tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server");
+        }));
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        let err = fetch_signed(&client, &base, "v1", "policy.json")
+            .await
+            .err()
+            .expect("403 is final");
+        assert!(
+            !err.chain().any(|e| e.is::<ReleaseUnreachable>()),
+            "{err:#}"
+        );
     }
 }

@@ -1745,6 +1745,10 @@ fn operations() -> Vec<Op> {
             .ok("{ status: { group: uint, leader: uint | null, is_leader: bool, term: uint, last_log: uint | null, applied: uint, voters: uint[], learners: uint[] } }")
             .operator()
             .errors(&[(400, "LAST_NODE"), (421, "NOT_LEADER")]),
+        get("/ops/job-nodes/{id}/attestation", "ops_job_node_attestation", Ops, "Whether the cluster accepts a job node")
+            .about("Runs the check the leader makes before it sends a job node work: a quote that passes the release policy, this cluster and node, this cluster's identity, a release not retired (not the per-app release approval). `admitted` carries the attested `release`; `refused` (final), with the reason: a 400 or 404 from the node, a 2xx that is oversized or does not decode, a failed verification, or a 400 or 404 from the collateral source on the PCK certificate or TCB info request; `unreachable` (transient), with the reason: anything else, including no answer, any other status from the node and any other collateral failure. `503` when this node's directory is stale. A verified answer is reused for up to a minute.")
+            .ok(r#"{ state: "admitted", node: uint, release: string } | { state: "refused" | "unreachable", node: uint, reason: string }"#)
+            .errors(&[(404, "NOT_FOUND"), (503, "UNAVAILABLE")]),
         get("/ops/nodes/{id}/receipt-key", "account_proof::ops_receipt_key", Ops, "A node's receipt key")
             .ok("{ node: uint, key: string, release: string, attestedAt: uint }")
             .errors(&[(404, "NOT_FOUND")]),

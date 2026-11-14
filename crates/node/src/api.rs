@@ -35,7 +35,7 @@ use crate::app::{AppMachine, Status};
 use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
-use crate::node::{CallRequest, Node, ViewRequest};
+use crate::node::{CallRequest, JobAttestError, Node, ViewRequest};
 use crate::report::{self, Reader, MAX_REPORT_PAGE};
 use crate::system::cluster_version::{scope_app_features, Feature};
 use crate::system::{

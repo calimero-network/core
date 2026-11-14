@@ -857,6 +857,34 @@ pub struct VerifiedQuote {
     pub profile: Option<String>,
 }
 
+/// Verification needed a service it could not reach (Intel PCS, the release
+/// host): says nothing about the quote, so a caller may try again.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct VerifierUnavailable(pub String);
+
+/// Why `verify_attestation` failed: a collateral fetch is unavailability, the
+/// rest are verdicts on the quote.
+fn quote_verification_error(e: calimero_tee_attestation::AttestationError) -> eyre::Report {
+    match e {
+        calimero_tee_attestation::AttestationError::CollateralFetchFailed(_) => {
+            VerifierUnavailable(format!("quote verification: {e}")).into()
+        }
+        e => eyre::eyre!("quote verification: {e:?}"),
+    }
+}
+
+/// Why fetching release `version` failed: an unreachable release host is
+/// unavailability, anything else (a 404, a bad signature) is a verdict.
+fn release_fetch_error(version: &str, e: eyre::Report) -> eyre::Report {
+    if e.chain()
+        .any(|c| c.is::<calimero_tee_release::ReleaseUnreachable>())
+    {
+        return VerifierUnavailable(format!("mero-tee release {version}: {e:#}")).into();
+    }
+    eyre::eyre!("mero-tee release {version}: {e:#}")
+}
+
 /// The one quote check behind every verifier here: `quote_b64` is genuine (or
 /// a mock `policy` allows), comes from an image `policy` trusts (judged
 /// against the release the node names, `release`), and its report data is
@@ -900,7 +928,7 @@ pub(crate) async fn verify_quote(
     second.copy_from_slice(&expected[32..]);
     let result = calimero_tee_attestation::verify_attestation(&quote, nonce, &second)
         .await
-        .map_err(|e| eyre::eyre!("quote verification: {e:?}"))?;
+        .map_err(quote_verification_error)?;
     judge(&result, policy, release).await.map(Some)
 }
 
@@ -923,7 +951,7 @@ async fn judge(
         ) => {
             let release = fetch_release(version.clone())
                 .await
-                .map_err(|e| eyre::eyre!("mero-tee release {version}: {e:#}"))?;
+                .map_err(|e| release_fetch_error(&version, e))?;
             let trusted: Vec<String> = allowed_profiles
                 .iter()
                 .filter(|p| policy.allow_debug_profiles || !is_debug_profile(p))
@@ -1014,7 +1042,39 @@ fn rand_nonce() -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    use calimero_tee_attestation::AttestationError as E;
+
     use super::*;
+
+    #[test]
+    fn a_collateral_fetch_failure_is_unavailability_not_a_verdict() {
+        let down = quote_verification_error(E::CollateralFetchFailed("pcs down".into()));
+        assert!(
+            down.chain().any(|c| c.is::<VerifierUnavailable>()),
+            "{down:#}"
+        );
+        let bad = quote_verification_error(E::QuoteVerificationFailed("bad sig".into()));
+        assert!(
+            !bad.chain().any(|c| c.is::<VerifierUnavailable>()),
+            "{bad:#}"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_release_host_is_unavailability_a_bad_release_is_not() {
+        let down = eyre::Report::new(calimero_tee_release::ReleaseUnreachable("503".into()))
+            .wrap_err("fetch");
+        let down = release_fetch_error("1.0.0", down);
+        assert!(
+            down.chain().any(|c| c.is::<VerifierUnavailable>()),
+            "{down:#}"
+        );
+        let bad = release_fetch_error("1.0.0", eyre::eyre!("failed signature verification"));
+        assert!(
+            !bad.chain().any(|c| c.is::<VerifierUnavailable>()),
+            "{bad:#}"
+        );
+    }
 
     fn doc(version: &str) -> AttestationDoc {
         AttestationDoc {
