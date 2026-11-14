@@ -48,7 +48,9 @@ fn set_get_len_remove() {
 ```
 
 - `TestApp::new(component, org, now_ms)` creates the app; `init` runs as the
-  owner.
+  owner, with no arguments (`{}`). An `init` whose parameters are all `Option`
+  starts with each `None`; one with a required parameter cannot start in the
+  harness, though it does on a node, which passes the app's `initArgs`.
 - `Org::new().admins([..]).members([..]).guests([..]).teams([..])` sets the org
   the app sees through `env::org_role` and `env::in_team`.
 - `t.as_(account).call(method, args)` / `.view(..)` run a method as `account`,

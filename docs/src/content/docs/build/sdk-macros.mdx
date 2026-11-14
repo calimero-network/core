@@ -137,9 +137,34 @@ listed in the ABI too.
 ## `#[app::logic]`
 
 On the state's `impl` block. Every `pub fn` is a method, named in camelCase in
-the ABI (`room_count` → `roomCount`); private `fn`s stay helpers. Methods take
-`&mut self` (a call), `&self` with `#[app::view]` (a view), or nothing
-(`#[app::init]`, which returns `Self`). Every method returns `app::Result<T>`.
+the ABI (`room_count` → `roomCount`); private `fn`s stay helpers. A method's
+receiver says its kind: `&mut self` is a call, `&self` with `#[app::view]` a
+view, and `#[app::init]` has no receiver and returns `Self`. Every method,
+`init` included, may take parameters, and every method returns `app::Result<T>`.
+
+`init`'s parameters work like a call's: the node passes the app's `initArgs`
+(`POST /apps`, `meroctl context create --params`) as a JSON object keyed by the
+camelCase parameter names, and the ABI lists them, so typed clients declare
+them as `InitArgs` ([typed clients](/build/guides/typed-clients/)). A missing
+required argument, a wrong type or an unknown name fails `init` with `BadArgs`,
+and the create answers `422 INIT_FAILED`. Make a parameter an `Option` when
+the app should also start without it:
+
+```rust
+#[app::init]
+pub fn init(title: String, max_players: Option<u64>) -> app::Result<Self> {
+    let mut app = Self::load();
+    app.title.set(&title)?;
+    app.max_players.set(&max_players.unwrap_or(2))?;
+    Ok(app)
+}
+```
+
+```bash
+meroctl context create --name blitz --package com.example.game --params '{"title":"Friday blitz","maxPlayers":"4"}'
+```
+
+The `u64` travels as a decimal string, as in any call.
 
 The generated `handle`:
 
@@ -158,7 +183,8 @@ The generated `handle`:
 
 ## Method attributes
 
-- `#[app::init]` runs once, as the owner, and takes no other attribute.
+- `#[app::init]` runs once, as the owner, with the app's `initArgs`, and takes
+  no other attribute.
 - `#[app::view]` makes the method a read.
 - `#[app::confirm]` asks the node to require a fresh passkey assertion for the
   call.
