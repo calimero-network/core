@@ -2326,3 +2326,43 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
     assert_eq!(status(&e), 404, "{e}");
     assert!(e.to_string().contains("no such package version"), "{e}");
 }
+
+/// A member who saw a release through the installer's organization stops
+/// seeing it once removed from that organization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_member_removed_from_the_org_loses_the_capability_card() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
+    let (amy, _amy_key) = signed_up(&c, 1, "amy").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let (mpk, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(mpk).await.unwrap();
+    let path = format!("packages/{PACKAGE}/1.0.0/capabilities");
+    assert_eq!(status(&get(&amy, &path).await.unwrap_err()), 404);
+
+    let org = alice.orgs().create("acme", None).await.unwrap().org_id;
+    let invite = alice
+        .orgs()
+        .invite_create(
+            &org,
+            typed(json!({ "role": "member" })),
+            Some(&mut alice_key),
+        )
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = amy.orgs().invite_redeem(&invite).await.unwrap();
+    assert_eq!(get(&amy, &path).await.unwrap()["version"], "1.0.0");
+
+    let _removed = alice
+        .orgs()
+        .remove_member(&org, &account_of(&amy).await, Some(&mut alice_key))
+        .await
+        .unwrap();
+    let e = get(&amy, &path).await.unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
+    assert!(e.to_string().contains("no such package version"), "{e}");
+}
