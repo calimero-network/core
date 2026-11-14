@@ -1535,7 +1535,7 @@
     },
     "/apps/{app}/methods/book": {
       "post": {
-        "description": "A call: runs as `POST /apps/{app}/intents` with `method: \"book\"`.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
+        "description": "A call: runs as `POST /apps/{app}/intents` with `method: \"book\"`.\n\nPublisher's description: Books `room_id` at `start`; `Taken` when the slot is held.\n\nThe ABI lists the app's errors for the whole app, not per method: any of them may answer `422 APP_ERROR`.",
         "operationId": "book",
         "parameters": [
           {

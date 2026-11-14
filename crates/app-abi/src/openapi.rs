@@ -558,6 +558,9 @@ impl Ctx {
         } else {
             format!("A call: runs as `POST /apps/{{app}}/intents` with `method: \"{name}\"`.")
         }];
+        if let Some(doc) = &m.doc {
+            description.push(format!("Publisher's description: {doc}"));
+        }
         if m.confirm {
             description.push(
                 "Needs the account holder's passkey: the first request is answered `412 CONFIRM_REQUIRED` with a challenge; send the same request again with `confirm` (the challenge id and the passkey's assertion over it).".into(),

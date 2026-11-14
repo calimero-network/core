@@ -77,6 +77,8 @@ pub struct Method {
     pub rate: Option<String>,
     /// A timer's interval.
     pub every: Option<String>,
+    /// The publisher's `///` comment on the method; not enforced by the node.
+    pub doc: Option<String>,
     /// A compute method's caps, as the ABI writes them.
     pub compute: Option<Value>,
 }
@@ -346,6 +348,7 @@ fn method(name: &str, json: &Value) -> EyreResult<Method> {
         compute_result: flag(fields, "computeResult", name)?,
         rate: text("rate"),
         every: text("every"),
+        doc: text("doc"),
         compute: fields.get("compute").cloned(),
     })
 }
