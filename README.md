@@ -70,8 +70,8 @@ latest release, each checked against its `SHA256SUMS`:
 curl -fsSL https://raw.githubusercontent.com/calimero-network/core/master/scripts/install.sh | sh -s -- merod meroctl
 ```
 
-On macOS, install `meroctl` alone and run the node in Docker
-(`meroctl local up --docker`). From a checkout, `cargo install --locked --path
+Both ship for Linux (x86_64, aarch64) and macOS (Apple silicon), also through
+Homebrew (`brew install calimero-network/tap/meroctl calimero-network/tap/merod`). From a checkout, `cargo install --locked --path
 crates/merod` (and `crates/meroctl`) builds them instead. See
 [Install & first run](https://calimero-network.github.io/core/operate/install/).
 
