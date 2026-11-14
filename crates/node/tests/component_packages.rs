@@ -630,6 +630,15 @@ async fn a_cards_service_is_the_sole_one_or_the_one_named() {
         .unwrap_err();
     assert_eq!(e.code(), Some("NO_SUCH_SERVICE"), "{e}");
     assert!(e.to_string().contains("has no service nope"), "{e}");
+    let e = capabilities(
+        &owner,
+        "com.test.named",
+        &format!("?service={}", "x".repeat(4096)),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_REQUEST"), "{e}");
+    assert!(e.to_string().len() < 512, "the name is not echoed: {e}");
 }
 
 /// An older node would drop `components` and apply a compute-only release as an app's,

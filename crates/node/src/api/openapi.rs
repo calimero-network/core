@@ -1458,10 +1458,10 @@ fn operations() -> Vec<Op> {
             .ok("{ [string]: { hash: string, worstCaseFuel: any, modules: any, pipeline: any } }")
             .errors(&[(404, "NOT_FOUND")]),
         get("/packages/{package}/{version}/capabilities", "package_capabilities", SignedIn, "A release's capabilities")
-            .about("What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several.")
+            .about("What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.")
             .query::<super::packages::CapabilitiesQuery>("{ service?: string }")
             .ok("{ package: string, version: string, service: string | null, bundle: string, mpk: string, manifestHash: string, signer: string, name: string | null, author: string | null, outbound: string[], abi: any }")
-            .errors(&[(400, "NO_SUCH_SERVICE"), (404, "NOT_FOUND")]),
+            .errors(&[(400, "BAD_REQUEST"), (400, "NO_SUCH_SERVICE"), (404, "NOT_FOUND")]),
         post("/apps/{app}/pipelines/{name}/estimate", "pipelines::estimate_run", SignedIn, "Estimate a pipeline run")
             .about("The owner and the organization's members. Runs, fuel and cost of a run of a pipeline the app's release registers, for `inputs` (file ids, only counted) or `counts`, not both; numbers as decimal strings.")
             .json::<super::pipelines::EstimateBody>("{ inputs?: { [string]: string[] }, counts?: { [string]: uint }, params?: { [string]: any } }")

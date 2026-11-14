@@ -6,6 +6,8 @@
 )]
 use super::*;
 
+const MAX_SERVICE_QUERY_BYTES: usize = 128; // a service name in `?service=`
+
 async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Body) -> ApiResult {
     let account = installer(&node, &headers).await?.account()?;
     node.refuse_undeployable(&account).await?;
@@ -207,6 +209,15 @@ async fn package_capabilities(
     Query(q): Query<CapabilitiesQuery>,
 ) -> ApiResult {
     let principal = signed_in(&node, &headers).await?;
+    if q.service
+        .as_ref()
+        .is_some_and(|s| s.len() > MAX_SERVICE_QUERY_BYTES)
+    {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            &format!("service is limited to {MAX_SERVICE_QUERY_BYTES} bytes"),
+        ));
+    }
     let account = principal.account()?;
     let frontend = principal.bound_app() == Some(package.as_str());
     node.sys_fresh_from(principal.sys_index).await;
