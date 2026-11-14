@@ -896,3 +896,108 @@ async fn a_replica_attests_as_the_orchestrator_and_a_job_node_refuses() {
     let body: Value = refused.json().await.unwrap();
     assert_eq!(body["error"], "NOT_FOUND");
 }
+
+async fn verdict(client: &Client, id: u64) -> Result<Value, Box<calimero_client::Error>> {
+    let answer = client
+        .ops()
+        .job_node_attestation(&id.to_string())
+        .await
+        .map_err(Box::new)?;
+    Ok(wire(answer))
+}
+
+/// The operator reads whether the cluster accepts a job node: admitted, refused with the
+/// reason, or unreachable, and a node that is no job node is a 404.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_ops_route_tells_admitted_from_refused_from_unreachable() {
+    let c = Cluster::start_with(3, |cfg| cfg.tee_release = Some("1.0.0".into())).await;
+    let ops = ops(&c).await;
+
+    let ours = c
+        .start_job_node(JOB, |cfg| cfg.tee_release = Some("1.0.0".into()))
+        .await;
+    c.register_job_node(JOB, &ours.url).await;
+    assert_eq!(
+        verdict(&ops, JOB).await.unwrap(),
+        json!({ "state": "admitted", "node": JOB, "release": "1.0.0" })
+    );
+
+    // Answers, but takes work from another cluster.
+    let theirs = calimero_node::backup::cluster_identity_key(&[9; 32]);
+    let other = c
+        .start_job_node(JOB + 1, |cfg| {
+            cfg.tee_release = Some("1.0.0".into());
+            cfg.cluster_identity = theirs.verifying_key().to_bytes();
+        })
+        .await;
+    c.register_job_node(JOB + 1, &other.url).await;
+    let refused = verdict(&ops, JOB + 1).await.unwrap();
+    assert_eq!(refused["state"], "refused", "{refused}");
+    assert_eq!(refused["node"], JOB + 1);
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap()
+            .contains("another cluster"),
+        "{refused}"
+    );
+
+    // Nothing listening.
+    c.register_job_node(JOB + 2, "http://127.0.0.1:1/").await;
+    let down = verdict(&ops, JOB + 2).await.unwrap();
+    assert_eq!(down["state"], "unreachable", "{down}");
+    assert_eq!(down["node"], JOB + 2);
+    assert!(!down["reason"].as_str().unwrap().is_empty(), "{down}");
+
+    // Answers with something that is not an attestation.
+    let junk = axum::Router::new().route("/attestation", get(|| async { "not json" }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, junk).await });
+    c.register_job_node(JOB + 3, &addr).await;
+    let unreadable = verdict(&ops, JOB + 3).await.unwrap();
+    assert_eq!(unreadable["state"], "unreachable", "{unreadable}");
+    server.abort();
+
+    // A replica and an unknown id are no job nodes.
+    for id in [1, 99] {
+        let e = verdict(&ops, id).await.unwrap_err();
+        assert_eq!(e.code(), Some("NOT_FOUND"), "{id}: {e}");
+    }
+}
+
+/// A job node on a release the cluster has retired is refused, naming the release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_ops_route_refuses_a_job_node_on_a_retired_release() {
+    let c = Cluster::start_with(3, |cfg| cfg.tee_release = Some("1.0.0".into())).await;
+    let ops = ops(&c).await;
+    let job = c
+        .start_job_node(JOB, |cfg| cfg.tee_release = Some("1.0.0".into()))
+        .await;
+    c.register_job_node(JOB, &job.url).await;
+    assert_eq!(verdict(&ops, JOB).await.unwrap()["state"], "admitted");
+
+    let _ok = common::ops_signed(
+        &ops,
+        "ops/releases/2.0.0/deadline",
+        json!({ "after": "2001-01-01T00:00:00Z" }),
+    )
+    .await
+    .unwrap();
+    let refused = verdict(&ops, JOB).await.unwrap();
+    assert_eq!(refused["state"], "refused", "{refused}");
+    assert!(
+        refused["reason"].as_str().unwrap().contains("retired"),
+        "{refused}"
+    );
+}
+
+/// Like every ops route, the verdict needs the ops token.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_ops_route_needs_the_ops_token() {
+    let c = Cluster::start(3).await;
+    let job = c.start_job_node(JOB, |_| {}).await;
+    c.register_job_node(JOB, &job.url).await;
+    let e = verdict(&c.client(0), JOB).await.unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+}

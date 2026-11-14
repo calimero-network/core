@@ -131,6 +131,21 @@ A replica answers `404` to the same request.
 The leader verifies the quote with the same code clients use (`verify_job_key`, sharing `verify_report` and the peer policy), then checks that the attested release is approved for the app's organization, as `Node::may_send` does for replicas.
 Because a job node attests only for jobs, no channel that carries the cluster secret, the cluster key, Raft or blob traffic can open to it.
 
+### Who attests a job node
+
+The leader does, for each run it sends, with a fresh nonce.
+It checks the quote against the peer policy and the release the job node names, that the document names this cluster and this node, and that the quote binds the cluster identity this cluster signs with.
+A release past an operator's deadline is refused, and so is a release the app's organization has not approved for that app.
+A verified answer is kept for a minute.
+A job node never receives the cluster's KMS key or the cluster key: it attests only its job key, so no channel that carries them opens to it.
+
+Operators read the verdict from `GET /ops/job-nodes/{id}/attestation`.
+It runs the leader's check, without the per-app approval, and answers one of three states with HTTP 200.
+`admitted` carries the attested `release`.
+`refused` means the node answered and its attestation does not pass, with the reason.
+`unreachable` means the request failed, with the reason.
+An id that is not a registered job node answers `404`.
+
 **Only compute components.** A job node prepares what it is given on the compute world, so an app component, which imports state and `runs`, is refused with `BAD_BUNDLE` even when the cluster signed it.
 The leader never offers one: it sends the run's pinned compute component, and the job node logs each component it prepares by hash.
 

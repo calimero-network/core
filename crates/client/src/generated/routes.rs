@@ -1658,6 +1658,17 @@ impl Ops<'_> {
         route::json(self.client.transport(), req, None, operator, false).await
     }
 
+    /// Whether the cluster accepts a job node.
+    ///
+    /// `GET /ops/job-nodes/{id}/attestation` (`ops_job_node_attestation`). Who: the ops token.
+    pub async fn job_node_attestation(self, id: &str) -> Result<OpsJobNodeAttestationResponse> {
+        let req = Request::new(
+            Method::GET,
+            format!("ops/job-nodes/{}/attestation", route::segment(id)),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// Prometheus metrics.
     ///
     /// `GET /ops/metrics` (`ops_metrics`). Who: the ops token.

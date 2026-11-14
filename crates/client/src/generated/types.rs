@@ -4513,6 +4513,94 @@ pub struct OpsDeploymentsGrantedResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum OpsJobNodeAttestationResponseReleaseState {
+    /// `admitted`.
+    Admitted,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl OpsJobNodeAttestationResponseReleaseState {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Admitted => "admitted",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for OpsJobNodeAttestationResponseReleaseState {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for OpsJobNodeAttestationResponseReleaseState {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "admitted" => Self::Admitted,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum OpsJobNodeAttestationResponseReasonState {
+    /// `refused`.
+    Refused,
+    /// `unreachable`.
+    Unreachable,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl OpsJobNodeAttestationResponseReasonState {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Refused => "refused",
+            Self::Unreachable => "unreachable",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for OpsJobNodeAttestationResponseReasonState {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for OpsJobNodeAttestationResponseReasonState {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "refused" => Self::Refused,
+            "unreachable" => Self::Unreachable,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[allow(clippy::large_enum_variant, reason = "an answer, read once")]
+pub enum OpsJobNodeAttestationResponse {
+    Release {
+        state: OpsJobNodeAttestationResponseReleaseState,
+        node: u64,
+        release: String,
+    },
+    Reason {
+        state: OpsJobNodeAttestationResponseReasonState,
+        node: u64,
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum OpsRegisterNodeRequestRole {
     /// `replica`.
     Replica,

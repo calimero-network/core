@@ -37,6 +37,7 @@ pub use segments::{SegmentPin, SEGMENT_GRACE, SWEEP_EVERY};
 
 #[cfg(feature = "testing")]
 pub use component::ComputeLimits;
+pub(crate) use job::JobAttestError;
 pub use job::{JobPeer, JOB_CONTROL_TIMEOUT, MAX_INFLIGHT_JOB_OPS};
 
 pub use component::{

@@ -88,6 +88,21 @@ pub(crate) fn timed_out(e: &eyre::Report) -> bool {
     e.downcast_ref::<TimedOut>().is_some()
 }
 
+/// Why a job node is not attested: the callers that act on the kind match it, never its text.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum JobAttestError {
+    #[error("node {0} is not a registered job node")]
+    NotRegistered(NodeId),
+    #[error("this node's directory could not be brought up to date")]
+    Stale,
+    /// The request failed: no answer, a non-2xx status or an unreadable body.
+    #[error("{0}")]
+    Unreachable(String),
+    /// The node answered and what it showed does not pass.
+    #[error("{0}")]
+    Refused(String),
+}
+
 /// What a job node with no room answers.
 const BUSY_STATUS: u16 = 503;
 
@@ -178,28 +193,34 @@ impl Node {
                 peer.release
             );
         }
+        self.check_not_retired(&peer)?;
+        Ok(peer)
+    }
+
+    /// Refuses `peer` when its release is past an operator's deadline.
+    pub(crate) fn check_not_retired(&self, peer: &JobPeer) -> Result<(), JobAttestError> {
         let now = self.clock.now_ms() / 1000;
         if self.sys(|s| s.retired(&peer.release, now)) {
-            eyre::bail!(
-                "job node {id} runs release {}, which is retired by a deadline",
-                peer.release
-            );
+            return Err(JobAttestError::Refused(format!(
+                "job node {} runs release {}, which is retired by a deadline",
+                peer.id, peer.release
+            )));
         }
-        Ok(peer)
+        Ok(())
     }
 
     /// Job node `id` as its attestation shows it, kept for [`JOB_ATTEST_TTL`]
     /// and only while the directory still holds the registration it was made for.
     pub(crate) async fn job_attestation(&self, id: NodeId) -> eyre::Result<JobPeer> {
         if !self.sys_fresh().await {
-            eyre::bail!("this node's directory could not be brought up to date");
+            return Err(JobAttestError::Stale.into());
         }
         let (url, epoch) = self
             .sys(|s| {
                 let url = s.job_nodes().find(|n| n.id == id)?.addr.clone();
                 Some((url, s.node_epoch.get(&id).copied().unwrap_or(0)))
             })
-            .ok_or_else(|| eyre::eyre!("node {id} is not a registered job node"))?;
+            .ok_or(JobAttestError::NotRegistered(id))?;
         let cached = self
             .job_peers
             .lock()
@@ -253,32 +274,26 @@ impl Node {
 
     async fn fetch_job_attestation(&self, id: NodeId, url: &str) -> eyre::Result<JobPeer> {
         let nonce: [u8; 32] = calimero_identity::random();
-        let mut at = resolve_path(&url.parse::<Url>()?, "attestation")?;
-        let _q = at
-            .query_pairs_mut()
-            .append_pair("nonce", &hex::encode(nonce))
-            .append_pair("purpose", "jobs");
-        let doc: AttestationDoc = bounded_json(
-            self.http
-                .get(at)
-                .timeout(JOB_ATTEST_TIMEOUT)
-                .send()
-                .await?
-                .error_for_status()?,
-        )
-        .await?;
+        let doc = self
+            .fetch_attestation_doc(url, &nonce)
+            .await
+            .map_err(|e| JobAttestError::Unreachable(format!("{e:#}")))?;
         if doc.cluster != self.config.cluster || doc.node != id {
-            eyre::bail!(
+            return Err(JobAttestError::Refused(format!(
                 "job node {id} attests as node {} of cluster {}",
-                doc.node,
-                doc.cluster
-            );
+                doc.node, doc.cluster
+            ))
+            .into());
         }
-        let (transport_key, job_key) =
-            verify_job_key(&doc, &nonce, &self.config.peer_policy()).await?;
+        let (transport_key, job_key) = verify_job_key(&doc, &nonce, &self.config.peer_policy())
+            .await
+            .map_err(|e| JobAttestError::Refused(format!("{e:#}")))?;
         // The quote binds the identity the job node takes work from: not this cluster's, no work.
         if doc.cluster_identity.as_deref() != Some(hex::encode(self.cluster_identity()).as_str()) {
-            eyre::bail!("job node {id} takes work from another cluster");
+            return Err(JobAttestError::Refused(format!(
+                "job node {id} takes work from another cluster"
+            ))
+            .into());
         }
         Ok(JobPeer {
             id,
@@ -293,6 +308,28 @@ impl Node {
                 transport_key,
             )),
         })
+    }
+
+    /// The document a job node answers to `nonce` for `purpose=jobs`; any failure is the request's.
+    async fn fetch_attestation_doc(
+        &self,
+        url: &str,
+        nonce: &[u8; 32],
+    ) -> eyre::Result<AttestationDoc> {
+        let mut at = resolve_path(&url.parse::<Url>()?, "attestation")?;
+        let _q = at
+            .query_pairs_mut()
+            .append_pair("nonce", &hex::encode(nonce))
+            .append_pair("purpose", "jobs");
+        bounded_json(
+            self.http
+                .get(at)
+                .timeout(JOB_ATTEST_TIMEOUT)
+                .send()
+                .await?
+                .error_for_status()?,
+        )
+        .await
     }
 
     /// How many runs `peer` has and how many it takes, asked over a sealed
