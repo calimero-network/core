@@ -13,7 +13,7 @@ command line).
 
 | Platform | `merod` | `meroctl` |
 | --- | --- | --- |
-| Linux (x86_64, aarch64) | native | native |
+| Linux (x86_64, aarch64; glibc 2.35 or newer: Ubuntu 22.04, Debian 12 and later) | native | native |
 | macOS (Apple silicon) | native, from 1.0.0-rc.25 (or in Docker) | native |
 | Windows | not supported | not supported |
 
@@ -45,8 +45,8 @@ brew install calimero-network/tap/meroctl calimero-network/tap/merod
 ```
 
 With a release before 1.0.0-rc.25, which shipped no macOS `merod`, the installer
-skips it on a Mac with a note, and `meroctl local up`, finding no `merod`, runs
-the node in the release's Docker image.
+skips it on a Mac with a note. `meroctl local up` runs the node in the release's
+Docker image anyway; `merod` is only needed for `--local`.
 
 ## Build
 
@@ -100,9 +100,12 @@ own checkout, the root `Dockerfile` builds the same kind of image:
    meroctl local up
    ```
 
-   It runs `merod local` (from `PATH`) in the background. The nodes listen on
+   It runs `merod local` in the release's Docker image, in the background
+   ([Docker](https://docs.docker.com/get-docker/) must be installed and
+   running; `--local` runs the `merod` on `PATH` instead). The nodes listen on
    `http://127.0.0.1:2501/` to `2503`, with mock attestation and a development
-   storage key, and keep state in `.merod-local/` (`--fresh` starts over).
+   storage key, and keep state in `~/.calimero/meroctl/local/` (`--fresh` starts
+   over), so `meroctl local down` and `status` find it from any directory.
    `meroctl` saves the cluster as the node `local`, trusting its mock
    attestation, and makes it the default node if you have none.
    It prints the node URLs and the Ops token (`opsToken`); `meroctl local
@@ -126,9 +129,10 @@ own checkout, the root `Dockerfile` builds the same kind of image:
 
 Then deploy an app: [Quickstart](/cloud/quickstart/).
 
-## First run on macOS: a cluster in Docker
+## The cluster in Docker
 
-The same `merod local` cluster runs in the published image. `--bind 0.0.0.0`
+`meroctl local up` runs the `merod local` cluster in the published image, on
+Linux and macOS alike. By hand, the same thing: `--bind 0.0.0.0`
 makes its nodes listen on every interface of the container, so the published
 ports reach them, at the same URLs as on Linux:
 
@@ -145,8 +149,7 @@ docker run --rm -p 2501-2503:2501-2503 -v merod-local:/data \
 - Use `:latest` for the newest stable release, or `:<version>` to pin one;
   match `meroctl`'s release to it.
 
-`meroctl local up --docker` does the same in the background (and `meroctl local
-up` does, on a Mac with no `merod` on PATH), saves the node
+`meroctl local up` does this in the background, saves the node
 as `local` and waits until it serves (`meroctl local down` stops it).
 
 Then, from the host:
