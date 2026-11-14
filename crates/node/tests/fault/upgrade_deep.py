@@ -95,6 +95,9 @@ NOT_COVERED = [
     ("Ops", "Restoring a backup onto the new release",
      "`POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, "
      "not a rollout"),
+    ("Ops", "A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`)",
+     "a read that stores nothing, so there is no data to carry across a roll; it needs a registered job "
+     "node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable"),
 ]
 
 
