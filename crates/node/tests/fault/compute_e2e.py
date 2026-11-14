@@ -8,9 +8,9 @@ policy, a member's CSV, a job node killed mid-run, the published output download
 revoke). Forged finals, per-run key isolation and
 the collection of unreferenced files after `BLOB_IDLE_MS` (an hour of entry time, which only an
 in-process clock can pass) are proved by in-process tests that are run and quoted. Binaries from
-`RV2_BIN_DIR` (default target/release); the compute fixture is built by `mero-app-build` and
-compute-redact's output is checked against `mero-compute` (both on PATH,
-`scripts/install-mero-app-build.sh` and `scripts/install-mero-compute.sh`), or the fixture is taken from `COMPUTE_E2E_WASM` and `COMPUTE_E2E_COMPUTE_WASM` (both).
+`RV2_BIN_DIR` (default target/release); the compute fixture is built by that `meroctl app build`
+and compute-redact's output is checked against `meroctl local compute run`, or the fixture is
+taken from `COMPUTE_E2E_WASM` and `COMPUTE_E2E_COMPUTE_WASM` (both).
 Work dir and logs: `COMPUTE_E2E_DIR` (default target/compute-e2e).
 The operator's decisions (`/ops/nodes`, `/ops/quotas`) are signed with the key the nodes start with
 (`--operator-key`), as the node tests' harness signs them.
@@ -137,7 +137,7 @@ def build_components(wd):
     if app:
         return Path(app), Path(compute)
     app, compute = wd / "app.wasm", wd / "compute.wasm"
-    subprocess.run(["mero-app-build", "apps/v2-fixtures/compute", "--out", str(app),
+    subprocess.run([str(BIN / "meroctl"), "app", "build", "apps/v2-fixtures/compute", "--out", str(app),
                     "--compute-out", str(compute), "--target-dir", str(wd / "build")], cwd=ROOT, check=True)
     return app, compute
 
@@ -145,9 +145,8 @@ def build_components(wd):
 def pack(wd, app, compute):
     """A signed package carrying both components, as a release ships them."""
     mpk = wd / f"{PACKAGE}-{VERSION}.mpk"
-    subprocess.run([sys.executable, "-I", "scripts/pack-component.py", "--wasm", str(app), "--compute", str(compute),
-                    "--package", PACKAGE, "--app-version", VERSION, "--out", str(mpk),
-                    "--mero-sign", str(BIN / "mero-sign")], cwd=ROOT, check=True)
+    subprocess.run([str(BIN / "meroctl"), "app", "pack", "--wasm", str(app), "--compute", str(compute),
+                    "--package", PACKAGE, "--app-version", VERSION, "--out", str(mpk)], cwd=ROOT, check=True)
     return mpk
 
 
@@ -394,12 +393,12 @@ def refused_with(code, call):
 
 
 def local_part(wd, compute, csv_path, policy, start, rows):
-    """What `mero-compute run` makes of one part on this machine: its output bytes and cells redacted."""
+    """What `meroctl local compute run` makes of one part on this machine: its output bytes and cells redacted."""
     out = wd / f"local-{start}"
     args = wd / f"local-{start}.json"
     args.write_text(json.dumps({"policy": policy, "job": "local", "start": start, "rows": rows}))
     shutil.rmtree(out, ignore_errors=True)
-    run = subprocess.run(["mero-compute", "run", str(compute), "--method", "redact", "--args", f"@{args}",
+    run = subprocess.run([str(BIN / "meroctl"), "local", "compute", "run", str(compute), "--method", "redact", "--args", f"@{args}",
                           "--input", str(csv_path), "--out", str(out)], capture_output=True, text=True, check=True)
     result = json.loads(base64.b64decode(re.search(r"result \(base64\): (\S+)", run.stdout).group(1)))
     return (out / "output-0").read_bytes(), result["cells"]
@@ -450,12 +449,12 @@ def redact_job(cl):
         if cl.procs.get(j) is None:
             cl.start_job(j, cl.identity)
     app_wasm, compute_wasm = wd / "redact-app.wasm", wd / "redact-compute.wasm"
-    subprocess.run(["mero-app-build", "apps/compute-redact", "--out", str(app_wasm), "--compute-out", str(compute_wasm),
+    subprocess.run([str(BIN / "meroctl"), "app", "build", "apps/compute-redact", "--out", str(app_wasm), "--compute-out", str(compute_wasm),
                     "--target-dir", str(wd / "build-redact")], cwd=ROOT, check=True)
     mpk = wd / f"{REDACT_PACKAGE}-{VERSION}.mpk"
-    subprocess.run([sys.executable, "-I", "scripts/pack-component.py", "--wasm", str(app_wasm), "--compute",
-                    str(compute_wasm), "--package", REDACT_PACKAGE, "--app-version", VERSION, "--out", str(mpk),
-                    "--mero-sign", str(BIN / "mero-sign")], cwd=ROOT, check=True)
+    subprocess.run([str(BIN / "meroctl"), "app", "pack", "--wasm", str(app_wasm), "--compute",
+                    str(compute_wasm), "--package", REDACT_PACKAGE, "--app-version", VERSION, "--out", str(mpk)],
+                   cwd=ROOT, check=True)
     package, version = cl.registry.publish(mpk)
     cl.cli(1, "app", "install", f"{package}@{version}")
     org = cl.cli(1, "namespace", "create", "Redact")["orgId"]
@@ -512,8 +511,8 @@ def redact_job(cl):
         start = i * REDACT_PER_PART
         refs.append(local_part(wd, compute_wasm, csv_path, policy, start, min(REDACT_PER_PART, REDACT_ROWS - start)))
     identical = [text == ref[0] for text, ref in zip(texts, refs)]
-    check("11b published parts equal mero-compute's output, retried part included", all(identical) and parts == len(refs),
-          f"each part rerun locally with mero-compute; part of the killed run among {parts}",
+    check("11b published parts equal meroctl local compute run's output, retried part included", all(identical) and parts == len(refs),
+          f"each part rerun locally with meroctl local compute run; part of the killed run among {parts}",
           f"parts byte-identical to the local runs: {identical}; sizes {[len(t) for t in texts]}")
 
     body = b"".join(texts).decode()

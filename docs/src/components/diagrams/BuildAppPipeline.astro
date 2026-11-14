@@ -2,7 +2,7 @@
 import Figure from '../Figure.astro';
 ---
 <Figure id="d-build-app-pipeline">
-<svg viewBox="0 0 760 340" role="img" aria-label="An app goes from a Rust crate on calimero-sdk, through mero-app-build into a calimero:app component with its ABI section, through pack-component.py and mero-sign into a signed .mpk, and onto the cluster, which verifies, prepares and creates it; a development cluster also takes the raw component. On the cluster, the app's leader runs each call and replicates the writes through the app's Raft log." xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 760 340" role="img" aria-label="An app goes from a Rust crate on calimero-sdk, through meroctl app build into a calimero:app component with its ABI section, through meroctl app pack, which signs it, into a signed .mpk, and onto the cluster, which verifies, prepares and creates it; a development cluster also takes the raw component. On the cluster, the app's leader runs each call and replicates the writes through the app's Raft log." xmlns="http://www.w3.org/2000/svg">
   <defs>
     <marker id="bap-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#8b949e"/>
@@ -28,7 +28,7 @@ import Figure from '../Figure.astro';
     <line x1="180" y1="123" x2="202" y2="123" stroke="#8b949e" stroke-width="1.4" marker-end="url(#bap-arrow)"/>
     <rect x="204" y="48" width="164" height="150" rx="8" fill="#10151c" stroke="#58a6ff" stroke-width="1.4"/>
     <text x="286" y="68" text-anchor="middle" fill="#58a6ff" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">2 · component</text>
-    <text x="216" y="92" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">mero-app-build</text>
+    <text x="216" y="92" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">meroctl app build</text>
     <text x="216" y="110" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">cargo build --release</text>
     <text x="216" y="126" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">  wasm32-wasip2</text>
     <text x="216" y="142" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">lift calimero:abi</text>
@@ -41,11 +41,11 @@ import Figure from '../Figure.astro';
     <line x1="368" y1="123" x2="390" y2="123" stroke="#8b949e" stroke-width="1.4" marker-end="url(#bap-arrow)"/>
     <rect x="392" y="48" width="164" height="150" rx="8" fill="#1a1430" stroke="#a371f7" stroke-width="1.4"/>
     <text x="474" y="68" text-anchor="middle" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="10.5" font-weight="700">3 · signed .mpk</text>
-    <text x="404" y="92" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">pack-component.py</text>
+    <text x="404" y="92" fill="#c9d1d9" font-family="'JetBrains Mono', monospace" font-size="9">meroctl app pack</text>
     <text x="404" y="110" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">manifest.json:</text>
     <text x="404" y="126" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">  package, appVersion,</text>
     <text x="404" y="142" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">  sha256 of app.wasm</text>
-    <text x="404" y="158" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">mero-sign: JCS+Ed25519</text>
+    <text x="404" y="158" fill="#8b949e" font-family="'JetBrains Mono', monospace" font-size="9">signed: JCS+Ed25519</text>
     <text x="404" y="186" fill="#a371f7" font-family="'JetBrains Mono', monospace" font-size="9">→ pkg-1.0.0.mpk</text>
   </g>
 

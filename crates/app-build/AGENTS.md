@@ -2,9 +2,9 @@
 
 ## Package Identity
 
-- **Crate**: `calimero-app-build` (`publish = false`, prototype; `meroctl`, which ships with each release, runs it); lib plus the deprecated bin `mero-app-build` (kept for one release; it prints a notice and runs the same code); the standard library's `File::lock` for the build lock
+- **Crate**: `calimero-app-build` (`publish = false`, prototype; `meroctl`, which ships with each release, runs it); a library (the `mero-app-build` binary is gone; `meroctl` is its command line); the standard library's `File::lock` for the build lock
 - **Used by**: `meroctl app build`, `meroctl app codegen`, `meroctl app abi diff` and `meroctl app pack DIR` (`crates/meroctl/src/make.rs`)
-- **Entry**: `src/lib.rs`, `src/main.rs`
+- **Entry**: `src/lib.rs`
 - **Spec**: `docs/specs/app-runtime-v0.14.md` (D45 build path)
 
 ## What This Crate Does
@@ -15,9 +15,9 @@
 `build_component_cached` returns the app component of the same entry.
 A miss builds under an exclusive cross-process file lock (`std::fs::File::lock`, `cache_dir/target/<name>.build.lock`, one per crate; Ruling 46) into one cargo target dir for every crate, `cache_dir/target/shared` (`build_component`'s own lock makes builds of different crates take turns; their shared dependencies compile once), recomputes the key and re-checks the cache once it holds the lock, so concurrent processes (nextest runs each test in its own) build once and the rest reuse the result. The key walk skips a file that vanishes while it walks. Test: `tests/concurrent_cache.rs` (6 processes on a cold cache, one `cargo build`).
 
-`build_in_repo_cache(crate_dir)` is that cache at the repository's `target/app-components`, hashing the SDK, its macros, `calimero-app-sdk` and the WIT, answered as a `BuiltApp` (`Built::from_component` reads the ABI and imports back from the cached bytes). Every test that builds a guest goes through it (the node's, the engine's, the SDK's, mero-compute's), so a guest compiles once per tree whichever test binary asks first; CI keeps `target/app-components` in its test-app cache.
+`build_in_repo_cache(crate_dir)` is that cache at the repository's `target/app-components`, hashing the SDK, its macros, `calimero-app-sdk` and the WIT, answered as a `BuiltApp` (`Built::from_component` reads the ABI and imports back from the cached bytes). Every test that builds a guest goes through it (the node's, the engine's, the SDK's, meroctl's `compute_run`), so a guest compiles once per tree whichever test binary asks first; CI keeps `target/app-components` in its test-app cache.
 
-`meroctl app codegen --abi <abi.json|.wasm|.mpk|manifest.json> --lang ts|python|swift|kotlin|openapi [-o <dir>] [--name <n>] [--service <s>] [--package <p>] [--kotlin-serialization-plugin] [--no-openapi]` writes the app's `openapi.json` (unless `--no-openapi`) and a typed client (`client.ts` over mero-js, `client.py` over calimero-client-py, `<Name>Client.swift` / `.kt`). The library runs the same in process: `codegen::Codegen::new(abi, lang, out)` and `run()`, which returns the paths written (`src/codegen.rs`). The client's name is `--name`, else the service, else the bundle's package, else the file's stem; a stem that names no app (`abi`, `app`, `component`, `compute`, `manifest`) falls back to the package name of the nearest `Cargo.toml` above the file, and with none the run fails asking for `--name`. `meroctl app abi diff <old> <new> [--json] [--service <s>]` prints what changed and exits 1 on a breaking change; `meroctl app abi show <file>` prints one ABI. The CLI side of both is `src/abi_tools.rs` over `calimero-app-abi`, which `meroctl` and the deprecated `mero-app-build` (`src/main.rs`) both call; test: `tests/abi_tools.rs`. `meroctl --version` prints the release.
+`meroctl app codegen --abi <abi.json|.wasm|.mpk|manifest.json> --lang ts|python|swift|kotlin|openapi [-o <dir>] [--name <n>] [--service <s>] [--package <p>] [--kotlin-serialization-plugin] [--no-openapi]` writes the app's `openapi.json` (unless `--no-openapi`) and a typed client (`client.ts` over mero-js, `client.py` over calimero-client-py, `<Name>Client.swift` / `.kt`). The library runs the same in process: `codegen::Codegen::new(abi, lang, out)` and `run()`, which returns the paths written (`src/codegen.rs`). The client's name is `--name`, else the service, else the bundle's package, else the file's stem; a stem that names no app (`abi`, `app`, `component`, `compute`, `manifest`) falls back to the package name of the nearest `Cargo.toml` above the file, and with none the run fails asking for `--name`. `meroctl app abi diff <old> <new> [--json] [--service <s>]` prints what changed and exits 1 on a breaking change; `meroctl app abi show <file>` prints one ABI. The CLI side of both is `src/abi_tools.rs` over `calimero-app-abi`, which `meroctl` calls; tests: `crates/meroctl/tests/app_abi_tools.rs`. `meroctl --version` prints the release.
 
 ## Rules
 
@@ -29,4 +29,4 @@ A miss builds under an exclusive cross-process file lock (`std::fs::File::lock`,
 
 `cargo test -p calimero-app-build`
 
-Docs teach `meroctl app build|codegen|abi`; an app's CI that only runs `codegen` downloads the release's prebuilt `meroctl_<target>.tar.gz` (Linux x86_64/aarch64 and macOS aarch64, in `SHA256SUMS`). Core's own scripts and CI jobs still call `mero-app-build` by that name for this release (`scripts/install-mero-app-build.sh` puts it on PATH). The crate stays `publish = false`, as does `calimero-app-abi`.
+Docs teach `meroctl app build|codegen|abi`; an app's CI that only runs `codegen` downloads the release's prebuilt `meroctl_<target>.tar.gz` (Linux x86_64/aarch64 and macOS aarch64, in `SHA256SUMS`). Core's own scripts and CI jobs call `meroctl app build` (from `target/release`, or `cargo install --locked --path crates/meroctl`). The crate stays `publish = false`, as does `calimero-app-abi`.

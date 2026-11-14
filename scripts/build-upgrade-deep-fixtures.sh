@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Builds the deep upgrade cases' fixtures (crates/node/tests/fault/upgrade_cases/20_*.py
-# and on) from a release's own source, with that release's mero-app-build and
-# mero-sign: the components and packages a cluster on that release would run.
-# Run after fetch-release.sh and build-release-fixtures.sh, whose checkout
-# (OUT/src) and tools (OUT/tools, OUT/mero-sign) it reuses.
+# and on) from a release's own source, with that release's own tools: the
+# components and packages a cluster on that release would run. Run after
+# fetch-release.sh and build-release-fixtures.sh, whose checkout (OUT/src) and
+# tools (OUT/tools/bin/release-build and release-pack) it reuses.
 #
 #   scripts/fetch-release.sh 1.0.0-rc.15 target/upgrade-from
 #   scripts/build-release-fixtures.sh 1.0.0-rc.15 target/upgrade-from
@@ -18,9 +18,10 @@ set -euo pipefail
 
 OUT=$(cd "${1:?usage: build-upgrade-deep-fixtures.sh OUT}" && pwd -P)
 SRC="$OUT/src"
-BUILD="$OUT/tools/bin/mero-app-build"
+BUILD="$OUT/tools/bin/release-build"
+PACK="$OUT/tools/bin/release-pack"
 DEEP="$OUT/deep"
-for need in "$SRC/.git" "$BUILD" "$OUT/mero-sign" "$OUT/kv-store-test-fixture.mpk"; do
+for need in "$SRC/.git" "$BUILD" "$PACK" "$OUT/kv-store-test-fixture.mpk"; do
   test -e "$need" || { echo "build-upgrade-deep-fixtures: $need missing (fetch-release.sh and build-release-fixtures.sh first)" >&2; exit 1; }
 done
 mkdir -p "$DEEP"
@@ -31,12 +32,11 @@ mkdir -p "$DEEP"
 python3 -I "$(dirname "$0")/upgrade-dev-bundle.py" "$OUT/kv-store-test-fixture.mpk" "$DEEP" dev a b c u
 
 for app in files notes-v1 notes-v2; do
-  (cd "$SRC" && "$BUILD" "apps/v2-fixtures/$app" --out "$DEEP/$app.wasm" --target-dir "$OUT/build")
+  (cd "$SRC" && "$BUILD" "apps/v2-fixtures/$app" --out "$DEEP/$app.wasm")
 done
 
 pack() { # WASM PACKAGE VERSION OUT
-  python3 -I "$SRC/scripts/pack-component.py" --wasm "$1" --mero-sign "$OUT/mero-sign" \
-    --package "$2" --app-version "$3" --out "$DEEP/$4"
+  "$PACK" --wasm "$1" --package "$2" --app-version "$3" --out "$DEEP/$4"
 }
 pack "$DEEP/kv-a.wasm" com.calimero.upgrade.kv-a 1.0.0 kv-a-1.0.0.mpk
 pack "$DEEP/kv-a.wasm" com.calimero.upgrade.kv-a 1.1.0 kv-a-1.1.0.mpk

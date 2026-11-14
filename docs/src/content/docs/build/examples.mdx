@@ -70,7 +70,7 @@ ran); they are ordinary `calimero-sdk` apps.
 | Fixture | Used for |
 | --- | --- |
 | `kv` | Calls, views, a `confirm` method, files, blobs, xcalls, actions and timers; also the `kv-store-test-fixture.mpk` attached to core's releases, which the clients' tests install |
-| `compute` | Compute methods that stream files, report progress and break each cap (`mero-compute`'s tests, the job-node tests) |
+| `compute` | Compute methods that stream files, report progress and break each cap (meroctl's `compute_run` tests, the job-node tests) |
 | `captcha` | A captcha service other apps of the organization verify against in the same request (`env::xcall_call`), and a Cloudflare Turnstile check with `env::fetch` |
 | `files` | Deterministic files written from calls and kept by `BlobRef`, and the refusal to stream them back outside a compute run |
 | `org-gated` | Org roles and teams on a cluster |

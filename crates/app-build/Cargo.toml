@@ -8,10 +8,6 @@ license.workspace = true
 description = "Builds Rust guests into calimero:app components"
 publish = false
 
-[[bin]]
-name = "mero-app-build"
-path = "src/main.rs"
-
 [dependencies]
 calimero-app-abi.workspace = true
 eyre.workspace = true

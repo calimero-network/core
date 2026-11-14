@@ -61,7 +61,7 @@ pointed at the latest published release:
 
 - **The pin.** `.github/upgrade-from` names the release every PR is rolled
   forward from. Once a release's GitHub assets are published (`merod`,
-  `meroctl` and `mero-sign` tarballs, `SHA256SUMS`, `kv-store-test-fixture.mpk`),
+  `meroctl` tarballs, `SHA256SUMS`, `kv-store-test-fixture.mpk`),
   set the pin to its tag in a follow-up PR (`chore(release): upgrade path from X`),
   and at the latest in the next release PR, so cutting X+1 pins X if nothing did.
   The `Upgrade path` job warns while a newer version is tagged.

@@ -1,6 +1,6 @@
 [package]
 name = "mero-sign"
-description = "CLI tool for signing Calimero bundle manifests"
+description = "Signing Calimero bundle manifests (Ed25519 over the JCS manifest); the command line is `meroctl app sign`"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -16,7 +16,6 @@ name = "mero_sign"
 calimero-app-abi.workspace = true
 calimero-bundle.workspace = true
 calimero-utils-fs.workspace = true
-clap = { workspace = true, features = ["derive"] }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 serde_json.workspace = true
 serde = { workspace = true, features = ["derive"] }

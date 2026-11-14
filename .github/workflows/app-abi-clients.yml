@@ -1,6 +1,6 @@
 name: App ABI clients
 
-# The typed clients `mero-app-build codegen` writes, run against the published clients they
+# The typed clients `meroctl app codegen` writes, run against the published clients they
 # call: the golden TypeScript (crates/app-abi/tests/golden/*.ts) type-checked with mero-js and
 # run against a test double, the golden Python imported with calimero-client-py, each call
 # bound to the real client's signature, and checked by mypy. The golden test pins the text;

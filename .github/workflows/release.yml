@@ -31,16 +31,15 @@ permissions:
   contents: read
 
 env:
-  # Linux (x86_64, aarch64): the node, its command line and the package signer.
+  # Linux (x86_64, aarch64): the node and its command line, which also builds,
+  # packs, signs and publishes apps.
   BINARIES: |-
     merod
     meroctl
-    mero-sign
   # macOS (aarch64): a developer's machine runs no node (Docker does), so the
-  # command line and the package signer only.
+  # command line only.
   MACOS_BINARIES: |-
     meroctl
-    mero-sign
   HOMEBREW_BINARIES: |-
     meroctl
   # The image runs a node and nothing else: meroctl and the other tools ship as
@@ -232,18 +231,6 @@ jobs:
             tar -czf artifacts/"$binary"_${MATRIX_TARGET}.tar.gz -C target/${MATRIX_TARGET}/release "$binary"
           done
 
-      # A bin of calimero-app-build, so it cannot join $BINARIES (`-p` names packages), and
-      # built on its own so its dependencies' features never unify into merod's. Every target:
-      # app developers and their CI run its `codegen` without compiling it.
-      - name: Build mero-app-build
-        env:
-          MATRIX_TARGET: ${{ matrix.target }}
-        run: |
-          cargo build -p calimero-app-build --bin mero-app-build --release --target "$MATRIX_TARGET"
-
-          tar -czf "artifacts/mero-app-build_${MATRIX_TARGET}.tar.gz" \
-            -C "target/${MATRIX_TARGET}/release" mero-app-build
-
       # A bin target of calimero-tee-attestation behind the `cli` feature, so it cannot join $BINARIES (`-p`).
       # Ships because mdma's manager shells out to it to verify TDX quotes; linux/amd64 image only.
       - name: Build calimero-tee-verify (Linux only)
@@ -363,14 +350,11 @@ jobs:
           shared-key: wasm-apps
           save-if: false
 
-      - name: Install mero-app-build
-        run: scripts/install-mero-app-build.sh
-
       - name: Build the kv bundle
         run: |
           set -euo pipefail
-          mero-app-build apps/v2-fixtures/kv --out dist/kv.wasm
           cargo build --release -p meroctl
+          "${CARGO_TARGET_DIR:-target}/release/meroctl" app build apps/v2-fixtures/kv --out dist/kv.wasm
           "${CARGO_TARGET_DIR:-target}/release/meroctl" app pack --wasm dist/kv.wasm \
             --package com.calimero.kv-store --app-version "${NEEDS_PREPARE_OUTPUTS_VERSION}" \
             --out dist/kv-store-test-fixture.mpk
@@ -536,9 +520,6 @@ jobs:
           shared-key: wasm-apps
           save-if: false
 
-      - name: Install mero-app-build
-        run: scripts/install-mero-app-build.sh
-
       # The suite's tools, not what ships: optimized without fat LTO, whose
       # single-threaded link was most of this job. Set on this step only, so the
       # cache step above hashes what the wasm-apps group's other jobs do.
@@ -548,10 +529,10 @@ jobs:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
           set -euo pipefail
-          cargo build --release -p meroctl -p mero-sign
+          cargo build --release -p meroctl
           mkdir -p target/image-e2e
           target_dir="${CARGO_TARGET_DIR:-target}"
-          mero-app-build \
+          "$target_dir/release/meroctl" app build \
             apps/v2-fixtures/kv --out target/image-e2e/kv.wasm
           cp "$target_dir/release/meroctl" target/image-e2e/
           for v in 1.0.0 1.1.0; do

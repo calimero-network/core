@@ -81,9 +81,6 @@ WORKFLOWS = {
             "scripts/tests/path-dep-closure-test.py",
             "scripts/install.sh",
             "scripts/tests/install-test.sh",
-            "scripts/pack-component.py",
-            "scripts/install-mero-app-build.sh",
-            "scripts/install-mero-compute.sh",
             # calimero-node's openapi test compares it with what the registry builds.
             "docs/public/openapi.json",
             "scripts/check-api-compat.py",
@@ -139,8 +136,6 @@ JOBS: dict = {
             "scripts/build-upgrade-deep-fixtures.sh",
             "scripts/upgrade-dev-bundle.py",
             "scripts/upgrade-path.sh",
-            "scripts/pack-component.py",
-            "scripts/install-mero-app-build.sh",
         ),
     ),
 }

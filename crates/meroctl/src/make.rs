@@ -243,7 +243,7 @@ pub fn build(a: &BuildArgs) -> eyre::Result<Value> {
     Ok(answer)
 }
 
-/// `app codegen`: the flags of `mero-app-build codegen`, which prints what it wrote.
+/// `app codegen`: `abi_tools::codegen`, which prints what it wrote.
 pub fn codegen(args: &[String]) -> eyre::Result<Value> {
     abi_tools::codegen(args.iter().cloned())?;
     Ok(Value::Null)
