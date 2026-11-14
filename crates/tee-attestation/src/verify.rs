@@ -1,7 +1,8 @@
 //! TDX quote verification.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::quote::Quote;
@@ -19,6 +20,8 @@ use crate::error::AttestationError;
 use crate::generate::{is_mock_quote, MOCK_QUOTE_HEADER};
 
 const COLLATERAL_TIMEOUT: Duration = Duration::from_secs(180); // dcap-qvl's own default
+const PCK_CERT_SEGMENT: &str = "pckcert"; // carries the node's PPID
+const TCB_INFO_SEGMENT: &str = "tcb"; // carries the node's FMSPC
 
 /// Parse a TDX quote from bytes a peer chose.
 ///
@@ -237,19 +240,24 @@ async fn reject_unparseable_certification_data(
     }
 }
 
-/// Reqwest transport that records the last response status (0: none, or a
-/// transport error), since dcap-qvl reports failures as untyped errors.
+/// Reqwest transport that records the status and URL of the last response (`None`: no
+/// request or a transport error), since dcap-qvl reports failures as untyped errors.
 struct RecordingHttp<'a> {
     client: reqwest::Client,
-    last_status: &'a AtomicU16,
+    last: &'a Mutex<Option<(u16, reqwest::Url)>>,
 }
 
 impl HttpClient for RecordingHttp<'_> {
     async fn get(&self, url: &str) -> anyhow::Result<HttpResponse> {
-        self.last_status.store(0, Ordering::Relaxed);
-        let resp = self.client.get(url).send().await?;
+        if let Ok(mut last) = self.last.lock() {
+            *last = None;
+        }
+        let url = reqwest::Url::parse(url)?;
+        let resp = self.client.get(url.clone()).send().await?;
         let status = resp.status().as_u16();
-        self.last_status.store(status, Ordering::Relaxed);
+        if let Ok(mut last) = self.last.lock() {
+            *last = Some((status, url));
+        }
         let headers = resp
             .headers()
             .iter()
@@ -269,10 +277,14 @@ impl HttpClient for RecordingHttp<'_> {
     }
 }
 
-/// A 4xx other than request timeout, too early and rate limiting means the
-/// source rejected what the quote carries; anything else is the source failing.
-fn source_rejected_request(status: u16) -> bool {
-    (400..500).contains(&status) && !matches!(status, 408 | 425 | 429)
+/// True for a 400 or 404 answering the PCK certificate or TCB info request, the two
+/// carrying values the node chose. Any other failure can be the source's own.
+fn source_refused_node_values(last: Option<&(u16, reqwest::Url)>) -> bool {
+    let Some((status, url)) = last else {
+        return false;
+    };
+    let segment = url.path().rsplit('/').next();
+    matches!(status, 400 | 404) && matches!(segment, Some(PCK_CERT_SEGMENT | TCB_INFO_SEGMENT))
 }
 
 /// Fetch collateral for `quote_bytes` from `source`.
@@ -289,19 +301,19 @@ async fn fetch_collateral(
         .build()
         .map_err(|err| unusable(&err))?;
     reject_unparseable_certification_data(quote_bytes, source).await?;
-    let last_status = AtomicU16::new(0);
+    let last = Mutex::new(None);
     let collateral_client: CollateralClient<DefaultConfig, _> = CollateralClient::new(
         RecordingHttp {
             client,
-            last_status: &last_status,
+            last: &last,
         },
         source,
     );
     collateral_client.fetch(quote_bytes).await.map_err(|err| {
         error!(error=?err, source=%source, "Failed to fetch collateral");
-        let status = last_status.load(Ordering::Relaxed);
+        let last = last.lock().ok().and_then(|last| last.clone());
         let detail = format!("collateral source {source:?}: {err:?}");
-        if source_rejected_request(status) {
+        if source_refused_node_values(last.as_ref()) {
             AttestationError::QuoteVerificationFailed(detail)
         } else {
             AttestationError::CollateralFetchFailed(detail)
@@ -591,7 +603,7 @@ pub fn verify_mock_attestation(
 
 #[cfg(test)]
 mod tests {
-    use axum::http::StatusCode;
+    use axum::http::{StatusCode, Uri};
     use axum::Router;
     use dcap_qvl::collateral::INTEL_PCS_URL;
 
@@ -756,29 +768,146 @@ mod tests {
             .expect("the fixture's certification data parses");
     }
 
-    /// Serves `status` for every request and returns the base URL.
-    async fn collateral_source_answering(status: StatusCode) -> String {
-        let app = Router::new().fallback(move || async move { status });
+    /// DER of a CRL distribution points extension naming one URI. rcgen's own encoder
+    /// nests the name in an extra SEQUENCE that dcap-qvl does not read as a full name.
+    fn crl_distribution_point_der(uri: &str) -> Vec<u8> {
+        let wrap = |tag: u8, inner: Vec<u8>| {
+            let mut out = vec![tag, inner.len() as u8];
+            out.extend(inner);
+            out
+        };
+        let name = wrap(0xa0, wrap(0xa0, wrap(0x86, uri.as_bytes().to_vec())));
+        wrap(0x30, wrap(0x30, name))
+    }
+
+    /// Serves the status `status_of` picks for the last path segment of each request, with
+    /// issuer-chain headers on every answer. The QE identity chain is a root whose CRL
+    /// distribution point is `<source>/root.crl`, so dcap-qvl's fallback stays local.
+    async fn collateral_source_routing(
+        status_of: impl Fn(&str) -> StatusCode + Clone + Send + Sync + 'static,
+    ) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
+        let mut params = rcgen::CertificateParams::default();
+        params.custom_extensions = vec![rcgen::CustomExtension::from_oid_content(
+            &[2, 5, 29, 31],
+            crl_distribution_point_der(&format!("{url}/root.crl")),
+        )];
+        let key = rcgen::KeyPair::generate().unwrap();
+        let chain = params.self_signed(&key).unwrap().pem().replace('\n', "%0A");
+        let app = Router::new().fallback(move |uri: Uri| {
+            let status = status_of(uri.path().rsplit('/').next().unwrap_or_default());
+            let chain = chain.clone();
+            async move {
+                (
+                    status,
+                    [
+                        ("SGX-PCK-CRL-Issuer-Chain", chain.clone()),
+                        ("SGX-TCB-Info-Issuer-Chain", chain.clone()),
+                        ("SGX-Enclave-Identity-Issuer-Chain", chain),
+                    ],
+                    "{}",
+                )
+            }
+        });
         tokio::spawn(async move { axum::serve(listener, app).await });
         url
     }
 
-    /// The source rejecting what the quote carries is a verdict on the quote.
-    #[tokio::test]
-    async fn a_collateral_source_rejecting_the_quote_with_a_4xx_is_not_an_outage() {
+    async fn collateral_source_answering(status: StatusCode) -> String {
+        collateral_source_routing(move |_| status).await
+    }
+
+    async fn failure_with(source: &str) -> AttestationError {
         let quote = include_bytes!("../tests/fixtures/tdx_quote");
+        fetch_collateral(quote, source).await.expect_err("fails")
+    }
+
+    /// The TCB info request carries the node's FMSPC: the source refusing it is a verdict.
+    #[tokio::test]
+    async fn a_source_refusing_the_nodes_tcb_info_request_is_a_verdict() {
         for status in [StatusCode::NOT_FOUND, StatusCode::BAD_REQUEST] {
-            let source = collateral_source_answering(status).await;
-            let err = fetch_collateral(quote, &source)
-                .await
-                .expect_err("rejected");
+            let source =
+                collateral_source_routing(
+                    move |s| if s == "tcb" { status } else { StatusCode::OK },
+                )
+                .await;
+            let err = failure_with(&source).await;
             assert!(
                 matches!(err, AttestationError::QuoteVerificationFailed(_)),
                 "{status}: got {err:?}"
             );
         }
+    }
+
+    /// Misconfiguration or credentials: says nothing about the node.
+    #[test]
+    fn only_a_400_or_404_on_pck_cert_or_tcb_is_a_verdict() {
+        let at = |status, path: &str| {
+            let url = reqwest::Url::parse(&format!("https://pccs.test{path}")).unwrap();
+            super::source_refused_node_values(Some(&(status, url)))
+        };
+        let pck = "/sgx/certification/v4/pckcert?qeid=00";
+        assert!(at(404, pck) && at(400, pck));
+        assert!(
+            at(404, "/tdx/certification/v4/tcb?fmspc=00") && at(400, "/tdx/certification/v4/tcb")
+        );
+        assert!(!at(403, pck) && !at(401, pck) && !at(500, pck));
+        assert!(
+            !at(404, "/sgx/certification/v4/pckcrl")
+                && !at(404, "/tdx/certification/v4/qe/identity")
+        );
+        assert!(!at(404, "/tcb/other") && !at(404, "/x/mytcb"));
+        assert!(!super::source_refused_node_values(None));
+    }
+
+    #[tokio::test]
+    async fn a_source_answering_403_or_401_to_everything_is_an_outage() {
+        for status in [StatusCode::FORBIDDEN, StatusCode::UNAUTHORIZED] {
+            let err = failure_with(&collateral_source_answering(status).await).await;
+            assert!(
+                matches!(err, AttestationError::CollateralFetchFailed(_)),
+                "{status}: got {err:?}"
+            );
+        }
+    }
+
+    /// The CRL and QE identity requests carry nothing the node chose.
+    #[tokio::test]
+    async fn a_404_on_a_request_the_node_did_not_parameterise_is_an_outage() {
+        for missing in ["pckcrl", "identity"] {
+            let source = collateral_source_routing(move |s| {
+                if s == missing {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::OK
+                }
+            })
+            .await;
+            let err = failure_with(&source).await;
+            assert!(
+                matches!(err, AttestationError::CollateralFetchFailed(_)),
+                "{missing}: got {err:?}"
+            );
+        }
+    }
+
+    /// The CRL distribution point URL comes from the source's own header, not the node.
+    #[tokio::test]
+    async fn a_404_from_the_root_crl_distribution_point_is_an_outage() {
+        let source = collateral_source_routing(|s| {
+            if matches!(s, "rootcacrl" | "root.crl") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::OK
+            }
+        })
+        .await;
+        let err = failure_with(&source).await;
+        assert!(
+            matches!(err, AttestationError::CollateralFetchFailed(_)),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]

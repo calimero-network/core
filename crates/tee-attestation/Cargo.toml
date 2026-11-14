@@ -54,4 +54,5 @@ configfs-tsm.workspace = true
 
 [dev-dependencies]
 axum.workspace = true
+rcgen.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "net"] }
