@@ -193,6 +193,33 @@ pub(super) fn plan(
     }
 }
 
+/// What a receipt is built from: run `r`'s record and the proof of each run it started; with
+/// `evidence`, each proof's job evidence and the attestation of each job key they name.
+fn receipt_source(m: &AppMachine, r: crate::component::PipelineRun, evidence: bool) -> Value {
+    let mut proofs = BTreeMap::new();
+    let mut jobs = BTreeMap::new();
+    for id in r.steps.values().flat_map(|s| &s.runs) {
+        let Some(mut proof) = m.step_proof(id) else {
+            continue;
+        };
+        if evidence {
+            proof.job = m.job_evidence(id);
+            if let Some(key) = proof.job_key.clone().filter(|k| !jobs.contains_key(k)) {
+                if let Some(doc) = m.job_attestation(&r.id, &key) {
+                    let _prev = jobs.insert(key, doc);
+                }
+            }
+        }
+        let _prev = proofs.insert(id.clone(), proof);
+    }
+    let source = crate::api::pipeline_receipt::ReceiptSource {
+        run: r,
+        proofs,
+        jobs,
+    };
+    serde_json::to_value(source).unwrap_or(Value::Null)
+}
+
 /// The step is stopped because starting its next run would pass the run's cost cap.
 fn cost_capped() -> StepVerdict {
     StepVerdict::Failed {
@@ -758,14 +785,7 @@ impl Node {
             let result = match req.args["run"].as_str() {
                 Some(run) if req.args["receipt"].as_bool() == Some(true) => {
                     m.pipeline_run(run).map_or(Value::Null, |r| {
-                        let proofs = r
-                            .steps
-                            .values()
-                            .flat_map(|s| &s.runs)
-                            .filter_map(|id| Some((id.clone(), m.step_proof(id)?)))
-                            .collect();
-                        let source = crate::api::pipeline_receipt::ReceiptSource { run: r, proofs };
-                        serde_json::to_value(source).unwrap_or(Value::Null)
+                        receipt_source(m, r, req.args["evidence"].as_bool() == Some(true))
                     })
                 }
                 Some(run) => {

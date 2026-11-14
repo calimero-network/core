@@ -371,8 +371,9 @@ impl Apps<'_> {
         self,
         app: &str,
         run: &str,
+        version: Option<u64>,
     ) -> Result<PipelineReceiptReceiptResponse> {
-        let req = Request::new(
+        let mut req = Request::new(
             Method::GET,
             format!(
                 "apps/{}/pipeline-runs/{}/receipt",
@@ -380,6 +381,9 @@ impl Apps<'_> {
                 route::segment(run)
             ),
         );
+        if let Some(v) = version {
+            req = req.query("version", v.to_string());
+        }
         route::json(self.client.transport(), req, None, None, false).await
     }
 

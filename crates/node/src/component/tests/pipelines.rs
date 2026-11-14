@@ -1370,7 +1370,18 @@ fn a_dropped_pipeline_run_drops_its_proofs() {
     let _a = begin(&mut w, "first", &["a"]);
     let _s = start_step(&mut w, "first", "a");
     let _r = run_done(&mut w, "first.a.0", 1);
-    assert!(w.r.machine.step_proof("first.a.0").is_some());
+    let proof = w.r.machine.step_proof("first.a.0").unwrap();
+    let key = proof.job_key.clone().unwrap();
+    assert!(
+        proof.job.is_none(),
+        "the proof row keeps the shape a release before reads"
+    );
+    assert!(
+        w.r.machine.job_evidence("first.a.0").is_some(),
+        "a reported run keeps what its job signed"
+    );
+    let doc = w.r.machine.job_attestation("first", &key).unwrap();
+    assert_eq!(doc.job_key.as_deref(), Some(key.as_str()));
     for i in 0..FINISHED_PIPELINE_RUNS_KEPT {
         let id = format!("n{i}");
         let _b = begin(&mut w, &id, &["a"]);
@@ -1378,6 +1389,8 @@ fn a_dropped_pipeline_run_drops_its_proofs() {
     }
     assert!(w.r.machine.pipeline_run("first").is_none());
     assert!(w.r.machine.step_proof("first.a.0").is_none());
+    assert!(w.r.machine.job_attestation("first", &key).is_none());
+    assert!(w.r.machine.job_evidence("first.a.0").is_none());
 }
 
 #[test]
@@ -1437,13 +1450,9 @@ fn a_receipt_still_lists_every_run_after_the_run_records_were_dropped() {
             })
             .collect(),
         run: pipeline(&w, PIPE),
+        jobs: BTreeMap::new(),
     };
-    let receipt = crate::api::pipeline_receipt::build_receipt(
-        &"cc".repeat(32),
-        "app",
-        &source.run,
-        &source.proofs,
-    );
+    let receipt = crate::api::pipeline_receipt::build_receipt(1, &"cc".repeat(32), "app", &source);
     assert_eq!(receipt.steps["a"].runs.len(), total);
     assert_eq!(receipt.modules["self"], "compute-v1");
     assert_eq!(receipt.inputs["in"].len(), 1);
@@ -1472,12 +1481,14 @@ fn a_receipt_marks_cached_runs_with_their_key_and_keeps_index_order() {
         },
     );
     let _r = run_done(&mut w, "p3.a.1", 2);
-    let run = pipeline(&w, "p3");
-    let proofs = std::iter::once("p3.a.1")
-        .filter_map(|id| Some((id.to_owned(), w.r.machine.step_proof(id)?)))
-        .collect();
-    let receipt =
-        crate::api::pipeline_receipt::build_receipt(&"cc".repeat(32), "app", &run, &proofs);
+    let source = crate::api::pipeline_receipt::ReceiptSource {
+        run: pipeline(&w, "p3"),
+        proofs: std::iter::once("p3.a.1")
+            .filter_map(|id| Some((id.to_owned(), w.r.machine.step_proof(id)?)))
+            .collect(),
+        jobs: BTreeMap::new(),
+    };
+    let receipt = crate::api::pipeline_receipt::build_receipt(1, &"cc".repeat(32), "app", &source);
     let runs = &receipt.steps["a"].runs;
     assert!(
         matches!(&runs[0], RunEntry::Cached(c) if c.index == 0 && c.cache_key == "k1"),

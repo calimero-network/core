@@ -146,7 +146,46 @@ fn attempt(run: &str, n: u32, signer: &SigningKey, digest: [u8; 32]) -> Componen
         job_key: hex::encode(signer.verifying_key().to_bytes()),
         assignment_digest: hex::encode(digest),
         ts_ms: 100 + u64::from(n),
+        job_attestation: Some(job_doc(signer, u64::from(n) + 40)),
     }))
+}
+
+/// A job node's attestation of `signer`'s key, as a leader would record it.
+pub(super) fn job_doc(signer: &SigningKey, node: u64) -> crate::attest::AttestationDoc {
+    crate::attest::AttestationDoc {
+        quote: String::new(),
+        transport_key: "00".repeat(32),
+        app_hash: "00".repeat(32),
+        nonce: "01".repeat(32),
+        release: crate::attest::Release {
+            version: "1.0.0".into(),
+            profile: "mock".into(),
+        },
+        cluster: "test".into(),
+        node,
+        mock: true,
+        receipt_key: None,
+        governance: None,
+        kms: None,
+        job_key: Some(hex::encode(signer.verifying_key().to_bytes())),
+        cluster_identity: Some("cc".repeat(32)),
+    }
+}
+
+#[test]
+fn an_attempt_from_before_attestations_decodes_and_unknown_fields_are_ignored() {
+    let entry: AttemptEntry = serde_json::from_value(serde_json::json!({
+        "run": "r1", "attempt": 1, "node": 4, "jobKey": "aa", "assignmentDigest": "bb", "tsMs": 1,
+    }))
+    .unwrap();
+    assert!(entry.job_attestation.is_none());
+    // No field is refused, as on every release since compute runs: so a release before this one
+    // decodes this release's entries too.
+    let _later: AttemptEntry = serde_json::from_value(serde_json::json!({
+        "run": "r1", "attempt": 1, "node": 4, "jobKey": "aa", "assignmentDigest": "bb", "tsMs": 1,
+        "somethingLater": true,
+    }))
+    .unwrap();
 }
 
 /// A file the run wrote: ids and hashes are hashes, as a report spells them.
@@ -409,6 +448,7 @@ fn an_attempt_needs_an_active_run_without_a_cancel_and_hash_spelled_keys() {
             job_key,
             assignment_digest: digest,
             ts_ms: 1,
+            job_attestation: None,
         }));
         assert_eq!(
             why(&w.push(&bad)),
@@ -1140,6 +1180,7 @@ fn the_entries_have_a_fixed_wire_shape() {
             "op": "computeAttempt", "run": "r1", "attempt": 1, "node": 41,
             "jobKey": hex::encode(k.verifying_key().to_bytes()),
             "assignmentDigest": hex::encode(DIGEST), "tsMs": 101,
+            "jobAttestation": serde_json::to_value(job_doc(&k, 41)).unwrap(),
         })
     );
     let wire = |o| serde_json::to_value(o).unwrap();

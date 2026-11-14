@@ -161,6 +161,8 @@ pub struct Session {
 pub struct AttestedCluster {
     pub keys: std::collections::BTreeMap<u64, [u8; 32]>,
     pub governance: attest::Governance,
+    /// The cluster name the entry node gave and every replica's quote bound.
+    pub cluster: String,
 }
 
 /// A connection to one node of a cluster: the generated route methods
@@ -228,7 +230,11 @@ impl Client {
             let _prev = keys.insert(node, key);
         }
         let governance = governance.ok_or_else(|| eyre::eyre!("no replica of {app} attested"))?;
-        Ok(AttestedCluster { keys, governance })
+        Ok(AttestedCluster {
+            keys,
+            governance,
+            cluster: cluster.to_owned(),
+        })
     }
 
     /// Use an API key for every request.
@@ -507,8 +513,8 @@ impl Client {
         }))
     }
 
-    /// The signed receipt of an ended pipeline run; check it with
-    /// [`Client::verify_receipt`].
+    /// The signed receipt of an ended pipeline run with its job evidence (version 2); check it
+    /// with [`Client::verify_receipt`].
     pub async fn pipeline_receipt(&self, app: &str, run: &str) -> Result<receipt::ReceiptAnswer> {
         // The signature covers the JSON as sent, so it is not read through a typed answer.
         let req = Request::new(
@@ -518,15 +524,18 @@ impl Client {
                 route::segment(app),
                 route::segment(run)
             ),
-        );
+        )
+        .query("version", receipt::RECEIPT_VERSION_JOBS.to_string());
         let v = self.transport.json(req).await?;
         serde_json::from_value(v)
             .map_err(|e| eyre::eyre!("the receipt is not well formed: {e}").into())
     }
 
     /// Checks that the node that answered holds a receipt key attested under this client's
-    /// policy ([`Client::verify_app_cluster`]) and signed `answer` with it, and that the receipt
-    /// is for `app` and `run`. Answers the receipt.
+    /// policy ([`Client::verify_app_cluster`]) and signed `answer` with it, that the receipt is
+    /// for `app` and `run`, that every job report it names is signed by its job key
+    /// ([`receipt::verify_job_reports`]), and that each such key is a job node's of the same
+    /// cluster attested under this client's policy. Answers the receipt.
     pub async fn verify_receipt(
         &self,
         app: &str,
@@ -544,7 +553,29 @@ impl Client {
         if verified.run != run {
             return Err(eyre::eyre!("the receipt is for run {}, not {run}", verified.run).into());
         }
+        for (key, node) in receipt::verify_job_reports(&verified)? {
+            self.verify_job_attestation(&verified, &cluster.cluster, &key, node)
+                .await
+                .map_err(|e| eyre::eyre!("job key {key}: {e:#}"))?;
+        }
         Ok(verified)
+    }
+
+    /// Checks that `receipt` carries the attestation of job key `key`: a job node's quote, under
+    /// this client's policy, binding that key to node `node` of `cluster` taking work from the
+    /// cluster identity the receipt names.
+    async fn verify_job_attestation(
+        &self,
+        receipt: &receipt::PipelineReceipt,
+        cluster: &str,
+        key: &str,
+        node: u64,
+    ) -> eyre::Result<()> {
+        let doc = receipt::job_attestation(receipt, cluster, key, node)?;
+        let nonce = receipt::hash_bytes(&doc.nonce)
+            .map_err(|_| eyre::eyre!("its attestation's nonce is not 32 bytes of hex"))?;
+        let _keys = attest::verify_job_key(doc, &nonce, &self.policy).await?;
+        Ok(())
     }
 
     /// The app's recent pipeline runs, newest first.

@@ -465,6 +465,7 @@ mod tests {
                 sha256: "h1".into(),
             }],
             usage: ProofUsage::default(),
+            job: None,
         };
         let step = StepReceipt {
             status: "succeeded".into(),
