@@ -43,8 +43,8 @@ pub enum GroupCmd {
         #[arg(long, value_enum)]
         join: Option<Join>,
     },
-    /// Delete a team with the teams below it and their contexts (with
-    /// contexts there, approved with a passkey).
+    /// Delete a team with the teams below it and their instances (with
+    /// instances there, approved with a passkey).
     Delete {
         namespace: String,
         group: String,
@@ -92,7 +92,7 @@ pub enum GroupCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// v1's group upgrades: move the organization's contexts (or one team's,
+    /// v1's group upgrades: move the organization's instances (or one team's,
     /// `--group`, with `--cascade` its subtree) to a release, then follow and retry.
     #[command(subcommand)]
     Upgrade(UpgradeCmd),
@@ -149,7 +149,7 @@ pub enum UpgradeCmd {
         namespace: String,
         run: String,
     },
-    /// Run the failed contexts of a run again, as a new run.
+    /// Run the failed instances of a run again, as a new run.
     Retry {
         namespace: String,
         run: String,

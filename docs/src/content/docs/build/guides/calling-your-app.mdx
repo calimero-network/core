@@ -123,9 +123,9 @@ meroctl --node eu whoami
   `401 PASSKEY_UNKNOWN_HERE`. A page served from the app's own frontend gets
   a session bound to its package: see [Ship a frontend](/build/guides/frontends/).
 - **API keys** are for scripts and services. An account holder creates one
-  with a passkey step-up (`meroctl account api-key create [--context C]...
+  with a passkey step-up (`meroctl account api-key create [--instance C]...
   [--read-only] [--ttl-secs N]`, or `client.auth.apikeyCreate` in mero-js);
-  the key is shown once. `--context` limits it to some apps and `--read-only`
+  the key is shown once. `--instance` limits it to some apps and `--read-only`
   to views.
 - Sessions refresh themselves: a `401` on a session the client holds the
   refresh token of is refreshed once and the request sent again.
@@ -176,9 +176,9 @@ println!("{} at {}", got.result, got.index);
 <TabItem label="meroctl">
 
 ```bash
-meroctl call -c my-kv set --args '{"key":"a","value":"1"}' --idempotency-key set-a-1
-meroctl call -c my-kv get --args '{"key":"a"}' --view
-meroctl call -c my-kv get --args '{"key":"a"}' --view --min-index 42
+meroctl call -i my-kv set --args '{"key":"a","value":"1"}' --idempotency-key set-a-1
+meroctl call -i my-kv get --args '{"key":"a"}' --view
+meroctl call -i my-kv get --args '{"key":"a"}' --view --min-index 42
 ```
 
 </TabItem>
@@ -244,7 +244,7 @@ call` takes `--dev-passkey FILE` on a development cluster.
 
 Python raises `CloudError(message, status, code, details)` and Rust returns
 `Error::Api { status, code, .. }`; `meroctl` prints the code and message.
-The app's own error codes and fields are in its ABI (`meroctl context abi`).
+The app's own error codes and fields are in its ABI (`meroctl instance abi`).
 
 ## Follow events
 
@@ -287,7 +287,7 @@ while let Some((id, kind, data)) = events.next().await {
 <TabItem label="meroctl">
 
 ```bash
-meroctl context watch my-kv --from 0 --limit 10
+meroctl instance watch my-kv --from 0 --limit 10
 ```
 
 </TabItem>
@@ -313,7 +313,7 @@ let key = cluster.keys.get(&set.receipt.node).expect("an attested replica");
 assert!(set.receipt.verify(key, &set.result));
 ```
 
-Python has `client.verify_app_cluster(app)`, and `meroctl attest app CONTEXT`
+Python has `client.verify_app_cluster(app)`, and `meroctl attest app INSTANCE`
 prints the same.
 
 <Aside type="note">

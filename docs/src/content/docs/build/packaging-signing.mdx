@@ -114,7 +114,7 @@ detail.
    `pack` checks each against the node's own rules before signing.
 
    A package of several services (each app instance runs one of them, named by
-   `meroctl context create --service NAME`) gives each with `--service
+   `meroctl instance create --service NAME`) gives each with `--service
    NAME=PATH`, where PATH is the service's crate directory (built) or its
    component; the manifest then declares `services` instead of `wasm`:
 
@@ -188,7 +188,7 @@ detail.
 
    ```bash
    meroctl app install --path dist/com.example.my-app-1.0.0.mpk
-   meroctl context create --name my-app --package com.example.my-app --alias my-app
+   meroctl instance create --name my-app --package com.example.my-app --alias my-app
    ```
 
    Before it logs the install, the node checks the publisher's signature and

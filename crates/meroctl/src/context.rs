@@ -13,7 +13,7 @@ use crate::env::{json_arg, to_json, DevPasskey, Env};
 
 #[derive(Debug, Subcommand)]
 pub enum ContextCmd {
-    /// Create a context from an installed application (`--package`), a
+    /// Create an instance from an installed application (`--package`), a
     /// bundle hash, or a local file (`--path`: installed first).
     Create {
         /// The context's name.
@@ -52,17 +52,20 @@ pub enum ContextCmd {
         package: Option<String>,
     },
     Get {
+        #[arg(value_name = "INSTANCE")]
         context: String,
     },
-    /// Delete a context (its owner or an org admin).
+    /// Delete an instance (its owner or an org admin).
     #[command(alias = "del")]
     Delete {
+        #[arg(value_name = "INSTANCE")]
         context: String,
     },
-    /// Move a context to another release (`--version`, `--package`) or a
+    /// Move an instance to another release (`--version`, `--package`) or a
     /// bundle, migrating its state where the ABI says how. The owner
     /// approves (`--dev-passkey` on a development cluster).
     Update {
+        #[arg(value_name = "INSTANCE")]
         context: String,
         #[arg(long)]
         version: Option<String>,
@@ -79,6 +82,7 @@ pub enum ContextCmd {
     },
     /// Hand the context to another account (its owner approves with a passkey).
     Transfer {
+        #[arg(value_name = "INSTANCE")]
         context: String,
         /// The new owner's account id.
         to: String,
@@ -89,6 +93,7 @@ pub enum ContextCmd {
     /// it is: whoever manages it now, as an admin of the target, approves
     /// with a passkey.
     Move {
+        #[arg(value_name = "INSTANCE")]
         context: String,
         namespace: String,
         /// Bring the members of its organization who reach it along.
@@ -100,6 +105,7 @@ pub enum ContextCmd {
     /// Print the context's committed events, then live ones, as JSON lines.
     #[command(alias = "ws")]
     Watch {
+        #[arg(value_name = "INSTANCE")]
         context: String,
         #[arg(long, default_value_t = 0)]
         from: u64,
@@ -107,15 +113,17 @@ pub enum ContextCmd {
         #[arg(long)]
         limit: Option<usize>,
     },
-    /// This account's names for contexts.
+    /// This account's names for instances.
     #[command(subcommand)]
     Alias(AliasCmd),
-    /// Make a context the default (the alias `default`).
+    /// Make an instance the default (the alias `default`).
     Use {
+        #[arg(value_name = "INSTANCE")]
         context: String,
     },
     /// Who reaches the context.
     Access {
+        #[arg(value_name = "INSTANCE")]
         context: String,
         #[arg(value_enum)]
         kind: AccessKind,
@@ -128,15 +136,18 @@ pub enum ContextCmd {
     },
     /// Set the context's metadata (JSON; `null` clears it).
     Metadata {
+        #[arg(value_name = "INSTANCE")]
         context: String,
         metadata: String,
     },
     /// Keys, bytes and blobs the context holds.
     Storage {
+        #[arg(value_name = "INSTANCE")]
         context: String,
     },
     /// The ABI of the bundle the context runs.
     Abi {
+        #[arg(value_name = "INSTANCE")]
         context: String,
     },
     /// Who is present in the context now (ephemeral, never stored).
@@ -170,9 +181,13 @@ pub enum AliasCmd {
 #[derive(Debug, Subcommand)]
 pub enum PresenceCmd {
     #[command(alias = "ls")]
-    List { context: String },
+    List {
+        #[arg(value_name = "INSTANCE")]
+        context: String,
+    },
     /// Say something about this device: STATE is hex (none retracts).
     Publish {
+        #[arg(value_name = "INSTANCE")]
         context: String,
         #[arg(long)]
         seq: u64,
@@ -181,6 +196,7 @@ pub enum PresenceCmd {
     },
     /// The snapshot, then each change, as JSON lines.
     Stream {
+        #[arg(value_name = "INSTANCE")]
         context: String,
         #[arg(long)]
         limit: Option<usize>,

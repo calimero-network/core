@@ -89,9 +89,9 @@ meroctl local dev apps/kv-store           # a local cluster, build, upload, fron
 meroctl local up                                            # 3 nodes on 127.0.0.1:2501-2503 in Docker, saved as node local (--local: merod from PATH)
 meroctl login --dev-passkey ./dev-passkey.json --name ada   # signs up: an account and its personal organization
 meroctl app build apps/kv-store --out kv_store.wasm
-meroctl context create --path kv_store.wasm --name kv --alias kv
-meroctl call --context kv set --args '{"key":"a","value":"1"}'
-meroctl call --context kv get --args '{"key":"a"}' --view
+meroctl instance create --path kv_store.wasm --name kv --alias kv
+meroctl call --instance kv set --args '{"key":"a","value":"1"}'
+meroctl call --instance kv get --args '{"key":"a"}' --view
 meroctl local down
 ```
 

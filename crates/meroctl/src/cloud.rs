@@ -78,12 +78,12 @@ pub enum ClustersCmd {
 
 #[derive(Debug, Subcommand)]
 pub enum ComputeCmd {
-    /// A context's pipelines: validate, estimate, run, follow, receipts, outputs.
+    /// An instance's pipelines: validate, estimate, run, follow, receipts, outputs.
     #[command(subcommand)]
     Pipeline(crate::pipeline::PipelineCmd),
     /// A compute run's module log (stdout, stderr and `log` lines).
     Logs {
-        /// The context (alias or id).
+        /// The app instance (alias or id).
         app: String,
         run: String,
         /// The attempt (default: the latest that kept a log).

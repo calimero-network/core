@@ -36,8 +36,8 @@ Its command names differ from the rest of these docs for a few objects
 
 Output is JSON, pretty-printed: the route's answer as the client reads it,
 with any field the client's types do not name kept as the node sent it.
-Commands that stream (`context watch`, `cloud compute pipeline watch`,
-`context presence stream`, `ops metrics`, `blob download` to stdout, `app
+Commands that stream (`instance watch`, `cloud compute pipeline watch`,
+`instance presence stream`, `ops metrics`, `blob download` to stdout, `app
 watch`, `local dev`) print their own lines, as do `app codegen`, `app abi
 diff` and `app signer`. The commands that need no node (`app new`, `app build`,
 `app codegen`, `app abi`, `app signer`, `app pack`, `app sign`, `app inspect`,
@@ -73,8 +73,8 @@ What an owner approves takes `--dev-passkey FILE`: a passkey kept in a file,
 which only a development cluster's `localhost` relying party accepts.
 Without it, the command sends the request plainly and the node answers
 `412 CONFIRM_REQUIRED`: on a real cluster the owner approves in a browser.
-That holds for `call` (a confirm method), `context update`, `context transfer`,
-`context move`, `namespace delete`, `namespace outbound`,
+That holds for `call` (a confirm method), `instance update`, `instance transfer`,
+`instance move`, `namespace delete`, `namespace outbound`,
 `namespace approve-release`, `namespace invite`, `namespace leave`,
 `namespace members add`, `namespace members remove`, `namespace capabilities`,
 `account outbound`, `account approve-release`, `account api-key create`,
@@ -104,7 +104,7 @@ Saved nodes, in `{home}/meroctl/nodes.json` (mode `0600`). No network.
 | `logout [--all]` | `/auth/logout-all` with `--all` | Forget the saved session; `--all` first ends every session of the account. |
 | `whoami` | `GET /auth/me` | Who the requests run as. |
 | `attest` (`attest node`) | `GET /attestation` | The node's attestation document. |
-| `attest app CONTEXT` (was `attest --context`) | `GET /apps/{app}/attestation` | Every replica of that app verified, their receipt keys and the governance they attest. |
+| `attest app INSTANCE` (was `attest --context`) | `GET /apps/{app}/attestation` | Every replica of that app verified, their receipt keys and the governance they attest. |
 | `attest release [--file FILE --nonce HEX]` (was `attest-release`) | `GET /attestation/release` | Verify a [release attestation](/operate/merod/#attest) (`merod attest`): fetched from the node's URL over a fresh nonce (a booting TD's `merod attest --serve`), or read from `FILE` with the nonce it was made over. Judged with `--allow-mock`, `--tee-profiles` and `--min-release` like any quote; needs no session. Prints the claim, the verified registers and the profile they matched. |
 
 ## app
@@ -139,7 +139,7 @@ list PACKAGE`).
 | `app get-latest-version PACKAGE` | `GET /packages/{package}` | Its newest installed version. |
 | `app pipelines PACKAGE [--version V]` | `GET /packages/{package}/{version}/pipelines` | The pipelines a version registered (default: the newest): per name, `hash`, `worstCaseFuel`, the `modules` it pins and the canonical `pipeline`. |
 | `app uninstall PACKAGE [--version V]` | `DELETE /packages/{package}[/{version}]` | Uninstall one version or the whole application. Refused while a context runs it. |
-| `app watch --path FILE --dev-passkey FILE [-c CONTEXT]... [--once] [--interval-ms MS]` | uploads, then `POST /apps/{app}/upgrade` | Push a build now, then on every save. A `.mpk` is installed and this account's contexts of its package (or the `--context`s named) are updated to its version; a raw `.wasm` updates only the `--context`s named. `--interval-ms` defaults to `500`. |
+| `app watch --path FILE --dev-passkey FILE [-c INSTANCE]... [--once] [--interval-ms MS]` | uploads, then `POST /apps/{app}/upgrade` | Push a build now, then on every save. A `.mpk` is installed and this account's contexts of its package (or the `--instance`s named) are updated to its version; a raw `.wasm` updates only the `--instance`s named. `--interval-ms` defaults to `500`. |
 | `app origins list PACKAGE` (`ls`) | `GET /package-origins/{package}` | The web origins registered for the application: each `origin`, its `rpId`, `addedBy`, `addedAt` and `served` (whether the cluster serves the frontend there). Its manager's only. |
 | `app origins add PACKAGE ORIGIN [--rp-id ID] [--served] [--dev-passkey FILE]` | `POST /package-origins/{package}` | Register a web origin whose pages may sign people in to the application ([registered origins](/protocol/identities/#registered-origins)). `ORIGIN` is `https://host[:port]` as a browser writes it (`http` only on a `localhost` name, on a `--dev` node). `--rp-id` is the passkey relying party there: the origin's host (the default) or a parent domain of it, never the cluster's rp-id or a parent of it; passkeys made there belong to that domain. A package registers at most 8. `--served` makes it a custom domain: the cluster also serves the application's frontend there from its signed bundle (`https://host`, no port; not under the apps domain or the cluster's rp-id; at most 4 per package and 64 per cluster). The node refuses it `400 NOT_SERVING` without `--apps-domain` and `409 CLUSTER_NOT_UPGRADED` while a node runs an older release; an origin held with the other `served` is `409 ORIGIN_TAKEN` (remove it first). Browsers reach it once Calimero Cloud holds its certificate and route (`docs/specs/custom-domains.md`). |
 | `app origins remove PACKAGE ORIGIN [--dev-passkey FILE]` (`rm`) | `DELETE /package-origins/{package}` | Remove a registered origin; the sessions opened there end. |
@@ -198,7 +198,7 @@ id).
 
 ```bash
 meroctl cloud compute pipeline validate ./pipelines/ingest.yaml --package com.example.docs --version 1.2.0
-meroctl file upload ./report.pdf -c docs                     # prints { id, size, sha256, index }
+meroctl file upload ./report.pdf -i docs                     # prints { id, size, sha256, index }
 meroctl cloud compute pipeline estimate docs ingest --input pages=<file-id>
 meroctl cloud compute pipeline run docs ingest --input pages=<file-id> --param lang=en --max-cost 5000000 --wait
 meroctl cloud compute pipeline receipt docs <run> --verify
@@ -219,28 +219,28 @@ App instances.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
-| `context create --name NAME (--package P [--version V] \| --bundle HASH \| --path FILE) [options]` | `POST /apps` | Create a context. `--path` installs a `.mpk` (or a development `.wasm`) first. See the options below. |
-| `context list [--package P]` (`ls`) | `GET /apps[?package=P]` | Contexts this account reaches. |
-| `context get CONTEXT` | `GET /apps/{app}` | One context. |
-| `context delete CONTEXT` (`del`) | `DELETE /apps/{app}` | Delete a context (its owner or an org admin). |
-| `context move CONTEXT NAMESPACE [--bring-members] [--dev-passkey F]` | `POST /apps/{app}/move` | Move the context to another org, its data where it is (whoever manages it now, as an admin of the target org, with a passkey); `--bring-members` adds the members who reach it. |
-| `context transfer CONTEXT ACCOUNT [--dev-passkey F]` | `POST /apps/{app}/transfer` | Hand the context to another account (its owner, or for an org's context its owner while a member or an org admin, with a passkey; an org's context only to a member of the org). |
-| `context update CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /apps/{app}/upgrade` | Move to another release or bundle; the state stays as it is and the new code reads it. `--migrate` is refused (`422 UPGRADE_FAILED`, `MigrationsNotSupported`: no migrations in this version). `--bundle` conflicts with `--version` and `--package`. The owner approves. |
-| `context watch CONTEXT [--from N] [--limit N]` (`ws`) | `GET /apps/{app}/events` | Print committed events from index `--from` (default `0`), then live ones, as JSON lines; stop after `--limit`. |
-| `context alias add ALIAS CONTEXT` (`new`, `create`) | `PUT /auth/aliases/{alias}` | Name a context for this account. |
-| `context alias remove ALIAS` (`rm`, `del`, `delete`) | `DELETE /auth/aliases/{alias}` | Remove an alias. |
-| `context alias get [ALIAS]` | `GET /auth/aliases/{alias}` | Resolve an alias (default `default`). |
-| `context alias list` (`ls`) | `GET /auth/aliases` | This account's aliases. |
-| `context use CONTEXT` | `PUT /auth/aliases/default` | Make a context the default (the alias `default`). |
-| `context access CONTEXT owner\|org\|team\|accounts\|public [--group TEAM] [--account ID]...` | `POST /apps/{app}/access` | Who reaches the context. `team` needs `--group`; `accounts` takes `--account` once per account. |
-| `context metadata CONTEXT JSON` | `POST /apps/{app}/metadata` | Set the context's metadata; `null` clears it. |
-| `context storage CONTEXT` | `GET /apps/{app}/storage` | Keys, bytes and blobs the context holds. |
-| `context abi CONTEXT` | `GET /apps/{app}/abi` | The ABI of the bundle it runs. |
-| `context presence list CONTEXT` (`ls`) | `GET /apps/{app}/presence` | Who is present now (ephemeral, never stored). |
-| `context presence publish CONTEXT --seq N [--state HEX]` | `POST /apps/{app}/presence` | Publish this device's presence; no `--state` retracts it. |
-| `context presence stream CONTEXT [--limit N]` | `GET /apps/{app}/presence/stream` | The snapshot, then each change, as JSON lines. |
+| `instance create --name NAME (--package P [--version V] \| --bundle HASH \| --path FILE) [options]` | `POST /apps` | Create a context. `--path` installs a `.mpk` (or a development `.wasm`) first. See the options below. |
+| `instance list [--package P]` (`ls`) | `GET /apps[?package=P]` | Contexts this account reaches. |
+| `instance get INSTANCE` | `GET /apps/{app}` | One context. |
+| `instance delete INSTANCE` (`del`) | `DELETE /apps/{app}` | Delete a context (its owner or an org admin). |
+| `instance move INSTANCE NAMESPACE [--bring-members] [--dev-passkey F]` | `POST /apps/{app}/move` | Move the context to another org, its data where it is (whoever manages it now, as an admin of the target org, with a passkey); `--bring-members` adds the members who reach it. |
+| `instance transfer INSTANCE ACCOUNT [--dev-passkey F]` | `POST /apps/{app}/transfer` | Hand the context to another account (its owner, or for an org's context its owner while a member or an org admin, with a passkey; an org's context only to a member of the org). |
+| `instance update INSTANCE [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /apps/{app}/upgrade` | Move to another release or bundle; the state stays as it is and the new code reads it. `--migrate` is refused (`422 UPGRADE_FAILED`, `MigrationsNotSupported`: no migrations in this version). `--bundle` conflicts with `--version` and `--package`. The owner approves. |
+| `instance watch INSTANCE [--from N] [--limit N]` (`ws`) | `GET /apps/{app}/events` | Print committed events from index `--from` (default `0`), then live ones, as JSON lines; stop after `--limit`. |
+| `instance alias add ALIAS INSTANCE` (`new`, `create`) | `PUT /auth/aliases/{alias}` | Name a context for this account. |
+| `instance alias remove ALIAS` (`rm`, `del`, `delete`) | `DELETE /auth/aliases/{alias}` | Remove an alias. |
+| `instance alias get [ALIAS]` | `GET /auth/aliases/{alias}` | Resolve an alias (default `default`). |
+| `instance alias list` (`ls`) | `GET /auth/aliases` | This account's aliases. |
+| `instance use INSTANCE` | `PUT /auth/aliases/default` | Make a context the default (the alias `default`). |
+| `instance access INSTANCE owner\|org\|team\|accounts\|public [--group TEAM] [--account ID]...` | `POST /apps/{app}/access` | Who reaches the context. `team` needs `--group`; `accounts` takes `--account` once per account. |
+| `instance metadata INSTANCE JSON` | `POST /apps/{app}/metadata` | Set the context's metadata; `null` clears it. |
+| `instance storage INSTANCE` | `GET /apps/{app}/storage` | Keys, bytes and blobs the context holds. |
+| `instance abi INSTANCE` | `GET /apps/{app}/abi` | The ABI of the bundle it runs. |
+| `instance presence list INSTANCE` (`ls`) | `GET /apps/{app}/presence` | Who is present now (ephemeral, never stored). |
+| `instance presence publish INSTANCE --seq N [--state HEX]` | `POST /apps/{app}/presence` | Publish this device's presence; no `--state` retracts it. |
+| `instance presence stream INSTANCE [--limit N]` | `GET /apps/{app}/presence/stream` | The snapshot, then each change, as JSON lines. |
 
-`context create` options:
+`instance create` options:
 
 | Flag | Meaning |
 | --- | --- |
@@ -258,13 +258,13 @@ App instances.
 ## call
 
 ```bash
-meroctl call -c CONTEXT METHOD [--args JSON] [--view [--min-index N]]
+meroctl call -i INSTANCE METHOD [--args JSON] [--view [--min-index N]]
              [--idempotency-key KEY] [--dev-passkey FILE]
 ```
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `-c, --context CONTEXT` | required | The context. |
+| `-c, --instance INSTANCE` | required | The context. |
 | `METHOD` | required | The method. |
 | `--args JSON` | `{}` | JSON arguments. |
 | `--view` | off | Read only (`POST /apps/{app}/views`): no write, answered by the leader. |
@@ -277,16 +277,16 @@ receipt signed by the answering node.
 
 ## blob
 
-A context's blobs. `-c` is `--context` and `-o` is `--output`.
+An instance's blobs. `-i` is `--instance` and `-o` is `--output`.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
-| `blob list -c CONTEXT` (`ls`) | `GET /apps/{app}/blobs` | The context's blobs. |
-| `blob upload FILE -c CONTEXT` | `POST /apps/{app}/blobs` | Upload a file; prints its id. |
-| `blob download ID -c CONTEXT [-o FILE]` | `GET /apps/{app}/blobs/{id}` | Write a blob to `--output`, or to standard output. |
-| `blob info ID -c CONTEXT` | `GET /apps/{app}/blobs/{id}/info` | A blob's size. |
-| `blob delete ID -c CONTEXT` (`rm`) | `DELETE /apps/{app}/blobs/{id}` | Forget a blob (its owner or an org admin); its bytes go once no other context holds them. |
-| `blob revoke ID -c CONTEXT` | `POST /apps/{app}/blobs/{id}/revoke` | Invalidate the download grants made so far for a published blob (its owner or an org admin). |
+| `blob list -i INSTANCE` (`ls`) | `GET /apps/{app}/blobs` | The context's blobs. |
+| `blob upload FILE -i INSTANCE` | `POST /apps/{app}/blobs` | Upload a file; prints its id. |
+| `blob download ID -i INSTANCE [-o FILE]` | `GET /apps/{app}/blobs/{id}` | Write a blob to `--output`, or to standard output. |
+| `blob info ID -i INSTANCE` | `GET /apps/{app}/blobs/{id}/info` | A blob's size. |
+| `blob delete ID -i INSTANCE` (`rm`) | `DELETE /apps/{app}/blobs/{id}` | Forget a blob (its owner or an org admin); its bytes go once no other context holds them. |
+| `blob revoke ID -i INSTANCE` | `POST /apps/{app}/blobs/{id}/revoke` | Invalidate the download grants made so far for a published blob (its owner or an org admin). |
 
 ## file
 
@@ -294,7 +294,7 @@ A context's sealed files.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
-| `file upload FILE -c CONTEXT` | `POST /apps/{app}/files`, or a session under `/apps/{app}/files/uploads` | Upload a sealed file (its owner or an org member): one request up to 16 MiB, else parts that resume after a dropped connection; prints its `id`, `size`, `sha256` and `index`. |
+| `file upload FILE -i INSTANCE` | `POST /apps/{app}/files`, or a session under `/apps/{app}/files/uploads` | Upload a sealed file (its owner or an org member): one request up to 16 MiB, else parts that resume after a dropped connection; prints its `id`, `size`, `sha256` and `index`. |
 | `file download APP ID (-o\|--out) PATH` | `POST /apps/{app}/files/{id}/export`, `GET /apps/{app}/files/{id}/segments/{k}` | Download a sealed file's plaintext: the node sends ciphertext and the file key wrapped to a key made for the call, and every byte is checked before anything is written. |
 
 ## namespace
@@ -361,8 +361,8 @@ The signed-in account.
 | `account session list` (`ls`) | `GET /auth/sessions` | Its live sessions: the device each was opened with, the application and origin it is bound to, when it opened and was last active (to within about an hour), and the current one. |
 | `account session revoke SESSION` | `DELETE /auth/sessions/{session}` | End one session. |
 | `account activity [--after T]` | `GET /auth/activity` | What its devices did, newest first: the applications and origins each signed in to, and the changes each approved (needs a passkey session). |
-| `account api-key create [--label L] [--context C]... [--read-only] [--ttl-secs N] [--dev-passkey FILE]` | `POST /auth/apikeys` | Create an API key (needs a passkey session). `--label` defaults to `meroctl`; `--context` limits it to those contexts. The key is printed once. |
-| `account api-key create --upgrades CONTEXT [--package P] [--label L] [--ttl-secs N] [--dev-passkey FILE]` | `POST /auth/apikeys` (`upgrades`) | An upgrade key, for CI: it moves that one context to signed releases of its application (`P`, default the one it runs) with `context update --version`, signing in place of the passkey step-up, and is refused everywhere else (`403 UPGRADE_KEY_ONLY`). Conflicts with `--context` and `--read-only`. |
+| `account api-key create [--label L] [--instance C]... [--read-only] [--ttl-secs N] [--dev-passkey FILE]` | `POST /auth/apikeys` | Create an API key (needs a passkey session). `--label` defaults to `meroctl`; `--instance` limits it to those contexts. The key is printed once. |
+| `account api-key create --upgrades INSTANCE [--package P] [--label L] [--ttl-secs N] [--dev-passkey FILE]` | `POST /auth/apikeys` (`upgrades`) | An upgrade key, for CI: it moves that one context to signed releases of its application (`P`, default the one it runs) with `instance update --version`, signing in place of the passkey step-up, and is refused everywhere else (`403 UPGRADE_KEY_ONLY`). Conflicts with `--instance` and `--read-only`. |
 | `account api-key list` (`ls`) | `GET /auth/apikeys` | Its API keys. |
 | `account api-key revoke KEY_ID [--dev-passkey FILE]` | `DELETE /auth/apikeys/{key}` | Revoke one, approved with a passkey. |
 | `account approve-release VERSION [--dev-passkey FILE]` | `POST /orgs/{org}/releases` | Approve a mero-tee release to hold the account's own contexts (its personal organization's). |
@@ -392,7 +392,7 @@ cluster an older `meroctl` started in `./.merod-local`.
 | Command | Meaning |
 | --- | --- |
 | `dev start --path FILE --dev-passkey FILE [--name NAME] [-p JSON] [-w]` | Install a build (`.mpk`, or a development `.wasm`), create a context from it (`--name`, default `dev`; `--params` for `init`) and, with `--watch`, push every later save to it. |
-| `dev watch --path FILE --dev-passkey FILE [-c CONTEXT]... [--once] [--interval-ms MS]` | `app watch` under another name. |
+| `dev watch --path FILE --dev-passkey FILE [-c INSTANCE]... [--once] [--interval-ms MS]` | `app watch` under another name. |
 
 ## network
 
@@ -416,13 +416,13 @@ node answers `403` for the others.
 | `ops placement` | `GET /ops/placement` | Each context's group and replica node ids, each node's zone, release and context count. Ids and counts only. |
 | `ops add-node ID ADDR [--zone Z] [--role replica\|job] [--pool P]` | `POST /ops/nodes` | Register a node so the system group admits it as a learner (and a voter while fewer than 3 voters are left). `ADDR` is its URL. `--role job` registers a job node (`merod run --job-node`): it is never admitted, placed or sent the cluster key. A node's role is fixed until it is removed. |
 | `ops remove-node ID` | `DELETE /ops/nodes/{id}` | Remove a node no app keeps a replica on; run against the system leader. |
-| `ops move CONTEXT --replicas ID,...` | `POST /ops/apps/{app}/replicas` | Move a context to these replica node ids. A follower answers `421 NOT_LEADER`; meroctl retries at the leader it names. The set it already has answers `unchanged: true`; another move of it running, `409 MOVE_IN_PROGRESS`. |
+| `ops move INSTANCE --replicas ID,...` | `POST /ops/apps/{app}/replicas` | Move a context to these replica node ids. A follower answers `421 NOT_LEADER`; meroctl retries at the leader it names. The set it already has answers `unchanged: true`; another move of it running, `409 MOVE_IN_PROGRESS`. |
 | `ops backup [--all]` | `POST /ops/backup[?all=true]` | Write sealed snapshots, into the node's `--backup-dir`, of the contexts this node leads now and of the system group when it leads it; `--all`: every group it holds, leader or not (a survivor of a lost majority). |
-| `ops restore CONTEXT [--backup NAME]` | `POST /ops/apps/{app}/restore` | Restore a context from a sealed backup in this node's `--backup-dir` (`{backup-dir}/{context}/{name}`, the newest without `--backup`); this node seeds it and becomes its first replica, and what the context wrote after the backup is lost. Signed. |
-| `ops restore CONTEXT --recovery-key-file FILE [--recovery-file NAME]` | `GET /ops/recovery-files`, then `POST /ops/apps/{app}/restore { recovery }` | Restore it from the node's recovery disk (`--recover-from`, else `--recovery-dir`) with the operator's backup key: meroctl checks each file's signature and attestation, opens the file's data key on this machine and sends only that. The context's newest file without `--recovery-file`. Signed. |
+| `ops restore INSTANCE [--backup NAME]` | `POST /ops/apps/{app}/restore` | Restore a context from a sealed backup in this node's `--backup-dir` (`{backup-dir}/{context}/{name}`, the newest without `--backup`); this node seeds it and becomes its first replica, and what the context wrote after the backup is lost. Signed. |
+| `ops restore INSTANCE --recovery-key-file FILE [--recovery-file NAME]` | `GET /ops/recovery-files`, then `POST /ops/apps/{app}/restore { recovery }` | Restore it from the node's recovery disk (`--recover-from`, else `--recovery-dir`) with the operator's backup key: meroctl checks each file's signature and attestation, opens the file's data key on this machine and sends only that. The context's newest file without `--recovery-file`. Signed. |
 | `ops backup-key [--public-key HEX]` | `GET`, `POST /ops/backup-key` | The operator's backup key (`{ holder, key, apps }`), or set it (64 hex, an X25519 public key; signed): every context's recovery-disk files are sealed to it where the operator upgrades apps. |
 | `ops recovery-keygen --out FILE` | none (local) | Make a backup key pair: the private half (hex) into `FILE` (mode `0600`; keep it off every node), the public half printed as `publicKey` for `ops backup-key --public-key`. |
-| `ops recover --key-file FILE` | `GET /ops/recovery-files`, `POST /ops/recover` | Found the cluster again from its recovery disk, on a founder started with `merod run --bootstrap --recover-from DIR`: the newest `system` file and every `code` file in `DIR/operator/`, each checked and opened on this machine with the backup key. Then `ops restore CONTEXT --recovery-key-file` each context. |
+| `ops recover --key-file FILE` | `GET /ops/recovery-files`, `POST /ops/recover` | Found the cluster again from its recovery disk, on a founder started with `merod run --bootstrap --recover-from DIR`: the newest `system` file and every `code` file in `DIR/operator/`, each checked and opened on this machine with the backup key. Then `ops restore INSTANCE --recovery-key-file` each context. |
 | `ops quotas` | `GET /ops/quotas` | The per-account quotas. |
 | `ops set-quotas JSON` | `POST /ops/quotas` | Replace them. |
 | `ops pools` | `GET /ops/pools` | The compute pools and the runs each takes at once. |
@@ -434,7 +434,7 @@ node answers `403` for the others.
 | `ops packages` | `GET /ops/packages` | The applications the operator installed (not the accounts'). |
 | `ops install PACKAGE[@VERSION] [--version V]` / `ops install --path FILE` | `POST /ops/packages/install`, `POST /ops/packages` | Install a release for the operator's upgrades, from the registry or a signed `.mpk`. |
 | `ops uninstall PACKAGE [--version V]` | `DELETE /ops/packages/{package}[/{version}]` | Uninstall what the operator installed. |
-| `ops upgrade CONTEXT [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT]` | `POST /ops/apps/{app}/upgrade` | Update a context to an installed release, where the operator holds app upgrades. |
+| `ops upgrade INSTANCE [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT]` | `POST /ops/apps/{app}/upgrade` | Update a context to an installed release, where the operator holds app upgrades. |
 | `ops upgrade-namespace ORG --package P --version V [--group TEAM [--cascade]] [--migrate EXPORT]` | `POST /ops/orgs/{org}/upgrade` | Update an organization's contexts (or one team's) to a release; follow it with `group upgrade status`. |
 
 <Aside type="note">
@@ -519,9 +519,9 @@ meroctl local up                                    # saves the node `local`, th
 meroctl login --dev-passkey ./dev-passkey.json --name ada
 meroctl app pack apps/kv-store/logic --app-version 0.1.0 --out kv-store.mpk
 meroctl app install --path ./kv-store.mpk
-meroctl context create --package com.calimero.kv-store --name notes --alias notes
-meroctl call -c notes set --args '{"key":"a","value":"1"}'
-meroctl call -c notes get --args '{"key":"a"}' --view
+meroctl instance create --package com.calimero.kv-store --name notes --alias notes
+meroctl call -i notes set --args '{"key":"a","value":"1"}'
+meroctl call -i notes get --args '{"key":"a"}' --view
 meroctl --ops-token "$TOKEN" ops status            # the token `local up` printed
 meroctl local down
 ```
