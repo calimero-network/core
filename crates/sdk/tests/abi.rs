@@ -220,7 +220,7 @@ fn abi_lists_every_method_with_its_attributes() {
     );
     assert_eq!(
         abi_json["methods"]["init"]["doc"],
-        "`init` takes arguments by name, like a call: the node's `initArgs` (`--params`). Both\nare optional, so an app created with none, as `TestApp::new` creates it, still starts."
+        "Sets up the org's rooms; `welcome` is the greeting and `opens_at` the first bookable\ntime. Both are optional."
     );
     assert_eq!(
         abi_json["errors"],

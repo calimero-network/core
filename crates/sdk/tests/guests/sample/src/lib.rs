@@ -91,8 +91,10 @@ pub enum Event {
 
 #[app::logic]
 impl Rooms {
-    /// `init` takes arguments by name, like a call: the node's `initArgs` (`--params`). Both
-    /// are optional, so an app created with none, as `TestApp::new` creates it, still starts.
+    /// Sets up the org's rooms; `welcome` is the greeting and `opens_at` the first bookable
+    /// time. Both are optional.
+    // `init` takes arguments by name, like a call: the node's `initArgs` (`--params`); an app
+    // created with none, as `TestApp::new` creates it, still starts.
     #[app::init]
     pub fn init(welcome: Option<String>, opens_at: Option<u64>) -> app::Result<Self> {
         let mut app = Self::load();

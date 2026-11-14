@@ -90,26 +90,51 @@ fn app_attr(attr: &Attribute) -> Option<String> {
     }
 }
 
-/// The `///` lines on `attrs`, one leading space each removed; `None` when there are none.
+/// The doc comments on `attrs`, one leading space per line removed; `None` when there are none.
+/// Only string literals are read: `include_str!` and `concat!` are not expanded yet.
 fn doc_comment(attrs: &[Attribute]) -> Option<String> {
-    let lines: Vec<String> = attrs
+    let text: Vec<String> = attrs
         .iter()
         .filter(|a| a.path().is_ident("doc"))
         .filter_map(|a| match &a.meta {
-            syn::Meta::NameValue(syn::MetaNameValue {
-                value:
-                    syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(s),
-                        ..
-                    }),
-                ..
-            }) => Some(s.value()),
+            syn::Meta::NameValue(nv) => doc_literal(&nv.value),
             _ => None,
         })
-        .map(|line| line.strip_prefix(' ').map_or(line.clone(), str::to_owned))
+        .map(|raw| unindent(&raw))
         .collect();
-    let doc = lines.join("\n").trim().to_owned();
+    let doc = text.join("\n").trim().to_owned();
     (!doc.is_empty()).then_some(doc)
+}
+
+/// The string in a `#[doc = ..]` value; `macro_rules!` wraps its `$d` fragments in a group.
+fn doc_literal(value: &syn::Expr) -> Option<String> {
+    match value {
+        syn::Expr::Group(g) => doc_literal(&g.expr),
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(s),
+            ..
+        }) => Some(s.value()),
+        _ => None,
+    }
+}
+
+/// A `///` is one line; a `/** */` is one string, whose ` * ` decoration goes when every
+/// line after the first carries it (as rustdoc does).
+fn unindent(raw: &str) -> String {
+    let lines: Vec<&str> = raw.split('\n').collect();
+    let starred = lines[1..]
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .all(|l| l.trim_start().starts_with('*'));
+    let strip = |line: &str| line.strip_prefix(' ').unwrap_or(line).to_owned();
+    let mut out = vec![strip(lines[0])];
+    for line in &lines[1..] {
+        out.push(match (starred, line.trim_start().strip_prefix('*')) {
+            (true, star) => strip(star.unwrap_or("")),
+            (false, _) => strip(line),
+        });
+    }
+    out.join("\n")
 }
 
 /// `"<n>s"`, `"<n>m"` or `"<n>h"` with `n > 0`, as the host reads it.
@@ -760,6 +785,70 @@ mod tests {
         assert!(
             out.contains(r#""bare":{"allowSystem":false,"confirm":false,"kind":"view""#),
             "{out}"
+        );
+    }
+
+    fn doc_of(f: ImplItemFn) -> Option<String> {
+        doc_comment(&f.attrs)
+    }
+
+    #[test]
+    fn doc_comment_reads_a_macro_rules_grouped_literal() {
+        let literal: syn::Expr = parse_quote!("Lists the rooms.");
+        let grouped = Attribute {
+            pound_token: Default::default(),
+            style: syn::AttrStyle::Outer,
+            bracket_token: Default::default(),
+            meta: syn::Meta::NameValue(syn::MetaNameValue {
+                path: parse_quote!(doc),
+                eq_token: Default::default(),
+                value: syn::Expr::Group(syn::ExprGroup {
+                    attrs: Vec::new(),
+                    group_token: Default::default(),
+                    expr: Box::new(literal),
+                }),
+            }),
+        };
+        assert_eq!(doc_comment(&[grouped]).as_deref(), Some("Lists the rooms."));
+    }
+
+    #[test]
+    fn doc_comment_leaves_out_what_a_proc_macro_cannot_read() {
+        let f: ImplItemFn = parse_quote! {
+            #[doc = include_str!("rooms.md")]
+            #[doc = concat!("a", "b")]
+            pub fn rooms(&self) {}
+        };
+        assert_eq!(doc_of(f), None);
+        let f: ImplItemFn = parse_quote! {
+            #[doc = include_str!("rooms.md")]
+            /// Lists the rooms.
+            pub fn rooms(&self) {}
+        };
+        assert_eq!(doc_of(f).as_deref(), Some("Lists the rooms."));
+    }
+
+    #[test]
+    fn doc_comment_reads_a_block_comment() {
+        let f: ImplItemFn = parse_quote! {
+            /**
+             * Lists the rooms.
+             *
+             *   Indented.
+             */
+            pub fn rooms(&self) {}
+        };
+        assert_eq!(
+            doc_of(f).as_deref(),
+            Some("Lists the rooms.\n\n  Indented.")
+        );
+        let f: ImplItemFn = parse_quote! {
+            #[doc = " Lists the rooms.\n  - one\n  * two\n"]
+            pub fn rooms(&self) {}
+        };
+        assert_eq!(
+            doc_of(f).as_deref(),
+            Some("Lists the rooms.\n - one\n * two")
         );
     }
 
