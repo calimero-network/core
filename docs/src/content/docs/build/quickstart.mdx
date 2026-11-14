@@ -53,7 +53,8 @@ a checkout of [core](https://github.com/calimero-network/core); the
    section.
 
 4. **Start a development cluster**: three nodes of `merod local` in the
-   background on `127.0.0.1:2501`-`2503`, mock attestation, state in
+   background, in the release's Docker image (Docker must be running; `--local`
+   runs the `merod` on `PATH`), on `127.0.0.1:2501`-`2503`, mock attestation, state in
    `~/.calimero/meroctl/local/`. `meroctl` saves it as the node `local` (trusting its mock
    quote), the default when you have none:
 
