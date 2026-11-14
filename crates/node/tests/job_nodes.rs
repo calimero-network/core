@@ -950,11 +950,16 @@ async fn the_ops_route_tells_admitted_from_refused_from_unreachable() {
     assert!(!down["reason"].as_str().unwrap().is_empty(), "{down}");
 
     // Answers 2xx with something that is not an attestation, or with too much: refused.
-    // A non-2xx is what a booting or busy node answers: unreachable.
+    // A 5xx, 408, 425 or 429 is what a booting or busy node answers: unreachable. Any other
+    // 4xx is a node that answers and will not attest for jobs, such as a replica: refused.
     for (next, (body_len, status, state)) in (JOB + 3..).zip([
         (8, 200, "refused"),
         (128 * 1024, 200, "refused"),
         (8, 503, "unreachable"),
+        (8, 429, "unreachable"),
+        (8, 408, "unreachable"),
+        (8, 404, "refused"),
+        (8, 403, "refused"),
     ]) {
         let app = axum::Router::new().route(
             "/attestation",

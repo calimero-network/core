@@ -309,8 +309,8 @@ impl Node {
         })
     }
 
-    /// The document a job node answers to `nonce` for `purpose=jobs`: no answer or a non-2xx
-    /// status is unreachable, a 2xx the leader cannot read as a document is refused.
+    /// The document a job node answers to `nonce` for `purpose=jobs`: no answer, a 5xx, 408, 425
+    /// or 429 is unreachable; any other non-2xx or an unreadable 2xx is refused.
     async fn fetch_attestation_doc(
         &self,
         url: &str,
@@ -332,8 +332,16 @@ impl Node {
             .timeout(JOB_ATTEST_TIMEOUT)
             .send()
             .await
-            .and_then(reqwest::Response::error_for_status)
             .map_err(|e| unreachable(&e))?;
+        let status = response.status();
+        if status.is_client_error() && !matches!(status.as_u16(), 408 | 425 | 429) {
+            return Err(JobAttestError::Refused(format!(
+                "the job node answers {status} to an attestation for jobs"
+            )));
+        }
+        if !status.is_success() {
+            return Err(unreachable(&format!("the job node answers {status}")));
+        }
         let body = match bounded_body(response, MAX_JOB_RESPONSE_BYTES).await {
             Ok(body) => body,
             Err(e) if e.is::<AnswerTooLarge>() => {
