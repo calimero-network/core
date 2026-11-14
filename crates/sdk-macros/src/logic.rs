@@ -818,13 +818,13 @@ mod tests {
     #[test]
     fn doc_comment_leaves_out_what_a_proc_macro_cannot_read() {
         let f: ImplItemFn = parse_quote! {
-            #[doc = include_str!("rooms.md")]
+            #[doc = include_str!("rooms.txt")]
             #[doc = concat!("a", "b")]
             pub fn rooms(&self) {}
         };
         assert_eq!(doc_of(f), None);
         let f: ImplItemFn = parse_quote! {
-            #[doc = include_str!("rooms.md")]
+            #[doc = include_str!("rooms.txt")]
             /// Lists the rooms.
             pub fn rooms(&self) {}
         };
