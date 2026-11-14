@@ -370,7 +370,9 @@ The signed-in account.
 
 A development cluster on this machine: `merod local` (mock attestation, a
 development storage key; never for real data) in the background, its state
-under `--dir` (default `.merod-local`) kept across restarts.
+under `--dir` (default `{home}/meroctl/local`, `~/.calimero/meroctl/local`, the
+same from any directory) kept across restarts. `down` and `status` also find a
+cluster an older `meroctl` started in `./.merod-local`.
 
 | Command | Meaning |
 | --- | --- |

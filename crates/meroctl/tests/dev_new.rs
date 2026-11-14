@@ -28,7 +28,7 @@ fn write(root: &Path, rel: &str, text: &str) {
     std::fs::write(p, text).unwrap();
 }
 
-/// The apps repository's layout: root files, two apps, shared packages and tools.
+/// The apps repository's layout: root files, two apps, shared packages and scripts.
 fn apps_repo(root: &Path) -> String {
     for (rel, text) in [
         ("package.json", "{}"),
@@ -42,7 +42,7 @@ fn apps_repo(root: &Path) -> String {
         ("apps/kv-store/app/package.json", "{}"),
         ("apps/mero-chat/logic/Cargo.toml", "[package]"),
         ("packages/connect/package.json", "{}"),
-        ("tools/component-bundle/Cargo.toml", "[package]"),
+        ("scripts/component-build.sh", "#!/bin/sh"),
         ("docs/COMPONENT-APPS.md", "docs"),
     ] {
         write(root, rel, text);
@@ -82,7 +82,7 @@ fn dev_new_starts_a_project_from_an_app_of_the_apps_repo() {
         "apps/kv-store/logic/Cargo.toml",
         "apps/kv-store/app/package.json",
         "packages/connect/package.json",
-        "tools/component-bundle/Cargo.toml",
+        "scripts/component-build.sh",
         "pnpm-workspace.yaml",
         "Cargo.toml",
     ] {
@@ -93,12 +93,26 @@ fn dev_new_starts_a_project_from_an_app_of_the_apps_repo() {
     assert!(!p.join("docs").exists());
     let readme = std::fs::read_to_string(p.join("README.md")).unwrap();
     assert!(readme.starts_with("# kv-store"), "{readme}");
+    // One commit holds what the template gave, so the project's own changes
+    // show as changes, and it names where it came from.
     let log = Command::new("git")
         .current_dir(&p)
-        .args(["log", "--oneline"])
+        .args(["log", "--format=%s"])
         .output()
         .unwrap();
-    assert!(!log.status.success(), "a fresh repository has no commits");
+    let log = String::from_utf8_lossy(&log.stdout).into_owned();
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert!(log.contains("apps/kv-store"), "{log}");
+    let status = Command::new("git")
+        .current_dir(&p)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert!(
+        status.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&status.stdout)
+    );
 
     // A directory with something in it is refused, and left as it was.
     let again = meroctl(tmp.path(), &["dev", "new", "my-app", "--repo", &repo]);

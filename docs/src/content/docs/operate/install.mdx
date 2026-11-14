@@ -13,7 +13,7 @@ command line).
 
 | Platform | `merod` | `meroctl` |
 | --- | --- | --- |
-| Linux (x86_64, aarch64) | native | native |
+| Linux (x86_64, aarch64; glibc 2.35 or newer: Ubuntu 22.04, Debian 12 and later) | native | native |
 | macOS (Apple silicon) | native, from 1.0.0-rc.25 (or in Docker) | native |
 | Windows | not supported | not supported |
 
@@ -102,7 +102,8 @@ own checkout, the root `Dockerfile` builds the same kind of image:
 
    It runs `merod local` (from `PATH`) in the background. The nodes listen on
    `http://127.0.0.1:2501/` to `2503`, with mock attestation and a development
-   storage key, and keep state in `.merod-local/` (`--fresh` starts over).
+   storage key, and keep state in `~/.calimero/meroctl/local/` (`--fresh` starts
+   over), so `meroctl local down` and `status` find it from any directory.
    `meroctl` saves the cluster as the node `local`, trusting its mock
    attestation, and makes it the default node if you have none.
    It prints the node URLs and the Ops token (`opsToken`); `meroctl local

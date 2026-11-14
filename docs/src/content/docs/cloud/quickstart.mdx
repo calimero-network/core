@@ -47,8 +47,8 @@ meroctl local up
 
 `meroctl local up` starts `merod local` in the background: three nodes on
 `http://127.0.0.1:2501-2503/` in one process, with mock attestation and a
-development storage key, keeping state in `.merod-local/` (`--fresh` starts
-over). It saves the cluster as the node `local`, trusting its mock attestation
+development storage key, keeping state in `~/.calimero/meroctl/local/`
+(`--fresh` starts over). It saves the cluster as the node `local`, trusting its mock attestation
 for this node only, so it cannot carry over to a real cluster; `meroctl local
 status` shows it and `meroctl local down` stops it. Browser apps
 on `http://localhost:3000` and `http://localhost:5173` may call it (`--origins`).

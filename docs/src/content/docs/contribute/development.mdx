@@ -45,7 +45,7 @@ The quickest cluster is one process. `meroctl local up` starts `merod local`
 as the node `local`, trusting its mock attestation:
 
 ```bash
-meroctl local up            # 3 nodes on 127.0.0.1:2501-2503, state in .merod-local/
+meroctl local up            # 3 nodes on 127.0.0.1:2501-2503, state in ~/.calimero/meroctl/local/
 meroctl local status        # the node URLs, the ops token, the log file
 meroctl local down          # stop it; the state stays
 meroctl local up --fresh    # start over

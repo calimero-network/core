@@ -36,9 +36,10 @@ pub struct ClusterArgs {
     /// Node i listens on base-port + i (127.0.0.1 only).
     #[arg(long, default_value_t = 2500)]
     pub base_port: u16,
-    /// Where the cluster keeps its state, kept across restarts.
-    #[arg(long, default_value = ".merod-local")]
-    pub dir: PathBuf,
+    /// Where the cluster keeps its state, kept across restarts (default:
+    /// `{home}/meroctl/local`, the same from every directory).
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
     /// Start from empty state.
     #[arg(long)]
     pub fresh: bool,
@@ -66,13 +67,15 @@ pub enum LocalCmd {
     Up(ClusterArgs),
     /// Stop the cluster `up` started; its state stays for the next `up`.
     Down {
-        #[arg(long, default_value = ".merod-local")]
-        dir: PathBuf,
+        /// The cluster's state directory (default: the one `up` uses).
+        #[arg(long)]
+        dir: Option<PathBuf>,
     },
     /// Whether the cluster runs, and its nodes.
     Status {
-        #[arg(long, default_value = ".merod-local")]
-        dir: PathBuf,
+        /// The cluster's state directory (default: the one `up` uses).
+        #[arg(long)]
+        dir: Option<PathBuf>,
     },
     /// Develop an app on the cluster: start it if it is not running, build the
     /// app, upload it, write the frontend's `.env.development.local`, run the
@@ -162,6 +165,26 @@ fn listening(url: &str) -> bool {
     .is_ok()
 }
 
+/// Where a cluster keeps its state when `--dir` names none: under the meroctl
+/// home, so `up` in one directory and `down` in another find the same cluster.
+fn default_dir(home: &Home) -> PathBuf {
+    home.dir.join("meroctl").join("local")
+}
+
+/// The state directory `down` and `status` act on: `--dir`, else the default;
+/// failing that, a cluster an older meroctl started in `./.merod-local`.
+fn found_dir(home: &Home, dir: Option<PathBuf>) -> PathBuf {
+    dir.unwrap_or_else(|| {
+        let default = default_dir(home);
+        let legacy = PathBuf::from(".merod-local");
+        if read_state(&default).is_none() && read_state(&legacy).is_some() {
+            legacy
+        } else {
+            default
+        }
+    })
+}
+
 fn read_state(dir: &Path) -> Option<State> {
     serde_json::from_str(&std::fs::read_to_string(dir.join(STATE_FILE)).ok()?).ok()
 }
@@ -176,22 +199,23 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
     if a.nodes == 0 {
         bail!("--nodes must be at least 1");
     }
-    if let Some(state) = read_state(&a.dir).filter(alive) {
+    let state_dir = a.dir.clone().unwrap_or_else(|| default_dir(home));
+    if let Some(state) = read_state(&state_dir).filter(alive) {
         if a.fresh {
             bail!(
                 "a cluster is running from {}: `meroctl local down` first",
-                a.dir.display()
+                state_dir.display()
             );
         }
         save_node(home, &state.urls[0])?;
-        return Ok((describe(&a.dir, &state, true), None));
+        return Ok((describe(&state_dir, &state, true), None));
     }
     let urls = urls(a.nodes, a.base_port);
     if let Some(busy) = urls.iter().find(|u| listening(u)) {
         bail!("{busy} is taken by another process: stop it, or pass --base-port");
     }
-    std::fs::create_dir_all(&a.dir)?;
-    let dir = std::path::absolute(&a.dir)?;
+    std::fs::create_dir_all(&state_dir)?;
+    let dir = std::path::absolute(&state_dir)?;
     let token = hex::encode(calimero_identity::random::<16>());
     let log = dir.join("merod.log");
     let mut local = vec![
@@ -288,7 +312,7 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
     )?;
     // Only a caller that owns the cluster (`dev`) stops it when done.
     let started = own.then(|| Started {
-        dir: a.dir.clone(),
+        dir: state_dir.clone(),
         child,
     });
     let deadline = Instant::now() + READY_TIMEOUT;
@@ -313,7 +337,7 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
         std::thread::sleep(Duration::from_millis(500));
     }
     save_node(home, &urls[0])?;
-    let answer = describe(&a.dir, &state, true);
+    let answer = describe(&state_dir, &state, true);
     Ok((answer, started))
 }
 
@@ -383,14 +407,17 @@ pub fn stop(dir: &Path) -> eyre::Result<Value> {
 pub async fn run(cmd: LocalCmd, home: Home) -> eyre::Result<Value> {
     match cmd {
         LocalCmd::Up(a) => Ok(up(&a, &home, false)?.0),
-        LocalCmd::Down { dir } => stop(&dir),
-        LocalCmd::Status { dir } => Ok(match read_state(&dir) {
-            Some(state) => {
-                let running = alive(&state);
-                describe(&dir, &state, running)
-            }
-            None => json!({ "running": false }),
-        }),
+        LocalCmd::Down { dir } => stop(&found_dir(&home, dir)),
+        LocalCmd::Status { dir } => {
+            let dir = found_dir(&home, dir);
+            Ok(match read_state(&dir) {
+                Some(state) => {
+                    let running = alive(&state);
+                    describe(&dir, &state, running)
+                }
+                None => json!({ "running": false }),
+            })
+        }
         LocalCmd::Dev(a) => dev(a, home).await,
         LocalCmd::Test { dir, cargo_args } => {
             let krate = crate_dir(&dir);

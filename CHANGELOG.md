@@ -17,6 +17,21 @@
   asks for auto-merge. One shared branch let a stalled PR swallow every bump
   from 1.0.0-rc.19 on, and `gh pr create ... || true` hid it; the job now fails
   when the formulas do not change or the PR cannot be opened.
+- **`meroctl local` keeps the cluster in the meroctl home**: `local up` (and
+  `local dev`) store the cluster's state in `{home}/meroctl/local`
+  (`~/.calimero/meroctl/local`) instead of `./.merod-local`, so `local down` and
+  `local status` find it from any directory. The quickstart runs `local up`, then
+  `cd`s into a new project, where `local down` used to report `"running": false`
+  and leave the cluster up. `down` and `status` still find a cluster an older
+  meroctl started in `./.merod-local`; `--dir` names any other.
+- **Linux release binaries need glibc 2.35, not 2.39**: they are built on
+  Ubuntu 22.04, so they run on Ubuntu 22.04, Debian 12 and later (they needed
+  Ubuntu 24.04 or Debian 13). The release fails if a binary needs a newer glibc.
+- **`meroctl app new` copies the apps repository's `scripts/`** (its
+  `component-build.sh` builds the contract and writes `res/abi.json`, and
+  `packages/merod-local` runs it) in place of `tools/`, which the apps
+  repository no longer has, makes one commit of what the template gave, and
+  says to run `meroctl local dev` next.
 
 ### Added
 

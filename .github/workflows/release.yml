@@ -123,13 +123,15 @@ jobs:
       # Every build is a release's (or a run by hand that checks one): Linux x86_64
       # and aarch64 (the release archives and the image's two platforms), and macOS
       # for a developer's machine (`merod local` and the command-line tools). There is no Windows build:
-      # nodes run on Linux TDX hosts only.
+      # nodes run on Linux TDX hosts only. Linux builds on Ubuntu 22.04 (glibc
+      # 2.35): a binary needs the glibc it was linked against or newer, and 24.04's
+      # 2.39 kept the release off Ubuntu 22.04 and Debian 12.
       - name: Choose the build targets
         id: build_matrix
         run: |
           set -euo pipefail
-          linux='{"name":"x86_64-unknown-linux-gnu","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}'
-          arm='{"name":"aarch64-unknown-linux-gnu","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu"}'
+          linux='{"name":"x86_64-unknown-linux-gnu","runner":"ubuntu-22.04","target":"x86_64-unknown-linux-gnu"}'
+          arm='{"name":"aarch64-unknown-linux-gnu","runner":"ubuntu-22.04-arm","target":"aarch64-unknown-linux-gnu"}'
           macos='{"name":"aarch64-apple-darwin","runner":"macos-latest","target":"aarch64-apple-darwin"}'
           matrix="[$linux,$arm,$macos]"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -221,6 +223,24 @@ jobs:
           binaries=$(printf -- '-p %s ' "${binaries[@]}")
 
           cargo build $binaries --release --target ${MATRIX_TARGET}
+
+      # The glibc floor the release promises (docs: operate/install): a newer
+      # symbol slipping in would keep the binaries off Ubuntu 22.04 and Debian 12.
+      - name: Guard - binaries need glibc 2.35 at most
+        if: ${{ runner.os == 'Linux' }}
+        env:
+          MATRIX_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          readarray -t binaries <<< "$TARGET_BINARIES"
+          for binary in "${binaries[@]}"; do
+            need=$(objdump -T "target/${MATRIX_TARGET}/release/$binary" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/GLIBC_//' | sort -V | tail -n1)
+            echo "$binary needs glibc $need"
+            if [ "$(printf '%s\n2.35\n' "$need" | sort -V | tail -n1)" != "2.35" ]; then
+              echo "::error::$binary needs glibc $need, newer than the 2.35 floor"
+              exit 1
+            fi
+          done
 
       - name: Compress artifacts using gzip
         env:
