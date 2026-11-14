@@ -2,8 +2,12 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.25] - 2026-11-14
+
 ### Added
 
+- **`GET /ops/job-nodes/{id}/attestation`** (`merod`, #5072): reports whether
+  the cluster accepts a job node, from its attestation, for the operator.
 - **`meroctl app pack` writes multi-service packages**: `--service NAME=PATH`
   (repeatable; PATH a crate directory, built, or a component), with
   `--service-compute NAME=FILE` and `--service-pipeline NAME=FILE`, or
