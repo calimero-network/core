@@ -174,6 +174,8 @@ pub struct JobPeer {
     pub job_key: [u8; 32],
     /// The mero-tee release its attestation named.
     pub release: String,
+    /// The attestation it was admitted on, which a pipeline receipt carries for its job key.
+    pub doc: AttestationDoc,
     /// The sealed channel pinned to `transport_key`.
     pub channel: Arc<SealedTransport>,
 }
@@ -299,7 +301,8 @@ impl Node {
             url: url.to_owned(),
             transport_key,
             job_key,
-            release: doc.release.version,
+            release: doc.release.version.clone(),
+            doc,
             channel: Arc::new(SealedTransport::with_key(
                 url.parse()?,
                 // No total timeout: `within` bounds every job call.
@@ -522,7 +525,7 @@ fn release_at_least(release: Option<&str>, own: &str) -> bool {
 
 impl Node {
     /// Whether every replica runs at least this release, so each reads a final entry that carries
-    /// a run's log as this node does.
+    /// a run's log, or an attempt its job node's attestation, as this node does.
     pub(crate) async fn replicas_take_logs(&self) -> bool {
         #[cfg(feature = "testing")]
         if self

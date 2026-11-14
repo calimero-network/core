@@ -90,6 +90,12 @@ pub(crate) mod rows {
     pub const CITEM: u8 = b'y';
     /// A component's step run proofs: one per step run that ran, keyed by run id.
     pub const CPROOF: u8 = b'v';
+    /// The attestation of each job node a pipeline run's steps ran on: one per pipeline run and
+    /// job key, keyed [`cjob`].
+    pub const CJOB: u8 = b'w';
+    /// What each step run's job report signs beyond its proof, keyed by run id. Kept apart from
+    /// the proof so a release before this reads its proof rows unchanged.
+    pub const CREPORT: u8 = b'g';
     /// A component's pipeline step cache: one entry per cache key.
     pub const CCACHE: u8 = b'x';
     /// A component's idempotency records, by `caller|key`.
@@ -105,6 +111,10 @@ pub(crate) mod rows {
     pub const CDEAD: u8 = b'd';
     /// A component's pending actions (D17, `crate::component::action`): `a ‖ id`.
     pub const CACT: u8 = b'a';
+
+    pub fn cjob(pipeline_run: &str, job_key: &str) -> String {
+        format!("{pipeline_run}/{job_key}")
+    }
 
     pub fn corder(class: u8, n: u64) -> Vec<u8> {
         let mut k = vec![CORDER, class];

@@ -1481,9 +1481,10 @@ fn operations() -> Vec<Op> {
             .events("a `snapshot`, then `run` and `step` per change, then `end`, and the stream closes")
             .errors(&[(404, "NOT_FOUND"), (429, "TOO_MANY_SUBSCRIBERS")]),
         get("/apps/{app}/pipeline-runs/{run}/receipt", "pipeline_receipt::receipt", SignedIn, "A pipeline run's receipt")
-            .about("The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key.")
-            .ok("{ receipt: any, node: string, signature: string }")
-            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RUN_NOT_ENDED")]),
+            .about("The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key. `version=2` adds what each job's report signs to its proof (`job`) and each job node's attestation (`jobAttestations`); the default, `1`, leaves them out.")
+            .query::<super::pipeline_receipt::ReceiptQuery>("{ version?: uint }")
+            .ok("{ receipt: any, node: uint, signature: string }")
+            .errors(&[(400, "BAD_VERSION"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "RUN_NOT_ENDED")]),
         post("/apps/{app}/pipeline-runs/{run}/cancel", "pipelines::cancel", SignedIn, "Cancel a pipeline run")
             .about("The owner and the organization's members. Its pending steps end cancelled and its running steps' runs stop.")
             .ok("{ run: string }")

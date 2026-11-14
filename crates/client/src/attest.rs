@@ -23,7 +23,7 @@ use url::Url;
 
 pub mod release;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Release {
     pub version: String,
@@ -31,7 +31,7 @@ pub struct Release {
 }
 
 /// `GET /attestation` answers this.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttestationDoc {
     /// The quote, base64.

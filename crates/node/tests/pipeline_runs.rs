@@ -1749,6 +1749,49 @@ async fn a_finished_run_has_a_receipt_signed_by_an_attested_node() {
         .unwrap();
     assert_eq!(sha256_hex(&bytes), a.outputs[0].sha256);
 
+    // Each job report is signed by a job key the receipt carries the job node's attestation of.
+    assert_eq!(receipt.version, 2);
+    for step in ["a", "b", "c"] {
+        let calimero_client::receipt::RunEntry::Ran(proof) = &receipt.steps[step].runs[0] else {
+            panic!("step {step} ran");
+        };
+        assert!(proof.job.is_some(), "{proof:?}");
+        let key = proof.job_key.as_deref().unwrap();
+        let doc = &receipt.job_attestations[key];
+        assert_eq!(
+            (doc.job_key.as_deref(), Some(doc.node)),
+            (Some(key), proof.node)
+        );
+        assert_eq!(
+            doc.cluster_identity.as_deref(),
+            Some(receipt.cluster.as_str())
+        );
+    }
+
+    // Unasked, the node answers the signed receipt without job evidence, which is no proof of
+    // what the jobs did.
+    let plain = rig
+        .alice
+        .apps()
+        .pipeline_receipt_receipt(&rig.app, &run, None)
+        .await
+        .unwrap();
+    assert_eq!(plain.receipt["version"], 1);
+    assert!(
+        plain.receipt.get("jobAttestations").is_none(),
+        "{}",
+        plain.receipt
+    );
+    assert!(plain.receipt["steps"]["a"]["runs"][0].get("job").is_none());
+    let plain: calimero_client::receipt::ReceiptAnswer =
+        serde_json::from_value(serde_json::to_value(&plain).unwrap()).unwrap();
+    let e = rig
+        .alice
+        .verify_receipt(&rig.app, &run, &plain)
+        .await
+        .expect_err("a receipt without job evidence passed");
+    assert!(e.to_string().contains("version 1"), "{e}");
+
     // Another node's key, or an edited receipt, does not verify.
     let mut forged = answer.clone();
     forged.receipt["state"] = json!("failed");
@@ -1757,6 +1800,34 @@ async fn a_finished_run_has_a_receipt_signed_by_an_attested_node() {
         .verify_receipt(&rig.app, &run, &forged)
         .await
         .is_err());
+}
+
+/// While a replica runs an older release the leader records no job attestation (that replica
+/// would drop it), so the run's receipt carries none and is refused, never passed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_run_assigned_while_a_replica_is_behind_has_a_receipt_that_is_refused() {
+    let rig = Rig::start(&[JOB_A]).await;
+    for n in rig.c.nodes.iter().flatten() {
+        n.node.set_replica_behind(true);
+    }
+    let file = rig.upload(b"one input").await;
+    let run = rig
+        .start_run("small", json!({ "docs": [file] }), json!({}))
+        .await;
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    let answer = rig.alice.pipeline_receipt(&rig.app, &run).await.unwrap();
+    assert!(
+        answer.receipt.get("jobAttestations").is_none(),
+        "{}",
+        answer.receipt
+    );
+    let e = rig
+        .alice
+        .verify_receipt(&rig.app, &run, &answer)
+        .await
+        .expect_err("a receipt without its job's attestation passed");
+    assert!(e.to_string().contains("no attestation"), "{e}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

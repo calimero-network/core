@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use super::blobs::{BlobRecord, Blobs};
 use super::{get_json, host_answer, parse_hex32, put_json, Applied, FileMark, Outcome};
 use crate::app::{rows, AppMachine};
+use crate::attest::AttestationDoc;
 use crate::job_wire::{
     hash_bytes, verify_report, FailReason, OutputRef, Report, ReportStatus, ReportUsage,
     MAX_RUN_LOG_BYTES,
@@ -150,6 +151,9 @@ pub struct Attempt {
     /// Hex SHA-256 of the exact assignment the leader built; the report binds it.
     pub assignment_digest: String,
     pub ts_ms: u64,
+    /// The job node's attestation, as its entry carried it; absent in a record from before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_attestation: Option<AttestationDoc>,
 }
 
 /// How a run ended and what it left.
@@ -343,6 +347,10 @@ pub struct AttemptEntry {
     pub job_key: String,
     pub assignment_digest: String,
     pub ts_ms: u64,
+    /// The job node's attestation the leader admitted it on, kept for a pipeline receipt; proposed
+    /// only for a pipeline's run and while every replica runs this release, which keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_attestation: Option<AttestationDoc>,
 }
 
 /// `computeFinal`: the run ended; `result` is what its result method did.
@@ -591,6 +599,7 @@ impl AppMachine {
             job_key: entry.job_key.clone(),
             assignment_digest: entry.assignment_digest.clone(),
             ts_ms: entry.ts_ms,
+            job_attestation: entry.job_attestation.clone(),
         });
         put_json(tx, rows::CRUN, &record.run, &record);
         host_answer(index, true, "")

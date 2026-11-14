@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import random
 
+from rv2 import CliError
 from upgrade_deep import DeepCase, Failed, check, eq, person, refused, scratch, until
 from upgrade_path import OLD_JOB, case
 
@@ -38,7 +39,8 @@ class Pipelines(DeepCase):
     seeds = ("a compute-only package registering a fan-out (batch 2) and collect pipeline, installed as an app; "
              "three sealed input files; a run to completion and a re-run of the same inputs; the cluster's job "
              "node stopped, then a run over three new files that waits unplaced across the roll")
-    verifies = ("the finished run's state, step states, runs and outputs; its receipt verifies against its outputs; "
+    verifies = ("the finished run's state, step states, runs and outputs; its receipt verifies against its outputs "
+                "on the old release, and on the new one is refused as carrying no job evidence; "
                 "its outputs download byte for byte; the re-run's steps came from the step cache; a stranger is "
                 "refused starting a run, the receipt and the events; the run left in flight is still running "
                 "mid-roll, then ends succeeded on the new release with each item run once, its outputs byte for "
@@ -120,10 +122,18 @@ class Pipelines(DeepCase):
         check(all(st["cached"] for st in rerun["summary"]["steps"].values()), f"the re-run answered from the cache: {rerun['summary']}")
         if w.phase == "mixed":  # the app's attested nodes are changing; the receipt is only fetched
             check(pat.cli("pipeline", "receipt", s["app"], first["id"]).get("signature"), "a signed receipt")
-        else:
+        elif w.phase == "seed":
             got = pat.cli("pipeline", "receipt", s["app"], first["id"], "--verify")
             check(got["verified"] is True and len(got["outputs"]) == 3 and all(o["matches"] for o in got["outputs"]),
                   f"the receipt of {first['id']}: {got}")
+        else:
+            # The old release kept no record of what its jobs signed, so this tree's meroctl will not call it verified.
+            try:
+                got = pat.cli("pipeline", "receipt", s["app"], first["id"], "--verify")
+            except CliError as e:
+                check("no job evidence" in e.stderr, f"the receipt of {first['id']} is refused for its jobs: {e.stderr}")
+            else:
+                raise Failed(f"the receipt of {first['id']}, with no job evidence, verified: {got}")
         eq(self._outputs(w, pat, s, first), s["out"], "the collect step's output")
         ids = [f["id"] for f in s["files"][:3]]
         refused(REFUSED, lambda: zed.http("POST", f"apps/{s['app']}/pipelines/{PIPELINE}/runs",

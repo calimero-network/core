@@ -5,29 +5,42 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use calimero_client::receipt::{
-    CachedRun, FileRef, PipelineReceipt, RunEntry, StepReceipt, StepRunProof,
+    CachedRun, FileRef, PipelineReceipt, RunEntry, StepReceipt, StepRunProof, RECEIPT_VERSION_JOBS,
+    RECEIPT_VERSION_SIGNED,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::{gate, may_handle_files, ApiResult};
+use crate::attest::AttestationDoc;
 use crate::component::{PipelineRun, PipelineState, RunInputRef, StepState};
 use crate::error::ApiError;
 use crate::node::{Node, PIPELINE_VIEW};
 use crate::packages::pipelines::SELF_MODULE;
 
-const RECEIPT_VERSION: u32 = 1;
 const RUN_NOT_ENDED: &str = "RUN_NOT_ENDED";
+const BAD_VERSION: &str = "BAD_VERSION";
 
-/// What the reserved view answers for a receipt: the record and the proof of each run it started.
+/// What the reserved view answers for a receipt: the record, the proof of each run it started
+/// and, when asked for evidence, the attestation of each job key they name. Without it a proof
+/// leaves out `job`, so a node on the release before reads the answer.
 #[derive(Serialize, Deserialize)]
 pub struct ReceiptSource {
     pub run: PipelineRun,
     pub proofs: BTreeMap<String, StepRunProof>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub jobs: BTreeMap<String, AttestationDoc>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReceiptQuery {
+    #[serde(default)]
+    version: Option<u32>,
 }
 
 /// The name a unit enum serializes to.
@@ -68,18 +81,28 @@ fn step_runs(step: &StepState, proofs: &BTreeMap<String, StepRunProof>) -> Vec<R
     runs
 }
 
-/// The receipt of an ended pipeline run of `app`, made by the cluster `cluster` (hex identity).
+/// The receipt of an ended pipeline run of `app`, made by the cluster `cluster` (hex identity):
+/// version 1 from `source` without its job evidence, version 2 with it.
 #[must_use]
 pub fn build_receipt(
+    version: u32,
     cluster: &str,
     app: &str,
-    run: &PipelineRun,
-    proofs: &BTreeMap<String, StepRunProof>,
+    source: &ReceiptSource,
 ) -> PipelineReceipt {
+    let run = &source.run;
+    let jobs = version == RECEIPT_VERSION_JOBS;
+    let mut proofs = source.proofs.clone();
+    if !jobs {
+        for p in proofs.values_mut() {
+            p.job = None;
+        }
+    }
+    let proofs = &proofs;
     let mut modules = run.modules.clone();
     let _prev = modules.insert(SELF_MODULE.to_owned(), run.compute_bundle.clone());
     PipelineReceipt {
-        version: RECEIPT_VERSION,
+        version,
         cluster: cluster.to_owned(),
         app: app.to_owned(),
         run: run.id.clone(),
@@ -118,6 +141,11 @@ pub fn build_receipt(
             })
             .collect(),
         cost_so_far: run.cost.map(|_| run.cost_so_far.to_string()),
+        job_attestations: if jobs {
+            source.jobs.clone()
+        } else {
+            BTreeMap::new()
+        },
     }
 }
 
@@ -127,7 +155,15 @@ pub(super) async fn receipt(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((app_id, run)): Path<(String, String)>,
+    Query(q): Query<ReceiptQuery>,
 ) -> ApiResult {
+    let version = q.version.unwrap_or(RECEIPT_VERSION_SIGNED);
+    if ![RECEIPT_VERSION_SIGNED, RECEIPT_VERSION_JOBS].contains(&version) {
+        return Err(ApiError::bad_request(
+            BAD_VERSION,
+            &format!("a receipt is version {RECEIPT_VERSION_SIGNED} or {RECEIPT_VERSION_JOBS}"),
+        ));
+    }
     let app_id = node.canonical_app_id(&app_id);
     let app = super::pipelines::component_app(&node, &app_id).await?;
     let p = gate(&node, &headers, &app, "*", false).await?;
@@ -140,7 +176,12 @@ pub(super) async fn receipt(
         .view(&crate::node::ViewRequest {
             app_id: app_id.clone(),
             method: PIPELINE_VIEW.to_owned(),
-            args: json!({ "run": run, "files": true, "receipt": true }),
+            args: json!({
+                "run": run,
+                "files": true,
+                "receipt": true,
+                "evidence": version == RECEIPT_VERSION_JOBS,
+            }),
             caller: p.caller,
             strong: true,
             min_index: 0,
@@ -159,10 +200,10 @@ pub(super) async fn receipt(
         ));
     }
     let receipt = build_receipt(
+        version,
         &hex::encode(node.cluster_identity()),
         &app_id,
-        &source.run,
-        &source.proofs,
+        &source,
     );
     let receipt: Value =
         serde_json::to_value(&receipt).map_err(|e| ApiError::internal(&e.to_string()))?;
