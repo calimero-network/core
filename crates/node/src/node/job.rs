@@ -309,8 +309,8 @@ impl Node {
         })
     }
 
-    /// The document a job node answers to `nonce` for `purpose=jobs`: no answer, a 5xx, 408, 425
-    /// or 429 is unreachable; any other non-2xx or an unreadable 2xx is refused.
+    /// The document a job node answers to `nonce` for `purpose=jobs`: a 400, a 404 or an
+    /// unreadable 2xx is refused; no answer or any other status is unreachable.
     async fn fetch_attestation_doc(
         &self,
         url: &str,
@@ -334,7 +334,7 @@ impl Node {
             .await
             .map_err(|e| unreachable(&e))?;
         let status = response.status();
-        if status.is_client_error() && !matches!(status.as_u16(), 408 | 425 | 429) {
+        if matches!(status.as_u16(), 400 | 404) {
             return Err(JobAttestError::Refused(format!(
                 "the job node answers {status} to an attestation for jobs"
             )));
