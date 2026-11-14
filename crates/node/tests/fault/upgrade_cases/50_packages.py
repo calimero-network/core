@@ -20,7 +20,8 @@ class Packages(DeepCase):
     seeds = ("two signed releases installed from the registry and the second uninstalled again; an app on "
              "the first with data; an app from a dev bundle (raw component)")
     verifies = ("the package and its versions; both apps answer from the new nodes; on the new release the "
-                "uninstalled version installs again and the app upgrades to it keeping its data")
+                "uninstalled version installs again and the app upgrades to it keeping its data; the release's "
+                "capability card reads with its ABI")
 
     def populate(self, w):
         pia = person(w, "pia")
@@ -55,6 +56,9 @@ class Packages(DeepCase):
         pia.raw("post", f"apps/{s['app']}/upgrade", {"version": s["v2"]})
         check(s["v2"] in json.dumps(pia.get(f"apps/{s['app']}")), f"the app runs {s['v2']} after the upgrade")
         eq(pia.result(s["app"], "get", {"key": "release"}), s["v1"], "data across an upgrade on the new release")
+        card = pia.get(f"packages/{s['package']}/{s['v1']}/capabilities")
+        eq((card["package"], card["version"]), (s["package"], s["v1"]), "the release's capability card")
+        check({"get", "set"} <= set(card["abi"]["methods"]), f"the card's ABI lacks the kv methods: {card['abi']}")
         self._record(w, s)
 
 

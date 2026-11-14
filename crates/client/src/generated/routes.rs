@@ -3046,6 +3046,25 @@ impl Packages<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// A release's capabilities.
+    ///
+    /// `GET /packages/{package}/{version}/capabilities` (`package_capabilities`). Who: signed in (a session or an API key).
+    pub async fn capabilities(
+        self,
+        package: &str,
+        version: &str,
+    ) -> Result<PackageCapabilitiesResponse> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "packages/{}/{}/capabilities",
+                route::segment(package),
+                route::segment(version)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// One package.
     ///
     /// `GET /packages/{package}` (`package_get`). Who: signed in (a session or an API key).

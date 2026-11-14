@@ -2227,3 +2227,70 @@ async fn an_apps_frontend_changes_and_deletes_its_server_on_the_page() {
     let e = s.alice.get(&format!("orgs/{org}")).await.unwrap_err();
     assert_eq!(status(&e), 404, "{e}");
 }
+
+/// A package's capability card is readable before any app of it exists: by
+/// an account that sees the release (the signed manifest's facts and the
+/// service component's ABI, verbatim), and by a session bound to the package
+/// even for an account that sees no release of it; any other account, and an
+/// unknown version, are told there is no such version.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, _alice_key) = signed_up(&c, 0, "alice").await;
+    let (bob, bob_key) = signed_up(&c, 0, "bob").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let wasm = kv_wasm();
+    let (mpk, manifest_hash) = release(
+        "1.0.0",
+        &wasm,
+        &publisher,
+        &Declares {
+            outbound: &["https://metrics.example/", "https://api.example/v1/"],
+            ..Declares::default()
+        },
+    );
+    let mpk_hash = hex::encode(calimero_identity::sha256(&mpk));
+    let _ = alice.packages().upload(mpk).await.unwrap();
+    let path = format!("packages/{PACKAGE}/1.0.0/capabilities");
+
+    let card = get(&alice, &path).await.unwrap();
+    let abi = calimero_node::component::embedded_abi(&wasm).expect("the fixture embeds an ABI");
+    assert!(abi["methods"].as_object().is_some_and(|m| !m.is_empty()));
+    assert_eq!(
+        card,
+        json!({
+            "package": PACKAGE,
+            "version": "1.0.0",
+            "service": null,
+            "bundle": hex::encode(calimero_identity::sha256(&wasm)),
+            "mpk": mpk_hash,
+            "manifestHash": manifest_hash,
+            "signer": calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes()),
+            "name": "Notes",
+            "author": "Example",
+            "outbound": ["https://api.example/v1/", "https://metrics.example/"],
+            "abi": abi,
+        })
+    );
+
+    // Bob shares no organization with the installer: no such version.
+    let e = get(&bob, &path).await.unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
+    assert!(e.to_string().contains("no such package version"), "{e}");
+    let e = get(&alice, &format!("packages/{PACKAGE}/9.9.9/capabilities"))
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
+    assert!(e.to_string().contains("no such package version"), "{e}");
+
+    // Bob in the package's own frontend: a session bound to it reads any release.
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(1);
+    let mut in_app_passkey = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut in_app_passkey).await.unwrap();
+    assert_eq!(get(&in_app, &path).await.unwrap(), card);
+}

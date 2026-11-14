@@ -672,6 +672,45 @@ pub(crate) async fn declared_min_runtime(
         .clone())
 }
 
+/// The capability card of release `v` of `package`, before any app of it
+/// exists. A release's one service is the one an app of it runs; a release
+/// with several has no single card and the caller must name one.
+pub(crate) async fn release_capabilities(
+    node: &Node,
+    package: &str,
+    v: &PackageVersion,
+) -> Result<Value, ApiError> {
+    let (service, bundle) = sole_service(package, v)?;
+    let facts = release_facts(node, package, v).await?;
+    Ok(diff::capability_card(&diff::Side {
+        package,
+        version: &v.version,
+        service: (!service.is_empty()).then_some(service),
+        bundle,
+        mpk: &v.mpk,
+        manifest_hash: &facts.manifest_hash,
+        signer: &facts.signer,
+        manifest: &facts.manifest,
+        abi: facts.abi.get(service).and_then(Option::as_ref),
+    }))
+}
+
+/// The one service (name, bundle hash) an app of `v` runs.
+fn sole_service<'a>(package: &str, v: &'a PackageVersion) -> Result<(&'a str, &'a str), ApiError> {
+    let mut parts = v.app_parts().iter();
+    match (parts.next(), parts.next()) {
+        (Some((name, bundle)), None) => Ok((name, bundle)),
+        _ => Err(ApiError::bad_request(
+            "NO_SUCH_SERVICE",
+            &format!(
+                "{package}@{} has {} services; an app of it names one",
+                v.version,
+                v.app_parts().len()
+            ),
+        )),
+    }
+}
+
 /// The signed-manifest hash of the release an upgrade targets: `release`
 /// (package, version) when the request named one, else the release `bundle`
 /// came out of; `None` for a raw development bundle, which has no manifest.
@@ -2674,6 +2713,27 @@ mod tests {
             decision: Decision::Pending,
             outcome: None,
         }
+    }
+
+    fn release_with(services: Value) -> PackageVersion {
+        serde_json::from_value(json!({
+            "version": "1.0.0", "mpk": "m", "mpkSize": 1, "source": "upload",
+            "services": services, "installedBy": "alice", "installedAt": 1
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_release_has_a_card_only_when_it_has_one_service() {
+        let one = release_with(json!({ "svc": "b1" }));
+        assert_eq!(sole_service("p", &one).unwrap(), ("svc", "b1"));
+        let unnamed = release_with(json!({ "": "b1" }));
+        assert_eq!(sole_service("p", &unnamed).unwrap(), ("", "b1"));
+        let two = release_with(json!({ "a": "b1", "b": "b2" }));
+        let e = sole_service("p", &two).unwrap_err();
+        assert_eq!((e.status, e.code.as_str()), (400, "NO_SUCH_SERVICE"));
+        let none = release_with(json!({}));
+        assert_eq!(sole_service("p", &none).unwrap_err().status, 400);
     }
 
     #[test]

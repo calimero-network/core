@@ -192,6 +192,27 @@ async fn package_pipelines(
     Ok(Json(node.release_pipelines(&refs).await?))
 }
 
+/// A release's capability card: what it is and may do, before any app of it exists.
+async fn package_capabilities(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((package, version)): Path<(String, String)>,
+) -> ApiResult {
+    let principal = signed_in(&node, &headers).await?;
+    let account = principal.account()?;
+    let frontend = principal.bound_app() == Some(package.as_str());
+    node.sys_fresh_from(principal.sys_index).await;
+    let release = node
+        .sys(|s| {
+            let v = s.packages.get(&package)?.versions.get(&version)?;
+            (frontend || s.sees_release(v, &account)).then(|| v.clone())
+        })
+        .ok_or_else(|| ApiError::not_found("no such package version"))?;
+    Ok(Json(
+        crate::consent_page::release_capabilities(&node, &package, &release).await?,
+    ))
+}
+
 async fn package_uninstall(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
@@ -412,6 +433,10 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route(
             "/packages/{package}/{version}/pipelines",
             get(package_pipelines),
+        )
+        .route(
+            "/packages/{package}/{version}/capabilities",
+            get(package_capabilities),
         )
         .route("/orgs/{org}/publishers", post(org_publisher))
         .route("/publishers/{signer}", get(publisher_binding))

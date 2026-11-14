@@ -96,6 +96,25 @@ fn side(s: &Side<'_>) -> Value {
     })
 }
 
+/// A release on its own, before any app of it exists: [`side`] plus what the
+/// release declares it may call out to and the ABI its component embeds.
+#[must_use]
+pub fn capability_card(s: &Side<'_>) -> Value {
+    let mut card = side(s);
+    if let Some(o) = card.as_object_mut() {
+        let _prev = o.insert(
+            "author".into(),
+            json!(s.manifest.metadata.as_ref().and_then(|m| m.author.clone())),
+        );
+        let _prev = o.insert(
+            "outbound".into(),
+            json!(s.manifest.outbound.iter().collect::<BTreeSet<_>>()),
+        );
+        let _prev = o.insert("abi".into(), json!(s.abi));
+    }
+    card
+}
+
 /// `{ added, removed, kept }` from `before` to `after`, each sorted.
 fn set_diff(before: BTreeSet<String>, after: BTreeSet<String>) -> Value {
     json!({
