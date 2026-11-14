@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`meroctl local up` starts the cluster with the public registry**: `meroctl app
+  install PACKAGE@VERSION` on a local cluster answered `400 NO_REGISTRY`, since
+  `local up` passed `merod local` no registry and, with the node in Docker, the
+  host's `MEROD_REGISTRY_URL` did not reach it. `--registry-url URL`
+  (`MEROD_REGISTRY_URL`) names another; empty means none.
+- **A missing `cargo` or `rustc` is named** (`calimero-app-build`, behind
+  `meroctl app build`, `app pack DIR` and `local dev`): "cargo not found:
+  building an app needs Rust (https://rustup.rs) on PATH", where it said only
+  "No such file or directory (os error 2)".
+
 ## [1.0.0-rc.25] - 2026-11-14
 
 ### Added

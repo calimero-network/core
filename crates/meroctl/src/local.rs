@@ -54,6 +54,10 @@ pub struct ClusterArgs {
     /// published on 127.0.0.1).
     #[arg(long, default_value_t = default_image())]
     pub image: String,
+    /// The package registry the cluster installs from, so `meroctl app install
+    /// PACKAGE@VERSION` works on it (empty: none; `app install --path` still does).
+    #[arg(long, env = "MEROD_REGISTRY_URL", default_value = DEFAULT_REGISTRY)]
+    pub registry_url: String,
 }
 
 fn default_image() -> String {
@@ -221,18 +225,7 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
     let dir = std::path::absolute(&state_dir)?;
     let token = hex::encode(calimero_identity::random::<16>());
     let log = dir.join("merod.log");
-    let mut local = vec![
-        "local".to_owned(),
-        "--nodes".into(),
-        a.nodes.to_string(),
-        "--base-port".into(),
-        a.base_port.to_string(),
-        "--ops-token".into(),
-        token.clone(),
-    ];
-    if a.fresh {
-        local.push("--fresh".into());
-    }
+    let mut local = merod_local_args(a, &token);
     let out = std::fs::File::create(&log)?;
     // The release's image unless `--local` (or MEROD) asks for a `merod` binary:
     // only Docker is needed, on Linux and macOS alike.
@@ -629,6 +622,30 @@ impl Deploy {
     }
 }
 
+/// The public app registry, which `app publish` publishes to.
+const DEFAULT_REGISTRY: &str = "https://apps.calimero.network";
+
+/// `merod local`'s arguments for `up`, before where it keeps its state and
+/// what it binds (those differ between the image and a binary).
+fn merod_local_args(a: &ClusterArgs, token: &str) -> Vec<String> {
+    let mut local = vec![
+        "local".to_owned(),
+        "--nodes".into(),
+        a.nodes.to_string(),
+        "--base-port".into(),
+        a.base_port.to_string(),
+        "--ops-token".into(),
+        token.to_owned(),
+    ];
+    if a.fresh {
+        local.push("--fresh".into());
+    }
+    if !a.registry_url.is_empty() {
+        local.extend(["--registry-url".into(), a.registry_url.clone()]);
+    }
+    local
+}
+
 /// Docker, which runs the node by default: installed, and its daemon up.
 fn docker_ready() -> eyre::Result<()> {
     let out = Command::new("docker")
@@ -646,5 +663,37 @@ fn docker_ready() -> eyre::Result<()> {
             String::from_utf8_lossy(&o.stderr).trim()
         ),
         Ok(_) => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        cluster: ClusterArgs,
+    }
+
+    fn args(argv: &[&str]) -> Vec<String> {
+        let cli = Cli::try_parse_from(std::iter::once("up").chain(argv.iter().copied())).unwrap();
+        merod_local_args(&cli.cluster, "t")
+    }
+
+    // `meroctl app install PACKAGE@VERSION` on a fresh `local up` answered
+    // `400 NO_REGISTRY`: the cluster was started without a registry.
+    #[test]
+    fn the_cluster_installs_from_the_public_registry_unless_told_otherwise() {
+        let default = args(&[]);
+        let at = default.iter().position(|a| a == "--registry-url").unwrap();
+        assert_eq!(default[at + 1], DEFAULT_REGISTRY);
+        let other = args(&["--registry-url", "http://127.0.0.1:8080"]);
+        assert!(other
+            .windows(2)
+            .any(|w| w == ["--registry-url", "http://127.0.0.1:8080"]));
+        assert!(!args(&["--registry-url", ""]).contains(&"--registry-url".to_owned()));
     }
 }

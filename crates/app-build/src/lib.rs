@@ -133,11 +133,26 @@ fn cargo_build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult
     Ok(cargo)
 }
 
+/// A Rust tool that could not be started: name it, and how to get it, rather
+/// than the OS's bare "No such file or directory".
+fn missing_tool(tool: &str, e: std::io::Error) -> eyre::Report {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        eyre::eyre!(
+            "{tool} not found: building an app needs Rust (https://rustup.rs) on PATH, \
+             with `rustup target add {TARGET}`"
+        )
+    } else {
+        eyre::eyre!("running {tool}: {e}")
+    }
+}
+
 fn build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Built> {
     // Builds into one target dir race on its artifacts across threads and processes.
     std::fs::create_dir_all(target_dir)?;
     let _lock = lock_exclusive(&target_dir.join(TARGET_LOCK))?;
-    let output = cargo_build(crate_dir, target_dir, compute)?.output()?;
+    let output = cargo_build(crate_dir, target_dir, compute)?
+        .output()
+        .map_err(|e| missing_tool("cargo", e))?;
     if !output.status.success() {
         eyre::bail!(
             "cargo build failed ({}):\n{}",
@@ -328,7 +343,8 @@ pub fn cache_key(crate_dir: &Path, also_hash: &[&Path]) -> EyreResult<String> {
         .arg("-V")
         .current_dir(crate_dir)
         .stdin(Stdio::null())
-        .output()?;
+        .output()
+        .map_err(|e| missing_tool("rustc", e))?;
     eyre::ensure!(rustc.status.success(), "rustc -V failed ({})", rustc.status);
     part("rustc", &rustc.stdout);
     part("app-build-version", env!("CARGO_PKG_VERSION").as_bytes());
@@ -494,7 +510,7 @@ fn lift_abi(bytes: &[u8]) -> EyreResult<(Vec<u8>, Option<Value>)> {
 mod tests {
     use std::path::Path;
 
-    use super::cargo_build;
+    use super::{cargo_build, missing_tool};
 
     // `meroctl app build apps/kv-store/logic` from the repository root used to
     // hand cargo `--target-dir apps/kv-store/logic/target` while running it in
@@ -511,5 +527,17 @@ mod tests {
             std::env::current_dir().unwrap().join("apps/kv/target")
         );
         assert_eq!(cargo.get_current_dir(), Some(Path::new("apps/kv")));
+    }
+
+    // `meroctl app pack DIR` with no cargo on PATH said only "No such file or
+    // directory (os error 2)".
+    #[test]
+    fn a_missing_cargo_is_named_with_how_to_get_it() {
+        let gone = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let msg = missing_tool("cargo", gone).to_string();
+        assert!(
+            msg.contains("cargo not found") && msg.contains("rustup"),
+            "{msg}"
+        );
     }
 }
