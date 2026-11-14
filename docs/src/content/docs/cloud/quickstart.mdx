@@ -65,25 +65,25 @@ meroctl whoami            # orgs: [{ "name": "Personal", "personal": true, ... }
 
 # Install the bundle and create an instance; naming no organization puts it in
 # your personal one.
-meroctl context create --path kv_store.wasm --name kv --alias kv
-meroctl call --context kv set --args '{"key":"a","value":"1"}'
-meroctl call --context kv get --args '{"key":"a"}' --view
-meroctl context watch kv --limit 1        # the committed events, as JSON lines
+meroctl instance create --path kv_store.wasm --name kv --alias kv
+meroctl call --instance kv set --args '{"key":"a","value":"1"}'
+meroctl call --instance kv get --args '{"key":"a"}' --view
+meroctl instance watch kv --limit 1        # the committed events, as JSON lines
 
 # A read-only API key for a script, approved with your passkey.
-meroctl account api-key create --context kv --read-only --dev-passkey ./dev-passkey.json
+meroctl account api-key create --instance kv --read-only --dev-passkey ./dev-passkey.json
 ```
 
 To share an app, create it in an organization of its own and invite people:
 
 ```bash
 meroctl namespace create Acme                          # answers { "orgId": ... }
-meroctl context create --path kv_store.wasm --name team-kv --namespace <org-id>
+meroctl instance create --path kv_store.wasm --name team-kv --namespace <org-id>
 meroctl namespace invite <org-id> --role member --uses 1 --dev-passkey ./dev-passkey.json
 # the invitee, signed in on their own: meroctl namespace join <token>
 ```
 
-In `meroctl`, an `app` is a signed package, a `context` an app instance, a
+In `meroctl`, an `app` is a signed package, an `instance` an app instance (v1's `context`, still accepted), a
 `namespace` an organization, a `group` one of its teams, `account` you (each
 passkey is one of your devices) and `ops` the operator
 ([glossary](/protocol/glossary/)). Every app instance is in an organization:
@@ -94,7 +94,7 @@ accepts. Against a real cluster, use an API key made in the console
 `--tee-profiles <profile> [--min-release <version>]`. The release floor defaults
 to the client's `DEFAULT_MIN_RELEASE`, and debug profiles are refused unless you
 pass `--allow-debug-profiles`. Install apps there as signed packages
-(`meroctl app install PACKAGE@VERSION`, then `meroctl context create --package
+(`meroctl app install PACKAGE@VERSION`, then `meroctl instance create --package
 PACKAGE --name NAME`); raw bundles are for development clusters.
 
 ## 3. From code

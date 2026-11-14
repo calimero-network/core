@@ -55,8 +55,8 @@ then:
 
 ```bash
 meroctl login --dev-passkey ./dev-passkey.json --name dev
-meroctl context create --name kv --path kv_store.wasm --alias kv
-meroctl call --context kv set --args '{"key":"a","value":"1"}'
+meroctl instance create --name kv --path kv_store.wasm --alias kv
+meroctl call --instance kv set --args '{"key":"a","value":"1"}'
 ```
 
 The login signs up an account (with its personal organization, where the

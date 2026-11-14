@@ -15,13 +15,13 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | --- | --- | --- |
 | `node add/remove/use/list` | saved nodes, `{home}/meroctl/nodes.json` | (local) |
 | `app install/list/get/versions/get-latest-version/pipelines/uninstall/watch` (also `package`) | signed packages (an application); `--path` a `.mpk`, or a dev `.wasm` bundle; `app origins list/add/remove` its registered web origins (its manager's; `add --served` a custom domain the cluster serves the frontend on) | `/packages*`, `/bundles`, `/package-origins/{package}` |
-| `context create/list/get/delete/update/watch/alias/use` | app instances; `use` is the alias `default`; also `access`, `transfer`, `metadata`, `storage`, `abi`, `presence` | `/apps*`, `/auth/aliases*` |
-| `call` | `call --context C METHOD --args JSON [--view]` | `/apps/{app}/intents`, `/views` |
-| `blob list/upload/download/info/delete` | a context's blobs | `/apps/{app}/blobs*` |
-| `file upload FILE -c CONTEXT` | a context's sealed files: one request up to 16 MiB, else resumable parts (`Client::upload_file`) | `/apps/{app}/files*` |
-| `file download CONTEXT ID -o OUT` | a sealed file's plaintext, streamed to `OUT.part` and renamed onto `OUT` only after every check passed (`Client::export_file_to`); `pipeline download` does the same per output | `/apps/{app}/files/{id}/export`, `.../segments/{k}` |
+| `instance create/list/get/delete/update/watch/alias/use` | app instances; `use` is the alias `default`; also `access`, `transfer`, `metadata`, `storage`, `abi`, `presence` | `/apps*`, `/auth/aliases*` |
+| `call` | `call --instance I METHOD --args JSON [--view]` | `/apps/{app}/intents`, `/views` |
+| `blob list/upload/download/info/delete` | an instance's blobs | `/apps/{app}/blobs*` |
+| `file upload FILE -i INSTANCE` | an instance's sealed files: one request up to 16 MiB, else resumable parts (`Client::upload_file`) | `/apps/{app}/files*` |
+| `file download INSTANCE ID -o OUT` | a sealed file's plaintext, streamed to `OUT.part` and renamed onto `OUT` only after every check passed (`Client::export_file_to`); `pipeline download` does the same per output | `/apps/{app}/files/{id}/export`, `.../segments/{k}` |
 | `run logs APP RUN [--attempt N]`, `pipeline logs APP RUN --step S [--index I]` | print a compute run's module log (stdout, stderr and `log` lines) read through the files export; the latest attempt unless `--attempt`; a pipeline step's run is its `--index`th | `/apps/{app}/runs/{run}/logs`, `/apps/{app}/files/{id}/export` |
-| (new) `pipeline validate/estimate/run/retry/get/cancel/watch/runs/receipt/logs/download` | a context's pipeline runs: check a pipeline source, estimate, start, follow (`watch`, SSE), the signed receipt (`receipt --verify`) | `/pipelines/validate`, `/apps/{app}/pipelines/*`, `/apps/{app}/pipeline-runs*` |
+| (new) `pipeline validate/estimate/run/retry/get/cancel/watch/runs/receipt/logs/download` | an instance's pipeline runs: check a pipeline source, estimate, start, follow (`watch`, SSE), the signed receipt (`receipt --verify`) | `/pipelines/validate`, `/apps/{app}/pipelines/*`, `/apps/{app}/pipeline-runs*` |
 | `namespace ...` | organizations: members, invites, groups, metadata, capabilities, outbound and release approvals | `/orgs*`, `/invites/*` |
 | `group ...` | teams: members, metadata, reparent, subgroups, settings; `group upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
 | `account ...` | the account: devices (passkeys), API keys, usage, approvals | `/auth/*` |
@@ -45,9 +45,9 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   `publish_pushes_the_bundle_to_the_registry`,
   `cloud_falls_back_to_an_older_managers_v2_routes`.
 - Sessions are kept per node URL in `{home}/meroctl/sessions.json` (0600) and
-  refreshed when they expire. A context argument is an alias of the account or
+  refreshed when they expire. An instance argument is an alias of the account or
   an id (`Env::app`).
-- What an owner approves (`context update`, `context transfer`, `namespace delete`, approvals,
+- What an owner approves (`instance update`, `instance transfer`, `namespace delete`, approvals,
   `group upgrade trigger/retry`, `app origins add/remove`) takes `--dev-passkey FILE` on a development
   cluster: `DevPasskey` loads it, gives it to the generated method as its
   `passkey` (the routes the document marks `x-calimero-step-up`) and saves it
@@ -75,7 +75,7 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
 - `main` runs the commands that need no node (`node`, `local`, `cloud` but
   `cloud compute`, `app`'s offline ones: `AppCmd::is_offline`) before it
   resolves a node, so they never read `--node`/`--api`. The old spellings
-  (`dev new`, `pipeline`, `run logs`, `attest-release`, `attest --context`)
+  (`dev new`, `pipeline`, `run logs`, `attest-release`, `attest --context`, `context` (now `instance`) and `--context`/`-c` (now `--instance`/`-i`))
   stay as hidden aliases for one release; `old_spellings_still_parse` and
   `the_command_tree_is_consistent` (clap's `debug_assert`) pin the tree.
 - `local up` without ownership leaves the cluster running; `local dev` owns

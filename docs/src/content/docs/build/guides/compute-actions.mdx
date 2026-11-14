@@ -207,7 +207,7 @@ There is no "start a run" route.
 A run starts when a logged call, timer or `init` calls `compute::start`, so you expose it as an ordinary method and call that:
 
 ```bash
-meroctl call -c CONTEXT submit --args '{"file":"<file id>","rowsPerPart":50000}'
+meroctl call -i INSTANCE submit --args '{"file":"<file id>","rowsPerPart":50000}'
 ```
 
 `GET /apps/{app}/runs/{run}` answers one run's state, attempts, input and output ids, usage, reason and `progress` while it runs.
@@ -248,7 +248,7 @@ pub fn link(&mut self, job: String, part: u32, ttl_secs: u32) -> app::Result<Str
 - A published output over 47 MiB cannot be published, so size parts below that.
 - `grant(ttl_seconds)` takes 1 to 86,400 seconds and is a call, so the log records who shared it (a view is refused for a published blob).
 - Anyone holding the grant downloads with `GET /apps/{app}/blobs/{id}?grant=<grant>`, with no session.
-- The app's owner or an org admin ends every grant made so far with `meroctl blob revoke ID -c CONTEXT`, or removes the blob with `meroctl blob delete ID -c CONTEXT`.
+- The app's owner or an org admin ends every grant made so far with `meroctl blob revoke ID -i INSTANCE`, or removes the blob with `meroctl blob delete ID -i INSTANCE`.
 
 ## Test it before you deploy
 

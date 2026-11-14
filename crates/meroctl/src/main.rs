@@ -155,12 +155,20 @@ enum Cmd {
     #[command(subcommand, alias = "package")]
     App(app::AppCmd),
     /// App instances (v1's contexts): create, list, get, update, delete, aliases, access.
-    #[command(subcommand)]
+    /// `context` is its old name, kept as a hidden alias.
+    #[command(subcommand, name = "instance", alias = "context")]
     Context(context::ContextCmd),
-    /// Call a method on a context (a write), or `--view` to read.
+    /// Call a method on an instance (a write), or `--view` to read.
     Call {
-        /// The context (an id or an alias).
-        #[arg(long, short)]
+        /// The app instance (an id or an alias).
+        #[arg(
+            long = "instance",
+            short = 'i',
+            alias = "context",
+            short_alias = 'c',
+            value_name = "INSTANCE"
+        )]
+        #[arg(value_name = "INSTANCE")]
         context: String,
         method: String,
         /// JSON arguments.
@@ -179,10 +187,10 @@ enum Cmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// A context's blobs: list, upload, download, info, delete.
+    /// An instance's blobs: list, upload, download, info, delete.
     #[command(subcommand)]
     Blob(blob::BlobCmd),
-    /// A context's sealed files: upload.
+    /// An instance's sealed files: upload.
     #[command(subcommand)]
     File(file::FileCmd),
     /// `cloud compute pipeline`, under its old name.
@@ -209,7 +217,7 @@ enum Cmd {
     /// around it: dev, test, compute run.
     #[command(subcommand)]
     Local(local::LocalCmd),
-    /// `meroctl local dev`'s predecessor: install a build, create a context
+    /// `meroctl local dev`'s predecessor: install a build, create an instance
     /// from it and keep it pushed.
     #[command(subcommand)]
     Dev(dev::DevCmd),
@@ -591,6 +599,18 @@ mod tests {
             &[
                 "meroctl", "app", "abi", "diff", "old.mpk", "new.wasm", "--json",
             ],
+            // v1's `context` is `instance`: the old command and `--context`/`-c` still parse.
+            &[
+                "meroctl", "context", "create", "--name", "kv", "--path", "a.wasm",
+            ],
+            &["meroctl", "call", "--context", "kv", "get"],
+            &["meroctl", "call", "-c", "kv", "get"],
+            &[
+                "meroctl", "instance", "create", "--name", "kv", "--path", "a.wasm",
+            ],
+            &["meroctl", "call", "--instance", "kv", "get"],
+            &["meroctl", "call", "-i", "kv", "get"],
+            &["meroctl", "blob", "list", "-c", "kv"],
             // Docker is the default; `--docker` from before stays accepted.
             &["meroctl", "local", "up", "--docker"],
             &["meroctl", "local", "up", "--local"],

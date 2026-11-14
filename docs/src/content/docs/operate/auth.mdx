@@ -266,11 +266,11 @@ read-only, also cannot install code or create apps. `meroctl` takes a key with
 
 ```bash
 # with a passkey session (development cluster: a file passkey approves it)
-meroctl account api-key create --label ci --context notes --read-only --dev-passkey ./dev-passkey.json
+meroctl account api-key create --label ci --instance notes --read-only --dev-passkey ./dev-passkey.json
 meroctl account api-key create --label deploy --upgrades notes --dev-passkey ./dev-passkey.json
 # then, on the machine that uses it
 export CALIMERO_API_KEY=cal_...
-meroctl call -c notes get --args '{"key":"a"}' --view
+meroctl call -i notes get --args '{"key":"a"}' --view
 ```
 
 ## Confirmations

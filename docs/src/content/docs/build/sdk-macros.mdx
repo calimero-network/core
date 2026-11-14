@@ -143,7 +143,7 @@ view, and `#[app::init]` has no receiver and returns `Self`. Every method,
 `init` included, may take parameters, and every method returns `app::Result<T>`.
 
 `init`'s parameters work like a call's: the node passes the app's `initArgs`
-(`POST /apps`, `meroctl context create --params`) as a JSON object keyed by the
+(`POST /apps`, `meroctl instance create --params`) as a JSON object keyed by the
 camelCase parameter names, and the ABI lists them, so typed clients declare
 them as `InitArgs` ([typed clients](/build/guides/typed-clients/)). A missing
 required argument, a wrong type or an unknown name fails `init` with `BadArgs`,
@@ -161,7 +161,7 @@ pub fn init(title: String, max_players: Option<u64>) -> app::Result<Self> {
 ```
 
 ```bash
-meroctl context create --name blitz --package com.example.game --params '{"title":"Friday blitz","maxPlayers":"4"}'
+meroctl instance create --name blitz --package com.example.game --params '{"title":"Friday blitz","maxPlayers":"4"}'
 ```
 
 The `u64` travels as a decimal string, as in any call.
