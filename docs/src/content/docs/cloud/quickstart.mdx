@@ -45,17 +45,16 @@ meroctl app build apps/kv-store --out kv_store.wasm
 meroctl local up
 ```
 
-`meroctl local up` starts `merod local` in the background: three nodes on
+`meroctl local up` starts `merod local` in the background, in the release's
+Docker image ([Docker](https://docs.docker.com/get-docker/) must be running;
+`--local` runs the `merod` on `PATH`): three nodes on
 `http://127.0.0.1:2501-2503/` in one process, with mock attestation and a
 development storage key, keeping state in `.merod-local/` (`--fresh` starts
 over). It saves the cluster as the node `local`, trusting its mock attestation
 for this node only, so it cannot carry over to a real cluster; `meroctl local
 status` shows it and `meroctl local down` stops it. Browser apps
 on `http://localhost:3000` and `http://localhost:5173` may call it (`--origins`).
-On macOS (Apple silicon) the same command runs the released `merod`; with a
-release before 1.0.0-rc.25, which shipped none for macOS, it runs the cluster in
-the release's Docker image instead
-([Install](/operate/install/#first-run-on-macos-a-cluster-in-docker)).
+The same command works on macOS ([Install](/operate/install/#the-cluster-in-docker)).
 
 ## 2. Sign up, deploy and call from the terminal
 

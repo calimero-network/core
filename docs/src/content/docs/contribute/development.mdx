@@ -13,10 +13,9 @@ meet.
 
 ## Prerequisites
 
-- **Linux.** `merod` and the node's tests need Linux (x86_64 or aarch64). On
-  macOS, run the node in Docker ([Install](/operate/install/#first-run-on-macos-a-cluster-in-docker))
-  and build `meroctl` natively; run the node's test suites in a Linux
-  container or VM.
+- **Linux or macOS.** `merod` builds and runs a development cluster on Linux
+  (x86_64, aarch64) and macOS (Apple silicon); the node's test suites need
+  Linux, so on a Mac run them in a Linux container or VM.
 - **Rust** pinned by `rust-toolchain.toml` (`1.98.0`, with `clippy` and
   `rustfmt`), and the `wasm32-wasip2` target apps build for (the toolchain
   file lists it; `rustup target add wasm32-wasip2` otherwise).
@@ -40,15 +39,16 @@ section. A WASM core module (an SDK 0.12 app) is refused.
 
 ## Run local nodes
 
-The quickest cluster is one process. `meroctl local up` starts `merod local`
-(the `merod` on `PATH`, here the one just built) in the background and saves it
-as the node `local`, trusting its mock attestation:
+The quickest cluster is one process. `meroctl local up --local` starts `merod
+local` (the `merod` on `PATH`, here the one just built; without `--local` the
+release's Docker image) in the background and saves it as the node `local`,
+trusting its mock attestation:
 
 ```bash
-meroctl local up            # 3 nodes on 127.0.0.1:2501-2503, state in .merod-local/
+meroctl local up --local    # 3 nodes on 127.0.0.1:2501-2503, state in .merod-local/
 meroctl local status        # the node URLs, the ops token, the log file
 meroctl local down          # stop it; the state stays
-meroctl local up --fresh    # start over
+meroctl local up --local --fresh    # start over
 ```
 
 then:

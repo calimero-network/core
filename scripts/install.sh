@@ -9,7 +9,7 @@
 # it is put in place. Without --version it takes the newest release, release
 # candidates included. `merod` ships for Linux, and for macOS (Apple silicon)
 # from 1.0.0-rc.25; with an older release it is skipped on a Mac, and
-# `meroctl local up` runs the node in the release's Docker image.
+# `meroctl local up` runs the node in the release's Docker image either way.
 #
 # Options:
 #   --version X   the release (a tag such as 1.0.0-rc.24)
@@ -89,7 +89,7 @@ for tool in $TOOLS; do
   archive="${tool}_${TARGET}.tar.gz"
   want=$(awk -v f="$archive" '$2 == f || $2 == "*"f { print $1 }' "$TMP/SHA256SUMS")
   if [ -z "$want" ] && [ "$tool" = merod ] && [ "$OS" = Darwin ]; then
-    say "skipping merod: $VERSION has no macOS build (from 1.0.0-rc.25); meroctl local up runs the node in Docker"
+    say "skipping merod: $VERSION has no macOS build (from 1.0.0-rc.25); meroctl local up runs the node in Docker either way"
     continue
   fi
   [ -n "$want" ] || die "release $VERSION has no $archive"

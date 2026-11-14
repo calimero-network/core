@@ -139,8 +139,8 @@ jobs:
           "$bin/meroctl" --help >/dev/null
           "$bin/meroctl" app --help >/dev/null
 
-      # The quickstart on a Mac: `meroctl local up` starts the built `merod local`
-      # from PATH, and a file passkey signs up on it.
+      # The built `merod local` on a Mac (`--local`: the runner has no Docker),
+      # and a file passkey signs up on it.
       - name: Start a development cluster
         run: |
           set -euo pipefail
@@ -148,7 +148,7 @@ jobs:
           export CALIMERO_HOME="$RUNNER_TEMP/calimero"
           trap 'meroctl local down || true; tail -n 50 "$CALIMERO_HOME/meroctl/local/merod.log" "$RUNNER_TEMP"/.merod-local/merod.log 2>/dev/null || true' EXIT
           cd "$RUNNER_TEMP"
-          meroctl local up --fresh
+          meroctl local up --local --fresh
           meroctl --allow-mock network status
           meroctl login --dev-passkey "$RUNNER_TEMP/dev-passkey.json" --name ci
           meroctl whoami
