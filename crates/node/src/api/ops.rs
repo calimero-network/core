@@ -31,12 +31,8 @@ async fn ops_cluster(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRe
     })))
 }
 
-/// `GET /ops/job-nodes/{id}/attestation`: whether the cluster accepts job node `id`, by the
-/// check the leader makes before it sends work (a quote that passes the release policy, this
-/// cluster and node, this cluster's identity, a release not retired). The per-app release
-/// approval is left out: it depends on the app. `state` is `admitted`, `refused` (it answered
-/// and fails, a 2xx that does not decode included) or `unreachable` (no answer, a non-2xx status,
-/// or a service verification needs failed); a verified answer is kept for a minute.
+/// `GET /ops/job-nodes/{id}/attestation`: the leader's check of job node `id` before it sends
+/// work, as `admitted`, `refused` (final) or `unreachable` (transient); the per-app approval is left out.
 async fn ops_job_node_attestation(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,

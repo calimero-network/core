@@ -1042,11 +1042,12 @@ fn rand_nonce() -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
+    use calimero_tee_attestation::AttestationError as E;
+
     use super::*;
 
     #[test]
     fn a_collateral_fetch_failure_is_unavailability_not_a_verdict() {
-        use calimero_tee_attestation::AttestationError as E;
         let down = quote_verification_error(E::CollateralFetchFailed("pcs down".into()));
         assert!(
             down.chain().any(|c| c.is::<VerifierUnavailable>()),

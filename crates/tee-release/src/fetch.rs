@@ -15,8 +15,8 @@ const FETCH_RETRIES: usize = 3;
 /// ceiling.
 const FETCH_MAX_BACKOFF_MS: u64 = 60_000;
 
-/// The release host could not be reached (5xx, 429, network) after every
-/// retry: unlike a 404 or a bad signature, this says nothing about the release.
+/// The release host could not be reached (5xx, 408, 425, 429, a rate-limited 403, network)
+/// after every retry: unlike a 404 or a bad signature, this says nothing about the release.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct ReleaseUnreachable(pub String);
@@ -24,8 +24,8 @@ pub struct ReleaseUnreachable(pub String);
 /// Fetch `asset` from release `tag` together with its `.sig` and
 /// `.bundle.json`, verify it was signed by `identity`, and return its body.
 ///
-/// Transient failures (5xx, 429, network) are retried with backoff; a 404 or
-/// any other client error is final, and so is a failed verification, which is
+/// Transient failures (5xx, 408, 425, 429, a rate-limited 403, network) are retried with
+/// backoff; a 404 or any other client error is final, and so is a failed verification, which is
 /// never retried because a bad signature does not become good.
 pub async fn fetch_verified_asset(
     tag: &str,

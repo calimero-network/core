@@ -133,18 +133,18 @@ Because a job node attests only for jobs, no channel that carries the cluster se
 
 ### Who attests a job node
 
-The leader does, for each run it sends, with a fresh nonce.
+The leader does, whenever it needs a job node, with a fresh nonce.
 It checks the quote against the peer policy and the release the job node names, that the document names this cluster and this node, and that the quote binds the cluster identity this cluster signs with.
 A release past an operator's deadline is refused, and so is a release the app's organization has not approved for that app.
-A verified answer is kept for a minute.
+A verified answer is reused for up to a minute, until the directory registers or removes the node, or until a channel to it fails; a refused or unreachable answer is never kept.
 A job node never receives the cluster's KMS key or the cluster key: it attests only its job key, so no channel that carries them opens to it.
 
 Operators read the verdict from `GET /ops/job-nodes/{id}/attestation`.
 It runs the leader's check, without the per-app approval, and answers one of three states with HTTP 200.
 `admitted` carries the attested `release`.
-`refused` means the node answered and its attestation does not pass, with the reason.
-`refused` also covers a 2xx answer that is oversized or does not decode as an attestation.
-`unreachable` means the request failed, the node answered a non-2xx status (what a booting or busy node does), or verification could not reach a service it needs (Intel PCS, the release host), with the reason; ask again later.
+`refused` is final: the node answered and its attestation does not pass, with the reason.
+It covers a 2xx answer that is oversized or does not decode, any non-2xx status other than 5xx, 408, 425 and 429 (a replica registered as a job node answers `404`), and a quote whose data Intel PCS rejects.
+`unreachable` is transient, so ask again later: no answer (connect, timeout, TLS or redirect failure, a connection cut mid-body), a 5xx, 408, 425 or 429 from the node (what a booting or busy node does), or an outage of a service verification needs (Intel PCS, the release host).
 An id that is not a registered job node answers `404`.
 
 **Only compute components.** A job node prepares what it is given on the compute world, so an app component, which imports state and `runs`, is refused with `BAD_BUNDLE` even when the cluster signed it.

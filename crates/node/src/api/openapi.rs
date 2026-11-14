@@ -1746,7 +1746,7 @@ fn operations() -> Vec<Op> {
             .operator()
             .errors(&[(400, "LAST_NODE"), (421, "NOT_LEADER")]),
         get("/ops/job-nodes/{id}/attestation", "ops_job_node_attestation", Ops, "Whether the cluster accepts a job node")
-            .about("Runs the check the leader makes before it sends a job node work: a quote that passes the release policy, this cluster and node, this cluster's identity, a release not retired (not the per-app release approval). `admitted` carries the attested `release`; `refused`: the node answered and fails (a 2xx that is oversized or does not decode included), with the reason; `unreachable`: no answer, a non-2xx status, or a service verification needs (Intel PCS, the release host) failed, with the reason. A verified answer is kept for a minute.")
+            .about("Runs the check the leader makes before it sends a job node work: a quote that passes the release policy, this cluster and node, this cluster's identity, a release not retired (not the per-app release approval). `admitted` carries the attested `release`; `refused` (final): the node answered and fails (a 2xx that is oversized or does not decode, a 4xx other than 408, 425 and 429, or data Intel rejects), with the reason; `unreachable` (transient): no answer, a 5xx, 408, 425 or 429, or a service verification needs (Intel PCS, the release host) failed, with the reason. A verified answer is reused for up to a minute.")
             .ok(r#"{ state: "admitted", node: uint, release: string } | { state: "refused" | "unreachable", node: uint, reason: string }"#)
             .errors(&[(404, "NOT_FOUND"), (503, "UNAVAILABLE")]),
         get("/ops/nodes/{id}/receipt-key", "account_proof::ops_receipt_key", Ops, "A node's receipt key")

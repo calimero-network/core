@@ -220,9 +220,8 @@ impl HttpClient for NoNetwork<'_> {
     }
 }
 
-/// dcap-qvl decodes the quote and reads its PCK chain before its first request,
-/// all on the node's own bytes. Dry-run `fetch` with no network: a failure
-/// before any request is a malformed quote, not a collateral outage.
+/// Dry-runs `fetch` with no network: dcap-qvl parses the quote before its first request,
+/// so a failure before any request is a malformed quote, not a collateral outage.
 async fn reject_unparseable_certification_data(
     quote_bytes: &[u8],
     source: &str,
