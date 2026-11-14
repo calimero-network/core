@@ -95,7 +95,7 @@ pub(crate) enum JobAttestError {
     NotRegistered(NodeId),
     #[error("this node's directory could not be brought up to date")]
     Stale,
-    /// The request failed: no answer, a non-2xx status or an unreadable body.
+    /// The request failed: no answer or a non-2xx status.
     #[error("{0}")]
     Unreachable(String),
     /// The node answered and what it showed does not pass.
@@ -163,14 +163,6 @@ async fn bounded_body(mut response: reqwest::Response, max: usize) -> eyre::Resu
         body.extend_from_slice(&chunk);
     }
     Ok(body)
-}
-
-async fn bounded_json<T: serde::de::DeserializeOwned>(
-    response: reqwest::Response,
-) -> eyre::Result<T> {
-    Ok(serde_json::from_slice(
-        &bounded_body(response, MAX_JOB_RESPONSE_BYTES).await?,
-    )?)
 }
 
 /// A job node whose transport and job signing keys one quote bound.
@@ -284,10 +276,7 @@ impl Node {
 
     async fn fetch_job_attestation(&self, id: NodeId, url: &str) -> eyre::Result<JobPeer> {
         let nonce: [u8; 32] = calimero_identity::random();
-        let doc = self
-            .fetch_attestation_doc(url, &nonce)
-            .await
-            .map_err(|e| JobAttestError::Unreachable(format!("{e:#}")))?;
+        let doc = self.fetch_attestation_doc(url, &nonce).await?;
         if doc.cluster != self.config.cluster || doc.node != id {
             return Err(JobAttestError::Refused(format!(
                 "job node {id} attests as node {} of cluster {}",
@@ -320,26 +309,40 @@ impl Node {
         })
     }
 
-    /// The document a job node answers to `nonce` for `purpose=jobs`; any failure is the request's.
+    /// The document a job node answers to `nonce` for `purpose=jobs`: no answer or a non-2xx
+    /// status is unreachable, a 2xx the leader cannot read as a document is refused.
     async fn fetch_attestation_doc(
         &self,
         url: &str,
         nonce: &[u8; 32],
-    ) -> eyre::Result<AttestationDoc> {
-        let mut at = resolve_path(&url.parse::<Url>()?, "attestation")?;
+    ) -> Result<AttestationDoc, JobAttestError> {
+        let unreachable = |e: &dyn std::fmt::Display| JobAttestError::Unreachable(format!("{e:#}"));
+        let mut at = resolve_path(
+            &url.parse::<Url>().map_err(|e| unreachable(&e))?,
+            "attestation",
+        )
+        .map_err(|e| unreachable(&e))?;
         let _q = at
             .query_pairs_mut()
             .append_pair("nonce", &hex::encode(nonce))
             .append_pair("purpose", "jobs");
-        bounded_json(
-            self.http
-                .get(at)
-                .timeout(JOB_ATTEST_TIMEOUT)
-                .send()
-                .await?
-                .error_for_status()?,
-        )
-        .await
+        let response = self
+            .http
+            .get(at)
+            .timeout(JOB_ATTEST_TIMEOUT)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|e| unreachable(&e))?;
+        let body = match bounded_body(response, MAX_JOB_RESPONSE_BYTES).await {
+            Ok(body) => body,
+            Err(e) if e.is::<AnswerTooLarge>() => {
+                return Err(JobAttestError::Refused(e.to_string()))
+            }
+            Err(e) => return Err(unreachable(&e)),
+        };
+        serde_json::from_slice(&body)
+            .map_err(|e| JobAttestError::Refused(format!("the attestation does not decode: {e}")))
     }
 
     /// How many runs `peer` has and how many it takes, asked over a sealed

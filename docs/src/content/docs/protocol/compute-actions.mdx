@@ -143,7 +143,8 @@ Operators read the verdict from `GET /ops/job-nodes/{id}/attestation`.
 It runs the leader's check, without the per-app approval, and answers one of three states with HTTP 200.
 `admitted` carries the attested `release`.
 `refused` means the node answered and its attestation does not pass, with the reason.
-`unreachable` means the request failed, or verification could not reach a service it needs (Intel PCS, the release host), with the reason; ask again later.
+`refused` also covers a 2xx answer that is oversized or does not decode as an attestation.
+`unreachable` means the request failed, the node answered a non-2xx status (what a booting or busy node does), or verification could not reach a service it needs (Intel PCS, the release host), with the reason; ask again later.
 An id that is not a registered job node answers `404`.
 
 **Only compute components.** A job node prepares what it is given on the compute world, so an app component, which imports state and `runs`, is refused with `BAD_BUNDLE` even when the cluster signed it.

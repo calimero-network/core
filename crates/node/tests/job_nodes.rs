@@ -949,15 +949,33 @@ async fn the_ops_route_tells_admitted_from_refused_from_unreachable() {
     assert_eq!(down["node"], JOB + 2);
     assert!(!down["reason"].as_str().unwrap().is_empty(), "{down}");
 
-    // Answers with something that is not an attestation.
-    let junk = axum::Router::new().route("/attestation", get(|| async { "not json" }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = format!("http://{}/", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move { axum::serve(listener, junk).await });
-    c.register_job_node(JOB + 3, &addr).await;
-    let unreadable = verdict(&ops, JOB + 3).await.unwrap();
-    assert_eq!(unreadable["state"], "unreachable", "{unreadable}");
-    server.abort();
+    // Answers 2xx with something that is not an attestation, or with too much: refused.
+    // A non-2xx is what a booting or busy node answers: unreachable.
+    for (next, (body_len, status, state)) in (JOB + 3..).zip([
+        (8, 200, "refused"),
+        (128 * 1024, 200, "refused"),
+        (8, 503, "unreachable"),
+    ]) {
+        let app = axum::Router::new().route(
+            "/attestation",
+            get(move || async move {
+                (
+                    axum::http::StatusCode::from_u16(status).unwrap(),
+                    "x".repeat(body_len),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        c.register_job_node(next, &addr).await;
+        let answered = verdict(&ops, next).await.unwrap();
+        assert_eq!(
+            answered["state"], state,
+            "{status} with {body_len} bytes: {answered}"
+        );
+        server.abort();
+    }
 
     // A replica and an unknown id are no job nodes.
     for id in [1, 99] {
