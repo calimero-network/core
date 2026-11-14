@@ -756,6 +756,9 @@ fn forwarded_view_error(e: eyre::Report) -> ApiError {
 /// How long a forwarded call or read waits for the leader before retrying.
 pub const FORWARD_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a read of what an app holds waits for its leader to answer, an election included.
+pub const LEADER_ANSWER_WAIT: Duration = Duration::from_secs(5);
+
 /// How long a system write may take, election and forwarding included, before
 /// it answers `503 UNAVAILABLE`. A system group that cannot commit (too few
 /// voters answering, or a membership change waiting on members that do not)
@@ -2980,13 +2983,33 @@ impl Node {
     }
 
     /// A linearizable read of `app`'s state: here if this node leads it, else the first
-    /// replica that answers `body` as leader.
+    /// replica that answers `body` as leader, asked again until [`LEADER_ANSWER_WAIT`] passes.
     async fn ask_leader<T>(
         &self,
         app: &AppRecord,
         body: Value,
         ask: impl Fn(&AppMachine) -> T,
         parse: impl Fn(&Value) -> Option<T>,
+    ) -> Option<T> {
+        let deadline = tokio::time::Instant::now() + LEADER_ANSWER_WAIT;
+        loop {
+            if let Some(answer) = self.ask_leader_once(app, &body, &ask, &parse).await {
+                return Some(answer);
+            }
+            let pause = tokio::time::sleep(Duration::from_millis(150));
+            if tokio::time::timeout_at(deadline, pause).await.is_err() {
+                return None;
+            }
+        }
+    }
+
+    /// One pass of [`Self::ask_leader`] over this node and the other replicas.
+    async fn ask_leader_once<T>(
+        &self,
+        app: &AppRecord,
+        body: &Value,
+        ask: &impl Fn(&AppMachine) -> T,
+        parse: &impl Fn(&Value) -> Option<T>,
     ) -> Option<T> {
         if let Some(g) = self.replica_group(app) {
             if let Ok(answer) = g.read_strong(|m, _| ask(m)).await {
@@ -3001,7 +3024,7 @@ impl Node {
                 .collect()
         });
         for addr in others {
-            if let Ok(v) = self.peer_forward(&addr, "internal/blob/held", &body).await {
+            if let Ok(v) = self.peer_forward(&addr, "internal/blob/held", body).await {
                 if let Some(answer) = parse(&v) {
                     return Some(answer);
                 }

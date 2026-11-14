@@ -471,8 +471,10 @@ async fn start_launch(
     for id in launch.inputs.values().flatten() {
         let raw = parse_hex32(id)
             .ok_or_else(|| ApiError::bad_request(BAD_INPUTS, "an input is not a file id"))?;
-        if node.file_held_strong(app, &raw).await != Some(true) {
-            return Err(expired());
+        match node.file_held_strong(app, &raw).await {
+            Some(true) => {}
+            Some(false) => return Err(expired()),
+            None => return Err(ApiError::unavailable("the app's leader did not answer")),
         }
     }
     let priced = with_limits(&launch.pipeline, &launch.limits);

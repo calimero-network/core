@@ -4768,6 +4768,19 @@
             "x-calimero-codes": [
               "TOO_MANY_PIPELINE_RUNS"
             ]
+          },
+          "503": {
+            "description": "`UNAVAILABLE`: the cluster cannot answer now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAVAILABLE"
+            ]
           }
         }
       }
@@ -5169,6 +5182,19 @@
             },
             "x-calimero-codes": [
               "TOO_MANY_PIPELINE_RUNS"
+            ]
+          },
+          "503": {
+            "description": "`UNAVAILABLE`: the cluster cannot answer now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAVAILABLE"
             ]
           }
         }
