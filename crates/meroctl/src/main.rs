@@ -136,7 +136,7 @@ enum Cmd {
     Attest {
         #[command(subcommand)]
         cmd: Option<AttestCmd>,
-        /// `attest app CONTEXT`, under its old spelling.
+        /// `attest app INSTANCE`, under its old spelling.
         #[arg(long, short, hide = true)]
         context: Option<String>,
     },
@@ -250,7 +250,10 @@ enum AttestCmd {
     /// The node's attestation, as the channel verified it.
     Node,
     /// Every replica of an app verified, and the governance they attest.
-    App { context: String },
+    App {
+        #[arg(value_name = "INSTANCE")]
+        context: String,
+    },
     /// Verify a release attestation (`merod attest`), made before the node
     /// holds any key: from `--file` with the `--nonce` it was made over, or
     /// fetched from the node (`GET /attestation/release`) over a fresh nonce.

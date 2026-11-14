@@ -915,7 +915,7 @@ fn scenario(root: &Path, url: &str) {
 
     // network, attest.
     assert_eq!(alice.run(&["network", "status"])["ok"], true);
-    let proven = alice.run(&["attest", "--instance", "notes"]);
+    let proven = alice.run(&["attest", "app", "notes"]);
     assert_eq!(
         proven["receiptKeys"].as_object().map(serde_json::Map::len),
         Some(3)
