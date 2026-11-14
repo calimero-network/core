@@ -86,7 +86,7 @@ meroctl local dev apps/kv-store           # a local cluster, build, upload, fron
 ### By hand
 
 ```bash
-meroctl local up                                            # 3 nodes on 127.0.0.1:2501-2503 in the background, saved as node local
+meroctl local up                                            # 3 nodes on 127.0.0.1:2501-2503 in Docker, saved as node local (--local: merod from PATH)
 meroctl login --dev-passkey ./dev-passkey.json --name ada   # signs up: an account and its personal organization
 meroctl app build apps/kv-store --out kv_store.wasm
 meroctl context create --path kv_store.wasm --name kv --alias kv
@@ -107,7 +107,7 @@ The full walk-through, with the JavaScript and Python clients, is the
 | Start | `app new DIR [--template T]` |
 | Build | `app build`, `app codegen --lang ts\|python\|swift\|kotlin\|openapi`, `app abi show\|diff` |
 | Ship | `app signer new`, `app pack [--key K] [--previous OLD]`, `app sign`, `app inspect`, `app publish [--org ORG]` |
-| Run locally | `local up\|down\|status [--docker]`, `local dev`, `local test`, `local compute run` |
+| Run locally | `local up\|down\|status [--local]` (Docker by default), `local dev`, `local test`, `local compute run` |
 | Cloud | `cloud login`, `cloud orgs`, `cloud clusters list\|create`, `cloud use CLUSTER`, `cloud compute pipeline\|logs` |
 | Use a node | `app install`, `context`, `call`, `blob`, `file`, `namespace` (organizations), `group` (teams), `account`, `attest`, `ops` |
 

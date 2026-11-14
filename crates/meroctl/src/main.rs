@@ -204,9 +204,9 @@ enum Cmd {
     /// This account: passkeys (devices), API keys, usage, approvals.
     #[command(subcommand)]
     Account(account::AccountCmd),
-    /// A development cluster on this machine (`merod local`, or its image with
-    /// `--docker`): up, down, status; and the loop around it: dev, test,
-    /// compute run.
+    /// A development cluster on this machine (`merod local` in the release's
+    /// image, or from PATH with `--local`): up, down, status; and the loop
+    /// around it: dev, test, compute run.
     #[command(subcommand)]
     Local(local::LocalCmd),
     /// `meroctl local dev`'s predecessor: install a build, create a context
@@ -591,9 +591,17 @@ mod tests {
             &[
                 "meroctl", "app", "abi", "diff", "old.mpk", "new.wasm", "--json",
             ],
+            // Docker is the default; `--docker` from before stays accepted.
+            &["meroctl", "local", "up", "--docker"],
+            &["meroctl", "local", "up", "--local"],
+            &["meroctl", "local", "dev", "app", "--local"],
         ] {
             assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
         }
+        assert!(
+            Cli::try_parse_from(["meroctl", "local", "up", "--docker", "--local"]).is_err(),
+            "--docker and --local contradict"
+        );
     }
 
     /// `package` is `app`: `meroctl package origins ...` reaches the same commands.

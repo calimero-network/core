@@ -26,16 +26,35 @@
 - **`merod` for macOS (Apple silicon), and the quickstart works there as on
   Linux** (`release`, `install.sh`, `meroctl`): releases publish
   `merod_aarch64-apple-darwin.tar.gz`, so on a Mac `install.sh merod meroctl`
-  and `meroctl local up` start a development cluster natively; production
+  and `meroctl local up --local` start a development cluster natively; production
   nodes still run in Linux TDX VMs. For a release without a macOS `merod`
   (1.0.0-rc.24 and older) `install.sh` installs `meroctl` and skips `merod` with a
-  note (it stopped with an error), and `meroctl local up` on macOS, finding no
-  `merod` on PATH and no `MEROD`, runs the node in the release's Docker image.
+  note (it stopped with an error).
+- **`meroctl local up` (and `local dev`) runs the node in Docker by default**:
+  the release's image (`ghcr.io/calimero-network/merod:<release>`) on Linux and
+  macOS alike, so a development cluster needs Docker and no `merod`; `--local`
+  (or `MEROD`) runs the `merod` on PATH as before. A missing or stopped Docker
+  is named before anything starts. `--docker` is still accepted.
 - **Homebrew carries `merod` and `meroctl` again**: each release opens its own
   bump PR in calimero-network/homebrew-tap (`chore/bump-formulas-<version>`) and
   asks for auto-merge. One shared branch let a stalled PR swallow every bump
   from 1.0.0-rc.19 on, and `gh pr create ... || true` hid it; the job now fails
   when the formulas do not change or the PR cannot be opened.
+- **`meroctl local` keeps the cluster in the meroctl home**: `local up` (and
+  `local dev`) store the cluster's state in `{home}/meroctl/local`
+  (`~/.calimero/meroctl/local`) instead of `./.merod-local`, so `local down` and
+  `local status` find it from any directory. The quickstart runs `local up`, then
+  `cd`s into a new project, where `local down` used to report `"running": false`
+  and leave the cluster up. `down` and `status` still find a cluster an older
+  meroctl started in `./.merod-local`; `--dir` names any other.
+- **Linux release binaries need glibc 2.35, not 2.39**: they are built on
+  Ubuntu 22.04, so they run on Ubuntu 22.04, Debian 12 and later (they needed
+  Ubuntu 24.04 or Debian 13). The release fails if a binary needs a newer glibc.
+- **`meroctl app new` copies the apps repository's `scripts/`** (its
+  `component-build.sh` builds the contract and writes `res/abi.json`, and
+  `packages/merod-local` runs it) in place of `tools/`, which the apps
+  repository no longer has, makes one commit of what the template gave, and
+  says to run `meroctl local dev` next.
 
 ### Deprecated
 

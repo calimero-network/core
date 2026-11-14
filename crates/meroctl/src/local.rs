@@ -1,7 +1,6 @@
 //! `meroctl local`: a development cluster on this machine and the loop around
-//! it. `up` starts `merod local` in the background (the binary on PATH, or the
-//! release's container image with `--docker`, and on macOS whenever none is
-//! on PATH, as with a release that shipped no macOS `merod`) and saves it as the node
+//! it. `up` starts `merod local` in the background (the release's container
+//! image, or with `--local` the `merod` on PATH or in `MEROD`) and saves it as the node
 //! `local`; `dev` builds an app, uploads it, writes its frontend's
 //! `.env.development.local`, runs the frontend's dev server and rebuilds on
 //! every save; `test` runs the app's tests and scenarios on core's engine;
@@ -36,18 +35,23 @@ pub struct ClusterArgs {
     /// Node i listens on base-port + i (127.0.0.1 only).
     #[arg(long, default_value_t = 2500)]
     pub base_port: u16,
-    /// Where the cluster keeps its state, kept across restarts.
-    #[arg(long, default_value = ".merod-local")]
-    pub dir: PathBuf,
+    /// Where the cluster keeps its state, kept across restarts (default:
+    /// `{home}/meroctl/local`, the same from every directory).
+    #[arg(long)]
+    pub dir: Option<PathBuf>,
     /// Start from empty state.
     #[arg(long)]
     pub fresh: bool,
-    /// Run the release's container image instead of `merod` from PATH (`merod
-    /// local --bind 0.0.0.0`, its ports published on 127.0.0.1). On macOS this
-    /// is the default when no `merod` is on PATH and `MEROD` is unset.
+    /// Run `merod` from PATH (or `MEROD`) instead of the release's container
+    /// image. Setting `MEROD` implies it.
     #[arg(long)]
+    pub local: bool,
+    /// The release's container image, the default: kept so older scripts
+    /// still parse.
+    #[arg(long, hide = true, conflicts_with = "local")]
     pub docker: bool,
-    /// The image for `--docker`.
+    /// The image the node runs in (`merod local --bind 0.0.0.0`, its ports
+    /// published on 127.0.0.1).
     #[arg(long, default_value_t = default_image())]
     pub image: String,
 }
@@ -66,13 +70,15 @@ pub enum LocalCmd {
     Up(ClusterArgs),
     /// Stop the cluster `up` started; its state stays for the next `up`.
     Down {
-        #[arg(long, default_value = ".merod-local")]
-        dir: PathBuf,
+        /// The cluster's state directory (default: the one `up` uses).
+        #[arg(long)]
+        dir: Option<PathBuf>,
     },
     /// Whether the cluster runs, and its nodes.
     Status {
-        #[arg(long, default_value = ".merod-local")]
-        dir: PathBuf,
+        /// The cluster's state directory (default: the one `up` uses).
+        #[arg(long)]
+        dir: Option<PathBuf>,
     },
     /// Develop an app on the cluster: start it if it is not running, build the
     /// app, upload it, write the frontend's `.env.development.local`, run the
@@ -162,6 +168,26 @@ fn listening(url: &str) -> bool {
     .is_ok()
 }
 
+/// Where a cluster keeps its state when `--dir` names none: under the meroctl
+/// home, so `up` in one directory and `down` in another find the same cluster.
+fn default_dir(home: &Home) -> PathBuf {
+    home.dir.join("meroctl").join("local")
+}
+
+/// The state directory `down` and `status` act on: `--dir`, else the default;
+/// failing that, a cluster an older meroctl started in `./.merod-local`.
+fn found_dir(home: &Home, dir: Option<PathBuf>) -> PathBuf {
+    dir.unwrap_or_else(|| {
+        let default = default_dir(home);
+        let legacy = PathBuf::from(".merod-local");
+        if read_state(&default).is_none() && read_state(&legacy).is_some() {
+            legacy
+        } else {
+            default
+        }
+    })
+}
+
 fn read_state(dir: &Path) -> Option<State> {
     serde_json::from_str(&std::fs::read_to_string(dir.join(STATE_FILE)).ok()?).ok()
 }
@@ -176,22 +202,23 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
     if a.nodes == 0 {
         bail!("--nodes must be at least 1");
     }
-    if let Some(state) = read_state(&a.dir).filter(alive) {
+    let state_dir = a.dir.clone().unwrap_or_else(|| default_dir(home));
+    if let Some(state) = read_state(&state_dir).filter(alive) {
         if a.fresh {
             bail!(
                 "a cluster is running from {}: `meroctl local down` first",
-                a.dir.display()
+                state_dir.display()
             );
         }
         save_node(home, &state.urls[0])?;
-        return Ok((describe(&a.dir, &state, true), None));
+        return Ok((describe(&state_dir, &state, true), None));
     }
     let urls = urls(a.nodes, a.base_port);
     if let Some(busy) = urls.iter().find(|u| listening(u)) {
         bail!("{busy} is taken by another process: stop it, or pass --base-port");
     }
-    std::fs::create_dir_all(&a.dir)?;
-    let dir = std::path::absolute(&a.dir)?;
+    std::fs::create_dir_all(&state_dir)?;
+    let dir = std::path::absolute(&state_dir)?;
     let token = hex::encode(calimero_identity::random::<16>());
     let log = dir.join("merod.log");
     let mut local = vec![
@@ -207,14 +234,11 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
         local.push("--fresh".into());
     }
     let out = std::fs::File::create(&log)?;
-    // Releases before 1.0.0-rc.25 shipped no `merod` for macOS: there, with
-    // none on PATH and no MEROD, the node runs in the release's image.
-    let docker = a.docker || no_native_merod();
-    if docker && !a.docker {
-        eprintln!(
-            "• no merod on PATH: running the node in Docker ({})",
-            a.image
-        );
+    // The release's image unless `--local` (or MEROD) asks for a `merod` binary:
+    // only Docker is needed, on Linux and macOS alike.
+    let docker = !a.local && std::env::var_os("MEROD").is_none();
+    if docker {
+        docker_ready()?;
     }
     let (pid, container, child) = if docker {
         // The image's merod writes as uid 10001 under /data, a named volume; it
@@ -269,7 +293,7 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
             .spawn()
             .wrap_err_with(|| {
                 format!(
-                    "starting {} (put merod on PATH, set MEROD, or pass --docker)",
+                    "starting {} (with --local, put merod on PATH or set MEROD; without it the node runs in Docker)",
                     merod.to_string_lossy()
                 )
             })?;
@@ -288,7 +312,7 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
     )?;
     // Only a caller that owns the cluster (`dev`) stops it when done.
     let started = own.then(|| Started {
-        dir: a.dir.clone(),
+        dir: state_dir.clone(),
         child,
     });
     let deadline = Instant::now() + READY_TIMEOUT;
@@ -313,7 +337,7 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
         std::thread::sleep(Duration::from_millis(500));
     }
     save_node(home, &urls[0])?;
-    let answer = describe(&a.dir, &state, true);
+    let answer = describe(&state_dir, &state, true);
     Ok((answer, started))
 }
 
@@ -383,14 +407,17 @@ pub fn stop(dir: &Path) -> eyre::Result<Value> {
 pub async fn run(cmd: LocalCmd, home: Home) -> eyre::Result<Value> {
     match cmd {
         LocalCmd::Up(a) => Ok(up(&a, &home, false)?.0),
-        LocalCmd::Down { dir } => stop(&dir),
-        LocalCmd::Status { dir } => Ok(match read_state(&dir) {
-            Some(state) => {
-                let running = alive(&state);
-                describe(&dir, &state, running)
-            }
-            None => json!({ "running": false }),
-        }),
+        LocalCmd::Down { dir } => stop(&found_dir(&home, dir)),
+        LocalCmd::Status { dir } => {
+            let dir = found_dir(&home, dir);
+            Ok(match read_state(&dir) {
+                Some(state) => {
+                    let running = alive(&state);
+                    describe(&dir, &state, running)
+                }
+                None => json!({ "running": false }),
+            })
+        }
         LocalCmd::Dev(a) => dev(a, home).await,
         LocalCmd::Test { dir, cargo_args } => {
             let krate = crate_dir(&dir);
@@ -602,11 +629,22 @@ impl Deploy {
     }
 }
 
-/// On macOS, when neither `MEROD` nor a `merod` on PATH names a node binary
-/// (a release before 1.0.0-rc.25 shipped none for macOS): `local up` uses the image.
-fn no_native_merod() -> bool {
-    cfg!(target_os = "macos")
-        && std::env::var_os("MEROD").is_none()
-        && !std::env::var_os("PATH")
-            .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("merod").is_file()))
+/// Docker, which runs the node by default: installed, and its daemon up.
+fn docker_ready() -> eyre::Result<()> {
+    let out = Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .stdin(Stdio::null())
+        .output();
+    match out {
+        Err(_) => bail!(
+            "the development cluster runs in Docker, which is not installed \
+             (https://docs.docker.com/get-docker/); or pass --local to run merod from PATH"
+        ),
+        Ok(o) if !o.status.success() => bail!(
+            "Docker is installed but not running: start Docker Desktop or the docker \
+             service; or pass --local to run merod from PATH\n{}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        ),
+        Ok(_) => Ok(()),
+    }
 }
