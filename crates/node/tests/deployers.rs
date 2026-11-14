@@ -26,7 +26,7 @@ mod harness;
 use harness::{kv_wasm, ops_signed, signed_up, typed, wire, Cluster, OPERATOR_SEED};
 use reqwest::Method;
 
-/// A signed single-service `.mpk`, the shape `mero-sign` signs.
+/// A signed single-service `.mpk`, the shape `meroctl app pack` signs.
 fn mpk(package: &str, version: &str, wasm: &[u8]) -> Vec<u8> {
     use sha2::Digest;
     let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);

@@ -1,6 +1,6 @@
 name: App ABI native clients
 
-# The Swift and Kotlin clients `mero-app-build codegen` writes, compiled with warnings as
+# The Swift and Kotlin clients `meroctl app codegen` writes, compiled with warnings as
 # errors against the SDK releases they are written for (scripts/check-app-abi-clients.py):
 # swift-sdk's MeroKit on macOS, kotlin-sdk's mero-core on Linux. `cargo test -p
 # calimero-app-abi` pins what the generator writes (tests/golden); this checks it compiles

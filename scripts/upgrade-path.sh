@@ -7,9 +7,9 @@
 #   FROM=1.0.0-rc.15 scripts/upgrade-path.sh
 #
 # Steps: read the pinned release (a `hard-cutover:` line reports the cutover and stops);
-# fetch its merod, meroctl, mero-sign and kv fixture (scripts/fetch-release.sh) and build
+# fetch its merod, meroctl (and mero-sign, for a release that shipped it) and kv fixture (scripts/fetch-release.sh) and build
 # its compute fixture from its tag (scripts/build-release-fixtures.sh); build this tree's
-# merod, meroctl, mero-sign and kv (signed as kv 2.0.0, the app upgrade); run the test.
+# merod and meroctl, and kv with that meroctl (signed as kv 2.0.0, the app upgrade); run the test.
 # A pinned tag that does not exist yet is reported and not run; a tag whose release
 # lacks an artifact fails.
 #
@@ -64,18 +64,17 @@ scripts/build-release-fixtures.sh "$FROM" "$FROM_DIR"
 # The deep cases' components and packages, from the same tag and tools.
 scripts/build-upgrade-deep-fixtures.sh "$FROM_DIR"
 
-cargo build --release -p merod -p meroctl -p mero-sign
-scripts/install-mero-app-build.sh
+cargo build --release -p merod -p meroctl
+MEROCTL="$TARGET/release/meroctl"
 mkdir -p "$TARGET/app-components" "$TARGET/upgrade-path-fixtures"
-mero-app-build apps/v2-fixtures/kv --out "$TARGET/app-components/kv.wasm"
-python3 -I scripts/pack-component.py --wasm "$TARGET/app-components/kv.wasm" \
-  --mero-sign "$TARGET/release/mero-sign" \
+"$MEROCTL" app build apps/v2-fixtures/kv --out "$TARGET/app-components/kv.wasm"
+"$MEROCTL" app pack --wasm "$TARGET/app-components/kv.wasm" \
   --package com.calimero.kv-store --app-version 2.0.0 --out "$TARGET/upgrade-path-fixtures/kv-next.mpk"
 # The pipeline cases' package: the compute fixture's compute component and its pipeline, from this tree.
-mero-app-build apps/v2-fixtures/compute --out "$TARGET/app-components/compute-app.wasm" \
+"$MEROCTL" app build apps/v2-fixtures/compute --out "$TARGET/app-components/compute-app.wasm" \
   --compute-out "$TARGET/app-components/compute.wasm"
-python3 -I scripts/pack-component.py --compute "$TARGET/app-components/compute.wasm" \
-  --pipeline apps/v2-fixtures/compute/pipelines/fanout.yaml --mero-sign "$TARGET/release/mero-sign" \
+"$MEROCTL" app pack --compute "$TARGET/app-components/compute.wasm" \
+  --pipeline apps/v2-fixtures/compute/pipelines/fanout.yaml \
   --package com.calimero.upgrade.pipelines --app-version 1.0.0 --out "$TARGET/upgrade-path-fixtures/pipelines.mpk"
 
 status=0

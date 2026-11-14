@@ -1,4 +1,5 @@
-//! `mero-compute` on the cluster tests' compute fixture, through the real binary.
+//! `meroctl local compute run` on the cluster tests' compute fixture, through the real
+//! binary (what `mero-compute`'s tests held).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -43,11 +44,11 @@ fn built() -> &'static Built {
 }
 
 fn tool(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_mero-compute"))
-        .arg("run")
+    Command::new(env!("CARGO_BIN_EXE_meroctl"))
+        .args(["local", "compute", "run"])
         .args(args)
         .output()
-        .expect("run mero-compute")
+        .expect("run meroctl local compute run")
 }
 
 fn text(bytes: &[u8]) -> String {

@@ -245,7 +245,7 @@ pub fn build(a: &BuildArgs) -> eyre::Result<Value> {
     Ok(answer)
 }
 
-/// `app codegen`: the flags of `mero-app-build codegen`, which prints what it wrote.
+/// `app codegen`: `abi_tools::codegen`, which prints what it wrote.
 pub fn codegen(args: &[String]) -> eyre::Result<Value> {
     abi_tools::codegen(args.iter().cloned())?;
     Ok(Value::Null)
@@ -341,6 +341,9 @@ struct CrateMeta {
     /// `[package.metadata.calimero]` as written, for the display metadata,
     /// links and the rest `pack` copies into the manifest (`manifest_extras`).
     table: toml::Table,
+    /// Where `calimero-sdk` comes from (`[dependencies]`, a git source and its
+    /// tag), written into the manifest's `buildInfo` as `mero-component` did.
+    sdk: Option<(String, Option<String>)>,
     dir: PathBuf,
 }
 
@@ -361,7 +364,18 @@ fn crate_meta(dir: &Path) -> eyre::Result<CrateMeta> {
             .and_then(toml::Value::as_str)
             .map(str::to_owned)
     };
+    // A component app takes `calimero-sdk` from core's git; one inherited from
+    // a workspace (`workspace = true`) names no source here.
+    let sdk = doc
+        .get("dependencies")
+        .and_then(|d| d.get("calimero-sdk"))
+        .and_then(toml::Value::as_table)
+        .and_then(|d| {
+            let git = d.get("git")?.as_str()?.to_owned();
+            Some((git, text_of(Some(d), "tag")))
+        });
     Ok(CrateMeta {
+        sdk,
         version: text_of(package, "version"),
         package: text_of(meta, "package"),
         min_runtime: text_of(meta, "min-runtime-version"),
@@ -389,7 +403,8 @@ fn icon_uri(path: &Path) -> eyre::Result<String> {
 /// (and `cargo mero` before it) read: `metadata` (`name`, `description`,
 /// `author`, `icon`, `tags`, `license`, `category`, `guide`), `handlers.slug`
 /// (default: the package), `links` (`frontend`, `github`, `docs`),
-/// `frontendAliases`, `outbound` and `upgrades`. A flag wins over the table.
+/// `frontendAliases`, `outbound` and `upgrades`, and `buildInfo` (the
+/// `calimero-sdk` git source and tag). A flag wins over the table.
 fn manifest_extras(
     a: &PackArgs,
     meta: &CrateMeta,
@@ -463,6 +478,14 @@ fn manifest_extras(
     }
     if !links.is_empty() {
         let _ = manifest.insert("links".into(), Value::Object(links));
+    }
+    if let Some((source, version)) = &meta.sdk {
+        let mut b = Map::new();
+        let _ = b.insert("sdkSource".into(), json!(source));
+        if let Some(v) = version {
+            let _ = b.insert("sdkVersion".into(), json!(v));
+        }
+        let _ = manifest.insert("buildInfo".into(), Value::Object(b));
     }
     let aliases = list("frontend-aliases");
     if !aliases.is_empty() {

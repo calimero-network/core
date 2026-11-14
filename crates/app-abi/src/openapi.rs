@@ -37,7 +37,7 @@ pub const OPENAPI_VERSION: &str = "3.1.0";
 const DESCRIPTION: &str = "Generated from the app's ABI (its `calimero:abi` section). \
 Every request and answer travels inside the node's sealed channel, after the client has \
 verified the node's attestation: use mero-js or calimero-client-py as the transport (the \
-typed clients `mero-app-build codegen` writes do), not plain HTTP. \
+typed clients `meroctl app codegen` writes do), not plain HTTP. \
 `POST /apps/{app}/methods/{name}` runs exactly as `POST /apps/{app}/intents` (a call) or \
 `POST /apps/{app}/views` (a view) with the same `method`: the same authentication, gating, \
 passkey step-up and limits. Errors are `{ error, message, details }`.";

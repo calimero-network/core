@@ -887,7 +887,7 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
 
 // ---------------------------------------------------------------- packages
 
-/// A signed single-service `.mpk`, the shape `mero-sign` signs.
+/// A signed single-service `.mpk`, the shape `meroctl app pack` signs.
 fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
     mpk_declaring(package, version, wasm, key, &[])
 }
@@ -1373,7 +1373,7 @@ async fn an_uploaded_package_is_verified_and_reaches_the_other_nodes() {
     assert_eq!(p["versions"][0]["source"], json!("upload"));
 }
 
-/// `mero-sign --dev`'s key has a public seed, so a release it signed proves
+/// The development key (`meroctl app sign --dev`) has a public seed, so a release it signed proves
 /// nothing about its publisher: only a development node takes one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_dev_signed_package_is_refused_outside_development() {

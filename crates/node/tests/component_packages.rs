@@ -18,7 +18,7 @@ use common::{
 };
 use serde_json::{json, Value};
 
-/// A signed single-service `.mpk`, the shape `mero-sign` signs.
+/// A signed single-service `.mpk`, the shape `meroctl app pack` signs.
 fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKey) -> Vec<u8> {
     mpk_with(package, version, wasm, None, key)
 }

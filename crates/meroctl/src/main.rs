@@ -44,7 +44,14 @@ use env::{
 #[command(
     name = "meroctl",
     // The release, not `CARGO_PKG_VERSION`: that is the workspace placeholder `0.0.0`.
-    version = env!("CALIMERO_RELEASE_VERSION"),
+    version = concat!(
+        env!("CALIMERO_RELEASE_VERSION"),
+        " (",
+        env!("CALIMERO_BUILD_DESCRIBE"),
+        ", ",
+        env!("CALIMERO_BUILD_COMMIT"),
+        ")"
+    ),
     about = "Command line for Calimero nodes",
     after_help = "Examples:\n  \
         meroctl dev new my-app\n  \

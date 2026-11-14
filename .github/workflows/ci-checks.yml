@@ -404,7 +404,7 @@ jobs:
           key: standalone-apps-v1-${{ matrix.shard }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', 'apps/**/Cargo.lock') }}
 
   rust-compute-tools:
-    name: mero-compute end to end
+    name: Compute end to end (meroctl)
     needs: [scope, rust-quick]
     if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
     runs-on: ubuntu-24.04
@@ -422,34 +422,32 @@ jobs:
           shared-key: ci-checks
           rust-cache: false
 
-      - name: Install mero-app-build and mero-compute
-        run: |
-          scripts/install-mero-app-build.sh
-          scripts/install-mero-compute.sh
+      - name: Install meroctl
+        run: cargo install --locked --path crates/meroctl
 
       # A digest of 300 KB must write one output of the same size, identically twice.
-      - name: mero-compute on the compute fixture
+      - name: meroctl local compute run on the compute fixture
         run: |
           set -euo pipefail
           out=target/mero-compute-check
           rm -rf "$out" && mkdir -p "$out"
-          mero-app-build \
+          meroctl app build \
             apps/v2-fixtures/compute --target-dir "$out/build" --out "$out/app.wasm"
           head -c 300000 /dev/urandom > "$out/input.bin"
-          mero-compute run "$out/compute.component.wasm" --method digest \
+          meroctl local compute run "$out/compute.component.wasm" --method digest \
             --input "$out/input.bin" --out "$out/out" --twice
           test "$(wc -c < "$out/out/output-0")" -eq 300000
 
       # The README's command for testing compute-redact's compute component alone, on its sample file.
-      - name: mero-compute on compute-redact
+      - name: meroctl local compute run on compute-redact
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
           out=target/mero-compute-redact
           rm -rf "$out" && mkdir -p "$out"
-          mero-app-build apps/compute-redact --target-dir "$out/build" \
+          meroctl app build apps/compute-redact --target-dir "$out/build" \
             --out "$out/app.wasm" --compute-out "$out/compute.wasm"
-          mero-compute run "$out/compute.wasm" --method redact \
+          meroctl local compute run "$out/compute.wasm" --method redact \
             --args @apps/compute-redact/example/redact.json \
             --input apps/compute-redact/example/people.csv --out "$out/out" --twice
           if grep -qE 'acme|4111|415' "$out/out/output-0"; then

@@ -1,5 +1,5 @@
 //! An app's typed client and OpenAPI document from its ABI, in process: what
-//! `mero-app-build codegen` runs.
+//! `meroctl app codegen` runs.
 //!
 //! ```no_run
 //! use calimero_app_build::codegen::{Codegen, Lang};

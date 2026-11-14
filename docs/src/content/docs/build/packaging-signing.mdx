@@ -13,7 +13,7 @@ That deliverable is an **`.mpk` bundle**: a single archive carrying your
 `calimero:app` component, a `manifest.json`, and an Ed25519 signature.
 This page walks the builder workflow that produces one.
 
-Every step is a `meroctl app` subcommand: `build` compiles the components, `key`
+Every step is a `meroctl app` subcommand: `build` compiles the components, `signer`
 makes the signing key, `pack` writes the manifest, signs it and packs the
 archive, and `inspect` checks the result as a node would. The node
 side — how a bundle is parsed, verified, and trusted on install — lives in
@@ -53,9 +53,9 @@ detail.
    #   signerId: did:key:z6Mkrb81NKkv7Mw4dZAWA5PTuwBhbq9u9eCPuby3icBUdirg
    ```
 
-   The key file is JSON with base64url-encoded `privateKey` and `publicKey` plus
-   the derived `signerId` (`meroctl app signer id <file>` prints it
-   again). `key new` will not overwrite an existing file unless you pass
+   The key file is JSON with base64url-encoded `private_key` and `public_key` plus
+   the derived `signer_id` (`meroctl app signer id <file>` prints it
+   again). `signer new` will not overwrite an existing file unless you pass
    `--force`, which loses the old key for good. **Keep it secret and out of version control** — it is
    your update authority (see below).
 
@@ -90,7 +90,11 @@ detail.
    my-signing-key.json` reads `package`, `min-runtime-version` and `frontend-dir`
    from the crate's `[package.metadata.calimero]` and the release from its
    `version`, builds the components when `--wasm` and `--compute` are not given,
-   and writes `apps/my-app/dist/<package>-<version>.mpk`.
+   and writes `apps/my-app/dist/<package>-<version>.mpk`. The same table gives
+   the display `metadata` (`name`, `description`, `author`, `icon`, `tags`,
+   `license`, `category`, `guide`), `handlers.slug`, `links` (`frontend`,
+   `github`, `docs`) and `frontendAliases`, and the crate's `calimero-sdk` git
+   dependency gives `buildInfo` (`sdkSource`, `sdkVersion`: the SDK it was built with).
 
    `--min-runtime-version` (default `0.1.0`) is the oldest `merod`
    release the app needs; a cluster with an older replica refuses the upgrade
@@ -110,9 +114,9 @@ detail.
    `pack` checks each against the node's own rules before signing.
 
    <Aside type="caution">
-   `links`, `frontendAliases` and multi-service `services`
-   (`calimero_bundle::BundleManifest`) have no flag: a release that needs them
-   adds them to `manifest.json` before `meroctl app sign manifest.json --key <file>`.
+   Multi-service `services` (`calimero_bundle::BundleManifest`) has no flag
+   yet: a release that needs it adds it to `manifest.json` before
+   `meroctl app sign manifest.json --key <file>`.
    </Aside>
 
    An app with compute methods also builds a compute component

@@ -151,8 +151,7 @@ check lints them) and to what counts as breaking.
 
 ### How a release is cut
 
-- **Version.** The one version of every public crate, `merod`, `meroctl` and
-  `mero-sign` is `version` under `[workspace.metadata.workspaces]` in the root
+- **Version.** The one version of every public crate, `merod` and `meroctl` is `version` under `[workspace.metadata.workspaces]` in the root
   `Cargo.toml` (`1.0.0-rc.24` at the time of writing). Nothing else holds it.
 - **Release pull request.** `chore(release): cut X` sets that version to `X`
   and turns `CHANGELOG.md`'s `## [Unreleased]` into a dated `## [X] - YYYY-MM-DD`
@@ -181,7 +180,7 @@ All from `release.yml`, on master only:
 
 | What | Where |
 | --- | --- |
-| `merod`, `meroctl`, `mero-sign` (Linux x86_64 and aarch64), `meroctl` and `mero-sign` (macOS aarch64), `mero-app-build` (Linux x86_64 and aarch64, macOS aarch64), `calimero-tee-verify` (Linux), `SHA256SUMS` with build provenance | the GitHub Release `X` |
+| `merod` and `meroctl` (Linux x86_64 and aarch64), `meroctl` (macOS aarch64), `calimero-tee-verify` (Linux), `SHA256SUMS` with build provenance; `scripts/install.sh` installs them | the GitHub Release `X` |
 | `kv-store-test-fixture.mpk`, the kv app bundle the upgrade path and clients test with | the GitHub Release `X` |
 | the public crates (`cargo ws publish`) | crates.io |
 | the `merod` image, multi-arch: `X`, plus `latest` for a final or `prerelease` for a pre-release | `ghcr.io/calimero-network/merod` |
@@ -189,10 +188,12 @@ All from `release.yml`, on master only:
 | SDK pin bumps for consumers | pull requests opened by `fleet-bump.yml` (below) |
 
 Each binary is `<binary>_<target triple>.tar.gz`, e.g.
-`mero-app-build_x86_64-unknown-linux-gnu.tar.gz`. `mero-app-build` is a release
-binary only: `calimero-app-build` and the `calimero-app-abi` it builds on are
-`publish = false`, so it is not on crates.io, and an app's CI downloads the
-archive (checked against `SHA256SUMS`) rather than running `cargo install --git`.
+`meroctl_x86_64-unknown-linux-gnu.tar.gz`. `meroctl` builds, packs, signs and
+generates clients for apps too: `calimero-app-build` and the `calimero-app-abi`
+it builds on are `publish = false`, so an app's CI downloads the archive (checked
+against `SHA256SUMS`, as `scripts/install.sh` does) rather than running
+`cargo install --git`. Releases before `meroctl` did (up to 1.0.0-rc.24) also
+shipped `mero-sign` and `mero-app-build`.
 
 The image holds `merod` only; `meroctl` and the other tools ship as the archives
 above. No other image tags are pushed: there is no `edge` or per-commit image.
@@ -232,10 +233,11 @@ on the branch `chore/core-X`, as the organization's GitHub App, with
 - `cargo` surface (apps, mero-ar, mero-tag, calimero-studio): pins
   `calimero-network/core` to the tag `X` (`chore(deps): pin the Calimero SDK to X`).
   A source-level break makes that pull request red until someone writes the code.
-  Where the repository pins the client generator in `scripts/install-mero-app-build.sh`
-  (`TAG="${MERO_APP_BUILD_TAG:-X}"`, the apps repository), the pin moves to `X` too,
+  Where the repository pins the client generator in `scripts/install-meroctl.sh`
+  (`TAG="${MEROCTL_TAG:-X}"`, the apps repository; `scripts/install-mero-app-build.sh`
+  with `MERO_APP_BUILD_TAG` before it moved to meroctl), the pin moves to `X` too,
   unless it runs ahead, and every package's `codegen` reruns with `X`'s released
-  `mero-app-build` binary, so the committed clients arrive regenerated. When they
+  `meroctl` (or `mero-app-build`) binary, so the committed clients arrive regenerated. When they
   cannot be (no binary for `X`, a codegen failure), the pull request's list of pins
   left unmoved names the command to run.
 - `tee` surface (mero-tee): sets `merodVersion` in `mero-tee/versions.json`,

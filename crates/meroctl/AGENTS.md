@@ -1,7 +1,7 @@
 # meroctl
 
 The one command line for Calimero: making an app and shipping it (`app new`,
-`build`, `codegen`, `abi`, `key`, `pack`, `sign`, `inspect`, `publish`; no node,
+`build`, `codegen`, `abi`, `signer`, `pack`, `sign`, `inspect`, `publish`; no node,
 `make.rs`), a development cluster and the loop around it (`local`, `local.rs`),
 Calimero Cloud (`cloud`, `cloud.rs`), and one command tree over a node's API
 through `calimero-client` (every request attested and sealed; the node's quote
@@ -26,7 +26,7 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | `group ...` | teams: members, metadata, reparent, subgroups, settings; `group upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
 | `account ...` | the account: devices (passkeys), API keys, usage, approvals | `/auth/*` |
 | `dev start/watch` | install, create, keep pushing a build (`dev new` is a hidden alias of `app new`) | |
-| (new) `app new/build/codegen/abi show\|diff/key new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone), `calimero-app-build`'s builder and `abi_tools`, `mero-sign`'s library, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
+| (new) `app new/build/codegen/abi show\|diff/signer new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone), `calimero-app-build`'s builder and `abi_tools`, `mero-sign`'s library, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
 | (new) `local up/down/status/dev/test/compute run` | `merod local` (PATH, `MEROD`, or `--docker`) in the background, state in `--dir`/`meroctl-local.json`, saved as node `local`; `dev` builds, uploads a raw bundle as a fresh deployer, writes `app/.env.development.local`, runs `pnpm dev` on :5173 and rebuilds on save; `compute run` is `mero-compute` (feature `compute`, default on) | `/bundles` |
 | (new) `cloud login/logout/orgs/clusters list\|create/use`, `cloud compute pipeline\|logs` | the Cloud manager (mdma) with a console session in `{home}/meroctl/cloud.json` (refreshed from `X-MDMA-Session-Refresh`); `use` saves a cluster's node as the default; `cloud compute` is the old top-level `pipeline` and `run logs` (hidden aliases) | `/api/orgs`, `/api/clusters` |
 | `network status` | `/health` | |

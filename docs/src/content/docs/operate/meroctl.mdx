@@ -11,9 +11,9 @@ import { Aside } from '@astrojs/starlight/components';
 `meroctl` is the one command line for Calimero: it starts an app
 (`app new`), builds, packs, signs and publishes it (`app build`, `app pack`,
 `app publish`), runs a development cluster around it (`local`), reaches
-Calimero Cloud (`cloud`), and talks to nodes. It replaces `mero-app-build`,
-`mero-sign`, `mero-compute` and `scripts/pack-component.py`, which stay one
-release as deprecated shims. The commands that talk to a node go through the
+Calimero Cloud (`cloud`), and talks to nodes. It replaced `mero-app-build`,
+`mero-sign`, `mero-compute` and `scripts/pack-component.py` (gone after
+1.0.0-rc.24). The commands that talk to a node go through the
 node API with `calimero-client`: before anything is sent it fetches the node's
 attestation and judges the quote, then every request travels in the sealed
 channel. Each

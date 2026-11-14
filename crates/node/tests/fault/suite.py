@@ -13,9 +13,9 @@ through meroctl, and stops it.
     python3 -I crates/node/tests/fault/suite.py --list
 
 Needs release merod and meroctl (`cargo build --release -p merod -p meroctl`, or
-`--merod`/`--meroctl`), the kv component (`mero-app-build apps/v2-fixtures/kv --out
+`--merod`/`--meroctl`), the kv component (`meroctl app build apps/v2-fixtures/kv --out
 target/app-components/kv.wasm`) and, for
-`packages`, two signed releases of it (`scripts/pack-component.py --wasm
+`packages`, two signed releases of it (`meroctl app pack --wasm
 target/app-components/kv.wasm --package com.calimero.kv-store --app-version 1.0.0
 --out dist/com.calimero.kv-store-1.0.0.mpk`, and `1.1.0`). See README.md beside this file.
 """
@@ -642,10 +642,10 @@ def main(argv=None):
     need(rv2.CLI, "meroctl", "cargo build --release -p meroctl, or --meroctl PATH")
     if set(names) - {"rooms-fault"}:
         need(args.kv_wasm, "the kv component",
-             "mero-app-build apps/v2-fixtures/kv "
+             "meroctl app build apps/v2-fixtures/kv "
              "--out target/app-components/kv.wasm, or --kv-wasm")
     if "packages" in names:
-        how = ("scripts/pack-component.py --wasm <kv.wasm> --package com.calimero.kv-store "
+        how = ("meroctl app pack --wasm <kv.wasm> --package com.calimero.kv-store "
                "--app-version 1.0.0 / 1.1.0 --out dist/com.calimero.kv-store-<version>.mpk")
         need(args.kv_mpk, "kv-store 1.0.0 .mpk", how + ", or --kv-mpk")
         need(args.kv_mpk_next, "kv-store 1.1.0 .mpk", how + ", or --kv-mpk-next")
