@@ -113,11 +113,37 @@ detail.
 
    `pack` checks each against the node's own rules before signing.
 
-   <Aside type="caution">
-   Multi-service `services` (`calimero_bundle::BundleManifest`) has no flag
-   yet: a release that needs it adds it to `manifest.json` before
-   `meroctl app sign manifest.json --key <file>`.
-   </Aside>
+   A package of several services (each app instance runs one of them, named by
+   `meroctl context create --service NAME`) gives each with `--service
+   NAME=PATH`, where PATH is the service's crate directory (built) or its
+   component; the manifest then declares `services` instead of `wasm`:
+
+   ```bash
+   meroctl app pack --service directory=crates/directory --service room=crates/room \
+     --package com.example.rooms --app-version 1.0.0 --key my-signing-key.json
+   ```
+
+   Or list them in the crate's table, paths relative to it, and `meroctl app pack
+   DIR` packs them with no flags (`--service` replaces the list). A workspace
+   root with no `[package]` of its own is read from `[workspace.metadata.calimero]`,
+   its release from `[workspace.package] version`, and its services build into
+   one target directory:
+
+   ```toml
+   [workspace.metadata.calimero]
+   package = "com.example.rooms"
+   services = [
+     { name = "directory", path = "crates/directory" },
+     { name = "room", path = "crates/room" },
+   ]
+   ```
+
+   Each service is packed as `services/<name>.wasm`, with its compute component
+   (built from its crate, or `--service-compute NAME=FILE` beside a component) as
+   `services/<name>.compute.wasm` and its pipelines (`--service-pipeline
+   NAME=FILE`) under `services/<name>/pipelines/`. A name is 1 to 64 letters,
+   digits, `-` or `_`. `--wasm`, `--compute` and `--pipeline` pack one service and
+   are refused beside services.
 
    An app with compute methods also builds a compute component
    (`meroctl app build <crate> --out app.wasm --compute-out compute.wasm`). Pass it

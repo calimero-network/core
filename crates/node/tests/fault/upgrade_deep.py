@@ -84,6 +84,10 @@ NOT_COVERED = [
     ("Deployments", "Deployer grants and deployments (`/deployers`, `/deployments`, `/ops/deployers`)",
      "not seeded yet: a grant is an operator-signed or passkey-approved decision these cases do not make "
      "yet; the cluster tests (`deployers.rs`, `deployments.rs`) cover them on one build"),
+    ("Packages", "Multi-service packages (`services`) and instances of a named service (`--service`)",
+     "not seeded yet: the suite installs the release's single-service kv bundle; `meroctl app pack --service` "
+     "writes one from components now, and the node's install of a named service is covered on one build "
+     "(`component_packages.rs`)"),
     ("Packages", "Registered web origins of a package (`/package-origins`)",
      "not seeded yet: an origin is added with its manager's passkey approval and is read only by the "
      "served-frontend path above"),
