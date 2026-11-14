@@ -420,10 +420,13 @@ jobs:
         uses: ./.github/actions/setup-rust-ci
         with:
           shared-key: ci-checks
-          rust-cache: false
+          save-if: false
 
-      - name: Install meroctl
-        run: cargo install --locked --path crates/meroctl
+      # A dev build reuses the test shards' cache; `cargo install` built release (fat LTO) cold.
+      - name: Build meroctl
+        run: |
+          cargo build --locked -p meroctl
+          echo "$CARGO_TARGET_DIR/debug" >> "$GITHUB_PATH"
 
       # A digest of 300 KB must write one output of the same size, identically twice.
       - name: meroctl local compute run on the compute fixture
