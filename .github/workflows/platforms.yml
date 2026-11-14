@@ -1,9 +1,10 @@
 name: Platforms
 
-# macOS, off the pull-request critical path: developers on a Mac run the node in
-# Docker and use `meroctl` natively, so release.yml ships it for
-# aarch64-apple-darwin (MACOS_BINARIES). This builds exactly that set
-# and runs each binary:
+# macOS, off the pull-request critical path: developers on a Mac run a
+# development cluster (`merod local`) and `meroctl` natively, so release.yml
+# ships `merod` and `meroctl` for aarch64-apple-darwin
+# (MACOS_BINARIES). This builds exactly that set, runs each binary, and starts
+# a development cluster with them:
 #
 #   - nightly on master, opening (or updating) an issue on failure;
 #   - on a PR into master labelled `ci:platforms`, and on dispatch.
@@ -133,9 +134,24 @@ jobs:
         run: |
           set -euo pipefail
           bin=target/aarch64-apple-darwin/release
+          "$bin/merod" --version
           "$bin/meroctl" --version
           "$bin/meroctl" --help >/dev/null
           "$bin/meroctl" app --help >/dev/null
+
+      # The quickstart on a Mac: `meroctl local up` starts the built `merod local`
+      # from PATH, and a file passkey signs up on it.
+      - name: Start a development cluster
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/aarch64-apple-darwin/release:$PATH"
+          export CALIMERO_HOME="$RUNNER_TEMP/calimero"
+          trap 'meroctl local down || true; tail -n 50 "$CALIMERO_HOME/meroctl/local/merod.log" "$RUNNER_TEMP"/.merod-local/merod.log 2>/dev/null || true' EXIT
+          cd "$RUNNER_TEMP"
+          meroctl local up --fresh
+          meroctl --allow-mock network status
+          meroctl login --dev-passkey "$RUNNER_TEMP/dev-passkey.json" --name ci
+          meroctl whoami
 
       # meroctl's attestation check, sealed channel and sessions, on the platform.
       - name: Test the client

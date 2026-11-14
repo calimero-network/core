@@ -14,7 +14,7 @@ command line).
 | Platform | `merod` | `meroctl` |
 | --- | --- | --- |
 | Linux (x86_64, aarch64) | native | native |
-| macOS | in Docker | native |
+| macOS (Apple silicon) | native, from 1.0.0-rc.25 (or in Docker) | native |
 | Windows | not supported | not supported |
 
 Production nodes run in Intel TDX VMs, which are Linux only; on a laptop you
@@ -32,13 +32,21 @@ release, release candidates included.
 # meroctl (Linux x86_64 and aarch64, macOS aarch64)
 curl -fsSL https://raw.githubusercontent.com/calimero-network/core/master/scripts/install.sh | sh
 
-# merod and meroctl, a pinned release (merod is Linux only)
+# merod and meroctl, a pinned release
 curl -fsSL https://raw.githubusercontent.com/calimero-network/core/master/scripts/install.sh \
   | sh -s -- merod meroctl --version 1.0.0-rc.24
 ```
 
-It replaces the `calimero-network/install-sh` repository's scripts. On macOS,
-`meroctl local up --docker` runs the node in the release's image.
+It replaces the `calimero-network/install-sh` repository's scripts. Homebrew
+installs the same binaries:
+
+```bash
+brew install calimero-network/tap/meroctl calimero-network/tap/merod
+```
+
+With a release before 1.0.0-rc.25, which shipped no macOS `merod`, the installer
+skips it on a Mac with a note, and `meroctl local up`, finding no `merod`, runs
+the node in the release's Docker image.
 
 ## Build
 
@@ -137,7 +145,8 @@ docker run --rm -p 2501-2503:2501-2503 -v merod-local:/data \
 - Use `:latest` for the newest stable release, or `:<version>` to pin one;
   match `meroctl`'s release to it.
 
-`meroctl local up --docker` does the same in the background, saves the node
+`meroctl local up --docker` does the same in the background (and `meroctl local
+up` does, on a Mac with no `merod` on PATH), saves the node
 as `local` and waits until it serves (`meroctl local down` stops it).
 
 Then, from the host:

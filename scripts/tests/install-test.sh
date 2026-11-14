@@ -48,6 +48,36 @@ if [ "$(uname -s)" = Linux ]; then
   check [ "$("$TMP/bin/merod")" = "merod 1.0.0-rc.2" ]
 fi
 
+# A Mac. 1.0.0-rc.2 has meroctl for it and no merod (as before 1.0.0-rc.25);
+# 1.0.0-rc.1 has both.
+mac_release() { # VERSION TOOLS...: add macOS archives of TOOLS to VERSION
+  local version=$1; shift
+  for tool in "$@"; do
+    printf '#!/bin/sh\necho %s mac %s\n' "$tool" "$version" > "$TMP/build/$tool" && chmod +x "$TMP/build/$tool"
+    tar -czf "$TMP/releases/download/$version/${tool}_aarch64-apple-darwin.tar.gz" -C "$TMP/build" "$tool"
+  done
+  (cd "$TMP/releases/download/$version" && sha256sum -- * > SHA256SUMS)
+}
+mac_release 1.0.0-rc.2 meroctl
+mac_release 1.0.0-rc.1 merod meroctl
+mac() {
+  CALIMERO_RELEASES="file://$TMP/releases" CALIMERO_RELEASES_API="file://$TMP/api/releases" \
+    CALIMERO_INSTALL_OS=Darwin CALIMERO_INSTALL_MACHINE=arm64 sh "$SCRIPT" "$@"
+}
+
+CASE="on macOS, a release with a macOS merod installs both"
+mkdir -p "$TMP/mac-new"
+if mac --dir "$TMP/mac-new" merod meroctl --version 1.0.0-rc.1 >/dev/null 2>"$TMP/err"; then :; else fail=1; fi
+check [ "$("$TMP/mac-new/merod")" = "merod mac 1.0.0-rc.1" ]
+check [ "$("$TMP/mac-new/meroctl")" = "meroctl mac 1.0.0-rc.1" ]
+
+CASE="on macOS, a release with no macOS merod installs meroctl and skips merod with a note"
+mkdir -p "$TMP/mac-old"
+if mac --dir "$TMP/mac-old" merod meroctl --version 1.0.0-rc.2 >/dev/null 2>"$TMP/err"; then :; else fail=1; fi
+check [ "$("$TMP/mac-old/meroctl")" = "meroctl mac 1.0.0-rc.2" ]
+check [ ! -e "$TMP/mac-old/merod" ]
+check grep -q "skipping merod" "$TMP/err"
+
 CASE="an archive that does not match SHA256SUMS is refused and not installed"
 rm -f "$TMP/bin/meroctl"
 printf 'tampered' >> "$TMP/releases/download/1.0.0-rc.1/meroctl_${TARGET}.tar.gz"

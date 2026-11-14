@@ -36,11 +36,16 @@ env:
   BINARIES: |-
     merod
     meroctl
-  # macOS (aarch64): a developer's machine runs no node (Docker does), so the
-  # command line only.
+  # macOS (aarch64): a developer's machine runs a development cluster
+  # (`merod local`, `meroctl local up`) natively, so the node too; production
+  # nodes still run only in Linux TDX VMs.
   MACOS_BINARIES: |-
+    merod
     meroctl
+  # Formulas in calimero-network/homebrew-tap (generate-formula.sh), bumped by
+  # `Update Homebrew Tap` below.
   HOMEBREW_BINARIES: |-
+    merod
     meroctl
   # The image runs a node and nothing else: meroctl and the other tools ship as
   # release archives and through Homebrew.
@@ -117,7 +122,7 @@ jobs:
 
       # Every build is a release's (or a run by hand that checks one): Linux x86_64
       # and aarch64 (the release archives and the image's two platforms), and macOS
-      # for the command-line tools Homebrew installs. There is no Windows build:
+      # for a developer's machine (`merod local` and the command-line tools). There is no Windows build:
       # nodes run on Linux TDX hosts only.
       - name: Choose the build targets
         id: build_matrix
@@ -671,36 +676,49 @@ jobs:
           git config --global user.email "${STEPS_GET_USER_ID_OUTPUTS_USER_ID}+${STEPS_APP_TOKEN_OUTPUTS_APP_SLUG}[bot]@users.noreply.github.com"
 
       # generate-formula.sh only downloads public release assets, so it runs without the app token.
+      # One branch and PR per release: a PR left open (or closed) for an earlier
+      # release must not swallow this one, as one shared branch did from rc.19 on.
       - name: Update Formula
         env:
           NEEDS_PREPARE_OUTPUTS_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          # Always start from the tap's default branch: an existing bump branch is not trusted to run its script.
-          git checkout -B chore/bump-formulas-version
+          set -euo pipefail
+          branch="chore/bump-formulas-${NEEDS_PREPARE_OUTPUTS_VERSION}"
+          echo "BUMP_BRANCH=$branch" >> "$GITHUB_ENV"
+          # From the tap's default branch: an existing bump branch is not trusted to run its script.
+          git checkout -B "$branch"
 
           readarray -t binaries <<< "$HOMEBREW_BINARIES"
-
           for binary in "${binaries[@]}"; do
             echo "Updating formula for ${binary}, version: ${NEEDS_PREPARE_OUTPUTS_VERSION}"
             ./generate-formula.sh "${binary}" "${NEEDS_PREPARE_OUTPUTS_VERSION}"
           done
 
           git status
-
           if git diff-index --quiet HEAD --; then
-            echo "There are no changes to commit"
+            echo "::error::the formulas did not change for ${NEEDS_PREPARE_OUTPUTS_VERSION}"
             exit 1
           fi
-
           git add Formula/
-          git commit -m "chore: bump formulas version"
+          git commit -m "chore: bump formulas to ${NEEDS_PREPARE_OUTPUTS_VERSION}"
 
+      # The tap's `Test Brew Install` installs every formula; the PR merges itself
+      # when it passes (the tap must allow auto-merge), else it waits for a person.
       - name: Open the bump PR
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NEEDS_PREPARE_OUTPUTS_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          git -c core.hooksPath=/dev/null push --force origin chore/bump-formulas-version
-          gh pr create -f || true
+          set -euo pipefail
+          git -c core.hooksPath=/dev/null push --force origin "$BUMP_BRANCH"
+          url=$(gh pr list --head "$BUMP_BRANCH" --state open --json url --jq '.[0].url // empty')
+          if [ -z "$url" ]; then
+            url=$(gh pr create --head "$BUMP_BRANCH" --title "chore: bump formulas to ${NEEDS_PREPARE_OUTPUTS_VERSION}" \
+              --body "meroctl and merod ${NEEDS_PREPARE_OUTPUTS_VERSION}, from calimero-network/core's release. Merges when Test Brew Install passes.")
+          fi
+          echo "::notice::Homebrew bump: $url"
+          gh pr merge --auto --squash "$url" ||
+            echo "::warning::auto-merge is off in homebrew-tap (Settings, Allow auto-merge): $url waits for a person"
 
   fleet-bump:
     name: Open SDK bump PRs
