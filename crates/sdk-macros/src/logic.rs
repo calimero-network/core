@@ -91,7 +91,7 @@ fn app_attr(attr: &Attribute) -> Option<String> {
 }
 
 /// The doc comments on `attrs`, one leading space per line removed; `None` when there are none.
-/// Only string literals are read: `include_str!` and `concat!` are not expanded yet.
+/// Only string literals are read; `include_str!` and `concat!` are left out.
 fn doc_comment(attrs: &[Attribute]) -> Option<String> {
     let text: Vec<String> = attrs
         .iter()
@@ -119,19 +119,22 @@ fn doc_literal(value: &syn::Expr) -> Option<String> {
 }
 
 /// A `///` is one line; a `/** */` is one string, whose ` * ` decoration goes when every
-/// line after the first carries it (as rustdoc does).
+/// line after the first carries it, else the indentation they share (as rustdoc does).
 fn unindent(raw: &str) -> String {
     let lines: Vec<&str> = raw.split('\n').collect();
-    let starred = lines[1..]
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .all(|l| l.trim_start().starts_with('*'));
+    let rest = || lines[1..].iter().filter(|l| !l.trim().is_empty());
+    let starred = rest().all(|l| l.trim_start().starts_with('*'));
+    let indent = rest()
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
     let strip = |line: &str| line.strip_prefix(' ').unwrap_or(line).to_owned();
     let mut out = vec![strip(lines[0])];
     for line in &lines[1..] {
-        out.push(match (starred, line.trim_start().strip_prefix('*')) {
-            (true, star) => strip(star.unwrap_or("")),
-            (false, _) => strip(line),
+        out.push(if starred {
+            strip(line.trim_start().strip_prefix('*').unwrap_or(""))
+        } else {
+            line.get(indent..).unwrap_or(line.trim_start()).to_owned()
         });
     }
     out.join("\n")
@@ -846,10 +849,25 @@ mod tests {
             #[doc = " Lists the rooms.\n  - one\n  * two\n"]
             pub fn rooms(&self) {}
         };
-        assert_eq!(
-            doc_of(f).as_deref(),
-            Some("Lists the rooms.\n - one\n * two")
-        );
+        assert_eq!(doc_of(f).as_deref(), Some("Lists the rooms.\n- one\n* two"));
+    }
+
+    #[test]
+    fn doc_comment_drops_the_shared_indent_of_an_undecorated_block() {
+        let f: ImplItemFn = parse_quote! {
+            #[doc = " Lists.\n        More.\n          Deeper.\n    "]
+            pub fn rooms(&self) {}
+        };
+        assert_eq!(doc_of(f).as_deref(), Some("Lists.\nMore.\n  Deeper."));
+    }
+
+    #[test]
+    fn doc_comment_drops_stars_from_a_literal_that_looks_like_a_block_comment() {
+        let f: ImplItemFn = parse_quote! {
+            #[doc = " Lists.\n * a\n * b"]
+            pub fn rooms(&self) {}
+        };
+        assert_eq!(doc_of(f).as_deref(), Some("Lists.\na\nb"));
     }
 
     fn refused(item: ItemImpl) -> String {
