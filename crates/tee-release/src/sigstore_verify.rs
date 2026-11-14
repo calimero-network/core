@@ -84,9 +84,9 @@ pub async fn verify_signed_asset(
     bundle: &str,
     identity: &WorkflowIdentity,
 ) -> EyreResult<()> {
-    let trust_root = SigstoreTrustRoot::new(None)
-        .await
-        .map_err(|e| eyre::eyre!("Failed to initialize Sigstore trust root: {}", e))?;
+    let trust_root = SigstoreTrustRoot::new(None).await.map_err(|e| {
+        crate::fetch::ReleaseUnreachable(format!("Failed to initialize Sigstore trust root: {e}"))
+    })?;
     let rekor_pub_keys = rekor_public_keys(&trust_root)?;
     let signed_bundle = SignedArtifactBundle::new_verified(bundle, &rekor_pub_keys)
         .map_err(|e| eyre::eyre!("Invalid signed bundle: {}", e))?;

@@ -966,6 +966,46 @@ async fn the_ops_route_tells_admitted_from_refused_from_unreachable() {
     }
 }
 
+/// A job node whose real quote the peer policy trusts no image for is refused: a final
+/// verdict, not a transient one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn the_ops_route_refuses_a_job_node_the_peer_policy_does_not_trust() {
+    let c = Cluster::start_with(3, |cfg| cfg.tee_release = Some("1.0.0".into())).await;
+    let ops = ops(&c).await;
+    let job = c
+        .start_job_node(JOB, |cfg| cfg.tee_release = Some("1.0.0".into()))
+        .await;
+
+    // Relays the job node's document with its quote swapped for a real-looking one.
+    let real = job.url.clone();
+    let relay = axum::Router::new().route(
+        "/attestation",
+        get(move |RawQuery(q): RawQuery| {
+            let url = format!("{real}attestation?{}", q.unwrap_or_default());
+            async move {
+                let mut doc: Value = reqwest::get(url).await.unwrap().json().await.unwrap();
+                doc["quote"] = json!("cmVhbA==");
+                doc["mock"] = json!(false);
+                axum::Json(doc)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = format!("http://{}/", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, relay).await });
+    c.register_job_node(JOB, &addr).await;
+    let refused = verdict(&ops, JOB).await.unwrap();
+    assert_eq!(refused["state"], "refused", "{refused}");
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap()
+            .contains("trusts no TD image"),
+        "{refused}"
+    );
+    server.abort();
+}
+
 /// A job node on a release the cluster has retired is refused, naming the release.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_ops_route_refuses_a_job_node_on_a_retired_release() {

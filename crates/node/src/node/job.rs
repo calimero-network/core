@@ -15,7 +15,7 @@ use url::Url;
 
 use super::Node;
 use crate::api::PLACEMENT_RELEASE_WAIT;
-use crate::attest::{verify_job_key, AttestationDoc};
+use crate::attest::{verify_job_key, AttestationDoc, VerifierUnavailable};
 use crate::error::ApiError;
 use crate::job_node::CANCEL_WAIT;
 use crate::job_wire::{self, Assignment};
@@ -101,6 +101,16 @@ pub(crate) enum JobAttestError {
     /// The node answered and what it showed does not pass.
     #[error("{0}")]
     Refused(String),
+}
+
+/// A failed verification: unreachable when it could not reach a service it needs, else refused.
+fn verification_failure(e: eyre::Report) -> JobAttestError {
+    if e.chain().any(|c| c.is::<VerifierUnavailable>()) {
+        return JobAttestError::Unreachable(format!(
+            "verification could not reach a service it needs: {e:#}"
+        ));
+    }
+    JobAttestError::Refused(format!("{e:#}"))
 }
 
 /// What a job node with no room answers.
@@ -287,7 +297,7 @@ impl Node {
         }
         let (transport_key, job_key) = verify_job_key(&doc, &nonce, &self.config.peer_policy())
             .await
-            .map_err(|e| JobAttestError::Refused(format!("{e:#}")))?;
+            .map_err(verification_failure)?;
         // The quote binds the identity the job node takes work from: not this cluster's, no work.
         if doc.cluster_identity.as_deref() != Some(hex::encode(self.cluster_identity()).as_str()) {
             return Err(JobAttestError::Refused(format!(
@@ -550,8 +560,22 @@ impl Node {
 
 #[cfg(test)]
 mod tests {
-    use super::{release_at_least, TtlFlag};
+    use super::{release_at_least, verification_failure, JobAttestError, TtlFlag};
+    use crate::attest::VerifierUnavailable;
     use std::time::Duration;
+
+    #[test]
+    fn only_an_unavailable_verifier_makes_a_job_node_unreachable() {
+        let down = eyre::Report::new(VerifierUnavailable("pcs".into())).wrap_err("verify");
+        assert!(matches!(
+            verification_failure(down),
+            JobAttestError::Unreachable(_)
+        ));
+        assert!(matches!(
+            verification_failure(eyre::eyre!("quote refused")),
+            JobAttestError::Refused(_)
+        ));
+    }
 
     #[test]
     fn a_flag_answers_only_while_fresh() {

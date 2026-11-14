@@ -1091,6 +1091,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "sigstore",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "x509-cert 0.3.0",

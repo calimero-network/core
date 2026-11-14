@@ -15,6 +15,12 @@ const FETCH_RETRIES: usize = 3;
 /// ceiling.
 const FETCH_MAX_BACKOFF_MS: u64 = 60_000;
 
+/// The release host could not be reached (5xx, 429, network) after every
+/// retry: unlike a 404 or a bad signature, this says nothing about the release.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct ReleaseUnreachable(pub String);
+
 /// Fetch `asset` from release `tag` together with its `.sig` and
 /// `.bundle.json`, verify it was signed by `identity`, and return its body.
 ///
@@ -79,7 +85,12 @@ impl SignedBodies {
             identity,
         )
         .await
-        .map_err(|e| eyre::eyre!("{asset} from {tag} failed signature verification: {e}"))?;
+        .map_err(|e| {
+            if e.is::<ReleaseUnreachable>() {
+                return e;
+            }
+            eyre::eyre!("{asset} from {tag} failed signature verification: {e}")
+        })?;
         Ok(self.body)
     }
 }
@@ -102,6 +113,7 @@ async fn fetch_signed(
     let names = [asset, signature_name.as_str(), bundle_name.as_str()];
 
     let mut last_error = String::new();
+    let mut unreachable = false;
     'attempts: for attempt in 1..=FETCH_RETRIES {
         let mut bodies = Vec::with_capacity(names.len());
         for (index, name) in names.into_iter().enumerate() {
@@ -113,6 +125,7 @@ async fn fetch_signed(
                 }
                 AssetFetchResult::Transient(error) => {
                     last_error = error;
+                    unreachable = true;
                     if attempt < FETCH_RETRIES {
                         warn!(attempt, retries = FETCH_RETRIES, error = %last_error, "transient release asset fetch failure, retrying");
                         tokio::time::sleep(fetch_backoff(attempt)).await;
@@ -122,6 +135,7 @@ async fn fetch_signed(
                 }
                 AssetFetchResult::NotFound(error) | AssetFetchResult::Permanent(error) => {
                     last_error = error;
+                    unreachable = false;
                     break 'attempts;
                 }
             }
@@ -136,6 +150,9 @@ async fn fetch_signed(
         }));
     }
 
+    if unreachable {
+        return Err(ReleaseUnreachable(last_error).into());
+    }
     bail!("{last_error}")
 }
 
@@ -193,7 +210,7 @@ mod tests {
     use axum::http::StatusCode;
     use axum::routing::get;
 
-    use super::{fetch_backoff, fetch_signed, Signed, FETCH_MAX_BACKOFF_MS};
+    use super::{fetch_backoff, fetch_signed, ReleaseUnreachable, Signed, FETCH_MAX_BACKOFF_MS};
 
     #[test]
     fn fetch_backoff_grows_then_caps() {
@@ -285,5 +302,72 @@ mod tests {
             .err()
             .expect("a half-published asset is a broken release, not an absent one");
         assert!(err.to_string().contains("policy.json.sig"), "{err}");
+        assert!(
+            !err.chain().any(|e| e.is::<ReleaseUnreachable>()),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_release_host_that_cannot_be_reached_is_unreachable_not_refused() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        drop(listener);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        let err = fetch_signed(&client, &base, "v1", "policy.json")
+            .await
+            .err()
+            .expect("nothing listens");
+        assert!(err.chain().any(|e| e.is::<ReleaseUnreachable>()), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn a_release_host_answering_503_is_unreachable() {
+        let app = axum::Router::new().fallback(|| async { StatusCode::SERVICE_UNAVAILABLE });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        drop(tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server");
+        }));
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        let err = fetch_signed(&client, &base, "v1", "policy.json")
+            .await
+            .err()
+            .expect("503 every time");
+        assert!(err.chain().any(|e| e.is::<ReleaseUnreachable>()), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn a_client_error_on_the_asset_is_a_refusal_not_unreachable() {
+        let app = axum::Router::new().fallback(|| async { StatusCode::FORBIDDEN });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let base = format!("http://{}", listener.local_addr().expect("addr"));
+        drop(tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server");
+        }));
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        let err = fetch_signed(&client, &base, "v1", "policy.json")
+            .await
+            .err()
+            .expect("403 is final");
+        assert!(
+            !err.chain().any(|e| e.is::<ReleaseUnreachable>()),
+            "{err:#}"
+        );
     }
 }

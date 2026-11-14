@@ -35,7 +35,8 @@ async fn ops_cluster(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRe
 /// check the leader makes before it sends work (a quote that passes the release policy, this
 /// cluster and node, this cluster's identity, a release not retired). The per-app release
 /// approval is left out: it depends on the app. `state` is `admitted`, `refused` (it answered
-/// and fails) or `unreachable` (the request failed); a verified answer is kept for a minute.
+/// and fails) or `unreachable` (the request, or a service verification needs, failed); a verified
+/// answer is kept for a minute.
 async fn ops_job_node_attestation(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
