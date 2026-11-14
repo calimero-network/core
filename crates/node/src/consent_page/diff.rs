@@ -96,22 +96,14 @@ fn side(s: &Side<'_>) -> Value {
     })
 }
 
-/// A release on its own, before any app of it exists: [`side`] plus what the
-/// release declares it may call out to and the ABI its component embeds.
+/// A release on its own: [`side`] plus its author, outbound prefixes and embedded ABI.
 #[must_use]
 pub fn capability_card(s: &Side<'_>) -> Value {
     let mut card = side(s);
-    if let Some(o) = card.as_object_mut() {
-        let _prev = o.insert(
-            "author".into(),
-            json!(s.manifest.metadata.as_ref().and_then(|m| m.author.clone())),
-        );
-        let _prev = o.insert(
-            "outbound".into(),
-            json!(s.manifest.outbound.iter().collect::<BTreeSet<_>>()),
-        );
-        let _prev = o.insert("abi".into(), json!(s.abi));
-    }
+    // SAFETY: `side` builds an object, which string keys index.
+    card["author"] = json!(s.manifest.metadata.as_ref().and_then(|m| m.author.clone()));
+    card["outbound"] = json!(s.manifest.outbound.iter().collect::<BTreeSet<_>>());
+    card["abi"] = json!(s.abi);
     card
 }
 

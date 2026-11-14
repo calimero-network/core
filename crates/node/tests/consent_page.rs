@@ -41,10 +41,21 @@ fn release(
     key: &ed25519_dalek::SigningKey,
     d: &Declares<'_>,
 ) -> (Vec<u8>, String) {
+    release_of(PACKAGE, version, wasm, key, d)
+}
+
+/// [`release`] of `package`.
+fn release_of(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    d: &Declares<'_>,
+) -> (Vec<u8>, String) {
     let sha = |b: &[u8]| hex::encode(calimero_identity::sha256(b));
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
-        package: PACKAGE.to_owned(),
+        package: package.to_owned(),
         app_version: version.to_owned(),
         signer_id: Some(calimero_bundle::derive_signer_id_did_key(
             key.verifying_key().as_bytes(),
@@ -2238,6 +2249,7 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, _alice_key) = signed_up(&c, 0, "alice").await;
     let (bob, bob_key) = signed_up(&c, 0, "bob").await;
+    let (_carol, carol_key) = signed_up(&c, 0, "carol").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
     let wasm = kv_wasm();
     let (mpk, manifest_hash) = release(
@@ -2293,4 +2305,24 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
     let mut in_app_passkey = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
     let _s = in_app.sign_in(&mut in_app_passkey).await.unwrap();
     assert_eq!(get(&in_app, &path).await.unwrap(), card);
+
+    // Carol, bound to another package's frontend, sees nothing of this one.
+    let (other, _) = release_of(
+        "com.test.other",
+        "1.0.0",
+        &wasm,
+        &publisher,
+        &Declares::default(),
+    );
+    let _ = alice.packages().upload(other).await.unwrap();
+    let other_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label("com.test.other")
+    );
+    let elsewhere = c.client(1);
+    let mut elsewhere_passkey = SoftAuthenticator::with_key(&carol_key, "localhost", &other_origin);
+    let _s = elsewhere.sign_in(&mut elsewhere_passkey).await.unwrap();
+    let e = get(&elsewhere, &path).await.unwrap_err();
+    assert_eq!(status(&e), 404, "{e}");
+    assert!(e.to_string().contains("no such package version"), "{e}");
 }

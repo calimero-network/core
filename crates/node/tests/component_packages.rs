@@ -569,6 +569,69 @@ async fn a_compute_only_package_installs() {
     assert_eq!(node.bundle_wasm(&record.bundle).await.unwrap(), job);
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "the client's own error, passed through for the test to read its code"
+)]
+async fn capabilities(
+    owner: &Client,
+    package: &str,
+    query: &str,
+) -> Result<Value, calimero_client::Error> {
+    let path = format!("packages/{package}/1.0.0/capabilities{query}");
+    owner
+        .transport()
+        .json(calimero_client::Request::new(reqwest::Method::GET, path))
+        .await
+}
+
+/// A compute-only release's card carries the ABI of the component its app runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_compute_only_releases_card_reports_its_compute_abi() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let job = common::components("compute").compute.clone().unwrap();
+    install_compute_only(&owner, "1.0.0", &job).await.unwrap();
+
+    let card = capabilities(&owner, "com.test.job", "").await.unwrap();
+    assert_eq!(card["bundle"], sha256_hex(&job));
+    assert_eq!(card["abi"], abi(&job));
+}
+
+/// A release's one service is the card's, named or not; `service` picks one
+/// by name and an unknown name is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_cards_service_is_the_sole_one_or_the_one_named() {
+    let (_c, owner, _pk) = compute_cluster().await;
+    let both = common::components("compute");
+    let job = both.compute.clone().unwrap();
+    let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
+    let _ = owner
+        .packages()
+        .upload(mpk_named_service(
+            "com.test.named",
+            "1.0.0",
+            &both.app,
+            &job,
+            &[],
+            &key,
+        ))
+        .await
+        .unwrap();
+
+    let sole = capabilities(&owner, "com.test.named", "").await.unwrap();
+    assert_eq!(sole["service"], "svc");
+    assert_eq!(sole["bundle"], sha256_hex(&both.app));
+    let named = capabilities(&owner, "com.test.named", "?service=svc")
+        .await
+        .unwrap();
+    assert_eq!(named, sole);
+    let e = capabilities(&owner, "com.test.named", "?service=nope")
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NO_SUCH_SERVICE"), "{e}");
+    assert!(e.to_string().contains("has no service nope"), "{e}");
+}
+
 /// An older node would drop `components` and apply a compute-only release as an app's,
 /// so such a release is installed only once every node runs this release.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

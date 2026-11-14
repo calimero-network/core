@@ -648,7 +648,11 @@ async fn release_facts(
         abi: wasm
             .iter()
             .map(|s| {
-                let abi = s.wasm.as_deref().and_then(crate::component::embedded_abi);
+                let abi = s
+                    .wasm
+                    .as_deref()
+                    .or(s.compute.as_deref())
+                    .and_then(crate::component::embedded_abi);
                 (s.name.clone(), abi)
             })
             .collect(),
@@ -672,15 +676,15 @@ pub(crate) async fn declared_min_runtime(
         .clone())
 }
 
-/// The capability card of release `v` of `package`, before any app of it
-/// exists. A release's one service is the one an app of it runs; a release
-/// with several has no single card and the caller must name one.
+/// The capability card of release `v` of `package` for `service` (its sole
+/// one when `None`), before any app of it exists.
 pub(crate) async fn release_capabilities(
     node: &Node,
     package: &str,
     v: &PackageVersion,
+    service: Option<&str>,
 ) -> Result<Value, ApiError> {
-    let (service, bundle) = sole_service(package, v)?;
+    let (service, bundle) = pick_service(package, v, service)?;
     let facts = release_facts(node, package, v).await?;
     Ok(diff::capability_card(&diff::Side {
         package,
@@ -695,20 +699,29 @@ pub(crate) async fn release_capabilities(
     }))
 }
 
-/// The one service (name, bundle hash) an app of `v` runs.
-fn sole_service<'a>(package: &str, v: &'a PackageVersion) -> Result<(&'a str, &'a str), ApiError> {
-    let mut parts = v.app_parts().iter();
-    match (parts.next(), parts.next()) {
-        (Some((name, bundle)), None) => Ok((name, bundle)),
-        _ => Err(ApiError::bad_request(
-            "NO_SUCH_SERVICE",
-            &format!(
-                "{package}@{} has {} services; an app of it names one",
-                v.version,
-                v.app_parts().len()
-            ),
-        )),
-    }
+/// The (name, bundle hash) of the service `service` names, or of the only one.
+fn pick_service<'a>(
+    package: &str,
+    v: &'a PackageVersion,
+    service: Option<&str>,
+) -> Result<(&'a str, &'a str), ApiError> {
+    let parts = v.app_parts();
+    let mut all = parts.iter();
+    let found = match (service, all.next(), all.next()) {
+        (Some(name), _, _) => parts.get_key_value(name),
+        (None, Some(only), None) => Some(only),
+        _ => None,
+    };
+    found
+        .map(|(name, bundle)| (name.as_str(), bundle.as_str()))
+        .ok_or_else(|| {
+            crate::packages::no_such_service(
+                package,
+                &v.version,
+                service.unwrap_or_default(),
+                parts,
+            )
+        })
 }
 
 /// The signed-manifest hash of the release an upgrade targets: `release`
@@ -2724,16 +2737,23 @@ mod tests {
     }
 
     #[test]
-    fn a_release_has_a_card_only_when_it_has_one_service() {
+    fn a_card_is_of_the_service_named_or_the_only_one() {
         let one = release_with(json!({ "svc": "b1" }));
-        assert_eq!(sole_service("p", &one).unwrap(), ("svc", "b1"));
+        assert_eq!(pick_service("p", &one, None).unwrap(), ("svc", "b1"));
+        assert_eq!(pick_service("p", &one, Some("svc")).unwrap(), ("svc", "b1"));
         let unnamed = release_with(json!({ "": "b1" }));
-        assert_eq!(sole_service("p", &unnamed).unwrap(), ("", "b1"));
+        assert_eq!(pick_service("p", &unnamed, None).unwrap(), ("", "b1"));
         let two = release_with(json!({ "a": "b1", "b": "b2" }));
-        let e = sole_service("p", &two).unwrap_err();
+        assert_eq!(pick_service("p", &two, Some("b")).unwrap(), ("b", "b2"));
+        let e = pick_service("p", &two, None).unwrap_err();
         assert_eq!((e.status, e.code.as_str()), (400, "NO_SUCH_SERVICE"));
-        let none = release_with(json!({}));
-        assert_eq!(sole_service("p", &none).unwrap_err().status, 400);
+        assert!(
+            e.message.contains("name one of [\"a\", \"b\"]"),
+            "{}",
+            e.message
+        );
+        let e = pick_service("p", &two, Some("c")).unwrap_err();
+        assert!(e.message.contains("has no service c"), "{}", e.message);
     }
 
     #[test]

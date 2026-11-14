@@ -3053,8 +3053,9 @@ impl Packages<'_> {
         self,
         package: &str,
         version: &str,
+        service: Option<&str>,
     ) -> Result<PackageCapabilitiesResponse> {
-        let req = Request::new(
+        let mut req = Request::new(
             Method::GET,
             format!(
                 "packages/{}/{}/capabilities",
@@ -3062,6 +3063,9 @@ impl Packages<'_> {
                 route::segment(version)
             ),
         );
+        if let Some(v) = service {
+            req = req.query("service", v);
+        }
         route::json(self.client.transport(), req, None, None, false).await
     }
 

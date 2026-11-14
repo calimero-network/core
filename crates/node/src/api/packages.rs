@@ -192,11 +192,19 @@ async fn package_pipelines(
     Ok(Json(node.release_pipelines(&refs).await?))
 }
 
-/// A release's capability card: what it is and may do, before any app of it exists.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CapabilitiesQuery {
+    #[serde(default)]
+    service: Option<String>,
+}
+
+/// A release's capability card, before any app of it exists.
 async fn package_capabilities(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((package, version)): Path<(String, String)>,
+    Query(q): Query<CapabilitiesQuery>,
 ) -> ApiResult {
     let principal = signed_in(&node, &headers).await?;
     let account = principal.account()?;
@@ -209,7 +217,8 @@ async fn package_capabilities(
         })
         .ok_or_else(|| ApiError::not_found("no such package version"))?;
     Ok(Json(
-        crate::consent_page::release_capabilities(&node, &package, &release).await?,
+        crate::consent_page::release_capabilities(&node, &package, &release, q.service.as_deref())
+            .await?,
     ))
 }
 
