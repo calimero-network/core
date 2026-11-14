@@ -6,16 +6,21 @@
 //!
 //! ```text
 //! handshake   Noise_NK_25519_AESGCM_SHA256, prologue "calimero/sealed-http/v2"
-//!   request   POST /sealed/v2/handshake   0x02 || transport_pk || Noise message 1
+//!   request   POST /sealed/handshake   0x02 || transport_pk || Noise message 1
 //!   response  0x02 || Noise message 2 (payload = session_id(16) || lifetime secs, u32 BE)
 //! identified  0x03 instead of 0x02, Noise_IK_25519_AESGCM_SHA256: a node calling a
 //!             peer proves its own transport key (peers only; clients stay on NK)
-//! exchange    POST /sealed/v2
+//! exchange    POST /sealed
 //!   header    0x02 || session_id(16) || request_id (u64 BE; from 1, each used once)
 //!   request   header || AES-256-GCM(req key, nonce = request_id || 0u32, aad = header, inner)
 //!   response  frames: u32 BE length || AES-256-GCM(resp key, nonce = request_id || index, aad = header, kind || data)
 //!   inner     u32 BE head length || head (JSON) || body
 //! ```
+//!
+//! The node still serves both endpoints at their earlier, deprecated paths
+//! (`/sealed/v2/handshake`, `/sealed/v2`), and the client falls back to them
+//! against a node that predates the new ones; the `v2` there never named the
+//! wire format, which the version byte does.
 
 pub mod client;
 pub mod file;
@@ -27,5 +32,5 @@ pub mod wrap;
 pub use identity::{PeerKey, StaticKey, IDENTIFIED_VERSION};
 pub use server::{
     derive_shared, expire_sessions, intercept, LowOrder, SealedOptions, SealedTransport,
-    HANDSHAKE_PATH, SEALED_PATH,
+    HANDSHAKE_PATH, LEGACY_HANDSHAKE_PATH, LEGACY_SEALED_PATH, SEALED_PATH,
 };

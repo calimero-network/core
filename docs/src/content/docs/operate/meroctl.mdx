@@ -123,7 +123,7 @@ one needs no node:
 | `app pack [DIR] [--wasm F] [--compute F] [--pipeline F]... [--frontend DIR] [--frontend-entry E] [--no-frontend] [--outbound URL]... [--upgrades owner\|publisher] [--package P] [--name N] [--description D] [--icon PNG] [--category C] [--app-version V] [--min-runtime-version V] [--key FILE] [--previous OLD] [--out FILE]` | Write the manifest the node reads, sign it, and write it with every file it names as an `.mpk`. With the crate `DIR`, its `[package.metadata.calimero]` and `version` fill what the flags leave out: `package`, `min-runtime-version`, `frontend-dir`, the display metadata a registry lists a new package by (`name`, `description`, `icon` (a PNG), `category`, `tags`, `author`, `license`, `guide`), `slug`, the links (`frontend`, `github`, `docs`, `frontend-aliases`), `outbound` and `upgrades`; `--name`, `--description`, `--icon` and `--category` set them without a crate, the components are built unless `--wasm`/`--compute` name them, and the default output is `DIR/dist/<package>-<version>.mpk`. A frontend is checked with the node's rules (paths, types, `MAX_FRONTEND_BYTES`, the entry) and the HTML rules its CSP enforces. Without `--key` the development key signs, which a public registry refuses. `--previous` reports ABI changes against the last release first. |
 | `app sign MANIFEST (--key FILE \| --dev) [--previous OLD]` | Sign a `manifest.json` in place. |
 | `app inspect FILE.mpk` | Open the bundle as a node does (signature, every artifact's hash) and print `verified`, `signerId`, `bundleHash` and the manifest. |
-| `app publish FILE.mpk [--registry URL] [--api-key KEY] [--org ORG] [--cloud URL] [--public]` | Publish to the app registry (`CALIMERO_REGISTRY_URL`, default `https://apps.calimero.network`; `POST /api/v2/bundles/push` with the signed manifest and the bundle, the key `CALIMERO_REGISTRY_API_KEY` as a bearer token, over `https` only). With `--org`, the key is a Calimero Cloud organization's (`ck_live_…`, scope `registry:publish`), traded at the Cloud (`CALIMERO_CLOUD_URL`) for a short publish token first. A new package is private unless `--public`. The registry's refusal comes back with its code (`version_not_allowed`, `invalid_signature`, ...). |
+| `app publish FILE.mpk [--registry URL] [--api-key KEY] [--org ORG] [--cloud URL] [--public]` | Publish to the app registry (`CALIMERO_REGISTRY_URL`, default `https://apps.calimero.network`; `POST /api/bundles/push` with the signed manifest and the bundle, the key `CALIMERO_REGISTRY_API_KEY` as a bearer token, over `https` only). With `--org`, the key is a Calimero Cloud organization's (`ck_live_…`, scope `registry:publish`), traded at the Cloud (`CALIMERO_CLOUD_URL`) for a short publish token first. A new package is private unless `--public`. The registry's refusal comes back with its code (`version_not_allowed`, `invalid_signature`, ...). |
 
 An application is installed once on the cluster and verified on every node
 that runs it. `meroctl package` is the same command (`meroctl package origins
@@ -161,16 +161,18 @@ Calimero Cloud's manager API (mdma). Its organizations and clusters take a
 console session (Google sign-in): `cloud login` checks and keeps the session
 token a signed-in console sends, in `{home}/meroctl/cloud.json` (mode `0600`),
 and saves the fresh one the manager sends back on each answer
-(`X-MDMA-Session-Refresh`). No node.
+(`X-MDMA-Session-Refresh`). No node. A manager (or, for `app publish`, a
+registry) that answers `404` at `/api/...` predates its unversioned routes, and
+the request is sent once more at `/api/v2/...`.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
-| `cloud login --token TOKEN [--url URL]` | `GET /api/v2/orgs` | Check and keep the session. `CALIMERO_CLOUD_TOKEN` and `CALIMERO_CLOUD_URL` (default `https://cloud.calimero.network`) work too. |
+| `cloud login --token TOKEN [--url URL]` | `GET /api/orgs` | Check and keep the session. `CALIMERO_CLOUD_TOKEN` and `CALIMERO_CLOUD_URL` (default `https://cloud.calimero.network`) work too. |
 | `cloud logout` | | Forget the saved session. |
-| `cloud orgs` | `GET /api/v2/orgs` | Your organizations, the personal one first. |
-| `cloud clusters list` (`ls`) | `GET /api/v2/clusters` | Your dedicated clusters, each with its nodes' `public_url`. |
-| `cloud clusters create NAME --size SIZE [--org ORG] [--region R]` | `POST /api/v2/clusters` | A new dedicated cluster: an organization admin, within quota, with a payment method (`402` otherwise). |
-| `cloud use CLUSTER [--as NAME]` | `GET /api/v2/clusters` | Save the cluster's node as a meroctl node (default: named after the cluster) and make it the default, attested as a real node (no `--allow-mock`). |
+| `cloud orgs` | `GET /api/orgs` | Your organizations, the personal one first. |
+| `cloud clusters list` (`ls`) | `GET /api/clusters` | Your dedicated clusters, each with its nodes' `public_url`. |
+| `cloud clusters create NAME --size SIZE [--org ORG] [--region R]` | `POST /api/clusters` | A new dedicated cluster: an organization admin, within quota, with a payment method (`402` otherwise). |
+| `cloud use CLUSTER [--as NAME]` | `GET /api/clusters` | Save the cluster's node as a meroctl node (default: named after the cluster) and make it the default, attested as a real node (no `--allow-mock`). |
 
 ## cloud compute pipeline
 

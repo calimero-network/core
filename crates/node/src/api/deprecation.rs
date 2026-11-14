@@ -64,6 +64,22 @@ mod tests {
     const AT: i64 = 1_794_441_600;
     const LIST: &[Deprecated] = &[("POST", "/old/{id}", AT)];
 
+    /// The sealed envelope marks its legacy paths itself, outside the router: with
+    /// the day this file's entries name.
+    #[test]
+    fn the_sealed_legacy_paths_are_deprecated_on_the_day_the_envelope_says() {
+        use calimero_sealed::server::{
+            LEGACY_HANDSHAKE_PATH, LEGACY_PATHS_DEPRECATED_AT, LEGACY_SEALED_PATH,
+        };
+        for path in [LEGACY_HANDSHAKE_PATH, LEGACY_SEALED_PATH] {
+            assert_eq!(
+                deprecated_at(DEPRECATED, "POST", path),
+                Some(LEGACY_PATHS_DEPRECATED_AT),
+                "{path}"
+            );
+        }
+    }
+
     #[test]
     fn a_route_is_deprecated_by_its_method_and_template() {
         assert_eq!(deprecated_at(LIST, "POST", "/old/{id}"), Some(AT));

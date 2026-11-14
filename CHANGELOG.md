@@ -2,8 +2,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`meroctl app pack` records the SDK in `buildInfo`**: from the crate's
+  `calimero-sdk` git dependency (`sdkSource`, `sdkVersion` = its tag), as the
+  apps repository's `mero-component bundle` wrote it, so `meroctl app pack`
+  writes the same signed manifest (byte for byte, for all 27 apps) and that
+  tool can go. A crate that inherits the SDK from its workspace records none.
+
 ### Changed
 
+- **The sealed channel drops `v2` from its paths** (`calimero-sealed`). A
+  session opens at `POST /sealed/handshake` and its requests go to
+  `POST /sealed`; the body, the version byte and the Noise prologue are
+  unchanged. The client (`meroctl`, `calimero-client`, a node calling its
+  peers) falls back once to the old paths against a node of 1.0.0-rc.24 or
+  earlier (`404`, `405` or `403 sealed_required` on the new handshake path).
+- **`meroctl` calls the app registry and Calimero Cloud without `/v2`**:
+  `app publish` pushes to `{registry}/api/bundles/push`, and the Cloud
+  manager's routes (`cloud login`, `orgs`, `clusters`, the registry token,
+  ...) are called at `/api/...`. Each falls back once to its `/api/v2/...`
+  path when the service answers `404` (an older registry or manager).
 - **`merod` for macOS (Apple silicon), and the quickstart works there as on
   Linux** (`release`, `install.sh`, `meroctl`): releases publish
   `merod_aarch64-apple-darwin.tar.gz`, so on a Mac `install.sh merod meroctl`
@@ -37,13 +56,12 @@
   repository no longer has, makes one commit of what the template gave, and
   says to run `meroctl local dev` next.
 
-### Added
+### Deprecated
 
-- **`meroctl app pack` records the SDK in `buildInfo`**: from the crate's
-  `calimero-sdk` git dependency (`sdkSource`, `sdkVersion` = its tag), as the
-  apps repository's `mero-component bundle` wrote it, so `meroctl app pack`
-  writes the same signed manifest (byte for byte, for all 27 apps) and that
-  tool can go. A crate that inherits the SDK from its workspace records none.
+- **`POST /sealed/v2/handshake` and `POST /sealed/v2`**: still served, the
+  same, with a `Deprecation` header; removable from 1.0.0-rc.28
+  (`crates/node/api-deprecations.toml`). Clients use `/sealed/handshake` and
+  `/sealed`.
 
 ### Removed
 

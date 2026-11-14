@@ -75,10 +75,22 @@ async fn clusters(State(seen): State<Tokens>, headers: HeaderMap) -> Json<Value>
 
 #[tokio::test(flavor = "multi_thread")]
 async fn cloud_signs_in_lists_and_uses_a_cluster() {
+    signs_in_lists_and_uses_a_cluster("/api").await;
+}
+
+/// A manager from before its unversioned routes serves only `/api/v2/...`:
+/// each request falls back to it on the `404`.
+#[tokio::test(flavor = "multi_thread")]
+async fn cloud_falls_back_to_an_older_managers_v2_routes() {
+    signs_in_lists_and_uses_a_cluster("/api/v2").await;
+}
+
+/// The manager serving its routes under `prefix`.
+async fn signs_in_lists_and_uses_a_cluster(prefix: &str) {
     let seen: Tokens = Arc::default();
     let app = axum::Router::new()
-        .route("/api/v2/orgs", get(orgs))
-        .route("/api/v2/clusters", get(clusters))
+        .route(&format!("{prefix}/orgs"), get(orgs))
+        .route(&format!("{prefix}/clusters"), get(clusters))
         .with_state(Arc::clone(&seen));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());

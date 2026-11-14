@@ -1,11 +1,13 @@
 //! The client and server halves against each other over real TCP.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
-use axum::http::{HeaderMap, Method, Uri};
+use axum::extract::Request;
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
+use axum::middleware::Next;
 use axum::response::sse::{Event, Sse};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::Extension;
 use axum::Router;
@@ -61,6 +63,48 @@ impl calimero_sealed::client::Attest for Known {
 }
 
 async fn serve(options: SealedOptions) -> (Url, Arc<SealedTransport>, tokio::task::JoinHandle<()>) {
+    let (url, transport, _seen, handle) = serve_recorded(options, None).await;
+    (url, transport, handle)
+}
+
+/// Every envelope request that reached the node: its path, the status it was
+/// answered, and whether the answer carried `Deprecation`.
+type Seen = Arc<Mutex<Vec<(String, u16, bool)>>>;
+
+/// How a node of 1.0.0-rc.24 or earlier, which serves the envelope only at
+/// `/sealed/v2/handshake` and `/sealed/v2`, answers the current paths.
+#[derive(Debug, Clone, Copy)]
+enum Predates {
+    /// Its router has no such route.
+    NotFound,
+    /// Something in front of it routes only other methods there.
+    MethodNotAllowed,
+    /// It seals everything, so it refuses the path as an unsealed request.
+    SealedRequired,
+}
+
+impl Predates {
+    fn answer(self) -> Response {
+        match self {
+            Self::NotFound => StatusCode::NOT_FOUND.into_response(),
+            Self::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED.into_response(),
+            Self::SealedRequired => (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({
+                    "error": { "code": "sealed_required", "message": "sealed only" },
+                })),
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// [`serve`], recording what reaches the envelope's paths, and answering the
+/// current paths as a node from before them would when `predates` says so.
+async fn serve_recorded(
+    options: SealedOptions,
+    predates: Option<Predates>,
+) -> (Url, Arc<SealedTransport>, Seen, tokio::task::JoinHandle<()>) {
     let transport = Arc::new(SealedTransport::generate(&options));
     let app = Router::new()
         .route("/events", get(events))
@@ -69,6 +113,32 @@ async fn serve(options: SealedOptions) -> (Url, Arc<SealedTransport>, tokio::tas
     // The envelope wraps the router from outside, so an opened request is routed afresh.
     let app = tower::Layer::layer(
         &axum::middleware::from_fn_with_state(Arc::clone(&transport), intercept),
+        app,
+    );
+    let seen = Seen::default();
+    let record = Arc::clone(&seen);
+    let app = tower::Layer::layer(
+        &axum::middleware::from_fn(move |request: Request, next: Next| {
+            let record = Arc::clone(&record);
+            async move {
+                let path = request.uri().path().to_owned();
+                if !path.starts_with("/sealed") {
+                    return next.run(request).await;
+                }
+                let response = match predates {
+                    Some(predates) if path == "/sealed/handshake" || path == "/sealed" => {
+                        predates.answer()
+                    }
+                    _ => next.run(request).await,
+                };
+                let deprecated = response.headers().contains_key("deprecation");
+                record
+                    .lock()
+                    .unwrap()
+                    .push((path, response.status().as_u16(), deprecated));
+                response
+            }
+        }),
         app,
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -84,8 +154,115 @@ async fn serve(options: SealedOptions) -> (Url, Arc<SealedTransport>, tokio::tas
     (
         format!("http://{addr}/").parse().unwrap(),
         transport,
+        seen,
         handle,
     )
+}
+
+/// Two requests through `client`, each answered by the node as sent.
+async fn two_requests(client: &Client, http: &reqwest::Client, url: &Url) {
+    for i in 0..2 {
+        let req = http
+            .post(url.join("apps/x/intents").unwrap())
+            .body(format!("hello {i}"))
+            .build()
+            .unwrap();
+        let resp = client.execute(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let v: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(
+            (&v["path"], &v["body"]),
+            (&"/apps/x/intents".into(), &format!("hello {i}").into())
+        );
+    }
+}
+
+fn seen(path: &str, status: u16, deprecated: bool) -> (String, u16, bool) {
+    (path.to_owned(), status, deprecated)
+}
+
+#[tokio::test]
+async fn a_session_opens_at_the_current_paths() {
+    let (url, transport, record, _h) = serve_recorded(SealedOptions::default(), None).await;
+    let http = reqwest::Client::new();
+    let client = Client::with_key(url.clone(), http.clone(), transport.public_key());
+    two_requests(&client, &http, &url).await;
+    assert_eq!(
+        *record.lock().unwrap(),
+        [
+            seen("/sealed/handshake", 200, false),
+            seen("/sealed", 200, false),
+            seen("/sealed", 200, false),
+        ]
+    );
+}
+
+/// A client of this release reaches a node that predates `/sealed/handshake`:
+/// it opens its session once more at `/sealed/v2/handshake` and sends that
+/// session's requests to `/sealed/v2`, which this node still serves, marked
+/// deprecated.
+#[tokio::test]
+async fn a_client_falls_back_to_the_legacy_paths_of_an_older_node() {
+    for predates in [
+        Predates::NotFound,
+        Predates::MethodNotAllowed,
+        Predates::SealedRequired,
+    ] {
+        let (url, transport, record, _h) =
+            serve_recorded(SealedOptions::default(), Some(predates)).await;
+        let http = reqwest::Client::new();
+        let client = Client::with_key(url.clone(), http.clone(), transport.public_key());
+        two_requests(&client, &http, &url).await;
+        let refused = predates.answer().status().as_u16();
+        assert_eq!(
+            *record.lock().unwrap(),
+            [
+                seen("/sealed/handshake", refused, false),
+                seen("/sealed/v2/handshake", 200, true),
+                seen("/sealed/v2", 200, true),
+                seen("/sealed/v2", 200, true),
+            ],
+            "{predates:?}"
+        );
+    }
+}
+
+/// The legacy paths' answers carry RFC 9745's header with the day they were
+/// deprecated, and the policy's `Link`.
+#[tokio::test]
+async fn the_legacy_paths_answer_deprecated() {
+    let (url, _transport, _h) = serve(SealedOptions::default()).await;
+    let http = reqwest::Client::new();
+    for (path, deprecated) in [
+        ("sealed/v2/handshake", true),
+        ("sealed/v2", true),
+        ("sealed/handshake", false),
+        ("sealed", false),
+    ] {
+        // Malformed bodies: refused, but by the envelope that path names.
+        let r = http
+            .post(url.join(path).unwrap())
+            .body(vec![2u8])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 400, "{path}");
+        let header = r.headers().get("deprecation").map(|v| v.to_str().unwrap());
+        assert_eq!(
+            header,
+            deprecated
+                .then(|| format!("@{}", calimero_sealed::server::LEGACY_PATHS_DEPRECATED_AT))
+                .as_deref(),
+            "{path}"
+        );
+        assert_eq!(
+            r.headers()
+                .get("link")
+                .is_some_and(|v| v.to_str().unwrap().contains("rel=\"deprecation\"")),
+            deprecated,
+            "{path}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -230,7 +407,7 @@ async fn post_whole_then_read(url: &Url, len: usize, chunked: bool) -> std::io::
         format!("content-length: {len}")
     };
     let head = format!(
-        "POST /sealed/v2 HTTP/1.1\r\nhost: node\r\n\
+        "POST /sealed HTTP/1.1\r\nhost: node\r\n\
          content-type: application/vnd.calimero.sealed\r\n{framing}\r\n\r\n"
     );
     stream.write_all(head.as_bytes()).await?;
@@ -338,7 +515,7 @@ async fn an_identified_handshake_with_another_nodes_key_is_refused() {
     message_1[32..64].copy_from_slice(&other.public_key());
     let body = [&[3u8][..], &transport.public_key(), &message_1].concat();
     let r = http
-        .post(url.join("sealed/v2/handshake").unwrap())
+        .post(url.join("sealed/handshake").unwrap())
         .body(body)
         .send()
         .await
@@ -353,7 +530,7 @@ async fn an_identified_handshake_with_another_nodes_key_is_refused() {
 async fn a_flood_of_anonymous_handshakes_leaves_peers_their_own() {
     let (url, transport, _h) = serve(SealedOptions::default()).await;
     let http = reqwest::Client::new();
-    let handshake = url.join("sealed/v2/handshake").unwrap();
+    let handshake = url.join("sealed/handshake").unwrap();
     // Well-formed NK requests whose ephemeral key is zero: charged, then refused.
     let flood = [&[2u8][..], &transport.public_key(), &[0u8; 48]].concat();
     let (refused_tx, mut refused) = tokio::sync::watch::channel(false);

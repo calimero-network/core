@@ -17,6 +17,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::commons::send_api;
 use crate::env::{write_private, Home, SavedNode};
 
 pub const DEFAULT_CLOUD: &str = "https://cloud.calimero.network";
@@ -120,7 +121,8 @@ fn save(home: &Home, saved: &Saved) -> eyre::Result<()> {
     write_private(&file(home), &serde_json::to_string_pretty(saved)?)
 }
 
-/// One manager request with the saved session; a refreshed token is saved.
+/// One manager request (`path` under `/api/`) with the saved session; a
+/// refreshed token is saved.
 async fn call(home: &Home, method: Method, path: &str, body: Option<Value>) -> eyre::Result<Value> {
     let mut saved = load(home)?;
     let (answer, refreshed) = request(&saved.url, &saved.token, method, path, body).await?;
@@ -142,16 +144,16 @@ async fn request(
     if !base.starts_with("https://") && !crate::make::is_loopback(base) {
         bail!("the Cloud URL must be https:// (a session is never sent in the clear)");
     }
-    let mut req = reqwest::Client::new()
-        .request(method, format!("{base}{path}"))
-        .bearer_auth(token);
-    if let Some(body) = body {
-        req = req.json(&body);
-    }
-    let res = req
-        .send()
-        .await
-        .wrap_err_with(|| format!("reaching {base}"))?;
+    let http = reqwest::Client::new();
+    let res = send_api(base, path, |url| {
+        let req = http.request(method.clone(), url).bearer_auth(token);
+        match &body {
+            Some(body) => req.json(body),
+            None => req,
+        }
+    })
+    .await
+    .wrap_err_with(|| format!("reaching {base}"))?;
     let status = res.status();
     let refreshed = res
         .headers()
@@ -178,8 +180,7 @@ async fn request(
 pub async fn run(cmd: CloudCmd, home: &Home) -> eyre::Result<Value> {
     match cmd {
         CloudCmd::Login { token, url } => {
-            let (orgs, refreshed) =
-                request(&url, &token, Method::GET, "/api/v2/orgs", None).await?;
+            let (orgs, refreshed) = request(&url, &token, Method::GET, "orgs", None).await?;
             save(
                 home,
                 &Saved {
@@ -193,10 +194,8 @@ pub async fn run(cmd: CloudCmd, home: &Home) -> eyre::Result<Value> {
             let _ = std::fs::remove_file(file(home));
             Ok(Value::Null)
         }
-        CloudCmd::Orgs => call(home, Method::GET, "/api/v2/orgs", None).await,
-        CloudCmd::Clusters(ClustersCmd::List) => {
-            call(home, Method::GET, "/api/v2/clusters", None).await
-        }
+        CloudCmd::Orgs => call(home, Method::GET, "orgs", None).await,
+        CloudCmd::Clusters(ClustersCmd::List) => call(home, Method::GET, "clusters", None).await,
         CloudCmd::Clusters(ClustersCmd::Create {
             name,
             org,
@@ -210,10 +209,10 @@ pub async fn run(cmd: CloudCmd, home: &Home) -> eyre::Result<Value> {
             if let Some(region) = region {
                 body["region"] = json!(region);
             }
-            call(home, Method::POST, "/api/v2/clusters", Some(body)).await
+            call(home, Method::POST, "clusters", Some(body)).await
         }
         CloudCmd::Use { cluster, name } => {
-            let all = call(home, Method::GET, "/api/v2/clusters", None).await?;
+            let all = call(home, Method::GET, "clusters", None).await?;
             let list = all
                 .as_array()
                 .or_else(|| all["clusters"].as_array())

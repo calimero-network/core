@@ -14,10 +14,10 @@
 //!
 //! ```text
 //! handshake   Noise_NK_25519_AESGCM_SHA256, prologue "calimero/sealed-http/v2"
-//!   request   POST /sealed/v2/handshake   0x02 || transport_pk || Noise message 1
+//!   request   POST /sealed/handshake   0x02 || transport_pk || Noise message 1
 //!   response  0x02 || Noise message 2 (payload = session_id(16) || lifetime secs, u32 BE)
 //!   keys      (req key, resp key) = Split()
-//! exchange    POST /sealed/v2
+//! exchange    POST /sealed
 //!   header    0x02 || session_id(16) || request_id (u64 BE; from 1, each used once)
 //!   request   header || AES-256-GCM(req key, nonce = request_id || 0u32, aad = header, inner)
 //!   response  frames, each u32 BE length || AES-256-GCM(resp key,
@@ -25,6 +25,13 @@
 //!             kind 0 = head (JSON), 1 = body bytes, 2 = end; no end frame = cut short
 //!   inner     u32 BE head length || head (JSON) || body
 //! ```
+//!
+//! A node on 1.0.0-rc.24 or earlier serves the two at `/sealed/v2/handshake` and
+//! `/sealed/v2` only. When the handshake path is not served (`404`, `405`, or a
+//! node that seals everything refusing it `403 sealed_required`), the client
+//! opens the session once more at the legacy path and posts that session's
+//! requests to the legacy exchange path, so a client or a peer on this release
+//! still reaches older nodes through a rollout.
 //!
 //! WebSockets cannot be sealed: an upgrade cannot cross a POST.
 
@@ -79,9 +86,15 @@ pub async fn read_body_capped(response: reqwest::Response, cap: usize) -> Result
 }
 
 /// Where a session is opened, under the node's base URL.
-pub const HANDSHAKE_PATH: &str = "sealed/v2/handshake";
+pub const HANDSHAKE_PATH: &str = "sealed/handshake";
 /// Where sealed requests are posted, under the node's base URL.
-pub const SEALED_PATH: &str = "sealed/v2";
+pub const SEALED_PATH: &str = "sealed";
+/// [`HANDSHAKE_PATH`] on a node of 1.0.0-rc.24 or earlier, tried when the node
+/// does not serve the new one.
+pub const LEGACY_HANDSHAKE_PATH: &str = "sealed/v2/handshake";
+/// [`SEALED_PATH`] on a node of 1.0.0-rc.24 or earlier, for a session opened at
+/// [`LEGACY_HANDSHAKE_PATH`].
+pub const LEGACY_SEALED_PATH: &str = "sealed/v2";
 /// Content type of every sealed body.
 pub const SEALED_CONTENT_TYPE: &str = "application/vnd.calimero.sealed";
 
@@ -159,6 +172,35 @@ enum KeySource {
 struct State {
     transport_key: Option<[u8; 32]>,
     session: Option<Arc<Session>>,
+    /// The paths the node serves the envelope at, learnt from its handshake.
+    paths: Paths,
+}
+
+/// Which paths a node serves the envelope at.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Paths {
+    /// [`HANDSHAKE_PATH`] and [`SEALED_PATH`].
+    #[default]
+    Current,
+    /// [`LEGACY_HANDSHAKE_PATH`] and [`LEGACY_SEALED_PATH`]: a node of
+    /// 1.0.0-rc.24 or earlier.
+    Legacy,
+}
+
+impl Paths {
+    const fn handshake(self) -> &'static str {
+        match self {
+            Self::Current => HANDSHAKE_PATH,
+            Self::Legacy => LEGACY_HANDSHAKE_PATH,
+        }
+    }
+
+    const fn sealed(self) -> &'static str {
+        match self {
+            Self::Current => SEALED_PATH,
+            Self::Legacy => LEGACY_SEALED_PATH,
+        }
+    }
 }
 
 impl SealedTransport {
@@ -330,17 +372,19 @@ impl SealedTransport {
             None => self.transport_key().await?,
         };
         state.transport_key = Some(key);
-        let session = match self.handshake(&key).await {
+        let session = match self.handshake(&key, &mut state.paths).await {
             Err(err) if err.downcast_ref::<StaleTransportKey>().is_some() => {
                 let KeySource::Attested(_) = &self.key else {
                     return Err(err);
                 };
                 // The node restarted: attest its new key, through the same
-                // verifier, and open the session to that.
+                // verifier, and open the session to that. It may run a newer
+                // release now, so its paths are learnt again.
                 state.transport_key = None;
+                state.paths = Paths::default();
                 let key = self.transport_key().await?;
                 state.transport_key = Some(key);
-                self.handshake(&key).await?
+                self.handshake(&key, &mut state.paths).await?
             }
             outcome => outcome?,
         };
@@ -360,8 +404,20 @@ impl SealedTransport {
         }
     }
 
-    async fn handshake(&self, transport_key: &[u8; 32]) -> Result<Session> {
-        match self.handshake_once(transport_key).await {
+    /// A handshake at `paths`, and once more at the legacy paths when the node
+    /// does not serve the current ones; `paths` keeps what the node served.
+    async fn handshake(&self, transport_key: &[u8; 32], paths: &mut Paths) -> Result<Session> {
+        match self.handshake_at(transport_key, *paths).await {
+            Err(err) if *paths == Paths::Current && predates_current_paths(&err) => {
+                *paths = Paths::Legacy;
+                self.handshake_at(transport_key, Paths::Legacy).await
+            }
+            outcome => outcome,
+        }
+    }
+
+    async fn handshake_at(&self, transport_key: &[u8; 32], paths: Paths) -> Result<Session> {
+        match self.handshake_once(transport_key, paths).await {
             // The node limits how fast sessions open. A refused handshake
             // opened nothing, so trying once more after the pause it asks for
             // is safe.
@@ -371,7 +427,7 @@ impl SealedTransport {
                     .and_then(|refusal| refusal.retry_after)
                     .unwrap_or(Duration::from_secs(1));
                 tokio::time::sleep(pause).await;
-                self.handshake_once(transport_key).await
+                self.handshake_once(transport_key, paths).await
             }
             outcome => outcome,
         }
@@ -379,7 +435,7 @@ impl SealedTransport {
 
     /// One handshake: identified with this node's key (Noise IK) on a
     /// channel to a peer, else anonymous (NK).
-    async fn handshake_once(&self, transport_key: &[u8; 32]) -> Result<Session> {
+    async fn handshake_once(&self, transport_key: &[u8; 32], paths: Paths) -> Result<Session> {
         let start = |err| eyre!("failed to start the handshake: {err}");
         let (mut noise, version, message_len) = match &self.identity {
             Some(key) => (
@@ -406,7 +462,7 @@ impl SealedTransport {
 
         let response = self
             .http
-            .post(resolve_path(&self.api_url, HANDSHAKE_PATH)?)
+            .post(resolve_path(&self.api_url, paths.handshake())?)
             .header(CONTENT_TYPE, SEALED_CONTENT_TYPE)
             .body(body)
             .send()
@@ -418,7 +474,7 @@ impl SealedTransport {
         let reply = read_body_capped(response, MAX_HANDSHAKE_REPLY)
             .await
             .wrap_err("the handshake reply is malformed")?;
-        finish(&mut noise, version, &reply)
+        finish(&mut noise, version, &reply, paths)
     }
 
     async fn send_in(
@@ -430,7 +486,7 @@ impl SealedTransport {
         let (request_id, header, envelope) = session.seal(head, body)?;
         let response = self
             .http
-            .post(resolve_path(&self.api_url, SEALED_PATH)?)
+            .post(resolve_path(&self.api_url, session.paths.sealed())?)
             .header(CONTENT_TYPE, SEALED_CONTENT_TYPE)
             .body(envelope)
             .send()
@@ -450,8 +506,13 @@ fn noise_builder(pattern: &str) -> Result<snow::Builder<'static>> {
     Ok(snow::Builder::new(params).prologue(PROLOGUE))
 }
 
-/// Finish the handshake with the node's reply.
-fn finish(noise: &mut snow::HandshakeState, version: u8, reply: &[u8]) -> Result<Session> {
+/// Finish the handshake with the node's reply, for a session served at `paths`.
+fn finish(
+    noise: &mut snow::HandshakeState,
+    version: u8,
+    reply: &[u8],
+    paths: Paths,
+) -> Result<Session> {
     let Some((&replied, message_2)) = reply.split_first() else {
         bail!("the handshake reply is malformed");
     };
@@ -478,16 +539,19 @@ fn finish(noise: &mut snow::HandshakeState, version: u8, reply: &[u8]) -> Result
         response_key: aead_key(&response)?,
         next_request_id: AtomicU64::new(1),
         renew_at: Instant::now() + lifetime.saturating_sub(RENEW_BEFORE),
+        paths,
     })
 }
 
-/// One sealed session: its id, its two keys, and the next request id.
+/// One sealed session: its id, its two keys, the next request id, and the
+/// paths the node that opened it serves.
 struct Session {
     id: [u8; SESSION_ID_LEN],
     request_key: LessSafeKey,
     response_key: LessSafeKey,
     next_request_id: AtomicU64,
     renew_at: Instant,
+    paths: Paths,
 }
 
 impl std::fmt::Debug for Session {
@@ -717,6 +781,19 @@ async fn refusal(response: reqwest::Response) -> eyre::Report {
         retry_after,
     }
     .into()
+}
+
+/// Whether a refused handshake says the node predates [`HANDSHAKE_PATH`]: it
+/// routes nothing there (`404`, `405`), or, sealing everything, refuses it as an
+/// unsealed request (`403 sealed_required`). Nothing was opened, so the legacy
+/// path is tried instead.
+fn predates_current_paths(err: &eyre::Report) -> bool {
+    err.downcast_ref::<SealedRefusal>()
+        .is_some_and(|refusal| match refusal.status {
+            404 | 405 => true,
+            403 => refusal.code.as_deref() == Some("sealed_required"),
+            _ => false,
+        })
 }
 
 fn refusal_code(err: &eyre::Report) -> Option<&str> {
