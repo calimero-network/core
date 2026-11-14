@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`meroctl app pack` records the SDK in `buildInfo`**: from the crate's
+  `calimero-sdk` git dependency (`sdkSource`, `sdkVersion` = its tag), as the
+  apps repository's `mero-component bundle` wrote it, so `meroctl app pack`
+  writes the same signed manifest (byte for byte, for all 27 apps) and that
+  tool can go. A crate that inherits the SDK from its workspace records none.
+
 ### Fixed
 
 - **`meroctl app build`, `app pack DIR` and `local dev` build where cargo would**:
