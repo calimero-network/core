@@ -32,7 +32,9 @@ async fn ops_cluster(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRe
 }
 
 /// `GET /ops/job-nodes/{id}/attestation`: the leader's check of job node `id` before it sends
-/// work, as `admitted`, `refused` (final) or `unreachable` (transient); the per-app approval is left out.
+/// work, as `admitted`, `refused` (final: 400, 404 or an unreadable 2xx from the node, a failed
+/// verification, or a 400 or 404 on the collateral PCK certificate or TCB info request) or
+/// `unreachable` (anything else); `503` when the directory is stale. The per-app approval is left out.
 async fn ops_job_node_attestation(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
