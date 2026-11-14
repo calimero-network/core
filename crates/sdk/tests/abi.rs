@@ -446,6 +446,57 @@ fn callers_follow_d13() {
     assert_eq!(app_error(&app.call("init", b"{}")).0, "WrongKind");
 }
 
+/// `init` takes arguments by name, like a call: what the node passes from `POST /apps`
+/// `initArgs` (`meroctl context create --params`) reaches it, the ABI lists its parameters, and
+/// bad arguments fail it with `BadArgs`.
+#[test]
+fn init_takes_arguments_like_a_call() {
+    let abi_json = built().abi.clone().expect("component carries an ABI");
+    assert_eq!(
+        abi_json["methods"]["init"]["params"],
+        json!([["welcome", "option<string>"], ["opensAt", "option<u64>"]]),
+        "{abi_json}"
+    );
+    let owner = || Caller::Account("owner".into());
+    let title =
+        |app: &mut App, key: &str| ok_json(&app.view("title", &args(json!({ "key": key }))));
+
+    // Delivered, by camelCase name, a `u64` as a decimal string (D20).
+    let mut app = App::new();
+    let init = args(json!({ "welcome": "hello", "opensAt": "1700" }));
+    let out = app.run(InvocationKind::Init, owner(), "init", &init, None);
+    assert_eq!(ok_json(&out), Value::Null);
+    assert_eq!(title(&mut app, "welcome"), json!("hello"));
+    assert_eq!(title(&mut app, "opensAt"), json!("1700"));
+
+    // No arguments (the node sends none when `initArgs` is absent): optional params are `None`.
+    let mut app = App::new();
+    let out = app.run(InvocationKind::Init, owner(), "init", b"", None);
+    assert_eq!(ok_json(&out), Value::Null);
+    assert_eq!(title(&mut app, "welcome"), Value::Null);
+
+    // Wrong type, unknown name, not an object: `BadArgs`, and nothing is written.
+    for (bad, says) in [
+        (json!({ "welcome": 5 }), "invalid type"),
+        (json!({ "opensAt": 1700 }), "invalid type: integer"),
+        (json!({ "welcom": "x" }), "unknown field `welcom`"),
+        (json!("hello"), "arguments are a JSON object"),
+    ] {
+        let mut app = App::new();
+        let out = app.run(
+            InvocationKind::Init,
+            owner(),
+            "init",
+            &args(bad.clone()),
+            None,
+        );
+        let (code, message) = app_error(&out);
+        assert_eq!(code, "BadArgs", "{bad}");
+        assert!(message.contains(says), "{bad}: {message}");
+        assert!(out.diff.is_empty(), "{bad}: a failed init writes nothing");
+    }
+}
+
 #[test]
 fn timer_sees_its_tick() {
     let mut app = App::new();

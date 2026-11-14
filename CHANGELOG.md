@@ -49,6 +49,13 @@
   The target dir is now resolved against the caller's directory, and is
   `CARGO_TARGET_DIR` when set, else `DIR/target`. `local dev` keeps the component
   it uploads in that target dir rather than beside the sources.
+- **The SDK docs say `#[app::init]` takes parameters** (`docs/build/sdk-macros`,
+  `build/testing`): "or nothing (`#[app::init]`)" meant no receiver and read as
+  no arguments. `init` takes parameters like a call, from the app's `initArgs`
+  (`meroctl context create --params`), listed in the ABI; bad ones fail it with
+  `BadArgs` (`422 INIT_FAILED`). Nothing changed in the SDK: `tests/abi.rs`
+  `init_takes_arguments_like_a_call` now pins it. `TestApp::new` runs `init`
+  with no arguments, so a required `init` parameter cannot start in the harness.
 
 ## [1.0.0-rc.24] - 2026-11-13
 

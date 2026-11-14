@@ -91,9 +91,26 @@ pub enum Event {
 
 #[app::logic]
 impl Rooms {
+    /// `init` takes arguments by name, like a call: the node's `initArgs` (`--params`). Both
+    /// are optional, so an app created with none, as `TestApp::new` creates it, still starts.
     #[app::init]
-    pub fn init() -> app::Result<Self> {
-        Ok(Self::load())
+    pub fn init(welcome: Option<String>, opens_at: Option<u64>) -> app::Result<Self> {
+        let mut app = Self::load();
+        if let Some(welcome) = welcome {
+            let _old = app.titles.insert(&"welcome".to_owned(), &welcome)?;
+        }
+        if let Some(opens_at) = opens_at {
+            let _old = app
+                .titles
+                .insert(&"opensAt".to_owned(), &opens_at.to_string())?;
+        }
+        Ok(app)
+    }
+
+    /// A title by key (what `init` and `put_title` wrote).
+    #[app::view]
+    pub fn title(&self, key: String) -> app::Result<Option<String>> {
+        Ok(self.titles.get(&key)?)
     }
 
     /// Books `room_id` at `start`; `Taken` when the slot is held.
