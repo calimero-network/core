@@ -4,6 +4,16 @@
 
 ### Added
 
+- **`meroctl app pack` writes multi-service packages**: `--service NAME=PATH`
+  (repeatable; PATH a crate directory, built, or a component), with
+  `--service-compute NAME=FILE` and `--service-pipeline NAME=FILE`, or
+  `services = [{ name, path }]` in the crate's `[package.metadata.calimero]`
+  (a virtual workspace's `[workspace.metadata.calimero]`, its release from
+  `[workspace.package] version`), packs the manifest's `services`
+  (`services/<name>.wasm`, `.compute.wasm`, `<name>/pipelines/`), which
+  `context create --service` instantiates. `--wasm`, `--compute` and
+  `--pipeline` are refused beside it. Every `pack` now opens the `.mpk` it wrote as a
+  node does (paths, bounds, signature, digests) before writing it.
 - **`meroctl app pack` records the SDK in `buildInfo`**: from the crate's
   `calimero-sdk` git dependency (`sdkSource`, `sdkVersion` = its tag), as the
   apps repository's `mero-component bundle` wrote it, so `meroctl app pack`

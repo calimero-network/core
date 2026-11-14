@@ -665,3 +665,218 @@ upgrades = "publisher"
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("is not a PNG"));
 }
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(data))
+}
+
+/// `--service NAME=PATH` packs a multi-service package: each service's
+/// component (and compute component, and pipelines) under `services/`, declared
+/// in the manifest's `services` as the node reads it, signed over all of it.
+#[test]
+fn pack_writes_a_package_of_several_services() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    std::fs::write(d.join("directory.wasm"), [COMPONENT, b"directory"].concat()).unwrap();
+    std::fs::write(d.join("room.wasm"), [COMPONENT, b"room"].concat()).unwrap();
+    std::fs::write(
+        d.join("room-compute.wasm"),
+        [COMPONENT, b"compute"].concat(),
+    )
+    .unwrap();
+    std::fs::write(d.join("nightly.yaml"), "name: nightly\n").unwrap();
+    let _ = ok(&meroctl(d, &["app", "signer", "new", "k.json"]));
+    let answer = ok(&meroctl(
+        d,
+        &[
+            "app",
+            "pack",
+            "--package",
+            "com.example.rooms",
+            "--app-version",
+            "1.0.0",
+            "--service",
+            "directory=directory.wasm",
+            "--service",
+            "room=room.wasm",
+            "--service-compute",
+            "room=room-compute.wasm",
+            "--service-pipeline",
+            "room=nightly.yaml",
+            "--key",
+            "k.json",
+            "--out",
+            "rooms.mpk",
+        ],
+    ));
+    assert_eq!(answer["services"], serde_json::json!(["directory", "room"]));
+    let files = untar(&d.join("rooms.mpk"));
+    assert_eq!(
+        names(&files),
+        [
+            "manifest.json",
+            "services/directory.wasm",
+            "services/room.compute.wasm",
+            "services/room.wasm",
+            "services/room/pipelines/nightly.yaml",
+        ]
+    );
+    let m = manifest(&files);
+    assert!(m.get("wasm").is_none() && m.get("compute").is_none());
+    let services = m["services"].as_array().unwrap();
+    assert_eq!(services.len(), 2);
+    assert_eq!(services[0]["name"], "directory");
+    assert!(services[0].get("compute").is_none());
+    assert_eq!(services[1]["name"], "room");
+    for (artifact, path) in [
+        (&services[0]["wasm"], "services/directory.wasm"),
+        (&services[1]["wasm"], "services/room.wasm"),
+        (&services[1]["compute"], "services/room.compute.wasm"),
+        (
+            &services[1]["pipelines"][0],
+            "services/room/pipelines/nightly.yaml",
+        ),
+    ] {
+        assert_eq!(artifact["path"], path);
+        assert_eq!(artifact["hash"], sha256_hex(&files[path]));
+        assert_eq!(artifact["size"], files[path].len());
+    }
+    // The bundle crate reads it as a multi-service manifest.
+    let typed: calimero_bundle::BundleManifest = serde_json::from_value(m.clone()).unwrap();
+    assert!(typed.is_multi_service());
+    assert_eq!(typed.service_names(), ["directory", "room"]);
+
+    // `inspect` opens it as a node does: signature and every artifact's hash.
+    let inspected = ok(&meroctl(d, &["app", "inspect", "rooms.mpk"]));
+    assert_eq!(inspected["verified"], true);
+    assert_eq!(inspected["manifest"]["services"], m["services"]);
+}
+
+/// A crate layout of several services packs with no flags but the release's:
+/// `services = [{ name, path }]` in DIR's `[package.metadata.calimero]`, or in
+/// `[workspace.metadata.calimero]` of a virtual workspace (Studio's `logic/`).
+#[test]
+fn pack_reads_the_services_of_a_workspace_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    std::fs::create_dir_all(d.join("logic/res")).unwrap();
+    std::fs::write(
+        d.join("logic/Cargo.toml"),
+        r#"[workspace]
+members = ["crates/directory", "crates/room"]
+
+[workspace.package]
+version = "0.2.0"
+
+[workspace.dependencies]
+calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.23" }
+
+[workspace.metadata.calimero]
+package = "com.example.rooms"
+name = "Rooms"
+services = [
+  { name = "directory", path = "res/directory.wasm" },
+  { name = "room", path = "res/room.wasm" },
+]
+"#,
+    )
+    .unwrap();
+    for s in ["directory", "room"] {
+        std::fs::write(
+            d.join(format!("logic/res/{s}.wasm")),
+            [COMPONENT, s.as_bytes()].concat(),
+        )
+        .unwrap();
+    }
+    let answer = ok(&meroctl(d, &["app", "pack", "logic"]));
+    assert_eq!(answer["package"], "com.example.rooms");
+    assert_eq!(answer["appVersion"], "0.2.0");
+    let files = untar(&d.join("logic/dist/com.example.rooms-0.2.0.mpk"));
+    let m = manifest(&files);
+    assert_eq!(m["services"][0]["name"], "directory");
+    assert_eq!(m["services"][1]["wasm"]["path"], "services/room.wasm");
+    assert_eq!(files["services/room.wasm"], [COMPONENT, b"room"].concat());
+    assert_eq!(m["metadata"]["name"], "Rooms");
+    assert_eq!(m["buildInfo"]["sdkVersion"], "1.0.0-rc.23");
+
+    // A --service flag replaces the table's list.
+    let _ = ok(&meroctl(
+        d,
+        &[
+            "app",
+            "pack",
+            "logic",
+            "--service",
+            "solo=logic/res/room.wasm",
+            "--out",
+            "solo.mpk",
+        ],
+    ));
+    let m = manifest(&untar(&d.join("solo.mpk")));
+    assert_eq!(m["services"].as_array().unwrap().len(), 1);
+    assert_eq!(m["services"][0]["name"], "solo");
+
+    // --wasm packs one service: refused beside the table's services.
+    std::fs::write(d.join("app.wasm"), [COMPONENT, b"app"].concat()).unwrap();
+    let out = meroctl(d, &["app", "pack", "logic", "--wasm", "app.wasm"]);
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--wasm"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn pack_refuses_services_it_cannot_pack() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    std::fs::write(d.join("a.wasm"), [COMPONENT, b"a"].concat()).unwrap();
+    std::fs::write(d.join("p.yaml"), "name: p\n").unwrap();
+    let refused = |extra: &[&str]| -> String {
+        let mut args = vec![
+            "app",
+            "pack",
+            "--package",
+            "p",
+            "--app-version",
+            "1.0.0",
+            "--out",
+            "out.mpk",
+        ];
+        args.extend(extra);
+        let out = meroctl(d, &args);
+        assert!(!out.status.success(), "{extra:?} was packed");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    // The single-service flags beside --service.
+    for flag in [
+        &["--wasm", "a.wasm"][..],
+        &["--compute", "a.wasm"],
+        &["--pipeline", "p.yaml"],
+    ] {
+        let mut extra = vec!["--service", "a=a.wasm"];
+        extra.extend(flag);
+        let err = refused(&extra);
+        assert!(err.contains(flag[0]) && err.contains("--service"), "{err}");
+    }
+    // A service with no name, a name that is not a file name, one named twice.
+    assert!(refused(&["--service", "a.wasm"]).contains("NAME=PATH"));
+    assert!(refused(&["--service", "a/b=a.wasm"]).contains("service name"));
+    assert!(refused(&["--service", "a.b=a.wasm"]).contains("service name"));
+    assert!(refused(&["--service", "a=a.wasm", "--service", "a=a.wasm"]).contains("twice"));
+    // A compute component or pipeline for a service the package does not have.
+    assert!(
+        refused(&["--service", "a=a.wasm", "--service-compute", "b=a.wasm"])
+            .contains("no service b")
+    );
+    assert!(
+        refused(&["--service", "a=a.wasm", "--service-pipeline", "b=p.yaml"])
+            .contains("no service b")
+    );
+    // ... or with no --service at all.
+    assert!(refused(&["--wasm", "a.wasm", "--service-compute", "a=a.wasm"]).contains("--service"));
+    // Not a component.
+    std::fs::write(d.join("bad.wasm"), "not wasm").unwrap();
+    assert!(refused(&["--service", "a=bad.wasm"]).contains("not a WASM component"));
+}

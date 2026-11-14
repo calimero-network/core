@@ -4,6 +4,7 @@
 //! tool it replaced was built on (`calimero-app-build`, `calimero-app-abi`,
 //! `mero-sign`, `calimero-bundle`), so the formats are the node's own.
 
+use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -33,6 +34,9 @@ pub fn target_dir(dir: &Path) -> PathBuf {
 const COMPUTE_FILE: &str = "compute.component.wasm";
 const WASM_MAGIC: &[u8] = b"\0asm\x0d\0\x01\0"; // a component; a core module is an SDK 0.12 app
 const DEFAULT_MIN_RUNTIME: &str = "0.1.0";
+/// The longest service name `pack` writes: the name `context create --service`
+/// takes, and a file name in the archive.
+const MAX_SERVICE_NAME: usize = 64;
 
 #[derive(Debug, Args)]
 pub struct NewArgs {
@@ -110,12 +114,27 @@ pub enum Upgrades {
 #[derive(Debug, Args)]
 pub struct PackArgs {
     /// The app's crate: reads `[package.metadata.calimero]` (`package`,
-    /// `min-runtime-version`, `frontend-dir`) and the crate's `version`, and
-    /// builds the components unless `--wasm` / `--compute` name them.
+    /// `min-runtime-version`, `frontend-dir`, `services`) and the crate's
+    /// `version` (in a virtual workspace, `[workspace.metadata.calimero]` and
+    /// `[workspace.package]`), and builds the components unless `--wasm` /
+    /// `--compute` name them.
     pub dir: Option<PathBuf>,
     /// The app component (omit, with no DIR, for a compute-only package).
     #[arg(long)]
     pub wasm: Option<PathBuf>,
+    /// A service of a multi-service package, `NAME=PATH` (repeatable): PATH is
+    /// the service's crate directory, which is built, or its component. The
+    /// manifest then declares `services` instead of `wasm`; replaces DIR's
+    /// `services`.
+    #[arg(long = "service", value_name = "NAME=PATH", value_parser = named_path)]
+    pub services: Vec<(String, PathBuf)>,
+    /// The compute component of a service given as a component, `NAME=PATH`
+    /// (a crate directory builds its own).
+    #[arg(long = "service-compute", value_name = "NAME=PATH", value_parser = named_path)]
+    pub service_compute: Vec<(String, PathBuf)>,
+    /// A pipeline YAML file of a service, `NAME=FILE` (repeatable).
+    #[arg(long = "service-pipeline", value_name = "NAME=FILE", value_parser = named_path)]
+    pub service_pipelines: Vec<(String, PathBuf)>,
     /// The compute component of the same build, packed as `compute.wasm`.
     #[arg(long)]
     pub compute: Option<PathBuf>,
@@ -171,6 +190,14 @@ pub struct PackArgs {
     /// break callers, refuse a state change without a state version bump.
     #[arg(long)]
     pub previous: Option<PathBuf>,
+}
+
+/// A `--service`-style value: `NAME=PATH`.
+fn named_path(value: &str) -> Result<(String, PathBuf), String> {
+    match value.split_once('=') {
+        Some((name, path)) if !path.is_empty() => Ok((name.to_owned(), PathBuf::from(path))),
+        _ => Err("expected NAME=PATH, e.g. room=crates/room".to_owned()),
+    }
 }
 
 #[derive(Debug, Args)]
@@ -338,6 +365,8 @@ struct CrateMeta {
     package: Option<String>,
     min_runtime: Option<String>,
     frontend_dir: Option<PathBuf>,
+    /// `services = [{ name, path }]`, each path relative to the crate.
+    services: Vec<(String, PathBuf)>,
     /// `[package.metadata.calimero]` as written, for the display metadata,
     /// links and the rest `pack` copies into the manifest (`manifest_extras`).
     table: toml::Table,
@@ -347,6 +376,9 @@ struct CrateMeta {
     dir: PathBuf,
 }
 
+/// `DIR/Cargo.toml`'s package and `[package.metadata.calimero]`; in a virtual
+/// workspace (no `[package]`, as a multi-service app's `logic/` is), its
+/// `[workspace.package]` and `[workspace.metadata.calimero]` instead.
 fn crate_meta(dir: &Path) -> eyre::Result<CrateMeta> {
     let path = dir.join("Cargo.toml");
     let text =
@@ -354,9 +386,18 @@ fn crate_meta(dir: &Path) -> eyre::Result<CrateMeta> {
     let doc: toml::Table = text
         .parse()
         .wrap_err_with(|| format!("parsing {}", path.display()))?;
-    let package = doc.get("package").and_then(toml::Value::as_table);
-    let meta = package
-        .and_then(|p| p.get("metadata"))
+    let workspace = doc.get("workspace").and_then(toml::Value::as_table);
+    let (package, meta, deps) = match doc.get("package").and_then(toml::Value::as_table) {
+        Some(p) => (Some(p), p.get("metadata"), doc.get("dependencies")),
+        None => (
+            workspace
+                .and_then(|w| w.get("package"))
+                .and_then(toml::Value::as_table),
+            workspace.and_then(|w| w.get("metadata")),
+            workspace.and_then(|w| w.get("dependencies")),
+        ),
+    };
+    let meta = meta
         .and_then(|m| m.get("calimero"))
         .and_then(toml::Value::as_table);
     let text_of = |t: Option<&toml::Table>, k: &str| {
@@ -366,16 +407,40 @@ fn crate_meta(dir: &Path) -> eyre::Result<CrateMeta> {
     };
     // A component app takes `calimero-sdk` from core's git; one inherited from
     // a workspace (`workspace = true`) names no source here.
-    let sdk = doc
-        .get("dependencies")
+    let sdk = deps
         .and_then(|d| d.get("calimero-sdk"))
         .and_then(toml::Value::as_table)
         .and_then(|d| {
             let git = d.get("git")?.as_str()?.to_owned();
             Some((git, text_of(Some(d), "tag")))
         });
+    let services = match meta.and_then(|m| m.get("services")) {
+        None => Vec::new(),
+        Some(list) => {
+            let bad = || {
+                eyre!(
+                    "{}: services is a list of {{ name = \"..\", path = \"..\" }}",
+                    path.display()
+                )
+            };
+            let mut services = Vec::new();
+            for s in list.as_array().ok_or_else(bad)? {
+                let s = s.as_table().ok_or_else(bad)?;
+                if s.keys().any(|k| k != "name" && k != "path") {
+                    return Err(bad());
+                }
+                let (Some(name), Some(rel)) = (text_of(Some(s), "name"), text_of(Some(s), "path"))
+                else {
+                    return Err(bad());
+                };
+                services.push((name, dir.join(rel)));
+            }
+            services
+        }
+    };
     Ok(CrateMeta {
         sdk,
+        services,
         version: text_of(package, "version"),
         package: text_of(meta, "package"),
         min_runtime: text_of(meta, "min-runtime-version"),
@@ -558,6 +623,128 @@ fn component(path: &Path) -> eyre::Result<Vec<u8>> {
     Ok(data)
 }
 
+/// Each pipeline file as `<dir>/<file name>`, refusing two of one name.
+fn pipeline_files(dir: &str, files: &[&Path], flag: &str) -> eyre::Result<Vec<ArchiveFile>> {
+    let mut out: Vec<ArchiveFile> = Vec::new();
+    for f in files {
+        let name = f
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| eyre!("{flag} {}: no file name", f.display()))?;
+        let path = format!("{dir}/{name}");
+        if out.iter().any(|(p, _)| *p == path) {
+            bail!("two {flag} files have the same name");
+        }
+        let data = std::fs::read(f).wrap_err_with(|| format!("reading {}", f.display()))?;
+        out.push((path, data));
+    }
+    Ok(out)
+}
+
+/// A service's name is what `context create --service` names and a file name
+/// in the archive (`services/<name>.wasm`), so letters, digits, `-` and `_`.
+fn check_service_name(name: &str) -> eyre::Result<()> {
+    let ok = !name.is_empty()
+        && name.len() <= MAX_SERVICE_NAME
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if !ok {
+        bail!("service name {name:?}: 1 to {MAX_SERVICE_NAME} letters, digits, '-' or '_'");
+    }
+    Ok(())
+}
+
+/// The manifest's `services` (in the order given) and the files they name: a
+/// service's component as `services/<name>.wasm`, its compute component as
+/// `services/<name>.compute.wasm`, its pipelines under `services/<name>/pipelines/`.
+/// A crate directory is built into DIR's target directory when DIR is given (a
+/// workspace's services share one), else its own (`target_dir`).
+fn pack_services(
+    a: &PackArgs,
+    services: &[(String, PathBuf)],
+) -> eyre::Result<(Value, Vec<ArchiveFile>, Vec<ArchiveFile>)> {
+    let mut names = BTreeSet::new();
+    for (name, _) in services {
+        check_service_name(name)?;
+        if !names.insert(name.as_str()) {
+            bail!("service {name} is named twice");
+        }
+    }
+    for (flag, given) in [
+        ("--service-compute", &a.service_compute),
+        ("--service-pipeline", &a.service_pipelines),
+    ] {
+        if let Some((name, _)) = given.iter().find(|(n, _)| !names.contains(n.as_str())) {
+            bail!("{flag} {name}=..: the package has no service {name}");
+        }
+    }
+    let shared_target = a.dir.as_deref().map(target_dir);
+    let (mut list, mut components, mut pipelines) = (Vec::new(), Vec::new(), Vec::new());
+    for (name, path) in services {
+        let computes: Vec<&Path> = a
+            .service_compute
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, p)| p.as_path())
+            .collect();
+        if computes.len() > 1 {
+            bail!("--service-compute {name} is given twice");
+        }
+        let (wasm, compute) = if path.is_dir() {
+            if !computes.is_empty() {
+                bail!(
+                    "--service-compute {name}: the service is built from {}, which builds its compute component",
+                    path.display()
+                );
+            }
+            eprintln!("building service {name} from {}", path.display());
+            let target = shared_target.clone().unwrap_or_else(|| target_dir(path));
+            let built = calimero_app_build::build_components(path, &target)?;
+            (built.app.component, built.compute.map(|c| c.component))
+        } else {
+            (
+                component(path)?,
+                computes.first().map(|p| component(p)).transpose()?,
+            )
+        };
+        let mut entry = Map::new();
+        let _ = entry.insert("name".into(), json!(name));
+        let wasm_path = format!("services/{name}.wasm");
+        let _ = entry.insert(
+            "wasm".into(),
+            serde_json::to_value(artifact(&wasm_path, &wasm))?,
+        );
+        components.push((wasm_path, wasm));
+        if let Some(compute) = compute {
+            let compute_path = format!("services/{name}.compute.wasm");
+            let _ = entry.insert(
+                "compute".into(),
+                serde_json::to_value(artifact(&compute_path, &compute))?,
+            );
+            components.push((compute_path, compute));
+        }
+        let files: Vec<&Path> = a
+            .service_pipelines
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, p)| p.as_path())
+            .collect();
+        let own = pipeline_files(
+            &format!("services/{name}/pipelines"),
+            &files,
+            "--service-pipeline",
+        )?;
+        if !own.is_empty() {
+            let declared: Vec<_> = own.iter().map(|(n, d)| artifact(n, d)).collect();
+            let _ = entry.insert("pipelines".into(), serde_json::to_value(declared)?);
+        }
+        pipelines.extend(own);
+        list.push(Value::Object(entry));
+    }
+    Ok((Value::Array(list), components, pipelines))
+}
+
 /// `app pack`: the manifest the node reads, signed, and every file it names, as a `.mpk`.
 pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     let meta = a
@@ -586,42 +773,62 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
         .or_else(|| meta.min_runtime.clone())
         .unwrap_or_else(|| DEFAULT_MIN_RUNTIME.to_owned());
 
-    // The components: named, or built from DIR.
-    let (mut wasm, mut compute) = (
-        a.wasm.as_deref().map(component).transpose()?,
-        a.compute.as_deref().map(component).transpose()?,
-    );
-    if let (Some(dir), None, None) = (&a.dir, &wasm, &compute) {
-        eprintln!("building {}", dir.display());
-        let built = calimero_app_build::build_components(dir, &target_dir(dir))?;
-        wasm = Some(built.app.component);
-        compute = built.compute.map(|c| c.component);
-    }
-    if wasm.is_none() && compute.is_none() {
-        bail!("give --wasm, --compute or both, or the app's crate DIR");
-    }
-    let mut parts: Vec<(&str, &str, Vec<u8>)> = Vec::new();
-    if let Some(w) = wasm {
-        parts.push(("wasm", "app.wasm", w));
-    }
-    if let Some(c) = compute {
-        parts.push(("compute", "compute.wasm", c));
-    }
-
-    let mut pipelines = Vec::new();
-    for f in &a.pipelines {
-        let name = f
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| eyre!("--pipeline {}: no file name", f.display()))?;
-        pipelines.push((format!("pipelines/{name}"), std::fs::read(f)?));
-    }
-    let mut names: Vec<_> = pipelines.iter().map(|(n, _)| n).collect();
-    names.sort();
-    names.dedup();
-    if names.len() != pipelines.len() {
-        bail!("two --pipeline files have the same name");
-    }
+    // The components: one app's (named, or built from DIR), or each service's
+    // (`--service`, else DIR's `services`).
+    let services = if a.services.is_empty() {
+        &meta.services
+    } else {
+        &a.services
+    };
+    let mut fields: Vec<(&str, Value)> = Vec::new();
+    let (components, pipelines) = if services.is_empty() {
+        if !a.service_compute.is_empty() || !a.service_pipelines.is_empty() {
+            bail!("--service-compute and --service-pipeline belong to a --service: name the services too");
+        }
+        let (mut wasm, mut compute) = (
+            a.wasm.as_deref().map(component).transpose()?,
+            a.compute.as_deref().map(component).transpose()?,
+        );
+        if let (Some(dir), None, None) = (&a.dir, &wasm, &compute) {
+            eprintln!("building {}", dir.display());
+            let built = calimero_app_build::build_components(dir, &target_dir(dir))?;
+            wasm = Some(built.app.component);
+            compute = built.compute.map(|c| c.component);
+        }
+        if wasm.is_none() && compute.is_none() {
+            bail!("give --wasm, --compute or both, or the app's crate DIR");
+        }
+        let mut components: Vec<ArchiveFile> = Vec::new();
+        for (key, name, data) in [
+            ("wasm", "app.wasm", wasm),
+            ("compute", "compute.wasm", compute),
+        ] {
+            if let Some(data) = data {
+                fields.push((key, serde_json::to_value(artifact(name, &data))?));
+                components.push((name.to_owned(), data));
+            }
+        }
+        let files: Vec<&Path> = a.pipelines.iter().map(PathBuf::as_path).collect();
+        let pipelines = pipeline_files("pipelines", &files, "--pipeline")?;
+        if !pipelines.is_empty() {
+            let list: Vec<_> = pipelines.iter().map(|(n, d)| artifact(n, d)).collect();
+            fields.push(("pipelines", serde_json::to_value(list)?));
+        }
+        (components, pipelines)
+    } else {
+        for (flag, given) in [
+            ("--wasm", a.wasm.is_some()),
+            ("--compute", a.compute.is_some()),
+            ("--pipeline", !a.pipelines.is_empty()),
+        ] {
+            if given {
+                bail!("{flag} packs a single-service app; a package of services (--service, or DIR's services) takes each service's own: --service-compute, --service-pipeline");
+            }
+        }
+        let (list, components, pipelines) = pack_services(a, services)?;
+        fields.push(("services", list));
+        (components, pipelines)
+    };
 
     let frontend_dir = match (&a.frontend, a.no_frontend, meta.frontend_dir.clone()) {
         (Some(d), _, _) => Some(d.clone()),
@@ -650,12 +857,8 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     let _ = manifest.insert("package".into(), json!(package));
     let _ = manifest.insert("appVersion".into(), json!(version));
     let _ = manifest.insert("minRuntimeVersion".into(), json!(min_runtime));
-    for (key, name, data) in &parts {
-        let _ = manifest.insert((*key).into(), serde_json::to_value(artifact(name, data))?);
-    }
-    if !pipelines.is_empty() {
-        let list: Vec<_> = pipelines.iter().map(|(n, d)| artifact(n, d)).collect();
-        let _ = manifest.insert("pipelines".into(), serde_json::to_value(list)?);
+    for (key, value) in fields {
+        let _ = manifest.insert(key.into(), value);
     }
     if let Some((f, _)) = &frontend {
         let _ = manifest.insert("frontend".into(), serde_json::to_value(f)?);
@@ -708,12 +911,20 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
             "signing with the development key (a public registry refuses it; --key for yours)"
         );
     }
+    // The shape the node reads, before anything is signed.
+    let manifest = Value::Object(manifest);
+    let _: calimero_bundle::BundleManifest = serde_json::from_value(manifest.clone())
+        .wrap_err("the manifest pack wrote is not the bundle crate's")?;
     let tmp = tempfile::tempdir()?;
     let path = tmp.path().join("manifest.json");
-    std::fs::write(&path, serde_json::to_vec(&Value::Object(manifest))?)?;
+    std::fs::write(&path, serde_json::to_vec(&manifest)?)?;
     // Beside the manifest, where `--previous` reads the new ABI from.
-    for (_, name, data) in &parts {
-        std::fs::write(tmp.path().join(name), data)?;
+    for (name, data) in &components {
+        let file = tmp.path().join(name);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(file, data)?;
     }
     if let Some(previous) = &a.previous {
         report_abi(&path, &std::path::absolute(previous)?)?;
@@ -728,14 +939,10 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
             None => PathBuf::from(file),
         }
     });
-    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
-    let gz =
-        flate2::write::GzEncoder::new(std::fs::File::create(&out)?, flate2::Compression::default());
+    let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut tar = tar::Builder::new(gz);
     let mut entries: Vec<(&str, &[u8])> = vec![("manifest.json", &signed)];
-    entries.extend(parts.iter().map(|(_, n, d)| (*n, d.as_slice())));
+    entries.extend(components.iter().map(|(n, d)| (n.as_str(), d.as_slice())));
     entries.extend(pipelines.iter().map(|(n, d)| (n.as_str(), d.as_slice())));
     if let Some((_, files)) = &frontend {
         entries.extend(files.iter().map(|(n, d)| (n.as_str(), d.as_slice())));
@@ -747,8 +954,18 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
         header.set_cksum();
         tar.append_data(&mut header, name, data)?;
     }
-    tar.into_inner()?.finish()?;
-    Ok(json!({ "wrote": out, "package": package, "appVersion": version }))
+    let mpk = tar.into_inner()?.finish()?;
+    // Opened as a node opens it (any runtime version): the manifest's paths and
+    // bounds, the signature, every artifact's digest.
+    VerifiedBundle::open(mpk.clone().into(), &semver::Version::new(u64::MAX, 0, 0))
+        .and_then(|b| b.contents().map(drop))
+        .wrap_err("the package pack wrote does not open as a node opens it")?;
+    write_file(&out, &mpk)?;
+    let mut answer = json!({ "wrote": out, "package": package, "appVersion": version });
+    if !services.is_empty() {
+        answer["services"] = json!(services.iter().map(|(n, _)| n).collect::<Vec<_>>());
+    }
+    Ok(answer)
 }
 
 /// `app publish`: the registry's `POST /api/bundles/push` (`/api/v2/...` on an
