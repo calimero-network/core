@@ -18,13 +18,14 @@ pub const APPS_REPO: &str = "https://github.com/calimero-network/apps";
 
 /// What a project keeps of the apps repository besides its app: the shared
 /// frontend packages (`@calimero-apps/connect`, `passkey`, `test-setup`, and
-/// `merod-local`, which `pnpm dev:local` runs) and `tools/component-bundle`,
-/// which builds the contract. Cone mode adds the root files (`package.json`,
+/// `merod-local`, which `pnpm dev:local` runs) and `scripts/` (its
+/// `component-build.sh` builds the contract and writes `res/abi.json`, and
+/// `install-meroctl.sh` pins meroctl). Cone mode adds the root files (`package.json`,
 /// `pnpm-workspace.yaml` with its catalogs, `pnpm-lock.yaml`,
 /// `tsconfig.base.json`, `Cargo.toml` with the core tag), so the app's
 /// `catalog:` and `workspace:*` dependencies and relative paths resolve as
 /// they do upstream.
-const SHARED: [&str; 2] = ["packages", "tools"];
+const SHARED: [&str; 2] = ["packages", "scripts"];
 
 #[derive(Debug, Subcommand)]
 pub enum DevCmd {
@@ -203,10 +204,29 @@ fn scaffold(
     )?;
     if git_init {
         git(Some(dir), &["init", "--quiet"])?;
+        // One commit of what the template gave, so the project's own changes
+        // show as changes. Without a git identity there is none to make it
+        // with: the files stay untracked, as `git init` leaves them.
+        let message = format!("Start from {repo} {app} ({commit})");
+        let committed = Command::new("git")
+            .current_dir(dir)
+            .args(["add", "-A"])
+            .status()
+            .is_ok_and(|s| s.success())
+            && Command::new("git")
+                .current_dir(dir)
+                .args(["commit", "--quiet", "-m", &message])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success());
+        if !committed {
+            eprintln!("note: no first commit (set git's user.name and user.email to get one)");
+        }
     }
     eprintln!(
-        "\nNext:\n  cd {dir_s}\n  pnpm install\n  rustup target add wasm32-wasip2\n  \
-         pnpm dev:local {template}    # merod local + build + deploy + http://localhost:5173/\n\n\
+        "\nNext:\n  cd {dir_s}\n  rustup target add wasm32-wasip2\n  \
+         meroctl local dev {app}    # a local cluster, build, deploy, the frontend on http://localhost:5173/\n\n\
          {app}/README.md has the rest."
     );
     Ok(json!({
@@ -223,13 +243,12 @@ fn readme(template: &str, repo: &str, git_ref: &str, commit: &str) -> String {
          ({git_ref}, {commit}).\n\n\
          The app is in `apps/{template}`: its contract in `logic/`, its frontend in `app/`; \
          its README says how to run and test it. `packages/` holds the shared frontend \
-         packages it uses and `merod-local` (`pnpm dev:local`), `tools/component-bundle` \
-         builds the contract, and the root `pnpm-workspace.yaml` and `Cargo.toml` pin the \
+         packages it uses, `scripts/component-build.sh` builds the contract and writes its \
+         `res/abi.json`, and the root `pnpm-workspace.yaml` and `Cargo.toml` pin the \
          versions, as in the apps repository.\n\n\
          ```bash\n\
-         pnpm install\n\
          rustup target add wasm32-wasip2\n\
-         pnpm dev:local {template}\n\
+         meroctl local dev apps/{template}\n\
          ```\n"
     )
 }

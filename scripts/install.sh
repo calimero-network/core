@@ -7,8 +7,9 @@
 # Installs `meroctl` (default) and/or `merod` into $CALIMERO_INSTALL_DIR
 # (default ~/.local/bin), each checked against the release's SHA256SUMS before
 # it is put in place. Without --version it takes the newest release, release
-# candidates included. `merod` ships for Linux only: on macOS run a node in
-# Docker (`meroctl local up --docker`).
+# candidates included. `merod` ships for Linux, and for macOS (Apple silicon)
+# from 1.0.0-rc.25; with an older release it is skipped on a Mac, and
+# `meroctl local up` runs the node in the release's Docker image either way.
 #
 # Options:
 #   --version X   the release (a tag such as 1.0.0-rc.24)
@@ -53,17 +54,21 @@ else
   die "sha256sum or shasum is required"
 fi
 
-case "$(uname -m)" in
+# CALIMERO_INSTALL_MACHINE and CALIMERO_INSTALL_OS stand in for `uname -m` and
+# `uname -s` in the tests.
+MACHINE="${CALIMERO_INSTALL_MACHINE:-$(uname -m)}"
+case "$MACHINE" in
   x86_64|amd64) ARCH=x86_64 ;;
   arm64|aarch64) ARCH=aarch64 ;;
-  *) die "unsupported architecture: $(uname -m)" ;;
+  *) die "unsupported architecture: $MACHINE" ;;
 esac
-case "$(uname -s)" in
+OS="${CALIMERO_INSTALL_OS:-$(uname -s)}"
+case "$OS" in
   Linux) TARGET="$ARCH-unknown-linux-gnu" ;;
   Darwin)
     [ "$ARCH" = aarch64 ] || die "on macOS only Apple silicon (aarch64) builds are released"
     TARGET="aarch64-apple-darwin" ;;
-  *) die "unsupported system: $(uname -s) (Linux and macOS)" ;;
+  *) die "unsupported system: $OS (Linux and macOS)" ;;
 esac
 
 if [ -z "$VERSION" ]; then
@@ -81,11 +86,12 @@ curl -fsSL "$BASE/SHA256SUMS" -o "$TMP/SHA256SUMS" \
 
 mkdir -p "$DIR"
 for tool in $TOOLS; do
-  if [ "$tool" = merod ] && [ "$(uname -s)" = Darwin ]; then
-    die "merod is released for Linux only; on macOS run a node in Docker: meroctl local up --docker"
-  fi
   archive="${tool}_${TARGET}.tar.gz"
   want=$(awk -v f="$archive" '$2 == f || $2 == "*"f { print $1 }' "$TMP/SHA256SUMS")
+  if [ -z "$want" ] && [ "$tool" = merod ] && [ "$OS" = Darwin ]; then
+    say "skipping merod: $VERSION has no macOS build (from 1.0.0-rc.25); meroctl local up runs the node in Docker either way"
+    continue
+  fi
   [ -n "$want" ] || die "release $VERSION has no $archive"
   say "downloading $tool $VERSION ($TARGET)"
   curl -fsSL "$BASE/$archive" -o "$TMP/$archive" || die "downloading $archive failed"
