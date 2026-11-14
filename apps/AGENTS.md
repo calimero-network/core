@@ -23,6 +23,9 @@ meroctl app pack --wasm <app>.wasm --package <id> --app-version 1.0.0 \
 meroctl app inspect dist/<id>-1.0.0.mpk               # verify it as a node does
 ```
 
+Each app's `Cargo.lock` must match its manifests and change only when they need it to (CI's "App lockfiles" check, `python3 scripts/check-app-lockfiles.py`).
+After a dependency change in a `Cargo.toml` an app resolves (its own, the root's or a crate it reaches by path), run `cargo update --workspace --manifest-path apps/<app>/Cargo.toml`; restore any other rewrite with `git checkout origin/master -- <lockfile>`.
+
 ## Testing a compute method locally
 
 A compute method (`#[app::compute]`) is tested alone, with no app component, cluster or job node.

@@ -88,6 +88,8 @@ WORKFLOWS = {
             "scripts/check-compat-door.py",
             "scripts/check-trust-boundary.py",
             "scripts/tests/check-compat-door-test.py",
+            "scripts/check-app-lockfiles.py",
+            "scripts/tests/check-app-lockfiles-test.py",
             "scripts/fetch-release-app.py",
             # the release `Apps of the previous release` fetches its kv bundle from
             ".github/upgrade-from",

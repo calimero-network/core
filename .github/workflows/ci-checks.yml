@@ -109,7 +109,7 @@ jobs:
   rust:
     name: Rust
     if: ${{ !cancelled() }}
-    needs: [scope, rust-quick, rust-lint, rust-test, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, upgrade-path]
+    needs: [scope, rust-quick, rust-lint, rust-test, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, app-lockfiles, upgrade-path]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -118,7 +118,7 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
           # job -> the `scope` output that decides whether it runs
-          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","upgrade-path":"upgrade_path"}'
+          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","app-lockfiles":"rust","upgrade-path":"upgrade_path"}'
         run: |
           # A push to master runs only the jobs that save caches (the merge queue ran
           # the rest on this tree), so there a gated job may be skipped.
@@ -506,6 +506,33 @@ jobs:
           # In CI the checkout is the merge commit; locally, the merge base with origin/master.
           if [ -n "${GITHUB_ACTIONS:-}" ]; then base="HEAD^1"; fi
           python3 scripts/check-api-compat.py ${base:+--base "$base"}
+
+  # Every app under apps/ is its own workspace, whose lockfile no other build updates:
+  # each must match its manifests, and change only when they need it to.
+  app-lockfiles:
+    name: App lockfiles
+    needs: scope
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Test the check
+        run: python3 scripts/tests/check-app-lockfiles-test.py
+
+      - name: Every app lockfile current, none rewritten without need
+        run: |
+          # In CI the checkout is the merge commit; locally, the merge base with origin/master.
+          if [ -n "${GITHUB_ACTIONS:-}" ]; then base="HEAD^1"; fi
+          python3 scripts/check-app-lockfiles.py ${base:+--base "$base"}
 
   rust-supply-chain:
     name: Rust supply chain
