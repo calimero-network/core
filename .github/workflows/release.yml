@@ -183,11 +183,14 @@ jobs:
 
       # Fat LTO compiles every crate differently from the other release builds
       # (ci-checks' `release` group), so a cut keeps its own group and saves it for
-      # the next cut (each runner's OS and architecture key it apart).
+      # the next cut. The runner names the group: rust-cache keys only OS and
+      # architecture (`Linux-x64`), so a target dir built on another image (24.04's,
+      # before the Linux builds moved to 22.04) would be restored and its crates
+      # would not load (`can't find crate for borsh`).
       - name: Setup Rust CI
         uses: ./.github/actions/setup-rust-ci
         with:
-          shared-key: release-lto
+          shared-key: release-lto-${{ matrix.runner }}
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
       - name: Update Bash
