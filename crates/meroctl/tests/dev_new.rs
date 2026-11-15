@@ -72,6 +72,11 @@ fn meroctl_with(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> std::process
     Command::new(env!("CARGO_BIN_EXE_meroctl"))
         .current_dir(cwd)
         .env("CALIMERO_HOME", cwd.join("home"))
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
+        .env_remove("EMAIL")
         .envs(env.iter().copied())
         .args(args)
         .output()
@@ -164,6 +169,10 @@ fn dev_new_without_a_git_identity_makes_the_project_and_says_so() {
             ("XDG_CONFIG_HOME", empty),
             ("GIT_CONFIG_GLOBAL", "/dev/null"),
             ("GIT_CONFIG_NOSYSTEM", "1"),
+            // Without this git derives an identity from the user and host name.
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "user.useConfigOnly"),
+            ("GIT_CONFIG_VALUE_0", "true"),
         ],
     );
     assert!(
