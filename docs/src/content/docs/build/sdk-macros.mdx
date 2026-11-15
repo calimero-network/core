@@ -142,6 +142,12 @@ receiver says its kind: `&mut self` is a call, `&self` with `#[app::view]` a
 view, and `#[app::init]` has no receiver and returns `Self`. Every method,
 `init` included, may take parameters, and every method returns `app::Result<T>`.
 
+A `///` comment on an exposed method is copied into the ABI as its `doc`
+([the ABI](/build/app-abi/)), so it is published with the app and shown to users
+as the publisher's description; keep internal notes in `//`. The node does not
+check it. A `#[doc = include_str!(..)]` or `concat!(..)` is left out, as a macro
+cannot read it.
+
 `init`'s parameters work like a call's: the node passes the app's `initArgs`
 (`POST /apps`, `meroctl instance create --params`) as a JSON object keyed by the
 camelCase parameter names, and the ABI lists them, so typed clients declare

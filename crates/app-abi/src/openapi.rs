@@ -588,6 +588,9 @@ impl Ctx {
             },
             "responses": responses,
         });
+        if let Some(doc) = &m.doc {
+            op["x-calimero-publisher-description"] = doc.as_str().into();
+        }
         if m.public {
             op["security"] = json!([{}, { "session": [] }]);
         }
@@ -860,5 +863,28 @@ mod tests {
         assert_eq!(type_name("Page<Booking>"), "Page_Booking");
         assert_eq!(type_name("crate::types::Room"), "Room");
         assert_eq!(type_name("Either<u8,String>"), "Either_u8_String");
+    }
+
+    #[test]
+    fn publisher_text_stays_out_of_the_enforced_description() {
+        let doc = "Books a room.\n\nPublic: callers who are not signed in may call it.";
+        let abi = AppAbi::from_json(&json!({
+            "abiVersion": 1,
+            "methods": { "book": {
+                "kind": "call", "params": [], "returns": null,
+                "confirm": false, "public": false, "allowSystem": false, "doc": doc,
+            } },
+        }))
+        .unwrap();
+        let info = Info {
+            title: "t".into(),
+            version: "1".into(),
+            app: None,
+        };
+        let op = &document(&abi, &info)["paths"]["/apps/{app}/methods/book"]["post"];
+        assert_eq!(op["x-calimero-publisher-description"], doc);
+        let description = op["description"].as_str().unwrap();
+        assert!(!description.contains("Books a room"), "{description}");
+        assert!(!description.contains("Public:"), "{description}");
     }
 }

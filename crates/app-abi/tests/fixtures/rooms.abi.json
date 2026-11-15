@@ -33,6 +33,7 @@
     "addRoom": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "Adds a room (admin); `Duplicate` when the id exists.",
       "kind": "call",
       "params": [
         [
@@ -54,6 +55,7 @@
     "adminRelease": {
       "allowSystem": false,
       "confirm": true,
+      "doc": "Frees any booking; the holder is told why. Needs a fresh passkey confirmation.",
       "kind": "call",
       "params": [
         [
@@ -71,6 +73,7 @@
     "availability": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "The held slots of `room_id` in the 24 hours from `day_start`; titles only for the\nholder and org admins.",
       "kind": "view",
       "params": [
         [
@@ -88,6 +91,7 @@
     "book": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "Books `slot_count` consecutive slots from `start` (member); returns the booking id.",
       "kind": "call",
       "params": [
         [
@@ -113,6 +117,7 @@
     "booking": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "One booking; `NotFound` unless the caller holds it or is an admin.",
       "kind": "view",
       "params": [
         [
@@ -126,6 +131,7 @@
     "cancel": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "Frees the booking's slots (holder only).",
       "kind": "call",
       "params": [
         [
@@ -139,6 +145,7 @@
     "checkIn": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "Marks the booking as used, so the timer keeps it (holder only).",
       "kind": "call",
       "params": [
         [
@@ -160,6 +167,7 @@
     "myBookings": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "The caller's bookings, earliest first.",
       "kind": "view",
       "params": [],
       "public": false,
@@ -168,6 +176,7 @@
     "releaseNoShows": {
       "allowSystem": true,
       "confirm": false,
+      "doc": "Releases bookings nobody checked in to, `CHECK_IN_GRACE_MS` after their start.",
       "every": "1m",
       "kind": "timer",
       "params": [],

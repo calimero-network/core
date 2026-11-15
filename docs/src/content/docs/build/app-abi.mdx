@@ -66,7 +66,9 @@ clients read it to learn the methods, arguments and results.
   [method attributes](/build/sdk-macros/#method-attributes): `confirm`,
   `public` (and `rate`), `allowSystem`, `every` on timers, `allowApps`,
   `allowAction`, `compute` (`fuel`, `memoryMib`, `wallSecs`, `result`) on compute
-  methods and `computeResult` on their result methods. A compute method's own
+  methods and `computeResult` on their result methods. `doc` is the method's `///`
+  comment, when it has one; UIs show it as the publisher's description, and the
+  node does not check it. A compute method's own
   kind makes a node that does not know compute refuse the bundle rather than
   serve the method as a call.
 - **`state`**: each field's kind, the search fields of each table, and the
@@ -98,7 +100,7 @@ The host reads `abiVersion` (and refuses one it does not support), the method
 kinds, and the flags: a view never runs as a write, `confirm` needs a fresh
 passkey assertion, `public` admits callers who are not signed in, `allowSystem`,
 `allowApps` and `allowAction` admit the node, other apps and the app's own
-actions. Free-form keys (`params`, `returns`, `errors`, `events`, `types`) describe the
+actions. Free-form keys (`params`, `returns`, `doc`, `errors`, `events`, `types`) describe the
 app to clients; nodes ignore them, so `types` came without an `abiVersion` bump: a
 node of an earlier release installs an app that carries it. A field the host enforces is added only with
 an `abiVersion` bump.
@@ -140,6 +142,8 @@ serves the one of the bundle an app runs at `GET /apps/{app}/openapi.json`
   documents the `412 CONFIRM_REQUIRED` step-up and its retry with `confirm`;
   a `public` one may be called without a session (`security: [{}, ...]`), and its
   `rate` is in `x-calimero-method`.
+  The method's `doc` is the operation's `x-calimero-publisher-description`, kept apart
+  from `description`, which states only what the node enforces.
 - **Events**: `GET /apps/{app}/events` answers `text/event-stream`; each frame's
   `event` is an event's name and `data` its fields (`<Name>Event`). An app with
   actions also gets the node's `ActionFailed { actionId, method, reason }`.
