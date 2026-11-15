@@ -28,7 +28,7 @@ export {
   useSetTeamMember,
   useRemoveTeamMember,
 } from './orgs';
-export type { OrgRole, TeamJoin, TeamRole, CreateTeamInput, TeamUpdate } from './orgs';
+export type { TeamJoin, CreateTeamInput, TeamUpdate } from './orgs';
 
 export { useCreateInvite, useRedeemInvite, useInviteRedemption, inviteLink, readInviteToken } from './invites';
 export type { CreateInviteInput, InviteRedemption, InviteRedemptionStatus } from './invites';

@@ -1,7 +1,9 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  // Split so both entries share one MeroContext (and its chunk) in ESM and CommonJS alike.
+  entry: { index: 'src/index.ts', 'node-shield': 'src/node-shield/index.ts' },
+  splitting: true,
   format: ['cjs', 'esm'],
   dts: true,
   sourcemap: true,

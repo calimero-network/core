@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMero } from '../context';
 import { describeError, type Failure } from '../errors';
 import { confirmWith, useClientAction, type MutationOptions } from './internal';
-import type { OrgRole } from './orgs';
+import type { OrgRole } from '@calimero-network/mero-js';
 
 const PARAM = 'invite';
 const STASH_KEY = 'mero:pendingInvite';

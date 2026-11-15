@@ -17,7 +17,7 @@
  * drops it when a refresh is refused.
  */
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { browserPasskey, CalimeroClient, LoginRequired } from '@calimero-network/mero-js';
 import type { CalimeroSession, PasskeyProvider } from '@calimero-network/mero-js';
 import { reportSessions, resolvePolicy, SessionReportingClient } from '../client';
@@ -36,7 +36,9 @@ import {
 } from '../storage';
 import type { MeroContextValue, MeroProviderConfig } from '../types';
 
-export const MeroContext = createContext<MeroContextValue | null>(null);
+import { MeroContext } from './context';
+
+export { MeroContext };
 
 export interface MeroProviderProps extends MeroProviderConfig {
   children: React.ReactNode;

@@ -7,13 +7,11 @@
  */
 
 import { useCallback } from 'react';
-import type { OrgInfo } from '@calimero-network/mero-js';
+import type { OrgInfo, OrgRole, TeamRole } from '@calimero-network/mero-js';
 import { useMero } from '../context';
 import { confirmWith, useClientAction, useResource, useSignedInClient, type MutationOptions } from './internal';
 
-export type OrgRole = 'guest' | 'member' | 'admin' | 'owner';
 export type TeamJoin = 'everyone' | 'invite';
-export type TeamRole = 'lead' | 'member' | 'readOnly';
 
 // ---------------------------------------------------------------- organizations
 

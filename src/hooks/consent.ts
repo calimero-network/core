@@ -90,7 +90,7 @@ export function useConsent(options?: MutationOptions) {
   const check = useCallback(
     (requestId: string) =>
       withClient(async (c) => {
-        const answer = (await c.consent.pageResult({ request: requestId }));
+        const answer = (await c.consent.pageResult({ request: requestId })) as ConsentResult;
         setResult(answer);
         return answer;
       }),

@@ -14,6 +14,7 @@ blobs, presence). It re-exports every mero-js export. See [README.md](README.md)
 - `src/context/`: `MeroContext`, the provider that holds the client.
 - `src/hooks/`: the hooks, one file per area.
 - `src/components/`: `ConnectButton`, `LoginModal` and their Storybook stories.
+- `src/node-shield/`: `NodeShield`, the separate `@calimero-network/mero-react/node-shield` entry.
 - `src/__tests__/`: the vitest tests (`fake.tsx` is their fake client); `src/test-utils/` holds `MockMeroProvider`.
 - `docs/`: the static docs site `static.yml` deploys to Pages.
 - `example/`: a separate demo project (its own `package.json` and lockfile), not part of the package.
@@ -25,7 +26,7 @@ These are the steps `ci.yml` runs:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm build                # tsup; CI checks dist/index.js, dist/index.cjs, dist/index.d.ts exist
+pnpm build                # tsup; CI checks every file package.json `exports` names exists
 pnpm test                 # vitest
 pnpm typecheck
 pnpm lint                 # eslint src

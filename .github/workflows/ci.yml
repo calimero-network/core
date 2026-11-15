@@ -32,10 +32,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Verify build artifacts
-        run: |
-          test -f dist/index.js
-          test -f dist/index.cjs
-          test -f dist/index.d.ts
+        run: node -e "const fs = require('fs'); for (const entry of Object.values(require('./package.json').exports)) for (const file of Object.values(entry)) fs.accessSync(file)"
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm lint
