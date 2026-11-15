@@ -1021,6 +1021,47 @@ async fn a_start_is_refused_with_a_stable_code() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_start_while_the_apps_leader_changes_finds_its_uploaded_file() {
+    let mut rig = Rig::start(&[]).await;
+    let file = rig.upload(b"some bytes").await;
+    let old = rig.c.app_leader(&rig.app).unwrap();
+    let alice = rig.c.client(usize::from(old == 0));
+    let mut pk = rig.pk;
+    let _s = alice.sign_in(&mut pk).await.unwrap();
+    // A start of no pipeline is refused after this node learned every node's release.
+    let ghost = alice
+        .start_pipeline_run(&rig.app, "ghost", json!({}), json!({}))
+        .await;
+    assert_eq!(ghost.unwrap_err().code(), Some("NO_SUCH_PIPELINE"));
+    let stopping = tokio::spawn(rig.c.nodes[old].take().unwrap().stop());
+    let started = alice
+        .start_pipeline_run(&rig.app, "broken", json!({ "docs": [file] }), json!({}))
+        .await;
+    stopping.await.unwrap();
+    assert!(started.is_ok(), "{started:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_start_while_the_app_has_no_leader_is_unavailable_not_expired() {
+    let mut rig = Rig::start_with(&[], |cfg| cfg.replicas = 1).await;
+    let file = rig.upload(b"some bytes").await;
+    let only = rig.c.app_leader(&rig.app).unwrap();
+    let alice = rig.c.client(usize::from(only == 0));
+    let mut pk = rig.pk;
+    let _s = alice.sign_in(&mut pk).await.unwrap();
+    // A start of no pipeline is refused after this node learned every node's release.
+    let ghost = alice
+        .start_pipeline_run(&rig.app, "ghost", json!({}), json!({}))
+        .await;
+    assert_eq!(ghost.unwrap_err().code(), Some("NO_SUCH_PIPELINE"));
+    rig.c.stop(only).await;
+    let started = alice
+        .start_pipeline_run(&rig.app, "broken", json!({ "docs": [file] }), json!({}))
+        .await;
+    assert_eq!(started.unwrap_err().code(), Some("UNAVAILABLE"));
+}
+
 fn cached(v: &Value, step: &str) -> bool {
     v["steps"][step]["cached"] == json!(true)
 }
