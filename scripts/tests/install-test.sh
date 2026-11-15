@@ -86,6 +86,22 @@ if run meroctl --version 1.0.0-rc.1 2>"$TMP/err" >/dev/null; then echo "FAIL tam
 check grep -q "does not match SHA256SUMS" "$TMP/err"
 check [ ! -e "$TMP/bin/meroctl" ]
 
+# A release being published: GitHub lists it (the workflow creates it before the
+# build, to pin its tag) while its archives are still uploading; SHA256SUMS,
+# written over every archive, can land first.
+CASE="without --version, a release still uploading is passed over for the newest complete one"
+release 1.0.0-rc.3
+rm -f "$TMP/releases/download/1.0.0-rc.3"/*.tar.gz
+printf '[\n  {\n    "tag_name": "1.0.0-rc.3",\n    "prerelease": true\n  },\n  {\n    "tag_name": "1.0.0-rc.2",\n    "prerelease": true\n  }\n]\n' > "$TMP/api/releases"
+rm -f "$TMP/bin/meroctl"
+run >/dev/null 2>"$TMP/err" || fail=1
+check [ "$("$TMP/bin/meroctl")" = "meroctl 1.0.0-rc.2" ]
+check grep -q "1.0.0-rc.3 is still being published" "$TMP/err"
+
+CASE="--version names a release still uploading: refused, never another"
+if run --version 1.0.0-rc.3 2>"$TMP/err" >/dev/null; then fail=1; fi
+check grep -q "1.0.0-rc.3 has no meroctl_${TARGET}.tar.gz yet" "$TMP/err"
+
 CASE="an unknown version fails with a hint"
 if run --version 9.9.9 2>"$TMP/err" >/dev/null; then fail=1; fi
 check grep -q "has no SHA256SUMS" "$TMP/err"
