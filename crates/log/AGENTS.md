@@ -13,6 +13,10 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `ensure_linearizable` and built again if entries committed meanwhile, so the
   builder may run twice (`FnMut`). Regression:
   `a_stale_build_by_a_deposed_leader_never_applies`.
+- Every leadership confirmation (`confirm_leader`: `read_strong`, a `Reply`, a build's term)
+  retries a round that missed a majority once per heartbeat, up to `election_max_ms`: one
+  slow heartbeat round (each waits one `heartbeat_ms`) is not a lost leader. Regression:
+  `a_strong_read_outlasts_a_heartbeat_round_its_followers_answer_late`.
 - `Group::propose_led` is `propose` that also hands the builder the `Leadership`
   (the term the same leadership check found: the metrics' term when they say this
   node leads, else the Raft core's after a confirmation; no extra round). Once per

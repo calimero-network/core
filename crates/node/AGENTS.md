@@ -758,7 +758,7 @@ is its command line.
   `plan` puts each run the cache answers (`CacheView::hit`: an entry whose outputs are all held) in `Start`/`More` `cached: [{ index, key }]` instead of `runs`; hits cost no room, and a wave ends at the first miss past its size.
   Apply takes the hits as finished runs in index order (an item row each with `cached_key`, `finished` counted, no `RunRecord`), settling the step at once when no run is left; a hit whose entry or outputs are gone ends the wave there (`CACHE_GONE` if it is the first), so the leader decides that index again.
   Entries leave past `MAX_CACHE_ENTRIES` (oldest first) and after `CACHE_TTL_MS` by the applied entry's timestamp (`expire_step_cache`, at most `CACHE_EXPIRY_STEP` per entry), releasing their holds; a hit refreshes the entry and moves it last.
-  `StepState::is_cached` and `cached_items` feed `cached` and `cachedItems` in the run view; a start naming a file id the app does not hold answers `410 OUTPUT_EXPIRED`.
+  `StepState::is_cached` and `cached_items` feed `cached` and `cachedItems` in the run view; a start naming a file id the app does not hold answers `410 OUTPUT_EXPIRED`, and `503 UNAVAILABLE` when the app's leader does not answer (regressions: `a_start_while_the_apps_leader_changes_finds_its_uploaded_file`, `a_start_while_the_app_has_no_leader_is_unavailable_not_expired`).
   Tests: `component/tests/pipelines.rs` (apply), `compute/pipelines.rs` (`plan` keys and hits), `pipeline_runs.rs` (`rerunning_with_one_changed_param_runs_only_the_steps_it_reaches`, `a_step_with_cache_false_always_runs`, `a_fan_out_reuses_its_cached_items`, `starting_with_an_expired_output_answers_output_expired`).
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas (`payer_quotas`: its override, else the cluster's, with `MoveApp { org_quotas }`, which the API always sets; `Feature::MoveOrgQuotas`, rc.24; an entry without it replays judging the cluster's limits). `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`) and a target that approves none of the releases holding the app (`MOVE_RELEASES_DISJOINT`); clients see each as `400 REJECTED` with the reason as the message. `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs` (`a_move_is_judged_by_the_targets_own_quota`), `tests/move_app.rs`.
@@ -1068,8 +1068,9 @@ is its command line.
 - **Blobs** (`POST/GET /apps/{app}/blobs[/{id}]`; how an app holds one: see
   "Component executor"): bytes live in the cluster's blob store (`hex(SHA-256)`, a
   majority before the answer, a missing one fetched from a peer). A download asks the
-  app's leader whether the app still holds the blob (`blob_held_strong`; 503 when no
-  leader answers). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) forgets it, then
+  app's leader whether the app still holds the blob (`blob_held_strong`, through
+  `Node::ask_leader`, which asks the replicas again through an election for up to
+  `LEADER_ANSWER_WAIT`; 503 when no leader answers by then). `DELETE /apps/{app}/blobs/{id}` (owner or org admin) forgets it, then
   `Node::collect_blob` deletes the bytes on every node (`internal/blob/delete`) unless
   another app still holds the same content (asked of each app's leader; an app whose
   leader does not answer counts as holding it) or it is a bundle or a release `.mpk`.
