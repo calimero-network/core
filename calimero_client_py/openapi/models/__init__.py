@@ -428,6 +428,7 @@ from .outbound_approval import OutboundApproval
 from .outbound_approved import OutboundApproved
 from .outbound_selection_type_0 import OutboundSelectionType0
 from .package import Package
+from .package_capabilities_response_200 import PackageCapabilitiesResponse200
 from .package_install_body import PackageInstallBody
 from .package_install_response_200 import PackageInstallResponse200
 from .package_install_response_200_services import PackageInstallResponse200Services
@@ -987,6 +988,7 @@ __all__ = (
     "OutboundApproved",
     "OutboundSelectionType0",
     "Package",
+    "PackageCapabilitiesResponse200",
     "PackageInstallBody",
     "PackageInstallResponse200",
     "PackageInstallResponse200Services",

@@ -4435,7 +4435,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "A pipeline run's receipt",
-        "description": "The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key.\n\n**Who:** signed in (a session or an API key).",
+        "description": "The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key. `version=2` adds what each job's report signs to its proof (`job`) and each job node's attestation (`jobAttestations`); the default, `1`, leaves them out.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -4462,6 +4462,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -4476,7 +4486,9 @@
                       "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
                     },
                     "node": {
-                      "type": "string"
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
                     },
                     "signature": {
                       "type": "string"
@@ -4490,6 +4502,19 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "`BAD_VERSION`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_VERSION"
+            ]
           },
           "401": {
             "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
@@ -4767,6 +4792,19 @@
             },
             "x-calimero-codes": [
               "TOO_MANY_PIPELINE_RUNS"
+            ]
+          },
+          "503": {
+            "description": "`UNAVAILABLE`: the cluster cannot answer now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAVAILABLE"
             ]
           }
         }
@@ -5169,6 +5207,19 @@
             },
             "x-calimero-codes": [
               "TOO_MANY_PIPELINE_RUNS"
+            ]
+          },
+          "503": {
+            "description": "`UNAVAILABLE`: the cluster cannot answer now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAVAILABLE"
             ]
           }
         }
@@ -24713,6 +24764,178 @@
             },
             "x-calimero-codes": [
               "FORBIDDEN"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/packages/{package}/{version}/capabilities": {
+      "get": {
+        "operationId": "package_capabilities",
+        "tags": [
+          "Packages"
+        ],
+        "x-calimero-group": "packages",
+        "summary": "A release's capabilities",
+        "description": "What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "package",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "service",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "package": {
+                      "type": "string"
+                    },
+                    "version": {
+                      "type": "string"
+                    },
+                    "service": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "bundle": {
+                      "type": "string"
+                    },
+                    "mpk": {
+                      "type": "string"
+                    },
+                    "manifestHash": {
+                      "type": "string"
+                    },
+                    "signer": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "author": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "outbound": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "abi": {
+                      "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
+                    }
+                  },
+                  "required": [
+                    "package",
+                    "version",
+                    "service",
+                    "bundle",
+                    "mpk",
+                    "manifestHash",
+                    "signer",
+                    "name",
+                    "author",
+                    "outbound",
+                    "abi"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_REQUEST`: the request is malformed; `NO_SUCH_SERVICE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_REQUEST",
+              "NO_SUCH_SERVICE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
             ]
           },
           "421": {

@@ -11,13 +11,23 @@ from ...models.error import Error
 from ...models.pipeline_receipt_receipt_response_200 import (
     PipelineReceiptReceiptResponse200,
 )
+from ...types import UNSET, Unset
 from typing import cast
+from typing import Union
 
 
 def _get_kwargs(
     app: str,
     run: str,
+    *,
+    version: Union[Unset, int] = UNSET,
 ) -> dict[str, Any]:
+
+    params: dict[str, Any] = {}
+
+    params["version"] = version
+
+    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
     _kwargs: dict[str, Any] = {
         "method": "get",
@@ -25,6 +35,7 @@ def _get_kwargs(
             app=app,
             run=run,
         ),
+        "params": params,
     }
 
     return _kwargs
@@ -37,6 +48,11 @@ def _parse_response(
         response_200 = PipelineReceiptReceiptResponse200.from_dict(response.json())
 
         return response_200
+
+    if response.status_code == 400:
+        response_400 = Error.from_dict(response.json())
+
+        return response_400
 
     if response.status_code == 401:
         response_401 = Error.from_dict(response.json())
@@ -85,17 +101,21 @@ def sync_detailed(
     run: str,
     *,
     client: AuthenticatedClient,
+    version: Union[Unset, int] = UNSET,
 ) -> Response[Union[Error, PipelineReceiptReceiptResponse200]]:
     """A pipeline run's receipt
 
      The owner and the organization's members. For an ended run: the receipt, the answering node and its
-    signature over it, by the node's receipt key.
+    signature over it, by the node's receipt key. `version=2` adds what each job's report signs to its
+    proof (`job`) and each job node's attestation (`jobAttestations`); the default, `1`, leaves them
+    out.
 
     **Who:** signed in (a session or an API key).
 
     Args:
         app (str):
         run (str):
+        version (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -108,6 +128,7 @@ def sync_detailed(
     kwargs = _get_kwargs(
         app=app,
         run=run,
+        version=version,
     )
 
     response = client.get_httpx_client().request(
@@ -122,17 +143,21 @@ def sync(
     run: str,
     *,
     client: AuthenticatedClient,
+    version: Union[Unset, int] = UNSET,
 ) -> Optional[Union[Error, PipelineReceiptReceiptResponse200]]:
     """A pipeline run's receipt
 
      The owner and the organization's members. For an ended run: the receipt, the answering node and its
-    signature over it, by the node's receipt key.
+    signature over it, by the node's receipt key. `version=2` adds what each job's report signs to its
+    proof (`job`) and each job node's attestation (`jobAttestations`); the default, `1`, leaves them
+    out.
 
     **Who:** signed in (a session or an API key).
 
     Args:
         app (str):
         run (str):
+        version (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -146,6 +171,7 @@ def sync(
         app=app,
         run=run,
         client=client,
+        version=version,
     ).parsed
 
 
@@ -154,17 +180,21 @@ async def asyncio_detailed(
     run: str,
     *,
     client: AuthenticatedClient,
+    version: Union[Unset, int] = UNSET,
 ) -> Response[Union[Error, PipelineReceiptReceiptResponse200]]:
     """A pipeline run's receipt
 
      The owner and the organization's members. For an ended run: the receipt, the answering node and its
-    signature over it, by the node's receipt key.
+    signature over it, by the node's receipt key. `version=2` adds what each job's report signs to its
+    proof (`job`) and each job node's attestation (`jobAttestations`); the default, `1`, leaves them
+    out.
 
     **Who:** signed in (a session or an API key).
 
     Args:
         app (str):
         run (str):
+        version (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -177,6 +207,7 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         app=app,
         run=run,
+        version=version,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -189,17 +220,21 @@ async def asyncio(
     run: str,
     *,
     client: AuthenticatedClient,
+    version: Union[Unset, int] = UNSET,
 ) -> Optional[Union[Error, PipelineReceiptReceiptResponse200]]:
     """A pipeline run's receipt
 
      The owner and the organization's members. For an ended run: the receipt, the answering node and its
-    signature over it, by the node's receipt key.
+    signature over it, by the node's receipt key. `version=2` adds what each job's report signs to its
+    proof (`job`) and each job node's attestation (`jobAttestations`); the default, `1`, leaves them
+    out.
 
     **Who:** signed in (a session or an API key).
 
     Args:
         app (str):
         run (str):
+        version (Union[Unset, int]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -214,5 +249,6 @@ async def asyncio(
             app=app,
             run=run,
             client=client,
+            version=version,
         )
     ).parsed

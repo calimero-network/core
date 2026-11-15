@@ -191,6 +191,7 @@ from .openapi.api.packages import bundle_put as _bundle_put
 from .openapi.api.packages import origins_add as _origins_add
 from .openapi.api.packages import origins_list as _origins_list
 from .openapi.api.packages import origins_remove as _origins_remove
+from .openapi.api.packages import package_capabilities as _package_capabilities
 from .openapi.api.packages import package_get as _package_get
 from .openapi.api.packages import package_install as _package_install
 from .openapi.api.packages import package_list as _package_list
@@ -1091,16 +1092,17 @@ class Apps(Group):
         """
         return self._run(_APP_OPENAPI, (app,), {}, None)
 
-    def pipeline_receipt_receipt(self, *, app, run):
+    def pipeline_receipt_receipt(self, *, app, run, version=UNSET):
         """A pipeline run's receipt (`GET /apps/{app}/pipeline-runs/{run}/receipt`, `pipeline_receipt_receipt`).
 
-        The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key.
+        The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key. `version=2` adds what each job's report signs to its proof (`job`) and each job node's attestation (`jobAttestations`); the default, `1`, leaves them out.
 
         **Who:** signed in (a session or an API key).
 
         Args:
             app: path
             run: path
+            version: query
 
         Returns: PipelineReceiptReceiptResponse200
         """
@@ -1110,7 +1112,7 @@ class Apps(Group):
                 app,
                 run,
             ),
-            {},
+            {"version": version},
             None,
         )
 
@@ -4891,6 +4893,12 @@ _BUNDLE_PUT = Operation(
     body="bytes",
     answer="json",
 )
+_PACKAGE_CAPABILITIES = Operation(
+    _package_capabilities,
+    "package_capabilities",
+    body="none",
+    answer="json",
+)
 _PACKAGE_GET = Operation(
     _package_get,
     "package_get",
@@ -4967,6 +4975,30 @@ class Packages(Group):
         Returns: BundlePutResponse200
         """
         return self._run(_BUNDLE_PUT, (), {}, body)
+
+    def capabilities(self, *, package, version, service=UNSET):
+        """A release's capabilities (`GET /packages/{package}/{version}/capabilities`, `package_capabilities`).
+
+        What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+
+        **Who:** signed in (a session or an API key).
+
+        Args:
+            package: path
+            version: path
+            service: query
+
+        Returns: PackageCapabilitiesResponse200
+        """
+        return self._run(
+            _PACKAGE_CAPABILITIES,
+            (
+                package,
+                version,
+            ),
+            {"service": service},
+            None,
+        )
 
     def get(self, *, package):
         """One package (`GET /packages/{package}`, `package_get`).

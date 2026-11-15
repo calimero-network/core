@@ -22,7 +22,7 @@ codes the document lists for the method beyond the ones every call can get
 (`UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, ...): see
 [errors](/reference/errors/).
 
-Generated from core `f9f06c789`.
+Generated from core `d958c1b7e`.
 
 ## `client.apps`
 
@@ -51,7 +51,7 @@ Generated from core `f9f06c789`.
 | `method(app, method, args=…, idempotency_key=…, consistency=…, min_index=…, confirm=None)` | `POST /apps/{app}/methods/{method}` | Call a method by its path. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `400 RESERVED_METHOD`, `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 NOT_CAUGHT_UP`, `503 TIMEOUT` |
 | `move(app, to_org, bring_members=…, confirm=None)` | `POST /apps/{app}/move` | Move an app to another organization. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
 | `openapi(app)` | `GET /apps/{app}/openapi.json` | An app's OpenAPI document. *Refusals:* `410 UNSUPPORTED_ENGINE`, `422 BAD_ABI` |
-| `pipeline_receipt_receipt(app, run)` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | A pipeline run's receipt. *Refusals:* `409 RUN_NOT_ENDED` |
+| `pipeline_receipt_receipt(app, run, version=…)` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | A pipeline run's receipt. *Refusals:* `400 BAD_VERSION`, `409 RUN_NOT_ENDED` |
 | `pipelines_cancel(app, run)` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a pipeline run |
 | `pipelines_estimate_run(app, name, inputs=…, counts=…, params=…)` | `POST /apps/{app}/pipelines/{name}/estimate` | Estimate a pipeline run. *Refusals:* `400 BAD_INPUTS`, `400 BAD_PARAMS`, `404 NO_SUCH_PIPELINE` |
 | `pipelines_get(app, run)` | `GET /apps/{app}/pipeline-runs/{run}` | One pipeline run |
@@ -241,6 +241,7 @@ Generated from core `f9f06c789`.
 | Method | Route | What it does |
 | --- | --- | --- |
 | `bundle_put(body)` | `POST /bundles` | Upload a raw component. *Refusals:* `400 BAD_BUNDLE`, `400 UNSUPPORTED_BUNDLE`, `429 QUOTA_EXCEEDED` |
+| `capabilities(package, version, service=…)` | `GET /packages/{package}/{version}/capabilities` | A release's capabilities. *Refusals:* `400 NO_SUCH_SERVICE` |
 | `get(package)` | `GET /packages/{package}` | One package |
 | `install(package, version)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED` |
 | `list()` | `GET /packages` | Installed packages |

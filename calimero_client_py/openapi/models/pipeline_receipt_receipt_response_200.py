@@ -14,12 +14,12 @@ class PipelineReceiptReceiptResponse200:
     """
     Attributes:
         receipt (Any): Free-form JSON: its shape is not this API's (see the description around it for whose it is).
-        node (str):
+        node (int):
         signature (str):
     """
 
     receipt: Any
-    node: str
+    node: int
     signature: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
