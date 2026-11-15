@@ -6,6 +6,8 @@
 )]
 use super::*;
 
+const MAX_SERVICE_QUERY_BYTES: usize = 128; // a service name in `?service=`
+
 async fn bundle_put(State(node): State<Arc<Node>>, headers: HeaderMap, body: Body) -> ApiResult {
     let account = installer(&node, &headers).await?.account()?;
     node.refuse_undeployable(&account).await?;
@@ -190,6 +192,45 @@ async fn package_pipelines(
         })
         .ok_or_else(|| ApiError::not_found("no such package version"))?;
     Ok(Json(node.release_pipelines(&refs).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CapabilitiesQuery {
+    #[serde(default)]
+    service: Option<String>,
+}
+
+/// A release's capability card, before any app of it exists.
+async fn package_capabilities(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((package, version)): Path<(String, String)>,
+    Query(q): Query<CapabilitiesQuery>,
+) -> ApiResult {
+    let principal = signed_in(&node, &headers).await?;
+    if q.service
+        .as_ref()
+        .is_some_and(|s| s.len() > MAX_SERVICE_QUERY_BYTES)
+    {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            &format!("service is limited to {MAX_SERVICE_QUERY_BYTES} bytes"),
+        ));
+    }
+    let account = principal.account()?;
+    let frontend = principal.bound_app() == Some(package.as_str());
+    node.sys_fresh_from(principal.sys_index).await;
+    let release = node
+        .sys(|s| {
+            let v = s.packages.get(&package)?.versions.get(&version)?;
+            (frontend || s.sees_release(v, &account)).then(|| v.clone())
+        })
+        .ok_or_else(|| ApiError::not_found("no such package version"))?;
+    Ok(Json(
+        crate::consent_page::release_capabilities(&node, &package, &release, q.service.as_deref())
+            .await?,
+    ))
 }
 
 async fn package_uninstall(
@@ -412,6 +453,10 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route(
             "/packages/{package}/{version}/pipelines",
             get(package_pipelines),
+        )
+        .route(
+            "/packages/{package}/{version}/capabilities",
+            get(package_capabilities),
         )
         .route("/orgs/{org}/publishers", post(org_publisher))
         .route("/publishers/{signer}", get(publisher_binding))

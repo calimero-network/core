@@ -5549,6 +5549,26 @@ pub struct PackageInstallResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PackageCapabilitiesResponse {
+    pub package: String,
+    pub version: String,
+    pub service: Option<String>,
+    pub bundle: String,
+    pub mpk: String,
+    #[serde(rename = "manifestHash")]
+    pub manifest_hash: String,
+    pub signer: String,
+    pub name: Option<String>,
+    pub author: Option<String>,
+    pub outbound: Vec<String>,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub abi: Value,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PackagePipelinesResponseValue {
     pub hash: String,
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).

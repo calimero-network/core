@@ -96,6 +96,17 @@ fn side(s: &Side<'_>) -> Value {
     })
 }
 
+/// A release on its own: [`side`] plus its author, outbound prefixes and embedded ABI.
+#[must_use]
+pub fn capability_card(s: &Side<'_>) -> Value {
+    let mut card = side(s);
+    // SAFETY: `side` builds an object, which string keys index.
+    card["author"] = json!(s.manifest.metadata.as_ref().and_then(|m| m.author.clone()));
+    card["outbound"] = json!(s.manifest.outbound.iter().collect::<BTreeSet<_>>());
+    card["abi"] = json!(s.abi);
+    card
+}
+
 /// `{ added, removed, kept }` from `before` to `after`, each sorted.
 fn set_diff(before: BTreeSet<String>, after: BTreeSet<String>) -> Value {
     json!({

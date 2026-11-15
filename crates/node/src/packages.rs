@@ -670,16 +670,25 @@ impl Node {
             .get(key)
             .cloned()
             .map(|b| (b, compute.get(key).cloned(), release));
-        found.ok_or_else(|| {
-            let names: Vec<&String> = services.keys().collect();
-            ApiError::bad_request(
-                "NO_SUCH_SERVICE",
-                &if key.is_empty() {
-                    format!("{package}@{version} has several services; name one of {names:?}")
-                } else {
-                    format!("{package}@{version} has no service {key}")
-                },
-            )
-        })
+        found.ok_or_else(|| no_such_service(package, &version, key, &services))
     }
+}
+
+/// `400 NO_SUCH_SERVICE`: `key` names none of `services`, or is empty and the
+/// release has several.
+pub(crate) fn no_such_service(
+    package: &str,
+    version: &str,
+    key: &str,
+    services: &BTreeMap<String, String>,
+) -> ApiError {
+    let names: Vec<&String> = services.keys().collect();
+    ApiError::bad_request(
+        "NO_SUCH_SERVICE",
+        &if key.is_empty() {
+            format!("{package}@{version} has several services; name one of {names:?}")
+        } else {
+            format!("{package}@{version} has no service {key}")
+        },
+    )
 }
