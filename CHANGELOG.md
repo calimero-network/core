@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.26] - 2026-11-15
+
 ### Changed
 
 - **`meroctl context` is `meroctl instance`**: 1.0 has app instances, not
@@ -13,6 +15,14 @@
   id) is unchanged.
 
 ### Fixed
+
+- **A strong read or a write's confirmation outlasts one slow heartbeat round**
+  (`calimero-log`, #5086): a leadership round that missed a majority is retried
+  once per heartbeat up to the election timeout, where a single late round made
+  the leader give up.
+- **Starting a pipeline during an election** (`calimero-node`, #5085): the check
+  of a pipeline start's inputs asks the app's leader again for up to 5 seconds
+  (`LEADER_ANSWER_WAIT`), where a start sent mid-election was refused.
 
 - **`meroctl local up` starts the cluster with the public registry**: `meroctl app
   install PACKAGE@VERSION` on a local cluster answered `400 NO_REGISTRY`, since
