@@ -163,7 +163,10 @@ export function canonicalizeManifest(manifest: { [key: string]: Json }): Uint8Ar
 
 // Manifests hold only strings, safe integers, arrays and objects, where JSON.stringify's
 // string and integer forms are RFC 8785's; keys sort by UTF-16 code unit, the default order.
-function jcs(value: Json): string {
+// With `anyNumber` (a node's receipt, which carries user params) every finite number is allowed:
+// RFC 8785 writes numbers as ECMAScript does, which `String` gives, and core's canonicalizer
+// converts every number to f64 first, so a number JSON.parse rounded canonicalizes as core's does.
+export function jcs(value: Json, anyNumber = false): string {
   if (typeof value === 'string') {
     if (/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(value)) {
       throw new Error('a lone surrogate cannot be canonicalized');
@@ -171,14 +174,17 @@ function jcs(value: Json): string {
     return JSON.stringify(value);
   }
   if (typeof value === 'number') {
-    if (!Number.isSafeInteger(value)) throw new Error('only safe integers can be canonicalized');
+    if (anyNumber ? !Number.isFinite(value) : !Number.isSafeInteger(value)) {
+      throw new Error(anyNumber ? 'a non-finite number cannot be canonicalized' : 'only safe integers can be canonicalized');
+    }
     return String(value);
   }
   if (value === null || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) return `[${value.map(jcs).join(',')}]`;
+  if (typeof value !== 'object') throw new Error(`a ${typeof value} cannot be canonicalized`);
+  if (Array.isArray(value)) return `[${value.map((v) => jcs(v, anyNumber)).join(',')}]`;
   return `{${Object.keys(value)
     .sort()
-    .map((k) => `${jcs(k)}:${jcs(value[k])}`)
+    .map((k) => `${jcs(k, anyNumber)}:${jcs(value[k], anyNumber)}`)
     .join(',')}}`;
 }
 

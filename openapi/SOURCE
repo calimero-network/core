@@ -3,5 +3,5 @@
 # Refresh it with `scripts/refresh-openapi.sh [<core ref>]`.
 repository=calimero-network/core
 path=docs/public/openapi.json
-ref=master
-commit=f0b0a6b9dcfd3b33f0fbe443aeafc50a93aed228
+ref=84724c0a83da157b43c1b0db19b2fd15ba6c1800
+commit=84724c0a83da157b43c1b0db19b2fd15ba6c1800

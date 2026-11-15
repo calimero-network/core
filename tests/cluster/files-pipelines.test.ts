@@ -14,6 +14,8 @@ const COMPUTE_WASM = process.env.COMPUTE_WASM;
 const COMPUTE_DIR = process.env.COMPUTE_FIXTURE_DIR;
 const sha256 = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
 const SIZES = [300_000, 120_000, 70_000];
+// Set by core's CI: a missing compute fixture or job node fails the suite instead of skipping the pipeline test.
+const REQUIRE_COMPUTE = process.env.MERO_JS_REQUIRE_COMPUTE === '1';
 
 let cluster: LocalCluster;
 
@@ -29,10 +31,13 @@ async function kvApp(c: CalimeroClient, name: string): Promise<string> {
 }
 
 beforeAll(async () => {
+  if (REQUIRE_COMPUTE && (!COMPUTE_WASM || !COMPUTE_DIR)) throw new Error('MERO_JS_REQUIRE_COMPUTE is set but COMPUTE_WASM or COMPUTE_FIXTURE_DIR is not');
   cluster = await startCluster(3, { jobNode: Boolean(COMPUTE_WASM) });
 });
 
 afterAll(() => cluster?.stop());
+
+type Receipt = { version: number; steps: Record<string, { runs: { outputs?: { id: string; size: number }[]; jobKey?: string }[] }>; jobAttestations?: Record<string, unknown> };
 
 describe('sealed files', () => {
   it('uploads a multi-part file, reads its info and exports it back byte for byte', async () => {
@@ -67,7 +72,7 @@ describe('sealed files', () => {
   });
 });
 
-describe.skipIf(!COMPUTE_WASM || !COMPUTE_DIR)('a signed compute package', () => {
+describe.skipIf(!REQUIRE_COMPUTE && (!COMPUTE_WASM || !COMPUTE_DIR))('a signed compute package', () => {
   it('is built and signed in JS, installed, run as a pipeline and its outputs downloaded', async () => {
     const alice = await person(0, 'alice-pipelines');
     const key = await generatePublisherKey();
@@ -90,7 +95,10 @@ describe.skipIf(!COMPUTE_WASM || !COMPUTE_DIR)('a signed compute package', () =>
     for (const f of files) ids.push((await alice.uploadFile(app, f)).id);
 
     // Starting a run needs a job node; without one (no MEROCTL to register it) the package is only installed.
-    if (!cluster.jobUrl) return;
+    if (!cluster.jobUrl) {
+      if (REQUIRE_COMPUTE) throw new Error('MERO_JS_REQUIRE_COMPUTE is set but no job node started (MEROCTL)');
+      return;
+    }
     const { run } = await alice.transport.json<{ run: string }>('POST', `apps/${app}/pipelines/fanout/runs`, {
       body: { inputs: { docs: ids }, params: {} },
     });
@@ -110,5 +118,21 @@ describe.skipIf(!COMPUTE_WASM || !COMPUTE_DIR)('a signed compute package', () =>
     expect(Buffer.compare(each[1], files[2])).toBe(0);
     const all = await alice.exportFile(app, view.steps.all.outputs[0].id);
     expect(all.length).toBe(SIZES.reduce((a, b) => a + b));
+
+    const answer = await alice.pipelineReceipt(app, run);
+    const receipt = (await alice.verifyPipelineReceipt(app, run, answer)) as unknown as Receipt;
+    expect(receipt.version).toBe(2);
+    for (const [name, step] of Object.entries(receipt.steps)) {
+      const outputs = step.runs.flatMap((r) => r.outputs ?? []);
+      expect(outputs.map((o) => o.id)).toEqual((view.steps[name]?.outputs ?? []).map((o) => o.id));
+      for (const r of step.runs) if (r.jobKey) expect(receipt.jobAttestations).toHaveProperty([r.jobKey]);
+    }
+    expect(Object.keys(receipt.jobAttestations ?? {}).length).toBeGreaterThan(0);
+
+    const forged = JSON.parse(JSON.stringify(answer)) as { receipt: Receipt };
+    const withOutput = Object.values(forged.receipt.steps).flatMap((s) => s.runs).find((r) => r.outputs?.length);
+    (withOutput?.outputs as { size: number }[])[0].size += 1;
+    await expect(alice.verifyPipelineReceipt(app, run, forged as never)).rejects.toThrow('not signed by that key');
+    await expect(alice.verifyPipelineReceipt(app, `${run}-other`, answer)).rejects.toThrow(`is for run ${run}`);
   });
 });

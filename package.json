@@ -65,7 +65,8 @@
     "test:cluster": "vitest run --config vitest.cluster.config.ts",
     "gen:api": "openapi-typescript openapi/core-openapi.json -o src/generated/api.ts && node scripts/gen-methods.mjs",
     "check:api": "pnpm gen:api && git diff --exit-code -- src/generated",
-    "refresh:openapi": "scripts/refresh-openapi.sh"
+    "refresh:openapi": "scripts/refresh-openapi.sh",
+    "refresh:receipt-vectors": "scripts/refresh-receipt-vectors.sh"
   },
   "files": [
     "dist"

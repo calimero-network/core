@@ -4435,7 +4435,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "A pipeline run's receipt",
-        "description": "The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key.\n\n**Who:** signed in (a session or an API key).",
+        "description": "The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key. `version=2` adds what each job's report signs to its proof (`job`) and each job node's attestation (`jobAttestations`); the default, `1`, leaves them out.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -4462,6 +4462,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -4476,7 +4486,9 @@
                       "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
                     },
                     "node": {
-                      "type": "string"
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
                     },
                     "signature": {
                       "type": "string"
@@ -4490,6 +4502,19 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "`BAD_VERSION`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_VERSION"
+            ]
           },
           "401": {
             "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
@@ -4767,6 +4792,19 @@
             },
             "x-calimero-codes": [
               "TOO_MANY_PIPELINE_RUNS"
+            ]
+          },
+          "503": {
+            "description": "`UNAVAILABLE`: the cluster cannot answer now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAVAILABLE"
             ]
           }
         }
@@ -5169,6 +5207,19 @@
             },
             "x-calimero-codes": [
               "TOO_MANY_PIPELINE_RUNS"
+            ]
+          },
+          "503": {
+            "description": "`UNAVAILABLE`: the cluster cannot answer now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAVAILABLE"
             ]
           }
         }
@@ -6370,7 +6421,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Read with a view method",
-        "description": "Read on a caught-up replica (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it), or (`\"stale\"`) on the one answering; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
+        "description": "Read linearizably (`consistency: \"strong\"`, the default; any value but `\"stale\"` reads as it): the replica answering waits until it applied the index the app's leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (`\"stale\"`) on the replica answering, as it stands; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.\n\n**Who:** whoever the app's access admits (a public app: anyone).",
         "security": [
           {
             "session": []
@@ -14600,6 +14651,148 @@
                 "$ref": "#/components/schemas/OperatorSignatureRequired"
               }
             }
+          }
+        }
+      }
+    },
+    "/ops/job-nodes/{id}/attestation": {
+      "get": {
+        "operationId": "ops_job_node_attestation",
+        "tags": [
+          "Ops"
+        ],
+        "x-calimero-group": "ops",
+        "summary": "Whether the cluster accepts a job node",
+        "description": "Runs the check the leader makes before it sends a job node work: a quote that passes the release policy, this cluster and node, this cluster's identity, a release not retired (not the per-app release approval). `admitted` carries the attested `release`; `refused` (final), with the reason: a 400 or 404 from the node, a 2xx that is oversized or does not decode, a failed verification, or a 400 or 404 from the collateral source on the PCK certificate or TCB info request; `unreachable` (transient), with the reason: anything else, including no answer, any other status from the node and any other collateral failure. `503` when this node's directory is stale. A verified answer is reused for up to a minute.\n\n**Who:** the ops token.",
+        "security": [
+          {
+            "opsToken": []
+          }
+        ],
+        "x-calimero-who": "the ops token",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "admitted"
+                          ]
+                        },
+                        "node": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "release": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "node",
+                        "release"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "refused",
+                            "unreachable"
+                          ]
+                        },
+                        "node": {
+                          "type": "integer",
+                          "format": "int64",
+                          "minimum": 0
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "node",
+                        "reason"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "503": {
+            "description": "`UNAVAILABLE`: the cluster cannot answer now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAVAILABLE"
+            ]
           }
         }
       }

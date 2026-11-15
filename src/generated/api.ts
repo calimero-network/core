@@ -635,7 +635,7 @@ export interface paths {
         };
         /**
          * A pipeline run's receipt
-         * @description The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key.
+         * @description The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key. `version=2` adds what each job's report signs to its proof (`job`) and each job node's attestation (`jobAttestations`); the default, `1`, leaves them out.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -927,7 +927,7 @@ export interface paths {
         put?: never;
         /**
          * Read with a view method
-         * @description Read on a caught-up replica (`consistency: "strong"`, the default; any value but `"stale"` reads as it), or (`"stale"`) on the one answering; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
+         * @description Read linearizably (`consistency: "strong"`, the default; any value but `"stale"` reads as it): the replica answering waits until it applied the index the app's leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (`"stale"`) on the replica answering, as it stands; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
          *
          *     **Who:** whoever the app's access admits (a public app: anyone).
          */
@@ -2128,6 +2128,28 @@ export interface paths {
          *     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
          */
         post: operations["ops_deployments_granted"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ops/job-nodes/{id}/attestation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether the cluster accepts a job node
+         * @description Runs the check the leader makes before it sends a job node work: a quote that passes the release policy, this cluster and node, this cluster's identity, a release not retired (not the per-app release approval). `admitted` carries the attested `release`; `refused` (final), with the reason: a 400 or 404 from the node, a 2xx that is oversized or does not decode, a failed verification, or a 400 or 404 from the collateral source on the PCK certificate or TCB info request; `unreachable` (transient), with the reason: anything else, including no answer, any other status from the node and any other collateral failure. `503` when this node's directory is stale. A verified answer is reused for up to a minute.
+         *
+         *     **Who:** the ops token.
+         */
+        get: operations["ops_job_node_attestation"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6947,7 +6969,9 @@ export interface operations {
     };
     pipeline_receipt_receipt: {
         parameters: {
-            query?: never;
+            query?: {
+                version?: number;
+            };
             header?: never;
             path: {
                 app: string;
@@ -6966,9 +6990,19 @@ export interface operations {
                     "application/json": {
                         /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
                         receipt: unknown;
-                        node: string;
+                        /** Format: int64 */
+                        node: number;
                         signature: string;
                     };
+                };
+            };
+            /** @description `BAD_VERSION` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
@@ -7124,6 +7158,15 @@ export interface operations {
             };
             /** @description `TOO_MANY_PIPELINE_RUNS` */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAVAILABLE`: the cluster cannot answer now */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7337,6 +7380,15 @@ export interface operations {
             };
             /** @description `TOO_MANY_PIPELINE_RUNS` */
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAVAILABLE`: the cluster cannot answer now */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12111,6 +12163,76 @@ export interface operations {
             };
             /** @description `OPERATOR_SIGNATURE_REQUIRED`: the operator key must sign the decision; `details` names the statement. `details` of `OPERATOR_SIGNATURE_REQUIRED`: a `OperatorSignatureRequired`. */
             428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    ops_job_node_attestation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        state: "admitted";
+                        /** Format: int64 */
+                        node: number;
+                        release: string;
+                    } | {
+                        /** @enum {string} */
+                        state: "refused" | "unreachable";
+                        /** Format: int64 */
+                        node: number;
+                        reason: string;
+                    };
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAVAILABLE`: the cluster cannot answer now */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

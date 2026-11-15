@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import type { Governance } from '../client/approvals.js';
 import { hex } from '../crypto/internal.js';
 import {
   backupPublicKey,
@@ -59,9 +60,9 @@ describe('a recovery file attestation', () => {
   it('binds the nonce and the receipt key as core does', async () => {
     expect(await recoveryAttestationNonce(binding.cluster, binding.node)).toBe(binding.nonce);
     const key = fromHexStr(binding.signingKey);
-    expect(await receiptKeyBinding(key, binding.governance, binding.cluster, binding.node)).toBe(binding.binding);
+    expect(await receiptKeyBinding(key, binding.governance as Governance, binding.cluster, binding.node)).toBe(binding.binding);
     // Another node's quote binds other bytes.
-    expect(await receiptKeyBinding(key, binding.governance, binding.cluster, binding.node + 1)).not.toBe(
+    expect(await receiptKeyBinding(key, binding.governance as Governance, binding.cluster, binding.node + 1)).not.toBe(
       binding.binding,
     );
   });
@@ -79,7 +80,7 @@ describe('a recovery file attestation', () => {
         cluster: binding.cluster,
         node: binding.node,
         receiptKey: binding.signingKey,
-        governance: binding.governance,
+        governance: binding.governance as Governance,
       },
     };
     const asked: unknown[] = [];
@@ -93,6 +94,10 @@ describe('a recovery file attestation', () => {
     await expect(verifyRecoveryAttestation(otherKey, verifyQuote)).rejects.toThrow(/signed/);
     await expect(verifyRecoveryAttestation({ ...header, attestation: null }, verifyQuote)).rejects.toThrow(
       /no attestation/,
+    );
+    const { governance: _governance, ...noGovernance } = attested.attestation;
+    await expect(verifyRecoveryAttestation({ ...attested, attestation: noGovernance }, verifyQuote)).rejects.toThrow(
+      'names no governance',
     );
   });
 });

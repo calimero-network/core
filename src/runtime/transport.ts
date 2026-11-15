@@ -371,6 +371,11 @@ export class NodeTransport implements Transport {
     return this.current;
   }
 
+  /** @internal The policy nodes are attested under, for the client's own verification (not part of the public API). */
+  get nodePolicy(): NodePolicy | undefined {
+    return this.policy;
+  }
+
   /** The sealed channel to `url`, attested under the policy before its first request. */
   private channel(url: string): typeof fetch {
     let channel = this.channels.get(url);

@@ -333,12 +333,19 @@ generated client sends through. `options` takes `query`, a JSON `body` or raw
 `new CalimeroClient(transport)` builds a client on a `NodeTransport` made
 elsewhere.
 
+## Pipeline receipts
+
+`client.pipelineReceipt(app, run)` fetches the signed receipt of an ended pipeline run as version 2, and
+`client.verifyPipelineReceipt(app, run, answer)` checks it as core's `Client::verify_receipt` does.
+It attests every replica of the app under the client's policy, checks the answering node's signature and that the
+receipt is for that app and run, then proves each job's report: the job key signed what the proof says, and a job node's
+quote binds that key to its node, the cluster and the cluster identity.
+A version 1 receipt is refused.
+The test vectors come from core (`pnpm refresh:receipt-vectors`).
+
 ## Not covered
 
 - The rest of `/ops/*`, the operator's API: use core's `meroctl`.
-- `/apps/{app}/attestation` and receipt verification (core's
-  `Client::verify_app_cluster`, which checks every replica's receipt key and the
-  cluster's governance): not yet in this client.
 - `/internal/*`: node to node only.
 
 ## Other exports

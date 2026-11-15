@@ -15,7 +15,7 @@ calls apps. See [README.md](README.md) and the docs site, whose source is `docs/
 - `src/sealed/`: the sealed channel (Noise) and release checks.
 - `src/package/`: building and signing a compute-only `.mpk` (golden vectors in `fixtures/` come from core's `calimero-bundle`).
 - `src/routes/`: the route client the generated methods call through.
-- `src/client/`: `CalimeroClient` and its helpers.
+- `src/client/`: `CalimeroClient` and its helpers. `receipts.ts` mirrors core's `calimero-client` receipt checks (the receipt and each job's report); its vectors in `fixtures/receipt-vectors.json` are core's: `pnpm refresh:receipt-vectors`, never hand-edited.
 - `src/generated/`: **generated, do not edit** (see below).
 - `tests/cluster/`: the cluster suite (`vitest.cluster.config.ts`); `tests/consumer/` is what `typecheck:consumer` compiles; unit tests sit beside the code as `src/**/*.test.ts`, and `typecheck:tests` (`tsconfig.test.json`) compiles them with `tests/cluster` and `tests/support`.
 

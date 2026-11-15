@@ -38,6 +38,8 @@ export interface Governance {
   deployments?: 'open' | 'granted';
   /** Who grants deployers: the operator (left out) or the cluster's owner. */
   deployers?: 'operator' | 'owner';
+  /** Who may create an account: anyone (`open`, left out), invitees or pre-authorized people only. */
+  signUp?: 'open' | 'invite' | 'closed';
 }
 
 // ---------------------------------------------------------------- reports

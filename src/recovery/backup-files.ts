@@ -25,6 +25,7 @@
 
 import { concat, fromHex, hex } from '../crypto/internal.js';
 import { dh, x25519KeyPair } from '../sealed/noise.js';
+import type { Governance } from '../client/approvals.js';
 import type { VerifyTransportQuote } from '../sealed/sealed.js';
 
 export const RECOVERY_FORMAT = 1;
@@ -244,6 +245,28 @@ export async function recoveryAttestationNonce(cluster: string, node: number): P
   return hex(await sha256(concat(utf8('calimero.recovery-backup.attest.v1\0'), len, name, id)));
 }
 
+const one = <T extends string>(value: unknown, allowed: readonly T[], label: string, fallback?: T): T => {
+  if (value === undefined && fallback) return fallback;
+  if (!allowed.includes(value as T)) throw new Error(`the governance's ${label} is not one of ${allowed.join(', ')}`);
+  return value as T;
+};
+
+/** The bytes a quote binds: the JSON, fields in declaration order, the later ones only when not their default (core's `Governance::canonical`). */
+export function governanceCanonical(g: Governance): Uint8Array {
+  const out: Record<string, string> = {
+    releases: one(g.releases, ['owner', 'operator'], 'releases'),
+    appUpgrades: one(g.appUpgrades, ['owner', 'operator'], 'appUpgrades'),
+    outbound: one(g.outbound, ['owner', 'operator'], 'outbound'),
+  };
+  const deployments = one(g.deployments, ['open', 'granted'], 'deployments', 'open');
+  if (deployments !== 'open') out.deployments = deployments;
+  const deployers = one(g.deployers, ['operator', 'owner'], 'deployers', 'operator');
+  if (deployers !== 'operator') out.deployers = deployers;
+  const signUp = one(g.signUp, ['open', 'invite', 'closed'], 'signUp', 'open');
+  if (signUp !== 'open') out.signUp = signUp;
+  return utf8(JSON.stringify(out));
+}
+
 /**
  * What a receipt-key quote binds after its nonce (core's `receipt_key_binding`,
  * `receipt-key.v3`), hex: the key, the cluster's governance as the node
@@ -252,11 +275,11 @@ export async function recoveryAttestationNonce(cluster: string, node: number): P
  */
 export async function receiptKeyBinding(
   receiptKey: Uint8Array,
-  governance: unknown,
+  governance: Governance,
   cluster: string,
   node: number,
 ): Promise<string> {
-  const g = await sha256(utf8(JSON.stringify(governance)));
+  const g = await sha256(governanceCanonical(governance));
   const name = utf8(cluster);
   const len = new Uint8Array(4);
   new DataView(len.buffer).setUint32(0, name.length, false);
@@ -271,7 +294,7 @@ interface ReceiptAttestation {
   cluster: string;
   node: number;
   receiptKey?: string;
-  governance?: unknown;
+  governance?: Governance;
 }
 
 /**
@@ -293,6 +316,7 @@ export async function verifyRecoveryAttestation(
   }
   const nonce = await recoveryAttestationNonce(header.cluster, header.node);
   if (doc.nonce !== nonce) throw new Error('the attestation is not over the recovery nonce');
+  if (!doc.governance) throw new Error('the attestation names no governance');
   const reportDataSuffix = await receiptKeyBinding(
     fromHex(header.signingKey, 'signing key', 32),
     doc.governance,

@@ -211,8 +211,8 @@ export function createRoutes(api: RouteClient) {
        * `GET /apps/{app}/pipeline-runs/{run}/receipt` (`pipeline_receipt_receipt`). **Who:** signed in (a session or an API key).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
-      pipelineReceiptReceipt: (args: operations['pipeline_receipt_receipt']['parameters']['path'], options?: MethodOptions): Promise<operations['pipeline_receipt_receipt']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"GET","path":"/apps/{app}/pipeline-runs/{run}/receipt","pathParams":["app","run"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['pipeline_receipt_receipt']['responses'][200]['content']['application/json']>,
+      pipelineReceiptReceipt: (args: operations['pipeline_receipt_receipt']['parameters']['path'] & NonNullable<operations['pipeline_receipt_receipt']['parameters']['query']>, options?: MethodOptions): Promise<operations['pipeline_receipt_receipt']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/pipeline-runs/{run}/receipt","pathParams":["app","run"],"query":["version"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['pipeline_receipt_receipt']['responses'][200]['content']['application/json']>,
       /**
        * Cancel a pipeline run.
        *
@@ -891,6 +891,13 @@ export function createRoutes(api: RouteClient) {
        */
       deploymentsGranted: (args: Partial<NonNullable<operations['ops_deployments_granted']['requestBody']>['content']['application/json']> = {}, options?: MethodOptions): Promise<operations['ops_deployments_granted']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/ops/deployments/granted","pathParams":[],"query":[],"body":"fields","optionalBody":true,"reply":"json","operator":true}, args as unknown as Record<string, unknown>, options) as Promise<operations['ops_deployments_granted']['responses'][200]['content']['application/json']>,
+      /**
+       * Whether the cluster accepts a job node.
+       *
+       * `GET /ops/job-nodes/{id}/attestation` (`ops_job_node_attestation`). **Who:** the ops token.
+       */
+      jobNodeAttestation: (args: operations['ops_job_node_attestation']['parameters']['path'], options?: MethodOptions): Promise<operations['ops_job_node_attestation']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/ops/job-nodes/{id}/attestation","pathParams":["id"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['ops_job_node_attestation']['responses'][200]['content']['application/json']>,
       /**
        * Prometheus metrics.
        *
