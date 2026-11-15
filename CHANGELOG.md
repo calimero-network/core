@@ -1,3 +1,9 @@
+## [11.2.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.1.5...mero-react-v11.2.0) (2026-11-15)
+
+### Features
+
+* add the node shield as @calimero-network/mero-react/node-shield ([#138](https://github.com/calimero-network/mero-react/issues/138)) ([86505d4](https://github.com/calimero-network/mero-react/commit/86505d447ca6730274ea640b56dff5979201234d))
+
 ## [11.1.5](https://github.com/calimero-network/mero-react/compare/mero-react-v11.1.4...mero-react-v11.1.5) (2026-11-13)
 
 ### Bug Fixes
