@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.28] - 2026-11-15
+
 ### Changed
 
 - **`meroctl local up` runs one node by default**: enough to build an app, and
