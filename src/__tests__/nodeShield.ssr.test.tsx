@@ -20,4 +20,8 @@ describe('NodeShield on the server', () => {
     expect(errors).not.toHaveBeenCalled();
     errors.mockRestore();
   });
+
+  it('renders the compact chip on the server with compact', () => {
+    expect(renderToString(<NodeShield client={client} compact />)).toContain('mero-node-shield--compact');
+  });
 });

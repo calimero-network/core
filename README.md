@@ -306,7 +306,20 @@ Props, all optional:
 - `cluster`: the label shown as "Cluster"; by default the provider's cluster. `cluster={null}` leaves the row out.
 - `compactBelow`: the window width in px at or below which the chip is the icon alone. It is always the icon alone at 560px or narrower.
 - `appCode`: `(client, url) => Promise<AppCodeCheck>`, the app's own check that node `url` runs its code. It is asked when the popover opens on a real, verified node, and its `match` or `mismatch` is shown as the "App code" row. A new function checks again, so memoise it (`useCallback`).
+- `compact`: `true` shows the chip as the icon alone at every width, whatever `compactBelow` says; for a floating chip.
+- `open` and `onOpenChange`: the popover's open state. Leave `open` out and the shield keeps its own; set it and the shield is controlled, opening and closing only when `open` changes. `onOpenChange(open)` is called either way when the shield asks to change it: on a chip click, Escape or an outside click.
 - `colors`: colours for this shield (below).
+
+A floating chip, icon only, that a menu item can also open:
+
+```tsx
+const [shieldOpen, setShieldOpen] = useState(false);
+
+<NodeShield compact open={shieldOpen} onOpenChange={setShieldOpen} />
+<button onClick={() => setShieldOpen(true)}>Node details</button>
+```
+
+Opening it from code behaves like a click: the popover is placed by the chip, takes focus and runs the app code check, and closing it returns focus to the chip.
 
 `AppCodeCheck` is the shape an app's own code check returns:
 

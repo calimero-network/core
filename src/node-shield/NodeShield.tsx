@@ -1,4 +1,4 @@
-import React, { useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { CalimeroClient } from '@calimero-network/mero-js';
 import { MeroContext } from '../context/context';
@@ -23,6 +23,12 @@ export interface NodeShieldProps {
   cluster?: string | null;
   /** Icon only when the window is this many px wide or narrower (always at 560px or narrower). */
   compactBelow?: number;
+  /** Icon only at every width, whatever `compactBelow` says. */
+  compact?: boolean;
+  /** Whether the popover is open; set it to control the shield, leave it out to let the shield keep its own state. */
+  open?: boolean;
+  /** Called with the open state the shield asks for: on a chip click, Escape or an outside click. */
+  onOpenChange?: (open: boolean) => void;
   /** The app's own check that node `url` runs its code, asked when the popover opens on a real, verified node. Memoise it. */
   appCode?: AppCodeChecker;
   /** Colours, as an alternative to setting the `--node-shield-*` custom properties in CSS. */
@@ -150,10 +156,18 @@ interface PopoverProps {
   id: string;
   style: React.CSSProperties;
   popRef: React.RefObject<HTMLDivElement>;
+  chipRef: React.RefObject<HTMLButtonElement>;
 }
 
-function Popover({ view, id, style, popRef }: PopoverProps) {
+function Popover({ view, id, style, popRef, chipRef }: PopoverProps) {
   const [copied, copy] = useCopy();
+  // A layout cleanup runs before the popover leaves the DOM, while it can still tell whether it holds focus.
+  useClientLayoutEffect(() => {
+    const el = popRef.current;
+    return () => {
+      if (el?.contains(document.activeElement)) chipRef.current?.focus();
+    };
+  }, [popRef, chipRef]);
   return createPortal(
     <div
       ref={popRef}
@@ -219,32 +233,49 @@ function Popover({ view, id, style, popRef }: PopoverProps) {
  * A header chip for the node `client` talks to, with a popover of what the browser's check verified.
  * Renders nothing until there is a client.
  */
-export function NodeShield({ client: clientProp, cluster: clusterProp, compactBelow, appCode, colors }: NodeShieldProps) {
+export function NodeShield({
+  client: clientProp,
+  cluster: clusterProp,
+  compactBelow,
+  compact: compactProp = false,
+  open: openProp,
+  onOpenChange,
+  appCode,
+  colors,
+}: NodeShieldProps) {
   const context = useContext(MeroContext);
   const client = clientProp !== undefined ? clientProp : (context?.client ?? null);
   const cluster = clusterProp !== undefined ? clusterProp : (context?.cluster ?? null);
   const [state, refresh] = useNodeVerification(client);
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const controlled = openProp !== undefined;
+  const open = controlled ? openProp : ownOpen;
+  const setOpen = useCallback(
+    (next: boolean) => {
+      if (!controlled) setOwnOpen(next);
+      onOpenChange?.(next);
+    },
+    [controlled, onOpenChange],
+  );
   const root = useRef<HTMLSpanElement>(null);
   const chip = useRef<HTMLButtonElement>(null);
   const pop = useRef<HTMLDivElement>(null);
   const popId = useId();
   const placement = usePlacement(open, chip, pop);
-  const compact = useNarrowerThan(compactBelow);
+  const compact = useNarrowerThan(compactProp ? undefined : compactBelow) || compactProp;
   const real = state.status === 'verified' && !state.mock;
   const code = useAppCode(client, appCode, open && real ? state.url : null);
 
   useEffect(() => {
+    if (open) refresh();
+  }, [open, refresh]);
+
+  useEffect(() => {
     if (!open) return;
-    refresh();
-    const close = (refocus: boolean) => {
-      setOpen(false);
-      if (refocus) chip.current?.focus();
-    };
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close(true);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
-      if (!chip.current?.contains(target) && !pop.current?.contains(target)) close(false);
+      if (!chip.current?.contains(target) && !pop.current?.contains(target)) setOpen(false);
     };
     document.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onDown);
@@ -252,7 +283,7 @@ export function NodeShield({ client: clientProp, cluster: clusterProp, compactBe
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('mousedown', onDown);
     };
-  }, [open, refresh]);
+  }, [open, setOpen]);
 
   // Focus waits for the placement: a popover still hidden for it cannot take focus.
   const placed = placement !== null;
@@ -274,7 +305,7 @@ export function NodeShield({ client: clientProp, cluster: clusterProp, compactBe
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? popId : undefined}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => setOpen(!open)}
         data-testid="node-shield"
       >
         <ShieldIcon kind={view.kind} />
@@ -285,6 +316,7 @@ export function NodeShield({ client: clientProp, cluster: clusterProp, compactBe
           view={view}
           id={popId}
           popRef={pop}
+          chipRef={chip}
           style={{ ...inheritedVars(root.current), ...vars, ...(placement ?? { visibility: 'hidden' }) }}
         />
       )}

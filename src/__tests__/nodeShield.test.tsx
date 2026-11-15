@@ -263,6 +263,61 @@ describe('NodeShield', () => {
   });
 });
 
+describe('the open prop', () => {
+  it('opens from code like a click: placed, focused, and checking the app code', async () => {
+    const appCode = vi.fn(async () => match);
+    const { rerender } = render(<NodeShield client={fakeClient(sealed).client} appCode={appCode} open={false} />);
+    await screen.findByText('Verified node');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    rerender(<NodeShield client={fakeClient(sealed).client} appCode={appCode} open />);
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(document.activeElement).toBe(dialog));
+    expect(dialog.style.visibility).not.toBe('hidden');
+    expect(chip().getAttribute('aria-expanded')).toBe('true');
+    await waitFor(() => expect(appCode).toHaveBeenCalledTimes(1));
+  });
+
+  it('asks the parent to close on Escape and stays open until it does, then returns focus to the chip', async () => {
+    const { client } = fakeClient(sealed);
+    const onOpenChange = vi.fn();
+    const { rerender } = render(<NodeShield client={client} open onOpenChange={onOpenChange} />);
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(document.activeElement).toBe(dialog));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    rerender(<NodeShield client={client} open={false} onOpenChange={onOpenChange} />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(chip());
+  });
+
+  it('asks the parent to open on a chip click, and to close on an outside click', async () => {
+    const onOpenChange = vi.fn();
+    const { rerender } = render(<NodeShield client={fakeClient(sealed).client} open={false} onOpenChange={onOpenChange} />);
+    await screen.findByText('Verified node');
+    open();
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    rerender(<NodeShield client={fakeClient(sealed).client} open onOpenChange={onOpenChange} />);
+    await screen.findByRole('dialog');
+    fireEvent.mouseDown(document.body);
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
+    expect(screen.getByRole('dialog')).toBeTruthy();
+  });
+
+  it('reports its own opening and closing when uncontrolled', async () => {
+    const onOpenChange = vi.fn();
+    render(<NodeShield client={fakeClient(sealed).client} onOpenChange={onOpenChange} />);
+    await screen.findByText('Verified node');
+    open();
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+    await screen.findByRole('dialog');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});
+
 describe('the app code check', () => {
   it('runs only once the popover is opened on a verified node, and shows a match', async () => {
     const appCode = vi.fn(async () => match);
@@ -429,6 +484,12 @@ describe('the compact shield', () => {
     expect(compact()).toBe(true);
     act(() => resize([]));
     expect(compact()).toBe(false);
+  });
+
+  it('is icon only at every width with compact, and does not need matchMedia', async () => {
+    render(<NodeShield client={fakeClient(sealed).client} compact compactBelow={0} />);
+    await waitFor(() => expect(chip().getAttribute('aria-label')).toBe('Verified node'));
+    expect(compact()).toBe(true);
   });
 
   it('is never compact without a width, and does not need matchMedia', async () => {
