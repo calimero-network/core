@@ -2,7 +2,7 @@
 //! Making one (`new`, `build`, `codegen`, `abi`) and shipping it (`key`,
 //! `pack`, `sign`, `inspect`, `publish`) need no node (`make.rs`); an
 //! application is then installed once on the cluster (verified on every
-//! node), and contexts are its running instances (`meroctl context create
+//! node), and each running copy of it is an instance (`meroctl instance create
 //! --package`). `meroctl package` is the same command.
 
 use std::path::{Path, PathBuf};
@@ -346,7 +346,7 @@ pub async fn watch(
     }
 }
 
-/// One push: the build, then each context's update to it.
+/// One push: the build, then each instance's update to it.
 async fn push(
     env: &Env,
     path: &Path,

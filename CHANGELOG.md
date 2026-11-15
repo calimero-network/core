@@ -11,6 +11,10 @@
   newest of the last five releases whose SHA256SUMS and archives can all be
   fetched, saying which it passed over; `--version` of a release still uploading
   says so.
+- **`meroctl`'s help says instance**: 1.0.0-rc.26 renamed `context` to
+  `instance`, but `meroctl --help`'s examples still read `context create` and
+  `call --context`, and the subcommands' help "the context". Every visible
+  help now says instance (`help_says_instance_not_context` pins it).
 
 ## [1.0.0-rc.26] - 2026-11-15
 

@@ -198,7 +198,7 @@ impl Env {
         Client::connect(url, self.trust.policy())
     }
 
-    /// The app (context) an argument names: an alias of this account, or
+    /// The app instance an argument names: an alias of this account, or
     /// the id itself.
     pub async fn app(&self, name: &str) -> eyre::Result<String> {
         if self.api_key.is_none() && self.home.session(&self.url).is_none() {

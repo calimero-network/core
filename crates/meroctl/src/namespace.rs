@@ -1,5 +1,5 @@
 //! `meroctl namespace`: organizations, v1's namespaces. An organization holds
-//! members (with roles), teams (`meroctl group`), invites and contexts.
+//! members (with roles), teams (`meroctl group`), invites and instances.
 
 use std::path::PathBuf;
 

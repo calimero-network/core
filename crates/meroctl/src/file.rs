@@ -1,4 +1,4 @@
-//! `meroctl file`: a context's sealed files.
+//! `meroctl file`: an instance's sealed files.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
