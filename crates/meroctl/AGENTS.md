@@ -95,10 +95,11 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   `a_kept_cluster_starts_with_its_own_node_count`,
   `a_cluster_from_before_keeps_its_nodes_and_volume`.
 - A cluster `local up` makes new (`--fresh`, or nothing kept) forgets the saved
-  sessions for its URLs. `login --dev-passkey FILE` signs up with the file's
-  passkey when the cluster answers `PASSKEY_UNKNOWN_HERE` (a cluster that started
-  over), so the file stays the developer's account. Test:
-  `a_dev_passkey_signs_up_again_on_a_cluster_that_started_over`.
+  sessions for its URLs. `login --dev-passkey FILE` never signs up with an existing
+  file: the cluster answers `PASSKEY_UNKNOWN_HERE` alike for a removed passkey and
+  for a cluster that started over, so a removed passkey stays refused; the error
+  says to sign up with a new file. Test:
+  `a_cluster_that_started_over_refuses_the_old_passkey_file_and_says_what_to_do`.
 
 ```bash
 cargo test -p meroctl        # every command group against an in-process 3-node cluster (builds apps/v2-fixtures/kv)

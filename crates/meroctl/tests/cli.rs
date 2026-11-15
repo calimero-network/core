@@ -1221,13 +1221,13 @@ fn a_misspelled_quota_is_refused_before_it_is_sent() {
     );
 }
 
-/// The quickstart's passkey file is "your development account". After the
-/// cluster starts over (`local up --fresh`), the file's passkey is unknown
-/// there: `login` with it answered `401 PASSKEY_UNKNOWN_HERE` and the docs'
-/// one command stopped working. It now signs up again with the same passkey,
-/// leaving the file as it was.
+/// After the cluster starts over (`local up --fresh`) its passkey file's
+/// passkey is unknown there, which the cluster answers exactly as it answers a
+/// passkey removed from its account, so `login` never signs up on its own (a
+/// removed passkey stays refused: the `account-passkeys` upgrade case). It says
+/// what to do, leaves the file as it was, and a new file signs up.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn a_dev_passkey_signs_up_again_on_a_cluster_that_started_over() {
+async fn a_cluster_that_started_over_refuses_the_old_passkey_file_and_says_what_to_do() {
     let dir = tempfile::tempdir().unwrap();
     let start = |name: &'static str, port: u16| {
         let path = dir.path().join(name);
@@ -1254,31 +1254,35 @@ async fn a_dev_passkey_signs_up_again_on_a_cluster_that_started_over() {
         }
     };
     let url = first.urls[0].clone();
-    let me = Meroctl {
-        home: dir.path().join("home"),
-    };
+    let home = dir.path().join("home");
     let file = dir.path().join("me.json");
-    let file_arg = file.display().to_string();
     let login = {
-        let (home, url, file_arg) = (me.home.clone(), url.clone(), file_arg.clone());
+        let (home, url, file) = (home.clone(), url.clone(), file.display().to_string());
         move || {
             let me = Meroctl { home: home.clone() };
             let _ = me.run(&["node", "add", "local", &url, "--allow-mock"]);
-            me.run(&["login", "--dev-passkey", &file_arg, "--name", "me"])
+            me.try_run(&["login", "--dev-passkey", &file, "--name", "me"])
         }
     };
-    let before = tokio::task::spawn_blocking(login.clone()).await.unwrap();
+    let before = tokio::task::spawn_blocking(login.clone())
+        .await
+        .unwrap()
+        .unwrap();
     let kept = std::fs::read_to_string(&file).unwrap();
     first.stop().await;
 
     // The same port, a new cluster: what `local up --fresh` makes.
     let second = start("second", port).await.unwrap();
-    let after = tokio::task::spawn_blocking(login).await.unwrap();
-    assert_ne!(
-        after["accountId"], before["accountId"],
-        "a new account on the new cluster"
+    let refused = tokio::task::spawn_blocking(login.clone())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        refused.contains("PASSKEY_UNKNOWN_HERE")
+            && refused.contains("started over")
+            && refused.contains("new passkey file"),
+        "{refused}"
     );
-    // The same passkey: its key and credential (the counter moves with every use).
     let key = |t: &str| {
         let v: Value = serde_json::from_str(t).unwrap();
         (v["pkcs8"].clone(), v["credentialId"].clone())
@@ -1286,9 +1290,17 @@ async fn a_dev_passkey_signs_up_again_on_a_cluster_that_started_over() {
     assert_eq!(
         key(&std::fs::read_to_string(&file).unwrap()),
         key(&kept),
-        "the same passkey"
+        "the file is left as it was"
     );
-    let who = tokio::task::spawn_blocking(move || me.run(&["whoami"]))
+
+    // As the message says: a new passkey file signs up.
+    std::fs::remove_file(&file).unwrap();
+    let after = tokio::task::spawn_blocking(login).await.unwrap().unwrap();
+    assert_ne!(
+        after["accountId"], before["accountId"],
+        "a new account on the new cluster"
+    );
+    let who = tokio::task::spawn_blocking(move || Meroctl { home }.run(&["whoami"]))
         .await
         .unwrap();
     assert_eq!(who["accountId"], after["accountId"], "{who}");

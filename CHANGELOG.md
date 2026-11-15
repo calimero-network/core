@@ -4,13 +4,13 @@
 
 ### Fixed
 
-- **A local cluster that started over takes the same passkey file**: after
-  `meroctl local up --fresh`, `meroctl login --dev-passkey FILE` answered
-  `401 PASSKEY_UNKNOWN_HERE`, since the new cluster had never seen the file's
-  passkey; it now signs up again with that passkey, leaving the file as it was.
-  And `local up` forgets the saved sessions for its URLs when it makes a new
-  cluster, where the next command answered `401 UNAUTHENTICATED: signature does
-  not verify` with the old cluster's session.
+- **A local cluster that started over is no longer a puzzle**: after `meroctl
+  local up --fresh` the next command answered `401 UNAUTHENTICATED: signature
+  does not verify` with the old cluster's saved session; `local up` now forgets
+  the saved sessions for its URLs when it makes a new cluster. And `login
+  --dev-passkey FILE` with the old cluster's file, which the cluster refuses
+  (`PASSKEY_UNKNOWN_HERE`, as for a removed passkey), now says to sign up with a
+  new passkey file.
 
 ## [1.0.0-rc.28] - 2026-11-15
 
