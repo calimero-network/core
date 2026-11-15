@@ -1,0 +1,632 @@
+{
+  "bindings": [
+    {
+      "receiptKey": "0101010101010101010101010101010101010101010101010101010101010101",
+      "governance": {
+        "releases": "owner",
+        "appUpgrades": "owner",
+        "outbound": "owner"
+      },
+      "governanceCanonical": "{\"releases\":\"owner\",\"appUpgrades\":\"owner\",\"outbound\":\"owner\"}",
+      "cluster": "eu-shared-1",
+      "node": 1,
+      "binding": "1be9b6ef6797845eefbec7f0496de9026e9ab7724a5b107df21a7fbb7e03a32e"
+    },
+    {
+      "receiptKey": "0202020202020202020202020202020202020202020202020202020202020202",
+      "governance": {
+        "releases": "operator",
+        "appUpgrades": "owner",
+        "outbound": "operator",
+        "deployments": "granted",
+        "deployers": "owner",
+        "signUp": "invite"
+      },
+      "governanceCanonical": "{\"releases\":\"operator\",\"appUpgrades\":\"owner\",\"outbound\":\"operator\",\"deployments\":\"granted\",\"deployers\":\"owner\",\"signUp\":\"invite\"}",
+      "cluster": "eu-shared-1",
+      "node": 1,
+      "binding": "2cd507ceece2e9c46dece9efe63fa693be3090c3acdf439c8f56292c07cc2549"
+    },
+    {
+      "receiptKey": "0303030303030303030303030303030303030303030303030303030303030303",
+      "governance": {
+        "releases": "owner",
+        "appUpgrades": "operator",
+        "outbound": "owner",
+        "signUp": "closed"
+      },
+      "governanceCanonical": "{\"releases\":\"owner\",\"appUpgrades\":\"operator\",\"outbound\":\"owner\",\"signUp\":\"closed\"}",
+      "cluster": "eu-shared-1",
+      "node": 1,
+      "binding": "e15ad9d8b588514c046eec7a0f97da31ce77c99311227a7dfbebde26fbdf2fd4"
+    },
+    {
+      "receiptKey": "0404040404040404040404040404040404040404040404040404040404040404",
+      "governance": {
+        "releases": "owner",
+        "appUpgrades": "owner",
+        "outbound": "owner"
+      },
+      "governanceCanonical": "{\"releases\":\"owner\",\"appUpgrades\":\"owner\",\"outbound\":\"owner\"}",
+      "cluster": "eu-shared-1",
+      "node": 2,
+      "binding": "346bdcb53fef320a94d1d0ecec5ce32f9d2e6d3aa3dc9499c110e03152afbe57"
+    },
+    {
+      "receiptKey": "0505050505050505050505050505050505050505050505050505050505050505",
+      "governance": {
+        "releases": "operator",
+        "appUpgrades": "owner",
+        "outbound": "operator",
+        "deployments": "granted",
+        "deployers": "owner",
+        "signUp": "invite"
+      },
+      "governanceCanonical": "{\"releases\":\"operator\",\"appUpgrades\":\"owner\",\"outbound\":\"operator\",\"deployments\":\"granted\",\"deployers\":\"owner\",\"signUp\":\"invite\"}",
+      "cluster": "eu-shared-1",
+      "node": 2,
+      "binding": "6690e4153ab1633e4831b49a8985252a4f5a76438ded6ecfd7c2ed17afe6ef33"
+    },
+    {
+      "receiptKey": "0606060606060606060606060606060606060606060606060606060606060606",
+      "governance": {
+        "releases": "owner",
+        "appUpgrades": "operator",
+        "outbound": "owner",
+        "signUp": "closed"
+      },
+      "governanceCanonical": "{\"releases\":\"owner\",\"appUpgrades\":\"operator\",\"outbound\":\"owner\",\"signUp\":\"closed\"}",
+      "cluster": "eu-shared-1",
+      "node": 2,
+      "binding": "6c21ee25180703f39aea083c4661222e90609d7ad7ae1a2b1f009e307a0e5afc"
+    },
+    {
+      "receiptKey": "0707070707070707070707070707070707070707070707070707070707070707",
+      "governance": {
+        "releases": "owner",
+        "appUpgrades": "owner",
+        "outbound": "owner"
+      },
+      "governanceCanonical": "{\"releases\":\"owner\",\"appUpgrades\":\"owner\",\"outbound\":\"owner\"}",
+      "cluster": "café-cluster",
+      "node": 300000,
+      "binding": "77bd9dfffef7c27cc3834c9583fc84073a5b5aa1b529d06da88cd6ed8fd5c26c"
+    },
+    {
+      "receiptKey": "0808080808080808080808080808080808080808080808080808080808080808",
+      "governance": {
+        "releases": "operator",
+        "appUpgrades": "owner",
+        "outbound": "operator",
+        "deployments": "granted",
+        "deployers": "owner",
+        "signUp": "invite"
+      },
+      "governanceCanonical": "{\"releases\":\"operator\",\"appUpgrades\":\"owner\",\"outbound\":\"operator\",\"deployments\":\"granted\",\"deployers\":\"owner\",\"signUp\":\"invite\"}",
+      "cluster": "café-cluster",
+      "node": 300000,
+      "binding": "524081a8886d9b3974c080a4e4b1d89337a5ed13baa8b7888d0516e8bb58ac5f"
+    },
+    {
+      "receiptKey": "0909090909090909090909090909090909090909090909090909090909090909",
+      "governance": {
+        "releases": "owner",
+        "appUpgrades": "operator",
+        "outbound": "owner",
+        "signUp": "closed"
+      },
+      "governanceCanonical": "{\"releases\":\"owner\",\"appUpgrades\":\"operator\",\"outbound\":\"owner\",\"signUp\":\"closed\"}",
+      "cluster": "café-cluster",
+      "node": 300000,
+      "binding": "80a4d70843fcfe4b123ad25d9e0be04e2e89ebe464bc44e8e719fd4b83e86431"
+    },
+    {
+      "receiptKey": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "governance": {
+        "releases": "owner",
+        "appUpgrades": "owner",
+        "outbound": "owner"
+      },
+      "governanceCanonical": "{\"releases\":\"owner\",\"appUpgrades\":\"owner\",\"outbound\":\"owner\"}",
+      "cluster": "",
+      "node": 0,
+      "binding": "105b4b6d58c74d6711191af507bd05e9b0033b3e396e7b9a62891e2fd49ed5ff"
+    },
+    {
+      "receiptKey": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "governance": {
+        "releases": "operator",
+        "appUpgrades": "owner",
+        "outbound": "operator",
+        "deployments": "granted",
+        "deployers": "owner",
+        "signUp": "invite"
+      },
+      "governanceCanonical": "{\"releases\":\"operator\",\"appUpgrades\":\"owner\",\"outbound\":\"operator\",\"deployments\":\"granted\",\"deployers\":\"owner\",\"signUp\":\"invite\"}",
+      "cluster": "",
+      "node": 0,
+      "binding": "ef342a25b52777902418e8e02ffe02d303fb78cf8910743392d5d13c50237dd9"
+    },
+    {
+      "receiptKey": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+      "governance": {
+        "releases": "owner",
+        "appUpgrades": "operator",
+        "outbound": "owner",
+        "signUp": "closed"
+      },
+      "governanceCanonical": "{\"releases\":\"owner\",\"appUpgrades\":\"operator\",\"outbound\":\"owner\",\"signUp\":\"closed\"}",
+      "cluster": "",
+      "node": 0,
+      "binding": "a2140571e81b50116712075cdf9d9e418999e22bc64ca70b1b89953dc992c203"
+    }
+  ],
+  "nonce": "0909090909090909090909090909090909090909090909090909090909090909",
+  "cluster": "eu-shared-1",
+  "governance": {
+    "releases": "operator",
+    "appUpgrades": "owner",
+    "outbound": "operator",
+    "deployments": "granted",
+    "deployers": "owner",
+    "signUp": "invite"
+  },
+  "nodes": {
+    "1": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+    "2": "511c34a1a2cb521df16bb246b8de8e7997ce235c7e76b22a3d7503a24819dd8a"
+  },
+  "mockDoc": {
+    "quote": "TU9DS19URFhfUVVPVEVfVjEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCYz7HtFEGXYw47RMsohmRtGAoasWYtqeDFEqVSIdlpps",
+    "transportKey": "0505050505050505050505050505050505050505050505050505050505050505",
+    "appHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "nonce": "0909090909090909090909090909090909090909090909090909090909090909",
+    "release": {
+      "version": "2.3.109",
+      "profile": "locked-read-only"
+    },
+    "cluster": "eu-shared-1",
+    "node": 1,
+    "mock": true,
+    "receiptKey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+    "governance": {
+      "releases": "operator",
+      "appUpgrades": "owner",
+      "outbound": "operator",
+      "deployments": "granted",
+      "deployers": "owner",
+      "signUp": "invite"
+    }
+  },
+  "unboundMockDoc": {
+    "quote": "TU9DS19URFhfUVVPVEVfVjEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCS/32tfWnPofEwCewnnkUk9/3S3GGoKhdP0Tznnrke09",
+    "transportKey": "0505050505050505050505050505050505050505050505050505050505050505",
+    "appHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "nonce": "0909090909090909090909090909090909090909090909090909090909090909",
+    "release": {
+      "version": "2.3.109",
+      "profile": "locked-read-only"
+    },
+    "cluster": "eu-shared-1",
+    "node": 1,
+    "mock": true,
+    "receiptKey": "66be7e332c7a453332bd9d0a7f7db055f5c5ef1a06ada66d98b39fb6810c473a",
+    "governance": {
+      "releases": "operator",
+      "appUpgrades": "owner",
+      "outbound": "operator",
+      "deployments": "granted",
+      "deployers": "owner",
+      "signUp": "invite"
+    }
+  },
+  "receiptAnswer": {
+    "receipt": {
+      "version": 1,
+      "cluster": "abababababababababababababababababababababababababababababababab",
+      "app": "app-1",
+      "run": "run-1",
+      "pipeline": "etl",
+      "release": "1.0.0",
+      "pipelineHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "modules": {
+        "load": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+        "self": "1212121212121212121212121212121212121212121212121212121212121212"
+      },
+      "inputs": {
+        "data": [
+          {
+            "id": "0101010101010101010101010101010101010101010101010101010101010101",
+            "size": 7,
+            "sha256": "0202020202020202020202020202020202020202020202020202020202020202"
+          }
+        ]
+      },
+      "params": {
+        "n": 3,
+        "zeta": [
+          true,
+          null,
+          "café"
+        ],
+        "alpha": {
+          "b": "x😀y",
+          "a": 0
+        }
+      },
+      "state": "succeeded",
+      "startTsMs": 1700000000000,
+      "endTsMs": 1700000005000,
+      "steps": {
+        "load": {
+          "status": "succeeded",
+          "runs": [
+            {
+              "run": "run-1.load.0",
+              "step": "load",
+              "index": 0,
+              "outcome": "done",
+              "attempt": 1,
+              "node": 4,
+              "jobKey": "0303030303030303030303030303030303030303030303030303030303030303",
+              "assignmentDigest": "0404040404040404040404040404040404040404040404040404040404040404",
+              "reportSha256": "0505050505050505050505050505050505050505050505050505050505050505",
+              "signature": "06060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606",
+              "outputs": [],
+              "usage": {
+                "cpuMicros": "1",
+                "gibMicros": "2",
+                "fuel": "3"
+              }
+            },
+            {
+              "index": 1,
+              "cached": true,
+              "cacheKey": "0707070707070707070707070707070707070707070707070707070707070707"
+            }
+          ]
+        }
+      }
+    },
+    "node": 1,
+    "signature": "861d5a5ec5b9370b31d906552d47c4ffc1aead8fe1e17029f4fca4026afa5c0a58d3437faf6efaebc49695c4e11e26d27e34b89513847f02f3caf030d3071806"
+  },
+  "floatAnswerText": "{\"receipt\":{\"version\":1,\"cluster\":\"abababababababababababababababababababababababababababababababab\",\"app\":\"app-1\",\"run\":\"run-1\",\"pipeline\":\"etl\",\"release\":\"1.0.0\",\"pipelineHash\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"modules\":{\"load\":\"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef\",\"self\":\"1212121212121212121212121212121212121212121212121212121212121212\"},\"inputs\":{\"data\":[{\"id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"size\":7,\"sha256\":\"0202020202020202020202020202020202020202020202020202020202020202\"}]},\"params\":{\"a\":0.1,\"b\":1e+21,\"c\":-0.0,\"d\":5e-324,\"e\":1.5,\"f\":1.7976931348623157e+308,\"g\":[1e-7,123456789.125,100.0,1e+22]},\"state\":\"succeeded\",\"startTsMs\":1700000000000,\"endTsMs\":1700000005000,\"steps\":{\"load\":{\"status\":\"succeeded\",\"runs\":[{\"run\":\"run-1.load.0\",\"step\":\"load\",\"index\":0,\"outcome\":\"done\",\"attempt\":1,\"node\":4,\"jobKey\":\"0303030303030303030303030303030303030303030303030303030303030303\",\"assignmentDigest\":\"0404040404040404040404040404040404040404040404040404040404040404\",\"reportSha256\":\"0505050505050505050505050505050505050505050505050505050505050505\",\"signature\":\"06060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606\",\"outputs\":[],\"usage\":{\"cpuMicros\":\"1\",\"gibMicros\":\"2\",\"fuel\":\"3\"}},{\"index\":1,\"cached\":true,\"cacheKey\":\"0707070707070707070707070707070707070707070707070707070707070707\"}]}}},\"node\":1,\"signature\":\"c9fc755eba4ab9143e5cb36c3daf531a2ede4c78b66191716b7fe0b01cca844af23fa1d2d8aa9a93dfc56ccb3c4228c0199c428cd1415f740b9d2a4e48c81407\"}",
+  "bigNumberAnswerText": "{\"receipt\":{\"version\":1,\"cluster\":\"abababababababababababababababababababababababababababababababab\",\"app\":\"app-1\",\"run\":\"run-1\",\"pipeline\":\"etl\",\"release\":\"1.0.0\",\"pipelineHash\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\",\"modules\":{\"load\":\"efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef\",\"self\":\"1212121212121212121212121212121212121212121212121212121212121212\"},\"inputs\":{\"data\":[{\"id\":\"0101010101010101010101010101010101010101010101010101010101010101\",\"size\":7,\"sha256\":\"0202020202020202020202020202020202020202020202020202020202020202\"}]},\"params\":{\"a\":9007199254740993,\"b\":5000000000000000000,\"c\":-9223372036854775808,\"d\":1e+19,\"e\":10000000000000000000,\"f\":18446744073709551615},\"state\":\"succeeded\",\"startTsMs\":1700000000000,\"endTsMs\":1700000005000,\"steps\":{\"load\":{\"status\":\"succeeded\",\"runs\":[{\"run\":\"run-1.load.0\",\"step\":\"load\",\"index\":0,\"outcome\":\"done\",\"attempt\":1,\"node\":4,\"jobKey\":\"0303030303030303030303030303030303030303030303030303030303030303\",\"assignmentDigest\":\"0404040404040404040404040404040404040404040404040404040404040404\",\"reportSha256\":\"0505050505050505050505050505050505050505050505050505050505050505\",\"signature\":\"06060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606060606\",\"outputs\":[],\"usage\":{\"cpuMicros\":\"1\",\"gibMicros\":\"2\",\"fuel\":\"3\"}},{\"index\":1,\"cached\":true,\"cacheKey\":\"0707070707070707070707070707070707070707070707070707070707070707\"}]}}},\"node\":1,\"signature\":\"c75e15694eb328951fabc09ebec93bd57f6a174fd025b0fe6a9b9dbdab83c4b478c096ffd34ae23c9ebabdf25cd0223a7e7d4a4d3a71bc149530d33b2ef18c01\"}",
+  "reportMessages": [
+    {
+      "assignment": "4b88ab7407c7a60166a1d0cb1aac98839300c8d3634c0ae6c4ac067e1e70bebd",
+      "app": "app-1",
+      "run": "run-1.load.0",
+      "attempt": 1,
+      "reason": null,
+      "message": "",
+      "resultSha256": "4353a5ecd0302753de2bd648d4b1ae769e26175b01fc38d9bf58ce541ef5c924",
+      "outputs": [
+        {
+          "id": "b713706333d2297c8524596fc3b1597609cbf9bd4a6204b68cfd5c5a3cd62763",
+          "size": 4096,
+          "sha256": "fd4e13150e02df01a59f4efb808ebaa3b512e3707ae0426c299a4504c3196251",
+          "segments": [
+            "09033078bf21badda682e14bf3ded6051617d9c6371797bb7e7ded631e437a4f",
+            "086c547124544a3da9143df51e0c5e18bafa858be5ce8362097edc4ec94fec66",
+            "ba79310033b7001bab86bacdc316f966c4ca4d965e53f2417ad1c2db9ac51045"
+          ]
+        },
+        {
+          "id": "3243069dd98dd18382d97eb86a1b17280c24dffc1cc86d766acf62ab59025edf",
+          "size": 70000,
+          "sha256": "cfdcc6eba463ce191fc28a00ed07bcf78cb5edf69c009ab022266b43b75b4e67",
+          "segments": [
+            "acd9d4096f51ac7ed54a3e87998eafd51360ee52ee4d25c5a8dd1034a39e1954",
+            "fa0a7d1f78be182089adb523e6b216253a5e8a36b552060b4fe3b82c801e31c4"
+          ]
+        }
+      ],
+      "usage": [
+        "1500",
+        "2500",
+        "3500"
+      ],
+      "log": null,
+      "messageHex": "63616c696d65726f2e636f6d707574652e7265706f72742e7631004b88ab7407c7a60166a1d0cb1aac98839300c8d3634c0ae6c4ac067e1e70bebd000000056170702d310000000c72756e2d312e6c6f61642e30000000010000000000000000004353a5ecd0302753de2bd648d4b1ae769e26175b01fc38d9bf58ce541ef5c92400000002b713706333d2297c8524596fc3b1597609cbf9bd4a6204b68cfd5c5a3cd627630000000000001000fd4e13150e02df01a59f4efb808ebaa3b512e3707ae0426c299a4504c31962510000000309033078bf21badda682e14bf3ded6051617d9c6371797bb7e7ded631e437a4f086c547124544a3da9143df51e0c5e18bafa858be5ce8362097edc4ec94fec66ba79310033b7001bab86bacdc316f966c4ca4d965e53f2417ad1c2db9ac510453243069dd98dd18382d97eb86a1b17280c24dffc1cc86d766acf62ab59025edf0000000000011170cfdcc6eba463ce191fc28a00ed07bcf78cb5edf69c009ab022266b43b75b4e6700000002acd9d4096f51ac7ed54a3e87998eafd51360ee52ee4d25c5a8dd1034a39e1954fa0a7d1f78be182089adb523e6b216253a5e8a36b552060b4fe3b82c801e31c400000000000005dc00000000000009c40000000000000dac",
+      "sha256": "41a24f079c78b4003b9446b1cf2ad37848ba3645d7de394760f7e5b41934aded"
+    },
+    {
+      "assignment": "cf4cc7a03535a20027a699d40910e6dd20b146c8ed5e34854d33ec425c1702f3",
+      "app": "app-1",
+      "run": "run-1.load.0",
+      "attempt": 1,
+      "reason": null,
+      "message": "",
+      "resultSha256": "4891678af08b3ce6004133205b2b33d949e4583c3c590b6e6eb76aa6e9bd790d",
+      "outputs": [
+        {
+          "id": "b2c894c09190b2a01114d5a2670ddb29ac0df2530d50eba7fdd096cb24ab4ca9",
+          "size": 12,
+          "sha256": "2ae73cff55835b4382566baa3bbc78a22f451535c53eab5819fd8fdf139dc628",
+          "segments": [
+            "1a8c386a99a694392d93aab18502c3aa1853aa22cacfcd3cb29e5193e9c30932"
+          ]
+        }
+      ],
+      "usage": [
+        "1500",
+        "2500",
+        "3500"
+      ],
+      "log": {
+        "id": "e833999704093b90c27aa1b2f2cd1700de3a270dade0d70df33a2fa1836d5c01",
+        "size": 300,
+        "sha256": "6c3826da721082187f83cbaf8d22e264d913caeac59bedf625179c8926b39b6b",
+        "segments": [
+          "de570218e16d87ef38b29200668fe3a409d97cdb851e2528e2b9fb0de0a6ffef",
+          "6a4b7f93777c8e2275ce900da1032445fa0409a8f268db719813d6189f071adf"
+        ]
+      },
+      "messageHex": "63616c696d65726f2e636f6d707574652e7265706f72742e763100cf4cc7a03535a20027a699d40910e6dd20b146c8ed5e34854d33ec425c1702f3000000056170702d310000000c72756e2d312e6c6f61642e30000000010000000000000000004891678af08b3ce6004133205b2b33d949e4583c3c590b6e6eb76aa6e9bd790d00000001b2c894c09190b2a01114d5a2670ddb29ac0df2530d50eba7fdd096cb24ab4ca9000000000000000c2ae73cff55835b4382566baa3bbc78a22f451535c53eab5819fd8fdf139dc628000000011a8c386a99a694392d93aab18502c3aa1853aa22cacfcd3cb29e5193e9c3093200000000000005dc00000000000009c40000000000000dac63616c696d65726f2e636f6d707574652e7265706f72742e6c6f672e763100e833999704093b90c27aa1b2f2cd1700de3a270dade0d70df33a2fa1836d5c01000000000000012c6c3826da721082187f83cbaf8d22e264d913caeac59bedf625179c8926b39b6b00000002de570218e16d87ef38b29200668fe3a409d97cdb851e2528e2b9fb0de0a6ffef6a4b7f93777c8e2275ce900da1032445fa0409a8f268db719813d6189f071adf",
+      "sha256": "729dde84d38f233e7712e592bcee988cd5d4898b8e92e7b7ba2505c9a12c22fa"
+    },
+    {
+      "assignment": "8eff997947f790f8237e375146a8d403c15d70d4394035c8fb636e9330934ca2",
+      "app": "app-1",
+      "run": "run-1.load.0",
+      "attempt": 2,
+      "reason": "app-error",
+      "message": "invalid input: row 7",
+      "resultSha256": "f2b2d6a87b06268ca60e78fac45024ce4583cf1d4d32cebc28d37da7da8c4a47",
+      "outputs": [],
+      "usage": [
+        "1500",
+        "2500",
+        "3500"
+      ],
+      "log": null,
+      "messageHex": "63616c696d65726f2e636f6d707574652e7265706f72742e7631008eff997947f790f8237e375146a8d403c15d70d4394035c8fb636e9330934ca2000000056170702d310000000c72756e2d312e6c6f61642e300000000201000000096170702d6572726f7200000014696e76616c696420696e7075743a20726f772037f2b2d6a87b06268ca60e78fac45024ce4583cf1d4d32cebc28d37da7da8c4a470000000000000000000005dc00000000000009c40000000000000dac",
+      "sha256": "7ce70539707a1f9d052f12f9b8909f25d92205d7554f0d3a50d8175cf9b54a1e"
+    },
+    {
+      "assignment": "1cb996318b420640f840bb8434020c058b7309616c4505be9a1206601e010918",
+      "app": "app-1",
+      "run": "run-1.load.0",
+      "attempt": 1,
+      "reason": "fuel",
+      "message": "",
+      "resultSha256": "bdad881c120548e0b64dd2cbc9f8269f28a7dd85726943c88789b935fa884515",
+      "outputs": [],
+      "usage": [
+        "18446744073709551615",
+        "0",
+        "18446744073709551000"
+      ],
+      "log": null,
+      "messageHex": "63616c696d65726f2e636f6d707574652e7265706f72742e7631001cb996318b420640f840bb8434020c058b7309616c4505be9a1206601e010918000000056170702d310000000c72756e2d312e6c6f61642e300000000101000000046675656c00000000bdad881c120548e0b64dd2cbc9f8269f28a7dd85726943c88789b935fa88451500000000ffffffffffffffff0000000000000000fffffffffffffd98",
+      "sha256": "af985856408ca54bd56aca4fe7b77ba5ddbf48313cacad1829b9dd0fe01e3e8a"
+    },
+    {
+      "assignment": "d575ac6c970bb4d157353fc2b3acdeb181ea9e99be8f18361a619ba2741fe43a",
+      "app": "café-app",
+      "run": "run-ü.日本.0",
+      "attempt": 1,
+      "reason": "trap",
+      "message": "trap: 😀 überlauf 日本語",
+      "resultSha256": "26099233cf10cd8e2d070dc40fe0c5c922e666f4ebd3c097618c13208380332f",
+      "outputs": [
+        {
+          "id": "5439a0e49a571252b38ddb24b6d8c357d51f9a0ae24e148ccb9518f45a92fa0b",
+          "size": 1,
+          "sha256": "b86e421c6c5f179896123e2e9c22dcc58b188595365903f519ec3aa557406003",
+          "segments": [
+            "cc271b2d66626a8b553a6a3fc88bc8bebb6caaf35cf977c83324d50805e224e6"
+          ]
+        }
+      ],
+      "usage": [
+        "1500",
+        "2500",
+        "3500"
+      ],
+      "log": null,
+      "messageHex": "63616c696d65726f2e636f6d707574652e7265706f72742e763100d575ac6c970bb4d157353fc2b3acdeb181ea9e99be8f18361a619ba2741fe43a00000009636166c3a92d6170700000000f72756e2dc3bc2ee697a5e69cac2e30000000010100000004747261700000001e747261703a20f09f988020c3bc6265726c61756620e697a5e69cace8aa9e26099233cf10cd8e2d070dc40fe0c5c922e666f4ebd3c097618c13208380332f000000015439a0e49a571252b38ddb24b6d8c357d51f9a0ae24e148ccb9518f45a92fa0b0000000000000001b86e421c6c5f179896123e2e9c22dcc58b188595365903f519ec3aa55740600300000001cc271b2d66626a8b553a6a3fc88bc8bebb6caaf35cf977c83324d50805e224e600000000000005dc00000000000009c40000000000000dac",
+      "sha256": "349174bbd9adc9dd4c6691052f539bada8c9594f1124e2b81b1c21a8e7dd2379"
+    }
+  ],
+  "jobKeyBindings": [
+    {
+      "transportKey": "3131313131313131313131313131313131313131313131313131313131313131",
+      "jobKey": "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+      "release": "2.3.109",
+      "cluster": "eu-shared-1",
+      "node": 4,
+      "clusterIdentity": "2121212121212121212121212121212121212121212121212121212121212121",
+      "binding": "f1c1ec76f99d6e48e02685d56aa93797da69ca0806d3cfd6d765e146d7eb0e7d"
+    },
+    {
+      "transportKey": "3131313131313131313131313131313131313131313131313131313131313131",
+      "jobKey": "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+      "release": "2.4.0-rc.1",
+      "cluster": "eu-shared-1",
+      "node": 4,
+      "clusterIdentity": "2121212121212121212121212121212121212121212121212121212121212121",
+      "binding": "57bdd6acb54e0b30a062269bb49f3dcabbccaa65a132d02695881096f54fd81e"
+    },
+    {
+      "transportKey": "3131313131313131313131313131313131313131313131313131313131313131",
+      "jobKey": "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+      "release": "2.3.109",
+      "cluster": "café-cluster",
+      "node": 4,
+      "clusterIdentity": "2121212121212121212121212121212121212121212121212121212121212121",
+      "binding": "b8204132fbb299e5ecc18d215992b780478826ab23b33f1e719b5dcc6dca7f4b"
+    },
+    {
+      "transportKey": "3131313131313131313131313131313131313131313131313131313131313131",
+      "jobKey": "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+      "release": "2.3.109",
+      "cluster": "eu-shared-1",
+      "node": 300000,
+      "clusterIdentity": "2121212121212121212121212121212121212121212121212121212121212121",
+      "binding": "4f3c0273bab23de323e8360e82dae1489f3d66a5d5fcee57a2a33205b5becbf8"
+    },
+    {
+      "transportKey": "3131313131313131313131313131313131313131313131313131313131313131",
+      "jobKey": "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+      "release": "2.3.109",
+      "cluster": "eu-shared-1",
+      "node": 4,
+      "clusterIdentity": "2222222222222222222222222222222222222222222222222222222222222222",
+      "binding": "3dedab0bec89adcdc2ab89915a43f0360b489659b9da08d1f8f7a99df76b0c26"
+    },
+    {
+      "transportKey": "3131313131313131313131313131313131313131313131313131313131313131",
+      "jobKey": "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+      "release": "2.3.109",
+      "cluster": "eu-shared-1",
+      "node": 4,
+      "clusterIdentity": null,
+      "binding": "1dd20eccf4217505e05848160247eae4d3e179c5b8cdf6f0710ca6931ebadcba"
+    },
+    {
+      "transportKey": "3232323232323232323232323232323232323232323232323232323232323232",
+      "jobKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+      "release": "2.3.109",
+      "cluster": "eu-shared-1",
+      "node": 4,
+      "clusterIdentity": "2121212121212121212121212121212121212121212121212121212121212121",
+      "binding": "edf0b1f46ba4fd6a0e4909e382fc7fd291903f20016917db84c47a0ca2b93c3b"
+    }
+  ],
+  "jobReceipt": {
+    "clusterIdentity": "2121212121212121212121212121212121212121212121212121212121212121",
+    "jobNonce": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+    "answer": {
+      "receipt": {
+        "version": 2,
+        "cluster": "2121212121212121212121212121212121212121212121212121212121212121",
+        "app": "app-1",
+        "run": "run-1",
+        "pipeline": "etl",
+        "release": "1.0.0",
+        "pipelineHash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "modules": {
+          "load": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+          "merge": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "self": "1212121212121212121212121212121212121212121212121212121212121212"
+        },
+        "inputs": {
+          "data": [
+            {
+              "id": "0101010101010101010101010101010101010101010101010101010101010101",
+              "size": 7,
+              "sha256": "0202020202020202020202020202020202020202020202020202020202020202"
+            }
+          ]
+        },
+        "params": {},
+        "state": "failed",
+        "startTsMs": 1700000000000,
+        "endTsMs": 1700000005000,
+        "steps": {
+          "load": {
+            "status": "succeeded",
+            "runs": [
+              {
+                "run": "run-1.load.0",
+                "step": "load",
+                "index": 0,
+                "outcome": "done",
+                "attempt": 1,
+                "node": 4,
+                "jobKey": "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+                "assignmentDigest": "9e195a37ef6a0b296a3627277b4254dca4d73b1d251be26a09448fe07eeffad2",
+                "reportSha256": "00c90b1cc19a04b6beab042cbfb70b46a8e592e35b3a0c37cdd8b09ca8149f5c",
+                "signature": "5707f0728fbbe60c3ca2f60f1a97d257e82fe449f828aff94157417a7223641c9ed8add0908a2c871c2ac746a54e9cf59f299040a7670fb407b7a81c3ce28f01",
+                "outputs": [
+                  {
+                    "id": "003764c1051579edbb0570f22e56112ea2e0c15e5f7bd8edae7a06f9be35f7d6",
+                    "size": 2048,
+                    "sha256": "198c60d1942fc581018d3e85ce4a3783dbc836098636d8ce400220a852d4a405"
+                  },
+                  {
+                    "id": "5f8125c29762bb035bfd4c348723f168d3fa392d07ca1ecd5f76919a1f580fe9",
+                    "size": 9,
+                    "sha256": "488108188ddbe746776504189de1455ca6174df5398e2cb24503c60ff4114fd1"
+                  }
+                ],
+                "usage": {
+                  "cpuMicros": "1500",
+                  "gibMicros": "2500",
+                  "fuel": "3500"
+                },
+                "job": {
+                  "resultSha256": "9da69b4fd281d3ef44d28a64401c9d820f26c3480b7a7d1706529cd819c43c0a",
+                  "segments": [
+                    [
+                      "1e09fa4213488e4a58729dea83f3f54348f0d0810efa541c39cdd381c3106090",
+                      "a042f98e896086b1b20c78ddd74b48fef7c3305ca32999a7be73e0166adbb4e4"
+                    ],
+                    [
+                      "88b6775b3ed6152b4932216a2d246089f7ee32f536b35f988c13ff87cae96091"
+                    ]
+                  ],
+                  "log": {
+                    "id": "6084853085c9e80be4d27e815fb4e917c816c0cc8cce0e0839d90e94e2718fde",
+                    "size": 120,
+                    "sha256": "ec77624d64c35f2749c1142c4ed6b4068e7d272050c6184ca2b87aea34bc60e8",
+                    "segments": [
+                      "546e05111e05c481e4b63038de4350553db586352da9c237d50058d005bc41be"
+                    ]
+                  }
+                }
+              },
+              {
+                "index": 1,
+                "cached": true,
+                "cacheKey": "0707070707070707070707070707070707070707070707070707070707070707"
+              }
+            ]
+          },
+          "merge": {
+            "status": "failed",
+            "reason": "lost",
+            "runs": [
+              {
+                "run": "run-1.merge.0",
+                "step": "merge",
+                "index": 0,
+                "outcome": "failed:lost",
+                "attempt": 1,
+                "node": 5,
+                "jobKey": "2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+                "outputs": [],
+                "usage": {
+                  "cpuMicros": "0",
+                  "gibMicros": "0",
+                  "fuel": "0"
+                }
+              }
+            ]
+          }
+        },
+        "jobAttestations": {
+          "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d": {
+            "quote": "TU9DS19URFhfUVVPVEVfVjEKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCvHB7Hb5nW5I4CaF1WqpN5faacoIBtPP1tdl4UbX6w59",
+            "transportKey": "3131313131313131313131313131313131313131313131313131313131313131",
+            "appHash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "nonce": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+            "release": {
+              "version": "2.3.109",
+              "profile": "locked-read-only"
+            },
+            "cluster": "eu-shared-1",
+            "node": 4,
+            "mock": true,
+            "jobKey": "db995fe25169d141cab9bbba92baa01f9f2e1ece7df4cb2ac05190f37fcc1f9d",
+            "clusterIdentity": "2121212121212121212121212121212121212121212121212121212121212121"
+          }
+        }
+      },
+      "node": 1,
+      "signature": "57a115288f9425f6ce0bb5f621ffa768d03ffe2a8afc37d0746722eda929115ad808f7c2dc1672cabea3c7cc54a5f0beb7db31b7eebc294b039e23b3fae02c09"
+    }
+  }
+}

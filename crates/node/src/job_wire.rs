@@ -3,6 +3,7 @@
 //! the job node. The leader and the job node both build and check them here, so the signed
 //! bytes are defined once.
 
+use calimero_client::receipt::ReportFields;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use eyre::{bail, eyre, Result as EyreResult};
 use serde::{Deserialize, Serialize};
@@ -11,12 +12,10 @@ use crate::types::Caller;
 
 const ASSIGNMENT_LABEL: &[u8] = b"calimero.compute.assignment.v1\0"; // prefix of the signed assignment
 const BUNDLE_LABEL: &[u8] = b"calimero.compute.bundle.v1\0"; // prefix of the signed component hash
-const REPORT_LABEL: &[u8] = b"calimero.compute.report.v1\0"; // prefix of the signed report message
 pub(crate) const SHA256_LEN: usize = 32; // bytes of a SHA-256
 pub const BUNDLE_SIGNATURE_HEADER: &str = "x-bundle-signature"; // the header carrying the cluster identity's signature over a component's hash
 pub const MAX_REPORT_MESSAGE_BYTES: usize = 512; // the failure text a signed report carries
 pub const MAX_RUN_LOG_BYTES: usize = 1 << 20; // the module log a run attempt keeps, truncated past it
-const LOG_LABEL: &[u8] = b"calimero.compute.report.log.v1\0"; // tags the log a report carries, after everything else it signs
 const MICROS_PER_SECOND: u128 = 1_000_000; // to turn GiB-microseconds into GiB-seconds
 const BYTES_PER_GIB: u128 = 1 << 30; // a GiB, the unit of memory billed
 
@@ -26,15 +25,7 @@ pub fn is_hash(text: &str) -> bool {
     text.len() == 2 * SHA256_LEN && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// The 32 bytes of a hash spelled as [`is_hash`] says.
-pub(crate) fn hash_bytes(text: &str) -> EyreResult<[u8; SHA256_LEN]> {
-    if !is_hash(text) {
-        bail!("a hash is 64 lowercase hex digits");
-    }
-    hex::decode(text)?
-        .try_into()
-        .map_err(|_| eyre!("a hash is 32 bytes"))
-}
+pub(crate) use calimero_client::receipt::hash_bytes;
 
 mod b64 {
     use base64::engine::general_purpose::STANDARD;
@@ -295,15 +286,9 @@ impl FailReason {
 }
 
 /// A file a run wrote: its id (the hash of its segment list), the hash of each segment of its
-/// ciphertext, and its plaintext size and hash.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct OutputRef {
-    pub id: String,
-    pub size: u64,
-    pub sha256: String,
-    pub segments: Vec<String>,
-}
+/// ciphertext, and its plaintext size and hash. The client's type, so a receipt's verifier
+/// rebuilds the report from the same shape.
+pub use calimero_client::receipt::JobOutput as OutputRef;
 
 /// What a run cost, in the integers that are signed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -379,41 +364,22 @@ pub fn report_message(report: &Report, assignment: &[u8; 32]) -> EyreResult<Vec<
     {
         bail!("only an app-error or trap report carries a message, of a bounded size");
     }
-    let mut m = REPORT_LABEL.to_vec();
-    m.extend_from_slice(assignment);
-    push_prefixed(&mut m, report.app.as_bytes())?;
-    push_prefixed(&mut m, report.run.as_bytes())?;
-    m.extend_from_slice(&report.attempt.to_be_bytes());
-    m.push(match report.status {
-        ReportStatus::Done => 0,
-        ReportStatus::Failed => 1,
-    });
-    push_prefixed(
-        &mut m,
-        report.reason.map_or("", FailReason::as_str).as_bytes(),
-    )?;
-    push_prefixed(&mut m, report.message.as_bytes())?;
-    m.extend_from_slice(&calimero_identity::sha256(&report.result));
-    let count = u32::try_from(report.outputs.len()).map_err(|_| eyre!("too many outputs"))?;
-    m.extend_from_slice(&count.to_be_bytes());
-    for output in &report.outputs {
-        push_output(&mut m, output)?;
-    }
-    m.extend_from_slice(&report.usage.cpu_micros.to_be_bytes());
-    m.extend_from_slice(&report.usage.gib_micros.to_be_bytes());
-    m.extend_from_slice(&report.usage.fuel.to_be_bytes());
-    if let Some(log) = &report.log {
-        m.extend_from_slice(LOG_LABEL);
-        push_output(&mut m, log)?;
-    }
-    Ok(m)
-}
-
-fn push_output(m: &mut Vec<u8>, output: &OutputRef) -> EyreResult<()> {
-    m.extend_from_slice(&hash_bytes(&output.id)?);
-    m.extend_from_slice(&output.size.to_be_bytes());
-    m.extend_from_slice(&hash_bytes(&output.sha256)?);
-    push_segments(m, &output.segments)
+    calimero_client::receipt::report_message(&ReportFields {
+        assignment,
+        app: &report.app,
+        run: &report.run,
+        attempt: report.attempt,
+        reason: report.reason.map(FailReason::as_str),
+        message: &report.message,
+        result_sha256: &calimero_identity::sha256(&report.result),
+        outputs: &report.outputs,
+        usage: [
+            report.usage.cpu_micros,
+            report.usage.gib_micros,
+            report.usage.fuel,
+        ],
+        log: report.log.as_ref(),
+    })
 }
 
 /// The signature (hex) of `report` under a job node's key.
@@ -469,6 +435,8 @@ pub(crate) fn sample_assignment() -> Assignment {
 
 #[cfg(test)]
 mod tests {
+    use calimero_client::receipt::JOB_REPORT_LOG_DOMAIN;
+
     use super::*;
 
     type Edit<T> = (&'static str, Box<dyn Fn(&mut T)>);
@@ -848,7 +816,7 @@ mod tests {
         let plain = report_message(&report(), &FOR).unwrap();
         let with = report_message(&logged(), &FOR).unwrap();
         assert_eq!(with[..plain.len()], plain);
-        let mut tail = LOG_LABEL.to_vec();
+        let mut tail = JOB_REPORT_LOG_DOMAIN.to_vec();
         tail.extend([0xdd; 32]);
         tail.extend(4u64.to_be_bytes());
         tail.extend([0xee; 32]);

@@ -1052,6 +1052,12 @@ impl Drive<'_> {
     ) -> bool {
         let node = self.node;
         let run = &self.rec.run;
+        // Only a pipeline receipt reads it, and a replica on an older release would drop it.
+        let receipt_run = match &self.rec.pipeline {
+            Some(link) if self.node.replicas_take_logs().await => Some(link.run.clone()),
+            _ => None,
+        };
+        let job_key = hex::encode(peer.job_key);
         let proposed = self
             .g
             .propose_led(|m, _, _| {
@@ -1067,9 +1073,14 @@ impl Drive<'_> {
                     run: run.clone(),
                     attempt,
                     node: peer.id,
-                    job_key: hex::encode(peer.job_key),
+                    job_key: job_key.clone(),
                     assignment_digest: digest.to_owned(),
                     ts_ms: node.stamp(m),
+                    // Once per pipeline run and job key: an earlier final already kept it.
+                    job_attestation: receipt_run
+                        .as_deref()
+                        .filter(|r| m.job_attestation(r, &job_key).is_none())
+                        .map(|_| peer.doc.clone()),
                 }));
                 Proposal::Append(entry_bytes(&mut cmd).0)
             })

@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use super::blobs::{BlobRecord, Blobs};
 use super::{get_json, host_answer, parse_hex32, put_json, Applied, FileMark, Outcome};
 use crate::app::{rows, AppMachine};
+use crate::attest::AttestationDoc;
 use crate::job_wire::{
     hash_bytes, verify_report, FailReason, OutputRef, Report, ReportStatus, ReportUsage,
     MAX_RUN_LOG_BYTES,
@@ -150,6 +151,9 @@ pub struct Attempt {
     /// Hex SHA-256 of the exact assignment the leader built; the report binds it.
     pub assignment_digest: String,
     pub ts_ms: u64,
+    /// The job node's attestation, as its entry carried it; absent in a record from before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_attestation: Option<AttestationDoc>,
 }
 
 /// How a run ended and what it left.
@@ -343,6 +347,10 @@ pub struct AttemptEntry {
     pub job_key: String,
     pub assignment_digest: String,
     pub ts_ms: u64,
+    /// The job node's attestation the leader admitted it on, kept for a pipeline receipt; proposed
+    /// only for a pipeline's run and while every replica runs this release, which keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_attestation: Option<AttestationDoc>,
 }
 
 /// `computeFinal`: the run ended; `result` is what its result method did.
@@ -591,6 +599,7 @@ impl AppMachine {
             job_key: entry.job_key.clone(),
             assignment_digest: entry.assignment_digest.clone(),
             ts_ms: entry.ts_ms,
+            job_attestation: entry.job_attestation.clone(),
         });
         put_json(tx, rows::CRUN, &record.run, &record);
         host_answer(index, true, "")
@@ -870,5 +879,57 @@ impl AppMachine {
             _ if entry.usage != ReportUsage::default() => Err(LEADER_USAGE),
             _ => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod receipt_reasons {
+    use calimero_client::receipt::{JOB_FAIL_REASONS, LEADER_FAIL_REASONS};
+
+    use super::super::pipelines::reason_code;
+    use super::FailedReason;
+
+    /// A receipt's verifier refuses an outcome it does not list, so a new reason must be listed.
+    #[test]
+    fn the_clients_outcome_lists_name_every_failure_reason_on_the_right_side() {
+        let all = [
+            FailedReason::Fuel,
+            FailedReason::Memory,
+            FailedReason::Trap,
+            FailedReason::AppError,
+            FailedReason::Integrity,
+            FailedReason::Cancelled,
+            FailedReason::Lost,
+            FailedReason::Refused,
+            FailedReason::Timeout,
+            FailedReason::Quota,
+            FailedReason::NotGranted,
+            FailedReason::TooLarge,
+        ];
+        for reason in all {
+            // Exhaustive, so a new variant does not compile until it is added to `all`.
+            match reason {
+                FailedReason::Fuel
+                | FailedReason::Memory
+                | FailedReason::Trap
+                | FailedReason::AppError
+                | FailedReason::Integrity
+                | FailedReason::Cancelled
+                | FailedReason::Lost
+                | FailedReason::Refused
+                | FailedReason::Timeout
+                | FailedReason::Quota
+                | FailedReason::NotGranted
+                | FailedReason::TooLarge => {}
+            }
+            let name = reason_code(reason);
+            let job = reason.job().is_some();
+            assert_eq!(JOB_FAIL_REASONS.contains(&name.as_str()), job, "{name}");
+            assert_eq!(LEADER_FAIL_REASONS.contains(&name.as_str()), !job, "{name}");
+        }
+        assert_eq!(
+            JOB_FAIL_REASONS.len() + LEADER_FAIL_REASONS.len(),
+            all.len()
+        );
     }
 }

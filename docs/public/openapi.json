@@ -4435,7 +4435,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "A pipeline run's receipt",
-        "description": "The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key.\n\n**Who:** signed in (a session or an API key).",
+        "description": "The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key. `version=2` adds what each job's report signs to its proof (`job`) and each job node's attestation (`jobAttestations`); the default, `1`, leaves them out.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -4462,6 +4462,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -4476,7 +4486,9 @@
                       "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
                     },
                     "node": {
-                      "type": "string"
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
                     },
                     "signature": {
                       "type": "string"
@@ -4490,6 +4502,19 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "`BAD_VERSION`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_VERSION"
+            ]
           },
           "401": {
             "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",

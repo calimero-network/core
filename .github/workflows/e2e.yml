@@ -224,6 +224,9 @@ jobs:
           cargo build --release -p merod -p meroctl
           "${CARGO_TARGET_DIR:-target}/release/meroctl" app build \
             apps/v2-fixtures/kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
+          "${CARGO_TARGET_DIR:-target}/release/meroctl" app build apps/v2-fixtures/compute \
+            --out "${CARGO_TARGET_DIR:-target}/app-components/compute-app.wasm" \
+            --compute-out "${CARGO_TARGET_DIR:-target}/app-components/compute.wasm"
           for v in 1.0.0 1.1.0; do
             "${CARGO_TARGET_DIR:-target}/release/meroctl" app pack --wasm "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm" \
               --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
@@ -898,7 +901,7 @@ jobs:
 
       - name: Point the clients at them
         run: |
-          chmod +x target/release/merod
+          chmod +x target/release/merod target/release/meroctl
           echo "MEROD_BINARY=$PWD/target/release/merod" >> "$GITHUB_ENV"
           echo "KV_STORE_WASM=$PWD/target/app-components/kv.wasm" >> "$GITHUB_ENV"
 
@@ -910,12 +913,26 @@ jobs:
           # restored here could be poisoned by another branch (zizmor cache-poisoning).
           package-manager-cache: false
 
+      # If this fails, refresh mero-js's receipt vectors from core (paired by `sdk-ref:` in the PR body).
+      - name: mero-js receipt vectors are the ones core produces
+        if: matrix.client == 'mero-js'
+        run: |
+          cp crates/client/tests/fixtures/receipt-vectors.json _mero-js/src/client/fixtures/receipt-vectors.json
+          git -C _mero-js diff --exit-code -- src/client/fixtures/receipt-vectors.json
+
+      # MERO_JS_REQUIRE_COMPUTE makes the pipeline test fail, not skip, so this job cannot pass vacuously.
       - name: mero-js cluster tests
         if: matrix.client == 'mero-js'
         working-directory: _mero-js
+        env:
+          MEROCTL: ${{ github.workspace }}/target/release/meroctl
+          COMPUTE_WASM: ${{ github.workspace }}/target/app-components/compute.wasm
+          COMPUTE_FIXTURE_DIR: ${{ github.workspace }}/apps/v2-fixtures/compute
+          MERO_JS_REQUIRE_COMPUTE: "1"
         run: |
           npm install -g pnpm
           pnpm install --frozen-lockfile
+          pnpm vitest run --config vitest.config.ts src/client/receipts.test.ts
           pnpm test:cluster
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0

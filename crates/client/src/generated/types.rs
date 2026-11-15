@@ -2749,7 +2749,7 @@ pub struct PipelinesCancelResponse {
 pub struct PipelineReceiptReceiptResponse {
     /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
     pub receipt: Value,
-    pub node: String,
+    pub node: u64,
     pub signature: String,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
