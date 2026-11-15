@@ -357,7 +357,7 @@ async fn app_create(
         .await?;
     // Wait for the app's first entry (init) to commit somewhere; a compute-only app's is empty,
     // but its group cannot take a pipeline start before it.
-    let deadline = tokio::time::Instant::now() + app_start_wait();
+    let deadline = tokio::time::Instant::now() + node.app_start_wait();
     loop {
         match app_ready(&node, &app_id).await {
             Some(Ok(())) => break,
@@ -384,16 +384,7 @@ async fn app_create(
 
 /// How long creating an app waits for its `init` to commit before answering `503 UNAVAILABLE`
 /// (the app stays created, and `init` keeps being retried).
-pub const APP_START_WAIT: Duration = Duration::from_secs(30);
-
-/// [`APP_START_WAIT`], or the wait a test set (`testing::app_start_wait`).
-fn app_start_wait() -> Duration {
-    #[cfg(feature = "testing")]
-    if let Some(wait) = crate::testing::app_start_wait_override() {
-        return wait;
-    }
-    APP_START_WAIT
-}
+pub(crate) const APP_START_WAIT: Duration = Duration::from_secs(30);
 
 /// Whether the app has run `init`, asking a replica if this node hosts none.
 /// Whether the app's init has committed: `None` not yet, `Some(Err(why))` failed.

@@ -5599,8 +5599,6 @@ fn spin_component() -> Vec<u8> {
 /// component bundle is taken, and `init` then runs on it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor() {
-    // The create call answers 503 after 4 s here, not the 30 s a cluster waits.
-    calimero_node::testing::app_start_wait(Duration::from_secs(4));
     // Unlimited fuel, so the spinning init hits its wall clock (a timeout, never
     // logged) instead of running out of fuel (a trap, logged as a failed init).
     let c = Cluster::start_with(3, |cfg| {
@@ -5610,6 +5608,12 @@ async fn an_app_whose_init_has_not_applied_is_upgraded_by_its_recorded_executor(
         });
     })
     .await;
+    // The create call answers 503 after 4 s here, not the 30 s a cluster waits.
+    c.nodes[0]
+        .as_ref()
+        .unwrap()
+        .node
+        .set_app_start_wait(Duration::from_secs(4));
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let stuck = alice
         .packages()

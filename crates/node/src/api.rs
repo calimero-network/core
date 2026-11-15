@@ -64,7 +64,7 @@ type ApiResult<T = Json<Value>> = Result<T, ApiError>;
 
 mod account_proof;
 mod approvals;
-mod apps;
+pub(crate) mod apps;
 mod auth;
 mod backup_keys;
 mod calls;
