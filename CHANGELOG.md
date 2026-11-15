@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`install.sh` installs the newest complete release**: GitHub lists a release
+  as soon as the release workflow creates it, before its archives are uploaded,
+  so `curl ... | sh` failed for everyone for the half hour a release builds
+  ("release 1.0.0-rc.26 has no SHA256SUMS"). Without `--version` it now takes the
+  newest of the last five releases whose SHA256SUMS and archives can all be
+  fetched, saying which it passed over; `--version` of a release still uploading
+  says so.
+
 ## [1.0.0-rc.26] - 2026-11-15
 
 ### Changed
