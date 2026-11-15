@@ -50,8 +50,9 @@ fi
 
 # A Mac. 1.0.0-rc.2 has meroctl for it and no merod (as before 1.0.0-rc.25);
 # 1.0.0-rc.1 has both.
-mac_release() { # VERSION TOOLS...: add macOS archives of TOOLS to VERSION
+mac_release() { # VERSION TOOLS...: give VERSION macOS archives of exactly TOOLS
   local version=$1; shift
+  rm -f "$TMP/releases/download/$version"/*_aarch64-apple-darwin.tar.gz # on a Mac host, release() made some already
   for tool in "$@"; do
     printf '#!/bin/sh\necho %s mac %s\n' "$tool" "$version" > "$TMP/build/$tool" && chmod +x "$TMP/build/$tool"
     tar -czf "$TMP/releases/download/$version/${tool}_aarch64-apple-darwin.tar.gz" -C "$TMP/build" "$tool"
