@@ -1,3 +1,9 @@
+## [35.3.0](https://github.com/calimero-network/mero-js/compare/mero-js-v35.2.1...mero-js-v35.3.0) (2026-11-15)
+
+### Features
+
+* **client:** expose what the client verified about its node ([#396](https://github.com/calimero-network/mero-js/issues/396)) ([14565de](https://github.com/calimero-network/mero-js/commit/14565dedb8efb2f9e99110b7f3d9b1c0143d33f5))
+
 ## [35.2.1](https://github.com/calimero-network/mero-js/compare/mero-js-v35.2.0...mero-js-v35.2.1) (2026-11-13)
 
 ### Bug Fixes
