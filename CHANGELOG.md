@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.27] - 2026-11-15
+
 ### Fixed
 
 - **`meroctl app signer new` makes the key's directory**: on a fresh machine
