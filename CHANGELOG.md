@@ -1,3 +1,9 @@
+## [11.3.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.2.0...mero-react-v11.3.0) (2026-11-15)
+
+### Features
+
+* **node-shield:** add open/onOpenChange and compact props ([#139](https://github.com/calimero-network/mero-react/issues/139)) ([52a188d](https://github.com/calimero-network/mero-react/commit/52a188d34f002be8e7623bf61b49f2f69c9f5bd6))
+
 ## [11.2.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.1.5...mero-react-v11.2.0) (2026-11-15)
 
 ### Features
