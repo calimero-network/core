@@ -14,9 +14,9 @@ gets back.
 From the command line, the same call and a read of its write:
 
 ```sh
-meroctl call -c my-kv set --args '{"key":"a","value":"1"}' --idempotency-key k1
+meroctl call -i my-kv set --args '{"key":"a","value":"1"}' --idempotency-key k1
 # { "index": 42, "result": null, "events": [ { "kind": "Inserted", … } ], "receipt": { … } }
-meroctl call -c my-kv get --args '{"key":"a"}' --view --min-index 42
+meroctl call -i my-kv get --args '{"key":"a"}' --view --min-index 42
 ```
 
 `meroctl` (and every client library) attests the node, opens the sealed

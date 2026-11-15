@@ -10,7 +10,7 @@ use crate::env::Env;
 pub enum RunCmd {
     /// Print a compute run's module log (stdout, stderr and `log` lines) to stdout.
     Logs {
-        /// The context (alias or id).
+        /// The app instance (alias or id).
         app: String,
         run: String,
         /// The attempt (default: the latest that kept a log).

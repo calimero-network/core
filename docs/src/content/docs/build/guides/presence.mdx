@@ -124,9 +124,9 @@ for e in client.presence_stream(app_id, limit=10, timeout=5):   # snapshot first
 ```
 
 ```bash
-meroctl context presence publish my-doc --seq 1 --state 7b7d   # no --state retracts
-meroctl context presence list my-doc
-meroctl context presence stream my-doc --limit 10
+meroctl instance presence publish my-doc --seq 1 --state 7b7d   # no --state retracts
+meroctl instance presence list my-doc
+meroctl instance presence stream my-doc --limit 10
 ```
 
 Rust: `client.apps().presence_publish(..)`, `presence_get(..)` and

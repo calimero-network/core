@@ -75,22 +75,28 @@ pub enum AppCmd {
         #[arg(long)]
         version: Option<String>,
     },
-    /// Uninstall one version, or the whole application. Refused while a context runs it.
+    /// Uninstall one version, or the whole application. Refused while an instance runs it.
     Uninstall {
         package: String,
         #[arg(long)]
         version: Option<String>,
     },
-    /// Push a build to its contexts now, then on every save (v1's `app
-    /// watch`). A signed `.mpk` is installed and the contexts running its
+    /// Push a build to its instances now, then on every save (v1's `app
+    /// watch`). A signed `.mpk` is installed and the instances running its
     /// package are updated to its version; a raw `.wasm` (development
-    /// clusters) updates the contexts named with `--context`.
+    /// clusters) updates the instances named with `--instance`.
     Watch {
         #[arg(long)]
         path: PathBuf,
-        /// The contexts to update (default for a `.mpk`: this account's
-        /// contexts of its package).
-        #[arg(long = "context", short)]
+        /// The instances to update (default for a `.mpk`: this account's
+        /// instances of its package).
+        #[arg(
+            long = "instance",
+            short = 'i',
+            alias = "context",
+            short_alias = 'c',
+            value_name = "INSTANCE"
+        )]
         contexts: Vec<String>,
         /// The owner's passkey file that approves each update.
         #[arg(long)]
@@ -300,7 +306,7 @@ async fn origins(cmd: OriginsCmd, env: &Env) -> eyre::Result<Value> {
     })
 }
 
-/// Push `path` to its contexts (now, if `push_first`), and again on every
+/// Push `path` to its instances (now, if `push_first`), and again on every
 /// save unless `once`.
 pub async fn watch(
     env: &Env,

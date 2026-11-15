@@ -45,7 +45,7 @@ pub enum PipelineCmd {
     },
     /// Start a run of the pipeline `name`; prints `{ run }`, or with `--wait` the ended run.
     Run {
-        /// The context (alias or id).
+        /// The app instance (alias or id).
         app: String,
         name: String,
         /// Bind an input to file ids: `NAME=ID[,ID...]`; once per input.

@@ -143,8 +143,8 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `GET /auth/me` | signed in | The account, passkeys (each with `addedAt` and `lastSignInAt`), `passkeyId`, organizations (`personal: true` on the one made at sign-up), `via` (`session` or `apiKey`), the `app` and `origin` a session is bound to, `recoveryCode`, `recoveryPending` | `whoami`, `account show` |
 | `GET /auth/apps[?after=ID&limit=N]` | signed in | The apps the account owns, in any organization (a package-bound session: its package's): `{ scope, governance, approvedReleases, clusterReleases, apps, next }`, `approvedReleases` its personal organization's, each app's release, newer releases it may upgrade to (`availableVersions`, and `latestReachable`/`latestBlocked`: the newest it can reach and why the latest is not it, [Which release an app can reach](/protocol/upgrades/#which-release-an-app-can-reach)), last upgrade, replicas' releases and `lastWriteAt` (as in `GET /ops/apps`) ([Reading the approvals](/protocol/governance/#reading-the-approvals)) | |
 | `GET /auth/usage` | signed in | Apps, bundle bytes, API keys and owned orgs against the quotas; `developerFuelToday` and `developerWritesToday`: what today's runs of the apps the account is the developer of used (D76, D78). `bundleBytes`, `developerFuelToday` and `developerWritesToday` are decimal strings | `account usage` |
-| `GET /auth/aliases` | signed in | The account's aliases | `context alias list` |
-| `GET/PUT/DELETE /auth/aliases/{alias}` | signed in | Resolve, set (`{ app }`) or remove an alias | `context alias get/add/remove`, `context use` |
+| `GET /auth/aliases` | signed in | The account's aliases | `instance alias list` |
+| `GET/PUT/DELETE /auth/aliases/{alias}` | signed in | Resolve, set (`{ app }`) or remove an alias | `instance alias get/add/remove`, `instance use` |
 | `POST /auth/apikeys` | account holder (a passkey session) | `{ label, apps?, methods?, readOnly, allowConfirm, ttlSecs?, upgrades?, confirm? }` → `{ keyId, key }`, approved with a passkey (`412` first). `upgrades: { app, package? }` makes an upgrade key, which signs that app's upgrades in place of a passkey and is refused everywhere else (`403 UPGRADE_KEY_ONLY`) | `account api-key create` |
 | `GET /auth/apikeys` | account holder | The account's keys | `account api-key list` |
 | `DELETE /auth/apikeys/{key}` | account holder | Revoke a key, approved with a passkey (`412` first; the retry's body carries `confirm`) | `account api-key revoke` |
@@ -180,22 +180,22 @@ the release fetches and verifies it again.
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /apps` | installer | `{ name, package?, version?, service?, bundle?, deployment?, org?, access?, initArgs?, metadata? }` → `{ appId, contextId, group, replicas, compute }`. With no `org`, the instance goes to the caller's personal organization; `deployment` creates from a deployment's offer. Confirm methods are the ones the app's ABI declares (`#[app::confirm]`) | `context create` |
-| `GET /apps[?package=P]` | signed in or anyone | Apps the caller reaches | `context list` |
-| `GET /apps/{app}` | signed in or anyone | One app | `context get` |
-| `DELETE /apps/{app}` | account holder | Delete (owner or org admin) | `context delete` |
+| `POST /apps` | installer | `{ name, package?, version?, service?, bundle?, deployment?, org?, access?, initArgs?, metadata? }` → `{ appId, contextId, group, replicas, compute }`. With no `org`, the instance goes to the caller's personal organization; `deployment` creates from a deployment's offer. Confirm methods are the ones the app's ABI declares (`#[app::confirm]`) | `instance create` |
+| `GET /apps[?package=P]` | signed in or anyone | Apps the caller reaches | `instance list` |
+| `GET /apps/{app}` | signed in or anyone | One app | `instance get` |
+| `DELETE /apps/{app}` | account holder | Delete (owner or org admin) | `instance delete` |
 | `POST /apps/{app}/intents` | app access | `{ method, args, idempotencyKey?, confirm? }`: a call. A confirm method answers `412` first. | `call` |
 | `POST /apps/{app}/views` | app access | `{ method, args, consistency?: "stale", minIndex? }`: a read | `call --view` |
 | `POST /apps/{app}/methods/{method}` | app access | The body of `/intents` or `/views` without `method`: runs as `/views` for a view the ABI declares (without `confirm`), else as `/intents`, with the same gate, step-up and limits | |
-| `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones | `context watch` |
-| `POST /apps/{app}/upgrade` | account holder | `{ bundle? \| package?, version?, service?, migrate?, confirm? }`; where the owner holds app upgrades | `context update` |
-| `POST /apps/{app}/transfer` | account holder | `{ to, confirm? }`: hand the app to another account (the owner, or for an organization's app its owner while a member, and in the app's team for an app on a team, or an organization admin, with a passkey step-up; an organization's app only to a member) | `context transfer` |
-| `POST /apps/{app}/move` | account holder | `{ toOrg, bringMembers?, confirm? }`: move the app to another organization, its data where it is (whoever manages it now, as an admin or the owner of `toOrg`, with a passkey step-up). Its files, runs and quotas go to the target; `org` or app-team access becomes the target's app team of its package (made when missing, closed when every app team of the target is; `org` access in a legacy target). `bringMembers` adds the source's members who reach it, capped at `member`. Answers `{ appId, from, org, access, created, added, revokedInvites }`; a node without the route answers `404` | `context move` |
-| `POST /apps/{app}/access` | account holder | `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` | `context access` |
-| `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `context metadata` |
-| `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one) | `context storage` |
+| `GET /apps/{app}/events?from=N` | app access | Server-sent events: committed events from `N`, then live ones | `instance watch` |
+| `POST /apps/{app}/upgrade` | account holder | `{ bundle? \| package?, version?, service?, migrate?, confirm? }`; where the owner holds app upgrades | `instance update` |
+| `POST /apps/{app}/transfer` | account holder | `{ to, confirm? }`: hand the app to another account (the owner, or for an organization's app its owner while a member, and in the app's team for an app on a team, or an organization admin, with a passkey step-up; an organization's app only to a member) | `instance transfer` |
+| `POST /apps/{app}/move` | account holder | `{ toOrg, bringMembers?, confirm? }`: move the app to another organization, its data where it is (whoever manages it now, as an admin or the owner of `toOrg`, with a passkey step-up). Its files, runs and quotas go to the target; `org` or app-team access becomes the target's app team of its package (made when missing, closed when every app team of the target is; `org` access in a legacy target). `bringMembers` adds the source's members who reach it, capped at `member`. Answers `{ appId, from, org, access, created, added, revokedInvites }`; a node without the route answers `404` | `instance move` |
+| `POST /apps/{app}/access` | account holder | `{ access: { kind: owner \| org \| team \| accounts \| public, … } }` | `instance access` |
+| `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `instance metadata` |
+| `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one) | `instance storage` |
 | `GET /apps/{app}/usage` | owner or org admin | A component's runs per UTC day: `today` and the 30 `days` before it, each `{ date, runs, fuel, wallMs, writes, bytesWritten, events }`, figures as decimal strings; `wallMs` is information only | |
-| `GET /apps/{app}/abi` | app access | The bundle's embedded ABI | `context abi` |
+| `GET /apps/{app}/abi` | app access | The bundle's embedded ABI | `instance abi` |
 | `POST /pipelines/validate` | a signed-in account | `{ source, package?, version? }`: `{ ok, errors: [{ path, code, message }], pipeline?, worstCaseFuel?, worstCaseCost? }`; with `package` and `version` (both, a release the caller sees, else `404`) the source is checked against that release's methods, modules and the cluster's pools. Writes nothing | `cloud compute pipeline validate` |
 | `POST /apps/{app}/pipelines/{name}/estimate` | the app's owner or its organization's members | `{ inputs?: { name: [fileId] } \| counts?: { name: n }, params? }`: `{ steps: { step: { runs, fuel, cost? } }, fuel, cost?, priceVersion? }`, numbers as decimal strings; ids are only counted. `400 BAD_INPUTS`, `404 NO_SUCH_PIPELINE` | `cloud compute pipeline estimate` |
 | `POST /apps/{app}/pipelines/{name}/runs` | the app's owner or its organization's members | `{ inputs: { name: [fileId] }, params, maxCost? }`: start a run of a pipeline the app's release registers; `202 { run }`, with `worstCase` when `maxCost` (micro-units, a decimal string) is given. `404 NO_SUCH_PIPELINE`, `400 BAD_INPUTS`, `400 BAD_PARAMS`, `400 BAD_MAX_COST`, `409 NO_PRICE_TABLE`, `429 TOO_MANY_PIPELINE_RUNS`, `409 CLUSTER_NOT_UPGRADED` | `cloud compute pipeline run` |
@@ -209,8 +209,8 @@ the release fetches and verifies it again.
 | `GET /apps/{app}/xcalls` | signed in (owner or org admin) | `{ pending, deadLetters }`: how many cross-app calls wait in its outbox, and the ones given up on | - |
 | `GET /apps/{app}/runs/{run}` | app access | A compute run's record without its arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (with plaintext sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` (percent, step) as the app's leader last polled it | - |
 | `GET /apps/{app}/attestation` | app access | `{ appId, cluster, replicas }`: every replica's receipt-key attestation, each bound to the cluster and its node id | `attest app` |
-| `GET/POST /apps/{app}/presence` | app access | Who is present; publish `{ seq, state }` | `context presence list/publish` |
-| `GET /apps/{app}/presence/stream` | app access | Server-sent events: `snapshot`, then `presence` diffs | `context presence stream` |
+| `GET/POST /apps/{app}/presence` | app access | Who is present; publish `{ seq, state }` | `instance presence list/publish` |
+| `GET /apps/{app}/presence/stream` | app access | Server-sent events: `snapshot`, then `presence` diffs | `instance presence stream` |
 | `POST /apps/{app}/blobs` | app access | Upload a blob | `blob upload` |
 | `GET /apps/{app}/blobs` | app access | List blobs (plain blobs only) | `blob list` |
 | `POST /apps/{app}/files` | owner, org member | Upload a sealed file of up to 16 MiB: `{ id, blobId, size, sha256, index }` | `file upload` |

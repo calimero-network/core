@@ -11,39 +11,81 @@ use crate::env::{read_file, to_json, Env};
 pub enum BlobCmd {
     #[command(alias = "ls")]
     List {
-        #[arg(long, short)]
+        #[arg(
+            long = "instance",
+            short = 'i',
+            alias = "context",
+            short_alias = 'c',
+            value_name = "INSTANCE"
+        )]
+        #[arg(value_name = "INSTANCE")]
         context: String,
     },
     /// Upload a file; prints its id.
     Upload {
         file: PathBuf,
-        #[arg(long, short)]
+        #[arg(
+            long = "instance",
+            short = 'i',
+            alias = "context",
+            short_alias = 'c',
+            value_name = "INSTANCE"
+        )]
+        #[arg(value_name = "INSTANCE")]
         context: String,
     },
     /// Write a blob to `--output` (default: standard output).
     Download {
         id: String,
-        #[arg(long, short)]
+        #[arg(
+            long = "instance",
+            short = 'i',
+            alias = "context",
+            short_alias = 'c',
+            value_name = "INSTANCE"
+        )]
+        #[arg(value_name = "INSTANCE")]
         context: String,
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
     Info {
         id: String,
-        #[arg(long, short)]
+        #[arg(
+            long = "instance",
+            short = 'i',
+            alias = "context",
+            short_alias = 'c',
+            value_name = "INSTANCE"
+        )]
+        #[arg(value_name = "INSTANCE")]
         context: String,
     },
     /// Forget a blob (its owner or an org admin); its bytes go once no other context holds them.
     #[command(alias = "rm")]
     Delete {
         id: String,
-        #[arg(long, short)]
+        #[arg(
+            long = "instance",
+            short = 'i',
+            alias = "context",
+            short_alias = 'c',
+            value_name = "INSTANCE"
+        )]
+        #[arg(value_name = "INSTANCE")]
         context: String,
     },
     /// Invalidate the download grants made so far for a published blob (its owner or an org admin).
     Revoke {
         id: String,
-        #[arg(long, short)]
+        #[arg(
+            long = "instance",
+            short = 'i',
+            alias = "context",
+            short_alias = 'c',
+            value_name = "INSTANCE"
+        )]
+        #[arg(value_name = "INSTANCE")]
         context: String,
     },
 }

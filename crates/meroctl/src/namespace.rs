@@ -60,7 +60,7 @@ pub enum NamespaceCmd {
     /// The organizations this account belongs to, with its role.
     #[command(alias = "ls")]
     List,
-    /// Delete the organization with its teams, invites and contexts (the owner's).
+    /// Delete the organization with its teams, invites and instances (the owner's).
     Delete {
         namespace: String,
         #[arg(long)]
@@ -133,7 +133,7 @@ pub enum NamespaceCmd {
         dev_passkey: Option<PathBuf>,
     },
     /// Approve URL prefixes an application's publisher may call out to from
-    /// the organization's contexts (the owner's, where the owner holds outbound approvals).
+    /// the organization's instances (the owner's, where the owner holds outbound approvals).
     Outbound {
         namespace: String,
         #[arg(long)]
@@ -147,7 +147,7 @@ pub enum NamespaceCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// Approve a mero-tee release to hold the organization's contexts
+    /// Approve a mero-tee release to hold the organization's instances
     /// (where the owner holds release approvals).
     ApproveRelease {
         namespace: String,

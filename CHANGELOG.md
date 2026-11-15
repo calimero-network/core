@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`meroctl context` is `meroctl instance`**: 1.0 has app instances, not
+  contexts, so the command group and its flag say so: `meroctl instance
+  create|list|get|update|delete|watch|alias|use|...`, and `--instance`/`-i`
+  where an app instance is named (`call`, `blob`, `file`, `pipeline`, `app
+  watch`, `account api-key create`). `context` and `--context`/`-c` still parse,
+  hidden, for one release. The answer's `contextId` (`sha256(appId)`, SDK 0.12's
+  id) is unchanged.
+
 ### Fixed
 
 - **`meroctl local up` starts the cluster with the public registry**: `meroctl app

@@ -8,7 +8,7 @@ sidebar:
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 
-An **app instance** (what `meroctl` still calls a *context*) is one running copy
+An **app instance** (`meroctl instance`, v1's *context*) is one running copy
 of a bundle with its own state and its own Raft group. Its directory record
 lives in the system group; its state lives only on its replicas.
 
@@ -99,7 +99,7 @@ record in the system group changes.
 | | Transfer | Move | Alias |
 | --- | --- | --- | --- |
 | Route | `POST /apps/{app}/transfer { to }` | `POST /apps/{app}/move { toOrg, bringMembers? }` | `PUT /auth/aliases/{alias} { app }` |
-| `meroctl` | `context transfer <app> <account>` | `context move <app> <org> [--bring-members]` | `context alias add <alias> <app>`, `context use <app>` |
+| `meroctl` | `instance transfer <app> <account>` | `instance move <app> <org> [--bring-members]` | `instance alias add <alias> <app>`, `instance use <app>` |
 | Changes | `owner` (and the organization, out of a personal one) | `org`, the access rule, the payer | The caller's own names |
 | Who | The app's manager | Its manager where it is, as an admin of the target | Any account that reaches the app |
 | Passkey | `<app> / __transfer / { to }` | `<app> / __move / { toOrg, bringMembers }` | None |
@@ -222,7 +222,7 @@ names nothing for anyone else and grants nothing.
   alias of an app the account no longer reaches leads to the same `404` as
   its id would.
 
-`meroctl` resolves an alias wherever it takes a context, and `meroctl context
+`meroctl` resolves an alias wherever it takes an instance, and `meroctl instance
 use <app>` sets the alias `default`.
 
 ## Replica moves

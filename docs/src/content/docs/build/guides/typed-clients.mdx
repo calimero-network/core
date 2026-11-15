@@ -23,7 +23,7 @@ generated code only adds the method names and types.
 ## Generate a client
 
 Put `meroctl` on PATH once, build the app, then point `codegen` at the
-component, the `.mpk` bundle or an ABI JSON file (`meroctl context abi` saves an
+component, the `.mpk` bundle or an ABI JSON file (`meroctl instance abi` saves an
 installed app's). Every release ships `meroctl` prebuilt for Linux (x86_64,
 aarch64) and macOS (aarch64), named `meroctl_<target>.tar.gz` and listed in the
 release's `SHA256SUMS`, so CI that only runs `codegen` needs no Rust toolchain.

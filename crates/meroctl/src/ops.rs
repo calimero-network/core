@@ -70,13 +70,14 @@ pub enum OpsCmd {
     RemoveNode {
         id: u64,
     },
-    /// Move a context to these replica node ids.
+    /// Move an instance to these replica node ids.
     Move {
+        #[arg(value_name = "INSTANCE")]
         context: String,
         #[arg(long, value_delimiter = ',')]
         replicas: Vec<u64>,
     },
-    /// Write encrypted snapshots of the contexts this node leads, and of the
+    /// Write encrypted snapshots of the instances this node leads, and of the
     /// system group when it leads it.
     Backup {
         /// Every group this node holds, leader or not: what a node of a
@@ -84,10 +85,11 @@ pub enum OpsCmd {
         #[arg(long)]
         all: bool,
     },
-    /// Restore a context from a sealed backup in this node's `--backup-dir`
+    /// Restore an instance from a sealed backup in this node's `--backup-dir`
     /// (`{backup-dir}/{context}/{name}`); this node seeds it and becomes its
     /// first replica. Everything the context wrote after the backup is lost.
     Restore {
+        #[arg(value_name = "INSTANCE")]
         context: String,
         /// The backup's file name; the newest one when left out.
         #[arg(long, conflicts_with = "recovery_key_file")]
@@ -178,8 +180,9 @@ pub enum OpsCmd {
         #[arg(long)]
         version: Option<String>,
     },
-    /// Update a context to a release, where the operator holds app upgrades.
+    /// Update an instance to a release, where the operator holds app upgrades.
     Upgrade {
+        #[arg(value_name = "INSTANCE")]
         context: String,
         #[arg(long)]
         version: Option<String>,
@@ -192,7 +195,7 @@ pub enum OpsCmd {
         #[arg(long)]
         migrate: Option<String>,
     },
-    /// Update an organization's contexts (or one team's) to a release, where
+    /// Update an organization's instances (or one team's) to a release, where
     /// the operator holds app upgrades. Follow it with `meroctl group upgrade status`.
     UpgradeNamespace {
         namespace: String,

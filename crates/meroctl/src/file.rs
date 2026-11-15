@@ -16,13 +16,20 @@ pub enum FileCmd {
     /// Upload a sealed file (one request up to 16 MiB, else resumable parts); prints its id, size and SHA-256.
     Upload {
         file: PathBuf,
-        #[arg(long, short)]
+        #[arg(
+            long = "instance",
+            short = 'i',
+            alias = "context",
+            short_alias = 'c',
+            value_name = "INSTANCE"
+        )]
+        #[arg(value_name = "INSTANCE")]
         context: String,
     },
     /// Download a sealed file's plaintext to `--out`: the node sends ciphertext and the file's key
     /// wrapped to a key made here, and `--out` appears only after every byte is checked.
     Download {
-        /// The context (alias or id).
+        /// The app instance (alias or id).
         app: String,
         id: String,
         #[arg(long, short)]

@@ -380,7 +380,7 @@ fn scenario(root: &Path, url: &str) {
 
     // context: an instance of an application, named by an alias.
     let created = alice.run(&[
-        "context",
+        "instance",
         "create",
         "--package",
         "com.test.kv",
@@ -394,7 +394,7 @@ fn scenario(root: &Path, url: &str) {
     let notes = s(&created["appId"]);
     let call = alice.run(&[
         "call",
-        "--context",
+        "--instance",
         "notes",
         "set",
         "--args",
@@ -403,7 +403,7 @@ fn scenario(root: &Path, url: &str) {
     assert!(call["index"].as_u64().unwrap() > 0, "{call}");
     let view = alice.run(&[
         "call",
-        "--context",
+        "--instance",
         "notes",
         "get",
         "--args",
@@ -411,63 +411,66 @@ fn scenario(root: &Path, url: &str) {
         "--view",
     ]);
     assert_eq!(view["result"], "1");
-    assert!(alice.run(&["context", "list"]).to_string().contains(&notes));
-    assert_eq!(alice.run(&["context", "get", "notes"])["appId"], notes);
+    assert!(alice
+        .run(&["instance", "list"])
+        .to_string()
+        .contains(&notes));
+    assert_eq!(alice.run(&["instance", "get", "notes"])["appId"], notes);
     assert_eq!(
-        alice.run(&["context", "alias", "get", "notes"])["appId"],
+        alice.run(&["instance", "alias", "get", "notes"])["appId"],
         notes
     );
-    let _ = alice.run(&["context", "use", "notes"]);
-    assert_eq!(alice.run(&["context", "alias", "get"])["appId"], notes);
-    let _ = alice.run(&["context", "metadata", "notes", r#"{"colour":"red"}"#]);
+    let _ = alice.run(&["instance", "use", "notes"]);
+    assert_eq!(alice.run(&["instance", "alias", "get"])["appId"], notes);
+    let _ = alice.run(&["instance", "metadata", "notes", r#"{"colour":"red"}"#]);
     assert_eq!(
-        alice.run(&["context", "get", "notes"])["metadata"]["colour"],
+        alice.run(&["instance", "get", "notes"])["metadata"]["colour"],
         "red"
     );
-    assert!(alice.run(&["context", "storage", "notes"]).is_object());
+    assert!(alice.run(&["instance", "storage", "notes"]).is_object());
     let events = alice
         .cmd()
-        .args(["context", "watch", "notes", "--limit", "1"])
+        .args(["instance", "watch", "notes", "--limit", "1"])
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&events.stdout).contains("\"kind\""));
 
     // Presence: ephemeral, per device.
     let _ = alice.run(&[
-        "context", "presence", "publish", "notes", "--seq", "1", "--state", "0a0b",
+        "instance", "presence", "publish", "notes", "--seq", "1", "--state", "0a0b",
     ]);
     assert!(alice
-        .run(&["context", "presence", "list", "notes"])
+        .run(&["instance", "presence", "list", "notes"])
         .to_string()
         .contains("0a0b"));
 
     // blob: upload, list, info, download, delete.
     let file = write("note.txt", b"hello blob");
-    let up = alice.run(&["blob", "upload", path(&file), "--context", "notes"]);
+    let up = alice.run(&["blob", "upload", path(&file), "--instance", "notes"]);
     let blob = s(up.get("blobId").or_else(|| up.get("id")).unwrap());
     assert!(alice
-        .run(&["blob", "list", "--context", "notes"])
+        .run(&["blob", "list", "--instance", "notes"])
         .to_string()
         .contains(&blob));
     assert!(alice
-        .run(&["blob", "info", &blob, "--context", "notes"])
+        .run(&["blob", "info", &blob, "--instance", "notes"])
         .is_object());
     let out = root.join("note.out");
     let _ = alice.run(&[
         "blob",
         "download",
         &blob,
-        "--context",
+        "--instance",
         "notes",
         "--output",
         path(&out),
     ]);
     assert_eq!(std::fs::read(&out).unwrap(), b"hello blob");
-    let _ = alice.run(&["blob", "delete", &blob, "--context", "notes"]);
+    let _ = alice.run(&["blob", "delete", &blob, "--instance", "notes"]);
 
     // file: upload a sealed file, then download its plaintext through a key made for the call.
     let sealed = write("sealed.txt", b"hello sealed file");
-    let up = alice.run(&["file", "upload", path(&sealed), "--context", "notes"]);
+    let up = alice.run(&["file", "upload", path(&sealed), "--instance", "notes"]);
     let id = s(up.get("id").unwrap());
     let back = root.join("sealed.out");
     let done = alice.run(&["file", "download", "notes", &id, "--out", path(&back)]);
@@ -514,7 +517,7 @@ fn scenario(root: &Path, url: &str) {
 
     // context update: to the next release, approved with the owner's passkey.
     let _ = alice.run(&[
-        "context",
+        "instance",
         "update",
         "notes",
         "--version",
@@ -523,12 +526,12 @@ fn scenario(root: &Path, url: &str) {
         pk,
     ]);
     assert!(alice
-        .run(&["context", "list", "--package", "com.test.kv"])
+        .run(&["instance", "list", "--package", "com.test.kv"])
         .to_string()
         .contains("1.1.0"));
     let view = alice.run(&[
         "call",
-        "--context",
+        "--instance",
         "notes",
         "get",
         "--args",
@@ -540,7 +543,7 @@ fn scenario(root: &Path, url: &str) {
     // dev: a raw .wasm context, and a rebuilt .wasm pushed to it.
     let raw_wasm = write("kv.wasm", &kv);
     let raw = alice.run(&[
-        "context",
+        "instance",
         "create",
         "--path",
         path(&raw_wasm),
@@ -549,7 +552,7 @@ fn scenario(root: &Path, url: &str) {
     ]);
     let raw = s(&raw["appId"]);
     let rebuilt = write("kv-rebuilt.wasm", &variant(&kv, "rebuilt"));
-    let before = alice.run(&["context", "get", &raw])["bundle"].clone();
+    let before = alice.run(&["instance", "get", &raw])["bundle"].clone();
     let out = alice
         .cmd()
         .args([
@@ -557,7 +560,7 @@ fn scenario(root: &Path, url: &str) {
             "watch",
             "--path",
             path(&rebuilt),
-            "--context",
+            "--instance",
             &raw,
             "--dev-passkey",
             pk,
@@ -572,14 +575,14 @@ fn scenario(root: &Path, url: &str) {
     );
     let pushed: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(pushed["upgraded"], json!([raw]), "{pushed}");
-    assert_ne!(alice.run(&["context", "get", &raw])["bundle"], before);
+    assert_ne!(alice.run(&["instance", "get", &raw])["bundle"], before);
 
     // account api-key: a scoped key works on its own.
     let key = alice.run(&[
         "account",
         "api-key",
         "create",
-        "--context",
+        "--instance",
         "notes",
         "--dev-passkey",
         pk,
@@ -593,7 +596,7 @@ fn scenario(root: &Path, url: &str) {
         "--api-key",
         &key,
         "call",
-        "--context",
+        "--instance",
         &notes,
         "get",
         "--args",
@@ -624,14 +627,14 @@ fn scenario(root: &Path, url: &str) {
     let _ = service.run(&[
         "--api-key",
         &ci_key,
-        "context",
+        "instance",
         "update",
         &notes,
         "--version",
         "1.2.0",
     ]);
     assert!(alice
-        .run(&["context", "get", "notes"])
+        .run(&["instance", "get", "notes"])
         .to_string()
         .contains(&s(&alice.run(&["app", "versions", "com.test.kv"])
             ["versions"]
@@ -748,7 +751,7 @@ fn scenario(root: &Path, url: &str) {
 
     // group upgrade: the organization's contexts to a release, followed to the end.
     let _ = alice.run(&[
-        "context",
+        "instance",
         "create",
         "--package",
         "com.test.kv",
@@ -912,7 +915,7 @@ fn scenario(root: &Path, url: &str) {
 
     // network, attest.
     assert_eq!(alice.run(&["network", "status"])["ok"], true);
-    let proven = alice.run(&["attest", "--context", "notes"]);
+    let proven = alice.run(&["attest", "app", "notes"]);
     assert_eq!(
         proven["receiptKeys"].as_object().map(serde_json::Map::len),
         Some(3)
@@ -922,12 +925,12 @@ fn scenario(root: &Path, url: &str) {
     // A personal context moves into an organization its owner administers,
     // with the owner's passkey; the node asks for it first.
     let asked = alice
-        .try_run(&["context", "move", "notes", &org])
+        .try_run(&["instance", "move", "notes", &org])
         .unwrap_err();
     assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
-    let moved = alice.run(&["context", "move", "notes", &org, "--dev-passkey", pk]);
+    let moved = alice.run(&["instance", "move", "notes", &org, "--dev-passkey", pk]);
     assert_eq!(moved["org"], org, "{moved}");
-    assert_eq!(alice.run(&["context", "get", "notes"])["org"], org);
+    assert_eq!(alice.run(&["instance", "get", "notes"])["org"], org);
 
     // Clean up: an organization goes with its contexts; logout forgets the session.
     // Without a file passkey the request still goes out: the node asks for the
@@ -937,14 +940,14 @@ fn scenario(root: &Path, url: &str) {
         .unwrap()
         .to_owned();
     let asked = alice
-        .try_run(&["context", "transfer", "notes", &me])
+        .try_run(&["instance", "transfer", "notes", &me])
         .unwrap_err();
     assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
     let asked = alice.try_run(&["namespace", "delete", &org]).unwrap_err();
     assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
     let _ = alice.run(&["namespace", "delete", &org, "--dev-passkey", pk]);
-    let _ = alice.run(&["context", "delete", &raw]);
-    let _ = alice.run(&["context", "alias", "remove", "notes"]);
+    let _ = alice.run(&["instance", "delete", &raw]);
+    let _ = alice.run(&["instance", "alias", "remove", "notes"]);
     let _ = alice.run(&["logout"]);
     assert!(alice.try_run(&["whoami"]).is_err());
     let _ = alice.run(&["node", "remove", "local"]);

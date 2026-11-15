@@ -218,7 +218,7 @@ Upgrade one instance first, yours or a test organization's, and use it:
    holders for a `publisher` package.
 
    ```bash
-   meroctl context update <app-id> --version 2.0.0 --dev-passkey ./dev-passkey.json
+   meroctl instance update <app-id> --version 2.0.0 --dev-passkey ./dev-passkey.json
    ```
 
    This is `POST /apps/{app}/upgrade { version }`; the node answers
@@ -230,7 +230,7 @@ Upgrade one instance first, yours or a test organization's, and use it:
    version each side declares. From CI, an
    [upgrade key](/cloud/deploy-from-ci/) signs instead.
 
-2. Check what it runs now: `meroctl context get <app-id>` shows the release,
+2. Check what it runs now: `meroctl instance get <app-id>` shows the release,
    and `GET /auth/apps` (or `/orgs/{org}/apps`) the newer releases it may move
    to.
 
@@ -317,7 +317,7 @@ The refusals an upgrade meets before it runs, and after:
 ## Rolling back
 
 An upgrade back to the previous release is an upgrade like any other
-(`meroctl context update <app-id> --version 1.0.0`), approved the same way. It
+(`meroctl instance update <app-id> --version 1.0.0`), approved the same way. It
 switches the code and keeps the state: whatever v2 wrote into its new fields
 stays there, unread by v1, and is read again if v2 comes back. A v2 that wrote
 into an old field in a shape v1 cannot decode is the one case a rollback does

@@ -338,19 +338,19 @@ the node reads to dispatch and gate calls ([App interface](/build/app-abi/)).
    [Packaging & signing](/build/packaging-signing/)); `init` runs as you:
 
    ```sh
-   meroctl context create --name my-kv --path kv_store.wasm --alias my-kv
+   meroctl instance create --name my-kv --path kv_store.wasm --alias my-kv
    ```
 
 2. **Call the setter.** A call without `--view` is a write the leader logs:
 
    ```sh
-   meroctl call -c my-kv set --args '{"key": "hello", "value": "world"}'
+   meroctl call -i my-kv set --args '{"key": "hello", "value": "world"}'
    ```
 
 3. **Read it back** with a view:
 
    ```sh
-   meroctl call -c my-kv get --args '{"key": "hello"}' --view
+   meroctl call -i my-kv get --args '{"key": "hello"}' --view
    ```
 
    ```json
@@ -363,7 +363,7 @@ the node reads to dispatch and gate calls ([App interface](/build/app-abi/)).
 4. **Follow its events** (stop with Ctrl-C, or `--limit N`):
 
    ```sh
-   meroctl context watch my-kv --from 0
+   meroctl instance watch my-kv --from 0
    ```
 
 </Steps>
@@ -399,7 +399,7 @@ it. Create one, create the context in it, and invite a second person:
 
    ```sh
    meroctl namespace create acme
-   meroctl context create --name team-kv --path kv_store.wasm \
+   meroctl instance create --name team-kv --path kv_store.wasm \
      --namespace <org-id> --alias team-kv
    ```
 
@@ -424,11 +424,11 @@ it. Create one, create the context in it, and invite a second person:
    ```
 
 4. **Write as one, read as the other**. Aliases are per account, so bob names
-   the context by its id (`meroctl context get team-kv` shows it):
+   the context by its id (`meroctl instance get team-kv` shows it):
 
    ```sh
-   meroctl --home ./bob call -c <context-id> set --args '{"key": "from", "value": "bob"}'
-   meroctl call -c team-kv get --args '{"key": "from"}' --view
+   meroctl --home ./bob call -i <context-id> set --args '{"key": "from", "value": "bob"}'
+   meroctl call -i team-kv get --args '{"key": "from"}' --view
    ```
 
    ```json

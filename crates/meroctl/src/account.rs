@@ -33,14 +33,14 @@ pub enum AccountCmd {
     /// API keys for services (need a passkey session to create).
     #[command(subcommand)]
     ApiKey(ApiKeyCmd),
-    /// Approve a mero-tee release to hold the account's own contexts.
+    /// Approve a mero-tee release to hold the account's own instances.
     ApproveRelease {
         version: String,
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
     /// Approve URL prefixes an application's publisher may call out to from
-    /// the account's own contexts.
+    /// the account's own instances.
     Outbound {
         #[arg(long)]
         package: String,
@@ -108,8 +108,8 @@ pub enum ApiKeyCmd {
     Create {
         #[arg(long, default_value = "meroctl")]
         label: String,
-        /// Only these contexts.
-        #[arg(long = "context")]
+        /// Only these instances.
+        #[arg(long = "instance", alias = "context", value_name = "INSTANCE")]
         contexts: Vec<String>,
         #[arg(long)]
         read_only: bool,

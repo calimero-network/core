@@ -46,7 +46,7 @@ pub enum DevCmd {
         #[arg(long)]
         no_git: bool,
     },
-    /// Install a build (`.mpk`, or a development `.wasm`), create a context
+    /// Install a build (`.mpk`, or a development `.wasm`), create an instance
     /// from it, and with `--watch` push every save to it.
     Start {
         #[arg(long)]
@@ -63,11 +63,17 @@ pub enum DevCmd {
         #[arg(long)]
         dev_passkey: PathBuf,
     },
-    /// Push a build to its contexts on every save (as `meroctl app watch`).
+    /// Push a build to its instances on every save (as `meroctl app watch`).
     Watch {
         #[arg(long)]
         path: PathBuf,
-        #[arg(long = "context", short)]
+        #[arg(
+            long = "instance",
+            short = 'i',
+            alias = "context",
+            short_alias = 'c',
+            value_name = "INSTANCE"
+        )]
         contexts: Vec<String>,
         #[arg(long)]
         dev_passkey: PathBuf,

@@ -80,9 +80,9 @@ a checkout of [core](https://github.com/calimero-network/core); the
    uploads a raw component; the instance goes in your personal organization:
 
    ```sh
-   meroctl context create --name my-kv --path kv_store.wasm --alias my-kv
-   meroctl call -c my-kv set --args '{"key": "hello", "value": "world"}'
-   meroctl call -c my-kv get --args '{"key": "hello"}' --view
+   meroctl instance create --name my-kv --path kv_store.wasm --alias my-kv
+   meroctl call -i my-kv set --args '{"key": "hello", "value": "world"}'
+   meroctl call -i my-kv get --args '{"key": "hello"}' --view
    ```
 
    The view answers the value with the log index it read and a receipt the
@@ -96,10 +96,10 @@ a checkout of [core](https://github.com/calimero-network/core); the
    `updateIfExists`), and a `u64` travels as a decimal string:
 
    ```sh
-   meroctl call -c my-kv len --view                       # result: "1"
-   meroctl call -c my-kv getResult --args '{"key": "x"}' --view
+   meroctl call -i my-kv len --view                       # result: "1"
+   meroctl call -i my-kv getResult --args '{"key": "x"}' --view
    # refused: 422 APP_ERROR, code NotFound, fields { "key": "x" }
-   meroctl context watch my-kv --limit 1                  # the Inserted event
+   meroctl instance watch my-kv --limit 1                  # the Inserted event
    ```
 
 7. **Pack it as a signed release.** A real cluster installs `.mpk` packages
@@ -112,7 +112,7 @@ a checkout of [core](https://github.com/calimero-network/core); the
    meroctl app pack --wasm kv_store.wasm --package com.example.kv \
      --app-version 0.1.0 --out dist/com.example.kv-0.1.0.mpk
    meroctl app install --path dist/com.example.kv-0.1.0.mpk
-   meroctl context create --name kv-pkg --package com.example.kv --alias kv-pkg
+   meroctl instance create --name kv-pkg --package com.example.kv --alias kv-pkg
    ```
 
 </Steps>
