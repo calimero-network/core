@@ -202,14 +202,27 @@ impl<M: Machine> Group<M> {
 
     /// Confirm leadership with a majority (a heartbeat round) and wait until
     /// this node has applied everything committed before it; answers that
-    /// read index.
+    /// read index. A round that misses a majority (a follower slow to answer one heartbeat)
+    /// is tried again once per heartbeat, until the longest election timeout has passed.
     async fn confirm_leader(&self) -> Result<u64, WriteError> {
-        match self.raft.ensure_linearizable().await {
-            Ok(read) => Ok(read.map_or(0, |l| l.index)),
-            Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(f))) => {
-                forward(f.leader_id, f.leader_node)
+        let config = self.raft.config();
+        let heartbeat = Duration::from_millis(config.heartbeat_interval);
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(config.election_timeout_max);
+        loop {
+            let round = tokio::time::Instant::now();
+            match self.raft.ensure_linearizable().await {
+                Ok(read) => return Ok(read.map_or(0, |l| l.index)),
+                Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(f))) => {
+                    return forward(f.leader_id, f.leader_node)
+                }
+                Err(RaftError::APIError(CheckIsLeaderError::QuorumNotEnough(_)))
+                    if round + heartbeat < deadline =>
+                {
+                    tokio::time::sleep_until(round + heartbeat).await;
+                }
+                Err(e) => return Err(WriteError::Unavailable(e.to_string())),
             }
-            Err(e) => Err(WriteError::Unavailable(e.to_string())),
         }
     }
 

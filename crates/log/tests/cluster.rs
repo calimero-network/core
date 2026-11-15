@@ -45,6 +45,8 @@ struct Net {
     down: Mutex<BTreeSet<NodeId>>,
     /// Nodes whose requests arrive but whose answers are lost.
     deaf: Mutex<BTreeSet<NodeId>>,
+    /// Nodes whose answers arrive `LATE`, past a heartbeat's timeout.
+    late: Mutex<BTreeSet<NodeId>>,
 }
 
 struct Wire(Arc<Net>, NodeId);
@@ -72,6 +74,9 @@ impl Transport for Wire {
             if net.deaf.lock().unwrap().contains(&me) {
                 return Err("answer lost".into());
             }
+            if net.late.lock().unwrap().contains(&me) {
+                tokio::time::sleep(LATE).await;
+            }
             Ok(answer)
         })
     }
@@ -84,6 +89,7 @@ struct Cluster {
 }
 
 const KEY: [u8; 32] = [7; 32];
+const LATE: Duration = Duration::from_millis(100); // twice `config()`'s heartbeat
 
 fn config() -> Config {
     Config {
@@ -213,6 +219,24 @@ async fn strong_read_needs_the_leader() {
         c.groups[follower].read_strong(|m, _| m.map.len()).await,
         Err(WriteError::NotLeader { .. })
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_strong_read_outlasts_a_heartbeat_round_its_followers_answer_late() {
+    let c = cluster(3).await;
+    let _ = put(&c, "k", "v").await;
+    let id = leader(&c).await;
+    let _ = c.net.late.lock().unwrap().insert(id);
+    let net = Arc::clone(&c.net);
+    let _on_time = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let _ = net.late.lock().unwrap().remove(&id);
+    });
+    let v = c.groups[&id]
+        .read_strong(|m, _| m.map.get("k").cloned())
+        .await
+        .unwrap();
+    assert_eq!(v.as_deref(), Some("v"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
