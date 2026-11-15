@@ -328,6 +328,25 @@ pub fn verify_manifest(manifest: &serde_json::Value) -> Result<bool> {
     Ok(true)
 }
 
+/// Make the directories a key file goes in that do not exist yet (`~/.calimero`
+/// on a fresh machine), owner-only on Unix: they hold a secret.
+fn make_key_dir(output_path: &Path) -> std::io::Result<()> {
+    let Some(dir) = output_path.parent().filter(|d| !d.as_os_str().is_empty()) else {
+        return Ok(());
+    };
+    if dir.exists() {
+        return Ok(());
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
+}
+
 /// Generate a new Ed25519 keypair. Refuses to replace an existing file unless
 /// `force`: a signing key is unrecoverable, and losing one means no further
 /// updates can be published for any app already installed under its signerId.
@@ -347,6 +366,12 @@ pub fn generate_key(output_path: &Path, force: bool) -> Result<()> {
     };
 
     let key_json = serde_json::to_string_pretty(&key_file)?;
+    make_key_dir(output_path).map_err(|e| {
+        eyre::eyre!(
+            "failed to make the directory for {}: {e}",
+            output_path.display()
+        )
+    })?;
     write_private_key(output_path, &key_json, force).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AlreadyExists {
             eyre::eyre!(
@@ -642,6 +667,37 @@ mod tests {
 
         generate_key(&key_path, true).unwrap();
         assert_ne!(std::fs::read_to_string(&key_path).unwrap(), original);
+    }
+
+    /// `meroctl app signer new ~/.calimero/release.key` on a fresh machine: the
+    /// key's directory does not exist yet, and is made (owner-only on Unix).
+    #[test]
+    fn generate_key_makes_the_keys_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir
+            .path()
+            .join("home")
+            .join(".calimero")
+            .join("release.key");
+
+        generate_key(&key_path, false).unwrap();
+
+        let key: KeyFile =
+            serde_json::from_str(&std::fs::read_to_string(&key_path).unwrap()).unwrap();
+        assert!(key.signer_id.starts_with("did:key:"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(key_path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(
+                mode & 0o777,
+                0o700,
+                "a directory made for a key is the owner's alone"
+            );
+        }
     }
 
     #[cfg(unix)]

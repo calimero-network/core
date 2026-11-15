@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- **`meroctl app signer new` makes the key's directory**: on a fresh machine
+  `meroctl app signer new ~/.calimero/release.key` (Package & publish) failed
+  with "No such file or directory" when `~/.calimero` did not exist yet; the
+  missing directories are made, owner-only on Unix.
 - **`install.sh` installs the newest complete release**: GitHub lists a release
   as soon as the release workflow creates it, before its archives are uploaded,
   so `curl ... | sh` failed for everyone for the half hour a release builds
