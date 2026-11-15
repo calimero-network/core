@@ -77,7 +77,8 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   resolves a node, so they never read `--node`/`--api`. The old spellings
   (`dev new`, `pipeline`, `run logs`, `attest-release`, `attest --context`, `context` (now `instance`) and `--context`/`-c` (now `--instance`/`-i`))
   stay as hidden aliases for one release; `old_spellings_still_parse` and
-  `the_command_tree_is_consistent` (clap's `debug_assert`) pin the tree.
+  `the_command_tree_is_consistent` (clap's `debug_assert`) pin the tree, and
+  `help_says_instance_not_context` keeps every visible help saying instance.
 - `local up` without ownership leaves the cluster running; `local dev` owns
   what it started (`Started`, stopped on drop). Readiness is every port
   listening and `merod local`'s `ops token` line in the log.

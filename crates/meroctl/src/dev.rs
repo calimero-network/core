@@ -1,5 +1,5 @@
 //! `meroctl dev`: v1's developer workflow. `new` starts a project from an app
-//! of the apps repository; `start` installs a build, creates a context from it
+//! of the apps repository; `start` installs a build, creates an instance from it
 //! and (with `--watch`) keeps pushing it on every save.
 
 use std::path::{Path, PathBuf};
@@ -51,7 +51,7 @@ pub enum DevCmd {
     Start {
         #[arg(long)]
         path: PathBuf,
-        /// The context's name.
+        /// The instance's name.
         #[arg(long, default_value = "dev")]
         name: String,
         /// Arguments for the app's `init`, JSON.

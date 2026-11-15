@@ -1,6 +1,6 @@
 //! `meroctl group`: an organization's teams, v1's groups (nested, open or
 //! restricted), and v1's group upgrades (`group upgrade`), which move an
-//! organization's (or one team's) contexts to a release.
+//! organization's (or one team's) instances to a release.
 
 use std::path::PathBuf;
 

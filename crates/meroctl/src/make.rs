@@ -34,7 +34,7 @@ pub fn target_dir(dir: &Path) -> PathBuf {
 const COMPUTE_FILE: &str = "compute.component.wasm";
 const WASM_MAGIC: &[u8] = b"\0asm\x0d\0\x01\0"; // a component; a core module is an SDK 0.12 app
 const DEFAULT_MIN_RUNTIME: &str = "0.1.0";
-/// The longest service name `pack` writes: the name `context create --service`
+/// The longest service name `pack` writes: the name `instance create --service`
 /// takes, and a file name in the archive.
 const MAX_SERVICE_NAME: usize = 64;
 
@@ -641,7 +641,7 @@ fn pipeline_files(dir: &str, files: &[&Path], flag: &str) -> eyre::Result<Vec<Ar
     Ok(out)
 }
 
-/// A service's name is what `context create --service` names and a file name
+/// A service's name is what `instance create --service` names and a file name
 /// in the archive (`services/<name>.wasm`), so letters, digits, `-` and `_`.
 fn check_service_name(name: &str) -> eyre::Result<()> {
     let ok = !name.is_empty()

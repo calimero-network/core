@@ -83,7 +83,7 @@ pub enum PipelineCmd {
     /// Follow a run live: one JSON line per event (`snapshot`, `run`, `step`), then the `end` event
     /// as the answer; exits when the run is no longer running.
     Watch { app: String, run: String },
-    /// The context's recent runs, newest first.
+    /// The instance's recent runs, newest first.
     Runs { app: String },
     /// The signed receipt of an ended run; with `--verify`, also check its signature under the
     /// answering node's attested key and every output's hash against the downloaded file.

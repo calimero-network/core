@@ -4,7 +4,7 @@
 //! attested, sealed client the SDKs use (`calimero-client`): the node's
 //! quote is checked before anything is sent. Where v1 had an "application"
 //! this has a signed package (`app`); a context is an app instance
-//! (`context`); a namespace is an organization (`namespace`); a group is one
+//! (`instance`); a namespace is an organization (`namespace`); a group is one
 //! of its teams (`group`); an identity is an account with passkeys
 //! (`account`). The operator's commands (`ops`) take `--ops-token`.
 
@@ -58,8 +58,8 @@ use env::{
         meroctl node add local http://127.0.0.1:2501 --allow-mock\n  \
         meroctl --node local login --dev-passkey ./dev-passkey.json\n  \
         meroctl --node local app install --path ./kv-store.mpk\n  \
-        meroctl --node local context create --package com.example.kv --name notes\n  \
-        meroctl --node local call --context notes set --args '{\"key\":\"a\",\"value\":\"1\"}'\n  \
+        meroctl --node local instance create --package com.example.kv --name notes\n  \
+        meroctl --node local call --instance notes set --args '{\"key\":\"a\",\"value\":\"1\"}'\n  \
         meroctl --node local --ops-token $TOKEN ops status\n  \
         meroctl --node local proxy --listen 127.0.0.1:2580"
 )]
@@ -578,6 +578,42 @@ mod tests {
     #[test]
     fn the_command_tree_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    /// No help a user can see calls an app instance a context (its name before
+    /// 1.0.0-rc.26): every visible command's help, the examples included. The
+    /// one line that names the old alias and the answer's `contextId` aside.
+    #[test]
+    fn help_says_instance_not_context() {
+        fn walk(cmd: &mut clap::Command, path: &str, found: &mut Vec<String>) {
+            let help = cmd.render_long_help().to_string();
+            for line in help.lines() {
+                let l = line.to_lowercase();
+                if l.contains("context")
+                    && !l.contains("is its old name")
+                    && !l.contains("v1's contexts")
+                    && !l.contains("contextid")
+                {
+                    found.push(format!("{path}: {}", line.trim()));
+                }
+            }
+            for sub in cmd.get_subcommands_mut() {
+                if sub.is_hide_set() {
+                    continue;
+                }
+                let next = format!("{path} {}", sub.get_name());
+                walk(sub, &next, found);
+            }
+        }
+        let mut cmd = Cli::command();
+        cmd.build();
+        let mut found = Vec::new();
+        walk(&mut cmd, "meroctl", &mut found);
+        assert!(
+            found.is_empty(),
+            "help still says context:\n{}",
+            found.join("\n")
+        );
     }
 
     /// The old spellings still parse, to the commands that replaced them.

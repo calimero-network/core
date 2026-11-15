@@ -48,8 +48,8 @@ pub enum OpsCmd {
     Cluster,
     /// Prometheus metrics (text).
     Metrics,
-    /// Where every context's replicas are, and each node's zone, release and
-    /// context count (ids and counts only), for rebalancing.
+    /// Where every instance's replicas are, and each node's zone, release and
+    /// instance count (ids and counts only), for rebalancing.
     Placement,
     /// Register a node so the system group admits it (it joins as a learner,
     /// and becomes a voter while the system group has fewer than 3).
@@ -65,7 +65,7 @@ pub enum OpsCmd {
         #[arg(long, default_value = "")]
         pool: String,
     },
-    /// Remove a node from the cluster once no context keeps a replica on it
+    /// Remove a node from the cluster once no instance keeps a replica on it
     /// (run against the system leader; another node names it).
     RemoveNode {
         id: u64,
@@ -86,8 +86,8 @@ pub enum OpsCmd {
         all: bool,
     },
     /// Restore an instance from a sealed backup in this node's `--backup-dir`
-    /// (`{backup-dir}/{context}/{name}`); this node seeds it and becomes its
-    /// first replica. Everything the context wrote after the backup is lost.
+    /// (`{backup-dir}/{app}/{name}`); this node seeds it and becomes its
+    /// first replica. Everything the instance wrote after the backup is lost.
     Restore {
         #[arg(value_name = "INSTANCE")]
         context: String,
@@ -100,12 +100,12 @@ pub enum OpsCmd {
         /// opened here; the key never leaves this machine but for that file's.
         #[arg(long)]
         recovery_key_file: Option<PathBuf>,
-        /// The recovery file's name; the context's newest when left out.
+        /// The recovery file's name; the instance's newest when left out.
         #[arg(long, requires = "recovery_key_file")]
         recovery_file: Option<String>,
     },
     /// The operator's backup key, or set it (`--public-key`, 64 hex): the
-    /// X25519 key every context's recovery-disk backups are sealed to where
+    /// X25519 key every instance's recovery-disk backups are sealed to where
     /// the operator upgrades apps.
     BackupKey {
         #[arg(long)]
@@ -121,8 +121,8 @@ pub enum OpsCmd {
     /// Found the cluster again from its recovery disk, on a founder started
     /// with `merod run --bootstrap --recover-from DIR`: the newest `system`
     /// file and every code file, each checked and opened here with the
-    /// operator's backup key. Then restore each context with
-    /// `ops restore CONTEXT --recovery-key-file`.
+    /// operator's backup key. Then restore each instance with
+    /// `ops restore INSTANCE --recovery-key-file`.
     Recover {
         #[arg(long)]
         key_file: PathBuf,

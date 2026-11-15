@@ -1,4 +1,4 @@
-//! `meroctl blob`: a context's blobs (v1's, scoped to the context that holds them).
+//! `meroctl blob`: an instance's blobs (v1's, scoped to the instance that holds them).
 
 use std::path::PathBuf;
 
@@ -61,7 +61,7 @@ pub enum BlobCmd {
         #[arg(value_name = "INSTANCE")]
         context: String,
     },
-    /// Forget a blob (its owner or an org admin); its bytes go once no other context holds them.
+    /// Forget a blob (its owner or an org admin); its bytes go once no other instance holds them.
     #[command(alias = "rm")]
     Delete {
         id: String,

@@ -115,13 +115,13 @@ pub enum ApiKeyCmd {
         read_only: bool,
         #[arg(long)]
         ttl_secs: Option<u64>,
-        /// An upgrade key, for CI: it upgrades this context to signed
-        /// releases of its application (`context update --version`) and does
+        /// An upgrade key, for CI: it upgrades this instance to signed
+        /// releases of its application (`instance update --version`) and does
         /// nothing else. Takes no other scope.
         #[arg(long, conflicts_with_all = ["contexts", "read_only"])]
         upgrades: Option<String>,
         /// With `--upgrades`: the application whose releases it may move the
-        /// context to (default: the one it runs).
+        /// instance to (default: the one it runs).
         #[arg(long, requires = "upgrades")]
         package: Option<String>,
         /// Approve with this passkey file (development clusters).

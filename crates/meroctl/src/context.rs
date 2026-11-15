@@ -16,7 +16,7 @@ pub enum ContextCmd {
     /// Create an instance from an installed application (`--package`), a
     /// bundle hash, or a local file (`--path`: installed first).
     Create {
-        /// The context's name.
+        /// The instance's name.
         #[arg(long)]
         name: String,
         #[arg(long, conflicts_with_all = ["bundle", "path"])]
@@ -45,7 +45,7 @@ pub enum ContextCmd {
         #[arg(long)]
         alias: Option<String>,
     },
-    /// Contexts this account reaches, optionally only one application's.
+    /// Instances this account reaches, optionally only one application's.
     #[command(alias = "ls")]
     List {
         #[arg(long)]
@@ -80,7 +80,7 @@ pub enum ContextCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// Hand the context to another account (its owner approves with a passkey).
+    /// Hand the instance to another account (its owner approves with a passkey).
     Transfer {
         #[arg(value_name = "INSTANCE")]
         context: String,
@@ -89,7 +89,7 @@ pub enum ContextCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// Move the context to another organization (namespace), its data where
+    /// Move the instance to another organization (namespace), its data where
     /// it is: whoever manages it now, as an admin of the target, approves
     /// with a passkey.
     Move {
@@ -102,7 +102,7 @@ pub enum ContextCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// Print the context's committed events, then live ones, as JSON lines.
+    /// Print the instance's committed events, then live ones, as JSON lines.
     #[command(alias = "ws")]
     Watch {
         #[arg(value_name = "INSTANCE")]
@@ -121,7 +121,7 @@ pub enum ContextCmd {
         #[arg(value_name = "INSTANCE")]
         context: String,
     },
-    /// Who reaches the context.
+    /// Who reaches the instance.
     Access {
         #[arg(value_name = "INSTANCE")]
         context: String,
@@ -134,23 +134,23 @@ pub enum ContextCmd {
         #[arg(long = "account")]
         accounts: Vec<String>,
     },
-    /// Set the context's metadata (JSON; `null` clears it).
+    /// Set the instance's metadata (JSON; `null` clears it).
     Metadata {
         #[arg(value_name = "INSTANCE")]
         context: String,
         metadata: String,
     },
-    /// Keys, bytes and blobs the context holds.
+    /// Keys, bytes and blobs the instance holds.
     Storage {
         #[arg(value_name = "INSTANCE")]
         context: String,
     },
-    /// The ABI of the bundle the context runs.
+    /// The ABI of the bundle the instance runs.
     Abi {
         #[arg(value_name = "INSTANCE")]
         context: String,
     },
-    /// Who is present in the context now (ephemeral, never stored).
+    /// Who is present in the instance now (ephemeral, never stored).
     #[command(subcommand)]
     Presence(PresenceCmd),
 }
@@ -167,7 +167,11 @@ pub enum AccessKind {
 #[derive(Debug, Subcommand)]
 pub enum AliasCmd {
     #[command(aliases = ["new", "create"])]
-    Add { alias: String, context: String },
+    Add {
+        alias: String,
+        #[arg(value_name = "INSTANCE")]
+        context: String,
+    },
     #[command(aliases = ["rm", "del", "delete"])]
     Remove { alias: String },
     Get {
