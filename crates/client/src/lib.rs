@@ -526,10 +526,11 @@ impl Client {
 
     /// Checks that the node that answered holds a receipt key attested under this client's
     /// policy ([`Client::verify_app_cluster`]) and signed `answer` with it, and that the receipt
-    /// is for `app`. Answers the receipt.
+    /// is for `app` and `run`. Answers the receipt.
     pub async fn verify_receipt(
         &self,
         app: &str,
+        run: &str,
         answer: &receipt::ReceiptAnswer,
     ) -> Result<receipt::PipelineReceipt> {
         let cluster = self.verify_app_cluster(app).await?;
@@ -539,6 +540,9 @@ impl Client {
         let verified = receipt::verify_pipeline_receipt(answer, key)?;
         if verified.app != app {
             return Err(eyre::eyre!("the receipt is for app {}, not {app}", verified.app).into());
+        }
+        if verified.run != run {
+            return Err(eyre::eyre!("the receipt is for run {}, not {run}", verified.run).into());
         }
         Ok(verified)
     }

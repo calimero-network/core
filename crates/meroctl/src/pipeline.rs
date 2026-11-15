@@ -185,7 +185,7 @@ async fn receipt(
     if !verify {
         return Ok(json);
     }
-    let receipt = env.client.verify_receipt(app, &answer).await?;
+    let receipt = env.client.verify_receipt(app, run, &answer).await?;
     let mut checked = Vec::new();
     for (step, id, sha256) in receipt_outputs(&receipt) {
         let done = env

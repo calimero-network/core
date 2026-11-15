@@ -1722,7 +1722,11 @@ async fn a_finished_run_has_a_receipt_signed_by_an_attested_node() {
     assert_eq!(done["state"], "succeeded", "{done}");
 
     let answer = rig.alice.pipeline_receipt(&rig.app, &run).await.unwrap();
-    let receipt = rig.alice.verify_receipt(&rig.app, &answer).await.unwrap();
+    let receipt = rig
+        .alice
+        .verify_receipt(&rig.app, &run, &answer)
+        .await
+        .unwrap();
     assert_eq!(
         (receipt.app.as_str(), receipt.run.as_str()),
         (rig.app.as_str(), run.as_str())
@@ -1789,7 +1793,11 @@ async fn a_finished_run_has_a_receipt_signed_by_an_attested_node() {
     // Another node's key, or an edited receipt, does not verify.
     let mut forged = answer.clone();
     forged.receipt["state"] = json!("failed");
-    assert!(rig.alice.verify_receipt(&rig.app, &forged).await.is_err());
+    assert!(rig
+        .alice
+        .verify_receipt(&rig.app, &run, &forged)
+        .await
+        .is_err());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1814,7 +1822,11 @@ async fn a_running_run_has_no_receipt_yet() {
     let _c = rig.alice.cancel_pipeline_run(&rig.app, &run).await.unwrap();
     let _done = rig.ended(&run).await;
     let answer = rig.alice.pipeline_receipt(&rig.app, &run).await.unwrap();
-    let receipt = rig.alice.verify_receipt(&rig.app, &answer).await.unwrap();
+    let receipt = rig
+        .alice
+        .verify_receipt(&rig.app, &run, &answer)
+        .await
+        .unwrap();
     assert_eq!(receipt.state, "cancelled");
     let calimero_client::receipt::RunEntry::Ran(a) = &receipt.steps["a"].runs[0] else {
         panic!("a ran");
@@ -1842,12 +1854,17 @@ async fn a_fan_out_with_cached_items_marks_them_cached_in_its_receipt() {
     let again = rig.ended(&again).await;
     assert!(cached(&again, "each"), "{again}");
 
+    let again_id = again["id"].as_str().unwrap();
     let answer = rig
         .alice
-        .pipeline_receipt(&rig.app, again["id"].as_str().unwrap())
+        .pipeline_receipt(&rig.app, again_id)
         .await
         .unwrap();
-    let receipt = rig.alice.verify_receipt(&rig.app, &answer).await.unwrap();
+    let receipt = rig
+        .alice
+        .verify_receipt(&rig.app, again_id, &answer)
+        .await
+        .unwrap();
     let runs = &receipt.steps["each"].runs;
     assert_eq!(runs.len(), 2, "{runs:?}");
     for (i, r) in runs.iter().enumerate() {
@@ -1862,7 +1879,7 @@ async fn a_fan_out_with_cached_items_marks_them_cached_in_its_receipt() {
     let first_answer = rig.alice.pipeline_receipt(&rig.app, &first).await.unwrap();
     let first_receipt = rig
         .alice
-        .verify_receipt(&rig.app, &first_answer)
+        .verify_receipt(&rig.app, &first, &first_answer)
         .await
         .unwrap();
     assert!(
@@ -1872,6 +1889,39 @@ async fn a_fan_out_with_cached_items_marks_them_cached_in_its_receipt() {
             .all(|r| matches!(r, RunEntry::Ran(_))),
         "the first run ran its items"
     );
+}
+
+/// A node could answer one run's receipt for another: both are signed by an attested replica of
+/// the app, so only the run the receipt names tells them apart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn another_runs_receipt_is_refused() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(b"one input").await;
+    let first = rig
+        .start_run("small", json!({ "docs": [file] }), json!({}))
+        .await;
+    let _first = rig.ended(&first).await;
+    let second = rig
+        .start_run("small", json!({ "docs": [file] }), json!({}))
+        .await;
+    let _second = rig.ended(&second).await;
+
+    let first_answer = rig.alice.pipeline_receipt(&rig.app, &first).await.unwrap();
+    let e = rig
+        .alice
+        .verify_receipt(&rig.app, &second, &first_answer)
+        .await
+        .expect_err("a receipt of the first run passed as the second's");
+    assert!(
+        e.to_string()
+            .contains(&format!("is for run {first}, not {second}")),
+        "{e}"
+    );
+    let ok = rig
+        .alice
+        .verify_receipt(&rig.app, &first, &first_answer)
+        .await;
+    assert!(ok.is_ok(), "{ok:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
