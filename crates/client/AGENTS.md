@@ -47,8 +47,8 @@ its cluster still runs such a node, and a client never takes it
 `verify_job_key` (`purpose=jobs`, a job node's attestation, `AttestationDoc::job_key`,
 absent from every other document) shares `verify_report`: report data =
 `nonce || SHA-256("calimero.tee-attest.job-key.v1" || x25519 transport key || ed25519 job key || release || cluster || node id)`
-(text length-prefixed), so swapping any of them breaks it. It answers `(transport_key, job_key)`; only nodes use it
-(the leader checking a job node), mero-js needs nothing.
+(text length-prefixed), so swapping any of them breaks it. It answers `(transport_key, job_key)`; the leader checks a job node with it, and
+`Client::verify_receipt` each job key a pipeline receipt names (mero-js `jobKeyBinding` mirrors the binding).
 
 `verify_orchestrator` (`purpose=orchestrator`, any replica of a cluster; `AttestationDoc::cluster_identity`) shares `verify_report`: report data =
 `nonce || SHA-256("calimero.tee-attest.orchestrator.v1" || x25519 transport key || ed25519 cluster identity)`

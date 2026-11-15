@@ -39,8 +39,7 @@ pub struct ReceiptSource {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ReceiptQuery {
-    #[serde(default)]
-    version: Option<u32>,
+    version: Option<u64>,
 }
 
 /// The name a unit enum serializes to.
@@ -81,8 +80,8 @@ fn step_runs(step: &StepState, proofs: &BTreeMap<String, StepRunProof>) -> Vec<R
     runs
 }
 
-/// The receipt of an ended pipeline run of `app`, made by the cluster `cluster` (hex identity):
-/// version 1 from `source` without its job evidence, version 2 with it.
+/// The receipt of an ended pipeline run of `app`, made by the cluster `cluster` (hex identity);
+/// `source` carries job evidence only when the view was asked for it (version 2).
 #[must_use]
 pub fn build_receipt(
     version: u32,
@@ -91,14 +90,7 @@ pub fn build_receipt(
     source: &ReceiptSource,
 ) -> PipelineReceipt {
     let run = &source.run;
-    let jobs = version == RECEIPT_VERSION_JOBS;
-    let mut proofs = source.proofs.clone();
-    if !jobs {
-        for p in proofs.values_mut() {
-            p.job = None;
-        }
-    }
-    let proofs = &proofs;
+    let proofs = &source.proofs;
     let mut modules = run.modules.clone();
     let _prev = modules.insert(SELF_MODULE.to_owned(), run.compute_bundle.clone());
     PipelineReceipt {
@@ -141,11 +133,7 @@ pub fn build_receipt(
             })
             .collect(),
         cost_so_far: run.cost.map(|_| run.cost_so_far.to_string()),
-        job_attestations: if jobs {
-            source.jobs.clone()
-        } else {
-            BTreeMap::new()
-        },
+        job_attestations: source.jobs.clone(),
     }
 }
 
@@ -157,13 +145,16 @@ pub(super) async fn receipt(
     Path((app_id, run)): Path<(String, String)>,
     Query(q): Query<ReceiptQuery>,
 ) -> ApiResult {
-    let version = q.version.unwrap_or(RECEIPT_VERSION_SIGNED);
-    if ![RECEIPT_VERSION_SIGNED, RECEIPT_VERSION_JOBS].contains(&version) {
-        return Err(ApiError::bad_request(
-            BAD_VERSION,
-            &format!("a receipt is version {RECEIPT_VERSION_SIGNED} or {RECEIPT_VERSION_JOBS}"),
-        ));
-    }
+    let version = match q.version.map(u32::try_from) {
+        None => RECEIPT_VERSION_SIGNED,
+        Some(Ok(v)) if [RECEIPT_VERSION_SIGNED, RECEIPT_VERSION_JOBS].contains(&v) => v,
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                BAD_VERSION,
+                &format!("a receipt is version {RECEIPT_VERSION_SIGNED} or {RECEIPT_VERSION_JOBS}"),
+            ))
+        }
+    };
     let app_id = node.canonical_app_id(&app_id);
     let app = super::pipelines::component_app(&node, &app_id).await?;
     let p = gate(&node, &headers, &app, "*", false).await?;

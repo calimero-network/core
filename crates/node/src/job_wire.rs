@@ -25,15 +25,7 @@ pub fn is_hash(text: &str) -> bool {
     text.len() == 2 * SHA256_LEN && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// The 32 bytes of a hash spelled as [`is_hash`] says.
-pub(crate) fn hash_bytes(text: &str) -> EyreResult<[u8; SHA256_LEN]> {
-    if !is_hash(text) {
-        bail!("a hash is 64 lowercase hex digits");
-    }
-    hex::decode(text)?
-        .try_into()
-        .map_err(|_| eyre!("a hash is 32 bytes"))
-}
+pub(crate) use calimero_client::receipt::hash_bytes;
 
 mod b64 {
     use base64::engine::general_purpose::STANDARD;
