@@ -39,15 +39,7 @@ pub(super) const UPLOAD_WINDOW: usize = 4;
 /// The longest a part waits for its segment to reach a majority.
 const PART_PUSH_WAIT: Duration = Duration::from_secs(20);
 /// The longest `complete` waits for every segment to reach a majority.
-const COMPLETE_WAIT: Duration = Duration::from_secs(20);
-/// [`COMPLETE_WAIT`], or the wait a test set (`testing::upload_complete_wait`).
-fn complete_wait() -> Duration {
-    #[cfg(feature = "testing")]
-    if let Some(wait) = crate::testing::upload_complete_wait_override() {
-        return wait;
-    }
-    COMPLETE_WAIT
-}
+pub(super) const COMPLETE_WAIT: Duration = Duration::from_secs(20);
 /// The first wait before a failed background push is tried again; it doubles up to the second.
 const PUSH_RETRY_FIRST: Duration = Duration::from_millis(200);
 const PUSH_RETRY_MAX: Duration = Duration::from_secs(5);
@@ -639,6 +631,18 @@ impl Node {
         UPLOAD_WINDOW
     }
 
+    #[cfg(feature = "testing")]
+    fn complete_wait(&self) -> Duration {
+        *(self.probes.upload_complete_wait.lock())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[cfg(not(feature = "testing"))]
+    #[allow(clippy::unused_self)]
+    fn complete_wait(&self) -> Duration {
+        COMPLETE_WAIT
+    }
+
     /// Pushes segment `k` to a majority in the background, with backoff, until it lands or the
     /// session ends.
     fn spawn_push(&self, session: &Arc<Session>, st: &mut State, k: usize) {
@@ -767,7 +771,7 @@ impl Node {
             ));
         }
         session
-            .wait_until(complete_wait(), |pushed| pushed.iter().all(|p| *p))
+            .wait_until(self.complete_wait(), |pushed| pushed.iter().all(|p| *p))
             .await?;
         self.finish_upload(g, &session, st, &key).await
     }

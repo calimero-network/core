@@ -210,6 +210,10 @@ pub(crate) struct Probes {
     pub push_low: std::sync::atomic::AtomicUsize,
     /// How many unpushed segments an upload session may hold.
     pub upload_window: std::sync::atomic::AtomicUsize,
+    /// How long an upload's `complete` waits for its segments to reach a majority.
+    pub upload_complete_wait: std::sync::Mutex<Duration>,
+    /// How long creating an app waits for its `init` to commit.
+    pub app_start_wait: std::sync::Mutex<Duration>,
     /// Fails the next segment an upload session stores.
     pub segment_store_fault: std::sync::atomic::AtomicBool,
     /// Fails the next barrier a failed mark commit asks for, leaving its outcome unknown.
@@ -266,6 +270,8 @@ impl Default for Probes {
             pending_low: Arc::new(std::sync::atomic::AtomicUsize::new(MAX_PENDING_FILE_BYTES)),
             push_low: std::sync::atomic::AtomicUsize::new(MAX_PUSH_BYTES),
             upload_window: std::sync::atomic::AtomicUsize::new(super::uploads::UPLOAD_WINDOW),
+            upload_complete_wait: std::sync::Mutex::new(super::uploads::COMPLETE_WAIT),
+            app_start_wait: std::sync::Mutex::new(crate::api::apps::APP_START_WAIT),
             segment_store_fault: std::sync::atomic::AtomicBool::new(false),
             barrier_fault: std::sync::atomic::AtomicBool::new(false),
             push_hold: std::sync::Mutex::new(None),

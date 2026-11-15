@@ -655,8 +655,8 @@ read them. The tests over budget when the rule came in are listed in
 `.config/nextest.toml` with a limit each; that list only shrinks. To take a
 test off it, make the test fast without making it prove less: a test limit
 instead of the production one (`ComputeLimits`, whose `poll` sets how often a
-leader asks its job nodes, and `calimero_node::testing`'s `app_start_wait`,
-`upload_complete_wait` and `shared_http_timeout`), polling for the state instead
+leader asks its job nodes, a node's `set_app_start_wait` and
+`set_upload_complete_wait`, and `calimero_node::testing::shared_http_timeout`), polling for the state instead
 of a fixed sleep, a smaller file where size is not the point, a matrix split into
 tests. A request a test expects to answer `503` is sent once through
 `client.transport()`: the client's `call` and `view` send it again while the node

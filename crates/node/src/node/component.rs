@@ -516,6 +516,32 @@ impl Node {
         self.probes.upload_window.store(n, Ordering::Relaxed);
     }
 
+    /// Makes an upload's `complete` here wait `wait` for its segments (default 20 s). Tests only.
+    #[cfg(feature = "testing")]
+    pub fn set_upload_complete_wait(&self, wait: Duration) {
+        *(self.probes.upload_complete_wait.lock())
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = wait;
+    }
+
+    /// Makes creating an app here wait `wait` for its `init` (default 30 s). Tests only.
+    #[cfg(feature = "testing")]
+    pub fn set_app_start_wait(&self, wait: Duration) {
+        *(self.probes.app_start_wait.lock()).unwrap_or_else(std::sync::PoisonError::into_inner) =
+            wait;
+    }
+
+    /// How long creating an app here waits for its `init` to commit.
+    #[cfg(feature = "testing")]
+    pub(crate) fn app_start_wait(&self) -> Duration {
+        *(self.probes.app_start_wait.lock()).unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[cfg(not(feature = "testing"))]
+    #[allow(clippy::unused_self)]
+    pub(crate) fn app_start_wait(&self) -> Duration {
+        crate::api::apps::APP_START_WAIT
+    }
+
     /// How many blob puts peers sent this node. Tests only.
     #[cfg(feature = "testing")]
     #[must_use]
