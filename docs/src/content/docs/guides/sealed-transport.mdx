@@ -93,7 +93,10 @@ all five registers of one image.
 with `policy.allowMock`. Nothing is read from the environment.
 
 <Aside type="caution">
-  `policy.appHash` (hex) makes the quote bind one app's bundle too. Leave it unset
+  `policy.app` (an app instance id) makes the node bind its own record of that app's
+  bundle hash into the quote, which `client.attestApp(app)` verifies and records;
+  `policy.appHash` (hex) then pins the hash it must be. `policy.appHash` alone is
+  only echoed by the node, so it proves nothing about the code. Leave both unset
   to talk to the node as a whole, which is what every method of the client does.
 </Aside>
 

@@ -19,15 +19,17 @@ import {
   routePath,
   type CalimeroSession,
   type NodeEvent,
+  type NodeVerificationState,
   type RetryOptions,
   type HttpMethod,
 } from '../runtime/transport.js';
-import { type NodePolicy } from '../runtime/attestation.js';
+import { type NodePolicy, type NodeVerification } from '../runtime/attestation.js';
 import { DEFAULT_DIRECTORY } from '../runtime/directory.js';
 import { CalimeroError, LoginRequired, NotFound, OriginNotRegistered, UnavailableError, WrongRecoveryCode } from '../runtime/errors.js';
 import { b64url, fromB64url, type PasskeyProvider } from '../runtime/passkey.js';
 import { createRouteClient, type RouteClientOptions } from '../routes/route-client.js';
 import type { MethodOptions } from '../routes/method.js';
+import type { PackageCapabilities } from './package-capabilities.js';
 import { createRoutes, type Routes } from '../generated/methods.js';
 import { passkeyConfirm, type PasskeyConfirmOptions } from '../runtime/passkey.js';
 
@@ -430,6 +432,16 @@ export class CalimeroClient {
     return this.transport.nodes;
   }
 
+  /** What the check of node `url` (from {@link nodes}; default: in use) established, or `undefined` before it first ran. */
+  verification(url?: string): NodeVerificationState | undefined {
+    return this.transport.verification(url);
+  }
+
+  /** Wait for the check requests wait for, starting it if needed, and answer its outcome (not thrown) without a request. */
+  verify(url?: string): Promise<NodeVerificationState> {
+    return this.transport.verify(url);
+  }
+
   /** Authenticate every request with an API key. */
   useApiKey(key: string): void {
     this.transport.useApiKey(key);
@@ -446,6 +458,20 @@ export class CalimeroClient {
   /** A JSON request through the transport, to an untyped path. */
   private json<T>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
     return this.transport.json<T>(method, path, { body });
+  }
+
+  /** Attest `app` on node `url` (from {@link nodes}; default: in use): the record's `appHash` is the one the node bound. */
+  attestApp(app: string, url?: string): Promise<NodeVerification> {
+    return this.transport.attestApp(app, url);
+  }
+
+  /** The manifest facts and ABI of a package version (of `service`, for a multi-service release), for a signed-in caller. */
+  packageCapabilities(pkg: string, version: string, options: { service?: string } = {}): Promise<PackageCapabilities> {
+    return this.transport.json<PackageCapabilities>(
+      'GET',
+      routePath('packages/{package}/{version}/capabilities', { package: pkg, version }),
+      { query: { service: options.service } },
+    );
   }
 
   // ---------------------------------------------------------------- identity

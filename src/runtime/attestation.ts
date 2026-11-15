@@ -96,7 +96,9 @@ export interface NodePolicy {
    * pinned measurements). Takes precedence over `release`.
    */
   verifyQuote?: VerifyTransportQuote;
-  /** The app bundle hash (hex) the quote must bind, when talking to one app. */
+  /** The app whose code the node must attest: it binds its own record of the bundle hash, which the record carries. */
+  app?: string;
+  /** With `app`: the hash the node must bind. Alone: sent and bound, but only echoed, so never recorded. */
   appHash?: string;
 }
 
@@ -109,6 +111,20 @@ export interface AttestationDoc {
   cluster: string;
   node: number;
   mock: boolean;
+}
+
+/**
+ * Only what the check verified. Sealed means `profile === 'locked-read-only'`; no profile or a mock is not
+ * sealed, and no release means no verifier link. `appHash` is the one the node bound for `policy.app`.
+ */
+export interface NodeVerification {
+  url: string;
+  mock: boolean;
+  release?: string;
+  profile?: string;
+  appHash?: string;
+  /** When the check passed (ms since the epoch). */
+  checkedAt: number;
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -156,21 +172,66 @@ export function claimedRelease(doc: Pick<AttestationDoc, 'release'>, minReleaseV
   return version;
 }
 
+/** `host` gave no answer: its fetch rejected (`cause`) or it answered a 5xx `status`. Says nothing about the quote. */
+export class Unanswered extends Error {
+  constructor(
+    readonly host: string,
+    readonly status?: number,
+    readonly cause?: unknown,
+  ) {
+    super(status ? `${host} answered HTTP ${status}` : `${host} could not be reached: ${(cause as Error)?.message}`);
+  }
+}
+
+/** `error` as {@link Unanswered} from `host` when it is a fetch's `TypeError`: no connection, or one dropped mid-body. */
+function unanswered(host: string, error: unknown): unknown {
+  return error instanceof TypeError ? new Unanswered(host, undefined, error) : error;
+}
+
+/** A status that is no answer yet: the host is overloaded or failing, not judging the request. */
+const unansweredStatus = (status: number) => status === 429 || status >= 500;
+
+/** `fetchImpl`, throwing {@link Unanswered} for `host` instead of a rejection, a dropped body or a 429/5xx. */
+function answered(fetchImpl: typeof fetch, host: string): typeof fetch {
+  return async (input, init) => {
+    const response = await fetchImpl(input, init).catch((error: unknown) => {
+      throw unanswered(host, error);
+    });
+    if (unansweredStatus(response.status)) throw new Unanswered(host, response.status);
+    const body = await response.arrayBuffer().catch((error: unknown) => {
+      throw unanswered(host, error);
+    });
+    return new Response(body, response);
+  };
+}
+
 async function releaseFor(version: string, policy: NodeReleasePolicy, fetchImpl: typeof fetch) {
   const source = policy.releaseSource;
   if (typeof source === 'function') return source(version);
-  if (source === 'github') return fetchGithubNodeRelease(version, { fetch: fetchImpl });
-  return fetchNodeRelease(cloudNodeReleaseUrl(source ?? DEFAULT_RELEASE_MIRROR, version), { fetch: fetchImpl });
+  const fetchMirror = answered(fetchImpl, 'the release mirror');
+  if (source === 'github') return fetchGithubNodeRelease(version, { fetch: fetchMirror });
+  return fetchNodeRelease(cloudNodeReleaseUrl(source ?? DEFAULT_RELEASE_MIRROR, version), { fetch: fetchMirror });
 }
 
 /** The collateral fetch a policy gets unless it brings its own: `@phala/dcap-qvl` against `collateralSource`. */
 function defaultCollateral(policy: NodeReleasePolicy): (quote: Uint8Array) => Promise<DcapCollateral> {
   const source = policy.collateralSource ?? DEFAULT_COLLATERAL_MIRROR;
+  // dcap-qvl fetches with its own `fetch`: only its call's `TypeError` is no answer, never a bad URL or bundle.
   if (source === 'intel') {
-    return async (quote) => (await dcap<(q: Uint8Array) => Promise<DcapCollateral>>('getCollateralFromPcs'))(quote);
+    return async (quote) => {
+      const get = await dcap<(q: Uint8Array) => Promise<DcapCollateral>>('getCollateralFromPcs');
+      return get(quote).catch((error: unknown) => {
+        throw unanswered('Intel PCS', error);
+      });
+    };
   }
-  return async (quote) =>
-    (await dcap<(url: string, q: Uint8Array) => Promise<DcapCollateral>>('getCollateral'))(source, quote);
+  new URL(source);
+  return async (quote) => {
+    const get = await dcap<(url: string, q: Uint8Array) => Promise<DcapCollateral>>('getCollateral');
+    return get(source, quote).catch((error: unknown) => {
+      throw unanswered(source, error);
+    });
+  };
 }
 
 /** `fetch`, refusing collateral older than `policy.maxCollateralAgeDays` (by its TCB info's `issueDate`). */
@@ -205,12 +266,17 @@ async function verifyRelease(
   args: Parameters<VerifyTransportQuote>[0],
   policy: NodeReleasePolicy,
   fetchImpl: typeof fetch,
-): Promise<boolean> {
+): Promise<Pick<NodeVerification, 'release' | 'profile'> | undefined> {
   // Refuse what no release could admit before reaching for the network.
   const version = claimedRelease(doc, policy.minReleaseVersion);
+  const profile = policy.profile ?? PRODUCTION_PROFILE;
+  const release = await releaseFor(version, policy, fetchImpl);
+  if (release.version !== version) {
+    throw new Error(`The node names mero-tee release ${version}, but the release served is ${release.version}`);
+  }
   const trusted = await trustSignedRelease({
-    release: await releaseFor(version, policy, fetchImpl),
-    profile: policy.profile ?? PRODUCTION_PROFILE,
+    release,
+    profile,
     allowDebugProfile: policy.allowDebugProfile,
     minReleaseVersion: policy.minReleaseVersion,
     identity: policy.identity,
@@ -223,7 +289,7 @@ async function verifyRelease(
     now: policy.now,
     ...trusted,
   });
-  return verifier(args);
+  return (await verifier(args)) ? { release: version, profile } : undefined;
 }
 
 /** Fetch the node's attestation and return its transport key once it checks out. */
@@ -232,18 +298,49 @@ export async function fetchAttestedKey(
   policy: NodePolicy,
   fetchImpl: typeof fetch = (input, init) => fetch(input, init),
 ): Promise<Uint8Array> {
+  return (await verifyNode(baseUrl, policy, fetchImpl)).key;
+}
+
+/** The app hash the node chose for `policy.app`, which must be real and the pinned one if any. */
+function nodeBoundAppHash(doc: AttestationDoc, policy: NodePolicy): Uint8Array {
+  const bound = fromHex(doc.appHash, 'appHash', 32);
+  if (bound.every((byte) => byte === 0)) throw new Error('The node bound no app: its app hash is all zero');
+  if (policy.appHash && hex(bound) !== policy.appHash.toLowerCase()) {
+    throw new Error(`The node's app hash ${hex(bound)} is not the pinned ${policy.appHash}`);
+  }
+  return bound;
+}
+
+/** {@link fetchAttestedKey}, with the record of what the check verified. */
+export async function verifyNode(
+  baseUrl: string,
+  policy: NodePolicy,
+  fetchImpl: typeof fetch = (input, init) => fetch(input, init),
+): Promise<{ key: Uint8Array; verification: NodeVerification }> {
+  const url = baseUrl.replace(/\/+$/, '');
   const nonce = hex(crypto.getRandomValues(new Uint8Array(32)));
-  const url = new URL(`${baseUrl.replace(/\/+$/, '')}/attestation`);
-  url.searchParams.set('nonce', nonce);
-  if (policy.appHash) url.searchParams.set('appHash', policy.appHash);
-  const response = await fetchImpl(url.toString());
+  const attestation = new URL(`${url}/attestation`);
+  attestation.searchParams.set('nonce', nonce);
+  if (policy.app) attestation.searchParams.set('app', policy.app);
+  else if (policy.appHash) attestation.searchParams.set('appHash', policy.appHash);
+  const response = await fetchImpl(attestation.toString());
+  if (unansweredStatus(response.status)) throw new Unanswered('the node', response.status);
   if (!response.ok) throw new Error(`The node refused to attest: HTTP ${response.status}`);
-  const doc = (await response.json()) as AttestationDoc;
+  const doc = (await response.json().catch((error: unknown) => {
+    throw unanswered('the node', error);
+  })) as AttestationDoc;
   const transportKey = fromHex(doc.transportKey, 'transportKey', 32);
-  const inner = policy.appHash ? fromHex(policy.appHash, 'appHash', 32) : new Uint8Array(32);
+  const boundApp = policy.app ? nodeBoundAppHash(doc, policy) : undefined;
+  const inner = boundApp ?? (policy.appHash ? fromHex(policy.appHash, 'appHash', 32) : new Uint8Array(32));
   const suffix = await transportKeyBinding(inner, transportKey);
   const quote = base64ToBytes(doc.quote);
   const header = new TextEncoder().encode(MOCK_QUOTE_HEADER);
+  const verification = (facts: Pick<NodeVerification, 'mock' | 'release' | 'profile'>): NodeVerification => ({
+    url,
+    ...facts,
+    ...(boundApp ? { appHash: hex(boundApp) } : {}),
+    checkedAt: Date.now(),
+  });
   if (equal(quote.slice(0, header.length), header)) {
     if (!policy.allowMock) {
       throw new Error('mock quote refused: this client only trusts real TEEs');
@@ -252,17 +349,17 @@ export async function fetchAttestedKey(
     if (!equal(report.slice(0, 32), fromHex(nonce, 'nonce', 32)) || !equal(report.slice(32), suffix)) {
       throw new Error('the quote does not bind this transport key, app and nonce');
     }
-    return transportKey;
+    return { key: transportKey, verification: verification({ mock: true }) };
   }
   const args = { quoteB64: doc.quote, nonce, reportDataSuffix: hex(suffix) };
-  let ok: boolean;
+  let facts: Pick<NodeVerification, 'release' | 'profile'> | undefined;
   if (policy.verifyQuote) {
-    ok = await policy.verifyQuote(args);
+    facts = (await policy.verifyQuote(args)) ? {} : undefined;
   } else if (policy.release) {
-    ok = await verifyRelease(doc, args, policy.release, fetchImpl);
+    facts = await verifyRelease(doc, args, policy.release, fetchImpl);
   } else {
     throw new Error('real quote refused: this client trusts no TD image (set policy.release)');
   }
-  if (!ok) throw new Error('The attestation did not verify, so its transport key is not trusted');
-  return transportKey;
+  if (!facts) throw new Error('The attestation did not verify, so its transport key is not trusted');
+  return { key: transportKey, verification: verification({ mock: false, ...facts }) };
 }

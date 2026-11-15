@@ -355,9 +355,18 @@ export function releaseNotesUrl(version: string): string {
   return `https://github.com/calimero-network/mero-tee/releases/tag/mero-tee-v${encodeURIComponent(version)}`;
 }
 
+function verifierUrl(query: Record<string, string>): string {
+  return `${RELEASE_VERIFIER}/mero-tee?${new URLSearchParams(query)}`;
+}
+
 /** The public verifier's page for a mero-tee release. */
 export function verifyReleaseUrl(version: string): string {
-  return `${RELEASE_VERIFIER}/mero-tee?release_tag=${encodeURIComponent(`mero-tee-v${version}`)}`;
+  return verifierUrl({ release_tag: `mero-tee-v${version}` });
+}
+
+/** The public verifier's page for a node: it fetches a fresh quote from `nodeUrl` and checks it against `release`. */
+export function verifyNodeUrl(nodeUrl: string, release: string): string {
+  return verifierUrl({ node_url: nodeUrl.replace(/\/+$/, ''), release_tag: `mero-tee-v${release}` });
 }
 
 /** A mero-tee release the cluster's nodes run that the scope has not approved. */

@@ -7,21 +7,35 @@ import { fromHex, hex } from '../crypto/internal.js';
 import type { SignedNodeRelease } from '../sealed/release.js';
 import { transportKeyBinding } from '../sealed/sealed.js';
 import type { DcapCollateral, DcapVerifiedReport } from '../sealed/verify.js';
-import { MOCK_QUOTE_HEADER, claimedRelease, fetchAttestedKey, freshCollateral, type NodePolicy } from './attestation.js';
+import {
+  MOCK_QUOTE_HEADER,
+  claimedRelease,
+  fetchAttestedKey,
+  freshCollateral,
+  Unanswered,
+  verifyNode,
+  type NodePolicy,
+} from './attestation.js';
 
 // The quote's collateral source, seen from the library: no test reaches Intel or the mirror.
-const dcapCalls = vi.hoisted(() => ({ getCollateral: [] as unknown[][], getCollateralFromPcs: 0 }));
+const dcapCalls = vi.hoisted(() => ({ getCollateral: [] as unknown[][], getCollateralFromPcs: 0, unbundled: false }));
 vi.mock('@phala/dcap-qvl', () => ({
+  default: undefined,
   verify: () => {
     throw new Error('each test passes its own dcapVerify');
   },
   getCollateral: async (...args: unknown[]) => {
     dcapCalls.getCollateral.push(args);
+    if (args[0] === 'http://down.test') throw new TypeError('fetch failed');
+    if (args[0] === 'http://bad.test') throw new Error('Failed to parse TCB info');
     return {} as DcapCollateral;
   },
-  getCollateralFromPcs: async () => {
-    dcapCalls.getCollateralFromPcs += 1;
-    return {} as DcapCollateral;
+  get getCollateralFromPcs() {
+    if (dcapCalls.unbundled) return undefined;
+    return async () => {
+      dcapCalls.getCollateralFromPcs += 1;
+      return {} as DcapCollateral;
+    };
   },
 }));
 
@@ -60,16 +74,18 @@ interface Td {
  * for its quote: it answers as `@phala/dcap-qvl` would for a genuine quote from
  * the TD described by `td`, binding what `td` says.
  */
-function node(td: Td = {}, opts: { claimed?: string; quote?: string } = {}) {
+function node(td: Td = {}, opts: { claimed?: string; quote?: string; app?: Uint8Array } = {}) {
   let asked = '';
+  const queries: URLSearchParams[] = [];
   const fetchImpl = (async (input: RequestInfo | URL) => {
     const url = new URL(String(input));
     asked = url.searchParams.get('nonce') ?? '';
+    queries.push(url.searchParams);
     return new Response(
       JSON.stringify({
         quote: opts.quote ?? REAL_QUOTE,
         transportKey: hex(TRANSPORT_KEY),
-        appHash: hex(new Uint8Array(32)),
+        appHash: hex(opts.app ?? new Uint8Array(32)),
         nonce: asked,
         release: { version: opts.claimed ?? '2.3.87', profile: 'locked-read-only' },
         cluster: 'test',
@@ -80,7 +96,7 @@ function node(td: Td = {}, opts: { claimed?: string; quote?: string } = {}) {
   }) as typeof fetch;
   const verify = async (): Promise<DcapVerifiedReport> => {
     const image = td.image ?? IMAGE;
-    const binding = await transportKeyBinding(new Uint8Array(32), td.boundKey ?? TRANSPORT_KEY);
+    const binding = await transportKeyBinding(opts.app ?? new Uint8Array(32), td.boundKey ?? TRANSPORT_KEY);
     const reportData = new Uint8Array(64);
     reportData.set(fromHex(td.nonce ?? asked, 'nonce', 32));
     reportData.set(binding, 32);
@@ -102,14 +118,14 @@ function node(td: Td = {}, opts: { claimed?: string; quote?: string } = {}) {
       },
     };
   };
-  return { fetchImpl, verify };
+  return { fetchImpl, verify, queries };
 }
 
 /** The production policy, with every network edge pointed at the fixtures. */
 async function attest(
   td: Td,
   release: Partial<NonNullable<NodePolicy['release']>> = {},
-  opts: { claimed?: string; quote?: string; policy?: Partial<NodePolicy> } = {},
+  opts: { claimed?: string; quote?: string; app?: Uint8Array; policy?: Partial<NodePolicy>; verify?: boolean } = {},
 ) {
   const n = node(td, opts);
   // dcap-qvl's verify is synchronous: the report is computed once the doc is served.
@@ -133,7 +149,8 @@ async function attest(
     report = await n.verify();
     return response;
   }) as typeof fetch;
-  return { result: fetchAttestedKey(BASE, policy, wrapped), releaseSource };
+  const result = opts.verify ? verifyNode(BASE, policy, wrapped) : fetchAttestedKey(BASE, policy, wrapped);
+  return { result, releaseSource, queries: n.queries };
 }
 
 describe('fetchAttestedKey with a release policy (core Measurements::Release)', () => {
@@ -167,6 +184,12 @@ describe('fetchAttestedKey with a release policy (core Measurements::Release)', 
   it('5. refuses a signed release that is not the one the node names', async () => {
     const { result } = await attest({}, { minReleaseVersion: '2.3.86', releaseSource: async () => ({ ...signed('2.3.86'), version: '2.3.87' }) });
     await expect(result).rejects.toThrow(/2\.3\.86, not 2\.3\.87/);
+  });
+
+  it('5b. refuses a genuinely signed release other than the one the node names', async () => {
+    const image = JSON.parse(signed('2.3.86').publishedMrtds).profiles['locked-read-only'];
+    const { result } = await attest({ image }, { minReleaseVersion: '2.3.86', releaseSource: async () => signed('2.3.86') });
+    await expect(result).rejects.toThrow(/names mero-tee release 2\.3\.87.*is 2\.3\.86/);
   });
 
   it('6. refuses a release whose measurements file was tampered with', async () => {
@@ -256,9 +279,144 @@ describe("the quote's collateral", () => {
     expect(freshCollateral(fetch, {})).toBe(fetch);
   });
 
+  it('is unanswered when its source cannot be reached, and refused when it answers something unusable', async () => {
+    const down = (await attest({}, { fetchCollateral: undefined, collateralSource: 'http://down.test' })).result;
+    await expect(down).rejects.toBeInstanceOf(Unanswered);
+    await expect(down).rejects.toMatchObject({ host: 'http://down.test', status: undefined });
+    const bad = (await attest({}, { fetchCollateral: undefined, collateralSource: 'http://bad.test' })).result;
+    await expect(bad).rejects.toThrow(/Failed to parse TCB info/);
+    await expect(bad).rejects.not.toBeInstanceOf(Unanswered);
+  });
+
+  it('is refused, not unanswered, for a collateral source that is not a URL', async () => {
+    const calls = dcapCalls.getCollateral.length;
+    const { result } = await attest({}, { fetchCollateral: undefined, collateralSource: 'not a url' });
+    await expect(result).rejects.toThrow(TypeError);
+    await expect(result).rejects.not.toBeInstanceOf(Unanswered);
+    expect(dcapCalls.getCollateral.length).toBe(calls);
+  });
+
+  it('is refused, not unanswered, when the bundle carries no collateral fetch', async () => {
+    dcapCalls.unbundled = true;
+    try {
+      const { result } = await attest({}, { fetchCollateral: undefined, collateralSource: 'intel' });
+      await expect(result).rejects.toThrow(/loaded without getCollateralFromPcs/);
+      await expect(result).rejects.not.toBeInstanceOf(Unanswered);
+    } finally {
+      dcapCalls.unbundled = false;
+    }
+  });
+
   it('is checked for age on the path a node is attested through', async () => {
     const stale = async () => ({ tcb_info: JSON.stringify({ issueDate: '2020-01-01T00:00:00Z' }) }) as DcapCollateral;
     const { result } = await attest({}, { fetchCollateral: stale, maxCollateralAgeDays: 30 });
     await expect(result).rejects.toThrow(/more than the 30 this client accepts/);
+  });
+});
+
+/** A node serving a mock quote that binds `app` (zeros by default), the nonce and the transport key. */
+function mockNode(app: Uint8Array = new Uint8Array(32)): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    const nonce = new URL(String(input)).searchParams.get('nonce') ?? '';
+    const suffix = await transportKeyBinding(app, TRANSPORT_KEY);
+    const report = new Uint8Array(64);
+    report.set(fromHex(nonce, 'nonce', 32));
+    report.set(suffix, 32);
+    const quote = new Uint8Array([...new TextEncoder().encode(MOCK_QUOTE_HEADER), ...report]);
+    return new Response(
+      JSON.stringify({
+        quote: btoa(String.fromCharCode(...quote)),
+        transportKey: hex(TRANSPORT_KEY),
+        appHash: hex(app),
+        release: { version: '9.9.9', profile: 'debug' },
+        cluster: 'claimed',
+        mock: true,
+      }),
+    );
+  }) as typeof fetch;
+}
+
+describe('verifyNode: the record of what was verified', () => {
+  const verified = async (td: Td = {}, release = {}, opts = {}) => {
+    const { result } = await attest(td, release, { ...opts, verify: true });
+    return (await result) as Awaited<ReturnType<typeof verifyNode>>;
+  };
+
+  it('names the release and profile the quote was checked against, with the transport key it bound', async () => {
+    const before = Date.now();
+    const { key, verification } = await verified();
+    expect(key).toEqual(TRANSPORT_KEY);
+    expect(verification).toEqual({
+      url: BASE,
+      mock: false,
+      release: '2.3.87',
+      profile: 'locked-read-only',
+      checkedAt: expect.any(Number),
+    });
+    expect(verification.checkedAt).toBeGreaterThanOrEqual(before);
+  });
+
+  it('names the debug profile only when it was allowed and matched', async () => {
+    const { verification } = await verified({ image: DEBUG_IMAGE }, { profile: 'debug', allowDebugProfile: true });
+    expect(verification.profile).toBe('debug');
+  });
+
+  it('leaves the app hash out when the policy only pins one, which the node merely echoes', async () => {
+    const policy: NodePolicy = { appHash: 'ab'.repeat(32), verifyQuote: async () => true };
+    const n = node({ boundKey: TRANSPORT_KEY });
+    const { verification } = await verifyNode(BASE, policy, (async (input: RequestInfo | URL) => n.fetchImpl(input)) as typeof fetch);
+    expect(verification.appHash).toBeUndefined();
+    expect(n.queries[0].get('appHash')).toBe('ab'.repeat(32));
+    expect(n.queries[0].has('app')).toBe(false);
+  });
+
+  it('marks a mock attestation, with no release or profile', async () => {
+    const { verification } = await verifyNode(BASE, { allowMock: true }, mockNode());
+    expect(verification).toEqual({ url: BASE, mock: true, checkedAt: expect.any(Number) });
+  });
+
+  it('is not produced for a node that fails verification', async () => {
+    await expect(verified({ debug: true })).rejects.toThrow(/debug TD/);
+  });
+});
+
+describe('an app-bound attestation (the node binds its own record of the app)', () => {
+  const APP_HASH = new Uint8Array(32).fill(0xcd);
+  const bound = async (app: Uint8Array | undefined, policy: Partial<NodePolicy> = {}) => {
+    const { result, queries } = await attest({}, {}, { app, verify: true, policy: { app: 'app-1', ...policy } });
+    return { result: result as ReturnType<typeof verifyNode>, queries };
+  };
+
+  it('records the app hash the node bound, asking by app id and not by hash', async () => {
+    const { result, queries } = await bound(APP_HASH, { appHash: 'CD'.repeat(32) });
+    expect((await result).verification.appHash).toBe(hex(APP_HASH));
+    expect(queries[0].get('app')).toBe('app-1');
+    expect(queries[0].has('appHash')).toBe(false);
+  });
+
+  it('refuses an all-zero app hash: the node bound no app', async () => {
+    const { result } = await bound(undefined);
+    await expect(result).rejects.toThrow(/all zero/);
+  });
+
+  it('refuses an app hash other than the one the policy pinned', async () => {
+    const { result } = await bound(APP_HASH, { appHash: 'ab'.repeat(32) });
+    await expect(result).rejects.toThrow(/not the pinned/);
+  });
+
+  it('refuses a quote that does not bind the app hash the node names', async () => {
+    const n = node({}, { app: APP_HASH });
+    const lying = (async (input: RequestInfo | URL) => {
+      const doc = await (await n.fetchImpl(input)).json();
+      return new Response(JSON.stringify({ ...doc, appHash: hex(new Uint8Array(32).fill(1)) }));
+    }) as typeof fetch;
+    const expected = hex(await transportKeyBinding(APP_HASH, TRANSPORT_KEY));
+    const policy: NodePolicy = { app: 'app-1', verifyQuote: async (args) => args.reportDataSuffix === expected };
+    await expect(verifyNode(BASE, policy, lying)).rejects.toThrow(/did not verify/);
+  });
+
+  it('records the bound app hash of a mock attestation too, marked as mock', async () => {
+    const { verification } = await verifyNode(BASE, { allowMock: true, app: 'app-1' }, mockNode(APP_HASH));
+    expect(verification).toMatchObject({ mock: true, appHash: hex(APP_HASH) });
   });
 });

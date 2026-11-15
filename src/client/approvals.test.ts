@@ -24,6 +24,8 @@ import {
   releaseConsent,
   stalledBy,
   upgradeConsent,
+  verifyNodeUrl,
+  verifyReleaseUrl,
   withdrawConsent,
   type AppsReport,
   type ReleaseRules,
@@ -396,5 +398,22 @@ describe('over the sealed channel', () => {
       ['DELETE', '/ops/releases/2.3.120/deadline'],
     ]);
     expect(last().head.headers).toContainEqual(['authorization', 'Bearer ops-token']);
+  });
+});
+
+describe('the public verifier links', () => {
+  it('names the release for a release', () => {
+    expect(verifyReleaseUrl('2.3.130')).toBe('https://mero-tee.vercel.app/mero-tee?release_tag=mero-tee-v2.3.130');
+  });
+
+  it('names the node and its release for a node, the link mdma builds', () => {
+    expect(verifyNodeUrl('https://node-1.eu.example/', '2.3.130')).toBe(
+      'https://mero-tee.vercel.app/mero-tee?node_url=https%3A%2F%2Fnode-1.eu.example&release_tag=mero-tee-v2.3.130',
+    );
+  });
+
+  it('encodes a node URL that carries a path and a query', () => {
+    const link = new URL(verifyNodeUrl('https://h.example/p?a=1&b=2', '1.0.0'));
+    expect(link.searchParams.get('node_url')).toBe('https://h.example/p?a=1&b=2');
   });
 });

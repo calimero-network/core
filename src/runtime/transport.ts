@@ -23,7 +23,8 @@
  */
 
 import { SealedTransportError, createSealedFetch } from '../sealed/sealed.js';
-import { fetchAttestedKey, type NodePolicy } from './attestation.js';
+import { hex } from '../crypto/internal.js';
+import { Unanswered, verifyNode, type NodePolicy, type NodeVerification } from './attestation.js';
 import { orderNodes, readDirectory } from './directory.js';
 import {
   CalimeroError,
@@ -39,6 +40,15 @@ import type { components } from '../generated/api.js';
 
 /** A signed-in session: what sign-up, sign-in and a refresh answer. */
 export type CalimeroSession = components['schemas']['Session'];
+
+/**
+ * Where a node stands with the client's check: `refused` failed verification, `unreachable`
+ * gave no answer (retried on next use).
+ */
+export type NodeVerificationState =
+  | { status: 'checking'; url: string }
+  | ({ status: 'verified' } & NodeVerification)
+  | { status: 'refused' | 'unreachable'; url: string; reason: string; checkedAt: number };
 
 /** One server-sent event: `data` parsed as JSON when it is. */
 export interface NodeEvent {
@@ -279,6 +289,11 @@ export class NodeTransport implements Transport {
   private at = 0;
   /** A sealed fetch per node, each attesting its own node on first use. */
   private readonly channels = new Map<string, typeof fetch>();
+  /** The latest attestation check of each node, and the attempt it came from. */
+  private readonly checks = new Map<string, NodeVerificationState>();
+  private readonly attempts = new Map<string, Promise<unknown>>();
+  /** The transport key each node's channel was attested to. */
+  private readonly keys = new Map<string, Uint8Array>();
   private readonly policy: NodePolicy;
   /** The unsealed fetch, for the one route served in the clear (`/attestation`). */
   readonly raw: typeof fetch;
@@ -314,9 +329,9 @@ export class NodeTransport implements Transport {
     this.raw = raw;
   }
 
-  /** Whether `error` is a `fetch` that got no answer: the node could not be reached or dropped the connection. */
+  /** Whether `error` is a host that gave no answer: a `fetch` that failed, or an attestation input left {@link Unanswered}. */
   isNetworkFailure(error: unknown): boolean {
-    return error instanceof TypeError && this.networkFailures.has(error);
+    return (error instanceof TypeError && this.networkFailures.has(error)) || error instanceof Unanswered;
   }
 
   /** Re-read the node list from `source` when it is due, and after a failover. */
@@ -358,16 +373,104 @@ export class NodeTransport implements Transport {
 
   /** The sealed channel to `url`, attested under the policy before its first request. */
   private channel(url: string): typeof fetch {
-    let sealed = this.channels.get(url);
-    if (!sealed) {
-      sealed = createSealedFetch({
+    let channel = this.channels.get(url);
+    if (!channel) {
+      // A channel that has been dropped records nothing: only the one in use speaks for the node.
+      const live = () => this.channels.get(url) === sealed;
+      let first: Promise<Uint8Array> | undefined;
+      const sealed: typeof fetch = createSealedFetch({
         baseUrl: url,
-        transportPublicKey: () => fetchAttestedKey(url, this.policy, this.raw),
+        transportPublicKey: () => {
+          const key = first ?? this.attest(url, live);
+          first = undefined;
+          return key;
+        },
         fetch: this.raw,
       });
       this.channels.set(url, sealed);
+      first = this.attest(url, live);
+      channel = sealed;
     }
-    return sealed;
+    return channel;
+  }
+
+  /** Attest node `url` for the channel `live` tells is in use, keeping what the check verified or why it failed. */
+  private attest(url: string, live: () => boolean): Promise<Uint8Array> {
+    if (!live()) return verifyNode(url, this.policy, this.raw).then(({ key }) => key);
+    this.checks.set(url, { status: 'checking', url });
+    const attempt: Promise<Uint8Array> = verifyNode(url, this.policy, this.raw).then(
+      ({ key, verification }) => {
+        if (live()) {
+          this.checks.set(url, { status: 'verified', ...verification });
+          this.keys.set(url, key);
+        }
+        return key;
+      },
+      (error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        const unreachable = this.isNetworkFailure(error);
+        if (live()) {
+          this.checks.set(url, { status: unreachable ? 'unreachable' : 'refused', url, reason, checkedAt: Date.now() });
+          // No answer says nothing about the node: the next use attests on a new channel.
+          if (unreachable) this.channels.delete(url);
+        }
+        throw error;
+      },
+    );
+    // A failure surfaces on the request that needed the key, not as an unhandled rejection.
+    attempt.catch(() => undefined);
+    this.attempts.set(url, attempt);
+    return attempt;
+  }
+
+  /** What the client's check of node `url` (a URL from `nodes`; default: the one in use) established; `undefined` before it is first used. */
+  verification(url: string = this.nodeUrl): NodeVerificationState | undefined {
+    return this.checks.get(url);
+  }
+
+  /**
+   * Attest `app` on node `url` (a URL from `nodes`; default: the one in use): the record's
+   * `appHash` is the one the node bound. Throws on refusal, or when the quote's key is not the channel's.
+   */
+  async attestApp(app: string, url: string = this.nodeUrl): Promise<NodeVerification> {
+    const pinned = this.policy.app === app ? this.policy.appHash : undefined;
+    const policy = { ...this.policy, app, appHash: pinned };
+    await this.settled(url);
+    let attested = await verifyNode(url, policy, this.raw);
+    if (!this.sameKey(url, attested.key)) {
+      // The node may have restarted: the channel's own check, on a new channel, decides which key requests use.
+      this.channels.delete(url);
+      await this.settled(url);
+      attested = await verifyNode(url, policy, this.raw);
+      if (!this.sameKey(url, attested.key)) {
+        throw new Error('The node attested the app under another transport key than its channel');
+      }
+    }
+    return attested.verification;
+  }
+
+  /** The settled check of node `url`; throws the reason when it failed. */
+  private async settled(url: string): Promise<void> {
+    const state = await this.verify(url);
+    if (state.status === 'refused' || state.status === 'unreachable') throw new Error(state.reason);
+  }
+
+  private sameKey(url: string, key: Uint8Array): boolean {
+    const channelKey = this.keys.get(url);
+    return channelKey !== undefined && hex(channelKey) === hex(key);
+  }
+
+  /**
+   * Start the check of node `url` if none runs and answer its settled outcome, without a request or a repeat.
+   * `checkedAt` is when that check ran; a failure is answered, not thrown.
+   */
+  async verify(url: string = this.nodeUrl): Promise<NodeVerificationState> {
+    this.channel(url);
+    for (;;) {
+      const attempt = this.attempts.get(url);
+      await attempt?.catch(() => undefined);
+      if (this.attempts.get(url) === attempt) return this.checks.get(url) as NodeVerificationState;
+    }
   }
 
   /**

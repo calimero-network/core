@@ -16,6 +16,8 @@ describe('the package root', () => {
       'CalimeroClient',
       'browserPasskey',
       'fetchAttestedKey',
+      'verifyNode',
+      'verifyNodeUrl',
       'claimedRelease',
       'MOCK_QUOTE_HEADER',
       'b64url',

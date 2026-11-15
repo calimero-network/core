@@ -30,14 +30,15 @@ export type {
   DirectorySource,
   HttpMethod,
   NodeTransportOptions,
+  NodeVerificationState,
   QueryValue,
   RequestOptions,
   Transport,
 } from './transport.js';
 
 // Attestation: what a node must prove before anything is sealed to it.
-export { claimedRelease, fetchAttestedKey, freshCollateral, MOCK_QUOTE_HEADER } from './attestation.js';
-export type { AttestationDoc, NodePolicy, NodeReleasePolicy } from './attestation.js';
+export { claimedRelease, fetchAttestedKey, freshCollateral, MOCK_QUOTE_HEADER, verifyNode } from './attestation.js';
+export type { AttestationDoc, NodePolicy, NodeReleasePolicy, NodeVerification } from './attestation.js';
 
 // The node directory a cluster's node list is read from.
 export { DEFAULT_DIRECTORY, DirectoryError } from './directory.js';

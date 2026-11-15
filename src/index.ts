@@ -33,6 +33,7 @@ export type {
   DirectorySource,
   HttpMethod,
   NodeTransportOptions,
+  NodeVerificationState,
   QueryValue,
   RequestOptions,
   Transport,
