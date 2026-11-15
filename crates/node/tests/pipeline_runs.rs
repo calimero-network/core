@@ -1768,6 +1768,29 @@ async fn a_finished_run_has_a_receipt_signed_by_an_attested_node() {
         );
     }
 
+    // The chain ran on one job node: only the first step's attempt carried its attestation, and
+    // the later ones found it already kept for this pipeline run.
+    let carried: Vec<bool> = ["a", "b", "c"]
+        .iter()
+        .map(|s| {
+            rig.record(&step_run(&done, s)).attempts[0]
+                .job_attestation
+                .is_some()
+        })
+        .collect();
+    assert_eq!(carried, [true, false, false]);
+
+    // A version this node does not know is refused, a value past u32 included.
+    for version in [3, 99, 1 << 40] {
+        let e = rig
+            .alice
+            .apps()
+            .pipeline_receipt_receipt(&rig.app, &run, Some(version))
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("BAD_VERSION"), "{version}: {e}");
+    }
+
     // Unasked, the node answers the signed receipt without job evidence, which is no proof of
     // what the jobs did.
     let plain = rig
