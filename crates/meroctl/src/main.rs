@@ -426,7 +426,19 @@ async fn main() -> eyre::Result<()> {
             }
             let session = if dev_passkey.exists() {
                 let mut pk = load_dev_passkey(dev_passkey)?;
-                let s = env.client.sign_in(&mut pk).await;
+                let mut s = env.client.sign_in(&mut pk).await;
+                // A cluster that started over (`local up --fresh`) has never
+                // seen this passkey: the file is still the developer's
+                // account, so sign up with the same passkey there.
+                if s.as_ref().err().and_then(calimero_client::Error::code)
+                    == Some("PASSKEY_UNKNOWN_HERE")
+                {
+                    eprintln!(
+                        "{} is not a passkey of this cluster (it started over?): signing up as {name} with it",
+                        dev_passkey.display()
+                    );
+                    s = env.client.sign_up(&mut pk, name).await;
+                }
                 save_passkey(dev_passkey, &pk)?;
                 s?
             } else {

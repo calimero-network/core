@@ -1260,9 +1260,9 @@ async fn a_dev_passkey_signs_up_again_on_a_cluster_that_started_over() {
     let file = dir.path().join("me.json");
     let file_arg = file.display().to_string();
     let login = {
-        let me = Meroctl { home: me.home.clone() };
-        let (url, file_arg) = (url.clone(), file_arg.clone());
+        let (home, url, file_arg) = (me.home.clone(), url.clone(), file_arg.clone());
         move || {
+            let me = Meroctl { home: home.clone() };
             let _ = me.run(&["node", "add", "local", &url, "--allow-mock"]);
             me.run(&["login", "--dev-passkey", &file_arg, "--name", "me"])
         }
@@ -1274,9 +1274,23 @@ async fn a_dev_passkey_signs_up_again_on_a_cluster_that_started_over() {
     // The same port, a new cluster: what `local up --fresh` makes.
     let second = start("second", port).await.unwrap();
     let after = tokio::task::spawn_blocking(login).await.unwrap();
-    assert_ne!(after["accountId"], before["accountId"], "a new account on the new cluster");
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), kept, "the same passkey file");
-    let who = tokio::task::spawn_blocking(move || me.run(&["whoami"])).await.unwrap();
+    assert_ne!(
+        after["accountId"], before["accountId"],
+        "a new account on the new cluster"
+    );
+    // The same passkey: its key and credential (the counter moves with every use).
+    let key = |t: &str| {
+        let v: Value = serde_json::from_str(t).unwrap();
+        (v["pkcs8"].clone(), v["credentialId"].clone())
+    };
+    assert_eq!(
+        key(&std::fs::read_to_string(&file).unwrap()),
+        key(&kept),
+        "the same passkey"
+    );
+    let who = tokio::task::spawn_blocking(move || me.run(&["whoami"]))
+        .await
+        .unwrap();
     assert_eq!(who["accountId"], after["accountId"], "{who}");
     second.stop().await;
 }
