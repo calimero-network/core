@@ -1220,3 +1220,63 @@ fn a_misspelled_quota_is_refused_before_it_is_sent() {
         "{refused}"
     );
 }
+
+/// The quickstart's passkey file is "your development account". After the
+/// cluster starts over (`local up --fresh`), the file's passkey is unknown
+/// there: `login` with it answered `401 PASSKEY_UNKNOWN_HERE` and the docs'
+/// one command stopped working. It now signs up again with the same passkey,
+/// leaving the file as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_dev_passkey_signs_up_again_on_a_cluster_that_started_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let start = |name: &'static str, port: u16| {
+        let path = dir.path().join(name);
+        async move {
+            calimero_node::local::start(
+                1,
+                port,
+                &path,
+                "ops-token",
+                vec!["http://localhost:3000".into()],
+                None,
+            )
+            .await
+        }
+    };
+    let mut attempt = 0;
+    let (first, port) = loop {
+        attempt += 1;
+        let port = free_base_port();
+        match start("first", port).await {
+            Ok(c) => break (c, port),
+            Err(e) if attempt < 5 && port_taken(&e) => continue,
+            Err(e) => panic!("the local cluster did not start: {e:?}"),
+        }
+    };
+    let url = first.urls[0].clone();
+    let me = Meroctl {
+        home: dir.path().join("home"),
+    };
+    let file = dir.path().join("me.json");
+    let file_arg = file.display().to_string();
+    let login = {
+        let me = Meroctl { home: me.home.clone() };
+        let (url, file_arg) = (url.clone(), file_arg.clone());
+        move || {
+            let _ = me.run(&["node", "add", "local", &url, "--allow-mock"]);
+            me.run(&["login", "--dev-passkey", &file_arg, "--name", "me"])
+        }
+    };
+    let before = tokio::task::spawn_blocking(login.clone()).await.unwrap();
+    let kept = std::fs::read_to_string(&file).unwrap();
+    first.stop().await;
+
+    // The same port, a new cluster: what `local up --fresh` makes.
+    let second = start("second", port).await.unwrap();
+    let after = tokio::task::spawn_blocking(login).await.unwrap();
+    assert_ne!(after["accountId"], before["accountId"], "a new account on the new cluster");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), kept, "the same passkey file");
+    let who = tokio::task::spawn_blocking(move || me.run(&["whoami"])).await.unwrap();
+    assert_eq!(who["accountId"], after["accountId"], "{who}");
+    second.stop().await;
+}
