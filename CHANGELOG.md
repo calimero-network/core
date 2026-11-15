@@ -1,3 +1,9 @@
+## [35.4.0](https://github.com/calimero-network/mero-js/compare/mero-js-v35.3.0...mero-js-v35.4.0) (2026-11-15)
+
+### Features
+
+* **client:** verify a pipeline run's receipt against the cluster's TDX attestation ([#390](https://github.com/calimero-network/mero-js/issues/390)) ([b77067c](https://github.com/calimero-network/mero-js/commit/b77067c56e3f679b13b0bb3e0052ce58b292709c))
+
 ## [35.3.0](https://github.com/calimero-network/mero-js/compare/mero-js-v35.2.1...mero-js-v35.3.0) (2026-11-15)
 
 ### Features
