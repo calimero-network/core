@@ -25,13 +25,21 @@ pub const NODE: &str = "local";
 /// The origin `merod local` trusts passkey ceremonies from, where `dev` runs the frontend.
 const DEV_ORIGIN: &str = "http://localhost:5173";
 const STATE_FILE: &str = "meroctl-local.json";
+/// What a cluster was made with, kept across `down` and `up`: its node count
+/// and Docker volume.
+const CLUSTER_FILE: &str = "cluster.json";
+/// A new cluster's nodes.
+const DEFAULT_NODES: u16 = 1;
+/// The node count every cluster had before `cluster.json` recorded one.
+const LEGACY_NODES: u16 = 3;
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Args)]
 pub struct ClusterArgs {
-    /// How many nodes.
-    #[arg(long, default_value_t = 3)]
-    pub nodes: u16,
+    /// How many nodes: 1 for a new cluster (enough to build an app), else
+    /// the count the cluster in `--dir` was made with. Core's own tests run 3.
+    #[arg(long)]
+    pub nodes: Option<u16>,
     /// Node i listens on base-port + i (127.0.0.1 only).
     #[arg(long, default_value_t = 2500)]
     pub base_port: u16,
@@ -138,6 +146,97 @@ struct State {
     log: PathBuf,
 }
 
+/// What a cluster in a state directory was made with (`cluster.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Made {
+    nodes: u16,
+    /// Its Docker volume (and container); none for a cluster run with `--local`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    volume: Option<String>,
+}
+
+/// The Docker volume and container of the cluster kept in `dir`: named after
+/// the directory, so two state directories never share one. Before this they
+/// were named after the port only, so a second `--dir` (or another home) on
+/// the same port took over the first one's data.
+fn volume_of(dir: &Path) -> String {
+    let id = calimero_identity::sha256(dir.as_os_str().as_encoded_bytes());
+    format!("meroctl-local-{}", hex::encode(&id[..6]))
+}
+
+/// How many nodes `merod local` keeps in `dir` (`node1`..`nodeN`, as
+/// `calimero_node::local::existing_nodes` counts them; that crate is not a
+/// dependency of the binary).
+fn node_dirs(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let count = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_dir())
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(|n| n.strip_prefix("node"))
+                .is_some_and(|i| !i.is_empty() && i.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .count();
+    u64::try_from(count).unwrap_or(u64::MAX)
+}
+
+/// What the cluster kept in `dir` was made with: `cluster.json`, else what an
+/// earlier meroctl left (its `merod.log`: 3 nodes, a volume named after the
+/// port, or a native cluster's node directories), else none (a new cluster).
+fn made(dir: &Path, base_port: u16) -> Option<Made> {
+    if let Some(m) = std::fs::read_to_string(dir.join(CLUSTER_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+    {
+        return Some(m);
+    }
+    let native = node_dirs(&dir.join("cluster"));
+    if native > 0 {
+        return Some(Made {
+            nodes: u16::try_from(native).unwrap_or(u16::MAX),
+            volume: None,
+        });
+    }
+    dir.join("merod.log").exists().then(|| Made {
+        nodes: LEGACY_NODES,
+        volume: Some(format!("meroctl-local-{base_port}")),
+    })
+}
+
+/// The node count and Docker volume `up` runs with: `--nodes` or the kept
+/// cluster's count (a different count for a kept cluster is refused: it never
+/// reaches a majority with fewer nodes), and the kept volume, else one named
+/// after the directory. `--fresh` starts over, so nothing kept counts.
+fn plan(a: &ClusterArgs, dir: &Path) -> eyre::Result<(u16, String)> {
+    let kept = if a.fresh {
+        None
+    } else {
+        made(dir, a.base_port)
+    };
+    let nodes = match (a.nodes, &kept) {
+        (Some(0), _) => bail!("--nodes must be at least 1"),
+        (Some(n), Some(k)) if n != k.nodes => bail!(
+            "the cluster in {} has {} node{}: pass --nodes {}, or --fresh to start over with {n}",
+            dir.display(),
+            k.nodes,
+            if k.nodes == 1 { "" } else { "s" },
+            k.nodes
+        ),
+        (Some(n), _) => n,
+        (None, Some(k)) => k.nodes,
+        (None, None) => DEFAULT_NODES,
+    };
+    let volume = kept
+        .and_then(|k| k.volume)
+        .unwrap_or_else(|| volume_of(dir));
+    Ok((nodes, volume))
+}
+
 /// A cluster this process started, stopped when it is dropped (`dev`).
 pub struct Started {
     dir: PathBuf,
@@ -203,9 +302,6 @@ fn alive(state: &State) -> bool {
 /// Start the cluster and wait until every node listens; with `own`, it is
 /// stopped when the answer is dropped.
 pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Option<Started>)> {
-    if a.nodes == 0 {
-        bail!("--nodes must be at least 1");
-    }
     let state_dir = a.dir.clone().unwrap_or_else(|| default_dir(home));
     if let Some(state) = read_state(&state_dir).filter(alive) {
         if a.fresh {
@@ -217,15 +313,16 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
         save_node(home, &state.urls[0])?;
         return Ok((describe(&state_dir, &state, true), None));
     }
-    let urls = urls(a.nodes, a.base_port);
+    std::fs::create_dir_all(&state_dir)?;
+    let dir = std::path::absolute(&state_dir)?;
+    let (nodes, volume) = plan(a, &dir)?;
+    let urls = urls(nodes, a.base_port);
     if let Some(busy) = urls.iter().find(|u| listening(u)) {
         bail!("{busy} is taken by another process: stop it, or pass --base-port");
     }
-    std::fs::create_dir_all(&state_dir)?;
-    let dir = std::path::absolute(&state_dir)?;
     let token = hex::encode(calimero_identity::random::<16>());
     let log = dir.join("merod.log");
-    let mut local = merod_local_args(a, &token);
+    let mut local = merod_local_args(a, nodes, &token);
     let out = std::fs::File::create(&log)?;
     // The release's image unless `--local` (or MEROD) asks for a `merod` binary:
     // only Docker is needed, on Linux and macOS alike.
@@ -243,14 +340,14 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
             "--bind".into(),
             "0.0.0.0".into(),
         ]);
-        let name = format!("meroctl-local-{}", a.base_port);
+        let name = volume.clone();
         let _ = Command::new("docker")
             .args(["rm", "-f", &name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
         let first = a.base_port + 1;
-        let last = a.base_port + a.nodes;
+        let last = a.base_port + nodes;
         let mut cmd = Command::new("docker");
         let _ = cmd
             .args(["run", "-d", "--name", &name, "-p"])
@@ -329,6 +426,12 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+    // Kept across `down`, so the next `up` starts the same cluster.
+    let kept = Made {
+        nodes,
+        volume: docker.then_some(volume),
+    };
+    std::fs::write(dir.join(CLUSTER_FILE), serde_json::to_string_pretty(&kept)?)?;
     save_node(home, &urls[0])?;
     let answer = describe(&state_dir, &state, true);
     Ok((answer, started))
@@ -627,11 +730,11 @@ const DEFAULT_REGISTRY: &str = "https://apps.calimero.network";
 
 /// `merod local`'s arguments for `up`, before where it keeps its state and
 /// what it binds (those differ between the image and a binary).
-fn merod_local_args(a: &ClusterArgs, token: &str) -> Vec<String> {
+fn merod_local_args(a: &ClusterArgs, nodes: u16, token: &str) -> Vec<String> {
     let mut local = vec![
         "local".to_owned(),
         "--nodes".into(),
-        a.nodes.to_string(),
+        nodes.to_string(),
         "--base-port".into(),
         a.base_port.to_string(),
         "--ops-token".into(),
@@ -680,7 +783,95 @@ mod tests {
 
     fn args(argv: &[&str]) -> Vec<String> {
         let cli = Cli::try_parse_from(std::iter::once("up").chain(argv.iter().copied())).unwrap();
-        merod_local_args(&cli.cluster, "t")
+        merod_local_args(&cli.cluster, 1, "t")
+    }
+
+    fn cluster(argv: &[&str]) -> ClusterArgs {
+        Cli::try_parse_from(std::iter::once("up").chain(argv.iter().copied()))
+            .unwrap()
+            .cluster
+    }
+
+    fn kept(dir: &Path, nodes: u16, volume: Option<&str>) {
+        std::fs::create_dir_all(dir).unwrap();
+        let made = Made {
+            nodes,
+            volume: volume.map(str::to_owned),
+        };
+        std::fs::write(
+            dir.join(CLUSTER_FILE),
+            serde_json::to_string(&made).unwrap(),
+        )
+        .unwrap();
+    }
+
+    // Two state directories on the same port shared the Docker volume
+    // `meroctl-local-2500`: a second home's `local up` ran on the first one's
+    // data, and its own sign-up found bundles it never uploaded ("unknown bundle").
+    #[test]
+    fn each_state_directory_gets_a_volume_of_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (one, two) = (tmp.path().join("a"), tmp.path().join("b"));
+        let (_, va) = plan(&cluster(&[]), &one).unwrap();
+        let (_, vb) = plan(&cluster(&[]), &two).unwrap();
+        assert_ne!(va, vb);
+        assert_ne!(va, "meroctl-local-2500");
+        assert_eq!(
+            plan(&cluster(&[]), &one).unwrap().1,
+            va,
+            "the same directory, the same volume"
+        );
+    }
+
+    #[test]
+    fn a_new_cluster_has_one_node_unless_told() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(plan(&cluster(&[]), tmp.path()).unwrap().0, 1);
+        assert_eq!(plan(&cluster(&["--nodes", "3"]), tmp.path()).unwrap().0, 3);
+        assert!(plan(&cluster(&["--nodes", "0"]), tmp.path()).is_err());
+    }
+
+    // A kept cluster restarted with fewer nodes never reaches a majority: it
+    // hangs until `merod local` gives up ("did not form within 20 s").
+    #[test]
+    fn a_kept_cluster_starts_with_its_own_node_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        kept(tmp.path(), 3, Some("meroctl-local-abc"));
+        assert_eq!(
+            plan(&cluster(&[]), tmp.path()).unwrap(),
+            (3, "meroctl-local-abc".to_owned())
+        );
+        let err = plan(&cluster(&["--nodes", "1"]), tmp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("has 3 nodes") && err.contains("--nodes 3") && err.contains("--fresh"),
+            "{err}"
+        );
+        assert_eq!(
+            plan(&cluster(&["--nodes", "1", "--fresh"]), tmp.path()).unwrap(),
+            (1, volume_of(tmp.path())),
+            "--fresh starts over in a volume of the directory's own"
+        );
+    }
+
+    // A cluster an earlier meroctl made has no `cluster.json`: 3 nodes, in the
+    // volume named after its port (Docker) or its node directories (`--local`).
+    #[test]
+    fn a_cluster_from_before_keeps_its_nodes_and_volume() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docker = tmp.path().join("docker");
+        std::fs::create_dir_all(&docker).unwrap();
+        std::fs::write(docker.join("merod.log"), "").unwrap();
+        assert_eq!(
+            plan(&cluster(&["--base-port", "2600"]), &docker).unwrap(),
+            (3, "meroctl-local-2600".to_owned())
+        );
+        let native = tmp.path().join("native");
+        for i in 1..=2 {
+            std::fs::create_dir_all(native.join("cluster").join(format!("node{i}"))).unwrap();
+        }
+        assert_eq!(plan(&cluster(&[]), &native).unwrap().0, 2);
     }
 
     // `meroctl app install PACKAGE@VERSION` on a fresh `local up` answered

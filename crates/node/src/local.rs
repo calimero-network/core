@@ -28,6 +28,25 @@ impl LocalCluster {
     }
 }
 
+/// How many nodes the cluster kept in `dir` has (its `node1`..`nodeN` data
+/// directories); 0 when `dir` holds none.
+pub fn existing_nodes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let count = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_dir())
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(|n| n.strip_prefix("node"))
+                .is_some_and(|i| !i.is_empty() && i.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .count();
+    u64::try_from(count).unwrap_or(u64::MAX)
+}
+
 /// Start `n` nodes on `127.0.0.1:base_port+1..=base_port+n`, keeping state under `dir`.
 pub async fn start(
     n: u64,

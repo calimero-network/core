@@ -44,6 +44,28 @@ CLI = os.environ.get("RV2_MEROCTL") or str(BIN / "meroctl")
 ORIGIN = "http://localhost:3000"
 
 
+# meroctl calls an app instance `instance` (`--instance`) from 1.0.0-rc.26; before,
+# `context` (`--context`). The tests write the new spelling, and the upgrade path
+# drives an older release's meroctl too, so `spelled_for` turns it back into the
+# old one for a meroctl that does not know `instance` (asked once per binary).
+_KNOWS_INSTANCE: dict[str, bool] = {}
+
+
+def knows_instance(meroctl: str) -> bool:
+    if meroctl not in _KNOWS_INSTANCE:
+        probe = subprocess.run([meroctl, "instance", "--help"], capture_output=True, timeout=30)
+        _KNOWS_INSTANCE[meroctl] = probe.returncode == 0
+    return _KNOWS_INSTANCE[meroctl]
+
+
+def spelled_for(meroctl: str, args) -> list[str]:
+    args = [str(a) for a in args]
+    if knows_instance(meroctl):
+        return args
+    old = ["context" if (i == 0 and a == "instance") else a for i, a in enumerate(args)]
+    return ["--context" if a == "--instance" else a for a in old]
+
+
 def b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 
@@ -308,7 +330,7 @@ class Cluster:
         home = Path(home) if home else self.workdir / "cfg"
         home.mkdir(parents=True, exist_ok=True)
         out = subprocess.run([CLI, "--home", str(home), "--api", self.url(i),
-                              "--allow-mock", *args], env=env,
+                              "--allow-mock", *spelled_for(CLI, args)], env=env,
                              capture_output=True, text=True, timeout=120)
         if out.returncode != 0:
             raise CliError(args, out.stderr)

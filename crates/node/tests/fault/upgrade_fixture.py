@@ -90,17 +90,17 @@ def main(argv=None) -> int:
         alice.raw("post", f"apps/{app}/metadata", {"metadata": {"color": "teal"}})
         # One upload of the bundle (its bytes are in the log once): the other apps name it.
         bundle = alice.raw("get", f"apps/{app}")["bundle"]
-        team_app = alice.cli("context", "create", "--name", "replay-team", "--bundle", bundle,
+        team_app = alice.cli("instance", "create", "--name", "replay-team", "--bundle", bundle,
                              "--namespace", org)["appId"]
         alice.raw("post", f"apps/{team_app}/access", {"access": {"kind": "team", "team": team}})
         bob.call(team_app, "set", {"key": "t", "value": "team"})
-        own = alice.cli("context", "create", "--name", "replay-own", "--bundle", bundle)["appId"]
+        own = alice.cli("instance", "create", "--name", "replay-own", "--bundle", bundle)["appId"]
         alice.call(own, "set", {"key": "o", "value": "own"})
-        ro = alice.cli("account", "api-key", "create", "--label", "ro", "--read-only", "--context", app,
+        ro = alice.cli("account", "api-key", "create", "--label", "ro", "--read-only", "--instance", app,
                        "--dev-passkey", pk)["key"]
         blob = work / "blob.bin"
         blob.write_bytes(bytes(range(256)) * 40)
-        up = alice.cli("blob", "upload", "--context", app, str(blob))
+        up = alice.cli("blob", "upload", "--instance", app, str(blob))
         blob_id = up.get("blobId") or up.get("id")
         alice.call(app, "attach", {"name": "doc", "blob": blob_id})
 

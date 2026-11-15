@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`meroctl local up` runs one node by default**: enough to build an app, and
+  lighter on a laptop. `--nodes 3` runs three, as Calimero Cloud replicates every
+  instance; core's own tests keep running three. A cluster keeps the count it was
+  made with (recorded in `cluster.json` in its state directory), and a cluster an
+  earlier meroctl made keeps its three.
+
+### Fixed
+
+- **`meroctl local`'s Docker clusters no longer share data**: the volume was
+  named after the port only (`meroctl-local-2500`), so a second state directory
+  or home on the same port started on the first one's data ("unknown bundle"
+  after its own upload). It is now named after the state directory; a cluster an
+  earlier meroctl made keeps its volume.
+- **A local cluster started with another node count than it was made with is
+  refused** (`merod local`, `meroctl local up`): with fewer nodes it never reached
+  a majority and failed after 20 s with "the local cluster did not form"; now it
+  says at once to pass the cluster's `--nodes` or `--fresh`.
+
 ## [1.0.0-rc.27] - 2026-11-15
 
 ### Fixed

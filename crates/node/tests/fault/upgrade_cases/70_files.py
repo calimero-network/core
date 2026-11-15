@@ -61,7 +61,7 @@ class AppFiles(DeepCase):
         _put_part(w, fay, kv, s["upload"], 0)
         blob = scratch(w, "gone") / "gone.bin"
         blob.write_bytes(random.Random(3).randbytes(5000))
-        up = fay.cli("blob", "upload", "--context", kv, str(blob))
+        up = fay.cli("blob", "upload", "--instance", kv, str(blob))
         s["gone"] = up.get("blobId") or up.get("id")
         fay.raw("delete", f"apps/{kv}/blobs/{s['gone']}")
         return s

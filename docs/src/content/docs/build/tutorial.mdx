@@ -45,8 +45,9 @@ a `Counter`, the two state types most apps start from.
    ```
 
 2. **A development cluster.** `meroctl local up` starts `merod local` in the
-   background: three nodes in one process on `127.0.0.1:2501`-`2503`, with
-   mock attestation. It saves the first node in `meroctl` as `local`:
+   background: one node on `127.0.0.1:2501` (`--nodes 3` runs three, in one
+   process, on `2501`-`2503`), with mock attestation. It saves the first node
+   in `meroctl` as `local`:
 
    ```sh
    meroctl local up

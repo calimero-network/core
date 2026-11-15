@@ -82,6 +82,18 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
 - `local up` without ownership leaves the cluster running; `local dev` owns
   what it started (`Started`, stopped on drop). Readiness is every port
   listening and `merod local`'s `ops token` line in the log.
+- `local up` runs one node unless `--nodes` says otherwise (core's own tests
+  run three). `cluster.json` in the state directory keeps what a cluster was
+  made with (its node count, and its Docker volume, which is also the
+  container's name), so the next `up` starts the same cluster: a different
+  `--nodes` without `--fresh` is refused, since a cluster restarted with fewer
+  nodes never reaches a majority. The volume is named after the state
+  directory (`volume_of`), never the port alone, so two directories on one port
+  never share data. A cluster an earlier meroctl made (no `cluster.json`, a
+  `merod.log`) keeps 3 nodes and the port's volume (`made`, `plan`). Tests:
+  `each_state_directory_gets_a_volume_of_its_own`,
+  `a_kept_cluster_starts_with_its_own_node_count`,
+  `a_cluster_from_before_keeps_its_nodes_and_volume`.
 
 ```bash
 cargo test -p meroctl        # every command group against an in-process 3-node cluster (builds apps/v2-fixtures/kv)
