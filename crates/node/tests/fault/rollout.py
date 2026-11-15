@@ -124,7 +124,8 @@ class Fleet(Cluster):
         env.update(env_extra or {})
         home = Path(home) if home else self.workdir / "cfg"
         home.mkdir(parents=True, exist_ok=True)
-        out = subprocess.run([self.meroctl, "--home", str(home), "--api", self.url(i), "--allow-mock", *args],
+        out = subprocess.run([self.meroctl, "--home", str(home), "--api", self.url(i), "--allow-mock",
+                              *rv2.spelled_for(self.meroctl, args)],
                              env=env, capture_output=True, text=True, timeout=180)
         if out.returncode != 0:
             raise rv2.CliError(args, out.stderr)

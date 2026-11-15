@@ -375,7 +375,7 @@ class Person:
 
     def deploy(self, wasm, name, org=None):
         """A dev bundle (raw component) installed and an app of it created."""
-        args = ["context", "create", "--name", name, "--path", str(wasm)]
+        args = ["instance", "create", "--name", name, "--path", str(wasm)]
         if org:
             args += ["--namespace", org]
         return self.cli(*args)["appId"]

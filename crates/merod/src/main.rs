@@ -264,6 +264,18 @@ async fn local(args: LocalArgs) -> eyre::Result<()> {
     if args.fresh && args.dir.exists() {
         std::fs::remove_dir_all(&args.dir)?;
     }
+    // A cluster's state holds its nodes' votes: restarted with fewer nodes it
+    // can never reach a majority (it hangs), and with more the new ones are
+    // nobody's replicas. Its node count is the one it was made with.
+    let kept = calimero_node::local::existing_nodes(&args.dir);
+    if kept > 0 && kept != args.nodes {
+        eyre::bail!(
+            "the cluster in {} has {kept} node{}: pass --nodes {kept}, or --fresh to start over with {}",
+            args.dir.display(),
+            if kept == 1 { "" } else { "s" },
+            args.nodes
+        );
+    }
     // The local cluster's rp id is `localhost`, its apps domain `localhost`.
     node_config::check_rp_id("localhost", &args.origins, Some("localhost"))
         .map_err(|e| eyre::eyre!("--rp-id \"localhost\" does not cover a passkey host: {e}"))?;

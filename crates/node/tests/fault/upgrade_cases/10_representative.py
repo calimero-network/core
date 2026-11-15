@@ -145,7 +145,7 @@ class KvPackage(Case):
         self.index = int(alice.call(self.app, "set", {"key": "last", "value": "old"})["index"])
         self.expected["last"] = "old"
         self.read_key = alice.cli("account", "api-key", "create", "--label", "kv-read", "--read-only",
-                                  "--context", self.app, "--dev-passkey", str(alice.passkey))["key"]
+                                  "--instance", self.app, "--dev-passkey", str(alice.passkey))["key"]
         self.release = self.version
 
     def verify(self, w):
@@ -175,7 +175,7 @@ class KvPackage(Case):
         alice = w.account("alice")
         _, nxt = w.registry.publish(w.fixtures["kv_next"])
         alice.raw("post", "packages/install", {"package": self.package, "version": nxt})
-        alice.cli("context", "update", self.app, "--version", nxt, "--dev-passkey", str(alice.passkey))
+        alice.cli("instance", "update", self.app, "--version", nxt, "--dev-passkey", str(alice.passkey))
         self.release = nxt
         got = alice.view(self.app, "entries")["result"]
         w.check(got == self.expected, f"after the upgrade to {nxt}: entries {json.dumps(got)[:300]}")

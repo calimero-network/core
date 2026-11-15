@@ -580,3 +580,40 @@ fn a_peer_floor_below_the_built_in_one_is_refused() {
     );
     assert!(health(port).is_none(), "nothing started");
 }
+
+/// A cluster's state holds its nodes' votes: `merod local` with fewer nodes
+/// than it was made with never reaches a majority and hangs, so it is refused
+/// before anything starts, naming the count and `--fresh`.
+#[test]
+fn local_refuses_another_node_count_than_its_cluster_has() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("cluster");
+    for i in 1..=3 {
+        std::fs::create_dir_all(dir.join(format!("node{i}"))).unwrap();
+    }
+    let out = merod(tmp.path())
+        .args([
+            "local",
+            "--nodes",
+            "1",
+            "--base-port",
+            &free_port().to_string(),
+            "--dir",
+        ])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a one-node start of a three-node cluster ran"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("has 3 nodes") && err.contains("--nodes 3") && err.contains("--fresh"),
+        "{err}"
+    );
+    assert!(
+        dir.join("node3").exists(),
+        "the refused start touched the cluster"
+    );
+}

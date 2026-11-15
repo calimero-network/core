@@ -27,7 +27,7 @@ from code.
     { from: 0, to: 1, label: 'upload the bundle (dev) or install PACKAGE@VERSION' },
     { from: 1, to: 2, label: 'record the bundle hash (bytes in every blob store)' },
     { from: 0, to: 1, label: 'POST /apps { name, bundle } (no org named)' },
-    { from: 1, to: 2, label: 'CreateApp in your personal organization, placed on 3 nodes' },
+    { from: 1, to: 2, label: 'CreateApp in your personal organization, placed on its nodes' },
     { from: 2, to: 3, label: 'replicas form the app group; init runs', dashed: true },
     { from: 0, to: 1, label: 'call set / view get' },
     { from: 1, to: 3, label: 'forwarded to the app leader, appended, applied' },
@@ -47,10 +47,12 @@ meroctl local up
 
 `meroctl local up` starts `merod local` in the background, in the release's
 Docker image ([Docker](https://docs.docker.com/get-docker/) must be running;
-`--local` runs the `merod` on `PATH`): three nodes on
-`http://127.0.0.1:2501-2503/` in one process, with mock attestation and a
-development storage key, keeping state in `~/.calimero/meroctl/local/`
-(`--fresh` starts over). It saves the cluster as the node `local`, trusting its mock attestation
+`--local` runs the `merod` on `PATH`): one node on `http://127.0.0.1:2501/`,
+with mock attestation and a development storage key, keeping state in
+`~/.calimero/meroctl/local/` (`--fresh` starts over). One node is enough to
+build an app. `--nodes 3` runs three in one process (`2501`-`2503`), as a Cloud
+cluster replicates every instance, to see a leader change or a read behind it;
+a cluster keeps the count it was made with (another needs `--fresh`). It saves the cluster as the node `local`, trusting its mock attestation
 for this node only, so it cannot carry over to a real cluster; `meroctl local
 status` shows it and `meroctl local down` stops it. Browser apps
 on `http://localhost:3000` and `http://localhost:5173` may call it (`--origins`).

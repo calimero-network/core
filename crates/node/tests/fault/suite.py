@@ -155,7 +155,7 @@ class Account:
             time.sleep(0.25)
 
     def deploy(self, wasm, name="app", org=None):
-        args = ["context", "create", "--name", name, "--path", str(wasm)]
+        args = ["instance", "create", "--name", name, "--path", str(wasm)]
         if org:
             args += ["--namespace", org]
         return self.cli(*args)["appId"]
@@ -264,12 +264,12 @@ def orgs_and_keys(ctx, cl):
     bob.call(app, "set", {"key": "from", "value": "bob"})  # a member writes
     expect_refused("NOT_FOUND", lambda: carol.call(app, "get", {"key": "from"}))  # not in the org
     # clear is a confirm method (#[app::confirm]): it needs a fresh passkey assertion: refused without, done with alice's passkey.
-    expect_refused("CONFIRM_REQUIRED", lambda: alice.cli("call", "--context", app, "clear"))
-    alice.cli("call", "--context", app, "clear", "--dev-passkey", str(alice.passkey))
+    expect_refused("CONFIRM_REQUIRED", lambda: alice.cli("call", "--instance", app, "clear"))
+    alice.cli("call", "--instance", app, "clear", "--dev-passkey", str(alice.passkey))
     # Minting a key needs a passkey assertion too: refused without, made with alice's.
     expect_refused("CONFIRM_REQUIRED", lambda: alice.cli("account", "api-key", "create", "--label", "service"))
     key = alice.cli("account", "api-key", "create", "--label", "service", "--read-only",
-                    "--context", app, "--dev-passkey", str(alice.passkey))["key"]
+                    "--instance", app, "--dev-passkey", str(alice.passkey))["key"]
     got = alice.view(app, "len", key=key)["result"]
     check(got == 0, f"len through the read-only key: {got!r}, want 0")
     expect_refused("FORBIDDEN", lambda: alice.call(app, "set", {"key": "x", "value": "y"}, key=key))
@@ -291,7 +291,7 @@ def packages(ctx, cl):
     _, nxt = cl.registry.publish(ctx.kv_mpk_next)
     check(nxt != first, f"the next release is {nxt}, the same version as the first")
     alice.raw("post", "packages/install", {"package": package, "version": nxt})
-    alice.cli("context", "update", app, "--version", nxt, "--dev-passkey", str(alice.passkey))
+    alice.cli("instance", "update", app, "--version", nxt, "--dev-passkey", str(alice.passkey))
     got = alice.view(app, "get", {"key": "k"})["result"]
     check(got == "v1", f"after the upgrade: {got!r}, want 'v1'")
     try:

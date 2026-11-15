@@ -458,7 +458,7 @@ def redact_job(cl):
     package, version = cl.registry.publish(mpk)
     cl.cli(1, "app", "install", f"{package}@{version}")
     org = cl.cli(1, "namespace", "create", "Redact")["orgId"]
-    app = cl.cli(1, "context", "create", "--name", "redact", "--package", package, "--version", version,
+    app = cl.cli(1, "instance", "create", "--name", "redact", "--package", package, "--version", version,
                  "--namespace", org)["appId"]
     owner = {"home": wd / "cfg", "passkey": wd / "dev-passkey.json"}
     admin, member, other = sign_up(cl, wd, "ada"), sign_up(cl, wd, "bob"), sign_up(cl, wd, "cyd")
@@ -565,7 +565,7 @@ def main():
         org = cl.cli(1, "namespace", "create", "Acme")["orgId"]
         package, version = registry.publish(mpk)
         cl.cli(1, "app", "install", f"{package}@{version}")
-        app = cl.cli(1, "context", "create", "--name", "compute", "--package", package, "--version", version,
+        app = cl.cli(1, "instance", "create", "--name", "compute", "--package", package, "--version", version,
                      "--namespace", org)["appId"]
         key = cl.cli(1, "account", "api-key", "create", "--label", "compute-e2e",
                       "--dev-passkey", str(wd / "dev-passkey.json"))["key"]

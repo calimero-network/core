@@ -127,7 +127,7 @@ class Activity(DeepCase):
         ann = person(w, "ann")
         ann.cli("account", "api-key", "create", "--label", "ci", "--dev-passkey", str(ann.passkey))
         app = ann.deploy(kv_wasm(w), "activity")
-        ann.cli("call", "--context", app, "clear", "--dev-passkey", str(ann.passkey))
+        ann.cli("call", "--instance", app, "clear", "--dev-passkey", str(ann.passkey))
         log = ann.get("auth/activity")["activity"]
         kinds = {e["kind"] for e in log}
         check({"approval", "signIn"} <= kinds, f"activity kinds {kinds}: {log}")
