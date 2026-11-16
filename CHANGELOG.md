@@ -19,13 +19,6 @@
   trap's kind (`422 TRAP`) and the error a failed `init` ended with
   (`422 INIT_FAILED`). Other codes' details, meant for the program, stay out of it.
 
-- **A node makes its quotes off its async workers, one at a time**
-  (`calimero-node`): `GET /attestation` (and a job node's, a waiting node's and
-  `merod attest --serve`'s) made its TDX quote, which blocks for about a second,
-  on a worker that also runs Raft and the API. Quotes now run on the blocking
-  pool, one at a time, with up to 8 more requests waiting at most 3 s each;
-  past that the route answers `503 BUSY` with `Retry-After: 1`.
-
 ## [1.0.0-rc.30] - 2026-11-16
 
 ### Deprecated
