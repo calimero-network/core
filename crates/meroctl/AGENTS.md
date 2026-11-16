@@ -93,7 +93,9 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   nodes never reaches a majority. The volume is named after the state
   directory (`volume_of`), never the port alone, so two directories on one port
   never share data. A cluster an earlier meroctl made (no `cluster.json`, a
-  `merod.log`) keeps 3 nodes and the port's volume (`made`, `plan`). Tests:
+  `merod.log`) keeps 3 nodes and the port's volume (`made`, `plan`); `up` writes
+  `cluster.json` before it creates `merod.log`, so an `up` that failed to start is
+  never read as such a cluster (`an_up_that_never_started_leaves_no_cluster_behind`). Tests:
   `each_state_directory_gets_a_volume_of_its_own`,
   `a_kept_cluster_starts_with_its_own_node_count`,
   `a_cluster_from_before_keeps_its_nodes_and_volume`.
