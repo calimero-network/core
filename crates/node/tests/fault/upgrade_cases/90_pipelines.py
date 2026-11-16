@@ -48,7 +48,7 @@ class Pipelines(DeepCase):
                 "is still answered from the cache")
 
     def _begin(self, p, s, files):
-        return p.cli("pipeline", "run", s["app"], PIPELINE, "--input", "docs=" + ",".join(s["files"][i]["id"] for i in files))["run"]
+        return p.cli("cloud", "compute", "pipeline", "run", s["app"], PIPELINE, "--input", "docs=" + ",".join(s["files"][i]["id"] for i in files))["run"]
 
     def _upload(self, p, s, seed, size):
         up = p.a.upload_file(s["app"], _data(seed, size))
@@ -56,7 +56,7 @@ class Pipelines(DeepCase):
 
     def _start(self, p, s, files):
         started = {"run": self._begin(p, s, files)}
-        view = until("the pipeline run ends", lambda: _ended(p.cli("pipeline", "get", s["app"], started["run"])), 180)
+        view = until("the pipeline run ends", lambda: _ended(p.cli("cloud", "compute", "pipeline", "get", s["app"], started["run"])), 180)
         eq(view["state"], "succeeded", f"pipeline run {started['run']}")
         s["runs"].append({"id": started["run"], "files": files, "summary": _summary(view)})
 
@@ -82,7 +82,7 @@ class Pipelines(DeepCase):
     def _outputs(self, w, pat, s, run):
         """The run's downloaded outputs by file name, each judged against the inputs; the collect output's digest."""
         out = scratch(w, "pipeline-" + run["id"])
-        pat.cli("pipeline", "download", s["app"], run["id"], "--out", str(out))
+        pat.cli("cloud", "compute", "pipeline", "download", s["app"], run["id"], "--out", str(out))
         data = [_data(s["files"][i]["seed"], s["files"][i]["size"]) for i in run["files"]]
         want = {"each-0.bin": data[0] + data[1], "each-1.bin": data[2]}
         for name, bytes_ in want.items():
@@ -96,41 +96,41 @@ class Pipelines(DeepCase):
         new release finishes what the old one began: each item run once, outputs and receipt intact."""
         live = s["live"]
         if w.phase in ("seed", "mixed"):
-            eq(pat.cli("pipeline", "get", s["app"], live["id"])["state"], "running", f"in-flight run {live['id']}")
+            eq(pat.cli("cloud", "compute", "pipeline", "get", s["app"], live["id"])["state"], "running", f"in-flight run {live['id']}")
             return
         if "summary" not in live:
-            view = until("the in-flight run ends", lambda: _ended(pat.cli("pipeline", "get", s["app"], live["id"])), 240)
+            view = until("the in-flight run ends", lambda: _ended(pat.cli("cloud", "compute", "pipeline", "get", s["app"], live["id"])), 240)
             eq(view["state"], "succeeded", f"in-flight run {live['id']}")
             each = view["steps"]["each"]["runs"]
             eq(len(each), 2, "the in-flight run's item runs")
             eq(len(set(each)), 2, "the in-flight run's item runs are distinct")
             live["summary"] = _summary(view)
             live["out"] = self._outputs(w, pat, s, live)
-            got = pat.cli("pipeline", "receipt", s["app"], live["id"], "--verify")
+            got = pat.cli("cloud", "compute", "pipeline", "receipt", s["app"], live["id"], "--verify")
             check(got["verified"] is True and len(got["outputs"]) == 3 and all(o["matches"] for o in got["outputs"]),
                   f"the receipt of the in-flight run {live['id']}: {got}")
-        eq(_summary(pat.cli("pipeline", "get", s["app"], live["id"])), live["summary"], f"in-flight run {live['id']}")
+        eq(_summary(pat.cli("cloud", "compute", "pipeline", "get", s["app"], live["id"])), live["summary"], f"in-flight run {live['id']}")
         eq(self._outputs(w, pat, s, live), live["out"], "the in-flight run's collect output")
 
     def check(self, w, s):
         pat, zed = person(w, "pat"), person(w, "zed")
         self._check_live(w, pat, s)
         for r in s["runs"]:
-            eq(_summary(pat.cli("pipeline", "get", s["app"], r["id"])), r["summary"], f"pipeline run {r['id']}")
+            eq(_summary(pat.cli("cloud", "compute", "pipeline", "get", s["app"], r["id"])), r["summary"], f"pipeline run {r['id']}")
         first, rerun = s["runs"][0], s["runs"][1]
         check(not any(st["cached"] for st in first["summary"]["steps"].values()), "the first run ran its steps")
         check(all(st["cached"] for st in rerun["summary"]["steps"].values()), f"the re-run answered from the cache: {rerun['summary']}")
         if w.phase == "mixed":  # the app's attested nodes are changing; the receipt is only fetched
-            check(pat.cli("pipeline", "receipt", s["app"], first["id"]).get("signature"), "a signed receipt")
+            check(pat.cli("cloud", "compute", "pipeline", "receipt", s["app"], first["id"]).get("signature"), "a signed receipt")
         elif w.phase == "seed":
-            got = pat.cli("pipeline", "receipt", s["app"], first["id"], "--verify")
+            got = pat.cli("cloud", "compute", "pipeline", "receipt", s["app"], first["id"], "--verify")
             check(got["verified"] is True and len(got["outputs"]) == 3 and all(o["matches"] for o in got["outputs"]),
                   f"the receipt of {first['id']}: {got}")
         else:
             # The old release logged no job attestation, so this tree's meroctl will not call it verified. A replica
             # that replayed the log rebuilt the job evidence (the final carries the report); one from a snapshot did not.
             try:
-                got = pat.cli("pipeline", "receipt", s["app"], first["id"], "--verify")
+                got = pat.cli("cloud", "compute", "pipeline", "receipt", s["app"], first["id"], "--verify")
             except CliError as e:
                 check(any(why in e.stderr for why in ("carries no attestation", "no job evidence")),
                       f"the receipt of {first['id']} is refused for its jobs: {e.stderr}")
@@ -152,5 +152,5 @@ class Pipelines(DeepCase):
         self._start(pat, s, [6])
         check(all(st["cached"] for st in s["runs"][2]["summary"]["steps"].values()), "the cache survived the roll")
         check(not any(st["cached"] for st in s["runs"][3]["summary"]["steps"].values()), "a new file ran its steps")
-        got = pat.cli("pipeline", "receipt", s["app"], s["runs"][3]["id"], "--verify")
+        got = pat.cli("cloud", "compute", "pipeline", "receipt", s["app"], s["runs"][3]["id"], "--verify")
         check(got["verified"] is True, f"the receipt of the run on the new release: {got}")
