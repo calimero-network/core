@@ -1,0 +1,117 @@
+---
+title: Authentication
+description: Passkeys on Android (Credential Manager), the v2 session and its single-use refresh token, API keys, failover on 421, and step-up confirmations.
+---
+
+Calimero 1.0 has no username and password and no `/auth/token`. People sign in with
+**WebAuthn passkeys**; machines use **API keys** (`cal_…`, `ck_live_…` for an org).
+
+## Passkeys
+
+`CalimeroClient.signUp(passkey, name)` and `signIn(passkey)` run the ceremony at
+`/auth/passkey/{register,login}/{begin,finish}`. Begin and finish go to the same node.
+
+A sign-up prompts twice: once to create the new passkey, once for that passkey to sign the account
+it creates. A registration carries no signature by the new key, so the cluster takes the account
+only with that second assertion (the node's `412 CONFIRM_REQUIRED`, which `signUp` answers).
+
+| Provider | Where |
+|---|---|
+| `PlatformPasskey(activity)` | mero-compose: Android's Credential Manager (Google Password Manager or another provider). |
+| `SoftPasskey(rpId, origin)` | mero-core: a software ES256 key, for development clusters and tests only. |
+| your own `PasskeyProvider` | anything that answers `create(options)` and `get(challenge, rpId, allowCredentials)`. |
+
+Android offers a passkey for the cluster's relying-party id only when that domain's
+`/.well-known/assetlinks.json` lists your app with the `get_login_creds` relation. `merod local`
+runs on `localhost`, which has none: use a `SoftPasskey` there (the sample app does).
+
+A dismissed sheet throws `PasskeyCancelled`; inside a confirmation it surfaces as
+`ConfirmCancelled`.
+
+## Sessions
+
+A session is `CalimeroSession(accountId, sessionToken = "v2.…", expiresAt, refreshToken = "rt_…")`.
+The session token lives 15 minutes; the refresh token 30 days and **once**: reusing it revokes the
+session. The client therefore:
+
+- refreshes by itself on a `401` and repeats the request once;
+- shares one refresh between every request that needs it (single-flight), so a token is never
+  sent twice;
+- tells you each new session through `CalimeroClientOptions.onSession` /
+  `onSessionChange`, so you always store the newest one (`EncryptedSessionStore` does it
+  encrypted).
+
+A refused refresh surfaces as `LoginRequired`: sign in again.
+
+## Failover
+
+A node on a release the account's owners have not approved answers `421 WRONG_NODE` before it
+reads anything. Give the client the cluster's other nodes (`nodes`) and it moves to the next and
+repeats the request once (a refresh: once per node). `421 NOT_LEADER` (operator routes) is typed
+as `NotLeader` with its `leaderUrl`, and not followed by itself.
+
+A call or a view whose node stays unavailable (`503`, or no answer) through all its retries fails
+over to the next node, where its retries start again with the same idempotency key; each node is
+tried once per request, and `UnavailableError` reaches you only when every node failed. The
+confirmed attempt of `callConfirmed` is sent once, to one node.
+
+Or let the client find the nodes: `CalimeroClient.connect(CalimeroConnectOptions("eu-shared-1",
+CloudPolicy.production, zone = "europe-west4-a"))` reads the cluster's nodes from the public node
+directory (`DEFAULT_DIRECTORY`), the zone's first, each group in weighted-random order, and reads it
+again after a failover and once its `refreshAfterSeconds` pass. The directory only picks which nodes
+to try: each is attested under your policy. It throws `DirectoryError` (`reason` `Unreachable`,
+`NotFound`, `BadResponse` or `Empty`) when it names no usable node.
+
+## Step-up confirmations
+
+Some calls need the account holder's passkey over that exact call (`412 CONFIRM_REQUIRED`):
+deleting an org, transferring an app, adding or removing a passkey, creating an API key, member,
+capability and team-member changes, making an invite, deployments and deployers, and
+`#[app::confirm]` methods. The `*Confirmed` methods and those that take a `passkey` answer it
+themselves; `addPasskey(newPasskey, approver)` is approved by a passkey the account already has.
+
+## API keys
+
+```kotlin
+client.useApiKey("cal_…")
+val created = client.createApiKey(ApiKeyOptions(label = "agent", apps = listOf(appId), readOnly = true), passkey)
+client.listApiKeys()                    // never the keys themselves
+client.revokeApiKey(keyId, passkey)     // approved with the passkey
+```
+
+### Upgrade keys for CI
+
+An upgrade with a session needs a passkey every time, which a CI job does not have. An **upgrade
+key** is made once, with the passkey, for one app: it upgrades that app to signed releases of its
+package with no passkey, and the node refuses it everything else (`403 UPGRADE_KEY_ONLY`).
+
+```kotlin
+// Once, by the app's owner:
+val key = client.createApiKey(ApiKeyOptions(label = "ci", upgrades = UpgradeKeyScope(appId), ttlSecs = 90 * 86_400), passkey).key
+// In CI, after publishing 1.4.0:
+ci.useApiKey(key)
+ci.upgradeApp(appId, AppUpgradeTarget(version = "1.4.0"))
+```
+
+## Sign-up policy and invites
+
+A cluster takes new accounts from anyone (`open`), with an invite (`invite`: an organization's or a
+cluster sign-up invite), or with a sign-up invite only (`closed`). Read it without a session, before
+any passkey prompt, and sign up with the invite; the new account joins the invite's organization:
+
+```kotlin
+val policy = client.signUpPolicy()     // policy, inviteRequired, …
+client.signUp(passkey, "bob", SignUpOptions(invite = token))
+```
+
+A sign-up the policy does not take, or an unknown, expired or used invite, is `SignUpRefused` with a
+`reason`, raised before any passkey is made.
+
+## Registered origins
+
+A package's manager can register a web origin of their own so that a frontend they host signs
+people in with passkeys for that origin (`addPackageOrigin(pkg, origin, passkey)`,
+`packageOrigins(pkg)`, `removePackageOrigin(pkg, origin, passkey)`). A client running there passes
+it, `signIn(passkey, SignInOptions(origin = "https://chat.example"))`, and the session is bound to
+the package (`me().app`, `me().origin`). A native app leaves `origin` null and signs in on the
+cluster's own relying party.

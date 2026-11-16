@@ -1,0 +1,16 @@
+---
+title: Glossary
+description: The words Calimero 1.0 uses, and the 0.x words the app-facing layer still uses.
+---
+
+| 1.0 | 0.x (and `MeroAppBackend`'s method names) | Meaning |
+|---|---|---|
+| organization (`orgId`) | namespace (`namespaceId`) | Accounts with roles (owner, admin, member, guest) that own apps together. |
+| team (`teamId`; `"{orgId}/{teamId}"` as a group id) | group, subgroup | A set of an organization's members; open (`everyone`) or invite-only. |
+| app instance (`appId`) | context (`contextId`) | One running copy of an app: its own replicated log. |
+| package (`com.example.app`) | application | A signed `.mpk` bundle from the registry. |
+| intent / view | mutation / query (JSON-RPC) | `POST /apps/{app}/intents` and `/views`. |
+| session `v2.…` + refresh `rt_…` | JWT from mero-auth | A passkey sign-in. |
+| consent page | admin dashboard approvals | The node's own page where an owner approves a release or upgrade. |
+| sealed channel | sealed transport to a relay | Noise NK to the node's attested transport key. |
+| — | relay, delegated execution, warrants | Gone: the client talks to the cluster itself. |

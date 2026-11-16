@@ -1,0 +1,7 @@
+# Supporting files the generator writes that mero-core does not take (see codegen/build.gradle.kts).
+# The java.time, UUID, URI, URL, BigDecimal and atomic adapters: the spec has no such fields, and
+# java.time needs API 26 (minSdk is 24). The custom Serializer template registers none of them.
+**/infrastructure/*Adapter.kt
+
+# The consent request body's branches: the body is mero-core's ConsentRequest (schemaMappings).
+**/models/ConsentPageCreateRequest*.kt

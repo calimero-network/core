@@ -1,0 +1,60 @@
+---
+title: App session (MeroAppSession)
+description: The app-facing layer native apps build on — MeroAppSession, MeroAppBackend and ContextContract — on Calimero 1.0.
+---
+
+`MeroAppSession` (mero-compose) is a Calimero app's signed-in account: a passkey session on the
+app's cluster, kept encrypted, and the `MeroAppBackend` built over it. View models take a
+`MeroAppBackend`, so tests hand them mero-testkit's `InMemoryAppBackend`.
+
+```kotlin
+class AppViewModel(app: Application) : AndroidViewModel(app) {
+    val session = MeroAppSession.create(
+        app,
+        packageName = "com.example.board",
+        callbackUrl = "board://consent",                     // where the consent page sends people back
+        config = MeroAppConfig(nodeUrl = BuildConfig.CLUSTER_URL),   // CloudPolicy.production by default
+        scope = viewModelScope,
+    )
+    init { viewModelScope.launch { session.restore() } }
+}
+
+// The sign-in button (Credential Manager over the activity):
+session.signIn(activity)            // or session.signUp(activity, name)
+// The passkey that approves step-ups (invites, member changes, leaving): the Activity on screen.
+override fun onCreate(…) { …; session.passkey = PlatformPasskey(this) }
+override fun onDestroy() { session.passkey = null; … }
+// Every deep link (consent returns, invites):
+viewModelScope.launch { session.handle(url) }
+```
+
+| `MeroAppSession` | |
+|---|---|
+| `backend: StateFlow<MeroAppBackend?>`, `revision` | the signed-in backend; re-read when `revision` moves |
+| `isRestoring`, `isSigningIn`, `lastError` | progress and failures |
+| `isSignedIn`, `account`, `applicationId`, `contract` | the account; `applicationId` is the package |
+| `restore()`, `signIn(…)`, `signUp(…)`, `cancelSignIn()`, `signOut()` | session lifecycle |
+| `handle(url)`, `pendingInvitation`, `pendingOrgInvitation`, `redeemPendingInvitation()`, `dismissPendingInvitation()` | links |
+| `requestConsent(context, request)`, `consentResult` | approvals on the consent page (`consentResult.outcome`: the typed `ConsentOutcome`) |
+| `passkey` | approves the backend's step-ups (`createInvitation`, `leaveNamespace`, `leaveSubgroup`, `setMemberRole`, `removeMember`); null: they throw `ConfirmRequired` |
+
+## The backend's words
+
+`MeroAppBackend` keeps the method names the native apps were written against, each mapped onto 1.0:
+
+| `MeroAppBackend` | Calimero 1.0 |
+|---|---|
+| `listNamespaces()` | `GET /auth/me` organizations |
+| `foundNamespace(name)` | `POST /orgs` |
+| `listSubgroups(org)` / `createSubgroup(org, name, isPublic)` | teams (`join: everyone` / `invite`); group id `"{org}/{team}"` |
+| `listContexts(group)` / `listContextEntries(group)` | the package's app instances in the org (no team) or on the team |
+| `createContext(group, package, name, initArgs)` | `POST /apps` from the package, access `team` (or `org`) |
+| `createServiceContext(group, package, service, …)` | the same, one service of a multi-service package |
+| `isMember(app)` / `joinContext(app)` | `GET /apps/{app}`: open teams admit every member already |
+| `createInvitation(org)` / `joinNamespace(org, invitation)` | `POST /orgs/{org}/invites` / `POST /invites/{token}/redeem` (`OrgInvitation`) |
+| `events(app)` | `GET /apps/{app}/events` (sealed SSE) |
+| `contract.query` / `contract.execute` | views / intents |
+| `uploadBlob` / `getBlob` | `/apps/{app}/blobs` |
+| `listMembers`, `setMemberRole`, `removeMember`, `setMemberName` | org members (or a team's), member metadata |
+| `leaveNamespace`, `leaveSubgroup`, `deleteSubgroup`, `removeContext` | remove yourself, delete a team, delete an app |
+| `hasRelay`, `canSubscribe` | always `true` while signed in (there are no relays) |
