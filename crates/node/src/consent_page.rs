@@ -976,7 +976,7 @@ pub async fn create(
         }
         CreateBody::CreateInvite { subject, return_to } => {
             let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
-            let (action, model) = create_invite_request(&node, &account, subject)?;
+            let (action, model) = create_invite_request(&node, &account, subject).await?;
             (action, model, to)
         }
         CreateBody::AcceptInvite { subject, return_to } => {
@@ -1939,6 +1939,12 @@ async fn create_org_request(
     let name = subject.name;
     crate::system::org_name_fits(&name).map_err(|why| ApiError::bad_request("BAD_REQUEST", why))?;
     let capabilities = subject.capabilities;
+    if capabilities.is_some_and(|c| !crate::types::Org::defined_caps(c)) {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            crate::system::UNKNOWN_CAPABILITIES,
+        ));
+    }
     if capabilities.is_some() {
         // Before the page: an earlier release would drop the field.
         node.require_features(&[crate::system::cluster_version::Feature::OrgCapabilities])
@@ -1994,7 +2000,7 @@ async fn create_org_request(
     ))
 }
 
-fn create_invite_request(
+async fn create_invite_request(
     node: &Node,
     account: &str,
     subject: CreateInviteSubject,
@@ -2010,6 +2016,15 @@ fn create_invite_request(
         return Err(ApiError::bad_request(
             "BAD_REQUEST",
             &format!("name at most {MAX_INVITE_TEAMS} teams"),
+        ));
+    }
+    if subject
+        .capabilities
+        .is_some_and(|c| !crate::types::Org::defined_caps(c))
+    {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            crate::system::UNKNOWN_CAPABILITIES,
         ));
     }
     let uses = subject.uses.unwrap_or(1).max(1);
@@ -2032,6 +2047,12 @@ fn create_invite_request(
     if !may_grant {
         return Err(ApiError::forbidden(crate::system::CANNOT_GRANT_UNHELD));
     }
+    // Before the page: an earlier release would drop these fields.
+    node.require_features(&crate::system::cluster_version::invite_features(
+        subject.all_apps,
+        subject.capabilities.is_some(),
+    ))
+    .await?;
     let teams = team_names(node, &org, Some(account), &subject.teams);
     let role_text = role_words(subject.role);
     let joins = if teams.is_empty() {

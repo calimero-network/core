@@ -8964,3 +8964,139 @@ fn an_invite_without_capabilities_reads_writes_and_is_consented_as_before() {
         json!(3)
     );
 }
+
+/// What a creator no longer holds is not handed out by their invite: the
+/// bits are clamped at redeem to what the creator may grant now, and a
+/// creator who left the organization grants no member-specific bits.
+#[test]
+fn an_invite_redeems_at_most_what_its_creator_may_grant_now() {
+    use crate::types::caps;
+
+    let wide = caps::CREATE_APP | caps::MANAGE_MEMBERS | caps::INVITE_MEMBERS;
+    let minted = |token: &str| {
+        let (mut m, _alice, mut bob, _carol) = proven_cluster();
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.members.insert("bob".into(), OrgRole::Admin);
+        let _ok = mint_with_capabilities(&mut m, &mut bob, "bob", token, Some(wide)).unwrap();
+        m
+    };
+
+    // Demoted to a member holding one of the bits.
+    let mut m = minted("inv_d");
+    let o = m.state.orgs.get_mut("org").unwrap();
+    let _prev = o.members.insert("bob".into(), OrgRole::Member);
+    let _prev = o.capabilities.insert("bob".into(), caps::CREATE_APP);
+    let _ok = m.run(redemption("inv_d", "carol", 10)).unwrap();
+    assert_eq!(m.state.orgs["org"].capabilities["carol"], caps::CREATE_APP);
+
+    // Stripped of every capability.
+    let mut m = minted("inv_s");
+    let o = m.state.orgs.get_mut("org").unwrap();
+    let _prev = o.members.insert("bob".into(), OrgRole::Member);
+    let _prev = o.capabilities.insert("bob".into(), 0);
+    let _ok = m.run(redemption("inv_s", "carol", 10)).unwrap();
+    assert_eq!(m.state.orgs["org"].capabilities["carol"], 0);
+
+    // Still an admin: all of it.
+    let mut m = minted("inv_a");
+    let _ok = m.run(redemption("inv_a", "carol", 10)).unwrap();
+    assert_eq!(m.state.orgs["org"].capabilities["carol"], wide);
+
+    // Removed from the organization: the default applies.
+    let mut m = minted("inv_r");
+    let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
+    let _ok = m.run(redemption("inv_r", "carol", 10)).unwrap();
+    assert!(!m.state.orgs["org"].capabilities.contains_key("carol"));
+}
+
+/// Bits no capability has are refused in the new fields, in the log too.
+#[test]
+fn capability_bits_outside_the_defined_set_are_refused() {
+    use crate::types::caps;
+
+    let unknown = caps::CREATE_APP | (1 << 20);
+    let (mut m, mut alice, _bob, _carol) = proven_cluster();
+    let create = SystemCmd::CreateOrg {
+        org_id: "bad".into(),
+        name: "Bad".into(),
+        actor: "alice".into(),
+        release: None,
+        recovery_key: None,
+        at: 0,
+        name_fits: true,
+        personal: false,
+        app_team: None,
+        capabilities: Some(unknown),
+    };
+    assert_eq!(
+        m.run_unproven(create).unwrap_err(),
+        super::UNKNOWN_CAPABILITIES
+    );
+    assert!(!m.state.orgs.contains_key("bad"));
+    assert_eq!(
+        mint_with_capabilities(&mut m, &mut alice, "alice", "inv_bad", Some(unknown)).unwrap_err(),
+        super::UNKNOWN_CAPABILITIES
+    );
+    let _ok =
+        mint_with_capabilities(&mut m, &mut alice, "alice", "inv_ok", Some(caps::DEFINED)).unwrap();
+}
+
+/// With an app team and capabilities in one entry both apply, and a refused
+/// app team leaves no organization behind.
+#[test]
+fn an_organization_with_an_app_team_and_capabilities_is_all_or_nothing() {
+    use crate::types::caps;
+
+    let create = |id: &str, package: &str| SystemCmd::CreateOrg {
+        org_id: id.into(),
+        name: "Acme".into(),
+        actor: "alice".into(),
+        release: None,
+        recovery_key: None,
+        at: 0,
+        name_fits: true,
+        personal: false,
+        app_team: Some(package.into()),
+        capabilities: Some(caps::INVITE_MEMBERS),
+    };
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let _prev = m.state.packages.insert(
+        "com.chat".into(),
+        serde_json::from_value(json!({
+            "name": "com.chat", "signerId": "did:key:z", "owner": "alice",
+            "versions": { "1.0.0": {
+                "version": "1.0.0", "mpk": "m", "mpkSize": 1, "source": "upload",
+                "services": { "": "b" }, "installedBy": "alice", "installedAt": 0,
+                "metadata": { "name": "Chat" }
+            } }
+        }))
+        .unwrap(),
+    );
+    let _ok = m.run_unproven(create("acme", "com.chat")).unwrap();
+    let o = &m.state.orgs["acme"];
+    assert_eq!(o.default_capabilities, caps::INVITE_MEMBERS);
+    assert!(o.app_team("com.chat").is_some());
+
+    assert!(m.run_unproven(create("ghost", "com.ghost")).is_err());
+    assert!(!m.state.orgs.contains_key("ghost"));
+}
+
+/// A member already in the organization keeps their own capabilities when
+/// they redeem an invite that carries others.
+#[test]
+fn an_existing_member_redeeming_a_capability_invite_keeps_their_own() {
+    use crate::types::caps;
+
+    let (mut m, mut alice, _bob, _carol) = proven_cluster();
+    let _prev = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .capabilities
+        .insert("bob".into(), caps::CREATE_TEAM);
+    let _ok = mint_with_capabilities(&mut m, &mut alice, "alice", "inv_c", Some(caps::CREATE_APP))
+        .unwrap();
+    let _ok = m.run(redemption("inv_c", "bob", 10)).unwrap();
+    assert_eq!(m.state.orgs["org"].capabilities["bob"], caps::CREATE_TEAM);
+}

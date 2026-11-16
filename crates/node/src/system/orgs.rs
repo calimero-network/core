@@ -295,6 +295,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if name_fits {
                 org_name_fits(&name)?;
             }
+            if capabilities.is_some_and(|c| !crate::types::Org::defined_caps(c)) {
+                return Err(UNKNOWN_CAPABILITIES);
+            }
             let recovery = recovery_key.map(|k| recovery_key_of(k, at)).transpose()?;
             if s.orgs.contains_key(&org_id) {
                 return Err("organization exists");
@@ -315,8 +318,8 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             let mut org = new_org(org_id.clone(), name, actor.clone(), release, personal);
             org.recovery = recovery;
-            // Set after the app team, as `SetDefaultCapabilities` would be
-            // right after this entry: the creator's team row is made first.
+            // Applied once the app team is made, so its rows are made under a
+            // new organization's default; a refused team removes the org.
             let _prev = s.orgs.insert(org_id.clone(), org);
             let set_default = |s: &mut super::SystemState| {
                 if let (Some(c), Some(o)) = (capabilities, s.orgs.get_mut(&org_id)) {
@@ -892,6 +895,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             if invite.all_apps && role < OrgRole::Admin {
                 return Err(ONLY_ADMINS_ALL_APPS);
+            }
+            if invite
+                .capabilities
+                .is_some_and(|c| !crate::types::Org::defined_caps(c))
+            {
+                return Err(UNKNOWN_CAPABILITIES);
             }
             if invite.capabilities.is_some_and(|c| !o.may_grant(&actor, c)) {
                 return Err(CANNOT_GRANT_UNHELD);

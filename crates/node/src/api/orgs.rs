@@ -134,7 +134,13 @@ pub(crate) async fn create_org(
     capabilities: Option<u32>,
 ) -> ApiResult {
     crate::system::org_name_fits(&name).map_err(malformed)?;
-    if capabilities.is_some() {
+    if let Some(bits) = capabilities {
+        if !crate::types::Org::defined_caps(bits) {
+            return Err(ApiError::bad_request(
+                "BAD_REQUEST",
+                crate::system::UNKNOWN_CAPABILITIES,
+            ));
+        }
         node.require_features(&[Feature::OrgCapabilities]).await?;
     }
     let org_id = typed_id::<16>();
@@ -1027,19 +1033,24 @@ pub(crate) async fn create_invite(
     if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
     }
-    if body.all_apps {
-        // Before the passkey step-up: an earlier release would drop the flag.
-        node.require_features(&[Feature::AllApps]).await?;
-    }
     if let Some(bits) = body.capabilities {
+        if !crate::types::Org::defined_caps(bits) {
+            return Err(ApiError::bad_request(
+                "BAD_REQUEST",
+                crate::system::UNKNOWN_CAPABILITIES,
+            ));
+        }
         let may = node.sys(|s| s.orgs.get(&org).is_none_or(|o| o.may_grant(&actor, bits)));
         if !may {
             return Err(ApiError::forbidden(crate::system::CANNOT_GRANT_UNHELD));
         }
-        // Before the passkey step-up: an earlier release would drop the field.
-        node.require_features(&[Feature::InviteCapabilities])
-            .await?;
     }
+    // Before the passkey step-up: an earlier release would drop the fields.
+    node.require_features(&crate::system::cluster_version::invite_features(
+        body.all_apps,
+        body.capabilities.is_some(),
+    ))
+    .await?;
     let token = format!("inv_{}", b64url(&random::<24>()));
     let invite = Invite {
         org: org.clone(),

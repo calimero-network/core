@@ -2406,6 +2406,19 @@ async fn a_frontend_creates_an_organization_with_member_capabilities_in_one_appr
         400,
         "bits are an unsigned number"
     );
+    assert_eq!(
+        status_of(create(json!({ "name": "x", "capabilities": 1 << 20 })).await),
+        400,
+        "a bit no capability has"
+    );
+    let e = post(
+        &alice,
+        "orgs",
+        json!({ "name": "x", "capabilities": 1 << 20 }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status(&e), 400, "{e}");
     let made = create(json!({ "name": "calimero", "capabilities": wanted }))
         .await
         .unwrap();
@@ -2551,6 +2564,21 @@ async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
     assert_eq!(code, 200, "{done}");
     let o = get(&alice, &format!("orgs/{org}")).await.unwrap();
     assert_eq!(o["capabilities"][&bob_id], granted, "{o}");
+
+    // A bit no capability has is refused, on the page and on the route.
+    let unknown = json!({ "role": "member", "capabilities": 1 << 20 });
+    let e = post(&alice, &format!("orgs/{org}/invites"), unknown.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 400, "{e}");
+    let refused = ask(
+        &in_app,
+        &back,
+        "createInvite",
+        json!({ "org": org, "role": "member", "capabilities": 1 << 20 }),
+    )
+    .await;
+    assert_eq!(status_of(refused), 400);
 
     // Bob holds create-apps and invite, nothing else: he grants no more.
     let over = granted | 0b1000; // and manage members

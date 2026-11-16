@@ -560,6 +560,8 @@ pub mod caps {
     /// under an app's team) without leading it; the creator leads the new
     /// team. On by default in an app team (its default capabilities).
     pub const CREATE_CHILD_TEAM: u32 = 1 << 11;
+    /// Every capability there is (bit 9 is v1's, never handed out).
+    pub const DEFINED: u32 = ((1 << 9) - 1) | APPROVE_RELEASES | CREATE_CHILD_TEAM;
     /// What a member holds unless an admin says otherwise.
     pub const DEFAULT: u32 = JOIN_OPEN_TEAMS;
 }
@@ -879,6 +881,12 @@ impl Org {
             .get(account)
             .copied()
             .unwrap_or(self.default_capabilities)
+    }
+
+    /// Whether `bits` name only defined capabilities ([`caps::DEFINED`]).
+    #[must_use]
+    pub const fn defined_caps(bits: u32) -> bool {
+        bits & !caps::DEFINED == 0
     }
 
     /// Whether `account` may hand out `bits`: admins any, others only bits

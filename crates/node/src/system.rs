@@ -903,6 +903,8 @@ pub const PERSONAL_ORG_NAME: &str = "Personal";
 /// by invite or set on a member, is the owner's or an admin's.
 pub const ONLY_ADMINS_ALL_APPS: &str =
     "only the organization's owner and admins give someone every app added later";
+/// A refusal: capability bits that no capability has.
+pub const UNKNOWN_CAPABILITIES: &str = "capabilities name a bit no capability has";
 /// A refusal: an invite grants no capability its creator does not hold.
 pub const CANNOT_GRANT_UNHELD: &str =
     "an invite grants only capabilities its creator holds; only the owner and admins grant any";
@@ -2112,6 +2114,12 @@ impl SystemState {
         if inv.uses_left == 0 {
             let _prev = self.invites.remove(invite_key);
         }
+        // What its creator may grant now: a demoted, stripped or removed
+        // creator's invite hands out no more than they could.
+        let granted = self.orgs.get(&inv.org).and_then(|o| {
+            o.role(&inv.created_by)?;
+            inv.capabilities.map(|c| c & o.org_caps(&inv.created_by))
+        });
         let o = self.orgs.get_mut(&inv.org).ok_or("no such organization")?;
         let role = o
             .members
@@ -2120,7 +2128,7 @@ impl SystemState {
             .map_or(inv.role, |r| r.max(inv.role));
         let new_member = !o.members.contains_key(account);
         let _prev = o.members.insert(account.to_owned(), role);
-        if let (Some(bits), true) = (inv.capabilities, new_member) {
+        if let (Some(bits), true) = (granted, new_member) {
             let _prev = o.capabilities.insert(account.to_owned(), bits);
         }
         if inv.all_apps {

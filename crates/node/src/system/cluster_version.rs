@@ -418,14 +418,7 @@ impl SystemCmd {
                 vec![Feature::TeamMembersBatch]
             }
             Self::CreateInvite { invite, .. } => {
-                let mut f = Vec::new();
-                if invite.all_apps {
-                    f.push(Feature::AllApps);
-                }
-                if invite.capabilities.is_some() {
-                    f.push(Feature::InviteCapabilities);
-                }
-                f
+                invite_features(invite.all_apps, invite.capabilities.is_some())
             }
             Self::SetPriceTable { .. } => vec![Feature::PriceTable],
             Self::InstallPackage { release, .. } => {
@@ -541,6 +534,20 @@ impl SystemCmd {
 #[must_use]
 pub fn may_join(logged: Option<&str>, advertised: Option<&str>) -> bool {
     logged.is_none_or(|l| advertised.is_some_and(|a| compare_versions(a, l) != Ordering::Less))
+}
+
+/// The features an invite uses: `allApps` and `capabilities` are dropped by
+/// an earlier release, so the route and the consent page ask for them first.
+#[must_use]
+pub fn invite_features(all_apps: bool, capabilities: bool) -> Vec<Feature> {
+    let mut f = Vec::new();
+    if all_apps {
+        f.push(Feature::AllApps);
+    }
+    if capabilities {
+        f.push(Feature::InviteCapabilities);
+    }
+    f
 }
 
 /// The features a `ScopeApps` with `apps` uses: one app team's `join` or
@@ -1281,6 +1288,24 @@ mod tests {
             uses(Feature::InviteCapabilities).features(),
             [Feature::InviteCapabilities]
         );
+    }
+
+    /// An invite asks only for the features its fields use, and an older
+    /// cluster refuses each.
+    #[test]
+    fn an_invites_fields_name_their_features() {
+        use super::invite_features;
+
+        assert!(invite_features(false, false).is_empty());
+        assert_eq!(invite_features(true, false), [Feature::AllApps]);
+        assert_eq!(invite_features(false, true), [Feature::InviteCapabilities]);
+        for (all_apps, capabilities, feature) in [
+            (true, false, Feature::AllApps),
+            (false, true, Feature::InviteCapabilities),
+        ] {
+            let refused = check(Some(RC24), &invite_features(all_apps, capabilities)).unwrap_err();
+            assert_eq!(refused.feature, feature);
+        }
     }
 
     #[test]
