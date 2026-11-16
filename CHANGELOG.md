@@ -1,3 +1,9 @@
+## [11.7.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.6.0...mero-react-v11.7.0) (2026-11-16)
+
+### Features
+
+* **invite:** already-member skip, wording and inviter on the invite dialogs ([#143](https://github.com/calimero-network/mero-react/issues/143)) ([896771c](https://github.com/calimero-network/mero-react/commit/896771c25ba922d824e633056bdf22189c2210f6))
+
 ## [11.6.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.5.0...mero-react-v11.6.0) (2026-11-16)
 
 ### Features
