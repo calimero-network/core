@@ -2559,6 +2559,8 @@ async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
     let (alice, alice_key) = signed_up(&c, 0, "alice").await;
     let (bob, bob_key) = signed_up(&c, 2, "bob").await;
+    let (carol, carol_key) = signed_up(&c, 2, "carol").await;
+    let carol_id = account_of(&carol).await;
     let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
@@ -2674,7 +2676,7 @@ async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
     )
     .await;
     assert_eq!(status_of(refused), 403);
-    let _page = ask(
+    let made = ask(
         &bob_in_app,
         &back,
         "createInvite",
@@ -2682,4 +2684,55 @@ async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
     )
     .await
     .unwrap();
+    let id = made["requestId"].as_str().unwrap().to_owned();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let ((code, done), _) = Page::new(&url).approve(&c, &mut bob_page).await;
+    assert_eq!(code, 200, "{done}");
+    let token = get(&bob_in_app, &format!("consent/{id}/result"))
+        .await
+        .unwrap()["outcome"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Alice strips Bob's capabilities before anyone redeems his invite: it
+    // grants no more than he could now, on the page and in the log.
+    let _ = approved(
+        &c,
+        &in_app,
+        &back,
+        "setCapabilities",
+        json!({ "org": org, "account": bob_id, "capabilities": 0 }),
+        &mut alice_page,
+    )
+    .await;
+    let _o = get_until(&alice, &format!("orgs/{org}"), |o| {
+        o["capabilities"][&bob_id] == 0
+    })
+    .await;
+    let carol_in_app = c.client(1);
+    let mut carol_in_app_passkey =
+        SoftAuthenticator::with_key(&carol_key, "localhost", &app_origin);
+    let _s = carol_in_app
+        .sign_in(&mut carol_in_app_passkey)
+        .await
+        .unwrap();
+    let made = ask(
+        &carol_in_app,
+        &back,
+        "acceptInvite",
+        json!({ "token": token }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let mut carol_page =
+        SoftAuthenticator::with_key(&carol_in_app_passkey, "localhost", &origin(&url));
+    let ((code, done), _) = Page::new(&url).approve(&c, &mut carol_page).await;
+    assert_eq!(code, 200, "{done}");
+    let o = get_until(&alice, &format!("orgs/{org}"), |o| {
+        o["members"].get(&carol_id).is_some()
+    })
+    .await;
+    assert_eq!(o["capabilities"][&carol_id], 0, "clamped to Bob's: {o}");
 }

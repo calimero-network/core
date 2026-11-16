@@ -2104,8 +2104,14 @@ impl SystemState {
         if inv.expires_at <= now || inv.uses_left == 0 {
             return Err(INVITE_EXPIRED);
         }
-        let all_apps =
-            inv.all_apps && (!clamp_grants || self.is_org_admin(&inv.org, &inv.created_by));
+        // The flag, or a cluster version that brings the rule to every node:
+        // read from state at this log position, so replicas agree.
+        let clamp = clamp_grants
+            || self.cluster_version.as_deref().is_some_and(|v| {
+                compare_versions(v, cluster_version::Feature::InviteCapabilities.since())
+                    != std::cmp::Ordering::Less
+            });
+        let all_apps = inv.all_apps && (!clamp || self.is_org_admin(&inv.org, &inv.created_by));
         let o = self.orgs.get(&inv.org).ok_or("no such organization")?;
         let unchanged = o.members.get(account).is_some_and(|r| *r >= inv.role)
             && (!all_apps || o.all_apps.contains(account))

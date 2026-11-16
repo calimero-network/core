@@ -9168,7 +9168,7 @@ fn an_all_apps_invite_grants_only_while_its_creator_is_still_an_admin() {
         let _prev = o.members.insert("bob".into(), OrgRole::Admin);
         let invite: crate::types::Invite = serde_json::from_value(json!({
             "org": "org", "role": "member", "expiresAt": 100, "usesLeft": 1,
-            "allApps": true, "createdBy": "bob",
+            "allApps": true, "createdBy": "bob", "capabilities": 3,
         }))
         .unwrap();
         let _prev = m
@@ -9195,12 +9195,18 @@ fn an_all_apps_invite_grants_only_while_its_creator_is_still_an_admin() {
         .insert("bob".into(), OrgRole::Member);
     let _ok = m.run(redemption("inv_d", "carol", 10)).unwrap();
     assert!(!m.state.orgs["org"].all_apps.contains("carol"), "demoted");
+    // Both clamps at once: bob holds only the default, create-apps is gone.
+    assert_eq!(
+        m.state.orgs["org"].capabilities["carol"],
+        3 & m.state.orgs["org"].default_capabilities
+    );
     assert!(m.state.orgs["org"].members.contains_key("carol"), "joined");
 
     let mut m = minted("inv_r");
     let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
     let _ok = m.run(redemption("inv_r", "carol", 10)).unwrap();
     assert!(!m.state.orgs["org"].all_apps.contains("carol"), "removed");
+    assert!(!m.state.orgs["org"].capabilities.contains_key("carol"));
 
     // As an earlier release logged it: no flag, granted as minted.
     let mut m = minted("inv_o");
@@ -9241,4 +9247,50 @@ fn an_invite_is_clamped_to_the_default_when_its_creator_has_no_row() {
     m.state.orgs.get_mut("org").unwrap().default_capabilities = caps::CREATE_APP;
     let _ok = m.run(redemption("inv_c", "carol", 10)).unwrap();
     assert_eq!(m.state.orgs["org"].capabilities["carol"], caps::CREATE_APP);
+}
+
+/// Once the logged cluster version reaches the release that clamps an
+/// `all_apps` grant, every redemption is clamped whatever its entry's flag
+/// says; before, an unflagged entry grants as minted. Read from state at
+/// apply, so every replica agrees at each log position.
+#[test]
+fn the_all_apps_clamp_follows_the_logged_cluster_version() {
+    let minted = |version: Option<&str>| {
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        m.state.cluster_version = version.map(str::to_owned);
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.members.insert("bob".into(), OrgRole::Member);
+        let invite: crate::types::Invite = serde_json::from_value(json!({
+            "org": "org", "role": "member", "expiresAt": 100, "usesLeft": 1,
+            "allApps": true, "createdBy": "bob",
+        }))
+        .unwrap();
+        let _prev = m
+            .state
+            .invites
+            .insert(crate::proof::invite_key("inv_v"), invite);
+        m
+    };
+    let unflagged = || -> SystemCmd {
+        serde_json::from_value(json!({
+            "op": "redeemInvite", "invite_key": crate::proof::invite_key("inv_v"),
+            "account": "carol", "now": 10,
+            "signature": crate::proof::sign_invite_redeem("inv_v", "carol", 10),
+        }))
+        .unwrap()
+    };
+    for (version, clamped) in [
+        (None, false),
+        (Some("1.0.0-rc.28"), false),
+        (Some("1.0.0-rc.29"), true),
+        (Some("1.0.0-rc.30"), true),
+    ] {
+        let mut m = minted(version);
+        let _ok = m.run(unflagged()).unwrap();
+        assert_eq!(
+            m.state.orgs["org"].all_apps.contains("carol"),
+            !clamped,
+            "{version:?}"
+        );
+    }
 }
