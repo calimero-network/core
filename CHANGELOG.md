@@ -19,19 +19,6 @@
   trap's kind (`422 TRAP`) and the error a failed `init` ended with
   (`422 INIT_FAILED`). Other codes' details, meant for the program, stay out of it.
 
-- **A snapshot built while a snapshot installs holds the state at its index**:
-  openraft builds a group's snapshot beside its installs, and a build that read
-  the group's state generation just before an install switched it labelled the
-  old generation's rows (often none, once the install had dropped them) with
-  the installed index; a build that ended after an install, or after a backup
-  restore (`replace_state`), also replaced the newer snapshot and deleted its
-  file. That snapshot went silently to lagging replicas, new replicas and
-  backups. A build now reads its generation under the lock it reads its index
-  under, and is made again instead of recorded when an install or a restore
-  switched the state meanwhile. Backups taken on a follower (one that
-  installed a snapshot) with an earlier release may hold an empty or older
-  state: re-take them for certainty.
-
 ## [1.0.0-rc.30] - 2026-11-16
 
 ### Deprecated
