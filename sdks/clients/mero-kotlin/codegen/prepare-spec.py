@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the copy of openapi/openapi.json that OpenAPI Generator reads.
+"""Write the copy of core's docs/public/openapi.json that OpenAPI Generator reads.
 
     python3 codegen/prepare-spec.py <openapi.json> <out.json>
 

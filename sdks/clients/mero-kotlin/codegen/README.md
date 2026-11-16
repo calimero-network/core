@@ -1,7 +1,8 @@
 # Core's OpenAPI document and the generated client
 
-`openapi.json` is core's node API (`docs/public/openapi.json` in calimero-network/core), vendored
-at the commit [`SOURCE`](SOURCE) records. mero-core's API client is generated from it.
+mero-core's API client is generated from core's node API, `docs/public/openapi.json` in this same
+tree (`../../../docs/public/openapi.json` from the SDK's directory), read in place: there is no
+vendored copy and nothing is fetched.
 
 | Layer | Where | Written by |
 |---|---|---|
@@ -24,20 +25,15 @@ the client. `codegen/` is a Gradle build of its own, with its own verification m
 generator never enters the SDK's build classpath.
 
 ```bash
-scripts/refresh-openapi.sh [ref]     # fetch core's document at ref (default master), record it, regenerate
-scripts/refresh-openapi.sh --check   # regenerate from the vendored document; fail on any diff (CI)
-./gradlew -p codegen generateMeroClient   # regenerate only
+python3 scripts/sdks.py generate mero-kotlin   # from core's root: regenerate the client and facade
+./gradlew -p codegen generateMeroClient        # the same, from sdks/clients/mero-kotlin
 ```
 
-`codegen/build.gradle.kts` refuses a document whose SHA-256 is not the one `SOURCE` records.
-
-`.github/workflows/openapi-sync.yml` does the refresh by itself: core's `openapi-sync.yml` sends a
-`core-openapi` event with the commit (a weekly run and a manual one with a `ref` catch the rest),
-and the workflow opens or refreshes one pull request on `chore/core-openapi` titled
-`chore(api): sync with core <sha>`. Its body lists the facade methods added, removed or changed
-(`codegen/facade-diff.py`); a removed or changed one needs a major version. It uses the GitHub App
-whose credentials the org shares as `vars.ACTIONS_APP_ID` / `secrets.ACTIONS_APP_PRIVATE_KEY`
-(both must be shared with this repository); the app must be installed on this repository.
+The generated sources are `mero-core/src/generated/kotlin` (`generated` in `sdk.json`). When core's
+document changes, CI's `SDK codegen drift` reports that they no longer match, and on merge
+core's `sdk-regenerate.yml` regenerates every SDK and opens one pull request (see
+`sdks/AGENTS.md`). `codegen/facade-diff.py` lists the facade methods one regeneration added,
+removed or changed; a removed or changed one breaks callers.
 
 ## Where the document and the generated client still need help
 

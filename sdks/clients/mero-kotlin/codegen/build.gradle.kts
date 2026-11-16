@@ -1,47 +1,23 @@
-import java.security.MessageDigest
-
-// Generates mero-core's API client from core's OpenAPI document (../openapi/openapi.json).
+// Generates mero-core's API client from core's OpenAPI document: docs/public/openapi.json of the
+// core tree this SDK lives in (sdks/clients/mero-kotlin), read in place, never fetched.
 //
 //   ./gradlew -p codegen generateMeroClient     # rewrite mero-core/src/generated/kotlin
-//
-// scripts/refresh-openapi.sh fetches a newer document first; `--check` regenerates from the
-// vendored one and fails on a diff (what CI runs).
+//   python3 scripts/sdks.py generate mero-kotlin   # the same, from core's root
 plugins {
     // Pinned exactly: the generated sources are checked in, so a generator bump is a reviewed
     // diff of its own, never a side effect of resolving a range.
     id("org.openapi.generator") version "7.26.0"
 }
 
-val spec = rootDir.resolve("../openapi/openapi.json")
-val source = rootDir.resolve("../openapi/SOURCE")
+val spec = rootDir.resolve("../../../../docs/public/openapi.json")
 val generated = layout.buildDirectory.dir("openapi")
 val target = rootDir.resolve("../mero-core/src/generated/kotlin")
 
-// The vendored document must be the one openapi/SOURCE names: an edit by hand, or a refresh that
-// did not record its commit, fails here instead of reaching the generated code.
-val checkSpec =
-    tasks.register("checkSpec") {
-        inputs.files(spec, source)
-        doLast {
-            val recorded =
-                source
-                    .readLines()
-                    .firstOrNull { it.startsWith("SHA256=") }
-                    ?.removePrefix("SHA256=")
-                    ?: error("openapi/SOURCE has no SHA256")
-            val actual = MessageDigest.getInstance("SHA-256").digest(spec.readBytes()).joinToString("") { "%02x".format(it) }
-            check(recorded == actual) {
-                "openapi/openapi.json ($actual) is not the document openapi/SOURCE records ($recorded): run scripts/refresh-openapi.sh"
-            }
-        }
-    }
-
-// What the generator reads: the vendored document with its `oneOf` request body named as a
+// What the generator reads: core's document with its `oneOf` request body named as a
 // component, so schemaMappings can map it (see prepare-spec.py).
 val prepared = layout.buildDirectory.file("openapi-prepared.json")
 val prepareSpec =
     tasks.register<Exec>("prepareSpec") {
-        dependsOn(checkSpec)
         inputs.files(spec, rootDir.resolve("prepare-spec.py"))
         outputs.file(prepared)
         commandLine("python3", rootDir.resolve("prepare-spec.py").path, spec.path, prepared.get().asFile.path)
@@ -136,7 +112,7 @@ val syncMeroClient =
 // reads the spec and the generated sources it calls, so it cannot drift from them.
 tasks.register<Exec>("generateMeroClient") {
     group = "codegen"
-    description = "Regenerates mero-core/src/generated/kotlin (client and facade) from openapi/openapi.json"
+    description = "Regenerates mero-core/src/generated/kotlin (client and facade) from core's docs/public/openapi.json"
     dependsOn(syncMeroClient)
     commandLine("python3", rootDir.resolve("facade.py").path, spec.path, target.path)
 }

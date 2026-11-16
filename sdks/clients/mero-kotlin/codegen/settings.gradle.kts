@@ -3,7 +3,7 @@
 // Kept out of the SDK's build on purpose: the generated sources are checked in under
 // mero-core/src/generated/kotlin, so building, testing or releasing the SDK needs neither the
 // generator nor its ~100 dependencies, and works offline from the Gradle cache it already needs.
-// Only refreshing the spec (scripts/refresh-openapi.sh) runs this build.
+// Only regenerating the client (`python3 scripts/sdks.py generate mero-kotlin`) runs this build.
 pluginManagement {
     repositories {
         gradlePluginPortal()
