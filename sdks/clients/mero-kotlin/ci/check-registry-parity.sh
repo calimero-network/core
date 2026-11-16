@@ -16,7 +16,7 @@
 set -euo pipefail
 
 CORE_SRC="mero-core/src/main/kotlin/com/calimero/mero"
-REGISTRY="sample-app/src/main/kotlin/com/calimero/mero/sample/explorer/OperationRegistry.kt"
+REGISTRY="examples/sample-app/src/main/kotlin/com/calimero/mero/sample/explorer/OperationRegistry.kt"
 
 # Internal / non-explorer methods, each with a reason.
 EXCLUDED=(

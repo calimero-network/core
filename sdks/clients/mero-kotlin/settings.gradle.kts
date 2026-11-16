@@ -25,4 +25,6 @@ rootProject.name = "mero-kotlin"
 include(":mero-core")
 include(":mero-compose")
 include(":mero-testkit")
+// The Mero Chat sample, under examples/ as every SDK's examples are; still `:sample-app`.
 include(":sample-app")
+project(":sample-app").projectDir = file("examples/sample-app")
