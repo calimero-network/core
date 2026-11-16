@@ -13,6 +13,13 @@ Two changes:
   `null`, since core 92ac297a1) loses its content, so the operation returns `Unit`. The generator
   names such a schema as a model `Null` it never writes; `ApiClient` reads no body for `Unit`,
   which is all a `null` answer says.
+- Every other union (`anyOf` / `oneOf` with more than one branch besides `null`) becomes free-form
+  JSON (`{}`, a `JsonElement`), unless `codegen/build.gradle.kts` maps it to a hand-written type
+  (MAPPED below). OpenAPI Generator 7.26's kotlinx output gets them all wrong: a union of scalars
+  (`passkeys: integer | "3+"`) or of a string and an object becomes a class that cannot read the
+  scalar, a `oneOf` of objects either a sealed class no branch extends (`AppScope`,
+  `Run.final.outcome`) or one class whose every branch's fields are required (an app's
+  `replicas`). Each failed to decode what the node answers.
 """
 
 import json
@@ -30,6 +37,7 @@ def hoist_one_of_bodies(spec):
                 if "oneOf" in schema:
                     name = "".join(p[:1].upper() + p[1:] for p in op["operationId"].split("_")) + "Request"
                     schemas[name] = schema
+                    HOISTED.add(name)
                     media["schema"] = {"$ref": f"#/components/schemas/{name}"}
 
 
@@ -47,10 +55,51 @@ def drop_null_answers(spec):
                         del response["content"]
 
 
+# The components `schemaMappings` maps to mero-core's own sealed types: their unions stay.
+MAPPED = {"Access", "Deployer", "OutboundSelection"}
+
+
+def is_null(branch):
+    return isinstance(branch, dict) and branch.get("type") == "null" and len(branch) == 1
+
+
+def free_form_unions(spec):
+    def walk(node):
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if not isinstance(node, dict):
+            return
+        for key in ("anyOf", "oneOf"):
+            branches = node.get(key)
+            if branches is None:
+                continue
+            rest = [b for b in branches if not is_null(b)]
+            if len(rest) == 1 and "$ref" in rest[0]:
+                continue  # `T | null`: the generator writes a nullable T
+            kept = {k: v for k, v in node.items() if k in ("description", "title")}
+            node.clear()
+            node.update(kept)
+            return
+        for value in node.values():
+            walk(value)
+
+    walk(spec["paths"])
+    for name, schema in spec.get("components", {}).get("schemas", {}).items():
+        if name not in MAPPED | HOISTED:
+            walk(schema)
+
+
+# The request bodies hoist_one_of_bodies named, mapped to hand-written types as well.
+HOISTED = set()
+
+
 def main():
     spec = json.load(open(sys.argv[1]))
     hoist_one_of_bodies(spec)
     drop_null_answers(spec)
+    free_form_unions(spec)
     with open(sys.argv[2], "w") as out:
         json.dump(spec, out, indent=1, sort_keys=False)
 

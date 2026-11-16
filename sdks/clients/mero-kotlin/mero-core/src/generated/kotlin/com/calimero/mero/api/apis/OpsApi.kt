@@ -41,7 +41,6 @@ import com.calimero.mero.api.models.OpsDeployerGrant200Response
 import com.calimero.mero.api.models.OpsDeployerGrantRequest
 import com.calimero.mero.api.models.OpsDeployerRevokeDelete200Response
 import com.calimero.mero.api.models.OpsDeploymentsGranted200Response
-import com.calimero.mero.api.models.OpsJobNodeAttestation200Response
 import com.calimero.mero.api.models.OpsOrgUpgradeRequest
 import com.calimero.mero.api.models.OpsOrgs200Response
 import com.calimero.mero.api.models.OpsOutboundRequest
@@ -794,7 +793,7 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Whether the cluster accepts a job node
      * Runs the check the leader makes before it sends a job node work: a quote that passes the release policy, this cluster and node, this cluster&#39;s identity, a release not retired (not the per-app release approval). &#x60;admitted&#x60; carries the attested &#x60;release&#x60;; &#x60;refused&#x60; (final), with the reason: a 400 or 404 from the node, a 2xx that is oversized or does not decode, a failed verification, or a 400 or 404 from the collateral source on the PCK certificate or TCB info request; &#x60;unreachable&#x60; (transient), with the reason: anything else, including no answer, any other status from the node and any other collateral failure. &#x60;503&#x60; when this node&#39;s directory is stale. A verified answer is reused for up to a minute.  **Who:** the ops token.
      * @param id 
-     * @return OpsJobNodeAttestation200Response
+     * @return kotlinx.serialization.json.JsonElement
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -803,11 +802,11 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun opsJobNodeAttestation(id: kotlin.String) : OpsJobNodeAttestation200Response = withContext(Dispatchers.IO) {
+    suspend fun opsJobNodeAttestation(id: kotlin.String) : kotlinx.serialization.json.JsonElement = withContext(Dispatchers.IO) {
         val localVarResponse = opsJobNodeAttestationWithHttpInfo(id = id)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsJobNodeAttestation200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonElement
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -826,16 +825,16 @@ open class OpsApi(basePath: kotlin.String = defaultBasePath, client: Call.Factor
      * Whether the cluster accepts a job node
      * Runs the check the leader makes before it sends a job node work: a quote that passes the release policy, this cluster and node, this cluster&#39;s identity, a release not retired (not the per-app release approval). &#x60;admitted&#x60; carries the attested &#x60;release&#x60;; &#x60;refused&#x60; (final), with the reason: a 400 or 404 from the node, a 2xx that is oversized or does not decode, a failed verification, or a 400 or 404 from the collateral source on the PCK certificate or TCB info request; &#x60;unreachable&#x60; (transient), with the reason: anything else, including no answer, any other status from the node and any other collateral failure. &#x60;503&#x60; when this node&#39;s directory is stale. A verified answer is reused for up to a minute.  **Who:** the ops token.
      * @param id 
-     * @return ApiResponse<OpsJobNodeAttestation200Response?>
+     * @return ApiResponse<kotlinx.serialization.json.JsonElement?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun opsJobNodeAttestationWithHttpInfo(id: kotlin.String) : ApiResponse<OpsJobNodeAttestation200Response?> = withContext(Dispatchers.IO) {
+    suspend fun opsJobNodeAttestationWithHttpInfo(id: kotlin.String) : ApiResponse<kotlinx.serialization.json.JsonElement?> = withContext(Dispatchers.IO) {
         val localVariableConfig = opsJobNodeAttestationRequestConfig(id = id)
 
-        return@withContext request<Unit, OpsJobNodeAttestation200Response>(
+        return@withContext request<Unit, kotlinx.serialization.json.JsonElement>(
             localVariableConfig
         )
     }

@@ -23,7 +23,6 @@
 
 package com.calimero.mero.api.models
 
-import com.calimero.mero.api.models.ReportAppLatestBlockedNodesInnerRuntime
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -42,8 +41,8 @@ data class ReportAppLatestBlockedNodesInner (
     @SerialName(value = "node")
     val node: kotlin.Long,
 
-    @SerialName(value = "runtime")
-    val runtime: ReportAppLatestBlockedNodesInnerRuntime?
+    @Contextual @SerialName(value = "runtime")
+    val runtime: kotlinx.serialization.json.JsonElement?
 
 ) {
 

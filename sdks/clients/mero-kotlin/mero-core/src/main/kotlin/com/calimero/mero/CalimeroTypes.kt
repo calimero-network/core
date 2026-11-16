@@ -47,12 +47,40 @@ data class ViewResult(
     val result: JsonElement = JsonNull,
 )
 
-/** One server-sent event: an app's committed event, or a presence change. [data] is parsed as JSON when it is. */
+/**
+ * One server-sent event: an app's committed event, or a presence change. [data] is parsed as JSON
+ * when it is. An app event's [id] is `<index>:<seq>` (the log index that committed it and its
+ * place among that entry's events): [CalimeroClient.events] with `after` resumes from it.
+ */
 data class CloudEvent(
     val id: String,
     val kind: String,
     val data: JsonElement,
-)
+) {
+    /** Where an app event sits in the app's log, from its [id]; null for an id of another form. */
+    val position: EventPosition? get() = EventPosition.parse(id)
+}
+
+/** An app event's place: the log [index] that committed it and its [seq] within that entry. */
+data class EventPosition(
+    val index: Long,
+    val seq: Long,
+) : Comparable<EventPosition> {
+    override fun compareTo(other: EventPosition): Int = compareValuesBy(this, other, EventPosition::index, EventPosition::seq)
+
+    override fun toString(): String = "$index:$seq"
+
+    companion object {
+        /** `<index>:<seq>`, as the node writes an event's id; null for anything else. */
+        fun parse(id: String): EventPosition? {
+            val parts = id.split(':')
+            if (parts.size != 2) return null
+            val index = parts[0].toLongOrNull() ?: return null
+            val seq = parts[1].toLongOrNull() ?: return null
+            return EventPosition(index, seq)
+        }
+    }
+}
 
 /** What installing a package release answers. */
 @Serializable

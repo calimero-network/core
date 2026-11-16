@@ -36,6 +36,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -521,7 +522,15 @@ class CalimeroClient(
                 .firstOrNull { it.key.matches(request.method, route) }
                 ?.value
         val type = binary ?: request.body?.contentType()?.let { "${it.type}/${it.subtype}" }
-        var body = if (bytes == null || (bytes.isEmpty() && type == null)) null else Body(bytes, type ?: OCTET_STREAM)
+        val saysJson = (type ?: request.header("Content-Type"))?.startsWith(JSON) == true
+        var body =
+            when {
+                // A step-up's optional body (`ConfirmOnly`) left out: the generated request says JSON
+                // and sends nothing, which the node cannot parse. `{}` is what "none" means there.
+                (bytes == null || bytes.isEmpty()) && saysJson -> jsonBody(JsonObject(emptyMap()))
+                bytes == null || (bytes.isEmpty() && type == null) -> null
+                else -> Body(bytes, type ?: OCTET_STREAM)
+            }
         if (stepUp.nulls.isNotEmpty()) {
             // The generated request leaves every null out; these the caller set to `null` ([Explicit]).
             val json = body?.let { parseOrNull(it.bytes.decodeToString()) as? JsonObject } ?: JsonObject(emptyMap())
@@ -847,6 +856,57 @@ class CalimeroClient(
         return done.string("credentialId").orEmpty()
     }
 
+    // ---------------------------------------------------------------- account recovery
+    //
+    // A recovery code, made with a passkey and shown once (`auth.recoveryCreate`), lets someone who
+    // lost every passkey register a new one: it is added, and the account signed in, 72 hours
+    // later unless a passkey the account still has cancels it first (`auth.accountRecoveryCancel`).
+
+    /**
+     * Signed out: start recovering the account [code] names. [passkey] makes a new passkey for it;
+     * the node spends the code and keeps the passkey as pending. Nothing is added and no session
+     * opens: finish with [finishAccountRecovery] at [AccountRecovery.readyAt]. A code the cluster
+     * does not hold (mistyped, replaced or spent) is [WrongRecoveryCode]; an account with a
+     * recovery already under way `409 RECOVERY_PENDING`.
+     */
+    suspend fun startAccountRecovery(
+        code: String,
+        passkey: PasskeyProvider,
+    ): AccountRecovery {
+        try {
+            val begin = post("auth/recovery/begin", buildJsonObject { put("code", code) }) as JsonObject
+            val registration = passkey.create(begin["options"] as? JsonObject ?: JsonObject(emptyMap()))
+            val started =
+                post(
+                    "auth/recovery/start",
+                    buildJsonObject {
+                        put("challengeId", begin.string("challengeId").orEmpty())
+                        put("code", code)
+                        put("registration", wire.encodeToJsonElement(registration))
+                    },
+                )
+            return wire.decodeFromJsonElement(AccountRecovery.serializer(), started)
+        } catch (e: LoginRequired) {
+            throw WrongRecoveryCode(e.nodeMessage, e.details)
+        }
+    }
+
+    /**
+     * Signed out, once the delay passed: finish the recovery with the passkey it registered
+     * ([passkey] approves the node's `412`). The passkey joins the account, every other session of
+     * the account ends, and this client is signed in. [accountId] (from the start) lets the node
+     * refuse early; before `readyAt` it is [RecoveryNotReady], with no recovery under way [NotFound].
+     */
+    suspend fun finishAccountRecovery(
+        passkey: PasskeyProvider,
+        accountId: String? = null,
+    ): CalimeroSession {
+        val body = buildJsonObject { accountId?.let { put("accountId", it) } }
+        val session = wire.decodeFromJsonElement(CalimeroSession.serializer(), postConfirmed("auth/recovery/finish", body, passkey))
+        takeSession(session)
+        return session
+    }
+
     /**
      * The node's attestation document, unverified: for display only. Every request this client
      * sends is sealed to a key it verified itself first.
@@ -985,6 +1045,19 @@ class CalimeroClient(
         app: String,
         from: Long = 0,
     ): Flow<CloudEvent> = stream("apps/${seg(app)}/events?from=$from")
+
+    /**
+     * The events after the one whose id was [after] (`<index>:<seq>`, [CloudEvent.id]), then live:
+     * how a stream that dropped picks up where it stopped. The node replays from that log index,
+     * and the events of that entry up to [after] are left out.
+     */
+    fun events(
+        app: String,
+        after: String,
+    ): Flow<CloudEvent> {
+        val last = requireNotNull(EventPosition.parse(after)) { "not an event id (<index>:<seq>): $after" }
+        return events(app, last.index).filter { e -> e.position?.let { it > last } ?: true }
+    }
 
     /** A server-sent event stream on [path], sealed like every other answer. Cancelling the collector closes it. */
     private fun stream(path: String): Flow<CloudEvent> =
@@ -1357,7 +1430,11 @@ class CalimeroClient(
             parseOrNull(text)?.takeUnless { it is JsonPrimitive && !it.isString && !JSON_LITERAL.matches(it.content) }
 
         /** The ceremonies that mint a session, which [exchange] never repeats by itself. */
-        internal fun ceremony(path: String): Boolean = path == "auth/refresh" || path.startsWith("auth/passkey/")
+        internal fun ceremony(path: String): Boolean =
+            path == "auth/refresh" || path.startsWith("auth/passkey/") || path in ACCOUNT_RECOVERY
+
+        /** The signed-out recovery ceremonies: one spends the code, one mints a session. */
+        private val ACCOUNT_RECOVERY = setOf("auth/recovery/begin", "auth/recovery/start", "auth/recovery/finish")
 
         /**
          * A key for a call the caller gave none, made once so every retry shares it: `node:c-` and

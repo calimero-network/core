@@ -23,7 +23,6 @@
 
 package com.calimero.mero.api.models
 
-import com.calimero.mero.api.models.AppScope
 import com.calimero.mero.api.models.ReportAppLatestBlocked
 import com.calimero.mero.api.models.ReportAppPackage
 import com.calimero.mero.api.models.ReportAppPublisher
@@ -39,7 +38,7 @@ import kotlinx.serialization.Contextual
  *
  * @param app 
  * @param group 
- * @param scope 
+ * @param scope The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.
  * @param bundle 
  * @param `package` 
  * @param publisher 
@@ -65,8 +64,9 @@ data class ReportApp (
     @SerialName(value = "group")
     val group: kotlin.Long,
 
-    @SerialName(value = "scope")
-    val scope: AppScope,
+    /* The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are. */
+    @Contextual @SerialName(value = "scope")
+    val scope: kotlinx.serialization.json.JsonElement?,
 
     @SerialName(value = "bundle")
     val bundle: kotlin.String,

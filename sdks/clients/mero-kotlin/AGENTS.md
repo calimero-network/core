@@ -65,7 +65,10 @@ is git-ignored). From this directory, what `.github/workflows/sdk-mero-kotlin.ym
 ./ci/check-registry-parity.sh                     # every public CalimeroClient method has an SDK-tab entry
 ```
 
-`./gradlew build` runs all of the Gradle ones but the bundle. The instrumented UI tests
+`./gradlew build` runs all of the Gradle ones but the bundle. The cluster tests (`mero-core`'s
+`cluster` package) run the client against a real `merod local` and are skipped unless one is named:
+`MEROD_BIN=… MERO_KV_MPK=… scripts/cluster-test.sh` ([TESTING.md](TESTING.md)); CI does not run
+them yet (it would need a merod binary). The instrumented UI tests
 (`:sample-app:connectedDebugAndroidTest`, an emulator) run only when the workflow is
 called with `instrumented: true`; see [TESTING.md](TESTING.md).
 

@@ -184,7 +184,7 @@ class OpsFacade internal constructor(
      */
     suspend fun jobNodeAttestation(
         id: kotlin.String,
-    ): OpsJobNodeAttestation200Response =
+    ): kotlinx.serialization.json.JsonElement =
         api(null, null, emptySet()).ops.opsJobNodeAttestation(id = id)
 
     /**

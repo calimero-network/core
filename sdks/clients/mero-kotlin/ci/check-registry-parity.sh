@@ -74,6 +74,8 @@ EXCLUDED=(
   startRecovery      # ditto
   cancelRecovery     # ditto
   finishRecovery     # ditto
+  startAccountRecovery  # signed out, a passkey ceremony like signUp: a recovery screen, not a form
+  finishAccountRecovery # ditto
 )
 
 methods() {
