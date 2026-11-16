@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **meroctl's old spellings** (deprecated in 1.0.0-rc.30, which warned about
+  each): `context` (`--context`, `-c`), `namespace`/`ns`, `group`, `groups`,
+  `create-group`, `subgroups`, `--namespace`, `--group`, `ops upgrade-namespace`,
+  `dev new`, `attest --context`, `attest-release` and the top-level `pipeline` and
+  `run logs` are refused now. The refusal names what replaced each one
+  (`instance`, `-i`, `org`, `team`, `teams`, `create-team`, `subteams`, `--org`,
+  `--team`, `upgrade-org`, `app new`, `attest app`, `attest release`, `cloud
+  compute pipeline`, `cloud compute logs`).
+
 ## [1.0.0-rc.30] - 2026-11-16
 
 ### Deprecated

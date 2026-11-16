@@ -1,4 +1,4 @@
-//! `meroctl dev new` against a local stand-in for the apps repository: no
+//! `meroctl app new` against a local stand-in for the apps repository: no
 //! network, no node.
 
 use std::path::Path;
@@ -88,7 +88,7 @@ fn dev_new_starts_a_project_from_an_app_of_the_apps_repo() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = apps_repo(&tmp.path().join("apps-repo"));
 
-    let out = meroctl(tmp.path(), &["dev", "new", "my-app", "--repo", &repo]);
+    let out = meroctl(tmp.path(), &["app", "new", "my-app", "--repo", &repo]);
     assert!(
         out.status.success(),
         "{}",
@@ -136,7 +136,7 @@ fn dev_new_starts_a_project_from_an_app_of_the_apps_repo() {
     );
 
     // A directory with something in it is refused, and left as it was.
-    let again = meroctl(tmp.path(), &["dev", "new", "my-app", "--repo", &repo]);
+    let again = meroctl(tmp.path(), &["app", "new", "my-app", "--repo", &repo]);
     assert!(!again.status.success());
     assert!(String::from_utf8_lossy(&again.stderr).contains("not empty"));
     assert!(p.join("apps/kv-store").exists());
@@ -144,7 +144,7 @@ fn dev_new_starts_a_project_from_an_app_of_the_apps_repo() {
     // An app the repository does not have is refused, and leaves nothing behind.
     let missing = meroctl(
         tmp.path(),
-        &["dev", "new", "other", "--repo", &repo, "--template", "nope"],
+        &["app", "new", "other", "--repo", &repo, "--template", "nope"],
     );
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("has no app apps/nope"));
@@ -163,7 +163,7 @@ fn dev_new_without_a_git_identity_makes_the_project_and_says_so() {
 
     let out = meroctl_with(
         tmp.path(),
-        &["dev", "new", "my-app", "--repo", &repo],
+        &["app", "new", "my-app", "--repo", &repo],
         &[
             ("HOME", empty),
             ("XDG_CONFIG_HOME", empty),

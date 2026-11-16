@@ -29,23 +29,6 @@ const SHARED: [&str; 2] = ["packages", "scripts"];
 
 #[derive(Debug, Subcommand)]
 pub enum DevCmd {
-    /// `meroctl app new`, under its old name.
-    #[command(hide = true)]
-    New {
-        dir: PathBuf,
-        /// The app under `apps/` to start from.
-        #[arg(long, default_value = "kv-store")]
-        template: String,
-        /// The branch or tag of the apps repository.
-        #[arg(long = "ref", default_value = "main")]
-        git_ref: String,
-        /// The apps repository to clone.
-        #[arg(long, default_value = APPS_REPO, hide = true)]
-        repo: String,
-        /// Skip `git init` in the new project.
-        #[arg(long)]
-        no_git: bool,
-    },
     /// Install a build (`.mpk`, or a development `.wasm`), create an instance
     /// from it, and with `--watch` push every save to it.
     Start {
@@ -67,13 +50,7 @@ pub enum DevCmd {
     Watch {
         #[arg(long)]
         path: PathBuf,
-        #[arg(
-            long = "instance",
-            short = 'i',
-            alias = "context",
-            short_alias = 'c',
-            value_name = "INSTANCE"
-        )]
+        #[arg(long = "instance", short = 'i', value_name = "INSTANCE")]
         contexts: Vec<String>,
         #[arg(long)]
         dev_passkey: PathBuf,
@@ -86,7 +63,6 @@ pub enum DevCmd {
 
 pub async fn run(cmd: DevCmd, env: &Env) -> eyre::Result<()> {
     match cmd {
-        DevCmd::New { .. } => unreachable!("`dev new` runs before connecting (main)"),
         DevCmd::Start {
             path,
             name,
@@ -127,7 +103,7 @@ pub async fn run(cmd: DevCmd, env: &Env) -> eyre::Result<()> {
     }
 }
 
-/// `meroctl dev new`: a sparse, shallow clone of `repo` at `git_ref` holding
+/// `meroctl app new`: a sparse, shallow clone of `repo` at `git_ref` holding
 /// `apps/<template>`, [`SHARED`] and the root files, with its history dropped.
 /// Nothing is rewritten, so the project builds and runs with the commands the
 /// app's README gives (`pnpm install`, `pnpm dev:local <template>`).
@@ -245,7 +221,7 @@ fn scaffold(
 fn readme(template: &str, repo: &str, git_ref: &str, commit: &str) -> String {
     format!(
         "# {template}\n\n\
-         Started with `meroctl dev new` from [`apps/{template}`]({repo}/tree/{commit}/apps/{template}) \
+         Started with `meroctl app new` from [`apps/{template}`]({repo}/tree/{commit}/apps/{template}) \
          ({git_ref}, {commit}).\n\n\
          The app is in `apps/{template}`: its contract in `logic/`, its frontend in `app/`; \
          its README says how to run and test it. `packages/` holds the shared frontend \

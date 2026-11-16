@@ -16,13 +16,7 @@ pub enum FileCmd {
     /// Upload a sealed file (one request up to 16 MiB, else resumable parts); prints its id, size and SHA-256.
     Upload {
         file: PathBuf,
-        #[arg(
-            long = "instance",
-            short = 'i',
-            alias = "context",
-            short_alias = 'c',
-            value_name = "INSTANCE"
-        )]
+        #[arg(long = "instance", short = 'i', value_name = "INSTANCE")]
         #[arg(value_name = "INSTANCE")]
         context: String,
     },
