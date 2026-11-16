@@ -4,6 +4,7 @@ import com.calimero.mero.AppAccess
 import com.calimero.mero.AppSource
 import com.calimero.mero.CalimeroClient
 import com.calimero.mero.CalimeroError
+import com.calimero.mero.ConfirmRequired
 import com.calimero.mero.ConsentOutcome
 import com.calimero.mero.ConsentRequest
 import com.calimero.mero.ConsentResult
@@ -275,7 +276,16 @@ class CalimeroAppBackend(
 
     override suspend fun deleteSubgroup(groupId: String) {
         val ref = GroupRef.parse(groupId)
-        client.orgs.teamDelete(org = ref.org, team = ref.team ?: throw IllegalArgumentException("$groupId is an organization, not a team"))
+        val team = ref.team ?: throw IllegalArgumentException("$groupId is an organization, not a team")
+        // A team that holds an app (or one below it does) goes only with a passkey: the node asks
+        // (`412`, naming the apps). An empty team goes without one.
+        val passkey = passkey()
+        try {
+            client.orgs.teamDelete(org = ref.org, team = team, passkey = passkey)
+        } catch (e: ConfirmRequired) {
+            if (passkey == null) throw PasskeyRequired("deleteSubgroup")
+            throw e
+        }
     }
 
     override suspend fun removeContext(

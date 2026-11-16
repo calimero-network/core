@@ -88,6 +88,16 @@ data class RecoveryTimes(
     val readyAt: Long = 0,
 )
 
+/** An account recovery under way ([CalimeroClient.startAccountRecovery]): the new passkey waits until [readyAt] (Unix seconds). */
+@Serializable
+data class AccountRecovery(
+    val accountId: String = "",
+    /** The new passkey's credential id. */
+    val credentialId: String = "",
+    val startedAt: Long = 0,
+    val readyAt: Long = 0,
+)
+
 /** What finishing a recovery answers: the organization and the owners it removed. */
 @Serializable
 data class RecoveryFinished(

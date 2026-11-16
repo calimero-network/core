@@ -1,5 +1,6 @@
 package com.calimero.mero
 
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -45,6 +46,36 @@ class LoginRequired(
     message: String,
     details: JsonObject = JsonObject(emptyMap()),
 ) : CalimeroError(401, "UNAUTHENTICATED", message, details)
+
+/**
+ * `401 PASSKEY_UNKNOWN_HERE`: a sign-in (or a confirmation) with a passkey no account of this
+ * cluster has. Accounts and passkeys are each cluster's own, while clusters may share one WebAuthn
+ * rp-id (every Calimero Cloud cluster uses `calimero.network`), so the platform offers a passkey
+ * made on another cluster here too; a passkey removed from its account answers the same.
+ *
+ * Not a [LoginRequired]: the client does not refresh for it, and signing in again with the same
+ * passkey fails the same way. Offer to sign up on this cluster, or point the person to the cluster
+ * their account is on. The node does not say which cluster or account the passkey belongs to.
+ */
+class PasskeyUnknownHere(
+    message: String,
+    details: JsonObject = JsonObject(emptyMap()),
+) : CalimeroError(
+        401,
+        "PASSKEY_UNKNOWN_HERE",
+        message.ifEmpty { "this passkey belongs to another Calimero cluster or was removed from this one" },
+        details,
+    )
+
+/**
+ * The recovery code is not one the cluster holds: mistyped, replaced by a newer one, or spent by a
+ * recovery that started (finished or cancelled). The node answers it `401`; a recovery is signed
+ * out, so it is this error, not [LoginRequired] ([CalimeroClient.startAccountRecovery]).
+ */
+class WrongRecoveryCode(
+    message: String,
+    details: JsonObject = JsonObject(emptyMap()),
+) : CalimeroError(401, "UNAUTHENTICATED", message.ifEmpty { "unknown or used recovery code" }, details)
 
 /**
  * `421 WRONG_NODE`: this node runs a mero-tee release the account's owners have not approved, so
@@ -140,6 +171,55 @@ class ReleaseDeadlineError(
 
     /** Its deadline, RFC 3339 (`""` when the node did not say). */
     val after: String = details.string("after").orEmpty()
+}
+
+/**
+ * `409 RUNTIME_TOO_OLD`: a node that would run the app (one of its replicas for an upgrade, a node
+ * it would be placed on or moved to) runs an older runtime than the release's signed
+ * `minRuntimeVersion`. Nothing ran. The app's report names the newest release it can reach.
+ */
+class RuntimeTooOld(
+    message: String,
+    details: JsonObject = JsonObject(emptyMap()),
+) : CalimeroError(409, "RUNTIME_TOO_OLD", message, details) {
+    /** The runtime the release needs. */
+    val minRuntimeVersion: String = details.string("minRuntimeVersion").orEmpty()
+
+    /** Each node that falls short and what it runs (a version, `{ before }`: older than that, or null), as the node sent it. */
+    val nodes: List<JsonObject> = (details["nodes"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
+}
+
+/**
+ * `400 NOT_SERVING`: a served origin (a custom domain, `served = true`) was asked of a cluster that
+ * serves no frontends. Register the origin unserved, or use a cluster that serves them.
+ */
+class NotServing(
+    message: String,
+    details: JsonObject = JsonObject(emptyMap()),
+) : CalimeroError(400, "NOT_SERVING", message, details)
+
+/**
+ * `409 CLUSTER_NOT_UPGRADED`: the change needs every node of the cluster on the node's release or
+ * later, and one is not yet (adding a served origin, say). Retry once the cluster is upgraded.
+ */
+class ClusterNotUpgraded(
+    message: String,
+    details: JsonObject = JsonObject(emptyMap()),
+) : CalimeroError(409, "CLUSTER_NOT_UPGRADED", message, details)
+
+/**
+ * `409 FEATURE_NOT_ACTIVE`: the command (or a field of it) needs a cluster version not every node
+ * supports yet, during a rollout from an older release; nothing was done. [feature] names it,
+ * [needs] is the core release it needs and [active] the cluster's version now (`""` when unknown).
+ * Retry once the old nodes have left, or tell the user the feature is not available yet.
+ */
+class FeatureNotActive(
+    message: String,
+    details: JsonObject = JsonObject(emptyMap()),
+) : CalimeroError(409, "FEATURE_NOT_ACTIVE", message, details) {
+    val feature: String = details.string("feature").orEmpty()
+    val needs: String = details.string("needs").orEmpty()
+    val active: String = details.string("active").orEmpty()
 }
 
 /**
@@ -332,15 +412,20 @@ fun errorFrom(
     if (status == 503) return UnavailableError(code, message, details, retryAfterOf(details, retryAfterHeader))
     return when ("$status $code") {
         "401 UNAUTHENTICATED" -> LoginRequired(message, details)
+        "401 PASSKEY_UNKNOWN_HERE" -> PasskeyUnknownHere(message, details)
         "421 WRONG_NODE" -> WrongNode(message, details)
         "421 NOT_LEADER" -> NotLeader(message, details)
         "404 NOT_FOUND" -> NotFound(message, details)
         "409 IDEMPOTENCY_MISMATCH" -> IdempotencyMismatch(message, details)
         "409 RELEASE_DEADLINE" -> ReleaseDeadlineError(message, details)
+        "409 RUNTIME_TOO_OLD" -> RuntimeTooOld(message, details)
         "409 CONSENT_STALE" -> ConsentStale(message, details)
         "403 ORIGIN_NOT_REGISTERED" -> OriginNotRegistered(message, details)
         "400 BAD_ORIGIN", "400 BAD_RP_ID" -> BadOrigin(code, message, details)
         "409 ORIGIN_TAKEN" -> OriginTaken(message, details)
+        "400 NOT_SERVING" -> NotServing(message, details)
+        "409 CLUSTER_NOT_UPGRADED" -> ClusterNotUpgraded(message, details)
+        "409 FEATURE_NOT_ACTIVE" -> FeatureNotActive(message, details)
         "429 QUOTA_EXCEEDED" -> QuotaExceeded(message, details)
         "403 SIGN_UP_REFUSED" -> SignUpRefused(message, details)
         "409 RECOVERY_NOT_READY" -> RecoveryNotReady(message, details)
