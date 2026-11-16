@@ -98,7 +98,7 @@ let package = Package(
         // MERO_E2E_NODE_URL is set (see TESTING.md).
         .testTarget(
             name: "MeroKitE2ETests",
-            dependencies: ["MeroKit", "MeroAPI"],
+            dependencies: ["MeroKit", "MeroAPI", "MeroKitUI"],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
             ]
