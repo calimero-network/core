@@ -43,3 +43,17 @@
 @keyframes mero-cw-pulse { 50% { opacity: 0.25; } }
 .mero-cw-error { margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; background: var(--_bad-bg); color: var(--_bad-ink); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .mero-cw-notice { position: fixed; right: 16px; bottom: 16px; z-index: var(--cw-z, 2147483000); max-width: 360px; padding: 10px 14px; border-radius: 10px; background: var(--_surface); color: var(--_ink); font-size: 13px; line-height: 1.4; box-shadow: 0 0 0 1px var(--_line), 0 12px 28px -12px rgba(14, 18, 34, 0.4); }
+.mero-cw-choices { display: flex; flex-direction: column; gap: 8px; margin: 0 0 12px; padding: 0; border: 0; }
+.mero-cw-choice { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--_line); border-radius: 12px; cursor: pointer; }
+.mero-cw-choice:has(input:checked) { border-color: var(--_ink); }
+.mero-cw-choice input { margin-top: 3px; accent-color: var(--_primary-bg); }
+.mero-cw-choice b { display: block; font-size: 13px; }
+.mero-cw-choice .mero-cw-sub { display: block; margin: 2px 0 0; }
+.mero-cw-caps { display: flex; flex-direction: column; gap: 2px; margin: 0 0 14px; padding: 6px 4px; border-top: 1px solid var(--_line); border-bottom: 1px solid var(--_line); max-height: 220px; overflow-y: auto; }
+.mero-cw-cap { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; padding: 6px 8px; font-size: 13px; }
+.mero-cw-cap label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.mero-cw-cap[data-disabled] { color: var(--_muted); }
+.mero-cw-cap[data-disabled] label { cursor: not-allowed; }
+.mero-cw-cap input { margin: 0; accent-color: var(--_primary-bg); }
+.mero-cw-hint { display: inline; color: var(--_muted); font-size: 11.5px; }
+.mero-cw-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
