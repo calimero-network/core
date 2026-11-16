@@ -25,7 +25,8 @@
 .mero-cw-field { margin: 0 0 12px; }
 .mero-cw-field label { display: block; margin: 0 0 5px; font-size: 12px; font-weight: 600; }
 .mero-cw-field input { width: 100%; padding: 9px 11px; border: 1px solid var(--_line); border-radius: 10px; background: var(--_surface); color: var(--_ink); font: inherit; font-size: 13px; }
-.mero-cw-field input:focus-visible { outline: 2px solid var(--_focus); outline-offset: 1px; }
+.mero-cw-field select { width: 100%; padding: 9px 11px; border: 1px solid var(--_line); border-radius: 10px; background: var(--_surface); color: var(--_ink); font: inherit; font-size: 13px; }
+.mero-cw-field input:focus-visible, .mero-cw-field select:focus-visible { outline: 2px solid var(--_focus); outline-offset: 1px; }
 .mero-cw-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 0 16px; border: 1px solid var(--_line); border-radius: 999px; background: var(--_surface); color: var(--_ink); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
 .mero-cw-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .mero-cw-btn--primary { border-color: transparent; background: var(--_primary-bg); color: var(--_primary-ink); }

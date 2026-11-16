@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import type { CalimeroClient, PasskeyProvider } from '@calimero-network/mero-js';
 import { ORG_CAPABILITIES } from '@calimero-network/mero-js';
 import { useMero } from '../context';
@@ -16,12 +16,17 @@ const REFUSALS: Record<string, { text: string; fallback: boolean }> = {
 
 /** The dialog's wording, so each app keeps its own. */
 export interface InviteLabels {
+  /** What people are invited to (`table`, `game`): the fixed sentences use it. Default `workspace`. */
+  noun?: string;
+  /** An extra line on the share step, e.g. what the invite gives. */
+  note?: string;
   title?: string;
   subtitle?: string;
   next?: string;
 }
 
-const DEFAULT_LABELS: Required<InviteLabels> = {
+const DEFAULT_LABELS: Required<Omit<InviteLabels, 'note'>> = {
+  noun: 'workspace',
   title: 'Invite people',
   subtitle: 'Choose what the people you invite can do.',
   next: 'Create invite',
@@ -38,6 +43,20 @@ export interface InviteDialogProps {
   role?: InviteRole;
   appName?: string;
   labels?: InviteLabels;
+  /** Who is inviting, named on the share step ("Ada invites you to ..."). */
+  inviterName?: string;
+  /** How many people may use the link. */
+  uses?: number;
+  /** How long the link lives, in seconds. */
+  ttlSecs?: number;
+  /** Offers an "Expires after" choice (seconds) on the permissions step; the pick is the invite's `ttlSecs`. */
+  expiryOptions?: number[];
+  /** Every app of the org, not just `teams` (an invite to several apps at once). */
+  allApps?: boolean;
+  /** `false` skips the permission picker and sends a default invite. */
+  permissions?: boolean;
+  /** Rendered under the link on the share step, e.g. a QR code. */
+  shareExtra?: (link: string) => ReactNode;
   /** Called once the invite exists, from the dialog or from a full-page approval. */
   onInvited?: (invite: CreatedInvite) => void;
   /** The page the link opens. Default: this page. */
@@ -53,11 +72,11 @@ export interface InviteDialogProps {
 type OrgFacts = { defaults: number; held: number } | 'unreadable' | null;
 
 /** What the inviter may grant and what a default invite gives, read from the workspace. */
-function useOrgFacts(org: string): OrgFacts {
+function useOrgFacts(org: string, active: boolean): OrgFacts {
   const { client, accountId } = useMero();
   const [facts, setFacts] = useState<OrgFacts>(null);
   useEffect(() => {
-    if (!client) return;
+    if (!client || !org || !active) return;
     let live = true;
     setFacts(null);
     client.orgs.get({ org }).then(
@@ -67,8 +86,15 @@ function useOrgFacts(org: string): OrgFacts {
     return () => {
       live = false;
     };
-  }, [client, org, accountId]);
+  }, [client, org, active, accountId]);
   return facts;
+}
+
+/** `3600` is "1 hour", `86400` "1 day", `604800` "7 days". */
+function describeDuration(secs: number): string {
+  const [unit, size] = secs >= 86_400 ? ['day', 86_400] : secs >= 3_600 ? ['hour', 3_600] : ['minute', 60];
+  const n = Math.round(secs / (size as number));
+  return `${n} ${unit}${n === 1 ? '' : 's'}`;
 }
 
 const originRoot = () => `${typeof window === 'undefined' ? '' : window.location.origin}/`;
@@ -88,14 +114,16 @@ export function InviteDialog({ client, passkey, ...props }: InviteDialogProps) {
   );
 }
 
-function Dialog({ open, onClose, org, teams, role = 'member', appName, labels, onInvited, linkBase, returnTo }: Omit<InviteDialogProps, 'client' | 'passkey'>) {
+function Dialog({ open, onClose, org, teams, role = 'member', appName, inviterName, labels, onInvited, linkBase, returnTo, uses, ttlSecs, expiryOptions, allApps, permissions = true, shareExtra }: Omit<InviteDialogProps, 'client' | 'passkey'>) {
   const text = { ...DEFAULT_LABELS, ...labels };
-  const facts = useOrgFacts(org);
+  const facts = useOrgFacts(org, open && permissions);
+  const [expiry, setExpiry] = useState<number | null>(null);
+  const ttl = expiryOptions?.length ? (expiry ?? (ttlSecs !== undefined && expiryOptions.includes(ttlSecs) ? ttlSecs : expiryOptions[0])) : ttlSecs;
   const [mode, setMode] = useState<'default' | 'custom'>('default');
   const [picked, setPicked] = useState<number | null>(null);
   const [shared, setShared] = useState<CreatedInvite | null>(null);
   const [copied, copy] = useCopy();
-  const ids = [useId(), useId()];
+  const ids = [useId(), useId(), useId()];
   const onCreated = (invite: CreatedInvite) => {
     setShared(invite);
     onInvited?.(invite);
@@ -126,14 +154,17 @@ function Dialog({ open, onClose, org, teams, role = 'member', appName, labels, o
       <div>
         <h2 className="mero-cw-title">Invite link ready</h2>
         <p className="mero-cw-sub">
+          {inviterName ? `${inviterName} invites you${appName ? ` to ${appName}` : ''}. ` : ''}
           Anyone with this link can join as a {role}
           {appName ? ` in ${appName}` : ''}.{' '}
-          {perms ? (perms.length ? `They can: ${perms.join(', ')}.` : 'They get basic access only.') : "They get the workspace's member defaults."}
+          {perms ? (perms.length ? `They can: ${perms.join(', ')}.` : 'They get basic access only.') : `They get the ${text.noun}'s member defaults.`}
         </p>
+        {labels?.note && <p className="mero-cw-sub">{labels.note}</p>}
         <div className="mero-cw-field">
           <label htmlFor={ids[0]}>Invite link</label>
           <input id={ids[0]} readOnly value={shared.link} onFocus={(e) => e.currentTarget.select()} />
         </div>
+        {shareExtra?.(shared.link)}
         <div className="mero-cw-row">
           <button type="button" className="mero-cw-btn mero-cw-btn--primary" onClick={() => copy(shared.link)}>
             Copy link
@@ -148,7 +179,7 @@ function Dialog({ open, onClose, org, teams, role = 'member', appName, labels, o
       </div>
     );
   } else {
-    const defaultWords = !readable ? "the workspace's member defaults" : describeCapabilities(facts.defaults).join(', ') || 'basic access only';
+    const defaultWords = !readable ? `the ${text.noun}'s member defaults` : describeCapabilities(facts.defaults).join(', ') || 'basic access only';
     body = (
       <div>
         <h2 className="mero-cw-title">{text.title}</h2>
@@ -181,50 +212,66 @@ function Dialog({ open, onClose, org, teams, role = 'member', appName, labels, o
             )}
           </p>
         )}
-        {facts === 'unreadable' && <p className="mero-cw-sub">We could not read this workspace's permissions, so only a default invite is available.</p>}
-        <fieldset className="mero-cw-choices">
-          <legend className="mero-cw-visually-hidden">Permissions</legend>
-          <label className="mero-cw-choice">
-            <input type="radio" name={ids[1]} checked={mode === 'default'} onChange={() => setMode('default')} />
-            <span>
-              <b>Default</b>
-              <span className="mero-cw-sub">{`They get the workspace's member defaults: ${defaultWords}.`}</span>
-            </span>
-          </label>
-          <label className="mero-cw-choice">
-            <input type="radio" name={ids[1]} checked={mode === 'custom'} disabled={!readable} onChange={() => setMode('custom')} />
-            <span>
-              <b>Custom</b>
-              <span className="mero-cw-sub">Choose exactly what they can do.</span>
-            </span>
-          </label>
-        </fieldset>
-        {mode === 'custom' && readable && (
-          <div className="mero-cw-caps">
-            {CAPABILITY_LABELS.map(({ name, label }) => {
-              const bit = ORG_CAPABILITIES[name];
-              const mine = (facts.held & bit) !== 0;
-              return (
-                <div key={name} className="mero-cw-cap" data-disabled={mine ? undefined : ''}>
-                  <label>
-                    <input type="checkbox" checked={mine && (bits & bit) !== 0} disabled={!mine} aria-describedby={mine ? undefined : `${ids[1]}-${name}`} onChange={(e) => setPicked(e.target.checked ? bits | bit : bits & ~bit)} />
-                    {label}
-                  </label>
-                  {!mine && (
-                    <span id={`${ids[1]}-${name}`} className="mero-cw-hint">
-                      You don't have this
-                    </span>
-                  )}
-                </div>
-              );
-            })}
+        {permissions && (
+          <>
+            {facts === 'unreadable' && <p className="mero-cw-sub">We could not read this {text.noun}'s permissions, so only a default invite is available.</p>}
+            <fieldset className="mero-cw-choices">
+              <legend className="mero-cw-visually-hidden">Permissions</legend>
+              <label className="mero-cw-choice">
+                <input type="radio" name={ids[1]} checked={mode === 'default'} onChange={() => setMode('default')} />
+                <span>
+                  <b>Default</b>
+                  <span className="mero-cw-sub">{`They get the ${text.noun}'s member defaults: ${defaultWords}.`}</span>
+                </span>
+              </label>
+              <label className="mero-cw-choice">
+                <input type="radio" name={ids[1]} checked={mode === 'custom'} disabled={!readable} onChange={() => setMode('custom')} />
+                <span>
+                  <b>Custom</b>
+                  <span className="mero-cw-sub">Choose exactly what they can do.</span>
+                </span>
+              </label>
+            </fieldset>
+            {mode === 'custom' && readable && (
+              <div className="mero-cw-caps">
+                {CAPABILITY_LABELS.map(({ name, label }) => {
+                  const bit = ORG_CAPABILITIES[name];
+                  const mine = (facts.held & bit) !== 0;
+                  return (
+                    <div key={name} className="mero-cw-cap" data-disabled={mine ? undefined : ''}>
+                      <label>
+                        <input type="checkbox" checked={mine && (bits & bit) !== 0} disabled={!mine} aria-describedby={mine ? undefined : `${ids[1]}-${name}`} onChange={(e) => setPicked(e.target.checked ? bits | bit : bits & ~bit)} />
+                        {label}
+                      </label>
+                      {!mine && (
+                        <span id={`${ids[1]}-${name}`} className="mero-cw-hint">
+                          You don't have this
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+        {expiryOptions && expiryOptions.length > 0 && (
+          <div className="mero-cw-field">
+            <label htmlFor={ids[2]}>Expires after</label>
+            <select id={ids[2]} value={ttl} onChange={(e) => setExpiry(Number(e.target.value))}>
+              {expiryOptions.map((secs) => (
+                <option key={secs} value={secs}>
+                  {describeDuration(secs)}
+                </option>
+              ))}
+            </select>
           </div>
         )}
         <button
           type="button"
           className="mero-cw-btn mero-cw-btn--primary mero-cw-btn--full"
           disabled={!flow.ready || flow.phase !== 'idle' || (mode === 'custom' && !readable)}
-          onClick={() => flow.create({ org, role, teams, ...(mode === 'custom' ? { capabilities: bits } : {}) })}
+          onClick={() => flow.create({ org, role, teams, uses, ttlSecs: ttl, allApps, ...(mode === 'custom' ? { capabilities: bits } : {}) })}
         >
           {flow.phase === 'creating' ? 'Creating…' : text.next}
         </button>

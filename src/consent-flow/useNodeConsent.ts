@@ -63,7 +63,7 @@ export interface StartOptions<I, R> {
  * app's frontend: the pop-up (or, when it cannot open, a full-page trip) with
  * the code, the wait, and the ways it ends. An unbound session does `direct`.
  */
-export function useNodeConsent<I>({ storageKey }: { storageKey: string }) {
+export function useNodeConsent<I>({ storageKey, onError }: { storageKey: string; onError?: (error: unknown) => void }) {
   const { client } = useMero();
   const consent = useConsent({ throwOnError: true });
   const [bound, setBound] = useState<boolean | null>(null);
@@ -174,6 +174,7 @@ export function useNodeConsent<I>({ storageKey }: { storageKey: string }) {
         if (problem) setError({ message: problem, code: null });
       } catch (e) {
         setError({ message: messageOf(e), code: codeOf(e) });
+        onError?.(e);
       } finally {
         if (win && !win.closed) win.close();
         popup.current = null;
