@@ -32,12 +32,8 @@ coverage/
 # TypeScript cache
 *.tsbuildinfo
 
-# Example app build
-example/app/dist/
-example/app/node_modules/
-
-# Rust build (example logic)
-example/logic/target/
+# Example builds
+examples/*/dist/
 
 # pnpm
 .pnpm-store/

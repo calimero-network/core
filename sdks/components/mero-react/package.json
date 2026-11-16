@@ -24,6 +24,8 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
+    "build:examples": "tsc -p examples/kv-store/tsconfig.json && vite build --config examples/kv-store/vite.config.js",
+    "dev:example": "vite --config examples/kv-store/vite.config.js",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "test": "vitest run",

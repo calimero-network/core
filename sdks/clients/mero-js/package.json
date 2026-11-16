@@ -42,6 +42,7 @@
   },
   "scripts": {
     "build": "tsc && esbuild src/index.ts --bundle --platform=neutral --external:@phala/dcap-qvl --target=es2020 --format=esm --outfile=dist/index.mjs --sourcemap && esbuild src/index.ts --bundle --platform=neutral --external:@phala/dcap-qvl --target=es2020 --format=cjs --outfile=dist/index.cjs --sourcemap && esbuild src/index.ts --bundle --platform=browser --external:@phala/dcap-qvl --target=es2020 --format=esm --outfile=dist/index.browser.mjs --sourcemap --minify && node scripts/runtime-entries.mjs",
+    "build:examples": "tsc -p examples/node-script/tsconfig.json",
     "test": "vitest run --passWithNoTests",
     "test:unit": "vitest run --config vitest.config.ts",
     "lint": "eslint .",
