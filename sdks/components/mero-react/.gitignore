@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Test coverage
+coverage/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Example app build
+example/app/dist/
+example/app/node_modules/
+
+# Rust build (example logic)
+example/logic/target/
+
+# pnpm
+.pnpm-store/
+storybook-static
+
+# Agent scratch workspace — never commit
+.superpowers/
+
+# Local fixture state for the two-node presence e2e (boot-presence-nodes.sh)
+.presence-nodes/
+.presence-nodes.pids
+
+# merobox/merod node state, if a local harness is run from the repo root
+data/

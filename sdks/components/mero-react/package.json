@@ -1,0 +1,111 @@
+{
+  "name": "@calimero-network/mero-react",
+  "version": "11.8.0",
+  "description": "React bindings for the Calimero 1.0 client (mero-js CalimeroClient)",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./node-shield": {
+      "types": "./dist/node-shield.d.ts",
+      "import": "./dist/node-shield.js",
+      "require": "./dist/node-shield.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build",
+    "prepublishOnly": "pnpm build && pnpm typecheck"
+  },
+  "dependencies": {
+    "@calimero-network/mero-js": "^35.6.0"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^12.0.6",
+    "@semantic-release/npm": "^13.1.5",
+    "@semantic-release/release-notes-generator": "^14.1.0",
+    "@storybook/addon-essentials": "^8.6.14",
+    "@storybook/react": "^8.6.18",
+    "@storybook/react-vite": "^8.6.18",
+    "@storybook/test": "^8.6.18",
+    "@testing-library/react": "^14.0.0",
+    "@types/node": "^26.0.1",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "conventional-changelog-conventionalcommits": "^9.3.1",
+    "eslint": "^10.1.0",
+    "jsdom": "^29.0.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "semantic-release": "^25.0.3",
+    "storybook": "^8.6.19",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vite": "^6.4.5",
+    "vitest": "^4.1.12"
+  },
+  "keywords": [
+    "calimero",
+    "mero",
+    "react",
+    "passkeys",
+    "confidential-cloud",
+    "sdk"
+  ],
+  "license": "MIT",
+  "author": "Calimero Ltd",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/calimero-network/mero-react.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "packageManager": "pnpm@10.14.0",
+  "pnpm": {
+    "overrides": {
+      "handlebars": ">=4.7.10",
+      "js-yaml@>=4 <5": "^4.3.2",
+      "source-map-js": ">=1.2.2",
+      "undici@<7": "^6.29.1",
+      "undici@>=7 <8": "^7.30.1",
+      "brace-expansion@>=2 <3": "^2.1.7",
+      "brace-expansion@>=4 <6": "^5.0.12",
+      "browserslist": ">=4.28.7",
+      "lodash": ">=4.18.0",
+      "lodash-es": ">=4.18.0",
+      "rollup@>=4 <5": "^4.59.0",
+      "ws@>=8 <9": "^8.21.0",
+      "postcss": ">=8.5.23",
+      "baseline-browser-mapping": ">=2.11.0",
+      "@babel/core@<7.29.6": "^7.29.6",
+      "@humanfs/node@<0.16.8": "~0.16.8"
+    }
+  }
+}

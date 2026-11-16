@@ -1,0 +1,11 @@
+{
+  "package": "com.calimero.kv-store",
+  "version": "0.2.11",
+  "name": "KV Store",
+  "description": "Calimero KV Store application",
+  "output": "dist/com.calimero.kv-store-0.2.11.mpk",
+  "abi": "res/abi.json",
+  "frontend": "https://kv-store-alpha.vercel.app/",
+  "github": "https://github.com/calimero-network/kv-store",
+  "docs": "https://docs.calimero.network/getting-started/"
+}

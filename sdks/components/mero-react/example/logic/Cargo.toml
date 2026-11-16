@@ -1,0 +1,26 @@
+[package]
+name = "kv-store"
+description = "Calimero KV Store application"
+version = "0.2.11"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+thiserror = "1.0.56"
+calimero-sdk = { git = "https://github.com/calimero-network/core", branch = "master" }
+calimero-storage = { git = "https://github.com/calimero-network/core", branch = "master" }
+
+[build-dependencies]
+calimero-wasm-abi = { git = "https://github.com/calimero-network/core", branch = "master" }
+serde_json = "1.0.113"
+
+[profile.app-release]
+inherits = "release"
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true

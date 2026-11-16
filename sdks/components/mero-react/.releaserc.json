@@ -1,0 +1,72 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "_comment": [
+          "noteKeywords is narrowed to the HYPHENATED spelling on purpose.",
+          "conventional-commits-parser matches note keywords case-INSENSITIVELY",
+          "at the start of a line, so the default ['BREAKING CHANGE'] turns any",
+          "commit body that happens to wrap onto a line beginning 'breaking",
+          "change ...' into a major release. That published mero-react 7.0.0 on",
+          "2026-09-01 off a commit that touched only CI and a test fixture, and",
+          "a major silently drops the whole fleet out of automated bumps, since",
+          "bump-fleet.sh skips majors by default.",
+          "An intentional major is still expressed the normal two ways, both",
+          "verified against @semantic-release/commit-analyzer itself:",
+          "  feat(api)!: ...            -> major",
+          "  BREAKING-CHANGE: <text>    -> major",
+          "  prose 'breaking change'    -> patch (was: major)"
+        ],
+        "parserOpts": {
+          "noteKeywords": ["BREAKING-CHANGE"]
+        },
+        "releaseRules": [
+          { "breaking": true, "release": "major" },
+          { "type": "fix", "release": "patch" },
+          { "type": "feat", "release": "minor" },
+          { "type": "chore", "release": null },
+          { "type": "docs", "release": null },
+          { "type": "refactor", "release": null },
+          { "type": "perf", "release": "patch" },
+          { "type": "test", "release": null },
+          { "type": "build", "release": null },
+          { "type": "ci", "release": null },
+          { "type": "style", "release": null },
+          { "type": "revert", "release": null },
+          { "revert": true, "release": null }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "parserOpts": { "noteKeywords": ["BREAKING-CHANGE"] }
+      }
+    ],
+    [
+      "@semantic-release/changelog",
+      { "changelogFile": "CHANGELOG.md" }
+    ],
+    [
+      "@semantic-release/npm",
+      { "npmPublish": false }
+    ],
+    [
+      "@semantic-release/github",
+      { "successComment": false, "releasedLabels": false }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["CHANGELOG.md", "package.json"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}",
+        "push": false
+      }
+    ]
+  ],
+  "tagFormat": "mero-react-v${version}"
+}

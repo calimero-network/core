@@ -1,0 +1,14 @@
+#!/bin/sh
+. "$(dirname "$0")/_/husky.sh"
+
+# Check for changes in the 'app' directory
+if git diff --cached --name-only | grep -q '^app/'; then
+  echo "Running checks for the React app..."
+  (cd app && pnpm prettier && pnpm lint:fix)
+fi
+
+# Check for changes in the 'logic' directory
+if git diff --cached --name-only | grep -q '^logic/'; then
+  echo "Running checks for the Rust logic..."
+  (cd logic && cargo test && cargo fmt -- --check)
+fi
