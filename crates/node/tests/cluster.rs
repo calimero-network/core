@@ -1054,8 +1054,22 @@ impl FakeRegistry {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy() {
+/// A three-node production cluster (no raw WASM, no uploads) installing from a fake
+/// registry, alice signed up, `com.test.kv@1.0.0` published by `publisher`, installed and
+/// run as the app `kv` with `k` = `v1`. The registry tests below share it, each short
+/// enough for CI's 15 s rule on a loaded runner: every release they install is compiled
+/// on each node that runs it.
+struct RegistryRig {
+    registry: FakeRegistry,
+    c: Cluster,
+    alice: Client,
+    alice_key: SoftAuthenticator,
+    publisher: ed25519_dalek::SigningKey,
+    kv: Vec<u8>,
+    app: String,
+}
+
+async fn registry_rig() -> RegistryRig {
     let registry = FakeRegistry::default();
     let url = registry.serve().await;
     let c = Cluster::start_with(3, |cfg| {
@@ -1064,7 +1078,7 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         cfg.allow_package_uploads = false;
     })
     .await;
-    let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let kv = kv_wasm();
     registry.publish(
@@ -1072,29 +1086,6 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         "1.0.0",
         mpk("com.test.kv", "1.0.0", &kv, &publisher),
     );
-
-    // Production nodes take no raw WASM: it carries no publisher signature.
-    let e = alice
-        .packages()
-        .bundle_put(kv.clone())
-        .await
-        .map(|b| b.hash)
-        .unwrap_err();
-    assert!(e.to_string().starts_with("403"), "{e}");
-    // Nor an uploaded package, signed or not, from an account or the
-    // operator: every release comes from the registry, so any node that lacks
-    // it fetches it there, and none lives only where it was uploaded.
-    let signed = mpk("com.test.kv", "1.0.0", &kv, &publisher);
-    let e = alice.packages().upload(signed.clone()).await.unwrap_err();
-    assert_eq!(e.code(), Some("UPLOADS_DISABLED"), "{e}");
-    let e = ops_at(&c, 0)
-        .await
-        .ops()
-        .package_upload(signed)
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), Some("UPLOADS_DISABLED"), "{e}");
-
     // Install by name; the node that installs it verifies it first.
     let installed = alice
         .packages()
@@ -1130,6 +1121,51 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         .await
         .unwrap();
 
+    RegistryRig {
+        registry,
+        c,
+        alice,
+        alice_key,
+        publisher,
+        kv,
+        app,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy() {
+    let RegistryRig {
+        registry,
+        c,
+        alice,
+        publisher,
+        kv,
+        app,
+        ..
+    } = registry_rig().await;
+
+    // Production nodes take no raw WASM: it carries no publisher signature.
+    let e = alice
+        .packages()
+        .bundle_put(kv.clone())
+        .await
+        .map(|b| b.hash)
+        .unwrap_err();
+    assert!(e.to_string().starts_with("403"), "{e}");
+    // Nor an uploaded package, signed or not, from an account or the
+    // operator: every release comes from the registry, so any node that lacks
+    // it fetches it there, and none lives only where it was uploaded.
+    let signed = mpk("com.test.kv", "1.0.0", &kv, &publisher);
+    let e = alice.packages().upload(signed.clone()).await.unwrap_err();
+    assert_eq!(e.code(), Some("UPLOADS_DISABLED"), "{e}");
+    let e = ops_at(&c, 0)
+        .await
+        .ops()
+        .package_upload(signed)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("UPLOADS_DISABLED"), "{e}");
+
     // Each node runs the app from its own copy, fetched from the registry
     // (never pushed by a peer) and verified again: one fetch per node.
     let session = alice.session().await.unwrap();
@@ -1150,6 +1186,19 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         assert_eq!(v.result, json!("v1"), "node {i}");
     }
     assert_eq!(registry.hits("com.test.kv@1.0.0"), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_registry_release_is_pinned_to_its_publisher_and_its_signed_bytes() {
+    let RegistryRig {
+        registry,
+        c,
+        alice,
+        publisher,
+        kv,
+        ..
+    } = registry_rig().await;
+    let session = alice.session().await.unwrap();
 
     // The package is pinned to its publisher: another key cannot release it.
     let intruder = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
@@ -1197,44 +1246,6 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("BAD_PACKAGE"), "{e}");
-
-    // Upgrade by version, within the package.
-    let v101 = variant(&kv, "v101");
-    registry.publish(
-        "com.test.kv",
-        "1.0.1",
-        mpk("com.test.kv", "1.0.1", &v101, &publisher),
-    );
-    let up = alice
-        .apps()
-        .upgrade(
-            &app,
-            typed(json!({ "version": "1.0.1" })),
-            Some(&mut alice_key),
-        )
-        .await
-        .map(wire)
-        .unwrap();
-    assert_eq!(up["status"], json!("ok"), "{up}");
-    let listed = alice
-        .apps()
-        .list(Some("com.test.kv"), None)
-        .await
-        .map(wire)
-        .unwrap();
-    assert_eq!(listed["apps"][0]["version"], json!("1.0.1"), "{listed}");
-    let v = alice
-        .apps()
-        .view(
-            &app,
-            "get",
-            Some(json!({ "key": "k" })),
-            Some(ViewsRequestConsistency::Strong),
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(v.result, json!("v1"), "state survives the upgrade");
 
     // A release some node fetches later must be the one the fleet installed:
     // a registry that swaps the bytes is refused, never run.
@@ -1293,6 +1304,59 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         refused >= 1,
         "a node without a copy must refuse the swapped release"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_registry_release_upgrades_in_place_and_uninstalls_once_nothing_runs_it() {
+    let RegistryRig {
+        // Kept, not dropped with `..`: the nodes run while it lives.
+        c: _cluster,
+        registry,
+        alice,
+        mut alice_key,
+        publisher,
+        kv,
+        app,
+        ..
+    } = registry_rig().await;
+
+    // Upgrade by version, within the package.
+    let v101 = variant(&kv, "v101");
+    registry.publish(
+        "com.test.kv",
+        "1.0.1",
+        mpk("com.test.kv", "1.0.1", &v101, &publisher),
+    );
+    let up = alice
+        .apps()
+        .upgrade(
+            &app,
+            typed(json!({ "version": "1.0.1" })),
+            Some(&mut alice_key),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(up["status"], json!("ok"), "{up}");
+    let listed = alice
+        .apps()
+        .list(Some("com.test.kv"), None)
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(listed["apps"][0]["version"], json!("1.0.1"), "{listed}");
+    let v = alice
+        .apps()
+        .view(
+            &app,
+            "get",
+            Some(json!({ "key": "k" })),
+            Some(ViewsRequestConsistency::Strong),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(v.result, json!("v1"), "state survives the upgrade");
 
     // Uninstall: refused while an app runs the release, done once none does.
     let e = alice
@@ -1307,7 +1371,6 @@ async fn packages_install_from_the_registry_and_every_node_verifies_its_own_copy
         .await
         .unwrap();
     let _ = alice.apps().delete(&app).await.unwrap();
-    let _ = alice.apps().delete(&app2).await.unwrap();
     let e = alice
         .apps()
         .call(
