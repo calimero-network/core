@@ -315,9 +315,87 @@ async fn verified_release(
     }))
 }
 
+/// The old spellings an invocation used, each with the one that replaced it.
+/// They still parse (hidden aliases) and `main` warns about each on stderr,
+/// ahead of their removal; the answer on stdout is unchanged.
+fn old_spellings(args: &[String]) -> Vec<(&'static str, &'static str)> {
+    use clap::CommandFactory as _;
+    // meroctl's own options that take a value, so `--node group` is a value.
+    let cmd = Cli::command();
+    let takes_value: Vec<String> = cmd
+        .get_arguments()
+        .filter(|a| a.get_action().takes_values())
+        .filter_map(|a| a.get_long().map(|l| format!("--{l}")))
+        .collect();
+    let mut words = Vec::new();
+    let mut i = 1;
+    while i < args.len() && words.len() < 2 {
+        let a = args[i].as_str();
+        if a.starts_with('-') {
+            if takes_value.iter().any(|l| l == a) && words.is_empty() {
+                i += 1;
+            }
+        } else {
+            words.push(a);
+        }
+        i += 1;
+    }
+    let (top, sub) = (words.first().copied(), words.get(1).copied());
+    let mut found = Vec::new();
+    match top {
+        Some("context") => found.push(("meroctl context", "meroctl instance")),
+        Some("namespace" | "ns") => found.push(("meroctl namespace", "meroctl org")),
+        Some("group") => found.push(("meroctl group", "meroctl team")),
+        Some("attest-release") => found.push(("meroctl attest-release", "meroctl attest release")),
+        Some("pipeline") => found.push(("meroctl pipeline", "meroctl cloud compute pipeline")),
+        Some("run") => found.push(("meroctl run logs", "meroctl cloud compute logs")),
+        _ => {}
+    }
+    match (top, sub) {
+        (Some("namespace" | "ns" | "org"), Some("groups")) => found.push(("groups", "teams")),
+        (Some("namespace" | "ns" | "org"), Some("create-group")) => {
+            found.push(("create-group", "create-team"));
+        }
+        (Some("group" | "team"), Some("subgroups")) => found.push(("subgroups", "subteams")),
+        (Some("ops"), Some("upgrade-namespace")) => {
+            found.push(("upgrade-namespace", "upgrade-org"))
+        }
+        (Some("dev"), Some("new")) => found.push(("meroctl dev new", "meroctl app new")),
+        _ => {}
+    }
+    let has = |flag: &str| {
+        args.iter()
+            .skip(1)
+            .any(|a| a == flag || a.starts_with(&format!("{flag}=")))
+    };
+    if top == Some("attest") && has("--context") {
+        found.push(("meroctl attest --context", "meroctl attest app"));
+    } else if has("--context") {
+        found.push(("--context", "--instance"));
+    }
+    if args.iter().skip(1).any(|a| a == "-c") {
+        found.push(("-c", "-i"));
+    }
+    if has("--namespace") {
+        found.push(("--namespace", "--org"));
+    }
+    if has("--group") {
+        found.push(("--group", "--team"));
+    }
+    found
+}
+
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     let mut cli = Cli::parse();
+    let argv: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    for (old, new) in old_spellings(&argv) {
+        eprintln!(
+            "warning: `{old}` is now `{new}`; the old spelling will be removed in a later release"
+        );
+    }
     // `attest node|app|release` are the old `attest [--context]` and `attest-release`.
     match &mut cli.cmd {
         Cmd::Attest {
@@ -758,6 +836,73 @@ mod tests {
             Cli::try_parse_from(["meroctl", "local", "up", "--docker", "--local"]).is_err(),
             "--docker and --local contradict"
         );
+    }
+
+    /// Each old spelling is named with its replacement, and a new one, or a
+    /// value that happens to be an old word, is not.
+    #[test]
+    fn old_spellings_are_named_with_their_replacements() {
+        let found = |line: &str| {
+            let args: Vec<String> = line.split(' ').map(str::to_owned).collect();
+            crate::old_spellings(&args)
+        };
+        assert_eq!(
+            found("meroctl context get kv"),
+            [("meroctl context", "meroctl instance")]
+        );
+        assert_eq!(
+            found("meroctl --node group context get kv"),
+            [("meroctl context", "meroctl instance")],
+            "a global option's value is not the command"
+        );
+        assert_eq!(found("meroctl call -c kv get"), [("-c", "-i")]);
+        assert_eq!(
+            found("meroctl call --context=kv get"),
+            [("--context", "--instance")]
+        );
+        assert_eq!(
+            found("meroctl namespace create-group o eng"),
+            [
+                ("meroctl namespace", "meroctl org"),
+                ("create-group", "create-team")
+            ]
+        );
+        assert_eq!(
+            found("meroctl ns groups o"),
+            [("meroctl namespace", "meroctl org"), ("groups", "teams")]
+        );
+        assert_eq!(
+            found("meroctl group subgroups o t"),
+            [("meroctl group", "meroctl team"), ("subgroups", "subteams")]
+        );
+        assert_eq!(
+            found("meroctl instance create --name kv --package p --namespace o --group t"),
+            [("--namespace", "--org"), ("--group", "--team")]
+        );
+        assert_eq!(
+            found("meroctl ops upgrade-namespace o"),
+            [("upgrade-namespace", "upgrade-org")]
+        );
+        assert_eq!(
+            found("meroctl attest --context kv"),
+            [("meroctl attest --context", "meroctl attest app")]
+        );
+        assert_eq!(
+            found("meroctl dev new my-app"),
+            [("meroctl dev new", "meroctl app new")]
+        );
+        for current in [
+            "meroctl instance get kv",
+            "meroctl call -i kv get --view",
+            "meroctl org create context",
+            "meroctl team get o group",
+            "meroctl instance create --name group --package p --org o --team t",
+            "meroctl --node local org teams o",
+            "meroctl attest app kv",
+            "meroctl app new my-app",
+        ] {
+            assert_eq!(found(current), [], "{current}");
+        }
     }
 
     /// `package` is `app`: `meroctl package origins ...` reaches the same commands.
