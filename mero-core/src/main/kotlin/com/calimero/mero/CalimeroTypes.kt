@@ -184,7 +184,21 @@ data class OrgInfo(
     val newWorkStopped: NewWorkStopped?,
     /** The recovery key and any recovery under way; null while the organization has none. */
     val recovery: OrgRecovery? = null,
-)
+) {
+    /**
+     * [packageName]'s app team here: the top-level team whose `metadata.app.package` is
+     * [packageName] (made with the organization on the consent page, or adopted by an admin); the
+     * smallest id when several are. Null without one, or for a closed team the caller does not see.
+     */
+    fun appTeam(packageName: String): String? {
+        if (packageName.isEmpty()) return null
+        return teams.values
+            .filter { team ->
+                val app = (team.metadata as? JsonObject)?.get("app") as? JsonObject
+                team.parent == null && (app?.get("package") as? JsonPrimitive)?.takeIf { it.isString }?.content == packageName
+            }.minOfOrNull { it.teamId }
+    }
+}
 
 /** A team of an organization (`GET /orgs/{org}/teams/{team}`, or one of [OrgInfo.teams]). */
 @Serializable

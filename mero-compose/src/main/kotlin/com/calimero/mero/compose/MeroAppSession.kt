@@ -1,6 +1,7 @@
 package com.calimero.mero.compose
 
 import android.content.Context
+import com.calimero.mero.AppHost
 import com.calimero.mero.CalimeroClient
 import com.calimero.mero.CalimeroClientOptions
 import com.calimero.mero.CalimeroError
@@ -10,13 +11,20 @@ import com.calimero.mero.ConsentResult
 import com.calimero.mero.ConsentStarted
 import com.calimero.mero.LoginRequired
 import com.calimero.mero.PasskeyProvider
+import com.calimero.mero.ServedPageHandoff
+import com.calimero.mero.ServedPagePasskey
+import com.calimero.mero.WebAuthenticating
+import com.calimero.mero.WebAuthenticationCancelled
 import com.calimero.mero.app.CalimeroAppBackend
 import com.calimero.mero.app.ContextContract
 import com.calimero.mero.app.MeroAppBackend
+import com.calimero.mero.app.OrgConsentApprover
 import com.calimero.mero.app.OrgInvitation
 import com.calimero.mero.app.SignedOutContextContract
+import com.calimero.mero.app.servedPageConsent
 import com.calimero.mero.consentReturn
 import com.calimero.mero.invite.InviteLink
+import com.calimero.mero.signInWithServedPage
 import com.calimero.mero.storage.EncryptedSessionStore
 import com.calimero.mero.storage.SessionStore
 import kotlinx.coroutines.CancellationException
@@ -150,6 +158,10 @@ class MeroAppSession(
      */
     @Volatile var passkey: PasskeyProvider? = null
 
+    /** The page [webPage] opened that waits for its link ([handle]). */
+    @Volatile
+    private var openPage: CustomTabAuthenticator? = null
+
     private val restoring = Mutex()
     private var signing: Job? = null
     private var knownAccount: String? = null
@@ -237,11 +249,126 @@ class MeroAppSession(
         rebuild()
     }
 
-    /** Stop a sign-in that is waiting (the person left the passkey sheet). */
+    /** Stop a sign-in that is waiting (the person left the passkey sheet or the served page). */
     fun cancelSignIn() {
+        cancelWebPage()
         signing?.cancel()
         _isSigningIn.value = false
     }
+
+    // ---- the package's served page -------------------------------------------------------
+
+    /**
+     * Sign in through the package's served page ([ServedPageHandoff]), opened in a Custom Tab over
+     * [activity]: the person signs in there with their passkey, and the page sends back a session
+     * bound to this package, sealed to a key made for this sign-in only. The page's link comes back
+     * to [callback] (`mero-chat://signed-in`): hand it to [handle]. Watch [isSigningIn] and
+     * [lastError]. (Swift `MeroClient.signInWithServedPage`.)
+     *
+     * @param cluster the Calimero Cloud cluster to sign in on; null: the package's primary cluster.
+     */
+    fun signInWithServedPage(
+        activity: Context,
+        callback: String,
+        cluster: String? = null,
+        appsDomain: String = AppHost.DEFAULT_DOMAIN,
+    ) = launchSignIn { signInWithServedPage(callback, webPage(activity), cluster, appsDomain) }
+
+    /**
+     * [signInWithServedPage] with [opener] showing the page. Answers whether it worked: a page the
+     * person left answers `false` with no [lastError]; any other failure lands in [lastError].
+     */
+    suspend fun signInWithServedPage(
+        callback: String,
+        opener: WebAuthenticating,
+        cluster: String? = null,
+        appsDomain: String = AppHost.DEFAULT_DOMAIN,
+    ): Boolean {
+        _lastError.value = null
+        return try {
+            val signedIn = client.signInWithServedPage(packageName, callback, opener, cluster, appsDomain)
+            store.save(signedIn.session)
+            knownAccount = signedIn.accountId
+            rebuild()
+            true
+        } catch (_: WebAuthenticationCancelled) {
+            false
+        } catch (e: CancellationException) {
+            throw e
+        } catch (
+            @Suppress("TooGenericExceptionCaught") e: Exception,
+        ) {
+            _lastError.value = e
+            false
+        }
+    }
+
+    /**
+     * The passkey the package's own step-ups go through: on Calimero Cloud the app's served page in
+     * a Custom Tab over [activity] ([ServedPagePasskey]), its approval coming back to [callback]
+     * (hand it to [handle]); on a development node (a client that allows mock attestation)
+     * [passkey]. Organization actions go to the consent page ([servedPageConsent]).
+     * (Swift `MeroClient.approvalPasskey`.)
+     */
+    fun approvalPasskey(
+        activity: Context,
+        callback: String,
+        cluster: String? = null,
+        appsDomain: String = AppHost.DEFAULT_DOMAIN,
+    ): PasskeyProvider? {
+        if (client.options.policy.allowMock) return passkey
+        return ServedPagePasskey(AppHost.origin(packageName, cluster, appsDomain), callback, webPage(activity), client.options.httpClient)
+    }
+
+    /**
+     * Where the node's consent page sends a package-bound session back: the package's served page
+     * (`{origin}/{version}/?native-consent=1`), which passes the answer on to the app's own link. The
+     * node takes only the package's own https origin as `returnTo`, never an app scheme. Null on a
+     * development node, where [callbackUrl] is used as it is. (Swift `MeroClient.servedConsentReturnTo`.)
+     */
+    suspend fun servedConsentReturnTo(
+        cluster: String? = null,
+        appsDomain: String = AppHost.DEFAULT_DOMAIN,
+    ): String? {
+        if (client.options.policy.allowMock) return null
+        val origin = AppHost.origin(packageName, cluster, appsDomain)
+        return ServedPageHandoff.consentReturnTo(origin, AppHost.latestVersion(origin, client.options.httpClient))
+    }
+
+    /**
+     * Where organization actions are approved: on Calimero Cloud the node's consent page in a Custom
+     * Tab over [activity], returning through the package's served page to [callback] (hand that link
+     * to [handle]); null on a development node, where the backend calls the node directly. Give it
+     * to a [CalimeroAppBackend] as its `consent`. (Swift `MeroClient.servedPageConsent`.)
+     *
+     * @param confirm runs before the page opens with the node's answer; show its `code`, which the
+     *   page shows too. Answer `false` not to open it.
+     */
+    fun servedPageConsent(
+        activity: Context,
+        callback: String,
+        cluster: String? = null,
+        appsDomain: String = AppHost.DEFAULT_DOMAIN,
+        confirm: (suspend (ConsentStarted) -> Boolean)? = null,
+    ): OrgConsentApprover? = client.servedPageConsent(packageName, callback, webPage(activity), cluster, appsDomain, confirm)
+
+    /** The person left a served or consent page this session opened ([webPage]): its wait ends. */
+    fun cancelWebPage() {
+        openPage?.cancel()
+    }
+
+    /** A Custom Tab over [context] whose link [handle] hands back. */
+    fun webPage(context: Context): WebAuthenticating =
+        WebAuthenticating { url, callback ->
+            val page = CustomTabAuthenticator(context)
+            openPage?.cancel()
+            openPage = page
+            try {
+                page.authenticate(url, callback)
+            } finally {
+                if (openPage === page) openPage = null
+            }
+        }
 
     /** Sign out: end the session on the node, and forget it here. [forgetDevice] also clears every stored value. */
     suspend fun signOut(forgetDevice: Boolean = false) {
@@ -257,12 +384,14 @@ class MeroAppSession(
     }
 
     /**
-     * A link the system handed the app: the consent page sending the person back
+     * A link the system handed the app: a page [webPage] opened sending the person back (the served
+     * page's sign-in, approval or consent answer), the consent page sending the person back
      * (`callbackUrl?request_id=…&result=…`, confirmed with the node into [consentResult]), or one of
      * this app's invitation links (held in [pendingInvitation] for the person to confirm). Returns
      * whether it was either.
      */
     suspend fun handle(url: String): Boolean {
+        if (openPage?.complete(url) == true) return true
         restoring.withLock { }
         if (consentReturn(url) != null) {
             runCatching { client.resumeConsent(url, consentRequestId) }
