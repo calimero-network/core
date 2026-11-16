@@ -600,7 +600,7 @@ app's data moves only to nodes on a release approved for it.
 </Steps>
 
 <Aside type="caution" title="Not across a hard cutover">
-  A release the CHANGELOG marks **Hard cutover** cannot read what the releases
+  A hard-cutover release (its notes list the breaking PR) cannot read what the releases
   before it stored, so a cluster is not rolled onto it: mdma refuses the rollout
   (`release_compat` `CUTOVERS`) and the cluster is recreated on the new release
   instead, with an empty state. 1.0.0-rc.20 is one: every app is in an

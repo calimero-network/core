@@ -51,4 +51,5 @@ jobs:
       - name: Check the door the body declares
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: git diff HEAD^1 HEAD | python3 scripts/check-compat-door.py
