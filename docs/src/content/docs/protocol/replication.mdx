@@ -212,6 +212,13 @@ follower opens the leader's frames as they are. Installing writes the group's ro
 mid-install leaves the previous state intact. `calimero-log`'s tests stream a
 ~6 MiB state to a new node this way.
 
+openraft builds a snapshot beside the installs and applies of the same group,
+so a build reads its generation, its index and its RocksDB view under the one
+lock an install switches them under, and records its file only if the
+generation is still the one it read: a build that an install or a backup
+restore overtook is made again, and never replaces the newer snapshot or
+deletes its file (`machine::build_races` in `crates/log`).
+
 ## Groups come and go with the directory
 
 The system group's app directory decides which nodes host which app groups.
