@@ -1,0 +1,36 @@
+---
+title: Error model
+description: The typed errors a node's refusals become, and the client-side errors.
+sidebar:
+  order: 2
+---
+
+The node answers a refusal as `{ error: CODE, message, details }`.
+`errorFrom(status:body:)` turns it into a typed error, matching the status and
+the code together. Every one is a subclass of `CalimeroError` (`status`,
+`code`, `message`, `details`), so `catch let e as CalimeroError` catches them all.
+
+| Status, code | Type | Notes |
+| --- | --- | --- |
+| `401 UNAUTHENTICATED` | `LoginRequired` | after the client's own refresh failed, or with an API key |
+| `421 WRONG_NODE` | `WrongNode` | after the client moved through the nodes it knows |
+| `421 NOT_LEADER` | `NotLeader` | `leaderUrl` (an addition to mero-js) |
+| `404 NOT_FOUND` | `NotFound` | also what an app you may not reach answers |
+| `412 CONFIRM_REQUIRED` | `ConfirmRequired` | the `*Confirmed` methods answer it |
+| `413 ARGS_TOO_LARGE` | `ArgsTooLarge` | |
+| `409 IDEMPOTENCY_MISMATCH` | `IdempotencyMismatch` | |
+| `409 RELEASE_DEADLINE` | `ReleaseDeadlineError` | `release`, `after` |
+| `409 CONSENT_STALE` | `ConsentStale` | |
+| `403 SIGN_UP_REFUSED` | `SignUpRefused` | `reason` (`.inviteOnly`, `.closed`, `.unknownInvite`, `.expiredInvite`, `.orgGone`, `.other`); core rc.9+ |
+| `403 ORIGIN_NOT_REGISTERED` | `OriginNotRegistered` | `origin`, `package`; core rc.9+ |
+| `400 BAD_ORIGIN`, `400 BAD_RP_ID` | `BadOrigin` | `code` says which |
+| `409 ORIGIN_TAKEN` | `OriginTaken` | |
+| `429 QUOTA_EXCEEDED` | `QuotaExceeded` | origins, a component app's blobs, an organization's file bytes |
+| `409 RECOVERY_NOT_READY` | `RecoveryNotReady` | `readyAt` (Unix seconds) |
+| `422 APP_ERROR` | `AppError` | `appCode`, `fields` |
+| `422 TRAP` | `TrapError` | `kind` |
+| `503 *`, or no answer | `UnavailableError` | `reason`, `committed` (`.no` / `.unknown`), `retryAfter`; after retries |
+
+Not node refusals: `ConfirmCancelled` (the person declined a step-up),
+`PasskeyCancelled`, `TeeTrustError` (the node did not attest), and
+`AccountError` (`invalidInput`, `protocolViolation`, `notSignedIn`, `noRelay`).

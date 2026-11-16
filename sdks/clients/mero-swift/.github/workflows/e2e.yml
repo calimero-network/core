@@ -1,0 +1,45 @@
+name: E2E (vs a development cluster)
+
+# Runs MeroKitE2ETests against a Calimero 1.0 development cluster reachable
+# from the runner (`merod local`, mock attestation). merod 1.0 runs on Linux
+# only, so this job takes the node's URL rather than booting one; with
+# `bundle_url` it also creates an app from that dev `.wasm` and calls it.
+on:
+  workflow_dispatch:
+    inputs:
+      node_url:
+        description: 'A node of a `merod local` cluster, e.g. http://host:2501'
+        required: true
+      bundle_url:
+        description: 'Optional: a dev kv-store .wasm to upload, create and call'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E (development cluster)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fetch the bundle
+        if: ${{ inputs.bundle_url != '' }}
+        env:
+          BUNDLE_URL: ${{ inputs.bundle_url }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "$BUNDLE_URL" -o kv-store.wasm
+          echo "MERO_E2E_BUNDLE=$PWD/kv-store.wasm" >> "$GITHUB_ENV"
+
+      - name: Run e2e tests
+        env:
+          MERO_E2E_NODE_URL: ${{ inputs.node_url }}
+        run: |
+          set -o pipefail
+          swift test --filter MeroKitE2ETests 2>&1 | tee e2e.log
+          grep -qE "Executed [1-9][0-9]* test" e2e.log \
+            || { echo "::error::e2e produced no executed tests"; exit 1; }

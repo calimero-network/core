@@ -1,0 +1,117 @@
+{
+  "role": "node",
+  "tag": "2.3.86",
+  "generated_at": "2026-09-28T07:50:49Z",
+  "measurement_markers": {
+    "role": "calimero.role=node",
+    "profile_key": "calimero.profile",
+    "root_hash_key": "calimero.root_hash"
+  },
+  "profiles": {
+    "debug": {
+      "ita_request_kind": "v2_tdx",
+      "ita_url": "https://api.trustauthority.intel.com/appraisal/v2/attest",
+      "mrtd": "c1ee9c16e3afc506cfe042c5b846a368528f3b37618eafb27469bc114cf914e9222c91618470e7f2b28ac360968270a5",
+      "mrtd_path": "quote:$.data.quote.body",
+      "mrtd_source": "parsed_td_quote",
+      "quote_path": "$.data.quoteB64",
+      "tee_info_mrtd": "c1ee9c16e3afc506cfe042c5b846a368528f3b37618eafb27469bc114cf914e9222c91618470e7f2b28ac360968270a5",
+      "tee_info_mrtd_path": "$.data.mrtd",
+      "timestamp_utc": "2026-09-28T07:45:35.116764Z",
+      "token_path": "$.token",
+      "rtmr0": "36dd50c47243df4d21c4af2adeb20c13ade4af4bfd2e133f136026f3589efa9466c42a697f9323b2635a5778311e629c",
+      "rtmr1": "2d8fd30c28b0ea68d12bcd2ddb85cfee548f9edf054a5f3623e7a79225f4256cb74708f104888c1b57f22f33066cde62",
+      "rtmr2": "a66e429799cd3381271b520fa96888be0dd68b7709b345ddb71a5b623cf9ea54571a08f8bfd1103ca10ef56a9034f216",
+      "rtmr3": "2abd1f95015b54f4351b19d5f73ff3ac3fa2cfe4725d5840d96f87e781c87ab7e4cddf85ff526e8da46a4466bb8a4a7a",
+      "allowed_mrtd": [
+        "c1ee9c16e3afc506cfe042c5b846a368528f3b37618eafb27469bc114cf914e9222c91618470e7f2b28ac360968270a5"
+      ],
+      "allowed_rtmr0": [
+        "36dd50c47243df4d21c4af2adeb20c13ade4af4bfd2e133f136026f3589efa9466c42a697f9323b2635a5778311e629c"
+      ],
+      "allowed_rtmr1": [
+        "2d8fd30c28b0ea68d12bcd2ddb85cfee548f9edf054a5f3623e7a79225f4256cb74708f104888c1b57f22f33066cde62"
+      ],
+      "allowed_rtmr2": [
+        "a66e429799cd3381271b520fa96888be0dd68b7709b345ddb71a5b623cf9ea54571a08f8bfd1103ca10ef56a9034f216"
+      ],
+      "allowed_rtmr3": [
+        "2abd1f95015b54f4351b19d5f73ff3ac3fa2cfe4725d5840d96f87e781c87ab7e4cddf85ff526e8da46a4466bb8a4a7a"
+      ],
+      "allowed_tcb_statuses": [
+        "uptodate",
+        "outofdate"
+      ]
+    },
+    "debug-read-only": {
+      "ita_request_kind": "v2_tdx",
+      "ita_url": "https://api.trustauthority.intel.com/appraisal/v2/attest",
+      "mrtd": "c1ee9c16e3afc506cfe042c5b846a368528f3b37618eafb27469bc114cf914e9222c91618470e7f2b28ac360968270a5",
+      "mrtd_path": "quote:$.data.quote.body",
+      "mrtd_source": "parsed_td_quote",
+      "quote_path": "$.data.quoteB64",
+      "tee_info_mrtd": "c1ee9c16e3afc506cfe042c5b846a368528f3b37618eafb27469bc114cf914e9222c91618470e7f2b28ac360968270a5",
+      "tee_info_mrtd_path": "$.data.mrtd",
+      "timestamp_utc": "2026-09-28T07:45:28.841624Z",
+      "token_path": "$.token",
+      "rtmr0": "36dd50c47243df4d21c4af2adeb20c13ade4af4bfd2e133f136026f3589efa9466c42a697f9323b2635a5778311e629c",
+      "rtmr1": "700f72fe16c0562434d857a8e938a5d107790d7edb794c51e105f196b6f54cb773dfe9dd26a15b129b9b1858bb985c4d",
+      "rtmr2": "aa481c3c41e290bf092845ed4972fd50b6ba8cfb5519b982de37f1effb5bf279d28001cf4a89cdef0c4346e847d4005a",
+      "rtmr3": "697bbcebb7e0f2c314c5dfe7bbd62988fa084ea4cbf30af1b16871004a67499e1abe56e8d8a7eba32de424519658ad27",
+      "allowed_mrtd": [
+        "c1ee9c16e3afc506cfe042c5b846a368528f3b37618eafb27469bc114cf914e9222c91618470e7f2b28ac360968270a5"
+      ],
+      "allowed_rtmr0": [
+        "36dd50c47243df4d21c4af2adeb20c13ade4af4bfd2e133f136026f3589efa9466c42a697f9323b2635a5778311e629c"
+      ],
+      "allowed_rtmr1": [
+        "700f72fe16c0562434d857a8e938a5d107790d7edb794c51e105f196b6f54cb773dfe9dd26a15b129b9b1858bb985c4d"
+      ],
+      "allowed_rtmr2": [
+        "aa481c3c41e290bf092845ed4972fd50b6ba8cfb5519b982de37f1effb5bf279d28001cf4a89cdef0c4346e847d4005a"
+      ],
+      "allowed_rtmr3": [
+        "697bbcebb7e0f2c314c5dfe7bbd62988fa084ea4cbf30af1b16871004a67499e1abe56e8d8a7eba32de424519658ad27"
+      ],
+      "allowed_tcb_statuses": [
+        "uptodate",
+        "outofdate"
+      ]
+    },
+    "locked-read-only": {
+      "ita_request_kind": "v2_tdx",
+      "ita_url": "https://api.trustauthority.intel.com/appraisal/v2/attest",
+      "mrtd": "c1ee9c16e3afc506cfe042c5b846a368528f3b37618eafb27469bc114cf914e9222c91618470e7f2b28ac360968270a5",
+      "mrtd_path": "quote:$.data.quote.body",
+      "mrtd_source": "parsed_td_quote",
+      "quote_path": "$.data.quoteB64",
+      "tee_info_mrtd": "c1ee9c16e3afc506cfe042c5b846a368528f3b37618eafb27469bc114cf914e9222c91618470e7f2b28ac360968270a5",
+      "tee_info_mrtd_path": "$.data.mrtd",
+      "timestamp_utc": "2026-09-28T07:49:52.626932Z",
+      "token_path": "$.token",
+      "rtmr0": "36dd50c47243df4d21c4af2adeb20c13ade4af4bfd2e133f136026f3589efa9466c42a697f9323b2635a5778311e629c",
+      "rtmr1": "792176c6faa41597efa202da794790fd06d4da848801c86494b4ef7ba41af97b62ed1fda10f51e354593419fe40f4dd7",
+      "rtmr2": "0b3389d341c8a76c96896fee4cd042a339f6f717634eac45408208aceaedba1e323a315699d1fc2aae42a36e97608dc9",
+      "rtmr3": "195cc0b1d723d9cb905e626803bcd64056789893983f07f1145f02049151652d37a66462f141b93acd3706f7273f6c7b",
+      "allowed_mrtd": [
+        "c1ee9c16e3afc506cfe042c5b846a368528f3b37618eafb27469bc114cf914e9222c91618470e7f2b28ac360968270a5"
+      ],
+      "allowed_rtmr0": [
+        "36dd50c47243df4d21c4af2adeb20c13ade4af4bfd2e133f136026f3589efa9466c42a697f9323b2635a5778311e629c"
+      ],
+      "allowed_rtmr1": [
+        "792176c6faa41597efa202da794790fd06d4da848801c86494b4ef7ba41af97b62ed1fda10f51e354593419fe40f4dd7"
+      ],
+      "allowed_rtmr2": [
+        "0b3389d341c8a76c96896fee4cd042a339f6f717634eac45408208aceaedba1e323a315699d1fc2aae42a36e97608dc9"
+      ],
+      "allowed_rtmr3": [
+        "195cc0b1d723d9cb905e626803bcd64056789893983f07f1145f02049151652d37a66462f141b93acd3706f7273f6c7b"
+      ],
+      "allowed_tcb_statuses": [
+        "uptodate",
+        "outofdate"
+      ]
+    }
+  }
+}

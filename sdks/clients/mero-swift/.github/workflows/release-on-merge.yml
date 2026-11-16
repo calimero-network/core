@@ -1,0 +1,72 @@
+name: Release on merge
+
+# Every push to master (a merged pull request) runs semantic-release over the
+# conventional commits since the last `v*` tag (.releaserc.json): `feat` is a
+# minor release, `fix`/`perf` a patch, every other type (`docs`, `chore`,
+# `refactor`, `style`, `test`, `build`, `ci`, `revert`) none, and `!` or a `BREAKING-CHANGE:` footer a major. When there is
+# one it pushes the tag `v<version>` and creates the GitHub Release with notes
+# made from those commits.
+#
+# It authenticates as the organization's GitHub App (`vars.ACTIONS_APP_ID`,
+# `secrets.ACTIONS_APP_PRIVATE_KEY`), not GITHUB_TOKEN: a tag pushed with
+# GITHUB_TOKEN would not start release.yml, which builds and tests every `v*`
+# tag (and only creates the GitHub Release itself for a tag pushed by hand).
+#
+# SwiftPM consumers resolve the tag directly; nothing else is published. The
+# CocoaPods spec is not pushed: MeroKit.podspec cannot express the
+# swift-openapi-runtime / swift-http-types dependencies.
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-on-merge
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Mint a token for this repository
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ACTIONS_APP_ID }}
+          private-key: ${{ secrets.ACTIONS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          # The tag push and the GitHub Release.
+          permission-contents: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Every tag and commit since the last release, for the analysis.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      # Exact versions. conventional-changelog-conventionalcommits stays on 9.x:
+      # 10.x needs conventional-changelog-writer 9, which
+      # @semantic-release/release-notes-generator 14 does not use yet.
+      - name: Run semantic-release
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+        run: >-
+          npx --yes
+          -p semantic-release@25.0.9
+          -p @semantic-release/commit-analyzer@13.0.1
+          -p @semantic-release/release-notes-generator@14.1.1
+          -p @semantic-release/github@12.0.10
+          -p conventional-changelog-conventionalcommits@9.3.1
+          semantic-release

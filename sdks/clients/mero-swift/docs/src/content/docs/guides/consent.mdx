@@ -1,0 +1,108 @@
+---
+title: The consent page
+description: How a native app asks the person to approve what its package-bound session may not do (create, run or leave an organization, mint, accept or revoke an invite, approve a release, upgrade, outbound hosts) on the node's own consent page, and reads what the approval made.
+sidebar:
+  order: 3
+---
+
+A session opened for an app's package may not create, run or leave an
+organization, mint, accept or revoke an invite, approve a mero-tee release,
+upgrade an app instance or open outbound hosts on its own. The app asks the node, and the person decides on
+the node's own consent page, with their passkey.
+
+| | |
+| --- | --- |
+| `client.requestConsent(_ request:)` → `ConsentStarted` | `POST /consent/requests` (sealed): `{ requestId, url, code, expiresAt }`. Refuses a `code` that is not the page's (`CONSENT_CODE_MISMATCH`). |
+| `client.consentResult(_ requestId:)` → `ConsentResult` | `GET /consent/{id}/result` (sealed, the same account): the decision now, with its typed `outcome` |
+| `client.confirmConsentReturn(_ started:, returned:)` → `ConsentResult` | after the page sent the person back: the result of the request the app started, or an error (below) |
+| `client.openConsentPage(_:options:)`, `client.waitForConsent(_:)` | ask and navigate; poll until decided |
+| `ConsentLauncher.decide(client:request:callback:…)` (MeroKitUI) | all of the above, with the page in `ASWebAuthenticationSession` (or the browser) |
+
+## What to ask, and what comes back
+
+| `ConsentRequest` | `ConsentResult.outcome` once approved |
+| --- | --- |
+| `.createOrg(name:returnTo:)` | `.orgCreated(orgId:)`, `result.orgId` |
+| `.createInvite(org:role:teams:ttlSecs:uses:allApps:returnTo:)` | `.inviteCreated(token:)`, `result.inviteToken` |
+| `.acceptInvite(token:returnTo:)` | `.inviteAccepted(org:)`, `result.joinedOrg` |
+| `.renameOrg(org:name:returnTo:)` | `.orgRenamed(orgId:name:)`, `result.newOrgName` |
+| `.deleteOrg(org:returnTo:)` | `.orgDeleted(apps:)`, `result.deletedApps` (the apps deleted with it) |
+| `.leaveOrg(org:returnTo:)` | none |
+| `.removeMember(org:account:returnTo:)` | none |
+| `.setMemberRole(org:account:role:returnTo:)` | none |
+| `.setMemberTeams(org:account:teams:returnTo:)`, each row a `ConsentTeamMembership(team:role:capabilities:)` | none |
+| `.removeMemberTeams(org:account:teams:returnTo:)` | none |
+| `.revokeInvite(org:inviteKey:returnTo:)` | none |
+| `.setCapabilities(org:account:team:capabilities:returnTo:)`: with `account`, that member's `OrgCapabilities` (organization-wide, or in `team`); without, a default | none |
+| `.setAllApps(org:account:allApps:returnTo:)` | none |
+| `.release(...)`, `.upgrade(...)`, `.outbound(...)` | none |
+
+The outcome comes only from the sealed `/consent/{id}/result`, never from the
+URL the page sends the person back to. `consentResult` refuses an answer for
+another request, an approved `createOrg`, `createInvite`, `acceptInvite`,
+`renameOrg` or `deleteOrg` without its outcome, and an outcome of another kind.
+`result.changesOrganizations` is `true` for an approved request of any
+organization kind: re-read what lists organizations, members or teams.
+
+An invite token is a bearer credential. `ConsentRequest`, `ConsentResult` and
+`ConsentOutcome` print it as `<redacted>` in their descriptions, debug
+descriptions and mirrors (`print`, `dump`, string interpolation), and no error
+carries it. Read it from `result.inviteToken`, and don't log it.
+
+## `returnTo`
+
+The node takes a `returnTo` only on the app package's own frontend origin or an
+origin its signed manifest names (`links.frontend`, `frontendAliases`). For a
+native app that is either:
+
+- a universal link on such an https origin, `CloudCallback.https(host:path:)`,
+  with the app in that origin's `apple-app-site-association`; or
+- on Calimero Cloud, the package's served page
+  (`{origin}/{version}/?native-consent=1`), which passes `request_id` and
+  `result` on to the app's callback. `MeroClient.requestConsent` takes it as
+  `returnTo:`.
+
+## After the page sends the person back
+
+The query on the return URL is a hint. `confirmConsentReturn` reads the result
+of the request this app started and:
+
+- throws `CONSENT_REQUEST_MISMATCH` when the return names another request;
+- throws `CONSENT_NOT_DECIDED` when the app's own request is still pending,
+  the sign that a different request was approved, or that the page was forged;
+- throws `CONSENT_REPLACED` when the node answers `404` for the app's own
+  request: an account has one undecided consent request per node, and a newer
+  one replaced it (possibly on a forged page). Ask again;
+- otherwise answers the decision (`approved` or `declined`) and its outcome.
+
+## In the app
+
+```swift
+import MeroKitUI
+
+let (started, result) = try await ConsentLauncher.decide(
+    client: cloud, request: .createOrg(name: "Acme", returnTo: callback.url), callback: callback,
+    confirm: { started in await showCode(started.code) })   // false: don't open the page
+if let org = result.orgId { open(org) }
+```
+
+- With an app scheme, or an https callback on iOS 17.4+ / macOS 14.4+, the
+  page opens in `ASWebAuthenticationSession`, and the return is checked with
+  `confirmConsentReturn`. A dismissed sheet answers the result as it stands.
+- With an https callback on an older system, `ASWebAuthenticationSession`
+  takes no https callback, so the page opens in the browser and the result is
+  polled (`waitForConsent`) until the request expires. The universal link
+  arrives in `onOpenURL`: hand it to `session.handle(url)`.
+
+`MeroAppSession.requestConsent(_:)` does the same with the session's
+`callback`, keeps the result in `consentResult`, remembers the request so
+`handle(url)` checks a later return against it, and bumps `revision` when the
+approval changed an organization (`result.changesOrganizations`).
+
+```swift
+.onOpenURL { url in Task { await session.handle(url) } }
+```
+
+`ConsentRequest.generated()` gives the same body as the generated type, for
+`client.consent.pageCreate(body:)`; `requestConsent` also checks the request
+and the node's confirmation code.

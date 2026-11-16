@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  # Build and test with a read-only token: this job runs the package's own code,
+  # so it gets nothing it could publish with.
+  verify:
+    name: Verify SPM Release
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build
+        run: swift build -c release
+
+      - name: Test
+        run: swift test
+
+  # SwiftPM consumes tags directly — no artifact upload is required. This job
+  # gates the tag on a green build/test and cuts a GitHub Release for it. It is
+  # the only one holding contents: write, and it runs nothing but the release.
+  release:
+    name: Publish SPM Release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # release-on-merge.yml (semantic-release) creates the release with the
+      # tag; only a tag pushed by hand gets one here, so there are never two.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::notice::$TAG already has a release (release-on-merge): not creating another"
+            exit 0
+          fi
+          gh release create "$TAG" --repo "$REPO" --verify-tag --generate-notes --title "$TAG"

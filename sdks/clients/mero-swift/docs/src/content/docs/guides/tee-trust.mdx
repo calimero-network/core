@@ -1,0 +1,25 @@
+---
+title: TEE trust
+description: What a node must prove before anything is sent to it — mock quotes in development, signed mero-tee releases and DCAP in production.
+sidebar:
+  order: 4
+---
+
+`fetchAttestedKey(baseURL, policy:)` asks `GET /attestation?nonce=…` and
+returns the transport key only once the quote checks out. Its report data must
+be `nonce ‖ SHA-256("calimero.tee-attest.transport-key.v1" ‖ app_hash ‖ transport_key)`.
+
+| `CloudPolicy` | What passes |
+| --- | --- |
+| `.development` (`allowMock: true`) | a `MOCK_TDX_QUOTE_V1` quote binding the nonce and key: `merod local` only |
+| `.production` (`release: CloudReleasePolicy(minReleaseVersion: "2.3.109")`) | a real TDX quote from a signed mero-tee release |
+| `verifyQuote:` | your own `TransportQuoteVerifier` (e.g. `createQuoteVerifier` with pinned measurements) |
+
+A real quote is judged as core's `Measurements::Release` does, and as mero-js does:
+
+1. the release the node names is at least `minReleaseVersion` (`claimedRelease`);
+2. that release's `published-mrtds.json` is fetched (`ReleaseSource`: the Cloud mirror, GitHub, or your own) and its Sigstore signature checked against mero-tee's release workflow (`trustSignedRelease`);
+3. the quote's signature chain and TCB status are checked on the device against Intel's collateral (`Dcap.verify`), which a 1.0 node does not send: it is fetched from the cloud's PCCS mirror (`collateralSource`, default `TeeTrust.defaultCollateralMirror`; `"intel"` for Intel's PCS) by `IntelPcs.collateral(for:baseURL:)`, or from `fetchCollateral` when you give one. The mirror cannot forge Intel's signatures; `maxCollateralAgeDays` bounds how old a copy it may replay;
+4. the TD is not a debug TD, and its registers are the release's image for the trusted profile (`locked-read-only` unless `allowDebugProfile`).
+
+Nothing reads the environment: mock quotes pass only with `allowMock`.

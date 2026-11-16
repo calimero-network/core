@@ -1,0 +1,53 @@
+---
+title: MeroKit
+description: The Calimero Swift SDK for Calimero 1.0 — attested, sealed requests to a confidential cluster, passkey sign-in, app calls and events, organizations and teams, and the SwiftUI app layer native apps build on.
+template: splash
+hero:
+  tagline: The native Swift SDK for Calimero 1.0. It verifies a node's TDX attestation, seals every request to it, signs people in with passkeys, and gives your SwiftUI app its organizations, teams, app instances and live events. Zero third-party dependencies.
+  actions:
+    - text: Quickstart
+      link: /get-started/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/calimero-network/swift-sdk
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="Get Started" icon="rocket">
+    Add the package, point `CalimeroClient` at a node, sign in with a passkey
+    and call an app. [Quickstart →](/get-started/quickstart/)
+  </Card>
+  <Card title="Sign-in" icon="approve-check">
+    Passkeys, sessions and refresh tokens, failover between nodes.
+    [Authentication →](/get-started/authentication/)
+  </Card>
+  <Card title="Guides" icon="setting">
+    Calls, views and events; orgs, teams and invites; the consent page; the
+    app layer (`MeroAppSession`). [Calls and events →](/guides/calls-and-events/)
+  </Card>
+  <Card title="Reference" icon="list-format">
+    Every `CalimeroClient` method and every typed error.
+    [CalimeroClient →](/reference/calimero-client/)
+  </Card>
+</CardGrid>
+
+## The device is a thin client
+
+MeroKit never runs a node. A Calimero 1.0 cluster is a set of attested TDX
+nodes; each app instance is one replicated log on them. MeroKit is the Swift
+port of [mero-js](https://github.com/calimero-network/mero-js)'s
+`CalimeroClient`: the same methods, the same errors, the same retry and
+failover rules.
+
+| Layer | What it is |
+| --- | --- |
+| `MeroKitUI.MeroAppSession` | An app's signed-in account and its `MeroAppBackend` (orgs, teams, app instances, invites, events). |
+| `MeroKitUI.MeroClient` | The observable session: sign-in, restore, sign-out, the consent page. |
+| `MeroKit.CalimeroClient` | Every node route, typed errors, refresh and failover. |
+| `MeroKit.SealedTransport` | Noise NK to the attested transport key (`calimero/sealed-http/v2`), sealed frames. |
+| `MeroKit` TEE trust | Mock or real quotes: signed mero-tee releases (Sigstore), DCAP against Intel's collateral. |

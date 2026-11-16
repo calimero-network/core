@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+      # A PR stacked on a feature branch (feat/openapi-remove-deprecated on
+      # feat/openapi-client) is checked too.
+      - 'feat/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build
+        run: swift build -v
+
+      - name: Test
+        run: swift test -v
+
+  lint:
+    name: Lint (SwiftLint + swift-format)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install linters
+        run: brew install swiftlint swift-format
+
+      - name: SwiftLint
+        run: swiftlint lint --strict --reporter github-actions-logging
+
+      - name: swift-format lint
+        run: swift-format lint --recursive --strict Sources Tests Examples
+
+  generated:
+    name: Generated API is current
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Builds swift-openapi-generator (openapi/source's GENERATOR_VERSION),
+      # regenerates MeroAPI and the facade from openapi/openapi.json and fails
+      # if the checked-in sources differ.
+      - name: Regenerate and compare
+        run: scripts/generate-openapi.sh check
+
+      # Stale: the fresh sources, laid out as in the repo, to unzip and commit
+      # (an artifact, and the same tarball in the log for where artifact
+      # storage cannot be reached).
+      - name: Upload the regenerated sources
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: openapi-generated
+          path: .build/openapi-fresh
+          if-no-files-found: ignore
+
+      - name: Print the regenerated sources (base64 tar.gz)
+        if: failure()
+        run: |
+          [ -d .build/openapi-fresh ] || exit 0
+          echo "-----BEGIN OPENAPI FRESH-----"
+          tar -czf - -C .build/openapi-fresh . | base64
+          echo "-----END OPENAPI FRESH-----"
