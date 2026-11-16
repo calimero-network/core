@@ -2455,3 +2455,119 @@ async fn a_frontend_creates_an_organization_with_member_capabilities_in_one_appr
 fn status_of(r: Result<Value, u16>) -> u16 {
     r.expect_err("the request is refused")
 }
+
+/// An invite made on the page carries capabilities: the page says in words
+/// what whoever joins can do (the joiner's page too), the step-up commits to
+/// the bits, and the member gets exactly them. Nobody below admin hands out
+/// a capability they lack, on the page or on the plain route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let (bob, bob_key) = signed_up(&c, 2, "bob").await;
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(v1).await.unwrap();
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let back = format!("{app_origin}/1.0.0/");
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let bob_in_app = c.client(1);
+    let mut bob_in_app_passkey = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = bob_in_app.sign_in(&mut bob_in_app_passkey).await.unwrap();
+
+    let org = post(&alice, "orgs", json!({ "name": "acme" }))
+        .await
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let granted = 0b11; // create apps, invite people
+
+    let made = ask(
+        &in_app,
+        &back,
+        "createInvite",
+        json!({ "org": org, "role": "member", "capabilities": granted }),
+    )
+    .await
+    .unwrap();
+    let id = made["requestId"].as_str().unwrap().to_owned();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["invite"]["capabilities"], granted, "{model}");
+    assert!(
+        model["points"]
+            .to_string()
+            .contains("Whoever joins can create apps and invite people."),
+        "{model}"
+    );
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["capabilities"], granted, "{args}");
+    let result = get(&in_app, &format!("consent/{id}/result")).await.unwrap();
+    let token = result["outcome"]["token"].as_str().unwrap().to_owned();
+
+    let made = ask(
+        &bob_in_app,
+        &back,
+        "acceptInvite",
+        json!({ "token": token }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert!(
+        model["points"]
+            .to_string()
+            .contains("You can create apps and invite people."),
+        "{model}"
+    );
+    let mut bob_page = SoftAuthenticator::with_key(&bob_in_app_passkey, "localhost", &origin(&url));
+    let ((code, done), _) = page.approve(&c, &mut bob_page).await;
+    assert_eq!(code, 200, "{done}");
+    let o = get(&alice, &format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["capabilities"][&bob_id], granted, "{o}");
+
+    // Bob holds create-apps and invite, nothing else: he grants no more.
+    let over = granted | 0b1000; // and manage members
+    let invites = format!("orgs/{org}/invites");
+    let e = post(
+        &bob,
+        &invites,
+        json!({ "role": "member", "capabilities": over }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    assert!(e.to_string().contains("grants only capabilities"), "{e}");
+    let refused = ask(
+        &bob_in_app,
+        &back,
+        "createInvite",
+        json!({ "org": org, "role": "member", "capabilities": over }),
+    )
+    .await;
+    assert_eq!(status_of(refused), 403);
+    let _page = ask(
+        &bob_in_app,
+        &back,
+        "createInvite",
+        json!({ "org": org, "role": "member", "capabilities": 1 }),
+    )
+    .await
+    .unwrap();
+}

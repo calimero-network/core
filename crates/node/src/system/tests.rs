@@ -8838,3 +8838,129 @@ fn an_organization_created_with_capabilities_sets_its_member_default() {
     let _ok = m.run_unproven(old).unwrap();
     assert_eq!(m.state.orgs["old"].default_capabilities, caps::DEFAULT);
 }
+
+/// `actor` mints an invite of `org` under `token` carrying `capabilities`,
+/// with their passkey's consent over exactly those terms.
+fn mint_with_capabilities(
+    m: &mut SystemMachine,
+    pk: &mut Soft,
+    actor: &str,
+    token: &str,
+    capabilities: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let key = crate::proof::invite_key(token);
+    let mut invite: crate::types::Invite = serde_json::from_value(json!({
+        "org": "org", "role": "member", "expiresAt": 100, "usesLeft": 2,
+    }))
+    .unwrap();
+    invite.capabilities = capabilities;
+    let c = consent(
+        pk,
+        "org:org",
+        "__create_invite",
+        &super::invite_args(&key, &invite),
+    );
+    m.run(SystemCmd::CreateInvite {
+        invite_key: key,
+        invite,
+        actor: actor.into(),
+        consent: c,
+        teams_seen: true,
+    })
+}
+
+/// An invite carrying capabilities gives a new member exactly those bits as
+/// their own setting; one without leaves them on the organization's default,
+/// and a member already in keeps what they have.
+#[test]
+fn an_invite_carrying_capabilities_gives_them_to_a_new_member() {
+    use crate::types::caps;
+
+    let granted = caps::CREATE_APP | caps::INVITE_MEMBERS | caps::MANAGE_METADATA;
+    let (mut m, mut alice, _bob, _carol) = proven_cluster();
+    let _ok = mint_with_capabilities(&mut m, &mut alice, "alice", "inv_c", Some(granted)).unwrap();
+    let _ok = mint_with_capabilities(&mut m, &mut alice, "alice", "inv_p", None).unwrap();
+    let key = crate::proof::invite_key("inv_c");
+    assert_eq!(m.state.invites[&key].capabilities, Some(granted));
+
+    // An existing member redeeming it keeps their own setting.
+    let _same = m.run(redemption("inv_c", "bob", 10)).unwrap();
+    assert!(!m.state.orgs["org"].capabilities.contains_key("bob"));
+
+    let _ok = m.run(redemption("inv_c", "carol", 11)).unwrap();
+    let o = &m.state.orgs["org"];
+    assert_eq!(o.capabilities["carol"], granted);
+    assert_eq!(o.org_caps("carol"), granted);
+
+    // Without capabilities the member is on the default, as before.
+    let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("carol");
+    let _gone = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .capabilities
+        .remove("carol");
+    let _ok = m.run(redemption("inv_p", "carol", 12)).unwrap();
+    let o = &m.state.orgs["org"];
+    assert!(!o.capabilities.contains_key("carol"));
+    assert_eq!(o.org_caps("carol"), o.default_capabilities);
+}
+
+/// Below admin, an invite grants only a subset of what its creator holds, so
+/// every node refuses an over-grant alike; an admin may grant any bits.
+#[test]
+fn an_invite_never_grants_capabilities_its_creator_lacks() {
+    use crate::types::caps;
+
+    let (mut m, _alice, mut bob, _carol) = proven_cluster();
+    let o = m.state.orgs.get_mut("org").unwrap();
+    let _prev = o
+        .capabilities
+        .insert("bob".into(), caps::INVITE_MEMBERS | caps::CREATE_APP);
+
+    let over = caps::CREATE_APP | caps::MANAGE_MEMBERS;
+    assert_eq!(
+        mint_with_capabilities(&mut m, &mut bob, "bob", "inv_over", Some(over)).unwrap_err(),
+        super::CANNOT_GRANT_UNHELD.to_owned()
+    );
+    assert!(!m
+        .state
+        .invites
+        .contains_key(&crate::proof::invite_key("inv_over")));
+    let _ok =
+        mint_with_capabilities(&mut m, &mut bob, "bob", "inv_ok", Some(caps::CREATE_APP)).unwrap();
+    let _ok = mint_with_capabilities(&mut m, &mut bob, "bob", "inv_none", Some(0)).unwrap();
+
+    let _prev = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .members
+        .insert("bob".into(), OrgRole::Admin);
+    let _ok = mint_with_capabilities(&mut m, &mut bob, "bob", "inv_admin", Some(over)).unwrap();
+}
+
+/// An invite from before the field has none and writes without it; the
+/// consent names it only when it is given.
+#[test]
+fn an_invite_without_capabilities_reads_writes_and_is_consented_as_before() {
+    let old: crate::types::Invite = serde_json::from_value(json!({
+        "org": "org", "role": "member", "expiresAt": 1, "usesLeft": 1,
+    }))
+    .unwrap();
+    assert_eq!(old.capabilities, None);
+    assert!(serde_json::to_value(&old)
+        .unwrap()
+        .get("capabilities")
+        .is_none());
+    assert!(super::invite_args("k", &old).get("capabilities").is_none());
+    let mut with = old;
+    with.capabilities = Some(3);
+    assert_eq!(super::invite_args("k", &with)["capabilities"], json!(3));
+    assert_eq!(
+        serde_json::to_value(&with).unwrap()["capabilities"],
+        json!(3)
+    );
+}

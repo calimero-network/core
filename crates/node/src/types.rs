@@ -881,6 +881,13 @@ impl Org {
             .unwrap_or(self.default_capabilities)
     }
 
+    /// Whether `account` may hand out `bits`: admins any, others only bits
+    /// they hold organization-wide.
+    #[must_use]
+    pub fn may_grant(&self, account: &str, bits: u32) -> bool {
+        bits & !self.org_caps(account) == 0
+    }
+
     /// Whether `account` holds `cap` for `team` (a team they manage, or their
     /// row's capabilities there, else the team's default while they are in it
     /// on top of their organization-wide ones), or organization-wide when
@@ -1068,6 +1075,11 @@ pub struct Invite {
     /// an invite from before reads and writes as it did.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all_apps: bool,
+    /// The capability bits a new member gets as their own setting
+    /// ([`Org::capabilities`]) when they redeem it, never more than its
+    /// creator holds. Left out when none: the organization's default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<u32>,
 }
 
 #[allow(

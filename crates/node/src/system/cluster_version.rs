@@ -98,10 +98,13 @@ pub enum Feature {
     /// `CreateOrg` with `capabilities`: an earlier release ignores the field
     /// and leaves the organization's member default as a new one's.
     OrgCapabilities,
+    /// `CreateInvite` with `capabilities`: an earlier release drops the field,
+    /// so a member redeeming it would get the organization's default.
+    InviteCapabilities,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 24] = [
+pub const FEATURES: [Feature; 25] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -126,6 +129,7 @@ pub const FEATURES: [Feature; 24] = [
     Feature::MoveOrgQuotas,
     Feature::PublishedRunByRelease,
     Feature::OrgCapabilities,
+    Feature::InviteCapabilities,
 ];
 
 impl Feature {
@@ -157,6 +161,7 @@ impl Feature {
             Self::MoveOrgQuotas => "moveOrgQuotas",
             Self::PublishedRunByRelease => "publishedRunByRelease",
             Self::OrgCapabilities => "orgCapabilities",
+            Self::InviteCapabilities => "inviteCapabilities",
         }
     }
 
@@ -186,7 +191,7 @@ impl Feature {
             Self::BackupKeys => "1.0.0-rc.20",
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
-            Self::OrgCapabilities => "1.0.0-rc.29",
+            Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
         }
     }
 }
@@ -412,7 +417,16 @@ impl SystemCmd {
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
             }
-            Self::CreateInvite { invite, .. } if invite.all_apps => vec![Feature::AllApps],
+            Self::CreateInvite { invite, .. } => {
+                let mut f = Vec::new();
+                if invite.all_apps {
+                    f.push(Feature::AllApps);
+                }
+                if invite.capabilities.is_some() {
+                    f.push(Feature::InviteCapabilities);
+                }
+                f
+            }
             Self::SetPriceTable { .. } => vec![Feature::PriceTable],
             Self::InstallPackage { release, .. } => {
                 let mut f = Vec::new();
@@ -509,7 +523,6 @@ impl SystemCmd {
             | Self::SetCapabilities { .. }
             | Self::SetDefaultCapabilities { .. }
             | Self::RemoveTeamMember { .. }
-            | Self::CreateInvite { .. }
             | Self::RedeemInvite { .. }
             | Self::RevokeInvite { .. }
             | Self::SetRecoveryKey { .. }
@@ -572,6 +585,17 @@ mod tests {
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
         match feature {
+            Feature::InviteCapabilities => SystemCmd::CreateInvite {
+                invite_key: "k".into(),
+                invite: serde_json::from_value(json!({
+                    "org": "org", "role": "member", "expiresAt": 1, "usesLeft": 1,
+                    "capabilities": 2,
+                }))
+                .unwrap(),
+                actor: "alice".into(),
+                consent: Value::Null,
+                teams_seen: true,
+            },
             Feature::OrgCapabilities => SystemCmd::CreateOrg {
                 org_id: "org-d".into(),
                 name: "Chat".into(),
@@ -1242,6 +1266,21 @@ mod tests {
         assert!(entry(run.clone()).features().is_empty());
         run["pool"] = json!("big");
         assert_eq!(entry(run).features(), [Feature::NamedPool]);
+    }
+
+    /// An invite is an older shape unless it carries capabilities, which an
+    /// earlier release would drop.
+    #[test]
+    fn only_an_invite_carrying_capabilities_needs_invite_capabilities() {
+        let mut plain = uses(Feature::InviteCapabilities);
+        if let SystemCmd::CreateInvite { invite, .. } = &mut plain {
+            invite.capabilities = None;
+        }
+        assert!(plain.features().is_empty());
+        assert_eq!(
+            uses(Feature::InviteCapabilities).features(),
+            [Feature::InviteCapabilities]
+        );
     }
 
     #[test]

@@ -893,6 +893,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if invite.all_apps && role < OrgRole::Admin {
                 return Err(ONLY_ADMINS_ALL_APPS);
             }
+            if invite.capabilities.is_some_and(|c| !o.may_grant(&actor, c)) {
+                return Err(CANNOT_GRANT_UNHELD);
+            }
             if s.sign_up_invites.contains_key(&invite_key) {
                 return Err("invite exists");
             }

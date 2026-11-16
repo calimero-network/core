@@ -903,6 +903,9 @@ pub const PERSONAL_ORG_NAME: &str = "Personal";
 /// by invite or set on a member, is the owner's or an admin's.
 pub const ONLY_ADMINS_ALL_APPS: &str =
     "only the organization's owner and admins give someone every app added later";
+/// A refusal: an invite grants no capability its creator does not hold.
+pub const CANNOT_GRANT_UNHELD: &str =
+    "an invite grants only capabilities its creator holds; only the owner and admins grant any";
 /// A refusal: the package has an app team in this organization already.
 pub const APP_TEAM_EXISTS: &str = "this package has an app team in this organization already";
 
@@ -2115,7 +2118,11 @@ impl SystemState {
             .get(account)
             .copied()
             .map_or(inv.role, |r| r.max(inv.role));
+        let new_member = !o.members.contains_key(account);
         let _prev = o.members.insert(account.to_owned(), role);
+        if let (Some(bits), true) = (inv.capabilities, new_member) {
+            let _prev = o.capabilities.insert(account.to_owned(), bits);
+        }
         if inv.all_apps {
             let _new = o.all_apps.insert(account.to_owned());
         }
@@ -4252,6 +4259,9 @@ pub fn invite_args(invite_key: &str, invite: &Invite) -> Value {
     // in the bytes it was before.
     if invite.all_apps {
         args["allApps"] = json!(true);
+    }
+    if let Some(bits) = invite.capabilities {
+        args["capabilities"] = json!(bits);
     }
     args
 }

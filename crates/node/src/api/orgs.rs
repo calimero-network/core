@@ -992,6 +992,11 @@ pub(crate) struct InviteBody {
     /// Whoever redeems it also gets every app added later (an admin's).
     #[serde(default)]
     pub(crate) all_apps: bool,
+    /// The capability bits whoever joins gets as their own setting; the
+    /// organization's default applies when absent. No more than the
+    /// creator holds (an admin's: any).
+    #[serde(default)]
+    pub(crate) capabilities: Option<u32>,
     #[serde(default)]
     pub(crate) confirm: Option<ConfirmBody>,
 }
@@ -1026,6 +1031,15 @@ pub(crate) async fn create_invite(
         // Before the passkey step-up: an earlier release would drop the flag.
         node.require_features(&[Feature::AllApps]).await?;
     }
+    if let Some(bits) = body.capabilities {
+        let may = node.sys(|s| s.orgs.get(&org).is_none_or(|o| o.may_grant(&actor, bits)));
+        if !may {
+            return Err(ApiError::forbidden(crate::system::CANNOT_GRANT_UNHELD));
+        }
+        // Before the passkey step-up: an earlier release would drop the field.
+        node.require_features(&[Feature::InviteCapabilities])
+            .await?;
+    }
     let token = format!("inv_{}", b64url(&random::<24>()));
     let invite = Invite {
         org: org.clone(),
@@ -1036,6 +1050,7 @@ pub(crate) async fn create_invite(
         created_by: actor.clone(),
         created_at: now_secs(),
         all_apps: body.all_apps,
+        capabilities: body.capabilities,
     };
     let args = crate::system::invite_args(&crate::proof::invite_key(&token), &invite);
     let c = consent_minted(
