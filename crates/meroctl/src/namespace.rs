@@ -208,7 +208,7 @@ pub async fn org(env: &Env, namespace: &str) -> eyre::Result<Org> {
 pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
     let orgs = env.client.orgs();
     Ok(match cmd {
-        NamespaceCmd::Create { name } => to_json(&orgs.create(&name, None).await?)?,
+        NamespaceCmd::Create { name } => to_json(&orgs.create(&name, None, None).await?)?,
         NamespaceCmd::Get { namespace } => to_json(&org(env, &namespace).await?)?,
         NamespaceCmd::List => json!({ "namespaces": env.client.auth().me().await?.orgs }),
         NamespaceCmd::Delete {
@@ -234,6 +234,7 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
                 ttl_secs,
                 uses: uses.map(u64::from),
                 all_apps: None,
+                capabilities: None,
             };
             let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
             let out = orgs.invite_create(&namespace, body, pk.get()).await;

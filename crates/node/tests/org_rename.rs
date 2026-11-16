@@ -60,7 +60,12 @@ async fn an_admin_renames_the_organization_with_a_passkey() {
     let (carol, mut cpk) = signed_up(&c, 2, "carol").await;
     let (dave, _d) = signed_up(&c, 0, "dave").await;
     let (erin, mut e) = signed_up(&c, 1, "erin").await;
-    let org = s(&alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]);
+    let org = s(&alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]);
     redeem(&bob, &invite(&alice, &mut a, &org, "admin").await).await;
     redeem(&carol, &invite(&alice, &mut a, &org, "member").await).await;
     // Minted before the rename, redeemed after it.

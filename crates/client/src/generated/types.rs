@@ -3472,6 +3472,8 @@ pub struct ConsentPageCreateRequestOutboundSubject {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConsentPageCreateRequestCreateOrgSubject {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -3530,6 +3532,8 @@ pub struct ConsentPageCreateRequestCreateInviteSubject {
     #[serde(rename = "allApps")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub all_apps: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -5267,6 +5271,8 @@ pub struct InviteCreateRequest {
     #[serde(rename = "allApps")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub all_apps: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -52,7 +52,12 @@ async fn serve_registry(files: BTreeMap<String, Vec<u8>>) -> String {
 /// An org of `owner`'s, with Rooms created in it from `package@version`; Rooms then
 /// takes a room (an admin's call), refuses the same room again, and answers a view.
 async fn run_rooms_from(c: &Cluster, owner: &Client, package: &str, version: &str) {
-    let org = owner.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
+    let org = owner
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -530,7 +535,12 @@ async fn install_compute_only(
 }
 
 async fn create_compute_only(owner: &Client, version: &str) -> String {
-    let org = owner.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
+    let org = owner
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();

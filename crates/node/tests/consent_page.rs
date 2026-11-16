@@ -1093,7 +1093,12 @@ async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_re
     let c = Cluster::start(3).await;
     let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
     let (bob, _) = signed_up(&c, 0, "bob").await;
-    let org = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
+    let org = alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -2340,7 +2345,12 @@ async fn a_member_removed_from_the_org_loses_the_capability_card() {
     let path = format!("packages/{PACKAGE}/1.0.0/capabilities");
     assert_eq!(status(&get(&amy, &path).await.unwrap_err()), 404);
 
-    let org = alice.orgs().create("acme", None).await.unwrap().org_id;
+    let org = alice
+        .orgs()
+        .create("acme", None, None)
+        .await
+        .unwrap()
+        .org_id;
     let invite = alice
         .orgs()
         .invite_create(

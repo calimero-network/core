@@ -1254,6 +1254,17 @@ is its command line.
   `appTeam`, the step-up `appTeam`. Regressions:
   `an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page`,
   `system::tests::an_organization_made_from_an_app_starts_with_its_app_team`.
+  `createOrg { capabilities }` sets the org's member default in that same
+  entry (`CreateOrg { capabilities }`, after the app team, `Feature::OrgCapabilities`);
+  `createInvite { capabilities }` is `Invite::capabilities`, which a new member
+  holds as their own `Org::capabilities` entry (`Feature::InviteCapabilities`),
+  refused above the creator's own bits (`Org::may_grant`, in `CreateInvite`'s
+  apply and asked first by the route and the page); the page lists the bits in
+  full (`consent_page::capabilities_point`), the step-up names them only when
+  given. Regressions:
+  `a_frontend_creates_an_organization_with_member_capabilities_in_one_approval`,
+  `an_invite_carries_capabilities_to_the_member_who_joins_with_it`,
+  `system::tests::an_invite_never_grants_capabilities_its_creator_lacks`.
   Moderation and settings (`consent_page/orgs.rs`): `leaveOrg { org }`,
   `removeMember { org, account }`, `setMemberRole { org, account, role }`,
   `setMemberTeams { org, account, teams: [TeamRow] }`, `removeMemberTeams

@@ -1879,7 +1879,12 @@ struct Org {
 
 async fn org_with_a_public_app(f: &Fixture) -> Org {
     let alice = &f.clients[0];
-    let org = alice.orgs().create("Docs", None).await.map(wire).unwrap()["orgId"]
+    let org = alice
+        .orgs()
+        .create("Docs", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();

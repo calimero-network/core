@@ -69,7 +69,12 @@ async fn operator_invite(ops: &Client, token: &str, uses: u32) -> Value {
 
 /// An organization of `owner`'s, and an invite to it for one member.
 async fn org_invite(owner: &Client, pk: &mut SoftAuthenticator) -> (String, String) {
-    let org = owner.orgs().create("Docs", None).await.map(wire).unwrap()["orgId"]
+    let org = owner
+        .orgs()
+        .create("Docs", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
