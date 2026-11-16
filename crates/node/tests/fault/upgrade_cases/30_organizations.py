@@ -336,7 +336,7 @@ class OrgCapabilities(DeepCase):
 
     def exercise(self, w, s):
         member = person(w, "cabe")
-        refused(("FORBIDDEN",), lambda: member.raw(
+        refused(("CANNOT_GRANT_UNHELD",), lambda: member.raw(
             "post", f"orgs/{s['org']}/invites", {"role": "member", "capabilities": 3 | 8}),
             "a member grants a capability they lack")
         token = member.raw("post", f"orgs/{s['org']}/invites", {"role": "member", "capabilities": 1})["token"]
