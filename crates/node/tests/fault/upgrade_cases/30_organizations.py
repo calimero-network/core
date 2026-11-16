@@ -8,7 +8,7 @@ import uuid
 import ed25519_sign
 from rv2 import b64url
 from upgrade_deep import (DeepCase, check, decisions, eq, invite, join, kv_wasm, new_org, people, person,
-                          refused, roles, same_decisions, same_read, snap, team_id)
+                          refused, roles, same_decisions, same_read, snap, team_id, until)
 from upgrade_path import case
 
 
@@ -305,4 +305,40 @@ class PersonalOrg(DeepCase):
         app = yan.deploy(kv_wasm(w), f"yan-{len(s['apps']) + 1}")
         yan.call(app, "set", {"key": "k", "value": app})
         s["apps"].append(app)
+        self.check(w, s)
+
+
+@case
+class OrgCapabilities(DeepCase):
+    name = "org-capabilities"
+    area = "Organizations"
+    since = "1.0.0-rc.29"
+    seeds = ("an organization created with member default capabilities (`POST /orgs { capabilities }`) and an "
+             "invite carrying capabilities, redeemed by a new member; both fields wait for the cluster "
+             "version that brings them, so they are made after the roll")
+    verifies = ("the organization's default capabilities and the member's own setting as the owner reads "
+                "them; a member holding two capabilities may not mint an invite granting a third (`403`), "
+                "and may mint one granting what they hold")
+
+    def populate(self, w):
+        owner, member = people(w, "cora", "cabe")
+        org = until("the cluster version takes capabilities on a new organization", lambda: owner.raw(
+            "post", "orgs", {"name": "Cora Co", "capabilities": 7})["orgId"], timeout=120)
+        token = invite(owner, org, capabilities=3)
+        member.raw("post", f"invites/{token}/redeem", {})
+        return {"org": org}
+
+    def check(self, w, s):
+        owner, member = people(w, "cora", "cabe")
+        o = owner.get(f"orgs/{s['org']}")
+        eq(o.get("defaultCapabilities"), 7, "the organization's default capabilities")
+        eq(o.get("capabilities", {}).get(member.id), 3, "the invited member's own capabilities")
+
+    def exercise(self, w, s):
+        member = person(w, "cabe")
+        refused(("FORBIDDEN",), lambda: member.raw(
+            "post", f"orgs/{s['org']}/invites", {"role": "member", "capabilities": 3 | 8}),
+            "a member grants a capability they lack")
+        token = member.raw("post", f"orgs/{s['org']}/invites", {"role": "member", "capabilities": 1})["token"]
+        check(token, "a member mints an invite granting what they hold")
         self.check(w, s)
