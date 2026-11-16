@@ -1,0 +1,113 @@
+name: Instrumented Tests
+
+# Android instrumented tests (the analog of Swift's XCUITest): builds the Compose
+# sample app and drives sign-in → home → chat → sign-out in an Android emulator on
+# the IN-APP DEMO (no cluster). This is the PR gate for UI behaviour.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  instrumented-tests:
+    name: connectedDebugAndroidTest (emulator, in-app mock)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      # Hardware acceleration for the emulator. Without KVM the x86_64 emulator
+      # boots under software rendering only and is far too slow.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # ⚠️ NO AVD CACHE — restoring one hangs the emulator on these runners.
+      #
+      # Measured 2026-09-09 on one job, three attempts, only the cache varied:
+      #
+      #   restore a cache saved AFTER a test run   → hung, killed at the 45m timeout
+      #   NO cache, create the AVD in-job          → PASSED in ~3 minutes
+      #   restore a cache saved BEFORE any test    → hung again
+      #
+      # So it is the RESTORE that breaks it, not staleness and not when the cache was
+      # written — a freshly created, immediately saved AVD fails the same way. A
+      # restored AVD boots far enough for adb and then never registers its system
+      # services:
+      #
+      #   android.os.ServiceManager$ServiceNotFoundException: No service published for: input
+      #   ##[error]The process '…/platform-tools/adb' failed with exit code 1
+      #
+      # …after which the job idles to `timeout-minutes`, so 90 seconds of work is
+      # reported as a 45-minute failure. With a fixed key it could never self-heal:
+      # every run restored the same thing, which is why RE-RUNNING NEVER HELPED.
+      # That cost two hours across three branches on 2026-09-09, one of which
+      # changed only `docs/package-lock.json`.
+      #
+      # Creating the AVD in-job costs ~2 minutes and is reliable. If you reinstate a
+      # cache, prove it by running the job TWICE — the second run is the one that
+      # restores, and the first will happily mislead you.
+      - name: Create AVD (not cached — see above)
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 30
+          target: default
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD created for this job."
+
+      - name: Run instrumented tests (in-app mock)
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 30
+          target: default
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          # NOTE: android-emulator-runner runs this script with /usr/bin/sh (dash), which does
+          # NOT support `set -o pipefail`. Redirect to a log file (instead of piping through tee)
+          # so the gradle exit code propagates and a real test failure fails the job.
+          # Single-line gradle invocation: the action runs this under sh and backslash line
+          # continuations don't survive (the `\` gets passed to gradle as a task name).
+          # In-app demo only (mero-testkit's InMemoryAppBackend): no cluster.
+          script: |
+            ./gradlew :sample-app:connectedDebugAndroidTest --stacktrace > instrumented.log 2>&1 || { cat instrumented.log; exit 1; }
+            cat instrumented.log
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: instrumented-logs
+          path: |
+            instrumented.log
+            sample-app/build/reports/androidTests/
+            sample-app/build/outputs/androidTest-results/
+          if-no-files-found: warn

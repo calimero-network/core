@@ -1,0 +1,24 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{kt,kts}]
+ktlint_standard_no-wildcard-imports = enabled
+ktlint_standard_filename = disabled
+# Test methods use backtick sentence names.
+ktlint_standard_function-naming = disabled
+# Wrapping/length are noisy on KDoc + snake_case DTOs; keep semantic rules, drop the pickiest ones.
+ktlint_standard_max-line-length = disabled
+ktlint_standard_argument-list-wrapping = disabled
+ktlint_standard_parameter-list-wrapping = disabled
+ktlint_standard_comment-wrapping = disabled
+max_line_length = off
+
+[*.{yml,yaml,json,toml}]
+indent_size = 2

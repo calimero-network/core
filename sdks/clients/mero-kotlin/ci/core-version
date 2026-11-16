@@ -1,0 +1,7 @@
+# The core release this SDK speaks to: Calimero 1.0 (the confidential cloud). Nodes are
+# `merod` 1.0 clusters; for local development run `cargo run -p merod -- local` (three nodes on
+# 127.0.0.1:2501-2503, --dev, mock attestation).
+#
+# Informational: no workflow boots a node any more (the 0.x e2e and merobox lanes were removed
+# with the 0.x API). Bump it when the SDK is checked against a newer core.
+CORE_TAG=1.0.0-rc.29

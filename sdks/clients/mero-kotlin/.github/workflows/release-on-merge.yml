@@ -1,0 +1,77 @@
+name: Release on merge
+
+# Cuts the next version on every push to main, as mero-js does: semantic-release
+# reads the conventional commits since the last `v*` tag (.releaserc.json), and
+# when they call for a release it pushes the tag `vX.Y.Z` and creates the GitHub
+# Release with notes generated from those commits. The tag then runs release.yml,
+# which publishes to GitHub Packages and to Maven Central.
+#
+# The tag is pushed with a GitHub App token, not GITHUB_TOKEN: a tag GITHUB_TOKEN
+# pushes does not start another workflow, so release.yml would never run. The
+# token is scoped to this repository and to contents: write. The app's
+# credentials are the org-shared vars.ACTIONS_APP_ID /
+# secrets.ACTIONS_APP_PRIVATE_KEY, and the app must be installed here.
+#
+# Nothing is committed back to main: CHANGELOG.md stays hand-written (see
+# PUBLISHING.md), and the version comes from the tag (release.yml passes
+# -PVERSION_NAME), so no release commit is needed.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never cancel: a cancelled run can leave a tag pushed with no release behind it.
+# Queue instead; the next run sees the tag and starts from there.
+concurrency:
+  group: release-on-merge
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag the next version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Mint a token for this repository
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ACTIONS_APP_ID }}
+          private-key: ${{ secrets.ACTIONS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          # Push the tag and create the GitHub Release; nothing else.
+          permission-contents: write
+
+      # Full history and tags: semantic-release finds the last release by its tag.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      # Exact versions, no lockfile and no package.json in this Gradle repo: npx
+      # fetches exactly these.
+      - name: Run semantic-release
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+          GIT_AUTHOR_NAME: ${{ steps.token.outputs.app-slug }}[bot]
+          GIT_COMMITTER_NAME: ${{ steps.token.outputs.app-slug }}[bot]
+        run: |
+          set -euo pipefail
+          npx --yes \
+            -p semantic-release@25.0.9 \
+            -p @semantic-release/commit-analyzer@13.0.1 \
+            -p @semantic-release/release-notes-generator@14.1.1 \
+            -p @semantic-release/github@12.0.10 \
+            -p conventional-changelog-conventionalcommits@9.3.1 \
+            semantic-release

@@ -1,0 +1,75 @@
+name: OpenAPI sync
+
+# Keeps the generated client in step with core's node API. Re-vendors core's
+# docs/public/openapi.json, regenerates mero-core/src/generated (client and
+# facade), and opens or refreshes one pull request on the machine-owned branch
+# `chore/core-openapi`. Core's openapi-sync.yml sends the `core-openapi` event
+# with the commit; a weekly run catches a missed one.
+#
+# The sync is core's reusable sdk-openapi-sync.yml, the one all four SDKs call,
+# pinned by commit below (the classifier it runs is read from core at that same
+# commit). It titles the pull request by what the change does to callers, which
+# semantic-release reads: `feat(api)!:` with a `BREAKING-CHANGE:` footer
+# (major), `feat(api):` (minor) or `chore(api):` (patch). A facade method that
+# codegen/facade-diff.py finds removed or changed (its exit 3) makes it
+# breaking too.
+#
+# The pull request is opened with a GitHub App token, not GITHUB_TOKEN: a pull
+# request GITHUB_TOKEN opens does not trigger this repository's CI. The app must
+# be installed on this repository; its credentials are the org-shared
+# vars.ACTIONS_APP_ID / secrets.ACTIONS_APP_PRIVATE_KEY, which must be shared
+# with this repository.
+
+on:
+  repository_dispatch:
+    types: [core-openapi]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Core branch, tag or commit to sync with"
+        required: false
+        default: master
+        type: string
+      dry_run:
+        description: "Regenerate and print the changes, but push nothing"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+# Never cancel: a cancelled run can leave the branch pushed with no pull
+# request opened against it. Queue instead.
+concurrency:
+  group: openapi-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync
+    uses: calimero-network/core/.github/workflows/sdk-openapi-sync.yml@fb0ed2e0c891df7e5a6fea9b0ad78b4e94a011b5
+    with:
+      ref: ${{ inputs.ref }}
+      dry-run: ${{ inputs.dry_run == true }}
+      timeout-minutes: 30
+      java-version: "17"
+      # Reads calimero-network/core (public) through gh, with this run's token.
+      generate: scripts/refresh-openapi.sh "$CORE_TARGET"
+      vendor-path: openapi/openapi.json
+      source-file: openapi/SOURCE
+      source-key: CORE_COMMIT
+      owned-paths: openapi mero-core/src/generated
+      summary: |
+        facade=mero-core/src/generated/kotlin/com/calimero/mero/api/facade
+        python3 codegen/facade-diff.py "$SYNC_BEFORE/$facade" "$facade"
+      # facade-diff.py prints its own heading.
+      summary-title: ""
+      pr-notes: |
+        Changes inside generated models are not listed as facade methods: check the diff
+        of `mero-core/src/generated/kotlin/com/calimero/mero/api/models`.
+      app-id: ${{ vars.ACTIONS_APP_ID }}
+    secrets:
+      app-private-key: ${{ secrets.ACTIONS_APP_PRIVATE_KEY }}

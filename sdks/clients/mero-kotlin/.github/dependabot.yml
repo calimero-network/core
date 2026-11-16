@@ -1,0 +1,14 @@
+# Workflow actions are pinned by commit SHA (with the release in a trailing
+# comment); this keeps the pins current. One grouped PR a week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+    commit-message:
+      prefix: chore(ci)

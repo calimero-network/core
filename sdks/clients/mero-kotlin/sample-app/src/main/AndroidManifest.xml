@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      No backup: the app's preferences hold the node URL and the session (encrypted).
+      No cleartext: release builds speak https only. The debug manifest (src/debug) allows http
+      to the loopback dev node and the emulator's host alias, nothing else.
+    -->
+    <application
+        android:allowBackup="false"
+        android:label="Mero Sample"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.MeroSample">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+              The node's consent page sends the person back here:
+              mero-sample://consent?request_id=…&result=approved|declined. Keep in sync with
+              SampleViewModel.CONSENT_CALLBACK. A release app uses a verified https App Link.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="mero-sample" android:host="consent" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

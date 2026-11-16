@@ -1,0 +1,37 @@
+{{!
+  mero-kotlin's Serializer, in place of openapi-generator 7.26.0's kotlin-client/jvm-common/infrastructure/Serializer.kt.mustache.
+  Only kotlinx.serialization, and none of the upstream contextual adapters: they are for java.time, UUID, URI and
+  BigDecimal fields (java.time needs API 26; minSdk is 24), and the spec has none (dateLibrary=string).
+  Unlike upstream, an absent optional field is left out of a request (explicitNulls = false), as the node's serde
+  expects of an optional field, and a missing nullable field reads as null.
+}}
+package {{packageName}}.infrastructure
+
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonBuilder
+
+object Serializer {
+    private var isJsonInitialized = false
+
+    @JvmStatic
+    val kotlinxSerializationJson: Json by lazy {
+        isJsonInitialized = true
+        Json {
+            encodeDefaults = true
+            explicitNulls = false
+            ignoreUnknownKeys = true
+            coerceInputValues = true
+            isLenient = true
+
+            apply(kotlinxSerializationJsonConfiguration)
+        }
+    }
+
+    var kotlinxSerializationJsonConfiguration: JsonBuilder.() -> Unit = {}
+        set(value) {
+            check(!isJsonInitialized) {
+                "Cannot configure kotlinxSerializationJsonConfiguration after kotlinxSerializationJson has been initialized."
+            }
+            field = value
+        }
+}
