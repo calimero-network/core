@@ -76,6 +76,27 @@ public struct CloudEvent: Sendable, Equatable {
         self.kind = kind
         self.data = data
     }
+
+    /// The log index of an app's event (its `id` is `<index>:<seq>`), or
+    /// `nil` for an event with no such id (presence, a pipeline's events).
+    public var index: Int? { Self.position(id)?.index }
+
+    /// The event's place among the events of its log entry: one call may
+    /// emit several, all at the same ``index``.
+    public var seq: Int? { Self.position(id)?.seq }
+
+    /// `<index>:<seq>` as numbers.
+    static func position(_ id: String) -> (index: Int, seq: Int)? {
+        let parts = id.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, let index = Int(parts[0]), let seq = Int(parts[1]) else { return nil }
+        return (index, seq)
+    }
+}
+
+/// A presence state as the node takes it: hex of `state`'s bytes, or `nil`
+/// to retract. (== mero-js `presenceState`.)
+public func presenceState(_ state: Data?) -> String? {
+    state.map { $0.map { String(format: "%02x", $0) }.joined() }
 }
 
 /// What installing a package release answers. (== mero-js `PackageInstalled`.)
@@ -592,4 +613,22 @@ public struct OrgCapabilities: OptionSet, Sendable, Hashable {
 
     /// What a member holds unless an admin says otherwise. (== mero-js `DEFAULT_ORG_CAPABILITIES`.)
     public static let `default`: OrgCapabilities = .joinOpenTeams
+}
+
+/// An account recovery under way. (== mero-js `AccountRecovery`.)
+public struct AccountRecovery: Codable, Sendable, Equatable {
+    public var accountId: String
+    /// The new passkey the recovery adds when it finishes.
+    public var credentialId: String
+    /// When it started (Unix seconds).
+    public var startedAt: Int
+    /// The earliest it may finish (Unix seconds): 72 hours after the start.
+    public var readyAt: Int
+
+    public init(accountId: String, credentialId: String, startedAt: Int, readyAt: Int) {
+        self.accountId = accountId
+        self.credentialId = credentialId
+        self.startedAt = startedAt
+        self.readyAt = readyAt
+    }
 }

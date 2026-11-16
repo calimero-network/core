@@ -676,6 +676,54 @@ public actor CalimeroClient {
         return finished.credentialId
     }
 
+    // MARK: - Account recovery
+
+    // A recovery code, made with a passkey (``auth``'s `recoveryCreate`) and
+    // shown once, lets someone who lost every passkey register a new one; it
+    // is added, and the account signed in, 72 hours later unless a passkey
+    // the account still has cancels it first (`recoveryCancel`).
+
+    /// Signed out: start recovering the account `code` names. `passkey` makes
+    /// a new passkey for it; the node spends the code and keeps the passkey
+    /// as pending. Nothing is added and no session opens: finish with
+    /// ``finishAccountRecovery(_:accountId:)`` at `readyAt`. A code the
+    /// cluster does not hold (mistyped, replaced or spent) is
+    /// ``WrongRecoveryCode``; an account with a recovery already under way
+    /// `409 RECOVERY_PENDING`. (== mero-js `startAccountRecovery`.)
+    public func startAccountRecovery(code: String, passkey: any PasskeyProvider) async throws -> AccountRecovery {
+        do {
+            let begin = try JSONValue(encoding: try await auth.recoveryBegin(code: code))
+            guard let challengeId = begin["challengeId"]?.stringValue, let options = begin["options"] else {
+                throw AccountError.protocolViolation("the account recovery did not begin")
+            }
+            let created = try await passkey.create(options: options)
+            let registration: Components.Schemas.Registration = try Self.converted(created)
+            return try Self.reading(
+                AccountRecovery.self,
+                try await auth.recoveryStart(challengeId: challengeId, code: code, registration: registration))
+        } catch let error as LoginRequired {
+            throw WrongRecoveryCode(error.message, details: error.details)
+        }
+    }
+
+    /// Signed out, once the delay passed: finish the recovery with the
+    /// passkey it registered (`passkey` signs the node's challenge). The
+    /// passkey joins the account, every other session of the account ends,
+    /// and this client is signed in. `accountId` (from the start) lets the
+    /// node refuse early; before `readyAt` it is ``RecoveryNotReady``, with
+    /// no recovery under way ``NotFound``. (== mero-js `finishAccountRecovery`.)
+    @discardableResult
+    public func finishAccountRecovery(
+        _ passkey: any PasskeyProvider, accountId: String? = nil
+    ) async throws
+        -> CalimeroSession
+    {
+        let session = try Self.reading(
+            CalimeroSession.self, try await auth.recoveryFinish(accountId: accountId, passkey: passkey))
+        useSession(session)
+        return session
+    }
+
     // MARK: - Bundles and blobs
 
     /// Upload a sealed file for component app `app` (core rc.9+,
@@ -832,6 +880,36 @@ public actor CalimeroClient {
     /// cancelled (stop iterating, or cancel the task).
     public nonisolated func events(_ app: String, from: Int = 0) -> AsyncThrowingStream<CloudEvent, Error> {
         stream { try await self.apps.events(app: app, from: Int64(from)) }
+    }
+
+    /// The events after the one whose id is `after` (`<index>:<seq>`, a
+    /// ``CloudEvent/id`` seen before), then live: what a stream that broke
+    /// resumes with. The node replays from the start of `after`'s log entry,
+    /// so the events of that entry up to and including `after` are skipped.
+    /// An id that is not `<index>:<seq>` throws ``AccountError/invalidInput(_:)``.
+    public nonisolated func events(_ app: String, after: String) -> AsyncThrowingStream<CloudEvent, Error> {
+        guard let last = CloudEvent.position(after) else {
+            return AsyncThrowingStream {
+                $0.finish(throwing: AccountError.invalidInput("event id \(after) is not <index>:<seq>"))
+            }
+        }
+        let replay = events(app, from: last.index)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await event in replay {
+                        if let at = CloudEvent.position(event.id), (at.index, at.seq) <= (last.index, last.seq) {
+                            continue
+                        }
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
     /// A server-sent event stream on `path`, sealed like every other answer.
