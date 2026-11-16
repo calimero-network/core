@@ -1,11 +1,11 @@
 """
 CloudClient against a real 3-node merod cluster (Calimero 1.0).
 
-Needs `merod` and the kv-store fixture from the core the client builds against
-(Cargo.toml's pin):
+Needs `merod` and the kv component from the core this SDK lives in, built as
+e2e.yml builds them (from core's root):
 
-    cargo build -p merod
-    cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
+    cargo build --release -p merod -p meroctl
+    target/release/meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
 
 Paths default to the core tree this SDK sits in (sdks/clients/mero-py);
 override with MEROD_BINARY (or MEROD_V2_BINARY) and KV_STORE_WASM. Skipped when the binary is missing.
@@ -32,9 +32,11 @@ BINARY = (
     or os.environ.get("MEROD_V2_BINARY")
     or str(CORE / "target/debug/merod")
 )
+# The kv component (apps/v2-fixtures/kv), where e2e.yml builds it:
+# `meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm`.
 KV_STORE_WASM = os.environ.get(
     "KV_STORE_WASM",
-    str(CORE / "target/wasm32-unknown-unknown/app-release/kv_store.wasm"),
+    str(CORE / "target/app-components/kv.wasm"),
 )
 ORIGIN = "http://localhost:3000"
 
@@ -44,10 +46,28 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+# MEROD_PORT_BASE keeps the clusters' ports in a range of their own (the next
+# free one from it, counting up) when other clusters share the machine;
+# otherwise the OS picks each.
+_next_port = (
+    int(os.environ["MEROD_PORT_BASE"]) if os.environ.get("MEROD_PORT_BASE") else None
+)
+
+
 def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    global _next_port
+    if _next_port is None:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+    while True:
+        port, _next_port = _next_port, _next_port + 1
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+        return port
 
 
 class Cluster:

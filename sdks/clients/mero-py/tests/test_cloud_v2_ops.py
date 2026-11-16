@@ -8,6 +8,7 @@ operator, so the operator's release, outbound and upgrade calls are allowed.
 Every operator decision is signed with that key (`use_operator_key`).
 """
 
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -59,13 +60,18 @@ def operator(cluster, i: int = 0, signed: bool = True) -> Client:
     return c
 
 
+def snake(name: str) -> str:
+    """A quota's JSON name (`maxAppsPerAccount`) as the facade's keyword."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
 def test_decisions_need_the_operators_signature(cluster):
     unsigned = operator(cluster, signed=False)
     name, value = next(
         (k, v) for k, v in unsigned.json.ops.quotas_get().items() if isinstance(v, int)
     )
     with pytest.raises(CloudError) as e:
-        unsigned.json.ops.quotas_set(**{name: value})
+        unsigned.json.ops.quotas_set(**{snake(name): value})
     assert (e.value.args[1], code(e.value)) == (428, "OPERATOR_SIGNATURE_REQUIRED")
     # A signature by another key is refused.
     with pytest.raises(CloudError) as e:
@@ -85,14 +91,15 @@ def test_status_metrics_and_quotas(cluster):
 
     quotas = ops.json.ops.quotas_get()
     name, value = next((k, v) for k, v in quotas.items() if isinstance(v, int))
-    ops.json.ops.quotas_set(**{name: value + 1})
+    ops.json.ops.quotas_set(**{snake(name): value + 1})
     after = ops.json.ops.quotas_get()
     assert after[name] == value + 1
     assert {k: v for k, v in after.items() if k != name} == {
         k: v for k, v in quotas.items() if k != name
     }
     with pytest.raises(CloudError) as e:
-        ops.json.ops.quotas_set(**{"no_such_quota": 1})
+        # The facade has a keyword per known quota only: send the body as is.
+        ops.post_operator_signed("ops/quotas", {"no_such_quota": 1})
     assert code(e.value) == "UNKNOWN_QUOTA"
 
 

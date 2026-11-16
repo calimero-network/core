@@ -105,7 +105,11 @@ def test_an_upgrade_key_upgrades_its_app_and_nothing_else(cluster):
     assert alice.json.apps.get(app=app)["bundle"] != before
 
     # Nothing else, reads included.
-    for refused in (ci.me, ci.list_apps, lambda: ci.json.apps.get(app=app)):
+    for refused in (
+        ci.json.auth.me,
+        ci.json.apps.list,
+        lambda: ci.json.apps.get(app=app),
+    ):
         with pytest.raises(CloudError) as e:
             refused()
         assert code(e.value) == "UPGRADE_KEY_ONLY"
