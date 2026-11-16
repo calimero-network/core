@@ -1,11 +1,19 @@
 # mero-kotlin — Calimero Android SDK
 
-The Android client for **Calimero 1.0**, the confidential cloud. It gives an Android app what
+**Your app's whole backend, like Firebase. Except nobody can read your data, not even us.**
+[Calimero](https://calimero-network.github.io/core/) gives an app auth (passkeys, sessions, scoped
+API keys), a database (replicated app state), functions (Rust app methods), realtime events,
+storage, hosting and typed clients, all running inside attested Intel TDX hardware. Clients verify
+the node's attestation against Sigstore-signed releases before they send it anything.
+
+mero-kotlin is the Android client for **Calimero 1.0**. It gives an Android app what
 [`@calimero-network/mero-js`](https://github.com/calimero-network/mero-js) ≥ 27 gives a web app,
 with the same names: `CalimeroClient` verifies a node's TDX attestation, seals every request to it
-(`calimero/sealed-http/v2`, Noise NK), signs people in with **passkeys**, and calls apps'
-**intents** and **views**. It is the Android twin of
-[`calimero-network/swift-sdk`](https://github.com/calimero-network/swift-sdk).
+(`calimero/sealed-http/v2`, Noise NK), signs people in with **passkeys** (Android Credential
+Manager) and machines with API keys, manages **organizations and teams**, calls apps' **intents**
+and **views**, and streams their **events** as a `Flow`. `mero-compose` adds the signed-in app
+session, the consent page in a Custom Tab and a theme; `mero-testkit` an in-memory backend for
+tests. It is the Android twin of [`calimero-network/swift-sdk`](https://github.com/calimero-network/swift-sdk).
 
 > **Calimero 1.0 only.** The 0.x API (`/admin-api`, `/jsonrpc`, `/ws`, `/sse`, `/auth/token`,
 > relays, delegated execution, `/api/cloud/*`) is gone from core, and from this SDK. See
@@ -141,6 +149,16 @@ failover on `421 WRONG_NODE`, `412` confirmations, sealed SSE, the consent reque
 backend's org/team/app mapping. See [TESTING.md](TESTING.md).
 
 Docs: <https://calimero-network.github.io/kotlin-sdk/> (sources in `docs/`).
+
+## Related repositories
+
+- [core](https://github.com/calimero-network/core): `merod`, the node, and the app SDK ([docs](https://calimero-network.github.io/core/))
+- [mero-tee](https://github.com/calimero-network/mero-tee): the TDX node images and the signed releases this SDK verifies
+- [app-registry](https://github.com/calimero-network/app-registry): the registry of signed app packages
+- [apps](https://github.com/calimero-network/apps): example apps, including mero-chat
+- [mero-js](https://github.com/calimero-network/mero-js), [mero-react](https://github.com/calimero-network/mero-react): the web client and its React bindings
+- [swift-sdk](https://github.com/calimero-network/swift-sdk): the iOS twin of this SDK
+- [calimero-client-py](https://github.com/calimero-network/calimero-client-py): the Python client
 
 ## License
 
