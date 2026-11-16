@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.29] - 2026-11-16
+
+### Added
+
+- **Capabilities when an organization or an invite is made** (`calimero-node`,
+  #5095): `POST /orgs { name, capabilities? }` sets the organization's member
+  default in the same `CreateOrg` entry, and `POST /orgs/{org}/invites
+  { ..., capabilities? }` gives whoever redeems it those capabilities as their
+  own. An inviter below admin may give only bits they hold organization-wide
+  (`403 CANNOT_GRANT_UNHELD`; unknown bits `400 UNKNOWN_CAPABILITIES`). Both
+  are features of cluster version 1.0.0-rc.29 (`OrgCapabilities`,
+  `InviteCapabilities`; `409 FEATURE_NOT_ACTIVE` below it).
+
 ### Changed
 
 - **`meroctl namespace` is `meroctl org`, and `group` is `team`**, as the docs
