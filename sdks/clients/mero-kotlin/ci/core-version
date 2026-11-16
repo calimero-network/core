@@ -4,4 +4,4 @@
 #
 # Informational: no workflow boots a node any more (the 0.x e2e and merobox lanes were removed
 # with the 0.x API). Bump it when the SDK is checked against a newer core.
-CORE_TAG=1.0.0-rc.29
+CORE_TAG=1.0.0-rc.30
