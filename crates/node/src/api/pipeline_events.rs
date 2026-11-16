@@ -132,6 +132,7 @@ pub(super) async fn events(
         caller: p.caller,
         strong: true,
         min_index: 0,
+        on_behalf_of: None,
     };
     let first = node.view(&req).await?;
     if first.result.is_null() {

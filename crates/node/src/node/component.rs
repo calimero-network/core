@@ -875,6 +875,19 @@ impl Node {
                 timeout: CALL_FETCH_TIMEOUT,
             })
         });
+        // Whom this run serves, for the apps it calls: its own caller when that is a
+        // person, else the person it was called for. Carried only once every node applies
+        // it alike (`Feature::OnBehalfOf`); before that no run names one.
+        let forward = if self.delegates() {
+            forwarded(&invocation.caller, extras.origin.as_ref())
+        } else {
+            None
+        };
+        let origin = if self.delegates() {
+            extras.origin.clone()
+        } else {
+            None
+        };
         let xcalls = extras.key.and_then(|key| {
             let node = self.this.lock().ok()?.upgrade()?;
             let handle = tokio::runtime::Handle::try_current().ok()?;
@@ -884,6 +897,7 @@ impl Node {
                 key,
                 handle,
                 read_only: extras.read_only,
+                origin: forward.clone(),
             }) as Arc<dyn calimero_app_host::XcallHost>)
         });
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
@@ -900,7 +914,9 @@ impl Node {
         let owner = self
             .sys(|s| s.apps.get(app_id).map(|a| a.owner.clone()))
             .unwrap_or_default();
-        match HostCore::new(app_id, state, applied, invocation, directory) {
+        match HostCore::new(app_id, state, applied, invocation, directory)
+            .and_then(|host| host.with_origin(origin.as_ref().map(Caller::to_host)))
+        {
             Ok(host) => {
                 let host = host.with_blobs(blobs).with_files(files.clone());
                 let host = match extras.runs {
@@ -937,6 +953,9 @@ impl Node {
                 let mut outcome = Outcome::from_host(out);
                 if !outcome.compute_starts.is_empty() {
                     outcome.name_owner(&owner);
+                }
+                for x in &mut outcome.xcalls {
+                    x.on_behalf_of.clone_from(&forward);
                 }
                 Ran {
                     outcome,
@@ -1423,6 +1442,7 @@ impl Node {
                         runs: Some(m.runs_provider(None)),
                         compute_component: m.state.component.head.compute_bundle.is_some(),
                         read_only: false,
+                        origin: None,
                     },
                 );
                 let outcome = ran.outcome;
@@ -1666,6 +1686,7 @@ impl Node {
                             read_only,
                             runs: Some(m.runs_provider(None)),
                             compute_component: m.state.component.head.compute_bundle.is_some(),
+                            origin: req.on_behalf_of.clone(),
                         },
                     );
                     ran_for = Some(started.elapsed());
@@ -2123,6 +2144,7 @@ impl Node {
             },
         );
         let meter = self.meter(&req.app_id, &bundle);
+        let origin = req.on_behalf_of.clone();
         // A view may run up to its deadline: off the async workers.
         let (out, run) = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
@@ -2138,6 +2160,7 @@ impl Node {
                         runs: None,
                         compute_component: false,
                         read_only: false,
+                        origin,
                     },
                     search,
                 )
@@ -2315,6 +2338,8 @@ impl Node {
             key: format!("action:{}", record.id),
             handle: tokio::runtime::Handle::current(),
             read_only: false,
+            // An action serves no one when it runs (D12): its calls name no person.
+            origin: None,
         });
         let meter = self.meter(app_id, &prepared.hash);
         let http = Arc::new(NodeHttp(self.outbound_for(
@@ -2492,6 +2517,12 @@ impl Node {
                 source: source.to_owned(),
                 seq: msg.seq,
             }),
+            // Only a person, and only once every node applies it alike: a row is written
+            // by every replica, so one an older leader delivers has none.
+            on_behalf_of: msg
+                .on_behalf_of
+                .clone()
+                .filter(|c| c.is_person() && self.delegates()),
             ..CallRequest::new(
                 target.app_id.clone(),
                 msg.method.clone(),
@@ -2720,6 +2751,7 @@ impl calimero_app_host::ActionHost for NodeAction {
             caller: self.caller.clone(),
             strong: true,
             min_index: 0,
+            on_behalf_of: None,
         };
         let node = Arc::clone(&self.node);
         match self.wait(async move { node.view(&req).await }) {
@@ -2752,6 +2784,39 @@ impl calimero_app_host::ActionHost for NodeAction {
     }
 }
 
+/// The person a run passes on to the apps it calls (`on_behalf_of`): its own caller when
+/// that is an account or an API key, the person it was called for when another app called
+/// it, and none for anyone else (`Public`, `System`: timers, actions' own calls).
+fn forwarded(caller: &calimero_app_host::Caller, origin: Option<&Caller>) -> Option<Caller> {
+    use calimero_app_host::Caller as H;
+    match caller {
+        H::Account(account) => Some(Caller::Account {
+            account: account.clone(),
+        }),
+        H::ApiKey { key_id, account } => Some(Caller::ApiKey {
+            key: key_id.clone(),
+            account: account.clone(),
+        }),
+        H::App(_) => origin.filter(|o| o.is_person()).cloned(),
+        H::Public | H::System => None,
+    }
+}
+
+impl Node {
+    /// Whether runs carry the person they serve to the apps they call: from the logged
+    /// cluster version that brings `Feature::OnBehalfOf` on. Judged on the logged version
+    /// alone (no round to the nodes), so it turns on a little after every node could.
+    fn delegates(&self) -> bool {
+        self.sys(|s| {
+            crate::system::cluster_version::check(
+                s.cluster_version.as_deref(),
+                &[crate::system::cluster_version::Feature::OnBehalfOf],
+            )
+            .is_ok()
+        })
+    }
+}
+
 /// What a component run reaches besides its own state, by the kind of run.
 #[derive(Clone, Default)]
 struct RunExtras {
@@ -2768,6 +2833,10 @@ struct RunExtras {
     /// A read-only member's call: its synchronous xcalls may view, not call, since a
     /// call commits on the target before this run's outcome is judged.
     read_only: bool,
+    /// The person the calling app's run served, for a run another app called (a delivery
+    /// or a synchronous xcall): `env::on_behalf_of()` here, and passed on to the apps this
+    /// run calls.
+    origin: Option<Caller>,
 }
 
 /// How long a call, timer or delivery waits for one outbound response (D76): within the
@@ -2819,6 +2888,8 @@ struct NodeXcall {
     handle: tokio::runtime::Handle,
     /// A read-only member's run: views only.
     read_only: bool,
+    /// The person the run serves, passed to the target (`CallRequest::on_behalf_of`).
+    origin: Option<Caller>,
 }
 
 /// The node's refusal of a synchronous xcall, for the guest: the target's ABI refusal as
@@ -2891,6 +2962,7 @@ impl calimero_app_host::XcallHost for NodeXcall {
         let req = CallRequest {
             idempotency_key: Some(key.to_owned()),
             sync_from: Some(self.source.clone()),
+            on_behalf_of: self.origin.clone(),
             ..CallRequest::new(
                 target,
                 method.to_owned(),
@@ -2921,6 +2993,7 @@ impl calimero_app_host::XcallHost for NodeXcall {
             },
             strong: true,
             min_index: 0,
+            on_behalf_of: self.origin.clone(),
         };
         let node = Arc::clone(&self.node);
         match self.wait(async move { node.view(&req).await })? {
@@ -3033,6 +3106,7 @@ mod tests {
                 app: "other".into(),
                 method: "set".into(),
                 args: Value::Null,
+                on_behalf_of: None,
             }],
             ..Outcome::default()
         };

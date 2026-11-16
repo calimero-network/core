@@ -282,4 +282,7 @@ pub enum InvalidInvocation {
     /// A compute run on an invocation that is not an action.
     #[error("only an action invocation carries a compute run")]
     RunOutsideAction,
+    /// An origin on a run another app did not call, or an origin that is not a person.
+    #[error("only a run another app calls carries an origin, and only an account or an API key")]
+    OriginOutsideXcall,
 }

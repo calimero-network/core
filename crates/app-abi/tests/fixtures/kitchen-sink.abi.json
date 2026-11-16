@@ -1,6 +1,6 @@
 {
   "abiVersion": 1,
-  "world": "calimero:app@0.5.1",
+  "world": "calimero:app@0.5.2",
   "state": {
     "fields": { "items": "table", "tags": "unorderedMap", "hits": "counter", "owner": "cell" },
     "search": { "items": ["title"] },

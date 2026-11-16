@@ -563,7 +563,7 @@ mod tests {
     fn abi_with(methods: Value, errors: Value, events: Value, state: Value) -> AppAbi {
         AppAbi::from_json(&json!({
             "abiVersion": 1,
-            "world": "calimero:app@0.5.1",
+            "world": "calimero:app@0.5.2",
             "methods": methods,
             "errors": errors,
             "events": events,

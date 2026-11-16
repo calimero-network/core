@@ -92,6 +92,19 @@ pub fn caller() -> Caller {
     backend::caller()
 }
 
+/// The person the calling app's run serves, when this run is another app's call: an
+/// xcall delivery or a synchronous `xcall_call`/`xcall_view` from a run that a signed-in
+/// account or an API key started (`Caller::Account` or `Caller::ApiKey`). The node sets it
+/// from that run's own caller and carries the first one along a chain; no argument can
+/// claim it. `None` for every other run, and for a call from an app's timer or action.
+///
+/// It is not consent: `caller()` is still `Caller::App(source)`. Trust it as far as you
+/// trust the source app, e.g. grant a bucket to the app *and* to the person, and require
+/// both.
+pub fn on_behalf_of() -> Option<Caller> {
+    backend::on_behalf_of()
+}
+
 /// This app's id.
 pub fn app_id() -> String {
     backend::app_id()
