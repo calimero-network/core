@@ -158,7 +158,7 @@ function Dialog({ open, onClose, org, teams, role = 'member', appName, labels, o
         )}
         {flow.error && (
           <p className="mero-cw-error" role="alert">
-            {featureOff ? "This cluster doesn't support custom permissions yet. Send a default invite instead." : flow.error}
+            {featureOff ? "This cluster doesn't support custom permissions yet." : flow.error}
             {featureOff && (
               <>
                 {' '}
