@@ -18,6 +18,11 @@
   fields (`422 APP_ERROR: the app refused the call (NotFound: {"key":"a"})`), a
   trap's kind (`422 TRAP`) and the error a failed `init` ended with
   (`422 INIT_FAILED`). Other codes' details, meant for the program, stay out of it.
+- **`meroctl local up` after an `up` that never started** (`meroctl`): an
+  `up` that stopped before its cluster ran (Docker not running, a port taken by
+  the image's pull, `merod` missing) left a `merod.log`, and the next `up` took
+  it for a cluster an earlier meroctl made: three nodes, refusing `--nodes 1`.
+  `up` now writes `cluster.json` (what the cluster is made with) before the log.
 
 ## [1.0.0-rc.30] - 2026-11-16
 
