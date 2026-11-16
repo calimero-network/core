@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      # The generated route types are those of the vendored OpenAPI document.
+      - run: pnpm check:api
+      - run: pnpm build
+      - run: pnpm test:unit
+      - run: pnpm typecheck
+      - run: pnpm typecheck:consumer
+      - run: pnpm typecheck:tests
+      - run: bash .github/scripts/tests/bump-fleet.test.sh
+      - run: bash .github/scripts/tests/wait-for-npm.test.sh
+      - run: pnpm lint
+
+  # The cluster suite (tests/cluster) starts its own three `merod run --dev`
+  # nodes with 1.0's flags (tests/cluster/cluster.ts), so this job only has to
+  # fetch a released 1.0 merod and the kv-store fixture built with it. Core's
+  # e2e.yml (`clients`) runs the same suite against core's own tree.
+  cluster:
+    name: Cluster tests (vs released merod 1.0)
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+
+      - name: Download released merod 1.0
+        id: merod
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/download-released-merod.sh
+
+      - name: Run the cluster tests against merod ${{ steps.merod.outputs.tag }}
+        env:
+          MEROD_BINARY: ${{ github.workspace }}/merod
+          KV_STORE_WASM: ${{ github.workspace }}/kv_store.wasm
+          NO_COLOR: '1'
+        run: |
+          set -o pipefail
+          pnpm test:cluster 2>&1 | tee cluster.log
+          # Guard against a vacuous green: the suite must have run, not skipped.
+          grep -qE "Tests +[1-9][0-9]* passed" cluster.log \
+            || { echo "::error::the cluster suite produced no passing tests"; exit 1; }
+
+      - name: Upload the cluster log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cluster-log
+          path: cluster.log
+          if-no-files-found: warn

@@ -1,0 +1,72 @@
+---
+title: Mero.js
+description: The JavaScript client for Calimero 1.0 — verify a node's TDX attestation, seal every request to it, sign people in with passkeys and machines with API keys, and run apps on their own replicated log.
+template: splash
+hero:
+  tagline: The JavaScript client for Calimero 1.0, the confidential cloud. It checks that a node is a genuine TEE running a signed release, seals every request to it, and signs people in with passkeys. From the browser or Node.
+  actions:
+    - text: Quickstart
+      link: /get-started/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/calimero-network/mero-js
+      icon: external
+      variant: minimal
+---
+
+import { Aside, Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="Get Started" icon="rocket">
+    Install the package, connect to a cluster, create an account with a
+    passkey and call an app. [Quickstart →](/get-started/quickstart/)
+  </Card>
+  <Card title="Understand" icon="open-book">
+    What the client checks before it sends anything, and how one request
+    travels. [Read the overview →](/understand/system-overview/)
+  </Card>
+  <Card title="Guides" icon="setting">
+    Apps and packages, organizations and approvals, the trust policy and the
+    sealed channel. [Browse the guides →](/guides/apps/) Building an app?
+    [Ask your users to approve node images and upgrades →](/guides/user-approvals/)
+  </Card>
+  <Card title="Reference" icon="list-format">
+    Every `CalimeroClient` method and the route it calls, the typed errors, and
+    what replaced the v1 client. [Open the reference →](/reference/client/)
+  </Card>
+</CardGrid>
+
+## At a glance
+
+```ts
+import { CalimeroClient, browserPasskey } from '@calimero-network/mero-js';
+
+const client = new CalimeroClient({
+  baseUrl: 'https://eu1.cloud.calimero.network',
+  policy: { release: { minReleaseVersion: '2.3.109' } },
+});
+await client.signIn(browserPasskey());
+const { result } = await client.apps.view({ app: appId, method: 'get', args: { key: 'a' } });
+```
+
+Every request goes through the same three steps:
+
+1. **Attest.** `GET /attestation` returns the node's TDX quote. The client
+   verifies it in the page (Intel's signature chain, TCB status, the
+   measurements of a signed mero-tee release) and that the quote binds the
+   node's transport key and a fresh nonce.
+2. **Seal.** The client opens a Noise NK session to that key and encrypts the
+   request, credentials included, end to end to the enclave.
+3. **Authorize.** The node checks the session token or API key inside the
+   envelope, and routes the call to the app's replicated log.
+
+The node side is [Calimero Core](https://calimero-network.github.io/core/)
+1.0 (`merod`); this package is byte-compatible with core's `calimero-sealed`
+and `calimero-client`.
+
+<Aside type="note">
+  Version 27 and later is the Calimero 1.0 client only. The v1 SDK (`MeroJs`,
+  the admin and auth API clients, JSON-RPC, contexts and namespaces) is in
+  26.x; see [Migrating from v1](/reference/migrating-from-v1/).
+</Aside>
