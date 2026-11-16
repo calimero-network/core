@@ -1,0 +1,46 @@
+{
+  "name": "@calimero-network/mero-charts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "version": "0.0.17",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/calimero-network/design-system.git",
+    "directory": "packages/charts"
+  },
+  "description": "Chart components for Calimero design system",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@calimero-network/mero-ui": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "react": ">=18 <20"
+  }
+}

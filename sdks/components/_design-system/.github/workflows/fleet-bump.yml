@@ -1,0 +1,395 @@
+name: Fleet bump
+
+# Opens (or refreshes) one pull request per consumer repository, moving its
+# @calimero-network/* dependencies to the versions this repository just
+# published.
+#
+# All of the editing lives in .github/scripts/bump-fleet.sh, which knows nothing
+# about GitHub and is runnable by hand against a local checkout:
+#
+#   .github/scripts/bump-fleet.sh --surface npm \
+#       --pkg @calimero-network/mero-ui=1.5.1 --dir ../mero-meet --no-lock --dry-run
+#
+# This file is only the plumbing around it: mint a token, check the consumer
+# out, run the script, push a branch, open the pull request.
+#
+# Three things here are load-bearing and easy to undo by accident:
+#
+#   * The pull request is created with a GitHub App installation token, NOT with
+#     GITHUB_TOKEN. A pull request opened by GITHUB_TOKEN does not trigger the
+#     target repository's workflows, so every bump would arrive with no CI at
+#     all and read as green because nothing ran.
+#
+#   * `gh pr create` is called without --base. The fleet is split between
+#     `master` and `main`, and letting each repository name its own default
+#     branch removes a whole category of silent failure.
+#
+#   * Major jumps are skipped unless allow_major is set. Most of the fleet is on
+#     mero-js 7 and mero-react 4 while those packages are at 13 and 6; opening
+#     that automatically would produce a pull request that cannot pass CI, on
+#     every release, forever. Crossing a major is a migration someone does on
+#     purpose.
+
+on:
+  workflow_call:
+    inputs:
+      packages:
+        description: "Space-separated name=version pairs, e.g. '@calimero-network/mero-ui=1.5.1'"
+        required: true
+        type: string
+      label:
+        description: "Branch slug — the PR lands on chore/<label>"
+        required: true
+        type: string
+      only:
+        description: "Comma-separated subset of fleet.json repos (blank = all)"
+        required: false
+        default: ""
+        type: string
+      allow_major:
+        description: "Also bump dependencies across a major version"
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: "Rewrite and print the diff, but push nothing"
+        required: false
+        default: false
+        type: boolean
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "Space-separated name=version pairs, e.g. '@calimero-network/mero-ui=1.5.1'"
+        required: true
+        type: string
+      label:
+        description: "Branch slug — the PR lands on chore/<label>"
+        required: true
+        type: string
+      only:
+        description: "Comma-separated subset of fleet.json repos (blank = all)"
+        required: false
+        default: ""
+        type: string
+      allow_major:
+        description: "Also bump dependencies across a major version"
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: "Rewrite and print the diff, but push nothing"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# Never cancel: a cancelled run can leave a branch pushed with no pull request
+# opened against it. Queue instead.
+concurrency:
+  group: fleet-bump-${{ inputs.label }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Decide which repositories to touch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      repos: ${{ steps.pick.outputs.repos }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select the npm consumers
+        id: pick
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          set -euo pipefail
+          repos=$(jq -c --arg only "${ONLY:-}" '
+            [ .consumers[] | select(.surfaces | index("npm")) | .repo ]
+            | if $only == "" then .
+              else
+                ( $only | split(",") | map(sub("^ +";"") | sub(" +$";"")) ) as $want
+                | map(select(. as $r | $want | index($r)))
+              end
+          ' .github/fleet.json)
+          echo "repos=$repos" >> "$GITHUB_OUTPUT"
+          echo "Selected: $repos"
+          if [ "$repos" = "[]" ]; then
+            echo "::warning::No repositories selected — check the 'only' filter against .github/fleet.json"
+          fi
+
+  bump:
+    name: ${{ matrix.repo }}
+    needs: plan
+    if: needs.plan.outputs.repos != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # One repository failing must not stop the others from getting their
+      # pull request.
+      fail-fast: false
+      matrix:
+        repo: ${{ fromJSON(needs.plan.outputs.repos) }}
+    steps:
+      - name: Check out this repository (for the bump script)
+        uses: actions/checkout@v4
+        with:
+          path: producer
+
+      # Scoped to the single repository this matrix leg touches, rather than to
+      # the whole fleet at once.
+      - name: Mint a token for ${{ matrix.repo }}
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ matrix.repo }}
+
+      - name: Check out ${{ matrix.repo }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/${{ matrix.repo }}
+          token: ${{ steps.token.outputs.token }}
+          path: consumer
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # Which pnpm this repository actually uses — not whichever one corepack
+      # happens to default to.
+      #
+      # Relying on the default silently rewrote lockfiles under pnpm 10+ for
+      # repositories whose CI pins pnpm 9. pnpm 10 dropped support for the
+      # top-level `resolutions` field, so a bump run under it wrote a lockfile
+      # with no `overrides:` block, and the repository's own
+      # `pnpm install --frozen-lockfile` then failed with
+      # ERR_PNPM_LOCKFILE_CONFIG_MISMATCH. Three repositories in this fleet use
+      # `resolutions`, and all three broke; the rest were fine only because they
+      # do not.
+      #
+      # Precedence is declared truth first: `packageManager` if the repository
+      # states one, otherwise whatever its own CI installs. The 9 fallback is
+      # the floor every unpinned repository here is already on.
+      - name: Decide which pnpm this repository uses
+        id: pnpm
+        run: |
+          set -euo pipefail
+
+          # Every probe below is allowed to find nothing, and saying so must not
+          # be fatal. `grep` exits 1 on no match, `xargs` reports that as 123,
+          # and `head -1` can SIGPIPE its producer into 141 — so under
+          # `set -euo pipefail` a repository that simply does not declare
+          # `packageManager` killed this step at exit 123 before either fallback
+          # below could run. That is not hypothetical: it took out 7 of the 12
+          # consumers on the 13.2.4 release, and the `version=9` floor has never
+          # once been reached. Hence `|| true` on each probe: absence is an
+          # answer, and only the last resort decides.
+
+          # Shallowest first, and never inside node_modules: a vendored
+          # dependency's own `packageManager` is not this repository's.
+          declared() {
+            find consumer -name package.json \
+                 -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null \
+              | awk -F/ '{print NF"\t"$0}' | sort -n | cut -f2- \
+              | tr '\n' '\0' \
+              | xargs -0 --no-run-if-empty \
+                  grep -hoE '"packageManager"[[:space:]]*:[[:space:]]*"pnpm@[^"]+"' 2>/dev/null \
+              | sed -n '1s/.*pnpm@//;1s/"$//;1p'
+          }
+
+          # What the repository's own CI installs. `version:` sits a line or two
+          # under the `uses:`, so keep a little context and take the first hit.
+          from_ci() {
+            grep -rhA3 'pnpm/action-setup' consumer/.github/workflows 2>/dev/null \
+              | grep -oE 'version:[[:space:]]*[0-9][0-9.]*' \
+              | sed -n '1s/version:[[:space:]]*//;1p'
+          }
+
+          version=$(declared || true)
+          source="packageManager"
+          if [ -z "$version" ]; then
+            version=$(from_ci || true)
+            source="its own CI"
+          fi
+          if [ -z "$version" ]; then
+            version=9
+            source="fallback"
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "::notice::${{ matrix.repo }} uses pnpm $version (from $source)"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ steps.pnpm.outputs.version }}
+
+      - name: Rewrite the dependency ranges
+        id: bump
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          ALLOW_MAJOR: ${{ inputs.allow_major }}
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+          CHANGED_FILES_OUT: ${{ runner.temp }}/changed.txt
+          # What the bump recognised and did NOT move, with the reason: a
+          # member declaring its own version for a catalogued package, a
+          # manifest outside every `packages:` glob, a skipped major. Surfaced
+          # in the run summary and the pull request body, because "the release
+          # went out" and "every consumer received it" are different claims and
+          # only the first one used to be printed.
+          UNCLAIMED_OUT: ${{ runner.temp }}/unclaimed.txt
+        run: |
+          set -euo pipefail
+          args=""
+          for spec in $PACKAGES; do
+            args="$args --pkg $spec"
+          done
+          if [ "$ALLOW_MAJOR" = "true" ]; then
+            args="$args --allow-major"
+          fi
+
+          set +e
+          # shellcheck disable=SC2086
+          producer/.github/scripts/bump-fleet.sh --surface npm $args --dir consumer
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          case "$code" in
+            0) echo "::notice::${{ matrix.repo }}: ranges rewritten" ;;
+            3) echo "::notice::${{ matrix.repo }}: declares none of these packages — skipped" ;;
+            4) echo "::notice::${{ matrix.repo }}: already current, or every candidate crossed a major" ;;
+            *) echo "::error::${{ matrix.repo }}: bump script failed"; exit "$code" ;;
+          esac
+
+      - name: Show the diff
+        if: steps.bump.outputs.code == '0'
+        working-directory: consumer
+        run: git --no-pager diff --stat
+
+      - name: Report what the bump did not move
+        if: always() && hashFiles(format('{0}/unclaimed.txt', runner.temp)) != ''
+        run: |
+          set -euo pipefail
+          {
+            echo "### ${{ matrix.repo }}: not moved by this bump"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/unclaimed.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Identify the app
+        if: steps.bump.outputs.code == '0' && inputs.dry_run != true
+        id: app
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SLUG: ${{ steps.token.outputs.app-slug }}
+        run: echo "uid=$(gh api "/users/${SLUG}[bot]" --jq .id)" >> "$GITHUB_OUTPUT"
+
+      - name: Open or refresh the pull request
+        if: steps.bump.outputs.code == '0' && inputs.dry_run != true
+        working-directory: consumer
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PACKAGES: ${{ inputs.packages }}
+          LABEL: ${{ inputs.label }}
+          REPO: ${{ github.repository_owner }}/${{ matrix.repo }}
+          SOURCE: ${{ github.repository }}
+          SLUG: ${{ steps.token.outputs.app-slug }}
+          APP_UID: ${{ steps.app.outputs.uid }}
+        run: |
+          set -euo pipefail
+
+          branch="chore/$LABEL"
+          title="chore(deps): bump $(echo "$PACKAGES" | sed 's|@calimero-network/||g; s/=/@/g; s/  */, /g')"
+
+          git config user.name "${SLUG}[bot]"
+          git config user.email "${APP_UID}+${SLUG}[bot]@users.noreply.github.com"
+
+          git checkout -b "$branch"
+
+          # Only the paths the script says it changed. A package manager run as a
+          # side effect writes files of its own — pnpm's minimum-release-age gate
+          # creates a pnpm-workspace.yaml holding just a minimumReleaseAgeExclude
+          # when the version being installed was published minutes ago. `git add -A`
+          # committed that into repositories which had no workspace file, giving them
+          # one with no `packages:` key and breaking their own `pnpm install`.
+          git add --pathspec-from-file="$RUNNER_TEMP/changed.txt"
+
+          leftover=$(git status --porcelain --untracked-files=all | grep -vE '^[MA] ' || true)
+          if [ -n "$leftover" ]; then
+            echo "::warning::the tooling left files this bump does not claim; they were NOT committed:"
+            printf '%s\n' "$leftover"
+          fi
+          git commit \
+            -m "$title" \
+            -m "Generated by the fleet-bump workflow in $SOURCE."
+
+          # The branch name is deterministic and the branch is machine-owned, so
+          # a re-run replaces it rather than opening a second pull request.
+          # Do not hand-edit it: push a fix to a branch of your own instead.
+          git push --force origin "$branch"
+
+          if gh pr view "$branch" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::notice::refreshed the existing pull request for $branch"
+            gh pr view "$branch" --repo "$REPO" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # Written to a file rather than a shell string: the block scalar this
+          # runs inside would eat a heredoc's terminator indentation.
+          cat > "$RUNNER_TEMP/pr-body.md" <<PR_BODY
+          Moves this repository onto the versions just published by
+          [$SOURCE](https://github.com/$SOURCE):
+
+          \`\`\`
+          $PACKAGES
+          \`\`\`
+
+          Rewritten automatically by \`fleet-bump\`. Every \`package.json\` that
+          actually declares one of these packages was updated — including ones in
+          workspace members — and the lockfile above each was refreshed with the
+          pnpm version that repository pins.
+
+          The existing range operator is preserved, so a \`^\` dependency stays a
+          \`^\` dependency. A bump that quietly converted a tracking range into a
+          hard pin would stop the repository ever seeing another patch release.
+
+          Dependencies that would have crossed a major version were **skipped**;
+          the section below lists them. Those are migrations, not bumps.
+
+          In \`calimero-network/apps\` the versions live once in
+          \`pnpm-workspace.yaml\`'s \`catalog:\` and fan out to every app under
+          \`apps/*/app\`, so one line there is the whole bump — this single pull
+          request replaces the fifteen that used to be opened against fifteen
+          separate app repositories. Manifests outside the workspace globs are
+          left alone; pnpm never installs them.
+          PR_BODY
+
+          # Attached rather than left in the log. A reviewer looking at a green
+          # bump should be able to see, without opening the run, which consumers
+          # it did not actually reach.
+          if [ -s "$RUNNER_TEMP/unclaimed.txt" ]; then
+            {
+              printf '\n<details><summary>What this bump did <b>not</b> move</summary>\n\n'
+              printf '```\n'
+              cat "$RUNNER_TEMP/unclaimed.txt"
+              printf '```\n\n</details>\n'
+            } >> "$RUNNER_TEMP/pr-body.md"
+          fi
+
+          gh pr create \
+            --repo "$REPO" \
+            --head "$branch" \
+            --title "$title" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
+
+          gh pr view "$branch" --repo "$REPO" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"

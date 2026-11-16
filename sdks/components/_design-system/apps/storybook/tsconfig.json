@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "baseUrl": ".",
+    "skipLibCheck": true,
+    "paths": {
+      "@calimero-network/mero-ui": ["../../packages/ui/src"],
+      "@calimero-network/mero-tokens": ["../../packages/tokens/src"],
+      "@calimero-network/mero-charts": ["../../packages/charts/src"],
+      "@calimero-network/mero-icons": ["../../packages/icons/src"]
+    }
+  },
+  "include": ["src", ".storybook"],
+  "references": []
+}

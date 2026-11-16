@@ -1,0 +1,36 @@
+{
+  "name": "@calimero-network/mero-tokens",
+  "publishConfig": {
+    "access": "public"
+  },
+  "version": "0.0.5",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/calimero-network/design-system.git",
+    "directory": "packages/tokens"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "tokens.json"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --dts --format esm,cjs",
+    "dev": "pnpm build",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0"
+  }
+}

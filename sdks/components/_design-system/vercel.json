@@ -1,0 +1,12 @@
+{
+  "buildCommand": "pnpm install --no-frozen-lockfile && pnpm -w build && pnpm -w build-storybook",
+  "outputDirectory": "storybook-static",
+  "installCommand": "pnpm install --no-frozen-lockfile",
+  "framework": null,
+  "build": {
+    "env": {
+      "NODE_OPTIONS": "--max-old-space-size=4096",
+      "VERCEL_ANALYTICS_ID": "disabled"
+    }
+  }
+}

@@ -1,0 +1,169 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no actual publish)"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.published.outputs.packages }}
+      ui: ${{ steps.published.outputs.ui }}
+    permissions:
+      # npm trusted publishing exchanges this OIDC token for a short-lived
+      # registry credential -- without it the publish 404s, which is npm's
+      # response to an unauthorised write rather than a missing package.
+      id-token: write
+      # The "Create GitHub Release" step below needs to write a release.
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.16.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          # Node 24 bundles an npm new enough for trusted publishing
+          # (>= 11.5.1). Node 20 ships npm 10 and cannot do the OIDC
+          # exchange. Matches mero-js and mero-react.
+          node-version: "24"
+          cache: "pnpm"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@calimero-network"
+          # Do not write an _authToken into .npmrc: a token there takes
+          # precedence over the OIDC credential and reintroduces the 404.
+          token: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: |
+          pnpm --filter=@calimero-network/mero-tokens build
+          pnpm --filter=@calimero-network/mero-icons build
+          pnpm --filter=@calimero-network/mero-ui build
+          pnpm --filter=@calimero-network/mero-charts build
+
+      # No .npmrc token step: authentication comes from the OIDC exchange
+      # above. A stale `_authToken` would take precedence over it, so the file
+      # is deliberately not written.
+
+      - name: Version packages
+        run: pnpm version-packages
+
+      - name: Publish packages
+        if: github.event.inputs.dry_run != 'true'
+        run: pnpm release
+        env:
+          # changesets shells out to `npm publish`, which reads this rather
+          # than a --provenance flag. mero-js and mero-react pass
+          # `--provenance` directly because they call npm publish themselves;
+          # this repo publishes through changesets, so the env var is the
+          # equivalent. Provenance attestation requires the same id-token
+          # permission the OIDC exchange already needs.
+          NPM_CONFIG_PROVENANCE: true
+
+      # `pnpm version-packages` above rewrites each package.json on the runner and
+      # that commit is never pushed back, so this repository's git tree is behind
+      # npm by design. The tree is nevertheless the right thing to read here: it is
+      # exactly what `pnpm release` just published.
+      #
+      # All four packages are reported, not just mero-ui. A consumer that declares
+      # none of them is skipped by the bump script, so naming them all costs
+      # nothing and means mero-icons or mero-charts moving is not silently ignored.
+      - name: Read the published versions
+        id: published
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          set -euo pipefail
+          pkgs=""
+          for dir in packages/*/; do
+            name=$(node -p "require('./${dir}package.json').name")
+            version=$(node -p "require('./${dir}package.json').version")
+            case "$name" in
+              @calimero-network/*) pkgs="$pkgs $name=$version" ;;
+            esac
+          done
+          echo "packages=${pkgs# }" >> "$GITHUB_OUTPUT"
+          echo "ui=$(node -p "require('./packages/ui/package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "::notice::published${pkgs}"
+
+      - name: Dry run summary
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          echo "=== DRY RUN COMPLETED ==="
+          echo "✅ All packages built successfully"
+          echo "✅ Type checking passed"
+          echo "✅ Linting passed"
+          echo "✅ Version packages step completed"
+          echo ""
+          echo "This was a dry run - no packages were published"
+          echo "To publish for real, run without dry_run=true"
+
+      - name: Get tag name
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            TAG_NAME=${GITHUB_REF#refs/tags/}
+          else
+            # For workflow_dispatch, find the latest tag
+            TAG_NAME=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          fi
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "Tag name: $TAG_NAME"
+
+      - name: Create GitHub Release
+        if: github.event.inputs.dry_run != 'true' && steps.tag.outputs.tag != ''
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          release_name: Release ${{ steps.tag.outputs.tag }}
+          body: |
+            ## Calimero Design System Release
+
+            This release includes:
+            - @calimero-network/mero-icons: Icon components
+            - @calimero-network/mero-ui: UI primitives with enhanced tooltips
+            - @calimero-network/mero-charts: Chart components (Gauge, TimeSeries, VectorTable, TimeSeriesWithTable)
+            - @calimero-network/mero-tokens: Design tokens
+
+            ### New Features:
+            - Complete charts package with fillable areas
+            - Custom tooltip component for Card
+            - Pure components without Card wrappers
+            - Comprehensive Storybook documentation
+          draft: false
+          prerelease: false
+
+  # Opens the pull request that moves every consumer in .github/fleet.json onto
+  # the versions just published. Majors are skipped by default -- see the header
+  # of fleet-bump.yml for why.
+  fleet-bump:
+    name: Open dependency bump PRs
+    needs: release
+    if: github.event.inputs.dry_run != 'true' && needs.release.outputs.packages != ''
+    uses: ./.github/workflows/fleet-bump.yml
+    with:
+      packages: ${{ needs.release.outputs.packages }}
+      label: design-system-${{ needs.release.outputs.ui }}
+    # GH_APP_PRIVATE_KEY, which the called workflow uses to mint a
+    # per-repository installation token.
+    secrets: inherit

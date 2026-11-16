@@ -1,0 +1,53 @@
+{
+  "name": "@calimero-network/mero-ui",
+  "publishConfig": {
+    "access": "public"
+  },
+  "version": "1.5.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/calimero-network/design-system.git",
+    "directory": "packages/ui"
+  },
+  "description": "UI primitives for Calimero design system",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@calimero-network/mero-icons": "workspace:*",
+    "@tiptap/extension-color": "^3.6.2",
+    "@tiptap/extension-link": "^3.6.2",
+    "@tiptap/extension-text-align": "^3.6.2",
+    "@tiptap/extension-text-style": "^3.6.2",
+    "@tiptap/extension-underline": "^3.6.2",
+    "@tiptap/extensions": "^3.6.2",
+    "@tiptap/react": "^3.6.2",
+    "@tiptap/starter-kit": "^3.6.2"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "react": ">=19.0.0",
+    "react-dom": ">=19.0.0"
+  }
+}

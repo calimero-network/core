@@ -1,0 +1,23 @@
+# Ignore development files
+node_modules
+.git
+.gitignore
+README.md
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Ignore build artifacts that aren't needed
+packages/*/dist
+apps/storybook/storybook-static
+
+# Ignore test files
+**/*.test.*
+**/*.spec.*
+**/__tests__/**
+
+# Ignore development tools
+.vscode
+.idea
+*.log
