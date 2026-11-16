@@ -1,3 +1,9 @@
+## [11.5.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.4.0...mero-react-v11.5.0) (2026-11-16)
+
+### Features
+
+* **create-workspace:** a noun label and an extra-fields slot for the dialog ([#141](https://github.com/calimero-network/mero-react/issues/141)) ([02e17b6](https://github.com/calimero-network/mero-react/commit/02e17b6bb74b197ab8acebea448414eeed3f3653))
+
 ## [11.4.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.3.0...mero-react-v11.4.0) (2026-11-16)
 
 ### Features
