@@ -1,3 +1,9 @@
+## [11.4.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.3.0...mero-react-v11.4.0) (2026-11-16)
+
+### Features
+
+* **create-workspace:** shared create workspace dialog with node-side approval ([#140](https://github.com/calimero-network/mero-react/issues/140)) ([609ad0a](https://github.com/calimero-network/mero-react/commit/609ad0a50338414e3b6c8e0b409ab9c4c29200d4))
+
 ## [11.3.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.2.0...mero-react-v11.3.0) (2026-11-15)
 
 ### Features
