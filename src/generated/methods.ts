@@ -1519,6 +1519,14 @@ export function createRoutes(api: RouteClient) {
       bundlePut: (args: RawBody, options?: MethodOptions): Promise<operations['bundle_put']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/bundles","pathParams":[],"query":[],"body":"raw","optionalBody":false,"media":"application/wasm","reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['bundle_put']['responses'][200]['content']['application/json']>,
       /**
+       * A release's capabilities.
+       *
+       * `GET /packages/{package}/{version}/capabilities` (`package_capabilities`). **Who:** signed in (a session or an API key).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      capabilities: (args: operations['package_capabilities']['parameters']['path'] & NonNullable<operations['package_capabilities']['parameters']['query']>, options?: MethodOptions): Promise<operations['package_capabilities']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/packages/{package}/{version}/capabilities","pathParams":["package","version"],"query":["service"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_capabilities']['responses'][200]['content']['application/json']>,
+      /**
        * One package.
        *
        * `GET /packages/{package}` (`package_get`). **Who:** signed in (a session or an API key).

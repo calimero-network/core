@@ -3572,6 +3572,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/packages/{package}/{version}/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A release's capabilities
+         * @description What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+         *
+         *     **Who:** signed in (a session or an API key).
+         */
+        get: operations["package_capabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/packages/{package}/{version}/pipelines": {
         parameters: {
             query?: never;
@@ -17469,6 +17491,80 @@ export interface operations {
             };
             /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    package_capabilities: {
+        parameters: {
+            query?: {
+                service?: string;
+            };
+            header?: never;
+            path: {
+                package: string;
+                version: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        package: string;
+                        version: string;
+                        service: string | null;
+                        bundle: string;
+                        mpk: string;
+                        manifestHash: string;
+                        signer: string;
+                        name: string | null;
+                        author: string | null;
+                        outbound: string[];
+                        /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+                        abi: unknown;
+                    };
+                };
+            };
+            /** @description `BAD_REQUEST`: the request is malformed; `NO_SUCH_SERVICE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
