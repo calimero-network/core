@@ -1,0 +1,18 @@
+{
+  "name": "mero-kotlin",
+  "kind": "client",
+  "language": "kotlin",
+  "published": [
+    {"registry": "maven", "name": "network.calimero:mero-kotlin"},
+    {"registry": "maven", "name": "network.calimero:mero-kotlin-compose"},
+    {"registry": "maven", "name": "network.calimero:mero-kotlin-testkit"}
+  ],
+  "version_files": [
+    {"path": "gradle.properties", "format": "properties", "key": "VERSION_NAME"}
+  ],
+  "depends_on": [],
+  "inputs": ["docs/public/openapi.json"],
+  "generate": "./gradlew -p codegen --no-daemon --console=plain generateMeroClient",
+  "generated": ["mero-core/src/generated/kotlin"],
+  "workflow": ".github/workflows/sdk-mero-kotlin.yml"
+}

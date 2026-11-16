@@ -1,9 +1,9 @@
-# TESTING — mero-kotlin (kotlin-sdk)
+# TESTING — mero-kotlin
 
-Run every command from the repo root. You need **JDK 17** and the **Android SDK**
+Run every command from this directory (`sdks/clients/mero-kotlin`). You need **JDK 17** and the **Android SDK**
 (`ANDROID_HOME`, or `sdk.dir` in `local.properties`).
 
-## 1. What CI runs (`.github/workflows/ci.yml`)
+## 1. What CI runs (core's `.github/workflows/sdk-mero-kotlin.yml`)
 
 ```bash
 ./gradlew ktlintCheck detekt
@@ -12,8 +12,10 @@ Run every command from the repo root. You need **JDK 17** and the **Android SDK*
 ./gradlew assembleDebug
 ./gradlew :sample-app:assembleDebugAndroidTest   # instrumented tests must compile
 ./ci/check-registry-parity.sh                     # every public CalimeroClient method has an SDK-tab entry
-scripts/refresh-openapi.sh --check                # the generated OpenAPI client matches openapi/openapi.json
 ```
+
+Whether the generated client matches core's `docs/public/openapi.json` is core's `SDK codegen
+drift` job (`python3 scripts/sdks.py generate mero-kotlin` from core's root, then `git status`).
 
 The unit tests need no network and no node:
 
@@ -25,7 +27,7 @@ The unit tests need no network and no node:
 | `mero-core` `agentgate/*` | The agent gate client. |
 | `sample-app` `ChatServiceTest` | The chat on `InMemoryAppBackend`. |
 
-## 2. Instrumented UI tests (`instrumented.yml`, an emulator)
+## 2. Instrumented UI tests (an emulator; `sdk-mero-kotlin.yml` with `instrumented: true`)
 
 ```bash
 ./gradlew :sample-app:connectedDebugAndroidTest

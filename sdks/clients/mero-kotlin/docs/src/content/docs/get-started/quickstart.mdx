@@ -11,11 +11,14 @@ quote, over a sealed channel. It mirrors mero-js ≥ 27's `CalimeroClient` one t
 
 ```kotlin
 dependencies {
-    implementation("com.calimero.mero:mero-core:<version>")     // CalimeroClient, attestation, sealed transport
-    implementation("com.calimero.mero:mero-compose:<version>")  // MeroAppSession, PlatformPasskey, ConsentLauncher
-    testImplementation("com.calimero.mero:mero-testkit:<version>") // InMemoryAppBackend
+    implementation("network.calimero:mero-kotlin:<version>")             // CalimeroClient, attestation, sealed transport
+    implementation("network.calimero:mero-kotlin-compose:<version>")     // MeroAppSession, PlatformPasskey, ConsentLauncher
+    testImplementation("network.calimero:mero-kotlin-testkit:<version>") // InMemoryAppBackend
 }
 ```
+
+`<version>` is core's release (the SDK ships with core). Before core's release these were
+`network.calimero:mero-core` and `network.calimero:mero-compose`; the Kotlin packages are unchanged.
 
 ## 2. A local cluster
 

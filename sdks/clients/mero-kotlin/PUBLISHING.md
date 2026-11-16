@@ -1,89 +1,60 @@
 # Publishing & releasing
 
 There's no "npm" for Android — the package registry is **Maven**. Artifacts are addressed by
-`group:artifact:version` coordinates (e.g. `network.calimero:mero-core:0.1.0`) and resolved by
-Gradle from a Maven repository. This repo publishes to two targets, both wired:
-
-| Target | Analogous to | Consumer auth | Role |
-|--------|--------------|---------------|------|
-| **Maven Central** | the public npm registry | **none** | the public target |
-| **GitHub Packages** | a private/org npm registry | a PAT, even for public packages | pre-releases, internal builds |
-
-Central is the one to point people at: it resolves through the `mavenCentral()` every Android
-project already declares. GitHub Packages needs no signing key and no Portal account, which is
-what keeps it useful for an internal or pre-release build.
+`group:artifact:version` coordinates (e.g. `network.calimero:mero-kotlin:1.0.0-rc.30`) and resolved
+by Gradle from a Maven repository. The public target is **Maven Central**: it resolves through the
+`mavenCentral()` every Android project already declares, with no credentials on the consumer side.
 
 ## Coordinates
 
+| Artifact | Module | Was (calimero-network/kotlin-sdk) |
+|---|---|---|
+| `network.calimero:mero-kotlin` | `mero-core/` | `network.calimero:mero-core` |
+| `network.calimero:mero-kotlin-compose` | `mero-compose/` | `network.calimero:mero-compose` |
+| `network.calimero:mero-kotlin-testkit` | `mero-testkit/` | not published |
+
 `network.calimero`, not `com.calimero.*`. Central makes you prove you own the namespace, and
 `com.calimero` would mean owning **calimero.com** — this is the reverse-DNS of calimero.network,
-a domain we do own, verified with a TXT record. Settled before the first public release on
-purpose: moving coordinates afterwards is a breaking change for every consumer.
+a domain we do own, verified with a TXT record.
 
-## Testing before release
+The artifact names follow core's `mero-<language>` rule; the Kotlin packages
+(`com.calimero.mero`, ...) did not change, so moving to the new coordinates changes no import.
 
-Before tagging, make sure the suite is green — see [TESTING.md](TESTING.md). At a
-minimum run what CI enforces:
+## Version
 
-```bash
-./gradlew ktlintCheck detekt testDebugUnitTest lint assembleDebug   # ci.yml
-```
+The version is core's: the root `VERSION` of calimero-network/core, written into
+`gradle.properties` `VERSION_NAME` by `python3 scripts/sdks.py version-sync` (from core's root).
+CI's `SDK scope` job fails while they differ. Never bump it on its own: the SDK releases only with
+core.
 
 ## How a release happens
 
-[RELEASING.md](RELEASING.md) has the rules for titles and breaking changes that pick
-the version, shared with every Calimero repository that ships releases.
+A core tag `X.Y.Z[-rc.N]` releases core and every SDK from that commit. Core's `release.yml` calls
+`.github/workflows/sdk-mero-kotlin.yml` with `publish: true` and `dry-run: false`, which:
 
-On merge, as in the JS repos. Every push to `main` runs `.github/workflows/release-on-merge.yml`,
-which runs semantic-release (`.releaserc.json`) over the conventional commits since the last
-`v*` tag:
+1. builds the three modules and runs `./gradlew nmcpPublishAggregationToCentralPortal`: one signed
+   bundle to **Maven Central**, published by the Portal as soon as it validates
+   (`publishingType = "AUTOMATIC"`);
+2. needs the Central secrets (`MAVEN_CENTRAL_USERNAME`, `MAVEN_CENTRAL_PASSWORD`, `SIGNING_KEY`,
+   `SIGNING_PASSWORD`) in the `maven-central` environment; without them the step is skipped with a
+   warning.
 
-| Commit | Release |
-|---|---|
-| `feat!:` / `BREAKING-CHANGE:` footer | major |
-| `feat:` | minor |
-| `fix:`, `perf:` | patch |
-| `docs:`, `chore:`, `refactor:`, `style:`, `test:`, `build:`, `ci:`, `revert:` | none |
+**A Central version can never be replaced, deleted or re-published.** Core's
+[RELEASING.md](../../../RELEASING.md) has the rules for what releases and when.
 
-Only the hyphenated `BREAKING-CHANGE:` footer (or `!`) makes a major; prose that happens to start a
-line with "breaking change" does not (see the comment in `.releaserc.json`).
+With `dry-run: true` (the default) the publish path builds the same publications and puts them in
+the runner's Maven local repository only: nothing leaves the runner.
 
-When the commits call for a release, it pushes the tag `vX.Y.Z` and creates the GitHub Release with
-notes generated from those commits. The tag then runs `.github/workflows/release.yml`:
-1. `./gradlew publish` → `mero-core` and `mero-compose` to **GitHub Packages**,
-2. `./gradlew nmcpPublishAggregationToCentralPortal` → both modules as one signed bundle to
-   **Maven Central**, published as soon as the Portal validates it,
-3. the GitHub Release, when release-on-merge did not create it (a tag pushed by hand).
+`CHANGELOG.md` keeps the history the SDK had as its own repository; new entries go in core's
+release notes.
 
-The tag is pushed with a GitHub App token (`vars.ACTIONS_APP_ID` / `secrets.ACTIONS_APP_PRIVATE_KEY`,
-scoped to this repository and `contents: write`): a tag pushed with `GITHUB_TOKEN` does not start
-`release.yml`. The app must be installed on this repository.
+### One-time setup before the first Central release from core
 
-`VERSION_NAME` in `gradle.properties` is only the default for local and dev builds; the tag
-overrides it, so a release commits nothing back to `main`. A tag pushed by hand
-(`git tag v1.2.3 && git push origin v1.2.3`) still releases through `release.yml`.
-
-### CHANGELOG.md
-
-`CHANGELOG.md` stays hand-written: a pull request that changes what the SDK does adds its entry
-under `## Unreleased`, in prose, as it always has. The per-version list of commits is the GitHub
-Release that semantic-release writes. Nothing rewrites the file on release; rename `## Unreleased`
-to the version in a later pull request if a version heading is wanted.
-
-### Maven Central publishes by itself
-
-`publishingType` is `AUTOMATIC`: the bundle is uploaded, validated and published with no click in
-the [Central Portal](https://central.sonatype.com/). **A Central version can never be replaced,
-deleted or re-published**, so a merge that semantic-release tags is a permanent release. A commit
-that must not release carries a type that releases nothing (`ci:`, `test:`, `build:`).
-
-### One-time setup before the first Central release
-
-1. Register the `network.calimero` namespace on the Central Portal and verify it with the DNS
-   TXT record it gives you.
-2. Generate a GPG key, publish the public half to a keyserver, and export the private half
-   ASCII-armored (`gpg --armor --export-secret-keys <id>`).
-3. Add four repo secrets:
+1. The `network.calimero` namespace is registered and verified on the Central Portal (done for
+   kotlin-sdk; it carries over).
+2. A GPG key, its public half on a keyserver, the private half exported ASCII-armored
+   (`gpg --armor --export-secret-keys <id>`).
+3. Four secrets on core's `maven-central` environment:
 
    | secret | what |
    |---|---|
@@ -92,8 +63,8 @@ that must not release carries a type that releases nothing (`ci:`, `test:`, `bui
    | `SIGNING_KEY` | the ASCII-armored private key |
    | `SIGNING_PASSWORD` | its passphrase (`''` if none) |
 
-Signing is opted into only when a key is present, so `publishToMavenLocal` and a GitHub Packages
-publish still work on a machine with no GPG key.
+Signing is opted into only when a key is present, so `publishToMavenLocal` works on a machine
+with no GPG key.
 
 ## Consuming from Maven Central
 
@@ -101,68 +72,31 @@ No repository block, no credentials — `mavenCentral()` is already there:
 
 ```kotlin
 dependencies {
-    implementation("network.calimero:mero-core:0.1.0")
-    implementation("network.calimero:mero-compose:0.1.0") // optional UI kit
+    implementation("network.calimero:mero-kotlin:1.0.0-rc.30")
+    implementation("network.calimero:mero-kotlin-compose:1.0.0-rc.30") // optional UI kit
+    testImplementation("network.calimero:mero-kotlin-testkit:1.0.0-rc.30")
 }
 ```
-
-
-## Consuming from GitHub Packages (pre-releases, internal builds)
-
-GitHub Packages requires auth even for public packages. In the consumer project:
-
-```kotlin
-// settings.gradle.kts
-dependencyResolutionManagement {
-    repositories {
-        google()
-        mavenCentral()
-        maven {
-            url = uri("https://maven.pkg.github.com/calimero-network/kotlin-sdk")
-            credentials {
-                username = providers.gradleProperty("gpr.user").orNull ?: System.getenv("GITHUB_ACTOR")
-                password = providers.gradleProperty("gpr.token").orNull ?: System.getenv("GITHUB_TOKEN")
-            }
-        }
-    }
-}
-```
-
-```kotlin
-// build.gradle.kts
-dependencies {
-    implementation("network.calimero:mero-core:0.1.0")
-    implementation("network.calimero:mero-compose:0.1.0") // optional UI kit
-}
-```
-
-Put a personal access token (scope `read:packages`) in `~/.gradle/gradle.properties` as
-`gpr.user` / `gpr.token`.
 
 ## Publishing locally (smoke test)
 
 ```bash
-./gradlew publishToMavenLocal -PVERSION_NAME=0.1.0-local
-# artifacts land in ~/.m2/repository/network/calimero/
+./gradlew publishToMavenLocal
+# artifacts land in ~/.m2/repository/network/calimero/mero-kotlin*/<VERSION_NAME>/
 ```
 
 To check the **actual Central bundle** — coordinates, javadoc jar, signatures, checksums — without
-any credentials, which is what `ci.yml` does on every pull request:
+any credentials, which is what `sdk-mero-kotlin.yml` does on every pull request:
 
 ```bash
 ORG_GRADLE_PROJECT_signingInMemoryKey="$(gpg --armor --export-secret-keys <throwaway-id>)" \
-  ./gradlew nmcpZipAggregation -PVERSION_NAME=0.0.0-local
+  ./gradlew nmcpZipAggregation
 unzip -l build/nmcp/zip/aggregation.zip
 ```
 
 `nmcpCheckAggregationFiles` runs as part of that and validates the bundle against Central's rules,
 so a broken release config fails on the pull request rather than on a tag that cannot be undone.
 
-## What ships
-
-`mero-core` and `mero-compose` only. `mero-testkit` applies `maven-publish` but registers no
-publication, so it is not published — it exists for this repo's own tests. Register a publication
-for it if consumers need `InMemoryAppBackend` from Maven.
-
-Version-align releases to the mero-js contract they implement: this SDK speaks Calimero 1.0, as
-mero-js ≥ 27's `CalimeroClient` does; a release that drops the 0.x API is a major version.
+The modules also declare a `GitHubPackages` repository (`calimero-network/core`) for an internal
+build a human publishes by hand (`./gradlew publish` with `GITHUB_ACTOR` / `GITHUB_TOKEN`); no
+workflow publishes there.

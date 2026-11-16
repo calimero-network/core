@@ -19,7 +19,11 @@ tests. It is the Android twin of [`calimero-network/swift-sdk`](https://github.c
 > relays, delegated execution, `/api/cloud/*`) is gone from core, and from this SDK. See
 > [Migrating from 0.x](https://calimero-network.github.io/kotlin-sdk/reference/migrating-from-0x/).
 
-> **Before committing, titling a pull request, or releasing**, read [RELEASING.md](RELEASING.md): the PR title is the release commit, and the rules are shared by every Calimero repository that ships releases.
+> **Lives in core.** This SDK is `sdks/clients/mero-kotlin` in
+> [calimero-network/core](https://github.com/calimero-network/core) (it was
+> `calimero-network/kotlin-sdk`) and ships with core, on core's version. Before committing, titling
+> a pull request, or releasing, read core's [RELEASING.md](../../../RELEASING.md) and
+> [sdks/AGENTS.md](../../AGENTS.md).
 
 ## Modules
 
@@ -28,7 +32,7 @@ tests. It is the Android twin of [`calimero-network/swift-sdk`](https://github.c
 | `mero-core` | `CalimeroClient` and its typed errors (`AppError`, `ConfirmRequired`, `WrongNode`, `LoginRequired`, `NotFound`, `UnavailableError`, …); attestation (`CloudPolicy`, `fetchAttestedKey`: mock quotes only when allowed, real quotes checked against Sigstore-signed mero-tee releases and Intel's DCAP collateral on the device); the sealed transport (`tee.SealedTransport`); passkeys (`PasskeyProvider`, `SoftPasskey`); approvals and the consent page; `SessionStore`; and the app-facing layer in `app` (`MeroAppBackend`, `ContextContract`, `CalimeroAppBackend`, `OrgInvitation`). Also the mero-agent-gate client (`agentgate`). |
 | `mero-compose` | `MeroAppSession` (a mobile app's signed-in account over `CalimeroAppBackend`), `PlatformPasskey` (Android Credential Manager), `ConsentLauncher` (the node's consent page in a Custom Tab, and `resume` for the App Link it returns to), `MeroTheme`. |
 | `mero-testkit` | `InMemoryAppBackend` and `RecordingContextContract`: test an app's view models with no cluster. |
-| `sample-app` | **Mero Chat** sample in the light Calimero style: Home / Chat / SDK tabs. |
+| `examples/sample-app` | **Mero Chat** sample in the light Calimero style: Home / Chat / SDK tabs. |
 
 ### The sample app
 
@@ -49,11 +53,27 @@ tests. It is the Android twin of [`calimero-network/swift-sdk`](https://github.c
 
 ```kotlin
 dependencies {
-    implementation("com.calimero.mero:mero-core:<version>")
-    implementation("com.calimero.mero:mero-compose:<version>")  // MeroAppSession, passkeys, consent
-    testImplementation("com.calimero.mero:mero-testkit:<version>")
+    implementation("network.calimero:mero-kotlin:<version>")
+    implementation("network.calimero:mero-kotlin-compose:<version>")  // MeroAppSession, passkeys, consent
+    testImplementation("network.calimero:mero-kotlin-testkit:<version>")
 }
 ```
+
+`<version>` is core's release (`1.0.0-rc.30`, ...): the SDK ships with core, on the same version.
+
+**Renamed artifacts.** Up to its last release from `calimero-network/kotlin-sdk` the SDK was
+`network.calimero:mero-core` and `network.calimero:mero-compose` (`mero-testkit` was not
+published). From core's release on they are:
+
+| Was | Now |
+|---|---|
+| `network.calimero:mero-core` | `network.calimero:mero-kotlin` |
+| `network.calimero:mero-compose` | `network.calimero:mero-kotlin-compose` |
+| (`mero-testkit`, unpublished) | `network.calimero:mero-kotlin-testkit` |
+
+Only the coordinates change: the Kotlin packages (`com.calimero.mero`, `com.calimero.mero.compose`,
+`com.calimero.mero.testkit`) and every import stay as they were. The Gradle modules keep their
+directory names (`mero-core/`, `mero-compose/`, `mero-testkit/`).
 
 Kotlin 2.x, coroutines and `Flow`; minSdk 24, compileSdk 34. See [PUBLISHING.md](PUBLISHING.md).
 
@@ -78,7 +98,7 @@ client.events(app).collect { /* sealed SSE */ }
 ```
 
 Every route of core's node API is also a method of the facade generated from core's OpenAPI document
-(`openapi/`): one suspend method per operation, named parameters, the typed answer. A `412` step-up is
+(`docs/public/openapi.json`, through `codegen/`): one suspend method per operation, named parameters, the typed answer. A `412` step-up is
 approved with the client's `passkey` (or the call's), a `428` signed with its `operator`:
 
 ```kotlin
@@ -137,7 +157,7 @@ invitation's token never appears in `toString`. See the
 ## Build & test
 
 ```bash
-./gradlew ktlintCheck detekt testDebugUnitTest lint assembleDebug   # what CI runs
+./gradlew ktlintCheck detekt testDebugUnitTest lint assembleDebug   # what CI (sdk-mero-kotlin.yml) runs
 ./gradlew :sample-app:assembleDebugAndroidTest                       # instrumented tests compile
 ./gradlew :sample-app:connectedDebugAndroidTest                      # the demo UI test (an emulator)
 ./ci/check-registry-parity.sh                                        # every client method in the SDK tab
