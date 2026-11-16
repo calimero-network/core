@@ -12,15 +12,31 @@ export const RUN_SUBCOMMAND = process.env.MEROD_RUN !== '0';
 export const KV_STORE_WASM =
   process.env.KV_STORE_WASM ?? resolve(__dirname, '../../../../../target/app-components/kv.wasm');
 
-async function freePort(): Promise<number> {
+/** `MERO_JS_CLUSTER_PORT_BASE=2900` takes the nodes' ports from 2900 up (the first free ones); unset, the OS picks. */
+let nextPort = Number(process.env.MERO_JS_CLUSTER_PORT_BASE ?? 0);
+
+function listenOn(port: number): Promise<number> {
   return new Promise((ok, fail) => {
     const s = createServer();
-    s.listen(0, '127.0.0.1', () => {
-      const port = (s.address() as { port: number }).port;
-      s.close(() => ok(port));
+    s.listen(port, '127.0.0.1', () => {
+      const bound = (s.address() as { port: number }).port;
+      s.close(() => ok(bound));
     });
     s.on('error', fail);
   });
+}
+
+async function freePort(): Promise<number> {
+  if (!nextPort) return listenOn(0);
+  for (let tries = 0; tries < 100; tries++) {
+    const port = nextPort++;
+    try {
+      return await listenOn(port);
+    } catch {
+      // taken: try the next one
+    }
+  }
+  throw new Error(`no free port from ${nextPort - 100} to ${nextPort - 1}`);
 }
 
 /** meroctl, to register a job node (the operator's decision is signed by it); without it no job node starts. */
