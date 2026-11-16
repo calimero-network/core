@@ -15,7 +15,7 @@
 //!
 //! Changing the shape of any row (a column's key layout, a sealed value's encoding, a
 //! machine's rows) raises [`STORE_FORMAT`] and appends the step that rewrites the old rows;
-//! a step that cannot exist is a hard cutover, declared in `CHANGELOG.md` and mdma's release
+//! a step that cannot exist is a hard cutover, declared by a breaking PR (`!` in its title) and mdma's release
 //! compatibility table before it ships (docs: protocol/storage, "Format versions"). Snapshots
 //! carry rows too: the same change raises the snapshot format ([`crate::SNAPSHOT_FORMAT`]).
 

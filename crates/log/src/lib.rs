@@ -765,11 +765,7 @@ impl Engine {
     #[must_use]
     pub fn group_state(&self, group: GroupId) -> GroupState {
         let generation = store::load_generation(&self.db, group).unwrap_or(0);
-        GroupState {
-            db: Arc::clone(&self.db),
-            group,
-            generation: Arc::new(std::sync::atomic::AtomicU32::new(generation)),
-        }
+        GroupState::new(Arc::clone(&self.db), group, generation)
     }
 
     /// The snapshot `group` serves on this node: its index, id and sealed file.

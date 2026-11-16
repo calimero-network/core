@@ -8,12 +8,13 @@ wrote. Earlier data and clusters survive it only through a reader, so the body s
     Reader: <the migration or decoder for the old shape, and the test that reads it>
     Hard cutover: <what breaks and for whom>
 
-and a hard cutover also adds a "Hard cutover" line to CHANGELOG.md in the same PR (mdma's
-release_compat CUTOVERS takes the release that ships it). A PR that moves a format version
+and a hard cutover is breaking, so the PR title says so with `!` (`feat(node)!: ...`): the
+release's generated notes list it as such (core keeps no CHANGELOG.md), and mdma's
+release_compat CUTOVERS takes the release that ships it. A PR that moves a format version
 (`STORE_FORMAT`, `SNAPSHOT_FORMAT`, `ENTRY_FORMAT`, the WIT package version or
 `SUPPORTED_ABI_VERSIONS`) must state its door at all.
 
-Reads the body from $PR_BODY and the PR's diff from stdin:
+Reads the body from $PR_BODY, the title from $PR_TITLE and the PR's diff from stdin:
 
     git diff HEAD^1 HEAD | python3 scripts/check-compat-door.py
 
@@ -47,19 +48,11 @@ VERSION_LINE_RE = re.compile(
 )
 
 
-def changelog_adds_cutover(diff: str) -> bool:
-    """Whether the diff adds a line naming a hard cutover to CHANGELOG.md."""
-    in_changelog = False
-    for line in diff.splitlines():
-        if line.startswith("diff --git "):
-            in_changelog = line.endswith(" b/CHANGELOG.md")
-        elif in_changelog and line.startswith("+") and not line.startswith("+++"):
-            if "hard cutover" in line.lower():
-                return True
-    return False
+# A Conventional Commit title that declares a breaking change: `<type>(<scope>)!: ...`.
+BREAKING_TITLE_RE = re.compile(r"^\s*[a-z]+(?:\([^)]*\))?!:")
 
 
-def problems(body: str, diff: str) -> list[str]:
+def problems(body: str, diff: str, title: str = "") -> list[str]:
     lines = list(_tb.visible_lines(body))
     doors = [m[1].lower() for line in lines if (m := DOOR_RE.match(line))]
     moves_a_version = bool(VERSION_LINE_RE.search(diff))
@@ -81,13 +74,16 @@ def problems(body: str, diff: str) -> list[str]:
             "`Door: one-way` needs `Reader: <the migration or decoder for the old shape, and its test>` "
             "or `Hard cutover: <what breaks and for whom>`"
         ]
-    if cutover and not changelog_adds_cutover(diff):
-        return ["`Hard cutover:` needs a line in CHANGELOG.md saying \"Hard cutover\" in this PR"]
+    if cutover and not BREAKING_TITLE_RE.match(title):
+        return [
+            "`Hard cutover:` is a breaking change: put `!` in the PR title (`feat(node)!: ...`), "
+            "so the release notes list it as one"
+        ]
     return []
 
 
 def main() -> int:
-    found = problems(os.environ.get("PR_BODY") or "", sys.stdin.read())
+    found = problems(os.environ.get("PR_BODY") or "", sys.stdin.read(), os.environ.get("PR_TITLE") or "")
     for problem in found:
         print(f"::error::Compatibility: {problem}")
     if not found:

@@ -15,6 +15,9 @@ pub struct ApiError {
     pub message: String,
     #[serde(default, skip_serializing_if = "is_null")]
     pub details: Box<Value>,
+    /// Seconds for the `Retry-After` header of the answer, if any.
+    #[serde(skip)]
+    pub retry_after: Option<u32>,
 }
 
 #[allow(clippy::borrowed_box, reason = "serde passes the field by reference")]
@@ -34,6 +37,7 @@ impl ApiError {
             code: code.to_owned(),
             message: message.to_owned(),
             details: Box::new(Value::Null),
+            retry_after: None,
         }
     }
 
@@ -71,6 +75,16 @@ impl ApiError {
     #[must_use]
     pub fn unavailable(message: &str) -> Self {
         Self::new(503, "UNAVAILABLE", message)
+    }
+
+    /// `503 BUSY` with `Retry-After: 1`: too many requests at once, send it
+    /// again in a second.
+    #[must_use]
+    pub fn busy(message: &str) -> Self {
+        Self {
+            retry_after: Some(1),
+            ..Self::new(503, "BUSY", message)
+        }
     }
 
     #[must_use]
@@ -111,8 +125,14 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = StatusCode::from_u16(self.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let code = crate::metrics::ErrorCode(self.code.clone());
+        let retry_after = self.retry_after;
         let mut response = (status, axum::Json(self)).into_response();
         let _prev = response.extensions_mut().insert(code);
+        if let Some(secs) = retry_after {
+            let _prev = response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, secs.into());
+        }
         response
     }
 }
