@@ -1,0 +1,294 @@
+name: SDK mero-kotlin
+
+# mero-kotlin (sdks/clients/mero-kotlin): the Android SDK, published to Maven
+# Central as network.calimero:mero-kotlin, mero-kotlin-compose and
+# mero-kotlin-testkit. Called by sdks.yml (tests, when a change reaches it) and
+# by release.yml (publish: true).
+#
+#   test          wrapper validation, ktlint + detekt, unit tests, Android Lint,
+#                 assembleDebug (the sample app in examples/ too), the Central
+#                 bundle checked with a throwaway key, the instrumented tests
+#                 compiled, the SDK/sample registry parity
+#   instrumented  the sample app's instrumented UI tests on an emulator (in-app
+#                 demo, no cluster): only with `instrumented: true`
+#   publish       with `publish: true`: `dry-run: true` (the default) publishes
+#                 to the runner's Maven local repository only; `dry-run: false`
+#                 uploads one signed bundle to Maven Central, which can never be
+#                 taken back
+#
+# Whether the generated client matches docs/public/openapi.json is sdks.yml's
+# `SDK codegen drift` job, not this one.
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: "Run the publish path"
+        type: boolean
+        default: false
+      dry-run:
+        description: "Publish to the runner's Maven local repository only, not to Maven Central"
+        type: boolean
+        default: true
+      instrumented:
+        description: "Also run the instrumented UI tests on an emulator (slow)"
+        type: boolean
+        default: false
+    secrets:
+      MAVEN_CENTRAL_USERNAME:
+        required: false
+      MAVEN_CENTRAL_PASSWORD:
+        required: false
+      SIGNING_KEY:
+        required: false
+      SIGNING_PASSWORD:
+        required: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: sdks/clients/mero-kotlin
+
+jobs:
+  test:
+    name: Lint, test & build
+    if: ${{ !inputs.publish }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Validate the Gradle wrapper
+        uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          build-root-directory: sdks/clients/mero-kotlin
+
+      - name: ktlint + detekt
+        run: ./gradlew ktlintCheck detekt --stacktrace
+
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Android Lint
+        run: ./gradlew lint --stacktrace
+
+      - name: Assemble (libraries and examples/sample-app)
+        run: ./gradlew assembleDebug --stacktrace
+
+      # Nothing else exercises the publishing wiring until a release tag, the
+      # worst moment to find it broken: a Central version can never be
+      # re-published. This builds the real bundle and runs nmcp's validation
+      # against Central's rules (coordinates, javadoc jar, signatures, checksums)
+      # with a throwaway key and no credentials.
+      - name: Release bundle is well-formed (no credentials needed)
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$(mktemp -d)"
+          cat > "$GNUPGHOME/params" <<'EOF'
+          %no-protection
+          Key-Type: RSA
+          Key-Length: 3072
+          Name-Real: CI Bundle Check
+          Name-Email: ci@example.invalid
+          Expire-Date: 0
+          %commit
+          EOF
+          gpg --batch --pinentry-mode loopback --gen-key "$GNUPGHOME/params"
+          ORG_GRADLE_PROJECT_signingInMemoryKey="$(gpg --batch --armor --export-secret-keys ci@example.invalid)" \
+            ./gradlew nmcpZipAggregation --stacktrace
+          unzip -l build/nmcp/zip/aggregation.zip
+
+      # The instrumented suites need an emulator (the `instrumented` job), but
+      # they must at least compile on every change.
+      - name: Compile instrumented tests
+        run: ./gradlew :sample-app:assembleDebugAndroidTest --stacktrace
+
+      - name: SDK surface / registry parity
+        run: ./ci/check-registry-parity.sh
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mero-kotlin-test-reports
+          path: |
+            sdks/clients/mero-kotlin/**/build/reports/tests/
+            sdks/clients/mero-kotlin/**/build/reports/ktlint/
+            sdks/clients/mero-kotlin/**/build/reports/detekt/
+            sdks/clients/mero-kotlin/**/build/reports/lint-results-*.html
+          if-no-files-found: ignore
+
+  instrumented:
+    name: Instrumented tests (emulator, in-app demo)
+    if: ${{ inputs.instrumented && !inputs.publish }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          build-root-directory: sdks/clients/mero-kotlin
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # No AVD cache: restoring one hangs the emulator on these runners (it boots
+      # far enough for adb, then never registers its system services). Creating
+      # the AVD in the job costs about two minutes and is reliable.
+      - name: Create AVD (not cached)
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          working-directory: sdks/clients/mero-kotlin
+          api-level: 30
+          target: default
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD created for this job."
+
+      # The action runs `script` under sh (dash): no pipefail and no line
+      # continuations, so the log goes to a file and the exit code propagates.
+      - name: Run instrumented tests (in-app demo)
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          working-directory: sdks/clients/mero-kotlin
+          api-level: 30
+          target: default
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            ./gradlew :sample-app:connectedDebugAndroidTest --stacktrace > instrumented.log 2>&1 || { cat instrumented.log; exit 1; }
+            cat instrumented.log
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mero-kotlin-instrumented-logs
+          path: |
+            sdks/clients/mero-kotlin/instrumented.log
+            sdks/clients/mero-kotlin/examples/sample-app/build/reports/androidTests/
+            sdks/clients/mero-kotlin/examples/sample-app/build/outputs/androidTest-results/
+          if-no-files-found: warn
+
+  # publish, dry-run: the same publications, into the runner's ~/.m2 only.
+  publish-dry-run:
+    name: Publish (dry run, Maven local)
+    if: ${{ inputs.publish && inputs.dry-run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Every SDK states VERSION
+        working-directory: .
+        run: python3 scripts/sdks.py version-check
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Publish to Maven local
+        run: ./gradlew publishToMavenLocal --stacktrace
+
+      - name: List what would be published
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^VERSION_NAME=//p' gradle.properties)"
+          for artifact in mero-kotlin mero-kotlin-compose mero-kotlin-testkit; do
+            dir="$HOME/.m2/repository/network/calimero/$artifact/$version"
+            test -f "$dir/$artifact-$version.pom" || { echo "::error::$artifact $version was not published"; exit 1; }
+            ls -1 "$dir"
+          done
+
+  # publish: one signed bundle to Maven Central, published once the Portal
+  # validates it (publishingType AUTOMATIC). The signing key and the Central
+  # token reach this job only, in the `maven-central` environment, and no
+  # third-party Gradle action runs inside the build that holds the key; no
+  # Gradle cache either (a cache another run wrote must not feed a release).
+  # Skipped with a warning while the Central secrets are missing.
+  publish-central:
+    name: Publish to Maven Central
+    if: ${{ inputs.publish && !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: maven-central
+    steps:
+      - name: Check for Maven Central credentials
+        id: central
+        working-directory: .
+        env:
+          HAS_CENTRAL: ${{ secrets.MAVEN_CENTRAL_USERNAME != '' && secrets.SIGNING_KEY != '' }}
+        run: |
+          echo "enabled=${HAS_CENTRAL}" >> "$GITHUB_OUTPUT"
+          if [ "${HAS_CENTRAL}" != "true" ]; then
+            echo "::warning::MAVEN_CENTRAL_USERNAME / SIGNING_KEY are not set; skipping Maven Central."
+          fi
+
+      - name: Checkout code
+        if: steps.central.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Every SDK states VERSION
+        if: steps.central.outputs.enabled == 'true'
+        working-directory: .
+        run: python3 scripts/sdks.py version-check
+
+      - name: Set up JDK 17
+        if: steps.central.outputs.enabled == 'true'
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Plain ./gradlew: the wrapper checks the distribution against
+      # distributionSha256Sum, and every dependency is checked against
+      # gradle/verification-metadata.xml. The version is VERSION_NAME, which
+      # version-check has just tied to the root VERSION (= the tag).
+      - name: Publish to Maven Central
+        if: steps.central.outputs.enabled == 'true'
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: ./gradlew nmcpPublishAggregationToCentralPortal --stacktrace
