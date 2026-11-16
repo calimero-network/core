@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.30] - 2026-11-16
+
 ### Deprecated
 
 - **meroctl's old spellings warn**: `context` (`--context`, `-c`), `namespace`/`ns`,
