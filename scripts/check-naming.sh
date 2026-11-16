@@ -32,14 +32,18 @@ report() {
   status=1
 }
 
+# sdks/ is left out: the SDKs keep their own public API names and the history
+# (CHANGELOG.md) they had as separate repositories, which spells v1's `app_key`.
+readonly NOT_SDKS=':(exclude)sdks/'
+
 for name in "${banned[@]}"; do
-  if hits=$(git grep -nIE -e "$name" -- '*.rs' | grep -vE "$DELIBERATE"); then
+  if hits=$(git grep -nIE -e "$name" -- '*.rs' "$NOT_SDKS" | grep -vE "$DELIBERATE"); then
     report "$name" "$hits"
   fi
 done
 
 # Prose spells the same concept its own ways: appKey, app-key, app key.
-if hits=$(git grep -nIEi -e 'app[-_ ]?key' -- '*.md' '*.mdx' '*.yml' \
+if hits=$(git grep -nIEi -e 'app[-_ ]?key' -- '*.md' '*.mdx' '*.yml' "$NOT_SDKS" \
           | grep -vE "$DELIBERATE"); then
   report "app key in docs" "$hits"
 fi
