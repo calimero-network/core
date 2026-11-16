@@ -507,6 +507,10 @@ final class CalimeroClientTests: XCTestCase {
         XCTAssertEqual(listings.count, 1)
     }
 
+    func testDefaultsToTheCalimeroCloudDirectory() {
+        XCTAssertEqual(defaultDirectory, "https://manager.cloud.calimero.network/api/directory")
+    }
+
     func testTheDirectorysFailuresAreDirectoryErrors() async throws {
         MockURLProtocol.setHandler { request in
             if request.url?.path.hasSuffix("/gone") == true { return .init(status: 404, headers: [:], body: Data()) }

@@ -247,6 +247,92 @@ final class SealedTransportTests: XCTestCase {
         XCTAssertEqual(node.handshakes, 1)
     }
 
+    func testOpensTheSessionAtTheUnversionedHandshakePath() async throws {
+        let node = SealedStandInNode { _ in .ok() }
+        let paths = Box<[String]>([])
+        MockURLProtocol.setHandler { request in
+            paths.update { $0.append(request.url?.path ?? "") }
+            return node.handle(request)
+        }
+        let (_, response) = try await transport(node).data(for: request("/admin-api/health"))
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(SealedTransport.handshakePath, "/sealed/handshake")
+        XCTAssertEqual(paths.get, ["/node/sealed/handshake", "/node" + SealedTransport.sealedPath])
+    }
+
+    func testOpensTheSessionAtTheV2PathWhenTheNodeDoesNotRouteTheNewOne() async throws {
+        // A node released before /sealed/handshake routes only the v2 path.
+        for status in [404, 405] {
+            let node = SealedStandInNode { _ in .ok() }
+            let paths = Box<[String]>([])
+            MockURLProtocol.setHandler { request in
+                let path = request.url?.path ?? ""
+                paths.update { $0.append(path) }
+                if path == "/node" + SealedTransport.handshakePath {
+                    return .init(status: status, headers: ["Content-Type": "text/plain"], body: Data("Not Found".utf8))
+                }
+                return node.handle(request)
+            }
+            let (_, response) = try await transport(node).data(for: request("/admin-api/health"))
+            XCTAssertEqual(response.statusCode, 200, "\(status)")
+            let expected = [
+                "/node/sealed/handshake", "/node/sealed/v2/handshake", "/node" + SealedTransport.sealedPath,
+            ]
+            XCTAssertEqual(paths.get, expected, "\(status)")
+            XCTAssertEqual(node.handshakes, 1, "\(status)")
+        }
+    }
+
+    func testOpensTheSessionAtTheV2PathWhenASealedOnlyNodeRefusesTheNewOne() async throws {
+        // An older node that seals everything refuses an unknown path as unsealed.
+        let node = SealedStandInNode { _ in .ok() }
+        let paths = Box<[String]>([])
+        MockURLProtocol.setHandler { request in
+            let path = request.url?.path ?? ""
+            paths.update { $0.append(path) }
+            if path == "/node" + SealedTransport.handshakePath {
+                return SealedStandInNode.refusal(403, "sealed_required")
+            }
+            return node.handle(request)
+        }
+        let (_, response) = try await transport(node).data(for: request("/admin-api/health"))
+        XCTAssertEqual(response.statusCode, 200)
+        let expected = ["/node/sealed/handshake", "/node/sealed/v2/handshake", "/node" + SealedTransport.sealedPath]
+        XCTAssertEqual(paths.get, expected)
+    }
+
+    func testReportsA404FromTheV2HandshakePathTooWithoutTryingAgain() async throws {
+        let calls = Counter()
+        MockURLProtocol.setHandler { _ in
+            calls.increment()
+            return .init(status: 404, headers: ["Content-Type": "text/plain"], body: Data("Not Found".utf8))
+        }
+        let sealed = try SealedTransport(baseURL: base, key: .key(transportKey), session: MockURLProtocol.makeSession())
+        do {
+            _ = try await sealed.data(for: request("/admin-api/health"))
+            XCTFail("expected a refusal")
+        } catch let error as SealedTransportError {
+            XCTAssertEqual(error.status, 404)
+        }
+        XCTAssertEqual(calls.count, 2)
+    }
+
+    func testDoesNotTryTheV2HandshakePathOnAnyOtherRefusal() async throws {
+        let refusals = [(400, "malformed"), (403, "forbidden"), (409, "stale_transport_key"), (500, "internal")]
+        for (status, code) in refusals {
+            let paths = Box<[String]>([])
+            MockURLProtocol.setHandler { request in
+                paths.update { $0.append(request.url?.path ?? "") }
+                return SealedStandInNode.refusal(status, code)
+            }
+            let sealed = try SealedTransport(
+                baseURL: base, key: .key(transportKey), session: MockURLProtocol.makeSession())
+            let answered = try? await sealed.data(for: request("/admin-api/health"))
+            XCTAssertNil(answered, "expected a refusal for \(status)")
+            XCTAssertEqual(paths.get, ["/node" + SealedTransport.handshakePath], "\(status)")
+        }
+    }
+
     func testPassesANodeRefusalOnAsASealedTransportError() async throws {
         MockURLProtocol.setHandler { _ in SealedStandInNode.refusal(400, "malformed") }
         let sealed = try SealedTransport(baseURL: base, key: .key(transportKey), session: MockURLProtocol.makeSession())
@@ -463,6 +549,7 @@ final class SealedStandInNode: @unchecked Sendable {
         let path = request.url?.path ?? ""
         do {
             if path == "/node" + SealedTransport.handshakePath { return try handshake(body) }
+            if path == "/node" + SealedTransport.legacyHandshakePath { return try handshake(body) }
             if path == "/node" + SealedTransport.sealedPath { return try exchange(body) }
         } catch {
             return Self.refusal(400, "malformed")

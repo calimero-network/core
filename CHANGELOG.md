@@ -2,6 +2,16 @@
 
 Notable changes to MeroKit. Versions are git tags (see [RELEASING.md](RELEASING.md)).
 
+## Unreleased: the sealed handshake and the directory drop `v2` from their paths
+
+- `SealedTransport` opens a session at `POST /sealed/handshake`
+  (`SealedTransport.handshakePath`). A node released before that path answers
+  `404` or `405` there, and the handshake is then sent once more to
+  `POST /sealed/v2/handshake` (the new `SealedTransport.legacyHandshakePath`),
+  so older nodes are still reached. Any other refusal is reported as before.
+- `defaultDirectory` is `https://manager.cloud.calimero.network/api/directory`
+  (was `.../api/v2/directory`, which the manager still serves).
+
 ## Unreleased: consent requests manage organizations
 
 `ConsentRequest` gains the ten organization kinds of calimero-network/core#5018:

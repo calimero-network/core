@@ -11,7 +11,8 @@ import FoundationNetworking
 // `crates/server/src/sealed.rs`:
 //
 //   handshake   Noise_NK_25519_AESGCM_SHA256, prologue "calimero/sealed-http/v2"
-//     request   POST /sealed/v2/handshake   0x02 ‖ transport_pk ‖ Noise message 1
+//     request   POST /sealed/handshake      0x02 ‖ transport_pk ‖ Noise message 1
+//               (nodes before it served only /sealed/v2/handshake; see legacyHandshakePath)
 //     response  0x02 ‖ Noise message 2 (payload = session_id(16) ‖ lifetime secs, u32 BE)
 //     keys      (req key, resp key) = Split()
 //   exchange    POST /sealed/v2
@@ -104,7 +105,12 @@ public enum TransportKeySource: Sendable {
 /// node refused it before running anything, so that is safe.
 public actor SealedTransport {
     /// Where a session is opened, relative to the node's base URL. (== mero-js `HANDSHAKE_PATH`.)
-    public static let handshakePath = "/sealed/v2/handshake"
+    public static let handshakePath = "/sealed/handshake"
+    /// Where nodes released before ``handshakePath`` existed open a session (newer
+    /// nodes still serve it as a deprecated alias). The handshake is tried here only
+    /// when the node answers 404, 405 or 403 `sealed_required` at ``handshakePath``.
+    /// (== mero-js `LEGACY_HANDSHAKE_PATH`.)
+    public static let legacyHandshakePath = "/sealed/v2/handshake"
     /// Where sealed requests are posted. (== mero-js `SEALED_PATH`.)
     public static let sealedPath = "/sealed/v2"
     /// Content type of every sealed body. (== mero-js `SEALED_CONTENT_TYPE`.)
@@ -315,9 +321,8 @@ public actor SealedTransport {
 
     static func handshakeOnce(_ carrier: URLSession, nodeURL: String, key: Data) async throws -> SealedSession {
         let noise = try NoiseInitiator(remoteStatic: key, prologue: prologue)
-        let request = try envelopeRequest(nodeURL + handshakePath, body: Data([version]) + key + noise.message1)
-        let (data, response) = try await carrier.data(for: request)
-        let http = response as? HTTPURLResponse
+        let (data, http) = try await postHandshake(
+            carrier, nodeURL: nodeURL, body: Data([version]) + key + noise.message1)
         guard http?.value(forHTTPHeaderField: "Content-Type") == contentType else {
             let retryAfter = http?.value(forHTTPHeaderField: "Retry-After")
             throw refusal(status: http?.statusCode ?? 0, body: data, retryAfter: retryAfter)
@@ -326,6 +331,36 @@ public actor SealedTransport {
             throw TeeTrustError("The handshake reply is malformed: it is too long")
         }
         return try sessionFrom(noise, reply: data)
+    }
+
+    /// Post handshake message 1 to ``handshakePath``; a node from before the path
+    /// gets the same message once at ``legacyHandshakePath``. Such a node routes
+    /// nothing there (404, 405) or, sealing everything as Cloud nodes do, refuses it
+    /// as an unsealed request (403 `sealed_required`). That node never read the
+    /// first message, so sending it again opens nothing twice. Any other answer is
+    /// returned as it is.
+    /// (== mero-js `postHandshake`.)
+    static func postHandshake(
+        _ carrier: URLSession, nodeURL: String, body: Data
+    ) async throws -> (Data, HTTPURLResponse?) {
+        func post(_ path: String) async throws -> (Data, HTTPURLResponse?) {
+            let (data, response) = try await carrier.data(for: try Self.envelopeRequest(nodeURL + path, body: body))
+            return (data, response as? HTTPURLResponse)
+        }
+        let first = try await post(handshakePath)
+        guard predatesHandshakePath(status: first.1?.statusCode, body: first.0) else { return first }
+        return try await post(legacyHandshakePath)
+    }
+
+    /// Whether a handshake answer says the node predates ``handshakePath`` (see `postHandshake`).
+    static func predatesHandshakePath(status: Int?, body: Data) -> Bool {
+        switch status {
+        case 404, 405: return true
+        case 403:
+            let json = try? MeroJSON.decode(JSONValue.self, from: body)
+            return json?["error"]?["code"]?.stringValue == "sealed_required"
+        default: return false
+        }
     }
 
     /// Finish the handshake with the node's reply. (== mero-js `sessionFrom`, for the published vectors.)
