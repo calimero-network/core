@@ -90,12 +90,13 @@ function setup(me: unknown = { accountId: 'a', app: 'app-1' }, overrides: Record
   return { client: Object.assign(client, { navigated }), onCreated, onClose, ...view };
 }
 
-async function toReview(name = 'My Team', self = 'Ronit') {
-  fireEvent.change(screen.getByLabelText('Workspace name'), { target: { value: name } });
+async function toReview(name = 'My Team', self = 'Ronit', nameLabel = 'Workspace name') {
+  fireEvent.change(screen.getByLabelText(nameLabel), { target: { value: name } });
   fireEvent.change(screen.getByLabelText('Your name'), { target: { value: self } });
   fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
   await screen.findByRole('heading', { name: 'Review before creating' });
 }
+const createButtonNamed = (name: string) => screen.getByRole('button', { name });
 const createButton = () => screen.getByRole('button', { name: 'Create workspace' }) as HTMLButtonElement;
 const readyToCreate = async () => {
   await waitFor(() => expect(createButton().disabled).toBe(false));
@@ -625,5 +626,62 @@ describe('the built-in full-page resume', () => {
     expect(notice.textContent).toContain('declined');
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
+describe('a noun for the thing being created', () => {
+  const R = RELEASE;
+  const lobby = (props: Partial<React.ComponentProps<typeof CreateWorkspaceDialog>> = {}, client = fakeClient({ verification: () => verified, verify: async () => verified, packageCapabilities: vi.fn(async () => card), nodes: [NODE] })) =>
+    render(<CreateWorkspaceDialog open release={R} onCreated={vi.fn()} onClose={vi.fn()} labels={{ noun: 'lobby' }} {...props} />, { wrapper: wrapper(client) });
+
+  it('words the names step and the review with it', async () => {
+    lobby();
+    expect(screen.getByRole('heading', { name: 'Create lobby' })).toBeTruthy();
+    expect(screen.getByText('Name your lobby, and choose how others in it will see you.')).toBeTruthy();
+    expect(screen.getByLabelText('Lobby name')).toBeTruthy();
+    await toReview('L', 'Me', 'Lobby name');
+    expect(screen.getByText('Check what this app can do and where it will run before you create the lobby.')).toBeTruthy();
+    expect(createButtonNamed('Create lobby')).toBeTruthy();
+    expect(screen.queryByText(/workspace/i)).toBeNull();
+  });
+
+  it('words the card-error note with it, and a full label still wins', async () => {
+    const client = fakeClient({ verification: () => verified, verify: async () => verified, packageCapabilities: vi.fn(async () => Promise.reject(new Error('x'))), nodes: [NODE] });
+    lobby({ labels: { noun: 'lobby', title: 'Host a game' } }, client);
+    expect(screen.getByRole('heading', { name: 'Host a game' })).toBeTruthy();
+    await toReview('L', 'Me', 'Lobby name');
+    expect((await screen.findByRole('alert')).textContent).toContain('You can still create the lobby.');
+  });
+});
+
+describe('extra fields on the names step', () => {
+  const R = RELEASE;
+  const withFields = (props: Partial<React.ComponentProps<typeof CreateWorkspaceDialog>>) =>
+    render(<CreateWorkspaceDialog open release={R} onCreated={vi.fn()} onClose={vi.fn()} {...props} />, { wrapper: wrapper(fakeClient({ verification: () => verified, verify: async () => verified, packageCapabilities: vi.fn(async () => card), nodes: [NODE] })) });
+  const fill = () => {
+    fireEvent.change(screen.getByLabelText('Workspace name'), { target: { value: 'W' } });
+    fireEvent.change(screen.getByLabelText('Your name'), { target: { value: 'Me' } });
+  };
+
+  it('renders the slot under the name inputs', () => {
+    withFields({ fields: <label>World seed<input /></label> });
+    const seed = screen.getByLabelText('World seed');
+    const self = screen.getByLabelText('Your name');
+    expect(self.compareDocumentPosition(seed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('keeps Continue disabled until fieldsValid', () => {
+    const view = withFields({ fields: <input aria-label="seed" />, fieldsValid: false });
+    fill();
+    expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(true);
+    view.rerender(<CreateWorkspaceDialog open release={R} onCreated={vi.fn()} onClose={vi.fn()} fields={<input aria-label="seed" />} fieldsValid />);
+    expect((screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('does not advance on Enter while the fields are invalid', () => {
+    withFields({ fieldsValid: false });
+    fill();
+    fireEvent.submit(screen.getByLabelText('Your name').closest('form') as HTMLFormElement);
+    expect(screen.queryByRole('heading', { name: 'Review before creating' })).toBeNull();
   });
 });

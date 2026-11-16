@@ -12,7 +12,7 @@ const EVERY_UNITS: Record<string, string> = { s: "second", m: "minute", h: "hour
 const INVITED_ONLY = "Only people invited to it can open it";
 const NOT_READABLE = "Calimero can't read it.";
 const TEST_SERVER_ENFORCES = ", as this test server enforces it";
-const CONTROL = { creator: "Only you control it", member: "Only the workspace's owners control it" };
+const control = (viewer: "creator" | "member", noun: string) => (viewer === "creator" ? "Only you control it" : `Only the ${noun}'s owners control it`);
 export const MAX_DOC_CHARS = 4000; // a publisher's description is cut here before it is parsed or shown
 const WORD_TAIL = 8; // how far back a sentence end looks for an abbreviation
 const ABBREVIATIONS = new Set(["e.g", "i.e", "etc", "vs", "cf"]); // a full stop after these does not end a sentence
@@ -339,8 +339,9 @@ export function codeLine(card: Pick<PackageCapabilities, "bundle" | "package" | 
 }
 
 /** The claims about the data: control and who can open it hold for a node that passed its check (as that server's own on a test server), "Calimero can't read it" only for a sealed one. `member` is a workspace that exists, seen by someone who may have joined later. */
-export function dataStatements(kind: ShieldKind, viewer: "creator" | "member"): string[] {
-  if (kind === "verified") return [`${CONTROL[viewer]}.`, `${INVITED_ONLY}.`, NOT_READABLE];
-  if (kind === "unsealed") return [`${CONTROL[viewer]}${TEST_SERVER_ENFORCES}`, `${INVITED_ONLY}${TEST_SERVER_ENFORCES}`];
+export function dataStatements(kind: ShieldKind, viewer: "creator" | "member", noun = "workspace"): string[] {
+  const CONTROL = control(viewer, noun);
+  if (kind === "verified") return [`${CONTROL}.`, `${INVITED_ONLY}.`, NOT_READABLE];
+  if (kind === "unsealed") return [`${CONTROL}${TEST_SERVER_ENFORCES}`, `${INVITED_ONLY}${TEST_SERVER_ENFORCES}`];
   return [];
 }

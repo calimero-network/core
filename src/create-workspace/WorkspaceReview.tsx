@@ -240,7 +240,7 @@ function Diverged({ divergence }: { divergence: "release" | "code" }) {
 }
 
 /** The four sections. */
-function ReviewBody({ review, release, cluster, local }: { review: Review; release: ReviewRelease | UnreleasedApp; cluster?: string; local?: boolean }) {
+function ReviewBody({ review, release, cluster, local, noun }: { review: Review; release: ReviewRelease | UnreleasedApp; cluster?: string; local?: boolean; noun: string }) {
   const { client, state, loaded, retry } = review;
   const view = describeShield(state, { code: null });
   const card = loaded.status === "ready" ? loaded.card : null;
@@ -249,7 +249,7 @@ function ReviewBody({ review, release, cluster, local }: { review: Review; relea
   const code = card ? codeLine(card, null, sealed) : null;
   const summary = card ? summarize(card, sealed) : [];
   const risks = card ? exceptions(card, sealed) : [];
-  const statements = dataStatements(view.kind, "creator");
+  const statements = dataStatements(view.kind, "creator", noun);
   const nodes = client && !local ? `${client.nodes.length} ${client.nodes.length === 1 ? "node" : "nodes"}` : "";
   const unreleased = loaded.status === 'none';
   const unknown = unreleased
@@ -266,7 +266,7 @@ function ReviewBody({ review, release, cluster, local }: { review: Review; relea
         <div className="mero-cw-review__alert" role="alert">
           <p>
             {loaded.message}
-            {client ? " You can still create the workspace." : ""}
+            {client ? ` You can still create the ${noun}.` : ""}
           </p>
           <button type="button" className="mero-cw-review__btn" onClick={retry}>
             Try again
@@ -438,6 +438,8 @@ export interface WorkspaceReviewProps {
   cluster?: string;
   /** A local development node: its label already says how many nodes there are. */
   local?: boolean;
+  /** What is being created, in the sentences around the review. Default `workspace`. */
+  noun?: string;
   /** The package release the workspace will run. */
   release: ReviewRelease | UnreleasedApp;
   /** The workspace is being created: both buttons wait. */
@@ -454,7 +456,7 @@ export interface WorkspaceReviewProps {
  * card and the node's own check. Read by the person before "Create workspace",
  * which stays disabled while the node has refused its check.
  */
-export function WorkspaceReview({ client, cluster, local, release, creating = false, disabled = false, onBack, onCreate }: WorkspaceReviewProps) {
+export function WorkspaceReview({ client, cluster, local, noun = "workspace", release, creating = false, disabled = false, onBack, onCreate }: WorkspaceReviewProps) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => heading.current?.focus(), []);
   const review = useReview(client, release);
@@ -464,15 +466,15 @@ export function WorkspaceReview({ client, cluster, local, release, creating = fa
       <h2 ref={heading} tabIndex={-1} className="mero-cw-review__title">
         Review before creating
       </h2>
-      <p className="mero-cw-review__lede">Check what this app can do and where it will run before you create the workspace.</p>
-      <ReviewBody review={review} release={release} cluster={cluster} local={local} />
+      <p className="mero-cw-review__lede">{`Check what this app can do and where it will run before you create the ${noun}.`}</p>
+      <ReviewBody review={review} release={release} cluster={cluster} local={local} noun={noun} />
       {refused && <p className="mero-cw-review__muted">Create is unavailable: this node did not pass its check.</p>}
       <div className="mero-cw-review__buttons">
         <button type="button" className="mero-cw-review__btn" disabled={creating} onClick={onBack}>
           Back
         </button>
         <button type="button" className="mero-cw-review__btn mero-cw-review__btn--primary" disabled={creating || disabled || refused} onClick={onCreate}>
-          {creating ? "Creating…" : "Create workspace"}
+          {creating ? "Creating…" : `Create ${noun}`}
         </button>
       </div>
     </div>

@@ -1,6 +1,6 @@
 import './workspaceReview.css';
 import './createWorkspace.css';
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { CalimeroClient, PasskeyProvider } from '@calimero-network/mero-js';
 import { MeroProvider, useMero } from '../context';
@@ -11,6 +11,8 @@ import type { ReviewRelease, UnreleasedApp } from '../node-shield/nodeChecks';
 
 /** The dialog's wording, so each app keeps its own. */
 export interface CreateWorkspaceLabels {
+  /** What is being created (`lobby`, `world`): the default sentences use it. Default `workspace`. */
+  noun?: string;
   title?: string;
   subtitle?: string;
   nameLabel?: string;
@@ -20,15 +22,23 @@ export interface CreateWorkspaceLabels {
   next?: string;
 }
 
-const DEFAULT_LABELS: Required<CreateWorkspaceLabels> = {
-  title: 'Create workspace',
-  subtitle: 'Name your workspace, and choose how others in it will see you.',
-  nameLabel: 'Workspace name',
-  namePlaceholder: '',
-  selfLabel: 'Your name',
-  selfPlaceholder: '',
-  next: 'Continue',
-};
+const NOUN = 'workspace';
+
+/** The wording from `labels`: every default sentence follows `noun`, and a full label wins. */
+function wording(labels?: CreateWorkspaceLabels) {
+  const noun = labels?.noun ?? NOUN;
+  return {
+    noun,
+    title: `Create ${noun}`,
+    subtitle: `Name your ${noun}, and choose how others in it will see you.`,
+    nameLabel: `${noun.charAt(0).toUpperCase()}${noun.slice(1)} name`,
+    namePlaceholder: '',
+    selfLabel: 'Your name',
+    selfPlaceholder: '',
+    next: 'Continue',
+    ...labels,
+  };
+}
 
 export interface CreateWorkspaceDialogProps {
   open: boolean;
@@ -44,6 +54,10 @@ export interface CreateWorkspaceDialogProps {
   /** Where the node's consent page sends the person back. Default: this origin's root, where the app mounts `ConsentPopupReturn`. */
   returnTo?: string;
   labels?: CreateWorkspaceLabels;
+  /** Extra inputs under the name fields; the app owns their state and reads it in `onCreated`. */
+  fields?: ReactNode;
+  /** Continue waits until this is true (default true): the validity of `fields`. */
+  fieldsValid?: boolean;
   /** Prefills "your name" (an app's last used name). */
   defaultSelfName?: string;
   /** The label under "Where it runs". Default: the cluster named by the node in use. */
@@ -98,8 +112,8 @@ export function CreateWorkspaceDialog({ client, passkey, ...props }: CreateWorks
   );
 }
 
-function Dialog({ open, onClose, release, onCreated, returnTo, labels, defaultSelfName = '', cluster }: Omit<CreateWorkspaceDialogProps, 'client' | 'passkey'>) {
-  const text = { ...DEFAULT_LABELS, ...labels };
+function Dialog({ open, onClose, release, onCreated, returnTo, labels, defaultSelfName = '', cluster, fields, fieldsValid = true }: Omit<CreateWorkspaceDialogProps, 'client' | 'passkey'>) {
+  const text = wording(labels);
   const { client, cluster: ambientCluster, nodeUrl } = useMero();
   const flow = useCreateWorkspace({ returnTo: returnTo ?? `${typeof window === 'undefined' ? '' : window.location.origin}/`, onCreated });
   const [step, setStep] = useState<'names' | 'review'>('names');
@@ -164,7 +178,7 @@ function Dialog({ open, onClose, release, onCreated, returnTo, labels, defaultSe
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (trimmed.name && trimmed.self) setStep('review');
+        if (trimmed.name && trimmed.self && fieldsValid) setStep('review');
       }}
     >
       <h2 className="mero-cw-title">{text.title}</h2>
@@ -177,7 +191,8 @@ function Dialog({ open, onClose, release, onCreated, returnTo, labels, defaultSe
         <label htmlFor={ids[1]}>{text.selfLabel}</label>
         <input id={ids[1]} value={selfName} placeholder={text.selfPlaceholder} onChange={(e) => setSelfName(e.target.value)} />
       </div>
-      <button type="submit" className="mero-cw-btn mero-cw-btn--primary mero-cw-btn--full" disabled={!trimmed.name || !trimmed.self}>
+      {fields}
+      <button type="submit" className="mero-cw-btn mero-cw-btn--primary mero-cw-btn--full" disabled={!trimmed.name || !trimmed.self || !fieldsValid}>
         {text.next}
       </button>
     </form>
@@ -192,6 +207,7 @@ function Dialog({ open, onClose, release, onCreated, returnTo, labels, defaultSe
         client={client}
         cluster={where}
         local={!!node && clusterName(node) === 'merod local'}
+        noun={text.noun}
         release={release}
         creating={flow.phase === 'creating'}
         disabled={!flow.ready}

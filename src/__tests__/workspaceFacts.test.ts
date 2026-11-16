@@ -485,6 +485,11 @@ describe("codeLine", () => {
 });
 
 describe("dataStatements", () => {
+  it("names what the owners control after the noun", () => {
+    expect(dataStatements("verified", "member", "lobby")[0]).toBe("Only the lobby's owners control it.");
+    expect(dataStatements("verified", "member")[0]).toBe("Only the workspace's owners control it.");
+  });
+
   it("makes the org claims for a node that passed its check, and the third only for a sealed one", () => {
     expect(dataStatements("verified", "creator")).toEqual(["Only you control it.", "Only people invited to it can open it.", "Calimero can't read it."]);
     for (const kind of ["checking", "refused"] as const) expect(dataStatements(kind, "creator")).toEqual([]);
