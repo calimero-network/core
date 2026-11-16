@@ -7,7 +7,12 @@ import { useCopy } from '../create-workspace/useCopy';
 import { CAPABILITY_LABELS, describeCapabilities, heldCapabilities } from './capabilities';
 import { useInviteCreate, useInviteResume, type CreatedInvite, type InviteRole } from './useInvite';
 
-const FEATURE_NOT_ACTIVE = 'FEATURE_NOT_ACTIVE';
+/** Refusals the node names by code: what to say, and whether a default invite is the way out. */
+const REFUSALS: Record<string, { text: string; fallback: boolean }> = {
+  FEATURE_NOT_ACTIVE: { text: "This cluster doesn't support custom permissions yet.", fallback: true },
+  CANNOT_GRANT_UNHELD: { text: "You can't give a permission you don't have.", fallback: false },
+  UNKNOWN_CAPABILITIES: { text: 'This cluster does not know one of the permissions you chose.', fallback: true },
+};
 
 /** The dialog's wording, so each app keeps its own. */
 export interface InviteLabels {
@@ -104,7 +109,7 @@ function Dialog({ open, onClose, org, teams, role = 'member', appName, labels, o
   const redirecting = flow.phase === 'redirect';
   const approving = flow.phase === 'approving' || redirecting;
   const notice = resume.message && dismissed !== resume.message ? resume.message : null;
-  const featureOff = flow.errorCode === FEATURE_NOT_ACTIVE;
+  const refusal = flow.errorCode ? REFUSALS[flow.errorCode] : undefined;
   const close = () => {
     setShared(null);
     onClose();
@@ -158,8 +163,8 @@ function Dialog({ open, onClose, org, teams, role = 'member', appName, labels, o
         )}
         {flow.error && (
           <p className="mero-cw-error" role="alert">
-            {featureOff ? "This cluster doesn't support custom permissions yet." : flow.error}
-            {featureOff && (
+            {refusal ? refusal.text : flow.error}
+            {refusal?.fallback && (
               <>
                 {' '}
                 <button

@@ -191,6 +191,36 @@ describe('an unbound session creates the invite itself', () => {
   });
 });
 
+describe('refusals the node names by code', () => {
+  const refuse = (code: string) => Object.assign(new Error(`403 ${code}: node words`), { code });
+
+  it('says you cannot give a permission you do not have, keeping the choices', async () => {
+    const { client } = setup();
+    client.orgs.inviteCreate.mockRejectedValue(refuse('CANNOT_GRANT_UNHELD'));
+    await ready();
+    custom();
+    fireEvent.click(create());
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain("You can't give a permission you don't have");
+    expect(alert.textContent).not.toContain('node words');
+    expect(within(alert).queryByRole('button', { name: 'Send a default invite' })).toBeNull();
+    expect((screen.getByRole('radio', { name: /Custom/ }) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('says a permission is unknown to the cluster and offers a default invite', async () => {
+    const { client } = setup({ me: BOUND });
+    client.consent.pageCreate.mockRejectedValue(refuse('UNKNOWN_CAPABILITIES'));
+    await ready();
+    custom();
+    fireEvent.click(create());
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('does not know one of the permissions');
+    fireEvent.click(within(alert).getByRole('button', { name: 'Send a default invite' }));
+    expect((screen.getByRole('radio', { name: /Default/ }) as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+});
+
 describe('a session bound to the app asks the node', () => {
   it('opens the window in the click, asks for a default invite and shows the link when approved', async () => {
     const { client, onInvited } = setup({ me: BOUND });
