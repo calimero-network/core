@@ -1,0 +1,24 @@
+# swift-openapi-generator's configuration for Sources/MeroAPI/Generated.
+# Run scripts/generate-openapi.sh after changing it; never edit the output.
+generate:
+  - types
+  - client
+accessModifier: public
+namingStrategy: idiomatic
+filter:
+  # Every route an account, an app or a frontend reaches. The operator's
+  # routes (the `Ops` tag, behind the ops token) stay out apart from the four
+  # `CalimeroClient` has always wrapped; name another here to generate it.
+  tags:
+    - Accounts
+    - Apps
+    - Consent
+    - Organizations
+    - Packages
+    - Public
+    - Sign-up and deployments
+  operations:
+    - ops_apps
+    - ops_orgs
+    - ops_release_deadline
+    - ops_release_deadline_lift

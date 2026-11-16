@@ -1,0 +1,6 @@
+# The generator that turns core's OpenAPI document (docs/public/openapi.json in
+# calimero-network/core) into Sources/MeroAPI/Generated. Read by
+# scripts/generate-openapi.sh.
+#
+# Shell:  . openapi/generator  ->  $GENERATOR_VERSION
+GENERATOR_VERSION=1.10.3

@@ -1,0 +1,70 @@
+---
+title: Quickstart
+description: Add MeroKit, connect to a Calimero 1.0 node, sign in with a passkey and call an app.
+sidebar:
+  order: 1
+---
+
+## Add the package
+
+```swift
+.package(url: "https://github.com/calimero-network/swift-sdk", exact: "1.0.0-rc.30")
+```
+
+The package (and the CocoaPods pod) is `mero-swift`, on Calimero core's version;
+the modules keep their names (`import MeroKit`). Products: `MeroKit` (the client), `MeroKitUI` (SwiftUI session and app layer),
+`MeroKitTestSupport` (fakes for your tests).
+
+## A development cluster
+
+```sh
+# in calimero-network/core, on Linux:
+cargo run -p merod -- local     # 3 nodes on 127.0.0.1:2501-2503, mock attestation
+# on a Mac (merod 1.0 is Linux only), in core's sdks/clients/mero-swift (or a swift-sdk checkout), with Docker:
+scripts/dev-cluster.sh up
+```
+
+```swift
+import MeroKit
+
+let client = CalimeroClient(CalimeroClientOptions(
+    baseUrl: "http://127.0.0.1:2501", nodes: ["http://127.0.0.1:2502", "http://127.0.0.1:2503"],
+    policy: .development))                 // trusts mock attestation: development only
+
+try await client.signUp(SoftPasskey(), name: "ada")   // a software passkey for rp `localhost`
+let bundle = try await client.packages.bundlePut(body: wasm).hash   // dev clusters only
+let app = try await client.apps.create(name: "kv", bundle: bundle).appId
+_ = try await client.call(app, "set", ["key": "a", "value": "1"])
+let value = try await client.view(app, "get", ["key": "a"]).result
+for try await event in client.events(app) { print(event.kind, event.data) }
+```
+
+## A real cluster
+
+```swift
+let client = try await CalimeroClient.connect(
+    CalimeroConnectOptions(cluster: "eu-shared-1", policy: .production, zone: "europe-west4-a"))
+// or one node you know: CalimeroClient(CalimeroClientOptions(baseUrl: nodeURL, policy: .production))
+try await client.signIn(PlatformPasskey())   // MeroKitUI: the device's passkey
+let app = try await client.apps.create(name: "chat", package: "com.calimero.chat", org: orgId).appId
+```
+
+`.production` trusts real TDX quotes only, from a signed mero-tee release at
+or above `2.3.109` with the `locked-read-only` profile
+([TEE trust](/guides/tee-trust/)). `connect` reads the cluster's nodes from
+the Calimero Cloud node directory, nearest zone first, and fails over between
+them; the directory only picks nodes, each is attested before use. The device's passkey needs the cluster's
+relying party in your app's Associated Domains (`webcredentials:<rp-id>`).
+
+## In SwiftUI
+
+```swift
+@StateObject var session = MeroAppSession(
+    packageName: "com.calimero.chat", callback: .scheme("myapp", path: "consent"),
+    config: MeroProviderConfig(nodeURL: "https://node.example"))
+
+.task { await session.restore() }
+.onOpenURL { url in Task { await session.handle(url) } }
+```
+
+See [the app layer](/guides/app-session/).

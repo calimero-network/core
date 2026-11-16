@@ -1,0 +1,68 @@
+---
+title: Private agents
+description: A client for mero-agent-gate — attest an agent in its TD, claim it with your key, provision its secrets sealed with HPKE, release it, and trust agent images by a signed mero-kms policy.
+sidebar:
+  order: 12
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A private agent runs in a TD next to other owners' agents, behind
+mero-agent-gate (mero-tee `mero-agent-gate/`). The client runs where the owner
+is, so whoever carries the requests sees only quotes and ciphertext. It is a
+port of mero-js `src/agent-gate/*`, against the gate's `protocol.rs`.
+
+## The flow
+
+```swift
+let policy = try verifySignedAgentPolicy(policyJSON, bundle: bundleJSON)   // signed by the KMS release
+let verifier = try agentQuoteVerifier(policy, fetchCollateral: { quote in try await myPCCS(quote) })
+let owner = try generateOwnerKey()        // keep owner.secret: the only key that can change the agent
+
+let agent = try await attestAgent(AttestAgentOptions(gateURL: gate, agentId: "a-1f2e", verifier: verifier))
+let done = try await provisionAgent(ProvisionAgentOptions(
+  gateURL: gate, agent: agent, ownerSecret: owner.secret,
+  secrets: ["NEAR_AI_API_KEY": key], verifier: verifier))
+// later
+try await releaseAgent(ReleaseAgentOptions(gateURL: gate, agent: agent, ownerSecret: owner.secret, verifier: verifier))
+```
+
+- `POST /attest {nonceB64, agentId}`: the gate's quote binds, after the nonce,
+  `SHA-256("mero-agent-gate/attest/v3" ‖ provisioning_pub ‖ len(id) ‖ id ‖ signing_pub ‖ owner_pub)`
+  (`agentKeyBinding`, zeros while unclaimed). `attestAgent` returns the keys
+  only once the quote verified, for the agent id **asked about**.
+- `POST /provision` / `/release`: an HPKE message sealed to the provisioning
+  key in **Auth mode** under the owner's X25519 key, `info` =
+  `"mero-agent-gate/provision/v2" ‖ recipient_pub ‖ len(id) ‖ id`
+  (`provisionInfo`). The first bundle for an unclaimed agent claims it.
+- Every call that sends refuses an agent a quote names another owner for
+  (`checkOwner`, `AgentGateError` `not_yours`), and checks the gate's answer
+  with a fresh quote: your key as owner after provisioning, none after release.
+- `validateAgentId` (`[a-z0-9][a-z0-9-]{0,62}`) and the secret names
+  (`[A-Za-z0-9][A-Za-z0-9_.-]{0,63}`, at most 64, each ≤ 64 KiB) are checked
+  before anything is sent. A gate refusal is an `AgentGateError` with its
+  `status` and `code` (`not_the_owner`, `no_free_slot`, …).
+
+## HPKE
+
+`hpkeSealAuth(recipientPublic:senderSecret:info:plaintext:)` and
+`hpkeOpenAuth(recipientSecret:senderPublic:info:sealed:)` are RFC 9180
+DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305, Auth mode,
+single-shot — built on CryptoKit's X25519, HMAC and ChaChaPoly, since
+CryptoKit's own HPKE needs iOS 17. The tests open a bundle the gate (Rust,
+the `hpke` crate) sealed.
+
+## Which agent images to trust
+
+`verifySignedAgentPolicy(_:bundle:profile:expectedVersion:)` verifies a
+mero-kms release's `kms-agent-attestation-policy.<profile>.json` against its
+cosign bundle (signer `TeeTrust.kmsReleaseSigner`), and refuses a file that is
+not an agent allowlist (`role: "agent"`) for the profile asked, or has an
+empty list. `agentQuoteVerifier(_:fetchCollateral:)` builds a `QuoteVerifier`
+from it: every register in its list, a TCB status it allows, never debug.
+
+<Aside type="note">
+The gate sends no collateral with its quote: `fetchCollateral` gets it, from a
+PCCS you choose. The collateral is Intel-signed, so where it comes from is not
+a trust decision.
+</Aside>
