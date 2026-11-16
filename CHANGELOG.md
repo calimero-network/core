@@ -1,3 +1,13 @@
+## [36.0.0](https://github.com/calimero-network/mero-js/compare/mero-js-v35.7.0...mero-js-v36.0.0) (2026-11-16)
+
+### ⚠ BREAKING CHANGES
+
+* **sealed:** send sealed requests to /sealed and drop the /sealed/v2 fallback (#399)
+
+### Features
+
+* **sealed:** send sealed requests to /sealed and drop the /sealed/v2 fallback ([#399](https://github.com/calimero-network/mero-js/issues/399)) ([be42dd2](https://github.com/calimero-network/mero-js/commit/be42dd260fa8b9580e03bb8de97c707818e91a1c))
+
 ## [35.7.0](https://github.com/calimero-network/mero-js/compare/mero-js-v35.6.0...mero-js-v35.7.0) (2026-11-16)
 
 ### Features
