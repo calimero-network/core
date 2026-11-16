@@ -432,6 +432,8 @@ every feature gated it stays at zero.
 | `orgAppTeam` | `CreateOrg` with `app_team`: an organization made on the consent page from an app's frontend starts with that app's team; an earlier release ignores the field and makes the organization bare | 1.0.0-rc.22 |
 | `moveOrgQuotas` | `MoveApp` with `org_quotas`; an earlier release ignores it and judges the target by the cluster's limits instead of its own override | 1.0.0-rc.24 |
 | `publishedRunByRelease` | `StartUpgradeRun` with `by_release` (a publisher's run); an earlier release ignores it and picks instances by the package each bundle was first recorded from | 1.0.0-rc.24 |
+| `orgCapabilities` | `CreateOrg` with `capabilities`: the organization's member default capabilities, set in the creating entry; an earlier release ignores the field and leaves the default a new organization has | 1.0.0-rc.29 |
+| `inviteCapabilities` | `CreateInvite` with `capabilities`: the bits a new member gets on redeeming; an earlier release drops the field, so they would get the organization's default | 1.0.0-rc.29 |
 | `clusterVersion` | `SetClusterVersion` | 1.0.0-rc.16 |
 
 The rc.15 features were added before the gate: on a cluster whose every node

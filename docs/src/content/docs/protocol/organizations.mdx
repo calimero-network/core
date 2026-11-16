@@ -92,7 +92,11 @@ before it starts.
 
 ## Organizations
 
-`POST /orgs { name }` creates an organization with its creator as **owner**.
+`POST /orgs { name, capabilities? }` creates an organization with its creator as **owner**.
+`capabilities` (bits) sets what members can do unless set for them
+(`defaultCapabilities`), in the same `CreateOrg` entry, so an app need not
+follow with a second call (`409 FEATURE_NOT_ACTIVE` below cluster version
+1.0.0-rc.29); absent, a new organization's default stands.
 Its name is one line of 1 to 64 characters with no space at either end
 (`400` otherwise). The owner or an admin renames it, with a passkey: `POST
 /orgs/{org}/name { name }` (`412 CONFIRM_REQUIRED` first; the consent is
@@ -446,7 +450,7 @@ rows; `412 CONFIRM_REQUIRED` first); `GET
     { label: 'Invitee', color: '#58a6ff' },
   ]}
   steps={[
-    { from: 0, to: 1, label: 'POST /orgs/{org}/invites { role, teams?, ttlSecs?, uses?, allApps? }' },
+    { from: 0, to: 1, label: 'POST /orgs/{org}/invites { role, teams?, ttlSecs?, uses?, allApps?, capabilities? }' },
     { from: 1, to: 0, label: '412 CONFIRM_REQUIRED (challenge binds inviteKey, role, teams, expiresAt, uses)', dashed: true },
     { from: 0, to: 1, label: 'retry with a passkey assertion' },
     { from: 1, to: 2, label: 'CreateInvite: only the token key (inviteKey) is kept' },
@@ -464,7 +468,7 @@ An app's own frontend cannot call these routes; it asks the node's consent page
 to mint (`createInvite`) or accept (`acceptInvite`) an invite with the person's
 passkey ([The consent page](/protocol/consent-page/#organizations-and-invites)).
 
-`POST /orgs/{org}/invites { role, teams?, ttlSecs?, uses?, allApps? }` returns a token
+`POST /orgs/{org}/invites { role, teams?, ttlSecs?, uses?, allApps?, capabilities? }` returns a token
 `inv_…`, after the inviter approves it with a passkey (`412 CONFIRM_REQUIRED`
 first; the consent binds `{ inviteKey, role, teams, expiresAt, uses }`). Only
 the token's Ed25519 public key is stored (`inviteKey`, the key whose seed is
@@ -475,6 +479,13 @@ is never `owner`. Only the owner or an admin mints one with `allApps`
 invite names (organization-wide when it names none), and may name only teams
 they see (a member of, or a manager): an organization-wide grant does not open a
 restricted team they are not in.
+`capabilities` (bits) is what a new member holds as their own setting
+(`Org::capabilities`) once they redeem it, in place of the organization's
+default; a member already in keeps theirs. An inviter below admin may give
+only bits they hold organization-wide (`403`, judged by the log too, so every
+node agrees); the owner and admins hold every bit. The consent's arguments
+then name `capabilities`, and the invite's earlier shape (none) is unchanged
+(`409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29).
 `POST /invites/{token}/redeem`, by a signed-in person (no passkey prompt): the
 node signs the redemption with the token's key, which every node checks
 where it applies, so a node that saw only the log cannot redeem an invite. It adds them at the invite's
