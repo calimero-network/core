@@ -2,12 +2,13 @@
 # A local Calimero 1.0 development cluster (`merod local`: three nodes on
 # 2501-2503, mock attestation) for testing mobile apps and the SDKs.
 #
-# merod 1.0 is Linux-only, so on a Mac this runs core's published image
-# (ghcr.io/calimero-network/merod) in Docker. `merod local` listens on
-# 127.0.0.1 inside the container, so a small forwarder sharing its network
-# publishes the nodes on the Mac: localhost:2501-2503 for the iOS Simulator,
-# 10.0.2.2 from the Android emulator, and the Mac's LAN address for a phone.
-# With MEROD_BIN set (a merod 1.0 binary, e.g. on Linux) it runs that instead.
+# By default this runs core's published image (ghcr.io/calimero-network/merod)
+# in Docker. `merod local` listens on 127.0.0.1 inside the container, so a small
+# forwarder sharing its network publishes the nodes on the Mac:
+# localhost:2501-2503 for the iOS Simulator, 10.0.2.2 from the Android
+# emulator, and the Mac's LAN address for a phone. With MEROD_BIN set (a merod
+# 1.x binary: a release's macOS build, or Linux) it runs that natively instead,
+# and MEROD_BASE_PORT moves its nodes (base+1..base+3; default 2500).
 #
 # The same copy of this script lives in swift-sdk, kotlin-sdk, mero-tag and
 # mero-ar; they share one cluster (container `merod-local`, volume
@@ -27,12 +28,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -z "${CORE_TAG:-}" ] && [ -f "$ROOT/ci/core-version" ]; then
   CORE_TAG=$(sed -n 's/^CORE_TAG=//p' "$ROOT/ci/core-version" | head -1)
 fi
-CORE_TAG="${CORE_TAG:-1.0.0-rc.29}"
+CORE_TAG="${CORE_TAG:-1.0.0-rc.30}"
 IMAGE="${MEROD_IMAGE:-ghcr.io/calimero-network/merod:${CORE_TAG}}"
 FORWARDER_IMAGE="alpine/socat:1.8.0.3"
 NAME="merod-local"
 VOLUME="merod-local"
-PORTS=(2501 2502 2503)
+BASE_PORT="${MEROD_BASE_PORT:-2500}"
+PORTS=($((BASE_PORT + 1)) $((BASE_PORT + 2)) $((BASE_PORT + 3)))
 NATIVE_DIR="${MEROD_LOCAL_DIR:-$HOME/.merod-local}"
 
 die() { echo "dev-cluster: $*" >&2; exit 1; }
@@ -75,14 +77,14 @@ urls() {
 
   Calimero dev cluster (merod ${CORE_TAG}, mock attestation)
 
-  iOS Simulator         http://localhost:2501
-  Android emulator      http://10.0.2.2:2501
-  Android phone (USB)   http://localhost:2501   after: $0 android
+  iOS Simulator         http://localhost:${PORTS[0]}
+  Android emulator      http://10.0.2.2:${PORTS[0]}
+  Android phone (USB)   http://localhost:${PORTS[0]}   after: $0 android
 EOF
   if native; then
     echo "  iPhone (Wi-Fi)        not reachable: a native merod listens on 127.0.0.1 only"
   else
-    echo "  iPhone (Wi-Fi)        http://${ip}:2501   same network; allow Local Network when asked"
+    echo "  iPhone (Wi-Fi)        http://${ip}:${PORTS[0]}   same network; allow Local Network when asked"
   fi
   cat <<EOF
 
@@ -94,6 +96,7 @@ EOF
 
 up_docker() {
   local fresh="$1"
+  [ "$BASE_PORT" = 2500 ] || die "MEROD_BASE_PORT is for a native merod (MEROD_BIN); the Docker cluster is on 2501-2503"
   need_docker
   if [ "$fresh" = 1 ]; then
     docker rm -f "$NAME" "$NAME-forward" >/dev/null 2>&1 || true
@@ -125,9 +128,9 @@ up_native() {
   local fresh="$1"
   "$MEROD_BIN" --version 2>/dev/null | grep -qE '^merod 1\.' \
     || die "MEROD_BIN ($MEROD_BIN) is not merod 1.x: $("$MEROD_BIN" --version 2>&1 | head -1)"
-  healthy && { say "a cluster already answers on :2501"; return; }
+  healthy && { say "a cluster already answers on :${PORTS[0]}"; return; }
   mkdir -p "$NATIVE_DIR"
-  local args=(local --dir "$NATIVE_DIR/cluster")
+  local args=(local --dir "$NATIVE_DIR/cluster" --base-port "$BASE_PORT")
   [ "$fresh" = 1 ] && args+=(--fresh)
   say "starting $MEROD_BIN ${args[*]}"
   nohup "$MEROD_BIN" "${args[@]}" >"$NATIVE_DIR/merod.log" 2>&1 &
@@ -176,7 +179,7 @@ cmd_install() {
   healthy || die "the cluster is not running ($0 up)"
   if native; then
     local ctl=("${MEROCTL_BIN:-meroctl}" --home "$NATIVE_DIR/meroctl")
-    "${ctl[@]}" node add dev-cluster http://127.0.0.1:2501/ --allow-mock >/dev/null 2>&1 || true
+    "${ctl[@]}" node add dev-cluster "http://127.0.0.1:${PORTS[0]}/" --allow-mock >/dev/null 2>&1 || true
     "${ctl[@]}" --node dev-cluster login --dev-passkey "$NATIVE_DIR/dev-passkey.json" --name developer >/dev/null
     "${ctl[@]}" --node dev-cluster app install --path "$file"
   else

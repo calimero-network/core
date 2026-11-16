@@ -46,6 +46,23 @@ public final class LoginRequired: CalimeroError, @unchecked Sendable {
     }
 }
 
+/// `401 PASSKEY_UNKNOWN_HERE`: a sign-in (or a confirmation) with a passkey
+/// no account of this cluster has: one made on another cluster that shares
+/// the rp-id (every Calimero Cloud cluster uses `calimero.network`), or one
+/// removed from its account. Not a ``LoginRequired``: the client does not
+/// refresh for it, and signing in again with the same passkey fails the same
+/// way. Offer to sign up here, or send the person to their own cluster.
+/// (== mero-js `PasskeyUnknownHere`.)
+public final class PasskeyUnknownHere: CalimeroError, @unchecked Sendable {
+    public init(_ message: String, details: [String: JSONValue] = [:]) {
+        super.init(
+            status: 401, code: "PASSKEY_UNKNOWN_HERE",
+            message: message.isEmpty
+                ? "this passkey belongs to another Calimero cluster or was removed from this one" : message,
+            details: details)
+    }
+}
+
 /// `421 WRONG_NODE`: this node runs a mero-tee release the account's owners
 /// have not approved, so it neither issues nor takes the account's sessions.
 /// The client moves to the next node it was given (`nodes`) and repeats the
@@ -190,11 +207,74 @@ public final class OriginTaken: CalimeroError, @unchecked Sendable {
     }
 }
 
+/// `409 RUNTIME_TOO_OLD`: a node that would run the app runs an older
+/// runtime than the release's signed `minRuntimeVersion`. Nothing ran.
+/// (== mero-js `RuntimeTooOld`.)
+public final class RuntimeTooOld: CalimeroError, @unchecked Sendable {
+    /// The runtime the release needs.
+    public let minRuntimeVersion: String
+    /// Each node that falls short, and what it runs, as the node said it.
+    public let nodes: [JSONValue]
+
+    public init(_ message: String, details: [String: JSONValue] = [:]) {
+        minRuntimeVersion = details["minRuntimeVersion"]?.stringValue ?? ""
+        nodes = details["nodes"]?.arrayValue ?? []
+        super.init(status: 409, code: "RUNTIME_TOO_OLD", message: message, details: details)
+    }
+}
+
+/// `400 NOT_SERVING`: a served origin (`served: true`) was asked of a
+/// cluster that serves no frontends. (== mero-js `NotServing`.)
+public final class NotServing: CalimeroError, @unchecked Sendable {
+    public init(_ message: String, details: [String: JSONValue] = [:]) {
+        super.init(status: 400, code: "NOT_SERVING", message: message, details: details)
+    }
+}
+
+/// `409 CLUSTER_NOT_UPGRADED`: the change needs every node of the cluster on
+/// the node's release or later, and one is not yet. Retry once the cluster
+/// is upgraded. (== mero-js `ClusterNotUpgraded`.)
+public final class ClusterNotUpgraded: CalimeroError, @unchecked Sendable {
+    public init(_ message: String, details: [String: JSONValue] = [:]) {
+        super.init(status: 409, code: "CLUSTER_NOT_UPGRADED", message: message, details: details)
+    }
+}
+
+/// `409 FEATURE_NOT_ACTIVE`: the command (or a field of it) needs a cluster
+/// version not every node supports yet, during a rollout; nothing was done.
+/// ``feature`` names it, ``needs`` is the core release it needs and
+/// ``active`` the cluster's version now (`""` when unknown).
+/// (== mero-js `FeatureNotActive`.)
+public final class FeatureNotActive: CalimeroError, @unchecked Sendable {
+    public let feature: String
+    public let needs: String
+    public let active: String
+
+    public init(_ message: String, details: [String: JSONValue] = [:]) {
+        feature = details["feature"]?.stringValue ?? ""
+        needs = details["needs"]?.stringValue ?? ""
+        active = details["active"]?.stringValue ?? ""
+        super.init(status: 409, code: "FEATURE_NOT_ACTIVE", message: message, details: details)
+    }
+}
+
 /// `429 QUOTA_EXCEEDED`: the caller holds as many of something (origins,
 /// blobs, an organization's file bytes, …) as it may. (== mero-js `QuotaExceeded`.)
 public final class QuotaExceeded: CalimeroError, @unchecked Sendable {
     public init(_ message: String, details: [String: JSONValue] = [:]) {
         super.init(status: 429, code: "QUOTA_EXCEEDED", message: message, details: details)
+    }
+}
+
+/// The recovery code is not one the cluster holds: mistyped, replaced by a
+/// newer one, or spent by a recovery that started. The node answers it
+/// `401`; a recovery is signed out, so it is this error, not
+/// ``LoginRequired``. (== mero-js `WrongRecoveryCode`.)
+public final class WrongRecoveryCode: CalimeroError, @unchecked Sendable {
+    public init(_ message: String, details: [String: JSONValue] = [:]) {
+        super.init(
+            status: 401, code: "UNAUTHENTICATED", message: message.isEmpty ? "unknown or used recovery code" : message,
+            details: details)
     }
 }
 
@@ -333,6 +413,7 @@ public func errorFrom(status: Int, body: JSONValue?, retryAfter header: String? 
     }
     switch "\(status) \(code)" {
     case "401 UNAUTHENTICATED": return LoginRequired(message, details: details)
+    case "401 PASSKEY_UNKNOWN_HERE": return PasskeyUnknownHere(message, details: details)
     case "421 WRONG_NODE": return WrongNode(message, details: details)
     case "421 NOT_LEADER": return NotLeader(message, details: details)
     case "404 NOT_FOUND": return NotFound(message, details: details)
@@ -350,7 +431,7 @@ public func errorFrom(status: Int, body: JSONValue?, retryAfter header: String? 
     }
 }
 
-/// The sign-up, origin, quota and recovery refusals (core rc.9+), apart so
+/// The sign-up, origin, quota, recovery and rollout refusals, apart so
 /// ``errorFrom(status:body:retryAfter:)`` stays one readable switch.
 private func accountError(
     status: Int, code: String, message: String, details: [String: JSONValue]
@@ -362,6 +443,10 @@ private func accountError(
     case "409 ORIGIN_TAKEN": return OriginTaken(message, details: details)
     case "429 QUOTA_EXCEEDED": return QuotaExceeded(message, details: details)
     case "409 RECOVERY_NOT_READY": return RecoveryNotReady(message, details: details)
+    case "409 RUNTIME_TOO_OLD": return RuntimeTooOld(message, details: details)
+    case "400 NOT_SERVING": return NotServing(message, details: details)
+    case "409 CLUSTER_NOT_UPGRADED": return ClusterNotUpgraded(message, details: details)
+    case "409 FEATURE_NOT_ACTIVE": return FeatureNotActive(message, details: details)
     default: return nil
     }
 }

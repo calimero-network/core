@@ -22,7 +22,7 @@ the same methods, the same typed errors, the same retry and failover rules.
   [swift-openapi-runtime](https://github.com/apple/swift-openapi-runtime) and
   [swift-http-types](https://github.com/apple/swift-http-types), pinned exactly.
 - A Calimero 1.0 cluster (core `1.0.0-rc.25` or later; developed against
-  `1.0.0-rc.29`, [`ci/core-version`](ci/core-version)),
+  `1.0.0-rc.30`, [`ci/core-version`](ci/core-version)),
   or `merod local` for development.
 - Docs: <https://calimero-network.github.io/swift-sdk/>
 
