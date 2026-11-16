@@ -152,9 +152,11 @@ check lints them) and to what counts as breaking.
 ### How a release is cut
 
 - **Version.** The one version of every public crate, `merod` and `meroctl` is `version` under `[workspace.metadata.workspaces]` in the root
-  `Cargo.toml` (`1.0.0-rc.30` at the time of writing). Nothing else holds it.
-- **Release pull request.** `chore(release): cut X` sets that version to `X`
-  and turns `CHANGELOG.md`'s `## [Unreleased]` into a dated `## [X] - YYYY-MM-DD`
+  `Cargo.toml` (`1.0.0-rc.30` at the time of writing). The SDKs under `sdks/`
+  ship on it too: the root `VERSION` and every SDK's manifests copy it, written
+  by `python3 scripts/sdks.py version-sync` ([sdks/AGENTS.md](sdks/AGENTS.md)).
+- **Release pull request.** `chore(release): cut X` sets that version to `X`,
+  runs `python3 scripts/sdks.py version-sync`, and turns `CHANGELOG.md`'s `## [Unreleased]` into a dated `## [X] - YYYY-MM-DD`
   section with the changes since the last release. `CHANGELOG.md` is
   hand-written: every pull request that changes behaviour adds its entry under
   `[Unreleased]`. Deciding to cut a release and merging this pull request is a
@@ -185,7 +187,8 @@ All from `release.yml`, on master only:
 | the public crates (`cargo ws publish`) | crates.io |
 | the `merod` image, multi-arch: `X`, plus `latest` for a final or `prerelease` for a pre-release | `ghcr.io/calimero-network/merod` |
 | a `meroctl` formula bump | a pull request in `calimero-network/homebrew-tap` |
-| SDK pin bumps for consumers | pull requests opened by `fleet-bump.yml` (below) |
+| the SDKs under `sdks/`, all at `X`: mero-js and mero-react (npm, `next` for a pre-release), mero-py (PyPI), mero-kotlin (Maven Central), mero-swift (the SwiftPM mirror `calimero-network/swift-sdk`, tagged `X`) | npm, PyPI, Maven Central, GitHub |
+| SDK pin bumps for consumers (cargo, tee, and npm once the JS SDKs are out) | pull requests opened by `fleet-bump.yml` (below) |
 
 Each binary is `<binary>_<target triple>.tar.gz`, e.g.
 `meroctl_x86_64-unknown-linux-gnu.tar.gz`. `meroctl` builds, packs, signs and
