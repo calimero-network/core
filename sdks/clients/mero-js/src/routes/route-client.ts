@@ -1,6 +1,6 @@
 /**
  * The node's routes as a typed client, generated from core's OpenAPI document
- * (`openapi/core-openapi.json`, types in `src/generated/api.ts` by
+ * (`docs/public/openapi.json`, types in `src/generated/api.ts` by
  * `pnpm gen:api`), run by `openapi-fetch` over this package's runtime:
  *
  * - its `fetch` is {@link transportFetch}: every request goes through a

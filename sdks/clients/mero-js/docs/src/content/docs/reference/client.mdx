@@ -80,7 +80,7 @@ The hand-written methods: each is more than one route, or a stream.
 ## The generated methods
 
 Every route of the node is a method, generated from core's OpenAPI document
-(`openapi/core-openapi.json`, by `pnpm gen:api` into `src/generated/`), in a
+(core's `docs/public/openapi.json`, by `pnpm gen:api` into `src/generated/`), in a
 group per tag: `client.apps`, `client.auth`, `client.orgs`, `client.packages`,
 `client.deployments`, `client.consent`, `client.ops`, `client.public`. Each takes
 one typed argument object (path parameters, query and body fields merged; a raw

@@ -154,7 +154,7 @@ The client is two layers. The **runtime** (`@calimero-network/mero-js/runtime`,
 sealed channel, the credential and the session's refresh on a `401`, moving on
 `421 WRONG_NODE`, D70 retries and failover, error mapping and server-sent
 events. The **route layer** is generated from core's OpenAPI document
-(`openapi/core-openapi.json`, the node's `docs/public/openapi.json`) by
+(the node's `docs/public/openapi.json`, in the same tree) by
 `pnpm gen:api`: `openapi-typescript` writes the types (`src/generated/api.ts`)
 and `scripts/gen-methods.mjs` one method per operation
 (`src/generated/methods.ts`), grouped by the operation's tag. `CalimeroClient`
@@ -222,27 +222,15 @@ client sends through). The `/runtime` entry re-exports the package's own bundle,
 so its error classes are the ones `CalimeroClient` throws (`instanceof` holds
 across both imports).
 
-### Refreshing the OpenAPI document
+### Regenerating from the OpenAPI document
 
-`openapi/core-openapi.json` is vendored from core at the commit `openapi/SOURCE`
-names. `scripts/refresh-openapi.sh [<core ref>]` (`pnpm refresh:openapi`)
-fetches it again, records the commit and regenerates `src/generated/`;
-`pnpm check:api` fails when the generated types or methods are not those of the
-vendored document.
-
-`.github/workflows/openapi-sync.yml` does this on its own: core sends a
-`repository_dispatch` (`core-openapi`, with the core commit) whenever its
-document changes, and a weekly run catches a missed one (or run it by hand with a
-`ref`). When the document or the generated code changed, it opens or refreshes a
-pull request on `chore/core-openapi` that lists the generated methods added,
-removed or changed (`scripts/openapi-sync-summary.mjs`); a removed or renamed
-one needs a major release.
-
-It opens that pull request with a GitHub App's token, so the pull request's CI
-runs: the organization's shared `vars.ACTIONS_APP_ID` /
-`secrets.ACTIONS_APP_PRIVATE_KEY`, which must be shared with this repository. The
-app must be installed on this repository
-with contents and pull-requests write.
+mero-js lives in calimero-network/core (`sdks/clients/mero-js`) and generates
+from that tree's `docs/public/openapi.json`, with no network: `pnpm generate`
+(or `python3 scripts/sdks.py generate mero-js` from core's root) rewrites
+`src/generated/` and copies core's receipt vectors; `pnpm check:api` fails when
+the committed output differs. When the server's API changes, core's
+`sdk-regenerate.yml` opens the pull request that regenerates every SDK (see
+core's `sdks/AGENTS.md`).
 
 ## Upgrading from 29.x
 
