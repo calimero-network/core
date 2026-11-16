@@ -281,6 +281,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             name_fits,
             personal,
             app_team,
+            capabilities,
         } => {
             if !s.accounts.contains_key(&actor) {
                 return Err("unknown account");
@@ -314,8 +315,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             let mut org = new_org(org_id.clone(), name, actor.clone(), release, personal);
             org.recovery = recovery;
+            // Set after the app team, as `SetDefaultCapabilities` would be
+            // right after this entry: the creator's team row is made first.
             let _prev = s.orgs.insert(org_id.clone(), org);
+            let set_default = |s: &mut super::SystemState| {
+                if let (Some(c), Some(o)) = (capabilities, s.orgs.get_mut(&org_id)) {
+                    o.default_capabilities = c;
+                }
+            };
             let Some(package) = app_team else {
+                set_default(s);
                 return Ok(json!({ "orgId": org_id }));
             };
             // The package's app team, as `ScopeApps` makes one for a package
@@ -339,7 +348,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 ScopeAsLogged::CURRENT,
             );
             match scoped {
-                Ok(v) => Ok(json!({ "orgId": org_id, "teamId": v["teams"][0]["teamId"] })),
+                Ok(v) => {
+                    set_default(s);
+                    Ok(json!({ "orgId": org_id, "teamId": v["teams"][0]["teamId"] }))
+                }
                 Err(why) => {
                     let _gone = s.orgs.remove(&org_id);
                     Err(why)

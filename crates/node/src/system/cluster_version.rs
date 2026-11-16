@@ -95,10 +95,13 @@ pub enum Feature {
     /// `StartUpgradeRun` with `by_release`: an earlier release ignores the
     /// field and judges a publisher's run by each bundle's first package.
     PublishedRunByRelease,
+    /// `CreateOrg` with `capabilities`: an earlier release ignores the field
+    /// and leaves the organization's member default as a new one's.
+    OrgCapabilities,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 23] = [
+pub const FEATURES: [Feature; 24] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -122,6 +125,7 @@ pub const FEATURES: [Feature; 23] = [
     Feature::OrgAppTeam,
     Feature::MoveOrgQuotas,
     Feature::PublishedRunByRelease,
+    Feature::OrgCapabilities,
 ];
 
 impl Feature {
@@ -152,6 +156,7 @@ impl Feature {
             Self::OrgAppTeam => "orgAppTeam",
             Self::MoveOrgQuotas => "moveOrgQuotas",
             Self::PublishedRunByRelease => "publishedRunByRelease",
+            Self::OrgCapabilities => "orgCapabilities",
         }
     }
 
@@ -181,6 +186,7 @@ impl Feature {
             Self::BackupKeys => "1.0.0-rc.20",
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
+            Self::OrgCapabilities => "1.0.0-rc.29",
         }
     }
 }
@@ -421,8 +427,19 @@ impl SystemCmd {
             Self::CreateApp { app } if !app.components.is_app() => vec![Feature::ComputeOnly],
             Self::AcquireRun { pool: Some(_), .. } => vec![Feature::NamedPool],
             Self::CreateOrg {
-                app_team: Some(_), ..
-            } => vec![Feature::OrgAppTeam],
+                app_team,
+                capabilities,
+                ..
+            } => {
+                let mut f = Vec::new();
+                if app_team.is_some() {
+                    f.push(Feature::OrgAppTeam);
+                }
+                if capabilities.is_some() {
+                    f.push(Feature::OrgCapabilities);
+                }
+                f
+            }
             Self::RegisterNode { .. }
             | Self::RemoveNode { .. }
             | Self::PutBundle { .. }
@@ -453,7 +470,6 @@ impl SystemCmd {
             | Self::UseRefresh { .. }
             | Self::RevokeSession { .. }
             | Self::SetQuotas { .. }
-            | Self::CreateOrg { .. }
             | Self::Genesis { .. }
             | Self::SetOperatorRelease { .. }
             | Self::SetReleaseApproval { .. }
@@ -551,10 +567,23 @@ mod tests {
     const RC20: &str = "1.0.0-rc.20";
     const RC22: &str = "1.0.0-rc.22";
     const RC24: &str = "1.0.0-rc.24";
+    const RC29: &str = "1.0.0-rc.29";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
         match feature {
+            Feature::OrgCapabilities => SystemCmd::CreateOrg {
+                org_id: "org-d".into(),
+                name: "Chat".into(),
+                actor: "alice".into(),
+                release: None,
+                recovery_key: None,
+                at: 0,
+                name_fits: true,
+                personal: false,
+                app_team: None,
+                capabilities: Some(crate::types::caps::INVITE_MEMBERS),
+            },
             Feature::OrgAppTeam => SystemCmd::CreateOrg {
                 org_id: "org-c".into(),
                 name: "Chat".into(),
@@ -565,6 +594,7 @@ mod tests {
                 name_fits: true,
                 personal: false,
                 app_team: Some("chat".into()),
+                capabilities: None,
             },
             Feature::BackupKeys => SystemCmd::SetBackupKey {
                 holder: crate::system::BackupHolder::Operator,
@@ -913,7 +943,7 @@ mod tests {
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
             .iter()
-            .partition(|f| ![RC19, RC20, RC22, RC24].contains(&f.since()));
+            .partition(|f| ![RC19, RC20, RC22, RC24, RC29].contains(&f.since()));
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -977,13 +1007,15 @@ mod tests {
             nodes: (1..=3).map(|id| (id, RC22.to_owned())).collect(),
         };
         propose(&mut nodes, &raise).unwrap();
-        // rc.24's wait for every node on rc.24.
-        let (rc22, rc24): (Vec<Feature>, Vec<Feature>) =
+        // rc.24's and rc.29's wait for every node on them.
+        let (rc22, later): (Vec<Feature>, Vec<Feature>) =
             last.into_iter().partition(|f| f.since() == RC22);
+        let (rc24, rc29): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC24);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in &rc24 {
+        for &feature in rc24.iter().chain(&rc29) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -999,6 +1031,24 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc24 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        for &feature in &rc29 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC24))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC29;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC29.into(),
+            nodes: (1..=3).map(|id| (id, RC29.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc29 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));

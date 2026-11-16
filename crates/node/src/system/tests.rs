@@ -2213,6 +2213,7 @@ fn a_create_org_entry_from_before_takes_any_name() {
         name_fits: true,
         personal: false,
         app_team: None,
+        capabilities: None,
     };
     assert!(m.run_unproven(create("o2", " padded ")).is_err());
     assert!(!m.state.orgs.contains_key("o2"));
@@ -2261,6 +2262,7 @@ fn an_account_has_one_personal_organization_outside_its_quota() {
         name_fits: true,
         personal,
         app_team: None,
+        capabilities: None,
     };
     let entry = serde_json::to_value(create("team", "alice", false)).unwrap();
     assert!(entry.get("personal").is_none(), "{entry}");
@@ -6012,6 +6014,7 @@ fn a_deleted_organization_takes_its_publisher_bindings_with_it() {
             name_fits: true,
             personal: false,
             app_team: None,
+            capabilities: None,
         })
         .unwrap();
     assert_eq!(m.state.publisher_of_signer(&signer), None);
@@ -7528,6 +7531,7 @@ fn a_bound_publisher_manages_its_packages_origins() {
             name_fits: true,
             personal: false,
             app_team: None,
+            capabilities: None,
         })
         .unwrap();
     let _prev = m.state.publishers.insert(
@@ -8735,6 +8739,7 @@ fn an_organization_made_from_an_app_starts_with_its_app_team() {
         name_fits: true,
         personal: false,
         app_team: app_team.map(str::to_owned),
+        capabilities: None,
     };
     let (mut m, _alice, _bob, _carol) = proven_cluster();
     let (mut other, _a, _b, _c) = proven_cluster();
@@ -8770,4 +8775,66 @@ fn an_organization_made_from_an_app_starts_with_its_app_team() {
     assert!(entry.get("app_team").is_none(), "{entry}");
     assert_eq!(m.run_unproven(plain).unwrap(), json!({ "orgId": "plain" }));
     assert_eq!(m.state.orgs["plain"].mode(), OrgMode::Legacy);
+}
+
+/// A `CreateOrg` naming `capabilities` sets the organization's member default
+/// in the same entry (with or without an app team), so every replica applies
+/// it alike; without it the entry, the default and an earlier release's log
+/// entry are as before.
+#[test]
+fn an_organization_created_with_capabilities_sets_its_member_default() {
+    use crate::types::caps;
+
+    let wanted = caps::CREATE_APP | caps::INVITE_MEMBERS | caps::JOIN_OPEN_TEAMS;
+    let create = |id: &str, capabilities: Option<u32>| SystemCmd::CreateOrg {
+        org_id: id.into(),
+        name: "Acme".into(),
+        actor: "alice".into(),
+        release: None,
+        recovery_key: None,
+        at: 0,
+        name_fits: true,
+        personal: false,
+        app_team: None,
+        capabilities,
+    };
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let (mut other, _a, _b, _c) = proven_cluster();
+
+    let _ok = m.run_unproven(create("acme", Some(wanted))).unwrap();
+    let _ok = other.run_unproven(create("acme", Some(wanted))).unwrap();
+    assert_eq!(m.state.orgs["acme"].default_capabilities, wanted);
+    assert_eq!(
+        serde_json::to_value(&m.state.orgs["acme"]).unwrap(),
+        serde_json::to_value(&other.state.orgs["acme"]).unwrap(),
+        "every replica applies it alike"
+    );
+
+    // Zero is a choice too: members hold nothing by default.
+    let _ok = m.run_unproven(create("none", Some(0))).unwrap();
+    assert_eq!(m.state.orgs["none"].default_capabilities, 0);
+
+    // Absent: the default is what a new organization holds, and the entry
+    // does not name the field.
+    let plain = create("plain", None);
+    let entry = serde_json::to_value(&plain).unwrap();
+    assert!(entry.get("capabilities").is_none(), "{entry}");
+    assert!(plain.features().is_empty());
+    let _ok = m.run_unproven(plain).unwrap();
+    assert_eq!(m.state.orgs["plain"].default_capabilities, caps::DEFAULT);
+
+    // An entry an earlier release logged has no field and replays unchanged.
+    let old: SystemCmd = serde_json::from_value(json!({
+        "op": "createOrg", "org_id": "old", "name": "N", "actor": "alice", "release": null,
+    }))
+    .unwrap();
+    assert!(matches!(
+        old,
+        SystemCmd::CreateOrg {
+            capabilities: None,
+            ..
+        }
+    ));
+    let _ok = m.run_unproven(old).unwrap();
+    assert_eq!(m.state.orgs["old"].default_capabilities, caps::DEFAULT);
 }

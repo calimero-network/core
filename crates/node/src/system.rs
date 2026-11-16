@@ -4933,6 +4933,12 @@ pub enum SystemCmd {
         /// none ([`cluster_version::Feature::OrgAppTeam`]).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_team: Option<String>,
+        /// The organization-wide capabilities its members hold unless set for
+        /// them ([`crate::types::Org::default_capabilities`]), set in this
+        /// entry. Left out when none
+        /// ([`cluster_version::Feature::OrgCapabilities`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capabilities: Option<u32>,
     },
     /// Rename an organization: its owner or an admin, with their passkey
     /// consent (`org:<org> / __rename_org / { name }`), to a name that fits

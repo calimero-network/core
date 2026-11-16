@@ -133,6 +133,7 @@ pub(crate) async fn create_org(
             name_fits: true,
             personal,
             app_team,
+            capabilities: None,
         })
         .await?;
     Ok(Json(v))
