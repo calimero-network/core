@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [1.0.0-rc.30] - 2026-11-16
+
+### Deprecated
+
+- **meroctl's old spellings warn**: `context` (`--context`, `-c`), `namespace`/`ns`,
+  `group`, `groups`, `create-group`, `subgroups`, `--namespace`, `--group`, `ops
+  upgrade-namespace`, `dev new`, `attest --context`, `attest-release` and the
+  top-level `pipeline` and `run logs` still work, and now print on stderr what
+  replaced them (`instance`, `org`, `team`, ...): they will be removed in a later
+  release. The answer on stdout is unchanged.
+
 ## [1.0.0-rc.29] - 2026-11-16
 
 ### Added

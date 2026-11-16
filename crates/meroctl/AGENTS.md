@@ -78,7 +78,9 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   (`dev new`, `pipeline`, `run logs`, `attest-release`, `attest --context`, `context` (now `instance`) and `--context`/`-c` (now `--instance`/`-i`),
   `namespace`/`ns` (now `org`, with `teams`, `create-team`), `group` (now `team`, with `subteams`),
   `--namespace`/`--group` (now `--org`/`--team`) and `ops upgrade-namespace` (now `upgrade-org`))
-  stay as hidden aliases for one release; `old_spellings_still_parse` and
+  stay as hidden aliases for one release, and each one an invocation uses prints a warning on
+  stderr naming its replacement (`old_spellings`, test
+  `old_spellings_are_named_with_their_replacements`); `old_spellings_still_parse` and
   `the_command_tree_is_consistent` (clap's `debug_assert`) pin the tree, and
   `help_says_instance_org_and_team` keeps every visible help saying instance, org and team.
 - `local up` without ownership leaves the cluster running; `local dev` owns
