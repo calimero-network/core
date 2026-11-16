@@ -1,0 +1,251 @@
+---
+title: Organizations
+description: Organizations, teams, members and roles, invites, capabilities and metadata, organization-wide upgrade runs, and the owner's release and outbound approvals.
+sidebar:
+  order: 2
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+
+A method that takes a passkey answers the node's `412 CONFIRM_REQUIRED` with
+`{ confirm: passkeyConfirm(passkey) }` (`import { passkeyConfirm } from '@calimero-network/mero-js'`).
+
+## Organizations and members
+
+Every change to who holds access (members, team members, capabilities and
+invites) is approved with the caller's passkey: the node answers
+`412 CONFIRM_REQUIRED` and the client signs the challenge with `passkey`.
+
+```ts
+const org = await (await client.orgs.create({ name: 'Acme' })).orgId;
+await client.orgs.get({ org }); // with the teams you reach or manage
+await client.orgs.setMember({ org, account: bobId, role: 'member' }, { confirm: passkeyConfirm(passkey) }); // guest | member | admin | owner
+await client.orgs.removeMember({ org, account: bobId }, { confirm: passkeyConfirm(passkey) }); // your own account id to leave
+await client.orgs.metadata({ org, metadata: { logo: '…' } });
+await client.orgs.memberMetadata({ org, account: bobId, metadata: { title: 'engineer' } }); // null clears it
+await client.orgs.delete({ org }, { confirm: passkeyConfirm(passkey) }); // the owner's passkey; takes its teams, invites and apps
+```
+
+Ownership moves with `setMember(org, account, 'owner', passkey)`.
+
+## Recovery
+
+An owner who loses every passkey gets the organization back with its recovery
+seed. The seed never leaves the client: the node stores only its public key and
+checks a signature the seed makes for the recovering account.
+
+```ts
+import { newRecoverySeed, parseRecoverySeed, recoveryPublicKey, recoverySeedText } from '@calimero-network/mero-js';
+
+const seed = newRecoverySeed();
+showToOwner(recoverySeedText(seed)); // 64 hex digits; keep it offline
+const org = await (await client.orgs.create({ name: 'Acme', recoveryKey: await recoveryPublicKey(seed) })).orgId;
+// later, or for an organization created without one (the owner, with a passkey):
+await client.orgs.recoverySet({ org, publicKey: await recoveryPublicKey(newRecoverySeed()) }, { confirm: passkeyConfirm(passkey) });
+
+// Every passkey lost: sign up again with a new passkey, then
+const { readyAt } = await fresh.startRecovery(org, parseRecoverySeed(written));
+// 72 hours later (the owner may cancelRecovery meanwhile; every member sees getOrg(org).recovery.pending)
+await fresh.orgs.recoveryFinish({ org }, { confirm: passkeyConfirm(newPasskey) }); // this account owns it; the old owner leaves it
+```
+
+Rotating the key (`setRecoveryKey`) cancels a recovery under way, and the old
+seed is refused from then on.
+
+## Invites
+
+```ts
+const token = await (await client.orgs.inviteCreate({ org, role: 'member', teams: [teamId], ttlSecs: 3600, uses: 5 }, { confirm: passkeyConfirm(passkey) })).token;
+// the invitee, signed in (no approval needed):
+await invitee.orgs.inviteRedeem({ token });
+```
+
+An owner or admin can also give someone every app added to the organization
+later: each app team made from then on gives them a row, so in an
+organization that keeps its apps apart a new app reaches them though nobody
+named them. Apps already there are untouched.
+
+```ts
+const all = await (await client.orgs.inviteCreate({ org, role: 'member', teams: [], allApps: true }, { confirm: passkeyConfirm(passkey) })).token;
+await client.orgs.allApps({ org, account: bobId, allApps: true }, { confirm: passkeyConfirm(passkey) }); // false stops it
+(await client.orgs.get({ org })).allApps; // who holds it
+```
+
+The invites a caller may see (an admin all, a team's manager those naming only
+its teams, anyone their own) are listed without their tokens, and withdrawn by
+key with a passkey:
+
+```ts
+const invites = await (await client.orgs.inviteList({ org })).invites; // { inviteKey, role, teams, usesLeft, expiresAt, expired, createdBy, createdAt }
+await client.orgs.inviteRevoke({ org, key: invites[0].inviteKey }, { confirm: passkeyConfirm(passkey) });
+```
+
+Someone without an account yet signs up with the invite and joins the
+organization in the same step. On a cluster whose sign-up policy is `invite`
+this is the only way in; read the policy first, without a session, to say so
+before any passkey prompt:
+
+```ts
+const { policy, inviteRequired } = await client.deployments.signUpPublic(); // GET /sign-up
+await client.signUp(passkey, 'bob', { invite: token });
+```
+
+An unknown, expired or used invite, or a sign-up the policy does not take, is
+`SignUpRefused`, with `reason` (`invite-only`, `closed`, `unknown-invite`,
+`expired-invite`, `org-gone`), raised before the browser makes a passkey.
+
+## Teams
+
+```ts
+const team = await (await client.orgs.teamCreate({ org, name: 'eng', join: 'invite' })).teamId; // or 'everyone'; optional parent
+await client.orgs.teamSetMember({ org, team, account: bobId, role: 'readOnly' }, { confirm: passkeyConfirm(passkey) }); // lead | member | readOnly
+await client.orgs.teamUpdate({ org, team, name: 'platform', parent: null, metadata: { colour: 'blue' } });
+await client.orgs.teamRemoveMember({ org, team, account: bobId }, { confirm: passkeyConfirm(passkey) });
+await client.orgs.teamDelete({ org, team }, { confirm: passkeyConfirm(passkey) }); // and the teams below it, and their apps
+```
+
+An app created with `access: { kind: 'team', team }` is reached by the team's
+members; a read-only member's calls that would write are refused.
+
+Deleting a team whose teams hold apps takes the deleter's passkey: the node's
+`412 CONFIRM_REQUIRED` lists the `apps` that go in its details, and the
+approval names exactly those (an app added after it is refused). A team with
+no apps is deleted without one, so `passkey` may be left out there.
+
+## App teams
+
+An app team is a top-level team that holds one package's instances (one per
+package per organization). The organization's mode follows from them:
+`legacy` (none), `standalone` (every app team open) or `shared` (some closed,
+and each app lists who is in it).
+
+```ts
+const { mode, appTeams } = await client.orgs.appTeamList({ org }); // any member; a guest sees only its own
+// The owner or an admin, with the passkey: find or make each package's team,
+// add everyone who reaches its instances now, move them onto it.
+const { teams } = await client.orgs.appTeamsScope({ org, apps: [{ package: 'com.example.chat', name: 'Chat' }], // absent: every package with an org-access instance
+  shared: true, // absent: when the organization then holds two or more }, { confirm: passkeyConfirm(passkey) });
+// "Members may invite others to this app":
+await client.orgs.capabilities({ org, team: teams[0].teamId, capabilities: ORG_CAPABILITIES.INVITE_MEMBERS }, { confirm: passkeyConfirm(passkey) });
+```
+
+`getTeam` answers the team's `package` and `defaultCapabilities`, and each
+member's effective `capabilities`.
+
+## Capabilities
+
+Below admin, what a member may do is their role plus capability bits:
+
+```ts
+import { ORG_CAPABILITIES, orgCapabilities } from '@calimero-network/mero-js';
+
+await client.orgs.capabilities({ org, capabilities: orgCapabilities('CREATE_APP', 'INVITE_MEMBERS'), account: bobId }, { confirm: passkeyConfirm(passkey) });
+await client.orgs.capabilities({ org, capabilities: ORG_CAPABILITIES.CREATE_APP, account: bobId, team }, { confirm: passkeyConfirm(passkey) }); // on one team
+await client.orgs.capabilities({ org, capabilities: ORG_CAPABILITIES.JOIN_OPEN_TEAMS }, { confirm: passkeyConfirm(passkey) }); // the organization's default
+```
+
+| Bit | Value | Lets a member |
+| --- | --- | --- |
+| `CREATE_APP` | 1 | create apps (on its team, or org-wide) |
+| `INVITE_MEMBERS` | 2 | mint invites |
+| `JOIN_OPEN_TEAMS` | 4 | be in open teams (the default) |
+| `MANAGE_MEMBERS` | 8 | add and remove a team's members |
+| `MANAGE_APPLICATION` | 16 | upgrade the org's apps, start upgrade runs, approve outbound hosts |
+| `CREATE_TEAM` | 32 | create a top-level team |
+| `DELETE_TEAM` | 64 | delete a team |
+| `MANAGE_VISIBILITY` | 128 | change who may join a team (open or invite-only) |
+| `MANAGE_METADATA` | 256 | set the organization's metadata |
+
+## Upgrade runs
+
+Upgrade every app of the organization that runs a package, with one passkey
+approval for the whole run, then follow it:
+
+```ts
+let run = await client.orgs.upgrade({ org, package: 'com.example.kv', version: '1.1.0', team, cascade: true }, { confirm: passkeyConfirm(passkey) });
+while (!run.finished) {
+  await new Promise((r) => setTimeout(r, 1000));
+  run = await client.orgs.upgradeStatus({ org, run: run.runId });
+}
+console.log(run.done, run.failed); // failed: app id -> why
+
+if (Object.keys(run.failed).length) await client.orgs.upgradeRetry({ org, run: run.runId }, { confirm: passkeyConfirm(passkey) }); // a new run
+```
+
+The org's owner, or a member holding `MANAGE_APPLICATION` org-wide, starts one.
+
+## Approvals
+
+Where the cluster leaves these decisions to the owner side (the default), they
+are made with a passkey and logged as consent. These calls belong to a page on
+the cluster's own origin (a console); a session opened on an app's frontend is
+refused them, and an app sends its user to the
+[consent page](/guides/user-approvals/) instead.
+
+The same holds, from an app's frontend, for creating an organization or an
+invite, joining with one, and managing an organization (leaving it, members'
+removal, roles, teams, capabilities and all-apps grants, revoking invites,
+renaming or deleting it): see
+[organizations from your app](/guides/user-approvals/#organizations-from-your-app).
+
+**Releases.** Nodes on a mero-tee release get an organization's data only once
+it is approved for that organization (the release the org began on is
+approved at creation). A member holding `APPROVE_RELEASES` approves (the owner
+and admins hold it; `getOrg(org).releaseApprovers` lists who does). An app's
+releases are its **publisher's** to approve: the organization its package's
+signing key is bound to, for every instance of the key's packages; for an
+unbound package, the app's own organization (an account's own apps are in its
+personal organization, `personal` in `auth.me()`, made at sign-up). The operator can give a
+release a deadline (`releaseRules()` lists them): past it, a scope that has not
+approved it (or newer) creates no apps, installs nothing and upgrades nothing
+(`ReleaseDeadlineError`, `getOrg(org).newWorkStopped`), while its running apps
+keep working:
+
+```ts
+const personalOrg = (await client.auth.me()).orgs.find((o) => o.personal)!.orgId;
+await client.orgs.releaseApproval({ org, version: '2.3.120', approved: true }, { confirm: passkeyConfirm(passkey) });
+await client.orgs.releaseApproval({ org: personalOrg, version: '2.3.120', approved: true }, { confirm: passkeyConfirm(passkey) }); // the account's own apps
+await client.orgs.releaseApproval({ org, version: '2.3.110', approved: false }, { confirm: passkeyConfirm(passkey) });  // withdraw
+```
+
+**Outbound HTTPS.** An app may call out only to URL prefixes approved for its
+package's publisher:
+
+```ts
+await client.orgs.outboundApproval({ org, package: 'com.example.kv' }, { confirm: passkeyConfirm(passkey) }); // every prefix its latest release declares
+await client.orgs.outboundApproval({ org, package: 'com.example.kv', prefixes: ['https://api.example/'], replace: true }, { confirm: passkeyConfirm(passkey) });
+await client.orgs.outboundApproval({ org: personalOrg, package: 'com.example.kv' }, { confirm: passkeyConfirm(passkey) }); // the account's own apps
+```
+
+**Publishers.** An organization becomes the publisher of a signing key's
+packages only with the key's own signature:
+
+```ts
+import { publisherBindingBytes } from '@calimero-network/mero-js';
+
+const { cluster, generation } = await client.public.publisherBinding({ signer: signerId });
+const signature = sign(publisherBindingBytes(cluster, org, signerId, generation)); // the key's Ed25519, base64url
+await client.orgs.publisher({ org, signerId, publicKey, signature }, { confirm: passkeyConfirm(passkey) });   // a member holding APPROVE_RELEASES
+```
+
+A package whose manifest declares `upgrades: "publisher"` is then upgraded by
+the publisher's `MANAGE_APPLICATION` holders, every instance at once:
+
+```ts
+const run = await client.orgs.publisherUpgrade({ org, package: 'com.example.kv', version: '1.2.0' }, { confirm: passkeyConfirm(passkey) });
+```
+
+Without `upgrades` (or with `"owner"`), each instance's owner upgrades it. A
+package may move from `publisher` to `owner` in a later release, never back.
+
+**Reading what waits.** `appsReport(org)` (any member) answers the approved
+releases, the releases the cluster's nodes run and whether each is approved,
+and per app its release, the newer ones it may move to and its last upgrade;
+`pendingApprovals(org)` sums it up.
+
+<Aside type="note">
+  A cluster started with `--release-approvals operator`, `--app-upgrades
+  operator` or `--outbound-approvals operator` gives that decision to its
+  operator instead, and refuses the owner's with `403`.
+</Aside>

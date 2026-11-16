@@ -1,0 +1,4 @@
+name: triple
+steps:
+  one:
+    method: triple

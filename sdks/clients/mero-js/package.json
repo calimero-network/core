@@ -1,0 +1,93 @@
+{
+  "name": "@calimero-network/mero-js",
+  "version": "1.0.0-rc.30",
+  "description": "JavaScript client for Calimero 1.0: attested TEE nodes, a sealed channel, passkeys and API keys",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "browser": "./dist/index.browser.mjs",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs",
+      "default": "./dist/index.mjs"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "browser": "./dist/runtime.browser.mjs",
+      "import": "./dist/runtime.mjs",
+      "require": "./dist/runtime.cjs",
+      "default": "./dist/runtime.mjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "dependencies": {
+    "@noble/hashes": "2.4.0",
+    "@phala/dcap-qvl": "0.5.3",
+    "openapi-fetch": "0.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.34",
+    "@typescript-eslint/eslint-plugin": "^5.62.0",
+    "@typescript-eslint/parser": "^5.62.0",
+    "esbuild": "^0.28.1",
+    "eslint": "^8.57.0",
+    "openapi-typescript": "7.13.0",
+    "rimraf": "^3.0.0",
+    "typescript": "5.6.3",
+    "vite": "^7.3.7",
+    "vitest": "^4.1.12"
+  },
+  "scripts": {
+    "build": "tsc && esbuild src/index.ts --bundle --platform=neutral --external:@phala/dcap-qvl --target=es2020 --format=esm --outfile=dist/index.mjs --sourcemap && esbuild src/index.ts --bundle --platform=neutral --external:@phala/dcap-qvl --target=es2020 --format=cjs --outfile=dist/index.cjs --sourcemap && esbuild src/index.ts --bundle --platform=browser --external:@phala/dcap-qvl --target=es2020 --format=esm --outfile=dist/index.browser.mjs --sourcemap --minify && node scripts/runtime-entries.mjs",
+    "build:examples": "tsc -p examples/node-script/tsconfig.json",
+    "test": "vitest run --passWithNoTests",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "eslint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "typecheck:consumer": "tsc --noEmit -p tsconfig.consumer.json",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
+    "tsc": "tsc -b",
+    "clean": "pnpm rimraf dist",
+    "prepublishOnly": "pnpm clean && pnpm build && pnpm test:unit && pnpm lint && pnpm typecheck && pnpm typecheck:consumer && pnpm typecheck:tests",
+    "test:cluster": "vitest run --config vitest.cluster.config.ts",
+    "generate": "pnpm gen:api && pnpm refresh:receipt-vectors",
+    "gen:api": "openapi-typescript ../../../docs/public/openapi.json -o src/generated/api.ts && node scripts/gen-methods.mjs",
+    "check:api": "pnpm generate && git diff --exit-code -- src/generated src/client/fixtures/receipt-vectors.json && test -z \"$(git status --porcelain --untracked-files=all -- src/generated)\"",
+    "refresh:receipt-vectors": "scripts/refresh-receipt-vectors.sh"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "calimero",
+    "mero",
+    "javascript",
+    "tee",
+    "confidential-computing",
+    "passkeys",
+    "sdk"
+  ],
+  "license": "MIT",
+  "author": "Calimero Ltd",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/calimero-network/mero-js",
+    "directory": "mero-js"
+  },
+  "homepage": "https://github.com/calimero-network/mero-js/blob/master/README.md",
+  "bugs": {
+    "url": "https://github.com/calimero-network/mero-js/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calimero | mero-react — mero-react</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta name="description" content="React bindings for Calimero 1.0">
+<meta name="theme-color" content="#0d1117">
+</head>
+<body>
+<div class="main">
+<div class="content prose">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>mero-react</span></div>
+<h1>mero-react</h1>
+<p class="page-subtitle">React bindings for Calimero 1.0</p>
+<p>React bindings for <strong>Calimero 1.0</strong>, on the mero-js client (<span class="code">CalimeroClient</span>) and its generated method groups (<span class="code">client.apps</span>, <span class="code">client.orgs</span>, <span class="code">client.auth</span>, ...).</p>
+<p>A 1.0 node runs in an attested TDX cluster. The client verifies the node's attestation, seals every request to the node's attested key, and signs people in with <strong>passkeys</strong>. mero-react puts one client in context and builds the hooks on top of it:</p>
+<ul><li>passkey sign-in and sign-up;</li><li>sessions that refresh by themselves;</li><li>calls, views and live events on an app instance;</li><li>organizations, teams and invites;</li><li>the node's consent page for approvals;</li><li>blobs and presence;</li><li>typed errors your UI can switch on.</li></ul>
+<div class="callout"><strong>Upgrading from 10.x?</strong> 11.0 is a rewrite for core 1.0, which removed <span class="code">/admin-api</span>, <span class="code">/jsonrpc</span>, <span class="code">/ws</span>, <span class="code">/sse</span>, mero-auth and <span class="code">/auth/token</span>. Read <a href="migration.html">Migrating from 10.x</a> below.</div>
+<h2>Installation</h2>
+<pre class="typedef">pnpm add @calimero-network/mero-react</pre>
+<p><span class="code">@calimero-network/mero-js</span> (^29.17) comes with it, and every mero-js export is re-exported, so apps need only this import. React 18 or 19 is a peer dependency.</p>
+<h2>Quick start</h2>
+<pre class="typedef">import {
+  MeroProvider,
+  ConnectButton,
+  useMero,
+  useView,
+  useExecute,
+  useSubscription,
+} from &#x27;@calimero-network/mero-react&#x27;;
+
+export function Root() {
+  return (
+    // A frontend the node serves at {label}.{apps-domain}:
+    &lt;MeroProvider servedByNode minReleaseVersion=&quot;2.3.109&quot; appId={APP_ID}&gt;
+      &lt;App /&gt;
+    &lt;/MeroProvider&gt;
+  );
+}
+
+function App() {
+  const { isAuthenticated } = useMero();
+  const items = useView&lt;string[]&gt;(&#x27;list_items&#x27;);
+  const { execute, failure } = useExecute();
+  useSubscription(undefined, (event) =&gt; {
+    if (event.kind === &#x27;ItemAdded&#x27;) void items.refetch();
+  });
+
+  if (!isAuthenticated) return &lt;ConnectButton appName=&quot;Notes&quot; /&gt;;
+  return (
+    &lt;&gt;
+      &lt;ul&gt;{items.data?.map((item) =&gt; &lt;li key={item}&gt;{item}&lt;/li&gt;)}&lt;/ul&gt;
+      &lt;button onClick={() =&gt; execute(&#x27;add_item&#x27;, { text: &#x27;hello&#x27; })}&gt;Add&lt;/button&gt;
+      {failure &amp;&amp; &lt;p role=&quot;alert&quot;&gt;{failure.message}&lt;/p&gt;}
+    &lt;/&gt;
+  );
+}</pre>
+<p>A frontend hosted elsewhere reaches a Calimero Cloud cluster by name, failing over between its nodes:</p>
+<pre class="typedef">&lt;MeroProvider cluster=&quot;eu-shared-1&quot; minReleaseVersion=&quot;2.3.109&quot; appId={APP_ID}&gt;</pre>
+<p>For local development against <span class="code">merod local</span> (three <span class="code">--dev</span> nodes with mock attestation on 127.0.0.1:2501-2503):</p>
+<pre class="typedef">&lt;MeroProvider
+  nodeUrl=&quot;http://127.0.0.1:2501&quot;
+  nodes={[&#x27;http://127.0.0.1:2502&#x27;, &#x27;http://127.0.0.1:2503&#x27;]}
+  allowMock
+&gt;</pre>
+<p><span class="code">allowMock</span> accepts mock attestation quotes. Never set it from anything a visitor controls, such as a URL parameter or the environment of a deployed build.</p>
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

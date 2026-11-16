@@ -1,0 +1,4 @@
+name: double
+steps:
+  one:
+    method: double
