@@ -284,7 +284,7 @@ fn apps_words(count: usize) -> String {
 }
 
 /// The capabilities `bits` hold, as a person reads them.
-fn cap_words(bits: u32) -> Vec<String> {
+pub(super) fn cap_words(bits: u32) -> Vec<String> {
     const NAMES: &[(u32, &str)] = &[
         (caps::CREATE_APP, "create apps"),
         (caps::INVITE_MEMBERS, "invite people"),
@@ -308,6 +308,18 @@ fn cap_words(bits: u32) -> Vec<String> {
         out.push(format!("other capabilities ({:#x})", bits & !known));
     }
     out
+}
+
+/// Every capability `bits` hold, in full (what a person consents to is never
+/// shortened to "and N more"); `None` when it holds none.
+pub(super) fn cap_list(bits: u32) -> Option<String> {
+    let words = cap_words(bits);
+    let (last, init) = words.split_last()?;
+    Some(if init.is_empty() {
+        last.clone()
+    } else {
+        format!("{} and {last}", init.join(", "))
+    })
 }
 
 /// What a set of capabilities can do, in a sentence's tail.

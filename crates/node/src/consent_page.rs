@@ -334,6 +334,10 @@ pub struct OutboundSubject {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateOrgSubject {
     name: String,
+    /// What its members can do unless set for them (capability bits); a new
+    /// organization's default when absent.
+    #[serde(default)]
+    capabilities: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -413,6 +417,8 @@ enum Action {
         /// asking session's own (an app's frontend), when the cluster
         /// version takes it ([`crate::system::cluster_version::Feature::OrgAppTeam`]).
         app_team: Option<String>,
+        /// The member default capabilities it starts with, as shown.
+        capabilities: Option<u32>,
     },
     CreateInvite {
         terms: InviteTerms,
@@ -1919,6 +1925,12 @@ async fn create_org_request(
 ) -> Result<(Action, Value), ApiError> {
     let name = subject.name;
     crate::system::org_name_fits(&name).map_err(|why| ApiError::bad_request("BAD_REQUEST", why))?;
+    let capabilities = subject.capabilities;
+    if capabilities.is_some() {
+        // Before the page: an earlier release would drop the field.
+        node.require_features(&[crate::system::cluster_version::Feature::OrgCapabilities])
+            .await?;
+    }
     let team = org_app_team(node, package).await;
     let mut points = vec![json!(format!(
         "A new organization named {name} is created, and you are its owner."
@@ -1929,12 +1941,19 @@ async fn create_org_request(
              organization, with you as its lead."
         )));
     }
+    if let Some(bits) = capabilities {
+        points.push(json!(match orgs::cap_list(bits) {
+            Some(list) => format!("Members can {list}."),
+            None =>
+                "Members can do nothing beyond belonging to it until you say otherwise.".to_owned(),
+        }));
+    }
     points.push(json!(
         "The app that sent you here can then make its apps in it and use them. \
          Adding people, teams or invites still asks you here first."
     ));
     points.push(json!("Nothing is created until you approve."));
-    let model = json!({
+    let mut model = json!({
         "kind": "createOrg",
         "headline": format!("Create the organization {name}"),
         "title": format!("Create the organization {name}"),
@@ -1949,10 +1968,14 @@ async fn create_org_request(
         ),
         "notes": [],
     });
+    if let Some(bits) = capabilities {
+        model["capabilities"] = json!({ "bits": bits, "names": orgs::cap_words(bits) });
+    }
     Ok((
         Action::CreateOrg {
             name,
             app_team: team.map(|(package, _)| package),
+            capabilities,
         },
         model,
     ))
@@ -2562,7 +2585,11 @@ async fn act(
     let account_subject = format!("account:{}", req.account);
     let Json(v) = match &req.action {
         Action::Org(a) => return orgs::act(node, &p, a, confirm).await,
-        Action::CreateOrg { name, app_team } => {
+        Action::CreateOrg {
+            name,
+            app_team,
+            capabilities,
+        } => {
             // `POST /orgs` takes no passkey; the page does, so the person
             // (not the app that sent them) creates it. Nothing is logged
             // beyond what `POST /orgs` logs, and with an app team the same
@@ -2570,6 +2597,9 @@ async fn act(
             let mut args = json!({ "name": name });
             if let Some(package) = app_team {
                 args["appTeam"] = json!(package);
+            }
+            if let Some(bits) = capabilities {
+                args["capabilities"] = json!(bits);
             }
             let _consent =
                 consent(node, &p, &account_subject, "__create_org", &args, confirm).await?;
@@ -2580,6 +2610,7 @@ async fn act(
                 None,
                 false,
                 app_team.clone(),
+                *capabilities,
             )
             .await?;
             return Ok(Acted {

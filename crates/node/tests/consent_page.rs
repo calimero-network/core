@@ -2366,3 +2366,92 @@ async fn a_member_removed_from_the_org_loses_the_capability_card() {
     assert_eq!(status(&e), 404, "{e}");
     assert!(e.to_string().contains("no such package version"), "{e}");
 }
+
+/// An app's frontend sets its new organization's member defaults in the same
+/// approval that creates it (`createOrg { capabilities }`): the page says in
+/// words what members can do, the step-up commits to the bits, and the
+/// organization exists with them. Absent, nothing changes; the plain
+/// `POST /orgs` takes the same field.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_frontend_creates_an_organization_with_member_capabilities_in_one_approval() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(v1).await.unwrap();
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let back = format!("{app_origin}/1.0.0/");
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+
+    let create = |subject: Value| ask(&in_app, &back, "createOrg", subject);
+    let wanted = 0b111; // create apps, invite people, join open teams
+    assert_eq!(
+        status_of(create(json!({ "name": "x", "capabilities": -1 })).await),
+        400,
+        "bits are an unsigned number"
+    );
+    let made = create(json!({ "name": "calimero", "capabilities": wanted }))
+        .await
+        .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["capabilities"]["bits"], wanted, "{model}");
+    let points = model["points"].to_string();
+    assert!(
+        points.contains("Members can create apps, invite people and join open teams."),
+        "{points}"
+    );
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(
+        args,
+        json!({
+            "name": "calimero", "appTeam": PACKAGE, "capabilities": wanted,
+            "__method": "__create_org"
+        })
+    );
+    let id = made["requestId"].as_str().unwrap();
+    let result = get(&in_app, &format!("consent/{id}/result")).await.unwrap();
+    let org = result["outcome"]["orgId"].as_str().unwrap().to_owned();
+    let o = get(&alice, &format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["defaultCapabilities"], wanted, "{o}");
+
+    // Absent: the page names no capabilities and the default is a new org's.
+    let made = create(json!({ "name": "plain" })).await.unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    assert!(page.model().await.get("capabilities").is_none());
+    let ((_, done), args) = page.approve(&c, &mut alice_page).await;
+    assert!(args.get("capabilities").is_none(), "{args} {done}");
+    let id = made["requestId"].as_str().unwrap();
+    let result = get(&in_app, &format!("consent/{id}/result")).await.unwrap();
+    let org = result["outcome"]["orgId"].as_str().unwrap();
+    let o = get(&alice, &format!("orgs/{org}")).await.unwrap();
+    assert_eq!(o["defaultCapabilities"], 4, "{o}");
+
+    // The plain route, unbound session.
+    let made = post(
+        &alice,
+        "orgs",
+        json!({ "name": "direct", "capabilities": 3 }),
+    )
+    .await
+    .unwrap();
+    let o = get(&alice, &format!("orgs/{}", made["orgId"].as_str().unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(o["defaultCapabilities"], 3, "{o}");
+}
+
+/// A refused request's status, from [`ask`]'s answer.
+fn status_of(r: Result<Value, u16>) -> u16 {
+    r.expect_err("the request is refused")
+}

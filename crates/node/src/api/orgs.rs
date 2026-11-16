@@ -99,6 +99,9 @@ pub(super) struct OrgBody {
     /// creator keeps the seed (`docs/specs/org-recovery.md`).
     #[serde(default)]
     recovery_key: Option<String>,
+    /// What its members can do unless set for them (capability bits).
+    #[serde(default)]
+    capabilities: Option<u32>,
 }
 
 async fn org_create(
@@ -107,7 +110,16 @@ async fn org_create(
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
-    create_org(&node, account, body.name, body.recovery_key, false, None).await
+    create_org(
+        &node,
+        account,
+        body.name,
+        body.recovery_key,
+        false,
+        None,
+        body.capabilities,
+    )
+    .await
 }
 
 /// Create an organization `account` owns: `POST /orgs`, and the consent
@@ -119,8 +131,12 @@ pub(crate) async fn create_org(
     recovery_key: Option<String>,
     personal: bool,
     app_team: Option<String>,
+    capabilities: Option<u32>,
 ) -> ApiResult {
     crate::system::org_name_fits(&name).map_err(malformed)?;
+    if capabilities.is_some() {
+        node.require_features(&[Feature::OrgCapabilities]).await?;
+    }
     let org_id = typed_id::<16>();
     let v = node
         .sys_write(&SystemCmd::CreateOrg {
@@ -133,7 +149,7 @@ pub(crate) async fn create_org(
             name_fits: true,
             personal,
             app_team,
-            capabilities: None,
+            capabilities,
         })
         .await?;
     Ok(Json(v))
