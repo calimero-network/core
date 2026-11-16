@@ -22,7 +22,7 @@ codes the document lists for the method beyond the ones every call can get
 (`UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, ...): see
 [errors](/reference/errors/).
 
-Generated from core `d958c1b7e`.
+Generated from core `c3611043c`.
 
 ## `client.apps`
 
@@ -118,7 +118,7 @@ Generated from core `d958c1b7e`.
 
 | Method | Route | What it does |
 | --- | --- | --- |
-| `page_create(body)` | `POST /consent/requests` | Ask the account's owner to approve |
+| `page_create(body)` | `POST /consent/requests` | Ask the account's owner to approve. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `403 CANNOT_GRANT_UNHELD`, `409 FEATURE_NOT_ACTIVE` |
 | `page_result(request)` | `GET /consent/{request}/result` | What became of a consent request |
 
 ## `client.deployments`
@@ -201,10 +201,10 @@ Generated from core `d958c1b7e`.
 | `apps(org, after=…, limit=…)` | `GET /orgs/{org}/apps` | The organization's apps |
 | `backup_key(org)` | `GET /orgs/{org}/backup-key` | The organization's backup key |
 | `capabilities(org, account=…, team=…, capabilities, confirm=None)` | `POST /orgs/{org}/capabilities` | Set capabilities. **passkey** |
-| `create(name, recovery_key=…)` | `POST /orgs` | Create an organization. *Refusals:* `429 QUOTA_EXCEEDED` |
+| `create(name, recovery_key=…, capabilities=…)` | `POST /orgs` | Create an organization. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `409 FEATURE_NOT_ACTIVE`, `429 QUOTA_EXCEEDED` |
 | `delete(org, confirm=None)` | `DELETE /orgs/{org}` | Delete an organization. **passkey** |
 | `get(org)` | `GET /orgs/{org}` | One organization |
-| `invite_create(org, role, teams=…, ttl_secs=…, uses=…, all_apps=…, confirm=None)` | `POST /orgs/{org}/invites` | Make an invite. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
+| `invite_create(org, role, teams=…, ttl_secs=…, uses=…, all_apps=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/invites` | Make an invite. **passkey**. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `403 CANNOT_GRANT_UNHELD`, `409 FEATURE_NOT_ACTIVE` |
 | `invite_list(org)` | `GET /orgs/{org}/invites` | The organization's invites |
 | `invite_redeem(token)` | `POST /invites/{token}/redeem` | Join with an invite |
 | `invite_revoke(org, key, confirm=None)` | `DELETE /orgs/{org}/invites/{key}` | Revoke an invite. **passkey** |

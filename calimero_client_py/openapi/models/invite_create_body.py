@@ -27,6 +27,7 @@ class InviteCreateBody:
         ttl_secs (Union[Unset, int]):
         uses (Union[Unset, int]):
         all_apps (Union[Unset, bool]):
+        capabilities (Union[Unset, int]):
         confirm (Union[Unset, Confirm]): A passkey assertion over the challenge a `412 CONFIRM_REQUIRED` named: the same
             request sent again with it approves exactly that request.
     """
@@ -36,6 +37,7 @@ class InviteCreateBody:
     ttl_secs: Union[Unset, int] = UNSET
     uses: Union[Unset, int] = UNSET
     all_apps: Union[Unset, bool] = UNSET
+    capabilities: Union[Unset, int] = UNSET
     confirm: Union[Unset, "Confirm"] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -53,6 +55,8 @@ class InviteCreateBody:
         uses = self.uses
 
         all_apps = self.all_apps
+
+        capabilities = self.capabilities
 
         confirm: Union[Unset, dict[str, Any]] = UNSET
         if not isinstance(self.confirm, Unset):
@@ -73,6 +77,8 @@ class InviteCreateBody:
             field_dict["uses"] = uses
         if all_apps is not UNSET:
             field_dict["allApps"] = all_apps
+        if capabilities is not UNSET:
+            field_dict["capabilities"] = capabilities
         if confirm is not UNSET:
             field_dict["confirm"] = confirm
 
@@ -93,6 +99,8 @@ class InviteCreateBody:
 
         all_apps = d.pop("allApps", UNSET)
 
+        capabilities = d.pop("capabilities", UNSET)
+
         _confirm = d.pop("confirm", UNSET)
         confirm: Union[Unset, Confirm]
         if isinstance(_confirm, Unset):
@@ -106,6 +114,7 @@ class InviteCreateBody:
             ttl_secs=ttl_secs,
             uses=uses,
             all_apps=all_apps,
+            capabilities=capabilities,
             confirm=confirm,
         )
 

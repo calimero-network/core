@@ -55,6 +55,11 @@ def _parse_response(
 
         return response_403
 
+    if response.status_code == 409:
+        response_409 = Error.from_dict(response.json())
+
+        return response_409
+
     if response.status_code == 421:
         response_421 = Error.from_dict(response.json())
 
@@ -89,8 +94,10 @@ def sync_detailed(
 ) -> Response[Union[Error, OrgCreateResponse200]]:
     """Create an organization
 
-     `recoveryKey` is the public half of an organization recovery key. Every account also has a personal
-    organization from sign-up (`personal` in `/auth/me`), which this does not make.
+     `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
+    members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster
+    version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in
+    `/auth/me`), which this does not make.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -123,8 +130,10 @@ def sync(
 ) -> Optional[Union[Error, OrgCreateResponse200]]:
     """Create an organization
 
-     `recoveryKey` is the public half of an organization recovery key. Every account also has a personal
-    organization from sign-up (`personal` in `/auth/me`), which this does not make.
+     `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
+    members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster
+    version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in
+    `/auth/me`), which this does not make.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -152,8 +161,10 @@ async def asyncio_detailed(
 ) -> Response[Union[Error, OrgCreateResponse200]]:
     """Create an organization
 
-     `recoveryKey` is the public half of an organization recovery key. Every account also has a personal
-    organization from sign-up (`personal` in `/auth/me`), which this does not make.
+     `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
+    members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster
+    version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in
+    `/auth/me`), which this does not make.
 
     **Who:** a passkey session (an API key is refused).
 
@@ -184,8 +195,10 @@ async def asyncio(
 ) -> Optional[Union[Error, OrgCreateResponse200]]:
     """Create an organization
 
-     `recoveryKey` is the public half of an organization recovery key. Every account also has a personal
-    organization from sign-up (`personal` in `/auth/me`), which this does not make.
+     `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what
+    members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster
+    version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in
+    `/auth/me`), which this does not make.
 
     **Who:** a passkey session (an API key is refused).
 

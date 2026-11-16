@@ -4117,21 +4117,25 @@ class Orgs(Group):
             confirm=confirm,
         )
 
-    def create(self, *, name, recovery_key=UNSET):
+    def create(self, *, name, recovery_key=UNSET, capabilities=UNSET):
         """Create an organization (`POST /orgs`, `org_create`).
 
-        `recoveryKey` is the public half of an organization recovery key. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.
+        `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.
 
         **Who:** a passkey session (an API key is refused).
 
         Args:
             name: body `name`
             recovery_key: body `recoveryKey`
+            capabilities: body `capabilities`
 
         Returns: OrgCreateResponse200
         """
         return self._run(
-            _ORG_CREATE, (), {}, {"name": name, "recoveryKey": recovery_key}
+            _ORG_CREATE,
+            (),
+            {},
+            {"name": name, "recoveryKey": recovery_key, "capabilities": capabilities},
         )
 
     def delete(self, *, org, confirm=None):
@@ -4172,11 +4176,12 @@ class Orgs(Group):
         ttl_secs=UNSET,
         uses=UNSET,
         all_apps=UNSET,
+        capabilities=UNSET,
         confirm=None,
     ):
         """Make an invite (`POST /orgs/{org}/invites`, `invite_create`).
 
-        A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives every app added later. `412` first.
+        A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives every app added later; `capabilities` (bits) is what a new member gets as their own setting, no more than the creator holds (`403`), and `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. `412` first.
 
         **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -4187,6 +4192,7 @@ class Orgs(Group):
             ttl_secs: body `ttlSecs`
             uses: body `uses`
             all_apps: body `allApps`
+            capabilities: body `capabilities`
             confirm: a passkey for the step-up, a ready `confirm`, or False
 
         Returns: InviteCreateResponse200
@@ -4201,6 +4207,7 @@ class Orgs(Group):
                 "ttlSecs": ttl_secs,
                 "uses": uses,
                 "allApps": all_apps,
+                "capabilities": capabilities,
             },
             confirm=confirm,
         )

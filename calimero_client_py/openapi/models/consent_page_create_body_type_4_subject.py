@@ -26,6 +26,7 @@ class ConsentPageCreateBodyType4Subject:
         ttl_secs (Union[Unset, int]):
         uses (Union[Unset, int]):
         all_apps (Union[Unset, bool]):
+        capabilities (Union[Unset, int]):
     """
 
     org: str
@@ -34,6 +35,7 @@ class ConsentPageCreateBodyType4Subject:
     ttl_secs: Union[Unset, int] = UNSET
     uses: Union[Unset, int] = UNSET
     all_apps: Union[Unset, bool] = UNSET
+    capabilities: Union[Unset, int] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -51,6 +53,8 @@ class ConsentPageCreateBodyType4Subject:
 
         all_apps = self.all_apps
 
+        capabilities = self.capabilities
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -67,6 +71,8 @@ class ConsentPageCreateBodyType4Subject:
             field_dict["uses"] = uses
         if all_apps is not UNSET:
             field_dict["allApps"] = all_apps
+        if capabilities is not UNSET:
+            field_dict["capabilities"] = capabilities
 
         return field_dict
 
@@ -85,6 +91,8 @@ class ConsentPageCreateBodyType4Subject:
 
         all_apps = d.pop("allApps", UNSET)
 
+        capabilities = d.pop("capabilities", UNSET)
+
         consent_page_create_body_type_4_subject = cls(
             org=org,
             role=role,
@@ -92,6 +100,7 @@ class ConsentPageCreateBodyType4Subject:
             ttl_secs=ttl_secs,
             uses=uses,
             all_apps=all_apps,
+            capabilities=capabilities,
         )
 
         consent_page_create_body_type_4_subject.additional_properties = d

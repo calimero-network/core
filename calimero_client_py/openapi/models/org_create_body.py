@@ -18,15 +18,19 @@ class OrgCreateBody:
     Attributes:
         name (str):
         recovery_key (Union[Unset, str]):
+        capabilities (Union[Unset, int]):
     """
 
     name: str
     recovery_key: Union[Unset, str] = UNSET
+    capabilities: Union[Unset, int] = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         name = self.name
 
         recovery_key = self.recovery_key
+
+        capabilities = self.capabilities
 
         field_dict: dict[str, Any] = {}
 
@@ -37,6 +41,8 @@ class OrgCreateBody:
         )
         if recovery_key is not UNSET:
             field_dict["recoveryKey"] = recovery_key
+        if capabilities is not UNSET:
+            field_dict["capabilities"] = capabilities
 
         return field_dict
 
@@ -47,9 +53,12 @@ class OrgCreateBody:
 
         recovery_key = d.pop("recoveryKey", UNSET)
 
+        capabilities = d.pop("capabilities", UNSET)
+
         org_create_body = cls(
             name=name,
             recovery_key=recovery_key,
+            capabilities=capabilities,
         )
 
         return org_create_body

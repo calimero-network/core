@@ -99,7 +99,9 @@ def sync_detailed(
     """Make an invite
 
      A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives
-    every app added later. `412` first.
+    every app added later; `capabilities` (bits) is what a new member gets as their own setting, no more
+    than the creator holds (`403`), and `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29.
+    `412` first.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
@@ -137,7 +139,9 @@ def sync(
     """Make an invite
 
      A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives
-    every app added later. `412` first.
+    every app added later; `capabilities` (bits) is what a new member gets as their own setting, no more
+    than the creator holds (`403`), and `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29.
+    `412` first.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
@@ -170,7 +174,9 @@ async def asyncio_detailed(
     """Make an invite
 
      A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives
-    every app added later. `412` first.
+    every app added later; `capabilities` (bits) is what a new member gets as their own setting, no more
+    than the creator holds (`403`), and `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29.
+    `412` first.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
@@ -206,7 +212,9 @@ async def asyncio(
     """Make an invite
 
      A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives
-    every app added later. `412` first.
+    every app added later; `capabilities` (bits) is what a new member gets as their own setting, no more
+    than the creator holds (`403`), and `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29.
+    `412` first.
 
     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED`
     first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
