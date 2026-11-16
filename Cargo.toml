@@ -28,17 +28,19 @@ name = "calimero_client_py"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Core's client at 1.0.0-rc.19: receipt-key quotes bind the cluster and node id
+# Core's client at 1.0.0-rc.30: it opens sealed sessions at `/sealed/handshake` and posts
+# to `/sealed` (falling back to `/sealed/v2` only for a node of rc.24 or earlier), and
+# receipt-key quotes bind the cluster and node id
 # (`calimero.tee-attest.receipt-key.v3`), which `verify_app_cluster` checks.
 #
 # The three move TOGETHER or not at all: moving one alone makes cargo resolve two
 # copies of the crates they share, and the error names types rather than
 # revisions, which reads as a code problem rather than a resolution one.
-calimero-client = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.19", features = ["testing"] }
-calimero-identity = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.19", features = ["testing"] }
+calimero-client = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.30", features = ["testing"] }
+calimero-identity = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.30", features = ["testing"] }
 # The sealed channel the generated client's requests go through (`SealedClient.request`):
 # core's `Client` answers JSON only, so each node keeps its own channel for them.
-calimero-sealed = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.19" }
+calimero-sealed = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.30" }
 # Signs the operator's decisions (`use_operator_key`); the major core uses.
 ed25519-dalek = "3"
 # Core's client reports transport errors over eyre (`Error::Transport`).
