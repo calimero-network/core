@@ -1,3 +1,14 @@
+## [11.6.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.5.0...mero-react-v11.6.0) (2026-11-16)
+
+### Features
+
+* **invite:** add InviteDialog and AcceptInviteDialog ([1c63da6](https://github.com/calimero-network/mero-react/commit/1c63da6b282fbf8b37940a4c8250d03285d3b90f))
+* **invite:** map CANNOT_GRANT_UNHELD and UNKNOWN_CAPABILITIES by code ([45149ec](https://github.com/calimero-network/mero-react/commit/45149ec7020d1805570dcd1d64d1b810a2953e4f))
+
+### Bug Fixes
+
+* **invite:** do not repeat the fallback in the unsupported-permissions notice ([629cc4a](https://github.com/calimero-network/mero-react/commit/629cc4a6316a341be176a0e85aa60853e171175a))
+
 ## [11.5.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.4.0...mero-react-v11.5.0) (2026-11-16)
 
 ### Features
