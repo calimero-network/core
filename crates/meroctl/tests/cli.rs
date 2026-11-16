@@ -411,6 +411,22 @@ fn scenario(root: &Path, url: &str) {
         "--view",
     ]);
     assert_eq!(view["result"], "1");
+    // An app's refusal names the app's own error, not only `422 APP_ERROR`.
+    let refused = alice
+        .try_run(&[
+            "call",
+            "--instance",
+            "notes",
+            "getResult",
+            "--args",
+            r#"{"key":"missing"}"#,
+            "--view",
+        ])
+        .unwrap_err();
+    assert!(
+        refused.contains("422 APP_ERROR") && refused.contains("NotFound"),
+        "{refused}"
+    );
     assert!(alice
         .run(&["instance", "list"])
         .to_string()

@@ -29,8 +29,9 @@ use types::AppAttestationResponseReplicasItem;
 /// An error from a node, or from getting to one.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// The node answered with an error.
-    #[error("{status} {code}: {message}")]
+    /// The node answered with an error. An app's own refusal (`APP_ERROR`), a
+    /// trap and a failed `init` also show what `details` says went wrong.
+    #[error("{status} {code}: {message}{}", why(code, details))]
     Api {
         status: u16,
         code: String,
@@ -45,6 +46,33 @@ pub enum Error {
     /// The node could not be reached, attested or understood.
     #[error(transparent)]
     Transport(#[from] eyre::Report),
+}
+
+/// What an error's `details` adds for a person reading it: the app's own error
+/// code and fields (`422 APP_ERROR`), a trap's kind (`422 TRAP`), the error a
+/// failed `init` ended with (`422 INIT_FAILED`). Nothing for other codes, whose
+/// details are for the program (a confirm challenge, say).
+fn why(code: &str, details: &Value) -> String {
+    fn shown(v: &Value) -> Option<String> {
+        match v {
+            Value::Null => None,
+            Value::String(s) if s.is_empty() => None,
+            Value::String(s) => Some(s.clone()),
+            Value::Object(o) if o.is_empty() => None,
+            v => Some(v.to_string()),
+        }
+    }
+    let parts = match code {
+        "APP_ERROR" => [shown(&details["code"]), shown(&details["fields"])],
+        "TRAP" => [shown(&details["kind"]), shown(&details["detail"])],
+        "INIT_FAILED" => [shown(&details["error"]), None],
+        _ => return String::new(),
+    };
+    match parts {
+        [Some(a), Some(b)] => format!(" ({a}: {b})"),
+        [Some(a), None] | [None, Some(a)] => format!(" ({a})"),
+        [None, None] => String::new(),
+    }
 }
 
 /// How often a retry-safe route (`client.apps().call(..)`, D70) is sent again
@@ -638,6 +666,65 @@ mod retry_tests {
             message: String::new(),
             details: Value::Null,
         }
+    }
+
+    fn shown(code: &str, details: Value) -> String {
+        Error::Api {
+            status: 422,
+            code: code.into(),
+            message: "m".into(),
+            details,
+        }
+        .to_string()
+    }
+
+    // `meroctl call` printed `422 APP_ERROR: the app refused the call` and
+    // nothing of which error the app returned.
+    #[test]
+    fn an_app_error_says_which_error_the_app_returned() {
+        assert_eq!(
+            shown(
+                "APP_ERROR",
+                serde_json::json!({ "index": 4, "code": "NotFound", "fields": { "key": "a" } })
+            ),
+            r#"422 APP_ERROR: m (NotFound: {"key":"a"})"#
+        );
+        assert_eq!(
+            shown(
+                "APP_ERROR",
+                serde_json::json!({ "code": "BadArgs", "fields": "expected a string" })
+            ),
+            "422 APP_ERROR: m (BadArgs: expected a string)"
+        );
+        assert_eq!(
+            shown(
+                "APP_ERROR",
+                serde_json::json!({ "code": "NotAView", "fields": null })
+            ),
+            "422 APP_ERROR: m (NotAView)"
+        );
+        assert_eq!(
+            shown(
+                "TRAP",
+                serde_json::json!({ "kind": "OutOfFuel", "detail": "" })
+            ),
+            "422 TRAP: m (OutOfFuel)"
+        );
+        assert_eq!(
+            shown(
+                "INIT_FAILED",
+                serde_json::json!({ "appId": "x", "error": "owner is required" })
+            ),
+            "422 INIT_FAILED: m (owner is required)"
+        );
+        // Details meant for the program stay out of the text.
+        assert_eq!(
+            shown(
+                "CONFIRM_REQUIRED",
+                serde_json::json!({ "challengeId": "c" })
+            ),
+            "422 CONFIRM_REQUIRED: m"
+        );
     }
 
     #[test]
