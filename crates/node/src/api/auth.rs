@@ -315,10 +315,17 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
         at: 0,
     };
     let now = now_secs();
+    // An earlier release would apply the grant unclamped, so the flag waits
+    // for every node to read it.
+    let clamp_grants = node
+        .require_features(&[crate::system::cluster_version::Feature::InviteCapabilities])
+        .await
+        .is_ok();
     let invite = invite.map(|token| crate::system::SignUpRedemption {
         invite_key: crate::proof::invite_key(token),
         now,
         signature: crate::proof::sign_invite_redeem(token, &account_id, now),
+        clamp_grants,
     });
     let _ok = node
         .sys_write(&SystemCmd::CreateAccount {

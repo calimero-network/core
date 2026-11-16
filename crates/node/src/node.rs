@@ -862,6 +862,26 @@ pub const REJECTED: &str = "REJECTED";
 
 /// The code of [`crate::system::PERSONAL_ORG_EXISTS`].
 pub const PERSONAL_ORG_EXISTS: &str = "PERSONAL_ORG_EXISTS";
+/// `403`: an invite grants no capability its creator does not hold.
+pub const CANNOT_GRANT_UNHELD: &str = "CANNOT_GRANT_UNHELD";
+/// `400`: capability bits that no capability has.
+pub const UNKNOWN_CAPABILITIES: &str = "UNKNOWN_CAPABILITIES";
+
+/// The refusal of an invite granting capabilities its creator lacks.
+#[must_use]
+pub fn cannot_grant_unheld() -> ApiError {
+    ApiError::new(403, CANNOT_GRANT_UNHELD, crate::system::CANNOT_GRANT_UNHELD)
+}
+
+/// The refusal of capability bits no capability has.
+#[must_use]
+pub fn unknown_capabilities() -> ApiError {
+    ApiError::new(
+        400,
+        UNKNOWN_CAPABILITIES,
+        crate::system::UNKNOWN_CAPABILITIES,
+    )
+}
 
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
@@ -874,6 +894,10 @@ pub fn rejected(reason: &str) -> ApiError {
         not_a_deployer()
     } else if reason == crate::system::PERSONAL_ORG_EXISTS {
         ApiError::new(409, PERSONAL_ORG_EXISTS, reason)
+    } else if reason == crate::system::CANNOT_GRANT_UNHELD {
+        cannot_grant_unheld()
+    } else if reason == crate::system::UNKNOWN_CAPABILITIES {
+        unknown_capabilities()
     } else if reason == crate::system::MODULE_IN_USE {
         ApiError::new(409, "MODULE_IN_USE", reason)
     } else if let Some(code) = recovery_code(reason) {
@@ -3818,5 +3842,20 @@ mod unbound_receipt_key_tests {
         assert!(!takes_unbound_receipt_key(Some(RECEIPT_KEY_BOUND_SINCE)));
         assert!(!takes_unbound_receipt_key(Some("1.0.0")));
         assert!(!takes_unbound_receipt_key(Some("garbage")));
+    }
+}
+
+#[cfg(test)]
+mod capability_refusal_tests {
+    use super::rejected;
+
+    /// What the log refuses in an invite's or an organization's capabilities
+    /// reaches the client under its own code, not as a bare message.
+    #[test]
+    fn the_logs_capability_refusals_have_their_own_codes() {
+        let e = rejected(crate::system::CANNOT_GRANT_UNHELD);
+        assert_eq!((e.status, e.code.as_str()), (403, "CANNOT_GRANT_UNHELD"));
+        let e = rejected(crate::system::UNKNOWN_CAPABILITIES);
+        assert_eq!((e.status, e.code.as_str()), (400, "UNKNOWN_CAPABILITIES"));
     }
 }

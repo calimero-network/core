@@ -164,6 +164,7 @@ async fn personal_org(node: &Node, owner: &str) -> Result<String, ApiError> {
             name_fits: true,
             personal: true,
             app_team: None,
+            capabilities: None,
         })
         .await;
     match made {

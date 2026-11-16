@@ -95,10 +95,16 @@ pub enum Feature {
     /// `StartUpgradeRun` with `by_release`: an earlier release ignores the
     /// field and judges a publisher's run by each bundle's first package.
     PublishedRunByRelease,
+    /// `CreateOrg` with `capabilities`: an earlier release ignores the field
+    /// and leaves the organization's member default as a new one's.
+    OrgCapabilities,
+    /// `CreateInvite` with `capabilities`: an earlier release drops the field,
+    /// so a member redeeming it would get the organization's default.
+    InviteCapabilities,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 23] = [
+pub const FEATURES: [Feature; 25] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -122,6 +128,8 @@ pub const FEATURES: [Feature; 23] = [
     Feature::OrgAppTeam,
     Feature::MoveOrgQuotas,
     Feature::PublishedRunByRelease,
+    Feature::OrgCapabilities,
+    Feature::InviteCapabilities,
 ];
 
 impl Feature {
@@ -152,6 +160,8 @@ impl Feature {
             Self::OrgAppTeam => "orgAppTeam",
             Self::MoveOrgQuotas => "moveOrgQuotas",
             Self::PublishedRunByRelease => "publishedRunByRelease",
+            Self::OrgCapabilities => "orgCapabilities",
+            Self::InviteCapabilities => "inviteCapabilities",
         }
     }
 
@@ -181,6 +191,7 @@ impl Feature {
             Self::BackupKeys => "1.0.0-rc.20",
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
+            Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
         }
     }
 }
@@ -406,7 +417,21 @@ impl SystemCmd {
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
             }
-            Self::CreateInvite { invite, .. } if invite.all_apps => vec![Feature::AllApps],
+            Self::RedeemInvite {
+                clamp_grants: true, ..
+            }
+            | Self::CreateAccount {
+                invite:
+                    Some(crate::system::SignUpRedemption {
+                        clamp_grants: true, ..
+                    }),
+                ..
+            } => vec![Feature::InviteCapabilities],
+            Self::CreateAccount { .. } => Vec::new(),
+            Self::RedeemInvite { .. } => Vec::new(),
+            Self::CreateInvite { invite, .. } => {
+                invite_features(invite.all_apps, invite.capabilities.is_some())
+            }
             Self::SetPriceTable { .. } => vec![Feature::PriceTable],
             Self::InstallPackage { release, .. } => {
                 let mut f = Vec::new();
@@ -421,8 +446,19 @@ impl SystemCmd {
             Self::CreateApp { app } if !app.components.is_app() => vec![Feature::ComputeOnly],
             Self::AcquireRun { pool: Some(_), .. } => vec![Feature::NamedPool],
             Self::CreateOrg {
-                app_team: Some(_), ..
-            } => vec![Feature::OrgAppTeam],
+                app_team,
+                capabilities,
+                ..
+            } => {
+                let mut f = Vec::new();
+                if app_team.is_some() {
+                    f.push(Feature::OrgAppTeam);
+                }
+                if capabilities.is_some() {
+                    f.push(Feature::OrgCapabilities);
+                }
+                f
+            }
             Self::RegisterNode { .. }
             | Self::RemoveNode { .. }
             | Self::PutBundle { .. }
@@ -436,7 +472,6 @@ impl SystemCmd {
             | Self::ReleaseRun { .. }
             | Self::SetReplicas { .. }
             | Self::SetAccess { .. }
-            | Self::CreateAccount { .. }
             | Self::AddPasskey { .. }
             | Self::RemovePasskey { .. }
             | Self::RevokeAllSessions { .. }
@@ -453,7 +488,6 @@ impl SystemCmd {
             | Self::UseRefresh { .. }
             | Self::RevokeSession { .. }
             | Self::SetQuotas { .. }
-            | Self::CreateOrg { .. }
             | Self::Genesis { .. }
             | Self::SetOperatorRelease { .. }
             | Self::SetReleaseApproval { .. }
@@ -493,8 +527,6 @@ impl SystemCmd {
             | Self::SetCapabilities { .. }
             | Self::SetDefaultCapabilities { .. }
             | Self::RemoveTeamMember { .. }
-            | Self::CreateInvite { .. }
-            | Self::RedeemInvite { .. }
             | Self::RevokeInvite { .. }
             | Self::SetRecoveryKey { .. }
             | Self::StartRecovery { .. }
@@ -512,6 +544,20 @@ impl SystemCmd {
 #[must_use]
 pub fn may_join(logged: Option<&str>, advertised: Option<&str>) -> bool {
     logged.is_none_or(|l| advertised.is_some_and(|a| compare_versions(a, l) != Ordering::Less))
+}
+
+/// The features an invite uses: `allApps` and `capabilities` are dropped by
+/// an earlier release, so the route and the consent page ask for them first.
+#[must_use]
+pub fn invite_features(all_apps: bool, capabilities: bool) -> Vec<Feature> {
+    let mut f = Vec::new();
+    if all_apps {
+        f.push(Feature::AllApps);
+    }
+    if capabilities {
+        f.push(Feature::InviteCapabilities);
+    }
+    f
 }
 
 /// The features a `ScopeApps` with `apps` uses: one app team's `join` or
@@ -551,10 +597,34 @@ mod tests {
     const RC20: &str = "1.0.0-rc.20";
     const RC22: &str = "1.0.0-rc.22";
     const RC24: &str = "1.0.0-rc.24";
+    const RC29: &str = "1.0.0-rc.29";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
         match feature {
+            Feature::InviteCapabilities => SystemCmd::CreateInvite {
+                invite_key: "k".into(),
+                invite: serde_json::from_value(json!({
+                    "org": "org", "role": "member", "expiresAt": 1, "usesLeft": 1,
+                    "capabilities": 2,
+                }))
+                .unwrap(),
+                actor: "alice".into(),
+                consent: Value::Null,
+                teams_seen: true,
+            },
+            Feature::OrgCapabilities => SystemCmd::CreateOrg {
+                org_id: "org-d".into(),
+                name: "Chat".into(),
+                actor: "alice".into(),
+                release: None,
+                recovery_key: None,
+                at: 0,
+                name_fits: true,
+                personal: false,
+                app_team: None,
+                capabilities: Some(crate::types::caps::INVITE_MEMBERS),
+            },
             Feature::OrgAppTeam => SystemCmd::CreateOrg {
                 org_id: "org-c".into(),
                 name: "Chat".into(),
@@ -565,6 +635,7 @@ mod tests {
                 name_fits: true,
                 personal: false,
                 app_team: Some("chat".into()),
+                capabilities: None,
             },
             Feature::BackupKeys => SystemCmd::SetBackupKey {
                 holder: crate::system::BackupHolder::Operator,
@@ -913,7 +984,7 @@ mod tests {
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
             .iter()
-            .partition(|f| ![RC19, RC20, RC22, RC24].contains(&f.since()));
+            .partition(|f| ![RC19, RC20, RC22, RC24, RC29].contains(&f.since()));
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -977,13 +1048,15 @@ mod tests {
             nodes: (1..=3).map(|id| (id, RC22.to_owned())).collect(),
         };
         propose(&mut nodes, &raise).unwrap();
-        // rc.24's wait for every node on rc.24.
-        let (rc22, rc24): (Vec<Feature>, Vec<Feature>) =
+        // rc.24's and rc.29's wait for every node on them.
+        let (rc22, later): (Vec<Feature>, Vec<Feature>) =
             last.into_iter().partition(|f| f.since() == RC22);
+        let (rc24, rc29): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC24);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        for &feature in &rc24 {
+        for &feature in rc24.iter().chain(&rc29) {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
                 (refused.feature, refused.active.as_deref()),
@@ -999,6 +1072,24 @@ mod tests {
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc24 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        for &feature in &rc29 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC24))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC29;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC29.into(),
+            nodes: (1..=3).map(|id| (id, RC29.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc29 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         assert!(same_state(&nodes));
@@ -1192,6 +1283,43 @@ mod tests {
         assert!(entry(run.clone()).features().is_empty());
         run["pool"] = json!("big");
         assert_eq!(entry(run).features(), [Feature::NamedPool]);
+    }
+
+    /// An invite is an older shape unless it carries capabilities, which an
+    /// earlier release would drop.
+    #[test]
+    fn only_an_invite_carrying_capabilities_needs_invite_capabilities() {
+        let mut plain = uses(Feature::InviteCapabilities);
+        if let SystemCmd::CreateInvite { invite, .. } = &mut plain {
+            invite.capabilities = None;
+        }
+        assert!(plain.features().is_empty());
+        assert_eq!(
+            uses(Feature::InviteCapabilities).features(),
+            [Feature::InviteCapabilities]
+        );
+    }
+
+    /// An invite asks only for the features its fields use, and an older
+    /// cluster refuses each.
+    #[test]
+    fn an_invites_fields_name_their_features() {
+        use super::invite_features;
+
+        assert!(invite_features(false, false).is_empty());
+        assert_eq!(invite_features(true, false), [Feature::AllApps]);
+        assert_eq!(invite_features(false, true), [Feature::InviteCapabilities]);
+        for (all_apps, capabilities, feature, below) in [
+            (true, false, Feature::AllApps, RC15),
+            (false, true, Feature::InviteCapabilities, RC24),
+        ] {
+            assert_eq!(
+                compare_versions(below, feature.since()),
+                std::cmp::Ordering::Less
+            );
+            let refused = check(Some(below), &invite_features(all_apps, capabilities)).unwrap_err();
+            assert_eq!(refused.feature, feature);
+        }
     }
 
     #[test]

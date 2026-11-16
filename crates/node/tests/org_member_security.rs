@@ -42,7 +42,12 @@ async fn id(c: &Client) -> String {
 }
 
 async fn new_org(owner: &Client, name: &str) -> String {
-    owner.orgs().create(name, None).await.map(wire).unwrap()["orgId"]
+    owner
+        .orgs()
+        .create(name, None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned()

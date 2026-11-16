@@ -281,6 +281,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             name_fits,
             personal,
             app_team,
+            capabilities,
         } => {
             if !s.accounts.contains_key(&actor) {
                 return Err("unknown account");
@@ -293,6 +294,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             if name_fits {
                 org_name_fits(&name)?;
+            }
+            if capabilities.is_some_and(|c| !crate::types::Org::defined_caps(c)) {
+                return Err(UNKNOWN_CAPABILITIES);
             }
             let recovery = recovery_key.map(|k| recovery_key_of(k, at)).transpose()?;
             if s.orgs.contains_key(&org_id) {
@@ -314,8 +318,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             let mut org = new_org(org_id.clone(), name, actor.clone(), release, personal);
             org.recovery = recovery;
+            // Applied once the app team is made, so its rows are made under a
+            // new organization's default; a refused team removes the org.
             let _prev = s.orgs.insert(org_id.clone(), org);
+            let set_default = |s: &mut super::SystemState| {
+                if let (Some(c), Some(o)) = (capabilities, s.orgs.get_mut(&org_id)) {
+                    o.default_capabilities = c;
+                }
+            };
             let Some(package) = app_team else {
+                set_default(s);
                 return Ok(json!({ "orgId": org_id }));
             };
             // The package's app team, as `ScopeApps` makes one for a package
@@ -339,7 +351,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 ScopeAsLogged::CURRENT,
             );
             match scoped {
-                Ok(v) => Ok(json!({ "orgId": org_id, "teamId": v["teams"][0]["teamId"] })),
+                Ok(v) => {
+                    set_default(s);
+                    Ok(json!({ "orgId": org_id, "teamId": v["teams"][0]["teamId"] }))
+                }
                 Err(why) => {
                     let _gone = s.orgs.remove(&org_id);
                     Err(why)
@@ -881,6 +896,15 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             if invite.all_apps && role < OrgRole::Admin {
                 return Err(ONLY_ADMINS_ALL_APPS);
             }
+            if invite
+                .capabilities
+                .is_some_and(|c| !crate::types::Org::defined_caps(c))
+            {
+                return Err(UNKNOWN_CAPABILITIES);
+            }
+            if invite.capabilities.is_some_and(|c| !o.may_grant(&actor, c)) {
+                return Err(CANNOT_GRANT_UNHELD);
+            }
             if s.sign_up_invites.contains_key(&invite_key) {
                 return Err("invite exists");
             }
@@ -897,12 +921,19 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             account,
             now,
             free_when_unchanged,
+            clamp_grants,
             ..
         } => {
             if !s.accounts.contains_key(&account) {
                 return Err("unknown account");
             }
-            let org = s.redeem_org_invite(&invite_key, &account, now, free_when_unchanged)?;
+            let org = s.redeem_org_invite(
+                &invite_key,
+                &account,
+                now,
+                free_when_unchanged,
+                clamp_grants,
+            )?;
             Ok(json!({ "org": org }))
         }
         SystemCmd::RevokeInvite {

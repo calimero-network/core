@@ -844,7 +844,12 @@ async fn releases_and_outbound_prefixes_are_approved_on_the_page_within_bounds()
         json!({ "version": "2.0.0", "policyDigest": digest, "__method": "__approve_release" })
     );
     let mine = alice.personal_org().await.unwrap();
-    let me = alice.orgs().get(&mine).await.map(wire).unwrap();
+    let me = get_until(&alice, &format!("orgs/{mine}"), |o| {
+        o["approvedReleases"]
+            .as_array()
+            .is_some_and(|a| a.contains(&json!("2.0.0")))
+    })
+    .await;
     assert!(
         me["approvedReleases"]
             .as_array()
@@ -975,6 +980,14 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
             .unwrap()
             .clone()
     };
+    let (alice_ref, mine_ref) = (&alice, &mine);
+    let approved_until = |want: Vec<Value>| async move {
+        let o = get_until(alice_ref, &format!("orgs/{mine_ref}"), |o| {
+            o["approvedReleases"].as_array() == Some(&want)
+        })
+        .await;
+        o["approvedReleases"].as_array().unwrap().clone()
+    };
     let first = approved().await;
     assert_eq!(first.len(), 1, "the sign-up node's release: {first:?}");
     let first = first[0].as_str().unwrap().to_owned();
@@ -990,7 +1003,16 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
     let page = Page::new(made["url"].as_str().unwrap());
     let ((code, done), _) = page.approve(&c, &mut page_key).await;
     assert_eq!(code, 200, "{done}");
-    assert!(approved().await.contains(&json!("2.0.0")));
+    let o = get_until(&alice, &format!("orgs/{mine}"), |o| {
+        o["approvedReleases"]
+            .as_array()
+            .is_some_and(|a| a.contains(&json!("2.0.0")))
+    })
+    .await;
+    assert!(o["approvedReleases"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("2.0.0")));
 
     // Withdrawn on the page: no measurements, the version alone is bound.
     let made = alice
@@ -1029,7 +1051,7 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
         done["redirect"],
         json!(format!("{back}?request_id={id}&result=approved"))
     );
-    assert_eq!(approved().await, vec![json!(first)]);
+    assert_eq!(approved_until(vec![json!(first)]).await, vec![json!(first)]);
 
     // A release that is not approved: the page says withdrawing changes nothing.
     let made = alice
@@ -1067,7 +1089,7 @@ async fn a_release_approval_is_withdrawn_on_the_page() {
         refused["message"],
         "the last approved release cannot be withdrawn"
     );
-    assert_eq!(approved().await, vec![json!(first)]);
+    assert_eq!(approved_until(vec![json!(first)]).await, vec![json!(first)]);
     let result = alice.consent().page_result(&id).await.map(wire).unwrap();
     assert_eq!(result["status"], "pending");
 
@@ -1093,7 +1115,12 @@ async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_re
     let c = Cluster::start(3).await;
     let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
     let (bob, _) = signed_up(&c, 0, "bob").await;
-    let org = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
+    let org = alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -1214,7 +1241,12 @@ async fn an_organizations_release_is_approved_on_the_page_by_whoever_approves_re
     let ((code, done), args) = page.approve(&c, &mut page_key).await;
     assert_eq!(code, 200, "{done}");
     assert_eq!(args["version"], "3.0.0");
-    let view = alice.orgs().get(&org).await.map(wire).unwrap();
+    let view = get_until(&alice, &format!("orgs/{org}"), |o| {
+        o["approvedReleases"]
+            .as_array()
+            .is_some_and(|a| a.contains(&json!("3.0.0")))
+    })
+    .await;
     assert!(
         view["approvedReleases"]
             .as_array()
@@ -1306,6 +1338,29 @@ async fn post(
     c.transport()
         .json(Request::new(Method::POST, path).json(body))
         .await
+}
+
+/// `GET path` until `done` holds of the answer: an approval is written
+/// through one node, and the node asked applies it a moment later.
+async fn get_until(
+    c: &calimero_client::Client,
+    path: &str,
+    done: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let last = get(c, path).await;
+        if let Ok(v) = &last {
+            if done(v) {
+                return v.clone();
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{path} never got there; last answer {last:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// `GET path` over the client's sealed transport, as JSON.
@@ -1408,7 +1463,7 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
         .as_str()
         .unwrap()
         .to_owned();
-    let o = get(&alice, &format!("orgs/{org}")).await.unwrap();
+    let o = get_until(&alice, &format!("orgs/{org}"), |o| o["name"] == "calimero").await;
     assert_eq!(o["name"], "calimero");
     assert_eq!(o["members"][&alice_id], "owner", "{o}");
     // Decided once.
@@ -1534,7 +1589,10 @@ async fn an_apps_frontend_creates_an_organization_invites_and_joins_on_the_page(
         .await
         .unwrap();
     assert_eq!(result["outcome"]["org"], json!(org), "{result}");
-    let o = get(&alice, &format!("orgs/{org}")).await.unwrap();
+    let o = get_until(&alice, &format!("orgs/{org}"), |o| {
+        o["members"][&bob_id] == "member"
+    })
+    .await;
     assert_eq!(o["members"][&bob_id], "member", "{o}");
 }
 
@@ -1772,9 +1830,14 @@ impl Server {
         }
     }
 
-    /// What `/orgs/{org}` answers Alice now.
-    async fn org(&self) -> Value {
-        self.alice.get(&format!("orgs/{}", self.org)).await.unwrap()
+    /// What `/orgs/{org}` answers Alice once `done` holds of it.
+    async fn org_until(&self, done: impl Fn(&Value) -> bool) -> Value {
+        get_until(&self.alice, &format!("orgs/{}", self.org), done).await
+    }
+
+    /// What `/orgs/{org}/invites` answers Alice once `done` holds of it.
+    async fn invites_until(&self, done: impl Fn(&Value) -> bool) -> Value {
+        get_until(&self.alice, &format!("orgs/{}/invites", self.org), done).await
     }
 }
 
@@ -1835,7 +1898,7 @@ async fn an_apps_frontend_moderates_its_server_on_the_page() {
         json!({ "account": bob, "role": "admin", "__method": "__set_org_role" })
     );
     assert!(result.get("outcome").is_none(), "{result}");
-    assert_eq!(s.org().await["members"][&bob], "admin");
+    let _o = s.org_until(|o| o["members"][&bob] == "admin").await;
 
     // setMemberTeams: Carol in #general.
     let teams = json!({ "org": org, "account": carol, "teams": [{ "team": team }] });
@@ -1874,9 +1937,11 @@ async fn an_apps_frontend_moderates_its_server_on_the_page() {
     assert_eq!(model["title"], "Put carol in general", "{model}");
     assert_eq!(args["__method"], "__set_team_members", "{args}");
     assert_eq!(args["teams"], json!([{ "team": team }]));
+    let o = s
+        .org_until(|o| o["teams"][&team]["members"].get(&carol).is_some())
+        .await;
     assert_eq!(
-        s.org().await["teams"][&team]["members"][&carol],
-        false,
+        o["teams"][&team]["members"][&carol], false,
         "a row, not a lead"
     );
 
@@ -1912,15 +1977,12 @@ async fn an_apps_frontend_moderates_its_server_on_the_page() {
     .await;
     assert_eq!(model["title"], "Take carol out of general", "{model}");
     assert_eq!(args["__method"], "__remove_team_members", "{args}");
-    assert!(
-        s.org().await["teams"][&team]["members"]
-            .get(&carol)
-            .is_none(),
-        "out of the team"
-    );
+    let _o = s
+        .org_until(|o| o["teams"][&team]["members"].get(&carol).is_none())
+        .await;
 
     // revokeInvite: an invite made earlier stops working.
-    let invites = s.alice.get(&format!("orgs/{org}/invites")).await.unwrap();
+    let invites = s.invites_until(|i| i["invites"] == json!([])).await;
     assert_eq!(invites["invites"], json!([]), "both were used: {invites}");
     let made = ask(
         alice_app,
@@ -1933,7 +1995,7 @@ async fn an_apps_frontend_moderates_its_server_on_the_page() {
     let page = Page::new(made["url"].as_str().unwrap());
     let ((code, done), _) = page.approve(&s.c, &mut s.alice_page).await;
     assert_eq!(code, 200, "{done}");
-    let invites = s.alice.get(&format!("orgs/{org}/invites")).await.unwrap();
+    let invites = s.invites_until(|i| i["invites"][0].is_object()).await;
     let key = invites["invites"][0]["inviteKey"]
         .as_str()
         .unwrap()
@@ -1979,7 +2041,7 @@ async fn an_apps_frontend_moderates_its_server_on_the_page() {
         args,
         json!({ "inviteKey": key, "__method": "__revoke_invite" })
     );
-    let invites = s.alice.get(&format!("orgs/{org}/invites")).await.unwrap();
+    let invites = s.invites_until(|i| i["invites"] == json!([])).await;
     assert_eq!(invites["invites"], json!([]), "{invites}");
 
     // removeMember: Carol is kicked.
@@ -2017,7 +2079,7 @@ async fn an_apps_frontend_moderates_its_server_on_the_page() {
         args,
         json!({ "account": carol, "__method": "__remove_member" })
     );
-    assert!(s.org().await["members"].get(&carol).is_none());
+    let _o = s.org_until(|o| o["members"].get(&carol).is_none()).await;
 
     // leaveOrg: Bob leaves; the owner cannot.
     let e = s
@@ -2052,7 +2114,7 @@ async fn an_apps_frontend_moderates_its_server_on_the_page() {
         args,
         json!({ "account": bob, "__method": "__remove_member" })
     );
-    assert!(s.org().await["members"].get(&bob).is_none());
+    let _o = s.org_until(|o| o["members"].get(&bob).is_none()).await;
 }
 
 /// A chat app's server settings, from its own frontend: rename, what members
@@ -2094,7 +2156,7 @@ async fn an_apps_frontend_changes_and_deletes_its_server_on_the_page() {
         json!({ "orgId": org, "name": "hall" }),
         "{result}"
     );
-    assert_eq!(s.org().await["name"], "hall");
+    let _o = s.org_until(|o| o["name"] == "hall").await;
 
     // setCapabilities, a member's: Bob may create apps and invite people.
     let e = alice_app
@@ -2127,7 +2189,7 @@ async fn an_apps_frontend_changes_and_deletes_its_server_on_the_page() {
         args,
         json!({ "team": null, "account": bob, "capabilities": 3, "__method": "__set_capabilities" })
     );
-    assert_eq!(s.org().await["capabilities"][&bob], 3);
+    let _o = s.org_until(|o| o["capabilities"][&bob] == 3).await;
     // ... and a team's default.
     let default = json!({ "org": org, "team": team, "capabilities": 1 });
     assert_eq!(
@@ -2149,7 +2211,9 @@ async fn an_apps_frontend_changes_and_deletes_its_server_on_the_page() {
         "{model}"
     );
     assert_eq!(args["__method"], "__set_default_capabilities", "{args}");
-    assert_eq!(s.org().await["teams"][&team]["defaultCapabilities"], 1);
+    let _o = s
+        .org_until(|o| o["teams"][&team]["defaultCapabilities"] == 1)
+        .await;
 
     // setAllApps.
     let e = alice_app
@@ -2184,7 +2248,7 @@ async fn an_apps_frontend_changes_and_deletes_its_server_on_the_page() {
         "{model}"
     );
     assert_eq!(args["__method"], "__set_all_apps", "{args}");
-    assert_eq!(s.org().await["allApps"], json!([bob]));
+    let _o = s.org_until(|o| o["allApps"] == json!([bob])).await;
 
     // deleteOrg: a stale page is refused, then the page counts what goes.
     let e = alice_app.delete(&format!("orgs/{org}")).await.unwrap_err();
@@ -2235,7 +2299,17 @@ async fn an_apps_frontend_changes_and_deletes_its_server_on_the_page() {
     );
     assert_eq!(args, json!({ "org": org, "__method": "__delete_org" }));
     assert_eq!(result["outcome"], json!({ "apps": [] }), "{result}");
-    let e = s.alice.get(&format!("orgs/{org}")).await.unwrap_err();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    let e = loop {
+        match s.alice.get(&format!("orgs/{org}")).await {
+            Err(e) => break e,
+            Ok(_) => assert!(
+                tokio::time::Instant::now() < deadline,
+                "the org is still there"
+            ),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
     assert_eq!(status(&e), 404, "{e}");
 }
 
@@ -2340,7 +2414,12 @@ async fn a_member_removed_from_the_org_loses_the_capability_card() {
     let path = format!("packages/{PACKAGE}/1.0.0/capabilities");
     assert_eq!(status(&get(&amy, &path).await.unwrap_err()), 404);
 
-    let org = alice.orgs().create("acme", None).await.unwrap().org_id;
+    let org = alice
+        .orgs()
+        .create("acme", None, None)
+        .await
+        .unwrap()
+        .org_id;
     let invite = alice
         .orgs()
         .invite_create(
@@ -2365,4 +2444,307 @@ async fn a_member_removed_from_the_org_loses_the_capability_card() {
     let e = get(&amy, &path).await.unwrap_err();
     assert_eq!(status(&e), 404, "{e}");
     assert!(e.to_string().contains("no such package version"), "{e}");
+}
+
+/// An app's frontend sets its new organization's member defaults in the same
+/// approval that creates it (`createOrg { capabilities }`): the page says in
+/// words what members can do, the step-up commits to the bits, and the
+/// organization exists with them. Absent, nothing changes; the plain
+/// `POST /orgs` takes the same field.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_frontend_creates_an_organization_with_member_capabilities_in_one_approval() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(v1).await.unwrap();
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let back = format!("{app_origin}/1.0.0/");
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+
+    let create = |subject: Value| ask(&in_app, &back, "createOrg", subject);
+    let wanted = 0b111; // create apps, invite people, join open teams
+    assert_eq!(
+        status_of(create(json!({ "name": "x", "capabilities": -1 })).await),
+        400,
+        "bits are an unsigned number"
+    );
+    assert_eq!(
+        status_of(create(json!({ "name": "x", "capabilities": 1 << 20 })).await),
+        400,
+        "a bit no capability has"
+    );
+    let e = post(
+        &alice,
+        "orgs",
+        json!({ "name": "x", "capabilities": 1 << 20 }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status(&e), 400, "{e}");
+    assert_eq!(e.code(), Some("UNKNOWN_CAPABILITIES"), "{e}");
+    let made = create(json!({ "name": "calimero", "capabilities": wanted }))
+        .await
+        .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["capabilities"]["bits"], wanted, "{model}");
+    let points = model["points"].to_string();
+    assert!(
+        points.contains("Members can create apps, invite people and join open teams."),
+        "{points}"
+    );
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(
+        args,
+        json!({
+            "name": "calimero", "appTeam": PACKAGE, "capabilities": wanted,
+            "__method": "__create_org"
+        })
+    );
+    let id = made["requestId"].as_str().unwrap();
+    let result = get(&in_app, &format!("consent/{id}/result")).await.unwrap();
+    let org = result["outcome"]["orgId"].as_str().unwrap().to_owned();
+    let o = get_until(&alice, &format!("orgs/{org}"), |o| {
+        o["defaultCapabilities"] == wanted
+    })
+    .await;
+    assert_eq!(o["defaultCapabilities"], wanted, "{o}");
+
+    // Absent: the page names no capabilities and the default is a new org's.
+    let made = create(json!({ "name": "plain" })).await.unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    assert!(page.model().await.get("capabilities").is_none());
+    let ((_, done), args) = page.approve(&c, &mut alice_page).await;
+    assert!(args.get("capabilities").is_none(), "{args} {done}");
+    let id = made["requestId"].as_str().unwrap();
+    let result = get(&in_app, &format!("consent/{id}/result")).await.unwrap();
+    let org = result["outcome"]["orgId"].as_str().unwrap();
+    let o = get_until(&alice, &format!("orgs/{org}"), |o| o["name"] == "plain").await;
+    assert_eq!(o["defaultCapabilities"], 4, "{o}");
+
+    // The plain route, unbound session.
+    let made = post(
+        &alice,
+        "orgs",
+        json!({ "name": "direct", "capabilities": 3 }),
+    )
+    .await
+    .unwrap();
+    let direct = format!("orgs/{}", made["orgId"].as_str().unwrap());
+    let o = get_until(&alice, &direct, |o| o["name"] == "direct").await;
+    assert_eq!(o["defaultCapabilities"], 3, "{o}");
+}
+
+/// A refused request's status, from [`ask`]'s answer.
+fn status_of(r: Result<Value, u16>) -> u16 {
+    r.expect_err("the request is refused")
+}
+
+/// An invite made on the page carries capabilities: the page says in words
+/// what whoever joins can do (the joiner's page too), the step-up commits to
+/// the bits, and the member gets exactly them. Nobody below admin hands out
+/// a capability they lack, on the page or on the plain route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let (bob, bob_key) = signed_up(&c, 2, "bob").await;
+    let (carol, carol_key) = signed_up(&c, 2, "carol").await;
+    let carol_id = account_of(&carol).await;
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(v1).await.unwrap();
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let back = format!("{app_origin}/1.0.0/");
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let bob_in_app = c.client(1);
+    let mut bob_in_app_passkey = SoftAuthenticator::with_key(&bob_key, "localhost", &app_origin);
+    let _s = bob_in_app.sign_in(&mut bob_in_app_passkey).await.unwrap();
+
+    let org = post(&alice, "orgs", json!({ "name": "acme" }))
+        .await
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let granted = 0b11; // create apps, invite people
+
+    let made = ask(
+        &in_app,
+        &back,
+        "createInvite",
+        json!({ "org": org, "role": "member", "capabilities": granted }),
+    )
+    .await
+    .unwrap();
+    let id = made["requestId"].as_str().unwrap().to_owned();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["invite"]["capabilities"], granted, "{model}");
+    assert!(
+        model["points"]
+            .to_string()
+            .contains("Whoever joins can create apps and invite people."),
+        "{model}"
+    );
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["capabilities"], granted, "{args}");
+    let result = get(&in_app, &format!("consent/{id}/result")).await.unwrap();
+    let token = result["outcome"]["token"].as_str().unwrap().to_owned();
+
+    let made = ask(
+        &bob_in_app,
+        &back,
+        "acceptInvite",
+        json!({ "token": token }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert!(
+        model["points"]
+            .to_string()
+            .contains("You can create apps and invite people."),
+        "{model}"
+    );
+    let mut bob_page = SoftAuthenticator::with_key(&bob_in_app_passkey, "localhost", &origin(&url));
+    let ((code, done), _) = page.approve(&c, &mut bob_page).await;
+    assert_eq!(code, 200, "{done}");
+    let o = get_until(&alice, &format!("orgs/{org}"), |o| {
+        o["capabilities"].get(&bob_id).is_some()
+    })
+    .await;
+    assert_eq!(o["capabilities"][&bob_id], granted, "{o}");
+
+    // A bit no capability has is refused, on the page and on the route.
+    let unknown = json!({ "role": "member", "capabilities": 1 << 20 });
+    let e = post(&alice, &format!("orgs/{org}/invites"), unknown.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(status(&e), 400, "{e}");
+    assert_eq!(e.code(), Some("UNKNOWN_CAPABILITIES"), "{e}");
+    let e = post(
+        &in_app,
+        "consent/requests",
+        json!({
+            "kind": "createInvite",
+            "subject": { "org": org, "role": "member", "capabilities": 1 << 20 },
+            "returnTo": back,
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status(&e), 400, "{e}");
+    assert_eq!(e.code(), Some("UNKNOWN_CAPABILITIES"), "{e}");
+
+    // Bob holds create-apps and invite, nothing else: he grants no more.
+    let over = granted | 0b1000; // and manage members
+    let invites = format!("orgs/{org}/invites");
+    let e = post(
+        &bob,
+        &invites,
+        json!({ "role": "member", "capabilities": over }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    assert_eq!(e.code(), Some("CANNOT_GRANT_UNHELD"), "{e}");
+    let e = post(
+        &bob_in_app,
+        "consent/requests",
+        json!({
+            "kind": "createInvite",
+            "subject": { "org": org, "role": "member", "capabilities": over },
+            "returnTo": back,
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    assert_eq!(e.code(), Some("CANNOT_GRANT_UNHELD"), "{e}");
+    let made = ask(
+        &bob_in_app,
+        &back,
+        "createInvite",
+        json!({ "org": org, "role": "member", "capabilities": 1 }),
+    )
+    .await
+    .unwrap();
+    let id = made["requestId"].as_str().unwrap().to_owned();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let ((code, done), _) = Page::new(&url).approve(&c, &mut bob_page).await;
+    assert_eq!(code, 200, "{done}");
+    let token = get(&bob_in_app, &format!("consent/{id}/result"))
+        .await
+        .unwrap()["outcome"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Alice strips Bob's capabilities before anyone redeems his invite: it
+    // grants no more than he could now, on the page and in the log.
+    let _ = approved(
+        &c,
+        &in_app,
+        &back,
+        "setCapabilities",
+        json!({ "org": org, "account": bob_id, "capabilities": 0 }),
+        &mut alice_page,
+    )
+    .await;
+    let _o = get_until(&alice, &format!("orgs/{org}"), |o| {
+        o["capabilities"][&bob_id] == 0
+    })
+    .await;
+    let carol_in_app = c.client(1);
+    let mut carol_in_app_passkey =
+        SoftAuthenticator::with_key(&carol_key, "localhost", &app_origin);
+    let _s = carol_in_app
+        .sign_in(&mut carol_in_app_passkey)
+        .await
+        .unwrap();
+    let made = ask(
+        &carol_in_app,
+        &back,
+        "acceptInvite",
+        json!({ "token": token }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let mut carol_page =
+        SoftAuthenticator::with_key(&carol_in_app_passkey, "localhost", &origin(&url));
+    let ((code, done), _) = Page::new(&url).approve(&c, &mut carol_page).await;
+    assert_eq!(code, 200, "{done}");
+    let o = get_until(&alice, &format!("orgs/{org}"), |o| {
+        o["members"].get(&carol_id).is_some()
+    })
+    .await;
+    assert_eq!(o["capabilities"][&carol_id], 0, "clamped to Bob's: {o}");
 }

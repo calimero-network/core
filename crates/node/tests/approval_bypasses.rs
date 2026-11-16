@@ -501,7 +501,7 @@ async fn forged_credentials_memberships_and_redemptions_are_refused() {
         .to_owned();
     let org = alice_client
         .orgs()
-        .create("Acme", None)
+        .create("Acme", None, None)
         .await
         .map(wire)
         .unwrap()["orgId"]
@@ -565,6 +565,7 @@ async fn forged_credentials_memberships_and_redemptions_are_refused() {
         now,
         signature,
         free_when_unchanged: true,
+        clamp_grants: true,
     };
     let refused = [
         ("a passkey without consent", add(Value::Null)),
@@ -782,7 +783,7 @@ async fn forged_bindings_deadlines_and_publisher_runs_are_refused() {
     let (_bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let org = alice_client
         .orgs()
-        .create("Acme", None)
+        .create("Acme", None, None)
         .await
         .map(wire)
         .unwrap()["orgId"]

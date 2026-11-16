@@ -10662,6 +10662,11 @@
                         "properties": {
                           "name": {
                             "type": "string"
+                          },
+                          "capabilities": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
                           }
                         },
                         "required": [
@@ -10720,6 +10725,11 @@
                           },
                           "allApps": {
                             "type": "boolean"
+                          },
+                          "capabilities": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
                           }
                         },
                         "required": [
@@ -11210,7 +11220,7 @@
             }
           },
           "400": {
-            "description": "`BAD_REQUEST`: the request is malformed",
+            "description": "`BAD_REQUEST`: the request is malformed; `UNKNOWN_CAPABILITIES`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11219,7 +11229,8 @@
               }
             },
             "x-calimero-codes": [
-              "BAD_REQUEST"
+              "BAD_REQUEST",
+              "UNKNOWN_CAPABILITIES"
             ]
           },
           "401": {
@@ -11236,7 +11247,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -11245,8 +11256,27 @@
               }
             },
             "x-calimero-codes": [
+              "CANNOT_GRANT_UNHELD",
               "FORBIDDEN"
             ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
           },
           "413": {
             "description": "`TOO_LARGE`",
@@ -18226,7 +18256,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Create an organization",
-        "description": "`recoveryKey` is the public half of an organization recovery key. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.\n\n**Who:** a passkey session (an API key is refused).",
+        "description": "`recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.\n\n**Who:** a passkey session (an API key is refused).",
         "security": [
           {
             "session": []
@@ -18246,6 +18276,11 @@
                   },
                   "recoveryKey": {
                     "type": "string"
+                  },
+                  "capabilities": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
                   }
                 },
                 "required": [
@@ -18276,7 +18311,7 @@
             }
           },
           "400": {
-            "description": "`BAD_REQUEST`: the request is malformed",
+            "description": "`BAD_REQUEST`: the request is malformed; `UNKNOWN_CAPABILITIES`",
             "content": {
               "application/json": {
                 "schema": {
@@ -18285,7 +18320,8 @@
               }
             },
             "x-calimero-codes": [
-              "BAD_REQUEST"
+              "BAD_REQUEST",
+              "UNKNOWN_CAPABILITIES"
             ]
           },
           "401": {
@@ -18313,6 +18349,24 @@
             "x-calimero-codes": [
               "FORBIDDEN"
             ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
           },
           "421": {
             "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
@@ -19660,7 +19714,7 @@
         ],
         "x-calimero-group": "orgs",
         "summary": "Make an invite",
-        "description": "A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives every app added later. `412` first.\n\n**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives every app added later; `capabilities` (bits) is what a new member gets as their own setting, no more than the creator holds (`403`), and `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. `412` first.\n\n**Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
@@ -19709,6 +19763,11 @@
                   "allApps": {
                     "type": "boolean"
                   },
+                  "capabilities": {
+                    "type": "integer",
+                    "format": "int64",
+                    "minimum": 0
+                  },
                   "confirm": {
                     "$ref": "#/components/schemas/Confirm"
                   }
@@ -19740,7 +19799,7 @@
             }
           },
           "400": {
-            "description": "`EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE`",
+            "description": "`EXPIRED_CHALLENGE`; `UNKNOWN_CAPABILITIES`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -19750,6 +19809,7 @@
             },
             "x-calimero-codes": [
               "EXPIRED_CHALLENGE",
+              "UNKNOWN_CAPABILITIES",
               "UNKNOWN_CHALLENGE",
               "WRONG_CHALLENGE"
             ]
@@ -19768,7 +19828,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19777,6 +19837,7 @@
               }
             },
             "x-calimero-codes": [
+              "CANNOT_GRANT_UNHELD",
               "FORBIDDEN"
             ]
           },

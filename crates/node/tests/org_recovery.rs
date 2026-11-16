@@ -56,7 +56,7 @@ async fn an_owner_who_lost_every_passkey_recovers_the_org() {
     let seed = calimero_identity::recovery::new_recovery_seed();
     let org = alice
         .orgs()
-        .create("Acme", Some(&recovery_public(&seed)))
+        .create("Acme", Some(&recovery_public(&seed)), None)
         .await
         .map(wire)
         .unwrap()["orgId"]
@@ -154,7 +154,12 @@ async fn a_wrong_seed_a_non_owner_a_rotated_seed_and_a_node_recover_nothing() {
     let (bob, mut bpk) = signed_up(&c, 1, "bob").await;
     let bob_id = account_of(&bob).await;
     // Created without a key, as every organization before this change.
-    let org = alice.orgs().create("Acme", None).await.map(wire).unwrap()["orgId"]
+    let org = alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
         .as_str()
         .unwrap()
         .to_owned();

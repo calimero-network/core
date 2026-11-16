@@ -99,6 +99,9 @@ pub(super) struct OrgBody {
     /// creator keeps the seed (`docs/specs/org-recovery.md`).
     #[serde(default)]
     recovery_key: Option<String>,
+    /// What its members can do unless set for them (capability bits).
+    #[serde(default)]
+    capabilities: Option<u32>,
 }
 
 async fn org_create(
@@ -107,7 +110,16 @@ async fn org_create(
     Json(body): Json<OrgBody>,
 ) -> ApiResult {
     let account = holder(&node, &headers).await?.account()?;
-    create_org(&node, account, body.name, body.recovery_key, false, None).await
+    create_org(
+        &node,
+        account,
+        body.name,
+        body.recovery_key,
+        false,
+        None,
+        body.capabilities,
+    )
+    .await
 }
 
 /// Create an organization `account` owns: `POST /orgs`, and the consent
@@ -119,8 +131,15 @@ pub(crate) async fn create_org(
     recovery_key: Option<String>,
     personal: bool,
     app_team: Option<String>,
+    capabilities: Option<u32>,
 ) -> ApiResult {
     crate::system::org_name_fits(&name).map_err(malformed)?;
+    if let Some(bits) = capabilities {
+        if !crate::types::Org::defined_caps(bits) {
+            return Err(crate::node::unknown_capabilities());
+        }
+        node.require_features(&[Feature::OrgCapabilities]).await?;
+    }
     let org_id = typed_id::<16>();
     let v = node
         .sys_write(&SystemCmd::CreateOrg {
@@ -133,6 +152,7 @@ pub(crate) async fn create_org(
             name_fits: true,
             personal,
             app_team,
+            capabilities,
         })
         .await?;
     Ok(Json(v))
@@ -975,6 +995,11 @@ pub(crate) struct InviteBody {
     /// Whoever redeems it also gets every app added later (an admin's).
     #[serde(default)]
     pub(crate) all_apps: bool,
+    /// The capability bits whoever joins gets as their own setting; the
+    /// organization's default applies when absent. No more than the
+    /// creator holds (an admin's: any).
+    #[serde(default)]
+    pub(crate) capabilities: Option<u32>,
     #[serde(default)]
     pub(crate) confirm: Option<ConfirmBody>,
 }
@@ -1005,10 +1030,21 @@ pub(crate) async fn create_invite(
     if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
     }
-    if body.all_apps {
-        // Before the passkey step-up: an earlier release would drop the flag.
-        node.require_features(&[Feature::AllApps]).await?;
+    if let Some(bits) = body.capabilities {
+        if !crate::types::Org::defined_caps(bits) {
+            return Err(crate::node::unknown_capabilities());
+        }
+        let may = node.sys(|s| s.orgs.get(&org).is_none_or(|o| o.may_grant(&actor, bits)));
+        if !may {
+            return Err(crate::node::cannot_grant_unheld());
+        }
     }
+    // Before the passkey step-up: an earlier release would drop the fields.
+    node.require_features(&crate::system::cluster_version::invite_features(
+        body.all_apps,
+        body.capabilities.is_some(),
+    ))
+    .await?;
     let token = format!("inv_{}", b64url(&random::<24>()));
     let invite = Invite {
         org: org.clone(),
@@ -1019,6 +1055,7 @@ pub(crate) async fn create_invite(
         created_by: actor.clone(),
         created_at: now_secs(),
         all_apps: body.all_apps,
+        capabilities: body.capabilities,
     };
     let args = crate::system::invite_args(&crate::proof::invite_key(&token), &invite);
     let c = consent_minted(
@@ -1083,6 +1120,12 @@ async fn invite_redeem(
 /// the consent page's `acceptInvite` once the person approved it there.
 pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> ApiResult {
     let now = now_secs();
+    // An earlier release would apply the grant unclamped, so the flag waits
+    // for every node to read it.
+    let clamp_grants = node
+        .require_features(&[Feature::InviteCapabilities])
+        .await
+        .is_ok();
     let v = node
         .sys_write(&SystemCmd::RedeemInvite {
             invite_key: crate::proof::invite_key(token),
@@ -1090,6 +1133,7 @@ pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> 
             account,
             now,
             free_when_unchanged: true,
+            clamp_grants,
         })
         .await?;
     Ok(Json(v))

@@ -838,6 +838,12 @@ pub struct SignUpRedemption {
     /// Unix seconds, signed: the invite's expiry is judged against it.
     pub now: u64,
     pub signature: String,
+    /// An organization invite's `all_apps` grant stands only while its
+    /// creator is still an admin, as for `RedeemInvite { clamp_grants }`.
+    /// Absent (`false`) in an earlier release's entry, which replays
+    /// granting as minted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clamp_grants: bool,
 }
 
 /// How the sign-up policy let an account in ([`SystemState::admits`]).
@@ -903,6 +909,11 @@ pub const PERSONAL_ORG_NAME: &str = "Personal";
 /// by invite or set on a member, is the owner's or an admin's.
 pub const ONLY_ADMINS_ALL_APPS: &str =
     "only the organization's owner and admins give someone every app added later";
+/// A refusal: capability bits that no capability has.
+pub const UNKNOWN_CAPABILITIES: &str = "capabilities name a bit no capability has";
+/// A refusal: an invite grants no capability its creator does not hold.
+pub const CANNOT_GRANT_UNHELD: &str =
+    "an invite grants only capabilities its creator holds; only the owner and admins grant any";
 /// A refusal: the package has an app team in this organization already.
 pub const APP_TEAM_EXISTS: &str = "this package has an app team in this organization already";
 
@@ -2087,14 +2098,23 @@ impl SystemState {
         account: &str,
         now: u64,
         free_when_unchanged: bool,
+        clamp_grants: bool,
     ) -> Result<OrgId, &'static str> {
         let inv = self.invites.get(invite_key).ok_or(INVITE_GONE)?;
         if inv.expires_at <= now || inv.uses_left == 0 {
             return Err(INVITE_EXPIRED);
         }
+        // The flag, or a cluster version that brings the rule to every node:
+        // read from state at this log position, so replicas agree.
+        let clamp = clamp_grants
+            || self.cluster_version.as_deref().is_some_and(|v| {
+                compare_versions(v, cluster_version::Feature::InviteCapabilities.since())
+                    != std::cmp::Ordering::Less
+            });
+        let all_apps = inv.all_apps && (!clamp || self.is_org_admin(&inv.org, &inv.created_by));
         let o = self.orgs.get(&inv.org).ok_or("no such organization")?;
         let unchanged = o.members.get(account).is_some_and(|r| *r >= inv.role)
-            && (!inv.all_apps || o.all_apps.contains(account))
+            && (!all_apps || o.all_apps.contains(account))
             && inv.teams.iter().all(|t| {
                 o.teams
                     .get(t)
@@ -2109,14 +2129,24 @@ impl SystemState {
         if inv.uses_left == 0 {
             let _prev = self.invites.remove(invite_key);
         }
+        // What its creator may grant now: a demoted, stripped or removed
+        // creator's invite hands out no more than they could.
+        let granted = self.orgs.get(&inv.org).and_then(|o| {
+            o.role(&inv.created_by)?;
+            inv.capabilities.map(|c| c & o.org_caps(&inv.created_by))
+        });
         let o = self.orgs.get_mut(&inv.org).ok_or("no such organization")?;
         let role = o
             .members
             .get(account)
             .copied()
             .map_or(inv.role, |r| r.max(inv.role));
+        let new_member = !o.members.contains_key(account);
         let _prev = o.members.insert(account.to_owned(), role);
-        if inv.all_apps {
+        if let (Some(bits), true) = (granted, new_member) {
+            let _prev = o.capabilities.insert(account.to_owned(), bits);
+        }
+        if all_apps {
             let _new = o.all_apps.insert(account.to_owned());
         }
         for t in &inv.teams {
@@ -4253,6 +4283,9 @@ pub fn invite_args(invite_key: &str, invite: &Invite) -> Value {
     if invite.all_apps {
         args["allApps"] = json!(true);
     }
+    if let Some(bits) = invite.capabilities {
+        args["capabilities"] = json!(bits);
+    }
     args
 }
 
@@ -4933,6 +4966,12 @@ pub enum SystemCmd {
         /// none ([`cluster_version::Feature::OrgAppTeam`]).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         app_team: Option<String>,
+        /// The organization-wide capabilities its members hold unless set for
+        /// them ([`crate::types::Org::default_capabilities`]), set in this
+        /// entry. Left out when none
+        /// ([`cluster_version::Feature::OrgCapabilities`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capabilities: Option<u32>,
     },
     /// Rename an organization: its owner or an admin, with their passkey
     /// consent (`org:<org> / __rename_org / { name }`), to a name that fits
@@ -5500,6 +5539,12 @@ pub enum SystemCmd {
         /// reaches the same state.
         #[serde(default)]
         free_when_unchanged: bool,
+        /// The invite's `all_apps` grant stands only while its creator is
+        /// still an owner or admin. Absent (`false`) in an earlier
+        /// release's entry, which replays granting it as minted
+        /// ([`cluster_version::Feature::InviteCapabilities`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        clamp_grants: bool,
     },
     /// Withdraw an invite before it is used up: its creator, an admin, or
     /// whoever manages every team it names ([`SystemState::sees_invite`]),

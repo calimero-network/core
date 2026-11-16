@@ -196,7 +196,8 @@ log records exactly the `CreateOrg` and `RedeemInvite` the routes write.
 
 The node asks the rules first, before any page exists: an organization's
 name (`400`), the inviter's membership (`404`), an invite above their own
-role or an owner invite (`403`), `allApps` below admin (`403`), a `ttlSecs`
+role or an owner invite (`403`), `allApps` below admin (`403`), `capabilities`
+the inviter does not hold (`403`), a `ttlSecs`
 of 1 second to 90 days and at most 64 teams (`400`), and for
 `acceptInvite` an invite that exists, is unexpired and has uses left
 (`404`). The log judges the rest (`INVITE_MEMBERS`, teams the inviter sees)
@@ -221,6 +222,17 @@ says so (`appTeam { package, name }` in the model), the step-up states it
 (`{ name, appTeam }`), and `outcome` carries the team's `teamId`. On a cluster
 whose version is below 1.0.0-rc.22 (`Feature::OrgAppTeam`), or for a package
 not installed, the organization is made bare, as before.
+
+`createOrg` also takes `capabilities` (bits): what the organization's members
+can do unless set for them, set in the same `CreateOrg` entry as the creation
+(and the app team), so one approval covers it. `createInvite` takes the same
+field for whoever joins with the invite (the invite's `capabilities`, which a
+new member holds as their own setting). The page lists them in full in plain
+words ("Members can create apps, invite people and join open teams."), the
+`acceptInvite` page too, and the step-up arguments name `capabilities` only
+when given, so a request without them is consented to as before. Both are
+refused (`409 FEATURE_NOT_ACTIVE`) below cluster version 1.0.0-rc.29
+(`Feature::OrgCapabilities`, `Feature::InviteCapabilities`).
 
 #### Moderation and settings
 
@@ -401,7 +413,7 @@ text only.
 | Release | `{ version, policyDigest }`: `policyDigest` is SHA-256 of the release's Sigstore-verified measurements as the node reads them when it writes the approval, so a release re-published under the same tag with other measurements is another approval. A node that cannot fetch them refuses (`503`); on mock attestation, where no node checks measurements, the digest is over none (`{ "profiles": {}, "version" }`) |
 | Upgrade | `{ bundle, migrate, manifest }`: the target WASM's hash and the target release's signed-manifest hash (`VerifiedBundle::manifest_hash`: SHA-256 of the canonical manifest, every artifact digest included; `null` only for a raw development bundle, which has no manifest) |
 | Outbound | `{ package, prefixes, replace }`, with the prefixes listed on the page, never `"manifest"` |
-| `createOrg` | `account:<a> / __create_org / { name }`, with `appTeam` (the package) when the asking app's team comes with it (not logged; the log records `CreateOrg` as `POST /orgs` writes it, with `app_team`) |
+| `createOrg` | `account:<a> / __create_org / { name }`, with `appTeam` (the package) when the asking app's team comes with it and `capabilities` when given (not logged; the log records `CreateOrg` as `POST /orgs` writes it, with `app_team`) |
 | `createInvite` | `org:<org> / __create_invite / system::invite_args` (logged, as the route's) |
 | `acceptInvite` | `account:<a> / __accept_invite / { inviteKey }` (not logged; the log records `RedeemInvite`) |
 | `leaveOrg`, `removeMember` | `org:<org> / __remove_member / { account }` (oneself for `leaveOrg`) |

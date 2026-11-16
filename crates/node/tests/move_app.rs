@@ -111,7 +111,12 @@ fn refused(e: &Error, why: &str) {
 }
 
 async fn new_org(owner: &Client, name: &str) -> String {
-    s(&owner.orgs().create(name, None).await.map(wire).unwrap()["orgId"])
+    s(&owner
+        .orgs()
+        .create(name, None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"])
 }
 
 /// `who` joins `org` at `role`, invited by `by` (its owner) with `pk`.
