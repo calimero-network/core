@@ -1,5 +1,19 @@
 # @calimero-network/mero-ui
 
+## 1.5.2
+
+### Patch Changes
+
+- 8d84e25: RichTextEditor: stop throwing on every mount. Every editor mount threw
+  `RangeError: Adding different instances of a keyed plugin (plugin$)`,
+  surfacing in consumers as a bare `Minified React error #520`: the build
+  inlined StarterKit (and with it a private copy of `@tiptap/core` and
+  ProseMirror) but left `@tiptap/extensions` external, so a consumer loaded a
+  second copy. `@tiptap/extensions` is now bundled too, and `link` and
+  `underline` are no longer registered twice (StarterKit v3 already bundles
+  both). (Published to npm from the design-system repository; recorded here
+  when the package moved to core.)
+
 ## 1.5.1
 
 ### Patch Changes

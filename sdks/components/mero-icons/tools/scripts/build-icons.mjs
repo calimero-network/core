@@ -7,8 +7,8 @@ import { globby } from "globby";
 import svgoConfig from "../svgo.config.json" with { type: "json" };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RAW = path.resolve(__dirname, "../../packages/icons/raw");
-const OUT = path.resolve(__dirname, "../../packages/icons/src");
+const RAW = path.resolve(__dirname, "../../raw");
+const OUT = path.resolve(__dirname, "../../src");
 
 await mkdir(OUT, { recursive: true });
 

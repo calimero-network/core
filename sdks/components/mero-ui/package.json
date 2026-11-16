@@ -3,11 +3,11 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "1.5.1",
+  "version": "1.0.0-rc.30",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/calimero-network/design-system.git",
-    "directory": "packages/ui"
+    "url": "git+https://github.com/calimero-network/core.git",
+    "directory": "sdks/components/mero-ui"
   },
   "description": "UI primitives for Calimero design system",
   "main": "./dist/index.js",
@@ -28,7 +28,11 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "storybook": "pnpm --dir examples/storybook dev",
+    "build-storybook": "pnpm --dir examples/storybook build-storybook"
   },
   "dependencies": {
     "@calimero-network/mero-icons": "workspace:*",
@@ -42,12 +46,20 @@
     "@tiptap/starter-kit": "^3.6.2"
   },
   "devDependencies": {
+    "@calimero-network/mero-tokens": "workspace:*",
     "@types/react": "^19.2.0",
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "eslint": "^10.1.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "tsup": "^8.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.12"
   },
   "peerDependencies": {
     "react": ">=19.0.0",
     "react-dom": ">=19.0.0"
-  }
+  },
+  "license": "MIT"
 }

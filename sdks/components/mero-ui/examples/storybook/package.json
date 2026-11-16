@@ -1,12 +1,13 @@
 {
-  "name": "@calimero-network/storybook-app",
+  "name": "mero-ui-storybook",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "storybook dev -p 6006",
     "build": "storybook build",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives"
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
+    "build-storybook": "storybook build"
   },
   "dependencies": {
     "@calimero-network/mero-charts": "workspace:*",
@@ -42,5 +43,6 @@
     "typescript-eslint": "^8.39.1",
     "use-sync-external-store": "1.2.0",
     "vite": "^7.1.8"
-  }
+  },
+  "description": "Storybook of every mero-ui, mero-icons, mero-tokens and mero-charts component. Not published."
 }

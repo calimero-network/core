@@ -3,11 +3,11 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "0.0.6",
+  "version": "1.0.0-rc.30",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/calimero-network/design-system.git",
-    "directory": "packages/icons"
+    "url": "git+https://github.com/calimero-network/core.git",
+    "directory": "sdks/components/mero-icons"
   },
   "type": "module",
   "exports": {
@@ -22,14 +22,23 @@
   "scripts": {
     "build": "tsup src/index.ts --dts --format esm,cjs",
     "dev": "pnpm build",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src test",
+    "test": "vitest run"
   },
   "peerDependencies": {
     "react": "^18.3.1"
   },
   "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "eslint": "^10.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tsup": "^8.0.0",
     "typescript": "^5.5.0",
-    "@types/react": "^18.3.12"
-  }
+    "vitest": "^4.1.12"
+  },
+  "license": "MIT"
 }

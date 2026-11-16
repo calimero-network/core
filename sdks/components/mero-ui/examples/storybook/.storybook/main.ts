@@ -3,24 +3,10 @@ import { mergeConfig } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// Get the project root directory
-// When Storybook runs, process.cwd() is the project root
-// But if running from apps/storybook, we need to go up 2 levels
-let rootDir = process.cwd();
-if (rootDir.endsWith('/apps/storybook') || rootDir.endsWith('\\apps\\storybook')) {
-  rootDir = path.resolve(rootDir, '../..');
-}
-
-// Fallback: try to get dirname from import.meta.url if available
-if (typeof import.meta.url !== 'undefined') {
-  try {
-    const configDir = path.dirname(fileURLToPath(import.meta.url));
-    // Config is in .storybook, so go up 3 levels to get to project root
-    rootDir = path.resolve(configDir, '../../..');
-  } catch {
-    // Use process.cwd() fallback
-  }
-}
+// This storybook lives in sdks/components/mero-ui/examples/storybook and shows
+// the sources of the four design-system packages next to mero-ui.
+const configDir = path.dirname(fileURLToPath(import.meta.url));
+const componentsDir = path.resolve(configDir, '../../../..');
 
 const config: StorybookConfig = {
   stories: ['../src/**/*.stories.@(js|jsx|mjs|ts|tsx)'],
@@ -37,10 +23,10 @@ const config: StorybookConfig = {
     return mergeConfig(config, {
       resolve: {
         alias: {
-          '@calimero-network/mero-ui': path.resolve(rootDir, 'packages/ui/src'),
-          '@calimero-network/mero-tokens': path.resolve(rootDir, 'packages/tokens/src'),
-          '@calimero-network/mero-charts': path.resolve(rootDir, 'packages/charts/src'),
-          '@calimero-network/mero-icons': path.resolve(rootDir, 'packages/icons/src'),
+          '@calimero-network/mero-ui': path.resolve(componentsDir, 'mero-ui/src'),
+          '@calimero-network/mero-tokens': path.resolve(componentsDir, 'mero-tokens/src'),
+          '@calimero-network/mero-charts': path.resolve(componentsDir, 'mero-charts/src'),
+          '@calimero-network/mero-icons': path.resolve(componentsDir, 'mero-icons/src'),
         },
       },
     });
