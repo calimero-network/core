@@ -22,11 +22,14 @@ sdks/
 - **Names**: every SDK is `mero-<language>` (a component: `mero-<framework>`),
   the same name for its directory, its `sdk.json` `name` and what it publishes
   where the registry allows it. `scripts/sdks.py` refuses any other name.
-- **One version**: the root `VERSION` (core's release, e.g. `1.0.0-rc.30`).
-  Every file that states an SDK's version is listed in its `sdk.json`
-  `version_files`; `python3 scripts/sdks.py version-sync` writes VERSION into
-  all of them and the `SDK scope` job fails while any differs. Never bump one
-  SDK on its own: SDKs release only with core.
+- **One version**: the root `VERSION`, which is core's release: the root
+  `Cargo.toml`'s `[workspace.metadata.workspaces]` `version` (e.g.
+  `1.0.0-rc.30`). Every file that states an SDK's version is listed in its
+  `sdk.json` `version_files`. A release cut bumps Cargo's version and runs
+  `python3 scripts/sdks.py version-sync` in the same commit, which writes it
+  into VERSION and every SDK; the `SDK scope` job (and release.yml) fail while
+  any of them differs. Never bump one SDK on its own: SDKs release only with
+  core.
 - **Inside the workspace** mero-react depends on mero-js through `workspace:*`;
   pnpm publishes that as the exact version.
 - **Generated vs written**: each client's generated layer (types, transport,
@@ -67,10 +70,14 @@ repository; new entries go in core's release notes.
 
 ## Release
 
-A core tag `X.Y.Z[-rc.N]` releases everything from that commit:
-`release.yml` checks `VERSION` equals the tag, then publishes each SDK through
-its workflow's `publish` path (npm: mero-js then mero-react; PyPI: mero-py;
-Maven Central: mero-kotlin; CocoaPods and the SwiftPM mirror: mero-swift).
+A release cut (RELEASING.md) releases everything from the same commit:
+`release.yml` checks that `VERSION` is the release, and once core's binaries
+are released publishes each SDK through its workflow's `publish` path (npm:
+mero-js then mero-react; PyPI: mero-py; Maven Central: mero-kotlin; CocoaPods
+and the SwiftPM mirror `calimero-network/swift-sdk`: mero-swift). Then
+`fleet-bump.yml` opens the downstream pull requests: cargo and tee as before,
+and npm (`surfaces: npm`) for the apps that pin mero-js / mero-react. A run of
+release.yml by hand runs every publish path as a dry run.
 
 ## Adding an SDK
 

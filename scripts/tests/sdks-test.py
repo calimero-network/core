@@ -183,6 +183,7 @@ def test_repository() -> None:
         check(f"{sdk['name']} workflow exists", (ROOT / sdk["workflow"]).is_file(), sdk["workflow"])
         for spec in sdk["version_files"]:
             check(f"{sdk['name']} {spec['path']} exists", (ROOT / sdk["dir"] / spec["path"]).is_file(), "")
+    check("VERSION is core's release", sdks.read_version() == sdks.core_version(), f"{sdks.read_version()} vs {sdks.core_version()}")
     if loaded:
         version = sdks.read_version()
         wrong = sdks.version_report(loaded, version)

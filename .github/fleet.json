@@ -65,7 +65,12 @@
     "the pull request it opens is red until someone writes the code. That is the",
     "signal working, not the automation failing: before calimero-studio was listed",
     "here nothing opened a pull request at all, and its pin sat twelve releases",
-    "behind until a weekly cron caught it."
+    "behind until a weekly cron caught it.",
+    "",
+    "The SDKs (mero-js, calimero-client-py, swift-sdk, kotlin-sdk) were the `openapi`",
+    "surface; they now live in sdks/ and regenerate in this tree (sdk-regenerate.yml),",
+    "so they are no longer listed. swift-sdk is the read-only SwiftPM mirror that",
+    "release.yml pushes sdks/clients/mero-swift to."
   ],
 
   "consumers": [
@@ -74,11 +79,7 @@
     { "repo": "mero-tag", "surfaces": ["cargo"] },
     { "repo": "app-registry", "surfaces": ["npm"] },
     { "repo": "calimero-studio", "surfaces": ["cargo"] },
-    { "repo": "mero-tee", "surfaces": ["tee"] },
-    { "repo": "mero-js", "surfaces": ["openapi"] },
-    { "repo": "calimero-client-py", "surfaces": ["openapi"] },
-    { "repo": "swift-sdk", "surfaces": ["openapi"] },
-    { "repo": "kotlin-sdk", "surfaces": ["openapi"] }
+    { "repo": "mero-tee", "surfaces": ["tee"] }
   ],
 
   "_retired_note": [
