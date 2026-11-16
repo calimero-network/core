@@ -1,6 +1,7 @@
 name: SDKs
 
-# The SDKs under sdks/ (mero-js, mero-py, mero-swift, mero-kotlin, mero-react):
+# The SDKs under sdks/ (clients: mero-js, mero-py, mero-swift, mero-kotlin;
+# components: mero-react, mero-ui, mero-icons, mero-tokens, mero-charts):
 # each is tested by its own reusable workflow, sdk-<name>.yml, and only when a
 # change can reach it (scripts/sdks.py scope, from each SDK's sdk.json).
 #
@@ -43,6 +44,10 @@ jobs:
       mero-py: ${{ steps.decide.outputs.mero-py }}
       mero-swift: ${{ steps.decide.outputs.mero-swift }}
       mero-kotlin: ${{ steps.decide.outputs.mero-kotlin }}
+      mero-icons: ${{ steps.decide.outputs.mero-icons }}
+      mero-tokens: ${{ steps.decide.outputs.mero-tokens }}
+      mero-ui: ${{ steps.decide.outputs.mero-ui }}
+      mero-charts: ${{ steps.decide.outputs.mero-charts }}
       any: ${{ steps.decide.outputs.any }}
       sdks: ${{ steps.decide.outputs.sdks }}
     steps:
@@ -119,6 +124,30 @@ jobs:
     needs: scope
     if: needs.scope.outputs.mero-kotlin != 'false'
     uses: ./.github/workflows/sdk-mero-kotlin.yml
+
+  mero-icons:
+    name: mero-icons
+    needs: scope
+    if: needs.scope.outputs.mero-icons != 'false'
+    uses: ./.github/workflows/sdk-mero-icons.yml
+
+  mero-tokens:
+    name: mero-tokens
+    needs: scope
+    if: needs.scope.outputs.mero-tokens != 'false'
+    uses: ./.github/workflows/sdk-mero-tokens.yml
+
+  mero-ui:
+    name: mero-ui
+    needs: scope
+    if: needs.scope.outputs.mero-ui != 'false'
+    uses: ./.github/workflows/sdk-mero-ui.yml
+
+  mero-charts:
+    name: mero-charts
+    needs: scope
+    if: needs.scope.outputs.mero-charts != 'false'
+    uses: ./.github/workflows/sdk-mero-charts.yml
 
   # Does each SDK's generated layer match master's API document as of this
   # change? Reported, not required: a server change merges on its own, and
@@ -199,7 +228,7 @@ jobs:
   sdks:
     name: SDKs
     if: ${{ !cancelled() }}
-    needs: [scope, mero-js, mero-react, mero-py, mero-swift, mero-kotlin]
+    needs: [scope, mero-js, mero-react, mero-py, mero-swift, mero-kotlin, mero-icons, mero-tokens, mero-ui, mero-charts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

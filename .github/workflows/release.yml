@@ -802,6 +802,59 @@ jobs:
       dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
     secrets: inherit
 
+  # The components after what they build on: icons and tokens, then ui, then charts.
+  sdk-mero-icons:
+    name: Publish mero-icons
+    needs: [prepare, sdk-version, release-binaries]
+    if: ${{ !cancelled() && needs.sdk-version.result == 'success' && (needs.prepare.outputs.binary_release != 'true' || needs.release-binaries.result == 'success') }}
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    uses: ./.github/workflows/sdk-mero-icons.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  sdk-mero-tokens:
+    name: Publish mero-tokens
+    needs: [prepare, sdk-version, release-binaries]
+    if: ${{ !cancelled() && needs.sdk-version.result == 'success' && (needs.prepare.outputs.binary_release != 'true' || needs.release-binaries.result == 'success') }}
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    uses: ./.github/workflows/sdk-mero-tokens.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  sdk-mero-ui:
+    name: Publish mero-ui
+    needs: [prepare, sdk-mero-icons, sdk-mero-tokens]
+    if: ${{ !cancelled() && needs.sdk-mero-icons.result == 'success' && needs.sdk-mero-tokens.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    uses: ./.github/workflows/sdk-mero-ui.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
+  sdk-mero-charts:
+    name: Publish mero-charts
+    needs: [prepare, sdk-mero-ui]
+    if: ${{ !cancelled() && needs.sdk-mero-ui.result == 'success' }}
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    uses: ./.github/workflows/sdk-mero-charts.yml
+    with:
+      publish: true
+      dry-run: ${{ needs.prepare.outputs.binary_release != 'true' }}
+    secrets: inherit
+
   sdk-mero-py:
     name: Publish mero-py
     needs: [prepare, sdk-version, release-binaries]
@@ -842,8 +895,8 @@ jobs:
   # The apps that pin the JavaScript SDKs, once both are published.
   fleet-bump-npm:
     name: Open SDK npm bump PRs
-    if: ${{ !cancelled() && github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true' && needs.sdk-mero-react.result == 'success' }}
-    needs: [prepare, sdk-mero-react]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/master' && needs.prepare.outputs.binary_release == 'true' && needs.sdk-mero-react.result == 'success' && needs.sdk-mero-charts.result == 'success' }}
+    needs: [prepare, sdk-mero-react, sdk-mero-charts]
     uses: ./.github/workflows/fleet-bump.yml
     with:
       version: ${{ needs.prepare.outputs.version }}

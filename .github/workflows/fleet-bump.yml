@@ -172,9 +172,11 @@ jobs:
           args=(--surface "$SURFACE" --version "$VERSION" --dir consumer)
           if [ "$SURFACE" = npm ]; then
             # The SDKs core publishes from sdks/, all at the release's version. A
-            # consumer still on an SDK's old major (mero-js 36, mero-react 11) is
+            # consumer still on an SDK's old major (mero-js 36, mero-react 11, mero-ui 1) is
             # left for a deliberate migration: bump-fleet.sh skips a major crossing.
-            args+=(--pkg "@calimero-network/mero-js=$VERSION" --pkg "@calimero-network/mero-react=$VERSION")
+            for pkg in mero-js mero-react mero-ui mero-icons mero-tokens mero-charts; do
+              args+=(--pkg "@calimero-network/$pkg=$VERSION")
+            done
           fi
           producer/.github/scripts/bump-fleet.sh "${args[@]}"
           code=$?
@@ -230,7 +232,7 @@ jobs:
           if [ "$SURFACE" = "tee" ]; then
             title="chore(image): bundle merod $VERSION and cut a new image version"
           elif [ "$SURFACE" = "npm" ]; then
-            title="chore(deps): pin the Calimero JavaScript SDKs to $VERSION"
+            title="chore(deps): pin the Calimero JavaScript SDKs and components to $VERSION"
             branch="chore/core-sdks-$VERSION"
           else
             title="chore(deps): pin the Calimero SDK to $VERSION"

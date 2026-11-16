@@ -78,10 +78,11 @@ repository; new entries go in core's release notes.
 A release cut (RELEASING.md) releases everything from the same commit:
 `release.yml` checks that `VERSION` is the release, and once core's binaries
 are released publishes each SDK through its workflow's `publish` path (npm:
-mero-js then mero-react; PyPI: mero-py; Maven Central: mero-kotlin; CocoaPods
+mero-js then mero-react, and mero-icons and mero-tokens, then mero-ui, then
+mero-charts; PyPI: mero-py; Maven Central: mero-kotlin; CocoaPods
 and the SwiftPM mirror `calimero-network/swift-sdk`: mero-swift). Then
 `fleet-bump.yml` opens the downstream pull requests: cargo and tee as before,
-and npm (`surfaces: npm`) for the apps that pin mero-js / mero-react. A run of
+and npm (`surfaces: npm`) for the apps that pin the JS SDKs and components. A run of
 release.yml by hand runs every publish path as a dry run.
 
 ## Adding an SDK
