@@ -21,7 +21,7 @@ tests open what core sealed. :func:`verify_attestation` checks that a header's
 signing key is an attested node's receipt key, through the caller's quote
 verifier (core's ``verify_attestation``).
 
-Needs the ``cryptography`` package (``pip install calimero-client-py[recovery]``).
+Needs the ``cryptography`` package (``pip install mero-py[recovery]``).
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ def _crypto():
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     except ImportError as e:  # pragma: no cover - the extra is missing
         raise ImportError(
-            "recovery needs the cryptography package: pip install calimero-client-py[recovery]"
+            "recovery needs the cryptography package: pip install mero-py[recovery]"
         ) from e
     return ed25519, x25519, AESGCM
 

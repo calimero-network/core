@@ -8,8 +8,9 @@ built with PyO3. `Client` is the preferred name of the client class;
 
 from importlib.metadata import version as _installed_version
 
-# Declared once, in Cargo.toml.
-__version__ = _installed_version("calimero-client-py")
+# Declared once, in Cargo.toml (core's VERSION). The distribution is `mero-py`
+# (it was `calimero-client-py`); the import names did not change.
+__version__ = _installed_version("mero-py")
 __author__ = "Calimero Network"
 __email__ = "team@calimero.network"
 

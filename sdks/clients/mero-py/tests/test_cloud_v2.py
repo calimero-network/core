@@ -7,8 +7,8 @@ Needs `merod` and the kv-store fixture from the core the client builds against
     cargo build -p merod
     cargo build -p kv-store --target wasm32-unknown-unknown --profile app-release
 
-Paths default to a sibling `core` checkout; override with MEROD_BINARY (or
-MEROD_V2_BINARY) and KV_STORE_WASM. Skipped when the binary is missing.
+Paths default to the core tree this SDK sits in (sdks/clients/mero-py);
+override with MEROD_BINARY (or MEROD_V2_BINARY) and KV_STORE_WASM. Skipped when the binary is missing.
 """
 
 import json
@@ -25,7 +25,8 @@ import pytest
 
 from calimero_client_py import CloudClient, CloudError, SoftPasskey
 
-CORE = Path(__file__).resolve().parents[2] / "core"
+# The core tree this SDK lives in (sdks/clients/mero-py/tests/ is four below it).
+CORE = Path(__file__).resolve().parents[4]
 BINARY = (
     os.environ.get("MEROD_BINARY")
     or os.environ.get("MEROD_V2_BINARY")

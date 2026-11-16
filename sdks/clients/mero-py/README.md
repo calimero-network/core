@@ -1,4 +1,10 @@
-# calimero-client-py
+# mero-py
+
+Published on PyPI as **`mero-py`** (up to 1.0.0-rc.30 it was
+`calimero-client-py`). Only the distribution was renamed: the import names are
+unchanged, so `import calimero` and `import calimero_client_py` keep working.
+It lives in core's monorepo, at `sdks/clients/mero-py`, and ships with every
+core release on core's version.
 
 **Your app's whole backend, like Firebase. Except nobody can read your data,
 not even us.** [Calimero](https://calimero-network.github.io/core/) gives an app
@@ -23,7 +29,7 @@ Calimero 1.0 deleted that node and this package deleted its client (1.0.0-rc.1
 is a breaking release); the [changelog](CHANGELOG.md) says what replaces each
 name.
 
-> **Before committing, titling a pull request, or releasing**, read [RELEASING.md](RELEASING.md): the PR title is the release commit, and the rules are shared by every Calimero repository that ships releases.
+> **Before committing, titling a pull request, or releasing**, read core's [RELEASING.md](../../../RELEASING.md) and [AGENTS.md](AGENTS.md): this SDK releases only with core.
 
 ## Documentation
 
@@ -35,7 +41,7 @@ under [`docs/`](docs/).
 ## Installation
 
 ```bash
-pip install calimero-client-py
+pip install --pre mero-py
 ```
 
 PyPI carries a prebuilt `abi3` wheel (any CPython 3.9+) for Linux x86_64 and
@@ -47,9 +53,8 @@ for details.
 
 ## The generated client
 
-The routes are generated from core's OpenAPI document (`docs/public/openapi.json`
-in core, vendored as [`openapi/openapi.json`](openapi/openapi.json) with the core
-commit in [`openapi/source.json`](openapi/source.json)):
+The routes are generated from core's OpenAPI document, read from this core
+tree ([`docs/public/openapi.json`](../../../docs/public/openapi.json)):
 
 - `calimero_client_py/openapi/` is [openapi-python-client](https://github.com/openapi-generators/openapi-python-client)
   0.26.2's output: one module per operation, typed models.
@@ -83,9 +88,8 @@ per route; 1.0.0rc4 removed them (CHANGELOG.md maps each to its facade method).
 Regenerate after a change to core's API:
 
 ```bash
-pip install openapi-python-client==0.26.2 black==26.10.1
-python scripts/refresh_openapi.py              # core's master (or --ref <ref>, --core ../core)
-python scripts/generate_openapi_client.py      # CI runs it with --check
+python3 scripts/sdks.py generate mero-py       # from core's root (bash scripts/generate.sh here)
+python scripts/generate_openapi_client.py --check   # what CI runs (openapi-python-client==0.26.2, black==26.10.1)
 ```
 
 ## Quick start
@@ -208,7 +212,8 @@ The Rust core depends on `calimero-client`, `calimero-identity` and
 `calimero-sealed` from
 [`github.com/calimero-network/core`](https://github.com/calimero-network/core),
 pinned by tag in `Cargo.toml`, so the first build fetches and compiles those too
-(a network connection is required for the initial build).
+(a network connection is required for the initial build). `AGENTS.md` has the
+rest: the layout, the generator, CI and releases.
 
 ## Related repositories
 
@@ -224,7 +229,7 @@ pinned by tag in `Cargo.toml`, so the first build fetches and compiles those too
 ## Support
 
 - Documentation: <https://calimero-network.github.io/calimero-client-py/>
-- Issues: <https://github.com/calimero-network/calimero-client-py/issues>
+- Issues: <https://github.com/calimero-network/core/issues>
 - Contact: team@calimero.network
 
 ## License

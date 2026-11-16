@@ -514,26 +514,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "calimero-client-py"
-version = "1.0.0-rc.4"
-dependencies = [
- "calimero-client",
- "calimero-identity",
- "calimero-sealed",
- "ed25519-dalek 3.0.0",
- "eyre",
- "futures-util",
- "hex",
- "openssl",
- "pyo3",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokio",
- "url",
-]
-
-[[package]]
 name = "calimero-identity"
 version = "0.0.0"
 source = "git+https://github.com/calimero-network/core?tag=1.0.0-rc.19#a4756175d72209502e754e3a3d06469cb8254c56"
@@ -2650,6 +2630,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "mero-py"
+version = "1.0.0-rc.30"
+dependencies = [
+ "calimero-client",
+ "calimero-identity",
+ "calimero-sealed",
+ "ed25519-dalek 3.0.0",
+ "eyre",
+ "futures-util",
+ "hex",
+ "openssl",
+ "pyo3",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
 ]
 
 [[package]]

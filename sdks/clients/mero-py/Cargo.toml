@@ -1,11 +1,11 @@
 [package]
-name = "calimero-client-py"
-version = "1.0.0-rc.4"
+name = "mero-py"
+version = "1.0.0-rc.30"
 edition = "2021"
 authors = ["Calimero Limited <info@calimero.network>"]
 description = "Python client library for Calimero 1.0"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/calimero-network/calimero-client-py"
+repository = "https://github.com/calimero-network/core"
 keywords = ["calimero", "blockchain", "api", "client", "web3", "python"]
 categories = ["api-bindings", "blockchain", "web-programming"]
 # Ensure source distribution includes all necessary files. Anchored with `/`:
@@ -20,10 +20,13 @@ include = [
     "/CHANGELOG.md",
 ]
 
-# Make this package standalone, not part of the workspace
+# Its own workspace: core's root Cargo.toml lists its members and this is not
+# one of them (it builds against core's crates at a release tag, below).
 [workspace]
 
 [lib]
+# The extension is `calimero_client_py._native` (maturin's `module-name`); the
+# crate and the distribution are `mero-py`.
 name = "calimero_client_py"
 crate-type = ["cdylib"]
 

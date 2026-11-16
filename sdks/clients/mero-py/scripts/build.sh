@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Build script for calimero-client-py
+# Build script for mero-py
 # This script builds the Python package using maturin
 
 set -e
 
-echo "🚀 Building calimero-client-py..."
+echo "Building mero-py..."
 
 # Check if we're in the right directory
 if [ ! -f "Cargo.toml" ]; then

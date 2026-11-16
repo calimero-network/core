@@ -31,7 +31,10 @@ from test_openapi_client import (
 
 
 def test_every_operation_is_one_method():
-    document = json.loads((ROOT / "openapi" / "openapi.json").read_text())
+    # Core's document, from the core tree this SDK lives in.
+    document = json.loads(
+        (ROOT.parents[2] / "docs" / "public" / "openapi.json").read_text()
+    )
     ids = set()
     for item in document["paths"].values():
         for op in item.values():

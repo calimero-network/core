@@ -345,21 +345,20 @@ def test_errors_keep_the_arguments_the_client_raised():
     assert error_from(502, b"bad gateway").args == ("502 ERROR: ", 502, "ERROR", "null")
 
 
-# ------------------------------------------------------------ the vendored document
+# ------------------------------------------------------------ core's document
 
 
-def test_the_vendored_document_is_the_one_recorded():
-    source = json.loads((ROOT / "openapi" / "source.json").read_text())
-    data = (ROOT / "openapi" / "openapi.json").read_bytes()
-    assert hashlib.sha256(data).hexdigest() == source["sha256"]
-    assert len(source["commit"]) == 40
+def test_the_generator_reads_this_core_trees_document():
+    # Not vendored: generated from the core tree this SDK lives in.
+    assert not (ROOT / "openapi" / "openapi.json").exists()
+    document = ROOT.parents[2] / "docs" / "public" / "openapi.json"
+    assert json.loads(document.read_text())["openapi"].startswith("3.")
 
 
 def test_the_generated_package_names_its_source():
     import calimero_client_py.openapi as generated
 
-    source = json.loads((ROOT / "openapi" / "source.json").read_text())
-    assert source["commit"] in (generated.__doc__ or "")
+    assert "docs/public/openapi.json" in (generated.__doc__ or "")
 
 
 # ------------------------------------------------------------ rc4: the routes are the facade's

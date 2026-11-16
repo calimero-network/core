@@ -1,13 +1,13 @@
 ---
 title: Installation
-description: Install calimero-client-py from PyPI (prebuilt wheels for Linux, macOS and Windows) or from source.
+description: Install mero-py from PyPI (prebuilt wheels for Linux, macOS and Windows) or from source.
 sidebar:
   order: 1
 ---
 
 import { Steps, Tabs, TabItem, LinkCard, CardGrid } from '@astrojs/starlight/components';
 
-`calimero-client-py` is the Python client for Calimero 1.0, backed by a native Rust core, built
+`mero-py` is the Python client for Calimero 1.0, backed by a native Rust core, built
 with [PyO3](https://pyo3.rs/) and [maturin](https://www.maturin.rs/). Two
 importable modules are installed:
 
@@ -51,22 +51,23 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   <TabItem label="pip">
 
 ```bash
-pip install calimero-client-py
+pip install --pre mero-py
 ```
 
   </TabItem>
   <TabItem label="pipx">
 
 ```bash
-pipx install calimero-client-py
+pipx install --pip-args=--pre mero-py
 ```
 
   </TabItem>
 </Tabs>
 
-This installs the latest release (1.0.0 or later), the client for
-Calimero 1.0's node. The client for v1's node is 0.9.0
-(`pip install calimero-client-py==0.9.0`).
+This installs the client for Calimero 1.0's node, on core's version
+(1.0.0rc30 and on). Up to then the distribution was `calimero-client-py`; the
+import names (`calimero`, `calimero_client_py`) did not change. The client for
+v1's node is `pip install calimero-client-py==0.9.0`.
 
 ## Verify
 
@@ -86,8 +87,8 @@ extension and installs it into the active virtual environment in one step.
 1. Clone and enter the repository:
 
    ```bash
-   git clone https://github.com/calimero-network/calimero-client-py.git
-   cd calimero-client-py
+   git clone https://github.com/calimero-network/core.git
+   cd core/sdks/clients/mero-py
    ```
 
 2. Install maturin and build in development mode:

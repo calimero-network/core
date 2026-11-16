@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "calimero-client-py"
+name = "mero-py"
 # maturin takes it from Cargo.toml.
 dynamic = ["version"]
 description = "Python client for Calimero 1.0"
@@ -27,8 +27,8 @@ classifiers = [
 
 [project.urls]
 Documentation = "https://calimero-network.github.io/calimero-client-py/"
-Repository = "https://github.com/calimero-network/calimero-client-py"
-Changelog = "https://github.com/calimero-network/calimero-client-py/blob/master/CHANGELOG.md"
+Repository = "https://github.com/calimero-network/core/tree/master/sdks/clients/mero-py"
+Changelog = "https://github.com/calimero-network/core/blob/master/sdks/clients/mero-py/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Example usage of calimero-client-py against a Calimero 1.0 cluster.
+Example usage of mero-py against a Calimero 1.0 cluster.
 
-1. Install the package: pip install calimero-client-py
-   (or from a checkout: maturin develop --release)
+1. Install the package: pip install --pre mero-py
+   (or from sdks/clients/mero-py: maturin develop --release)
 2. Start a development cluster (see tests/test_cloud_v2.py for `merod run`)
    and build an app bundle, e.g. core's kv-store fixture.
-3. Run: python example_usage.py http://127.0.0.1:2428 path/to/kv_store.wasm
+3. Run: python examples/example_usage.py http://127.0.0.1:2428 path/to/kv_store.wasm
 
 Development clusters serve mock quotes, so this passes allow_mock=True; a
 production node is pinned to a signed mero-tee release with tee_profiles=[...].

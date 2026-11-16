@@ -29,3 +29,5 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+# pytest-cov
+.coverage

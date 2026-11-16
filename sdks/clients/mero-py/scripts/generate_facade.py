@@ -151,7 +151,7 @@ def generate(document: dict) -> str:
     out = [
         '"""The operations of core\'s node API, one method each: generated, do not edit.',
         "",
-        "Made by scripts/generate_facade.py from openapi/openapi.json and the",
+        "Made by scripts/generate_facade.py from core's docs/public/openapi.json and the",
         "generated calls in `calimero_client_py.openapi`. Reach them on a client:",
         '`client.orgs.invite_create(org=..., role="member")`. Arguments are',
         "keyword-only: the path's, the query's and the JSON body's fields; a",
