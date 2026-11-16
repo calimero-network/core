@@ -2491,6 +2491,7 @@ fn invites_are_redeemed_with_the_tokens_key() {
         now: 10,
         signature,
         free_when_unchanged: true,
+        clamp_grants: false,
     };
     assert!(m.run(redeem(String::new())).is_err(), "no signature");
     let forged = crate::proof::sign_invite_redeem("inv_guess", "carol", 10);
@@ -2527,6 +2528,7 @@ fn redemption(token: &str, account: &str, now: u64) -> SystemCmd {
         now,
         signature: crate::proof::sign_invite_redeem(token, account, now),
         free_when_unchanged: true,
+        clamp_grants: true,
     }
 }
 
@@ -9099,4 +9101,90 @@ fn an_existing_member_redeeming_a_capability_invite_keeps_their_own() {
         .unwrap();
     let _ok = m.run(redemption("inv_c", "bob", 10)).unwrap();
     assert_eq!(m.state.orgs["org"].capabilities["bob"], caps::CREATE_TEAM);
+}
+
+/// An invite's `all_apps` grant stands at redeem only while its creator is
+/// still an owner or admin; an entry logged without the flag keeps granting
+/// as minted, so every replica of an older log agrees.
+#[test]
+fn an_all_apps_invite_grants_only_while_its_creator_is_still_an_admin() {
+    let minted = |token: &str| {
+        let (mut m, _alice, _bob, _carol) = proven_cluster();
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.members.insert("bob".into(), OrgRole::Admin);
+        let invite: crate::types::Invite = serde_json::from_value(json!({
+            "org": "org", "role": "member", "expiresAt": 100, "usesLeft": 1,
+            "allApps": true, "createdBy": "bob",
+        }))
+        .unwrap();
+        let _prev = m
+            .state
+            .invites
+            .insert(crate::proof::invite_key(token), invite);
+        m
+    };
+
+    let mut m = minted("inv_a");
+    let _ok = m.run(redemption("inv_a", "carol", 10)).unwrap();
+    assert!(
+        m.state.orgs["org"].all_apps.contains("carol"),
+        "still admin"
+    );
+
+    let mut m = minted("inv_d");
+    let _prev = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .members
+        .insert("bob".into(), OrgRole::Member);
+    let _ok = m.run(redemption("inv_d", "carol", 10)).unwrap();
+    assert!(!m.state.orgs["org"].all_apps.contains("carol"), "demoted");
+    assert!(m.state.orgs["org"].members.contains_key("carol"), "joined");
+
+    let mut m = minted("inv_r");
+    let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
+    let _ok = m.run(redemption("inv_r", "carol", 10)).unwrap();
+    assert!(!m.state.orgs["org"].all_apps.contains("carol"), "removed");
+
+    // As an earlier release logged it: no flag, granted as minted.
+    let mut m = minted("inv_o");
+    let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
+    let old: SystemCmd = serde_json::from_value(json!({
+        "op": "redeemInvite", "invite_key": crate::proof::invite_key("inv_o"),
+        "account": "carol", "now": 10,
+        "signature": crate::proof::sign_invite_redeem("inv_o", "carol", 10),
+    }))
+    .unwrap();
+    assert!(old.features().is_empty());
+    let _ok = m.run(old).unwrap();
+    assert!(m.state.orgs["org"].all_apps.contains("carol"));
+    assert_eq!(
+        redemption("inv_o", "carol", 10).features(),
+        [super::cluster_version::Feature::InviteCapabilities]
+    );
+}
+
+/// A creator still in the organization with no capability row of their own
+/// grants what the organization's default gives them.
+#[test]
+fn an_invite_is_clamped_to_the_default_when_its_creator_has_no_row() {
+    use crate::types::caps;
+
+    let (mut m, _alice, mut bob, _carol) = proven_cluster();
+    let o = m.state.orgs.get_mut("org").unwrap();
+    o.default_capabilities = caps::INVITE_MEMBERS | caps::CREATE_APP;
+    assert!(!o.capabilities.contains_key("bob"));
+    let _ok = mint_with_capabilities(
+        &mut m,
+        &mut bob,
+        "bob",
+        "inv_c",
+        Some(caps::INVITE_MEMBERS | caps::CREATE_APP),
+    )
+    .unwrap();
+    m.state.orgs.get_mut("org").unwrap().default_capabilities = caps::CREATE_APP;
+    let _ok = m.run(redemption("inv_c", "carol", 10)).unwrap();
+    assert_eq!(m.state.orgs["org"].capabilities["carol"], caps::CREATE_APP);
 }

@@ -921,12 +921,19 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             account,
             now,
             free_when_unchanged,
+            clamp_grants,
             ..
         } => {
             if !s.accounts.contains_key(&account) {
                 return Err("unknown account");
             }
-            let org = s.redeem_org_invite(&invite_key, &account, now, free_when_unchanged)?;
+            let org = s.redeem_org_invite(
+                &invite_key,
+                &account,
+                now,
+                free_when_unchanged,
+                clamp_grants,
+            )?;
             Ok(json!({ "org": org }))
         }
         SystemCmd::RevokeInvite {

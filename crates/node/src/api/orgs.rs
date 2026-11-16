@@ -1126,6 +1126,12 @@ async fn invite_redeem(
 /// the consent page's `acceptInvite` once the person approved it there.
 pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> ApiResult {
     let now = now_secs();
+    // An earlier release would apply the grant unclamped, so the flag waits
+    // for every node to read it.
+    let clamp_grants = node
+        .require_features(&[Feature::InviteCapabilities])
+        .await
+        .is_ok();
     let v = node
         .sys_write(&SystemCmd::RedeemInvite {
             invite_key: crate::proof::invite_key(token),
@@ -1133,6 +1139,7 @@ pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> 
             account,
             now,
             free_when_unchanged: true,
+            clamp_grants,
         })
         .await?;
     Ok(Json(v))

@@ -417,6 +417,10 @@ impl SystemCmd {
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
             }
+            Self::RedeemInvite {
+                clamp_grants: true, ..
+            } => vec![Feature::InviteCapabilities],
+            Self::RedeemInvite { .. } => Vec::new(),
             Self::CreateInvite { invite, .. } => {
                 invite_features(invite.all_apps, invite.capabilities.is_some())
             }
@@ -516,7 +520,6 @@ impl SystemCmd {
             | Self::SetCapabilities { .. }
             | Self::SetDefaultCapabilities { .. }
             | Self::RemoveTeamMember { .. }
-            | Self::RedeemInvite { .. }
             | Self::RevokeInvite { .. }
             | Self::SetRecoveryKey { .. }
             | Self::StartRecovery { .. }
@@ -1299,11 +1302,15 @@ mod tests {
         assert!(invite_features(false, false).is_empty());
         assert_eq!(invite_features(true, false), [Feature::AllApps]);
         assert_eq!(invite_features(false, true), [Feature::InviteCapabilities]);
-        for (all_apps, capabilities, feature) in [
-            (true, false, Feature::AllApps),
-            (false, true, Feature::InviteCapabilities),
+        for (all_apps, capabilities, feature, below) in [
+            (true, false, Feature::AllApps, RC15),
+            (false, true, Feature::InviteCapabilities, RC24),
         ] {
-            let refused = check(Some(RC24), &invite_features(all_apps, capabilities)).unwrap_err();
+            assert_eq!(
+                compare_versions(below, feature.since()),
+                std::cmp::Ordering::Less
+            );
+            let refused = check(Some(below), &invite_features(all_apps, capabilities)).unwrap_err();
             assert_eq!(refused.feature, feature);
         }
     }

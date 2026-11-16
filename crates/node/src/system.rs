@@ -2092,14 +2092,17 @@ impl SystemState {
         account: &str,
         now: u64,
         free_when_unchanged: bool,
+        clamp_grants: bool,
     ) -> Result<OrgId, &'static str> {
         let inv = self.invites.get(invite_key).ok_or(INVITE_GONE)?;
         if inv.expires_at <= now || inv.uses_left == 0 {
             return Err(INVITE_EXPIRED);
         }
+        let all_apps =
+            inv.all_apps && (!clamp_grants || self.is_org_admin(&inv.org, &inv.created_by));
         let o = self.orgs.get(&inv.org).ok_or("no such organization")?;
         let unchanged = o.members.get(account).is_some_and(|r| *r >= inv.role)
-            && (!inv.all_apps || o.all_apps.contains(account))
+            && (!all_apps || o.all_apps.contains(account))
             && inv.teams.iter().all(|t| {
                 o.teams
                     .get(t)
@@ -2131,7 +2134,7 @@ impl SystemState {
         if let (Some(bits), true) = (granted, new_member) {
             let _prev = o.capabilities.insert(account.to_owned(), bits);
         }
-        if inv.all_apps {
+        if all_apps {
             let _new = o.all_apps.insert(account.to_owned());
         }
         for t in &inv.teams {
@@ -5524,6 +5527,12 @@ pub enum SystemCmd {
         /// reaches the same state.
         #[serde(default)]
         free_when_unchanged: bool,
+        /// The invite's `all_apps` grant stands only while its creator is
+        /// still an owner or admin. Absent (`false`) in an earlier
+        /// release's entry, which replays granting it as minted
+        /// ([`cluster_version::Feature::InviteCapabilities`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        clamp_grants: bool,
     },
     /// Withdraw an invite before it is used up: its creator, an admin, or
     /// whoever manages every team it names ([`SystemState::sees_invite`]),
