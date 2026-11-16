@@ -96,11 +96,10 @@ swift-openapi-generator's own `Client` over the same transport.
 
 The facade (`Sources/MeroKit/Api/Generated`) and `MeroAPI`
 (`Sources/MeroAPI/Generated`) are generated from
-[`openapi/openapi.json`](openapi/openapi.json), core's document at the commit
-in [`openapi/source`](openapi/source), by
+core's document (`docs/public/openapi.json` in calimero-network/core, the
+commit this SDK is released from) by
 [`scripts/generate-openapi.sh`](scripts/generate-openapi.sh), and checked in:
-`refresh [REF]` vendors a newer document, `check` (a CI job) fails on stale
-output. MeroKit 1.0 removed the 0.x wrappers (`getOrg`, `invite`,
+core's CI fails on stale output. MeroKit 1.0 removed the 0.x wrappers (`getOrg`, `invite`,
 `createApp`, ...): [CHANGELOG.md](CHANGELOG.md) maps each to its facade
 method. `call`/`view` (idempotent retries, failover, exact numbers), the
 sign-in ceremonies, the event streams and the escape hatches (`post`,
@@ -176,8 +175,7 @@ XCUITest suite drives.
 
 ```sh
 swift build && swift test
-scripts/generate-openapi.sh                     # regenerate MeroAPI + the facade from openapi/openapi.json
-scripts/generate-openapi.sh refresh docs/openapi   # vendor core's document from a branch, tag or commit first
+scripts/generate-openapi.sh                     # in core: regenerate MeroAPI + the facade from docs/public/openapi.json
 swiftlint lint --strict
 swift-format lint --recursive --strict Sources Tests examples
 scripts/dev-cluster.sh up                       # merod local on :2501-2503 (Docker on a Mac)

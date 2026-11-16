@@ -3,7 +3,7 @@
 
 Usage: scripts/openapi-normalize.py IN.json OUT.json
 
-openapi/openapi.json stays byte for byte what core publishes; the generator
+core's docs/public/openapi.json is read as it is published; the generator
 (1.10.3) reads this script's output instead. Each rewrite keeps the
 document's meaning:
 
