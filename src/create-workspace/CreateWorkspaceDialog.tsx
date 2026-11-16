@@ -1,9 +1,8 @@
-import './workspaceReview.css';
-import './createWorkspace.css';
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { CalimeroClient, PasskeyProvider } from '@calimero-network/mero-js';
-import { MeroProvider, useMero } from '../context';
+import { useMero } from '../context';
+import { ApprovalCard, DialogShell, useMounted, WithClient } from '../consent-flow/DialogShell';
 import { clusterName } from './clusterName';
 import { WorkspaceReview } from './WorkspaceReview';
 import { useCreateWorkspace, useCreateWorkspaceResume, type CreatedWorkspace } from './useCreateWorkspace';
@@ -68,9 +67,6 @@ export interface CreateWorkspaceDialogProps {
   passkey?: PasskeyProvider;
 }
 
-const subscribeNothing = () => () => undefined;
-const useMounted = () => useSyncExternalStore(subscribeNothing, () => true, () => false);
-
 /** Says why a full-page approval created nothing (declined, or a return that is not this tab's request). */
 function ResumeNotice({ onCreated }: Pick<CreateWorkspaceDialogProps, 'onCreated'>) {
   const { message } = useCreateWorkspaceResume({ onCreated });
@@ -88,12 +84,6 @@ function ResumeNotice({ onCreated }: Pick<CreateWorkspaceDialogProps, 'onCreated
   );
 }
 
-const CloseIcon = () => (
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
-    <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-  </svg>
-);
-
 /**
  * Create a workspace in three steps: names, review, and (on a session bound to
  * the app's frontend) approval on the node's own page. Mount it once under
@@ -101,14 +91,10 @@ const CloseIcon = () => (
  * full-page trip to the node. Needs a `MeroProvider`, or pass `client`.
  */
 export function CreateWorkspaceDialog({ client, passkey, ...props }: CreateWorkspaceDialogProps) {
-  const sessionStore = useMemo(() => ({ load: () => client?.session ?? null, save: () => undefined, clear: () => undefined }), [client]);
-  const inner = <Dialog {...props} />;
-  return client ? (
-    <MeroProvider client={client} sessionStore={sessionStore} passkey={passkey}>
-      {inner}
-    </MeroProvider>
-  ) : (
-    inner
+  return (
+    <WithClient client={client} passkey={passkey}>
+      <Dialog {...props} />
+    </WithClient>
   );
 }
 
@@ -121,7 +107,6 @@ function Dialog({ open, onClose, release, onCreated, returnTo, labels, defaultSe
   const [selfName, setSelfName] = useState(defaultSelfName);
   const ids = [useId(), useId()];
   const first = useRef<HTMLInputElement>(null);
-  const mounted = useMounted();
   useEffect(() => {
     if (open && release && step === 'names') first.current?.focus();
   }, [open, release, step]);
@@ -136,44 +121,7 @@ function Dialog({ open, onClose, release, onCreated, returnTo, labels, defaultSe
       Checking the newest release…
     </p>
   ) : approving ? (
-    <div className="mero-cw-approve">
-      <h2 className="mero-cw-title">Approve with your passkey</h2>
-      <p className="mero-cw-sub">
-        {redirecting
-          ? 'Your node will open its own page to ask for your passkey. Check that it shows this code.'
-          : 'A window from your node opened. Check it shows this code, then approve there.'}
-      </p>
-      <div className="mero-cw-code" aria-live="polite">
-        {flow.code ?? '...'}
-      </div>
-      {redirecting ? (
-        <>
-          <button type="button" className="mero-cw-btn mero-cw-btn--primary mero-cw-btn--full" onClick={flow.proceed}>
-            Continue to your node
-          </button>
-          <div className="mero-cw-row">
-            <button type="button" className="mero-cw-btn" onClick={flow.cancel}>
-              Cancel
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="mero-cw-wait" role="status">
-            <span className="mero-cw-dot" aria-hidden="true" />
-            Waiting for your approval...
-          </div>
-          <div className="mero-cw-row">
-            <button type="button" className="mero-cw-btn" onClick={flow.cancel}>
-              Cancel
-            </button>
-            <button type="button" className="mero-cw-link" onClick={flow.reopen}>
-              Open the window again
-            </button>
-          </div>
-        </>
-      )}
-    </div>
+    <ApprovalCard redirecting={redirecting} code={flow.code} onCancel={flow.cancel} onProceed={flow.proceed} onReopen={flow.reopen} />
   ) : step === 'names' ? (
     <form
       onSubmit={(e) => {
@@ -220,19 +168,11 @@ function Dialog({ open, onClose, release, onCreated, returnTo, labels, defaultSe
   return (
     <>
       <ResumeNotice onCreated={onCreated} />
-      {open &&
-        mounted &&
-        createPortal(
-          <div className="mero-cw mero-cw-overlay" onKeyDown={(e) => e.key === 'Escape' && !approving && onClose()}>
-            <div className="mero-cw-card" role="dialog" aria-modal="true" aria-label={text.title}>
-              <button type="button" className="mero-cw-x" aria-label="Close" onClick={() => (approving ? flow.cancel() : onClose())}>
-                <CloseIcon />
-              </button>
-              <div className="mero-cw-body">{body}</div>
-            </div>
-          </div>,
-          document.body,
-        )}
+      {open && (
+        <DialogShell label={text.title} locked={approving} onClose={() => (approving ? flow.cancel() : onClose())}>
+          {body}
+        </DialogShell>
+      )}
     </>
   );
 }
