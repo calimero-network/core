@@ -45,7 +45,7 @@ concurrency:
 jobs:
   sync:
     name: Sync
-    uses: calimero-network/core/.github/workflows/sdk-openapi-sync.yml@fb0ed2e0c891df7e5a6fea9b0ad78b4e94a011b5
+    uses: calimero-network/core/.github/workflows/sdk-openapi-sync.yml@256ec932342ef2d6752b7575caf8bed0ac9d8f83
     with:
       ref: ${{ inputs.ref }}
       dry-run: ${{ inputs.dry_run == true }}
