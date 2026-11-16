@@ -10,7 +10,7 @@
  */
 
 /** The Calimero Cloud control plane's public node directory. */
-export const DEFAULT_DIRECTORY = 'https://manager.cloud.calimero.network/api/v2/directory';
+export const DEFAULT_DIRECTORY = 'https://manager.cloud.calimero.network/api/directory';
 
 /** How long a listing stands when the directory does not say. */
 const DEFAULT_REFRESH_SECONDS = 60;

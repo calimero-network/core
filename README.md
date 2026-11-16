@@ -78,7 +78,7 @@ environment.
 
 `CalimeroClient.connect({ cluster, policy })` is the recommended way to reach a
 Calimero Cloud cluster. It reads the cluster's nodes from the public node
-directory (`DEFAULT_DIRECTORY`, `https://manager.cloud.calimero.network/api/v2/directory`;
+directory (`DEFAULT_DIRECTORY`, `https://manager.cloud.calimero.network/api/directory`;
 `directory` names another), puts those in `zone` first when you give one, and
 orders each group at random, weighted by the directory's weight. A cluster the
 directory does not know, or one with no usable node, throws `DirectoryError`.

@@ -1,5 +1,6 @@
 export {
   HANDSHAKE_PATH,
+  LEGACY_HANDSHAKE_PATH,
   SEALED_CONTENT_TYPE,
   SEALED_PATH,
   SealedTransportError,

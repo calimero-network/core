@@ -4,6 +4,7 @@ import { concat, fromHex, fromHexUnsized, hex } from '../crypto/internal.js';
 import { SymmetricState, dh, initiate, x25519KeyPair, type X25519KeyPair } from './noise.js';
 import {
   HANDSHAKE_PATH,
+  LEGACY_HANDSHAKE_PATH,
   SEALED_CONTENT_TYPE,
   SEALED_PATH,
   SealedTransportError,
@@ -179,6 +180,7 @@ class StandInNode {
   fetch = vi.fn(async (url: string, init: RequestInit): Promise<Response> => {
     const body = init.body as Uint8Array;
     if (url === `${StandInNode.baseUrl}${HANDSHAKE_PATH}`) return this.handshake(body);
+    if (url === `${StandInNode.baseUrl}${LEGACY_HANDSHAKE_PATH}`) return this.handshake(body);
     if (url === `${StandInNode.baseUrl}${SEALED_PATH}`) return this.exchange(body);
     throw new Error(`unexpected ${url}`);
   });
@@ -361,6 +363,73 @@ describe('createSealedFetch', () => {
     const response = await sealedFetch(`${baseUrl}/admin-api/health`);
     expect(response.status).toBe(200);
     expect(node.handshakes).toBe(1);
+  });
+
+  it('opens the session at /sealed/handshake', async () => {
+    const node = await StandInNode.start(() => ok());
+    const sealedFetch = createSealedFetch({ baseUrl, transportPublicKey: node.transportKey, fetch: node.fetch as never });
+    expect((await sealedFetch(`${baseUrl}/admin-api/health`)).status).toBe(200);
+    const urls = node.fetch.mock.calls.map(([url]) => url);
+    expect(HANDSHAKE_PATH).toBe('/sealed/handshake');
+    expect(urls).toEqual([`${baseUrl}/sealed/handshake`, `${baseUrl}${SEALED_PATH}`]);
+  });
+
+  it.each([404, 405])(
+    'opens the session at /sealed/v2/handshake when the node answers %i at /sealed/handshake',
+    async (status) => {
+      // A node released before /sealed/handshake routes only the v2 path.
+      const node = await StandInNode.start(() => ok());
+      const carrier = vi.fn(async (url: string, init: RequestInit) => {
+        if (url === `${baseUrl}${HANDSHAKE_PATH}`) return new Response('Not Found', { status });
+        return node.fetch(url, init);
+      });
+      const sealedFetch = createSealedFetch({ baseUrl, transportPublicKey: node.transportKey, fetch: carrier as never });
+      expect((await sealedFetch(`${baseUrl}/admin-api/health`)).status).toBe(200);
+      expect(carrier.mock.calls.map(([url]) => url)).toEqual([
+        `${baseUrl}/sealed/handshake`,
+        `${baseUrl}/sealed/v2/handshake`,
+        `${baseUrl}${SEALED_PATH}`,
+      ]);
+      expect(node.handshakes).toBe(1);
+    },
+  );
+
+  it('opens the session at /sealed/v2/handshake when a sealed-only node answers 403 sealed_required', async () => {
+    // An older node that seals everything refuses an unknown path as unsealed.
+    const node = await StandInNode.start(() => ok());
+    const carrier = vi.fn(async (url: string, init: RequestInit) => {
+      if (url === `${baseUrl}${HANDSHAKE_PATH}`) return refusal(403, 'sealed_required');
+      return node.fetch(url, init);
+    });
+    const sealedFetch = createSealedFetch({ baseUrl, transportPublicKey: node.transportKey, fetch: carrier as never });
+    expect((await sealedFetch(`${baseUrl}/admin-api/health`)).status).toBe(200);
+    expect(carrier.mock.calls.map(([url]) => url)).toEqual([
+      `${baseUrl}/sealed/handshake`,
+      `${baseUrl}/sealed/v2/handshake`,
+      `${baseUrl}${SEALED_PATH}`,
+    ]);
+  });
+
+  it('reports a 404 from the old handshake path too, without trying again', async () => {
+    const carrier = vi.fn(async () => new Response('Not Found', { status: 404 }));
+    const sealedFetch = createSealedFetch({ baseUrl, transportPublicKey: transportKey, fetch: carrier });
+    const error = await sealedFetch(`${baseUrl}/admin-api/health`).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SealedTransportError);
+    expect((error as SealedTransportError).status).toBe(404);
+    expect(carrier).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [400, 'malformed'],
+    [403, 'forbidden'],
+    [409, 'stale_transport_key'],
+    [500, 'internal'],
+  ])('does not try the old handshake path when the node answers %i', async (status, code) => {
+    const carrier = vi.fn(async () => refusal(status, code));
+    const sealedFetch = createSealedFetch({ baseUrl, transportPublicKey: transportKey, fetch: carrier });
+    await expect(sealedFetch(`${baseUrl}/admin-api/health`)).rejects.toBeInstanceOf(Error);
+    expect(carrier).toHaveBeenCalledTimes(1);
+    expect(carrier).toHaveBeenCalledWith(`${baseUrl}${HANDSHAKE_PATH}`, expect.anything());
   });
 
   it('passes a node refusal on as a SealedTransportError', async () => {

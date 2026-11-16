@@ -32,7 +32,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
-const DIRECTORY = 'https://directory.test/api/v2/directory';
+const DIRECTORY = 'https://directory.test/api/directory';
 const ok = (json: unknown): Reply => ({ status: 200, json });
 const unavailable = (): Reply => ({ status: 503, json: { error: 'UNAVAILABLE', message: 'unavailable (stand-in)' } });
 const dropped = (): Reply => ({ status: 0, drop: true });
@@ -88,7 +88,7 @@ describe('CalimeroClient.connect: the node directory', () => {
   });
 
   it('defaults to the Calimero Cloud directory', () => {
-    expect(DEFAULT_DIRECTORY).toBe('https://manager.cloud.calimero.network/api/v2/directory');
+    expect(DEFAULT_DIRECTORY).toBe('https://manager.cloud.calimero.network/api/directory');
   });
 
   it('orders the nodes in the zone first, each group by weight', async () => {

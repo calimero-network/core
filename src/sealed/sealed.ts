@@ -21,7 +21,8 @@
  *
  * ```text
  * handshake   Noise_NK_25519_AESGCM_SHA256, prologue "calimero/sealed-http/v2"
- *   request   POST /sealed/v2/handshake   0x02 || transport_pk || Noise message 1
+ *   request   POST /sealed/handshake      0x02 || transport_pk || Noise message 1
+ *             (nodes before it served only /sealed/v2/handshake; see LEGACY_HANDSHAKE_PATH)
  *   response  0x02 || Noise message 2 (payload = session_id(16) || lifetime secs, u32 BE)
  *   keys      (req key, resp key) = Split()
  * exchange    POST /sealed/v2
@@ -42,7 +43,13 @@ import { initiate } from './noise.js';
 import type { DcapCollateral } from './verify.js';
 
 /** Where a session is opened, relative to the node's base URL. */
-export const HANDSHAKE_PATH = '/sealed/v2/handshake';
+export const HANDSHAKE_PATH = '/sealed/handshake';
+/**
+ * Where nodes released before {@link HANDSHAKE_PATH} existed open a session (newer
+ * nodes still serve it as a deprecated alias). The handshake is tried here only
+ * when the node answers 404 or 405 at {@link HANDSHAKE_PATH}.
+ */
+export const LEGACY_HANDSHAKE_PATH = '/sealed/v2/handshake';
 /** Where sealed requests are posted, relative to the node's base URL. */
 export const SEALED_PATH = '/sealed/v2';
 /** Content type of every sealed body. */
@@ -278,16 +285,53 @@ async function handshakeOnce(
   transportKey: Uint8Array,
 ): Promise<Session> {
   const noise = await initiate(transportKey, PROLOGUE);
-  const response = await baseFetch(`${nodeUrl}${HANDSHAKE_PATH}`, {
-    method: 'POST',
-    headers: { 'content-type': SEALED_CONTENT_TYPE },
-    body: concat(new Uint8Array([VERSION]), transportKey, noise.message1),
-  });
+  const response = await postHandshake(
+    baseFetch,
+    nodeUrl,
+    concat(new Uint8Array([VERSION]), transportKey, noise.message1),
+  );
   if (response.headers.get('content-type') !== SEALED_CONTENT_TYPE) {
     throw await envelopeRefusal(response);
   }
   const reply = await readAtMost(response, MAX_HANDSHAKE_REPLY);
   return sessionFrom(noise, reply);
+}
+
+/**
+ * Post handshake message 1 to {@link HANDSHAKE_PATH}; a node from before the
+ * path gets the same message once at {@link LEGACY_HANDSHAKE_PATH}. Such a node
+ * routes nothing there (404, 405) or, sealing everything as Cloud nodes do,
+ * refuses it as an unsealed request (403 `sealed_required`). That node never
+ * read the first message, so sending it again opens nothing twice. Any other
+ * answer is returned as it is.
+ */
+async function postHandshake(
+  baseFetch: typeof fetch,
+  nodeUrl: string,
+  body: Uint8Array,
+): Promise<Response> {
+  const post = (path: string) =>
+    baseFetch(`${nodeUrl}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': SEALED_CONTENT_TYPE },
+      body,
+    });
+  const response = await post(HANDSHAKE_PATH);
+  if (!(await predatesHandshakePath(response))) return response;
+  await response.body?.cancel();
+  return post(LEGACY_HANDSHAKE_PATH);
+}
+
+/** Whether a handshake answer says the node predates {@link HANDSHAKE_PATH} (see `postHandshake`). */
+async function predatesHandshakePath(response: Response): Promise<boolean> {
+  if (response.status === 404 || response.status === 405) return true;
+  if (response.status !== 403) return false;
+  try {
+    const body = (await response.clone().json()) as { error?: { code?: string } };
+    return body?.error?.code === 'sealed_required';
+  } catch {
+    return false;
+  }
 }
 
 /** Finish the handshake with the node's reply. Exported for the published vectors. */

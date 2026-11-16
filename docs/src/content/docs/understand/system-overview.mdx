@@ -23,7 +23,7 @@ to the app's leader over a peer channel attested the same way.
 | Step | What | Where |
 | --- | --- | --- |
 | Attest (once per node key) | `GET /attestation?nonce=…`, then verify the quote against `policy` | `fetchAttestedKey` (`src/runtime/attestation.ts`) |
-| Open a session | Noise NK to the attested transport key, `POST /sealed/v2/handshake` | `createSealedFetch` (`src/sealed/sealed.ts`) |
+| Open a session | Noise NK to the attested transport key, `POST /sealed/handshake` (`/sealed/v2/handshake` on a node that answers `404` or `405` there) | `createSealedFetch` (`src/sealed/sealed.ts`) |
 | Send | the request, its `Authorization` header and body sealed in `POST /sealed/v2`; the answer comes back in sealed frames, event streams too | the same |
 | Map the answer | a refusal becomes a typed error | `errorFrom` (`src/runtime/errors.ts`) |
 | Retry | a `503` or a dropped connection, for calls and views, with the same idempotency key | `CalimeroClient` |
