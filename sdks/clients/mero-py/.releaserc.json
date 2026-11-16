@@ -1,0 +1,54 @@
+{
+  "branches": ["master"],
+  "tagFormat": "v${version}",
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits",
+        "_comment": [
+          "noteKeywords is narrowed to the HYPHENATED spelling on purpose (as in",
+          "mero-js, kotlin-sdk and swift-sdk): the parser matches note keywords",
+          "case-insensitively at the start of a line, so the default",
+          "['BREAKING CHANGE'] turns any body line beginning 'breaking change'",
+          "into a major release. `type!:` and a `BREAKING-CHANGE:` footer still",
+          "make one."
+        ],
+        "parserOpts": {
+          "noteKeywords": ["BREAKING-CHANGE"]
+        },
+        "releaseRules": [
+          { "breaking": true, "release": "major" },
+          { "type": "fix", "release": "patch" },
+          { "type": "feat", "release": "minor" },
+          { "type": "chore", "release": null },
+          { "type": "docs", "release": null },
+          { "type": "refactor", "release": null },
+          { "type": "perf", "release": "patch" },
+          { "type": "test", "release": null },
+          { "type": "build", "release": null },
+          { "type": "ci", "release": null },
+          { "type": "style", "release": null },
+          { "type": "revert", "release": null },
+          { "revert": true, "release": null }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits",
+        "parserOpts": { "noteKeywords": ["BREAKING-CHANGE"] }
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "successComment": false,
+        "failComment": false,
+        "failTitle": false,
+        "releasedLabels": false
+      }
+    ]
+  ]
+}

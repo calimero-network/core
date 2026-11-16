@@ -1,0 +1,90 @@
+[package]
+name = "calimero-client-py"
+version = "1.0.0-rc.4"
+edition = "2021"
+authors = ["Calimero Limited <info@calimero.network>"]
+description = "Python client library for Calimero 1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/calimero-network/calimero-client-py"
+keywords = ["calimero", "blockchain", "api", "client", "web3", "python"]
+categories = ["api-bindings", "blockchain", "web-programming"]
+# Ensure source distribution includes all necessary files. Anchored with `/`:
+# these are gitignore-style patterns, and a bare `LICENSE*` also matches every
+# license file under `.venv/` or `docs/node_modules/`.
+include = [
+    "/src/**/*.rs",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE*",
+    "/CHANGELOG.md",
+]
+
+# Make this package standalone, not part of the workspace
+[workspace]
+
+[lib]
+name = "calimero_client_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Core's client at 1.0.0-rc.19: receipt-key quotes bind the cluster and node id
+# (`calimero.tee-attest.receipt-key.v3`), which `verify_app_cluster` checks.
+#
+# The three move TOGETHER or not at all: moving one alone makes cargo resolve two
+# copies of the crates they share, and the error names types rather than
+# revisions, which reads as a code problem rather than a resolution one.
+calimero-client = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.19", features = ["testing"] }
+calimero-identity = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.19", features = ["testing"] }
+# The sealed channel the generated client's requests go through (`SealedClient.request`):
+# core's `Client` answers JSON only, so each node keeps its own channel for them.
+calimero-sealed = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.19" }
+# Signs the operator's decisions (`use_operator_key`); the major core uses.
+ed25519-dalek = "3"
+# Core's client reports transport errors over eyre (`Error::Transport`).
+eyre = "0.6"
+futures-util = "0.3"
+
+# Python bindings
+# `extension-module` is enabled by the `python` feature below, not here.
+#
+# With it always on, pyo3 deliberately does not link libpython — correct for the
+# shared object a wheel ships, and fatal for a test binary, which has no
+# interpreter to borrow those symbols from. macOS hides this (its linker resolves
+# them lazily); Linux does not, so `cargo test` fails there and only there. The
+# `python` feature already existed and was empty, which is this recipe left
+# half-wired.
+pyo3 = { version = "0.22", features = ["multiple-pymethods"] }
+
+serde = "1.0"
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["rt-multi-thread", "sync", "time"] }
+url = "2.5"
+hex = "0.4"
+# The node directory (`Client.connect`): plain HTTPS, the same 0.12 and TLS
+# stack core's client already pulls in, so it adds no second copy.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Core's TDX attestation (`tdx_workload_attestation`, `tdx-linux`) links
+# OpenSSL on Linux. The manylinux images the wheels build in ship no OpenSSL
+# headers, so build it from source there.
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
+[features]
+default = []
+# What maturin builds with (see `[tool.maturin] features` in pyproject.toml).
+# `abi3-py39`: one wheel per platform, for every CPython from 3.9 on, built
+# against the stable ABI instead of one interpreter's.
+python = ["pyo3/extension-module", "pyo3/abi3-py39"]
+
+[profile.release]
+strip = "symbols"
+lto = true
+codegen-units = 1
+opt-level = "z"
+panic = "unwind"
+
+[profile.dev]
+opt-level = 0
+debug = true

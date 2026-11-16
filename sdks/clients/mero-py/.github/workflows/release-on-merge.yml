@@ -1,0 +1,120 @@
+name: Release on merge
+
+# Every push to master (a merged pull request) runs semantic-release over the
+# conventional commits since the last release (.releaserc.json). When they
+# make one, it pushes the tag `v<version>` and creates the GitHub Release with
+# notes from those commits. The tag starts build-wheels.yml, which builds the
+# sdist and the five wheels with that version and publishes them to PyPI once
+# the `pypi` environment's reviewers approve.
+#
+# Versions: master is the release branch, so every release is a stable
+# MAJOR.MINOR.PATCH (the shape of mero-js, kotlin-sdk and swift-sdk). The
+# repository had no release tags when this was set up, so the first release
+# is 1.0.0. RELEASING.md has the whole process.
+#
+# It authenticates as the organization's GitHub App (`vars.ACTIONS_APP_ID`,
+# `secrets.ACTIONS_APP_PRIVATE_KEY`), not GITHUB_TOKEN: a tag pushed with
+# GITHUB_TOKEN would not start build-wheels.yml.
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-on-merge
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tag and release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Every tag and commit since the last release, for the analysis.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Mint a token for this repository
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ACTIONS_APP_ID }}
+          private-key: ${{ secrets.ACTIONS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          # The tag, its note and the GitHub Release.
+          permission-contents: write
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      # Exact versions. conventional-changelog-conventionalcommits stays on 9.x:
+      # 10.x needs conventional-changelog-writer 9, which
+      # @semantic-release/release-notes-generator 14 does not use yet.
+      #
+      # PyPI never takes a version back or takes it twice. A tag whose version
+      # PyPI already has (a release history semantic-release cannot see, such
+      # as a lost tag) would build files PyPI refuses, so the version is
+      # computed first (--dry-run) and the release stops if PyPI has it.
+      - name: Compute the next version
+        id: next
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+          FORCE_COLOR: '0'
+        run: |
+          set -euo pipefail
+          npx --yes \
+            -p semantic-release@25.0.9 \
+            -p @semantic-release/commit-analyzer@13.0.1 \
+            -p @semantic-release/release-notes-generator@14.1.1 \
+            -p @semantic-release/github@12.0.10 \
+            -p conventional-changelog-conventionalcommits@9.3.1 \
+            semantic-release --dry-run | tee "$RUNNER_TEMP/dry-run.log"
+          # "the next release version is X", or, before the first release,
+          # "There is no previous release, the next release version is 1.0.0".
+          version=$(sed -E 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/dry-run.log" \
+            | sed -nE 's/.*[Tt]he next release version is ([0-9A-Za-z.+-]+).*/\1/p' | tail -n 1)
+          if [ -z "$version" ]; then
+            if grep -q 'There are no relevant changes' "$RUNNER_TEMP/dry-run.log"; then
+              echo "::notice::no release: no feat, fix, perf or breaking commit since the last one"
+              echo "version=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if grep -q 'configured to only publish from' "$RUNNER_TEMP/dry-run.log"; then
+              echo "::notice::no release: only master releases"
+              echo "version=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::the dry run named no next version and did not say there is none"
+            exit 1
+          fi
+          pep440=$(echo "$version" | sed -E 's/-rc\./rc/; s/-beta\./b/; s/-alpha\./a/')
+          status=$(curl -sS -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/calimero-client-py/$pep440/json")
+          case "$status" in
+            404) ;;
+            200) echo "::error::PyPI already has calimero-client-py $pep440: not tagging v$version"; exit 1 ;;
+            *) echo "::error::could not check PyPI for $pep440 (HTTP $status)"; exit 1 ;;
+          esac
+          echo "::notice::releasing $version (PyPI $pep440)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Run semantic-release
+        if: steps.next.outputs.version != ''
+        env:
+          GITHUB_TOKEN: ${{ steps.token.outputs.token }}
+        run: >-
+          npx --yes
+          -p semantic-release@25.0.9
+          -p @semantic-release/commit-analyzer@13.0.1
+          -p @semantic-release/release-notes-generator@14.1.1
+          -p @semantic-release/github@12.0.10
+          -p conventional-changelog-conventionalcommits@9.3.1
+          semantic-release

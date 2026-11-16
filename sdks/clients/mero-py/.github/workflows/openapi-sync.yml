@@ -1,0 +1,92 @@
+name: OpenAPI sync
+
+# Keeps the generated client current with core's OpenAPI document: refreshes
+# openapi/openapi.json from core, regenerates calimero_client_py/openapi,
+# calimero_client_py/facade.py and the docs' method reference, and opens (or
+# refreshes) one pull request on the machine-owned branch chore/core-openapi.
+#
+# Core's openapi-sync.yml sends `repository_dispatch` (type `core-openapi`,
+# `client_payload.commit` the full core sha) when the document changes on its
+# master; the weekly schedule is the fallback for a missed event. By hand:
+#
+#   gh workflow run openapi-sync.yml -f ref=master -f dry_run=true
+#
+# The sync is core's reusable sdk-openapi-sync.yml, the one all four SDKs
+# call, pinned by commit below (the classifier it runs is read from core at
+# that same commit). It titles the pull request by what the change does to
+# callers, which semantic-release reads: `feat(api)!:` with a
+# `BREAKING-CHANGE:` footer (major), `feat(api):` (minor) or `chore(api):`
+# (patch). All the editing is in scripts/refresh_openapi.py and
+# scripts/generate_openapi_client.py, which run the same by hand.
+#
+# The pull request is made with a GitHub App installation token, not
+# GITHUB_TOKEN: a pull request GITHUB_TOKEN opens or pushes to runs no
+# workflow, so it would arrive with no CI at all and read as green.
+#
+# The App's id and key: the org-shared ACTIONS_APP_ID (variable) and
+# ACTIONS_APP_PRIVATE_KEY (secret), which must be shared with this repository.
+
+on:
+  repository_dispatch:
+    types: [core-openapi]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Core branch, tag or sha to read the document from"
+        required: false
+        default: master
+        type: string
+      dry_run:
+        description: "Regenerate and report, but push nothing"
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    # Mondays 05:17 UTC.
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+# Never cancel: a cancelled run can leave the branch pushed with no pull
+# request. Queue instead.
+concurrency:
+  group: openapi-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync
+    uses: calimero-network/core/.github/workflows/sdk-openapi-sync.yml@fb0ed2e0c891df7e5a6fea9b0ad78b4e94a011b5
+    with:
+      ref: ${{ inputs.ref }}
+      dry-run: ${{ inputs.dry_run == true }}
+      timeout-minutes: 20
+      python-version: "3.11"
+      # The versions the repository pins: the generator in
+      # scripts/generate_openapi_client.py, black in pyproject.toml.
+      setup: |
+        generator=$(sed -n 's/^GENERATOR = "\(.*\)"$/\1/p' scripts/generate_openapi_client.py)
+        black=$(grep -o '"black==[^"]*"' pyproject.toml | head -1 | tr -d '"')
+        test -n "$generator" && test -n "$black"
+        pip install "openapi-python-client==$generator" "$black"
+      # --commit records a commit core sent as master's; a manual run reads --ref.
+      generate: |
+        if [ "$CORE_DISPATCHED" = true ]; then
+          python scripts/refresh_openapi.py --commit "$CORE_TARGET"
+        else
+          python scripts/refresh_openapi.py --ref "$CORE_TARGET"
+        fi
+        python scripts/generate_openapi_client.py
+      vendor-path: openapi/openapi.json
+      source-file: openapi/source.json
+      source-key: commit
+      owned-paths: openapi calimero_client_py/openapi calimero_client_py/facade.py docs/src/content/docs/reference/methods.mdx
+      summary: python scripts/facade_changes.py "$SYNC_BEFORE/calimero_client_py/facade.py" calimero_client_py/facade.py
+      summary-title: Facade methods
+      pr-notes: |
+        A **removed or renamed** method, or a signature that drops or now requires an
+        argument, breaks callers: release it in a **major** version.
+      app-id: ${{ vars.ACTIONS_APP_ID }}
+    secrets:
+      app-private-key: ${{ secrets.ACTIONS_APP_PRIVATE_KEY }}

@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+permissions:
+  contents: read
+
+jobs:
+  tracked-binaries:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+    - name: Check no tracked file is binary
+      run: |
+        binary=$(git ls-files --eol | awk '$1=="i/-text"')
+        if [ -n "$binary" ]; then
+          echo "$binary" >&2
+          exit 1
+        fi
+
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+    
+    - name: Set up Python
+      uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v4
+      with:
+        python-version: "3.11"
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      with:
+        toolchain: stable
+
+    - name: Install dependencies
+      run: |
+        pip install maturin==1.15.0
+        pip install -e ".[dev]"
+    
+    - name: Check code formatting with Black
+      run: |
+        black --check .
+
+    # calimero_client_py/openapi and calimero_client_py/facade.py are
+    # generated from openapi/openapi.json and checked in: regenerate them and
+    # fail on any difference (scripts/generate_openapi_client.py says how).
+    - name: Check the generated client is current
+      run: |
+        pip install openapi-python-client==0.26.2
+        python scripts/generate_openapi_client.py --check
+
+    # pyo3 only turns a Rust panic into a Python exception when it unwinds.
+    - name: Check the release profile unwinds
+      run: |
+        python -c "import tomllib, sys; sys.exit(tomllib.load(open('Cargo.toml', 'rb')).get('profile', {}).get('release', {}).get('panic') == 'abort')" || {
+          echo "[profile.release] must not set panic = \"abort\"" >&2
+          exit 1
+        }
+
+    # Black gated the Python and nothing gated the Rust, so `src/` had already
+    # drifted from rustfmt by the time this was added.
+    - name: Check Rust formatting
+      run: |
+        cargo fmt --check
+
+    # The step below builds the extension, so a compile error is caught there,
+    # but a wrong answer in Rust-only logic (path-segment encoding, say) is not.
+    # Without `--features python`, deliberately: that feature turns on pyo3's
+    # `extension-module`, which leaves libpython unlinked — right for a wheel's
+    # shared object, fatal for a test binary that has no interpreter to borrow
+    # those symbols from.
+    - name: Run Rust tests
+      run: |
+        cargo test
+
+    - name: Run tests
+      run: |
+        pytest tests/ -v --tb=short
+
+  abi-codegen:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: abi-codegen
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+    - name: Set up Python
+      uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v4
+      with:
+        python-version: "3.11"
+
+    - name: Install dependencies
+      run: |
+        pip install -e . pytest==9.1.1 pytest-cov==7.1.0
+
+    - name: Run tests
+      run: |
+        pytest
+
+  workflow-permissions:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+    - name: Set up Python
+      uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v4
+      with:
+        python-version: "3.11"
+
+    - name: Check OIDC tokens are only minted inside an environment
+      run: |
+        pip install pyyaml==6.0.3 pytest==9.1.1
+        pytest -o addopts="" scripts/test_check_oidc_jobs.py
+        python scripts/check_oidc_jobs.py
+
+    - name: Check workflows are least-privilege and pinned
+      run: |
+        pytest -o addopts="" scripts/test_check_workflow_hardening.py
+        python scripts/check_workflow_hardening.py
+
+  # Cargo.toml pins core's 1.0.0-rc.1 tag, so a change on core master to
+  # `calimero-client` (a field added to a request type, a renamed method)
+  # breaks only the next pin bump. This builds against core master as it is
+  # today. `calimero-identity` and `calimero-sealed` move with it, or cargo resolves two copies of
+  # the crates they share.
+  core-master:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+    # pyo3's build script reads the interpreter on PATH; the runner image's
+    # default can be newer than the pinned pyo3 supports, so pin it as `test` does.
+    - name: Set up Python
+      uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v4
+      with:
+        python-version: "3.11"
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      with:
+        toolchain: stable
+
+    - name: Check against core master
+      run: |
+        sed -i -E 's/(tag|rev|branch) = "[^"]*"/branch = "master"/' Cargo.toml
+        grep -n 'branch = "master"' Cargo.toml
+        cargo update -p calimero-client -p calimero-identity -p calimero-sealed
+        cargo check --all-targets

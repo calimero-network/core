@@ -1,0 +1,262 @@
+name: Build and Publish Wheels
+
+# Builds the sdist and the five abi3 wheels on every pull request and push to
+# master. A `v*` tag (pushed by release-on-merge.yml's semantic-release, or by
+# hand) also publishes them to PyPI, after the `pypi` environment's reviewers
+# approve: the tag's version is written into Cargo.toml for the build
+# (scripts/set_version.py), so the files carry it without a commit back.
+on:
+  push:
+    branches: [ master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The release's version: the tag's, without its `v`. Empty for anything but
+  # a tag, which then builds with Cargo.toml's version and publishes nothing.
+  version:
+    name: Release version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+    - name: Read the tag
+      id: tag
+      env:
+        REF: ${{ github.ref }}
+        TAG: ${{ github.ref_name }}
+      run: |
+        case "$REF" in
+          refs/tags/v*)
+            version="${TAG#v}"
+            if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+              echo "::error::tag $TAG is not v<MAJOR.MINOR.PATCH>[-rc.N]"
+              exit 1
+            fi
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "::notice::building release $version" ;;
+          *) echo "version=" >> "$GITHUB_OUTPUT" ;;
+        esac
+
+  build-source:
+    name: Build source distribution
+    runs-on: ubuntu-latest
+    needs: [version]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+    - name: Set up Python
+      uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v4
+      with:
+        python-version: '3.13'
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      with:
+        toolchain: stable
+
+    - name: Install build tools
+      run: |
+        pip install maturin==1.15.0
+
+    - name: Set the release's version
+      if: needs.version.outputs.version != ''
+      env:
+        VERSION: ${{ needs.version.outputs.version }}
+      run: python scripts/set_version.py "$VERSION"
+
+    - name: Build source distribution
+      run: maturin build --sdist --out dist
+
+    - name: Upload source artifacts
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: source-distribution
+        path: dist/*.tar.gz
+        retention-days: 1
+
+  # One abi3 wheel per platform (`abi3-py39`, set by the `python` feature):
+  # it installs on every CPython from 3.9 on, so nobody compiles a pyo3
+  # extension plus `ring` and `aws-lc-sys` from source. merobox drives nodes on
+  # Windows, mdma runs on Linux, developers on macOS; an sdist-only release
+  # sends each of them back to a Rust toolchain.
+  build-wheels:
+    name: Build wheel (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    needs: [version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - name: linux-x86_64
+          os: ubuntu-latest
+          target: x86_64
+          manylinux: '2014'
+          smoke: true
+        # Built on an arm64 runner rather than cross-compiled: aws-lc-sys and
+        # ring build their C and assembly for the host they run on.
+        - name: linux-aarch64
+          os: ubuntu-24.04-arm
+          target: aarch64
+          manylinux: '2014'
+          smoke: true
+        - name: macos-arm64
+          os: macos-latest
+          target: aarch64-apple-darwin
+          manylinux: ''
+          smoke: true
+        # Cross-compiled on the arm64 runner; the x86_64 macOS runners are gone.
+        - name: macos-x86_64
+          os: macos-latest
+          target: x86_64-apple-darwin
+          manylinux: ''
+          smoke: false
+        - name: windows-x86_64
+          os: windows-latest
+          target: x64
+          manylinux: ''
+          smoke: true
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      with:
+        python-version: '3.13'
+
+    # `aws-lc-sys` assembles its x86_64 primitives with NASM on windows-msvc.
+    # Harmless if a future version stops needing it.
+    - name: Install NASM
+      if: runner.os == 'Windows'
+      uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+    - name: Set the release's version
+      if: needs.version.outputs.version != ''
+      shell: bash
+      env:
+        VERSION: ${{ needs.version.outputs.version }}
+      run: python scripts/set_version.py "$VERSION"
+
+    - name: Build the wheel
+      uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+      with:
+        maturin-version: v1.15.0
+        target: ${{ matrix.target }}
+        manylinux: ${{ matrix.manylinux }}
+        args: --release --out dist
+        # Core's TDX attestation links OpenSSL on Linux, built from source
+        # (`openssl` with `vendored`, Cargo.toml); its Configure needs Perl
+        # core modules (IPC::Cmd, Time::Piece, ...) the manylinux2014 image
+        # leaves out.
+        before-script-linux: yum install -y perl-core
+
+    - name: Show what was produced
+      shell: bash
+      run: ls -la dist/
+
+    # The wheel imports and answers on the machine it was built for (a
+    # cross-compiled one cannot run here).
+    - name: Import the wheel
+      if: matrix.smoke
+      shell: bash
+      run: |
+        # The generated client's dependencies from the index, the wheel from dist/.
+        python -m pip install "httpx>=0.23.0,<0.29.0" "attrs>=22.2.0"
+        python -m pip install --no-index --find-links dist calimero-client-py
+        # Away from the checkout, whose package directories would shadow the wheel's.
+        cd "$RUNNER_TEMP"
+        python -c "import calimero, calimero_client_py as c; assert c.Client is c.CloudClient; print(calimero.__version__, c.VERSION)"
+        if [ -n "$VERSION" ]; then
+          python -c "import sys, calimero_client_py as c; sys.exit(c.VERSION != sys.argv[1])" "$VERSION"
+        fi
+      env:
+        VERSION: ${{ needs.version.outputs.version }}
+
+    - name: Upload the wheel
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: wheel-${{ matrix.name }}
+        path: dist/*.whl
+        retention-days: 1
+
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    # Every wheel is a hard requirement, not a nice-to-have: a platform whose
+    # wheel is missing falls back to the sdist, which means compiling a pyo3
+    # extension plus `ring` and `aws-lc-sys` from source there. `needs` waits
+    # for every matrix entry; one that fails blocks the release.
+    needs: [version, build-source, build-wheels]
+    if: startsWith(github.ref, 'refs/tags/v') && needs.version.outputs.version != ''
+    # PyPI trusts any OIDC token from this workflow; the environment's reviewers are the gate.
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Download source artifacts
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: source-distribution
+        path: dist/
+
+    - name: Download the wheels
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        pattern: wheel-*
+        path: dist/
+        merge-multiple: true
+
+    - name: Verify what is about to be published
+      env:
+        VERSION: ${{ needs.version.outputs.version }}
+      run: |
+        echo "Artifacts staged for PyPI:"
+        ls -la dist/
+
+        for file in dist/*.tar.gz; do
+          echo "Checking $file"
+          tar -tzf "$file" | head -10
+        done
+
+        # A wheel that silently failed to arrive would publish a release that
+        # sends its platform back to building from source, which is the whole
+        # problem the wheel jobs exist to stop. `needs` guarantees the jobs
+        # ran; this checks each artifact actually landed in dist/.
+        missing=0
+        # One pattern per platform: the platform tag, any manylinux or macOS
+        # floor (`manylinux_2_17_x86_64.manylinux2014_x86_64`, `macosx_11_0_arm64`).
+        for platform in 'manylinux_*_x86_64' 'manylinux_*_aarch64' 'macosx_*_arm64' 'macosx_*_x86_64' 'win_amd64'; do
+          # shellcheck disable=SC2086 # the pattern is meant to glob
+          found=$(ls dist/*-abi3-$platform*.whl 2>/dev/null || true)
+          if [ -n "$found" ]; then
+            echo "$platform wheel present: $found"
+          else
+            echo "::error::no abi3 $platform wheel in dist/ — refusing to publish a release without it"
+            missing=1
+          fi
+        done
+        # Every file carries the tag's version (PEP 440: 1.0.0-rc.5 is 1.0.0rc5).
+        pep440=$(echo "$VERSION" | sed -E 's/-rc\./rc/; s/-beta\./b/; s/-alpha\./a/')
+        for file in dist/*; do
+          case "$(basename "$file")" in
+            calimero_client_py-"$pep440"-*.whl|calimero_client_py-"$pep440".tar.gz) ;;
+            *) echo "::error::$file is not version $pep440"; missing=1 ;;
+          esac
+        done
+        exit $missing
+
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+      with:
+        packages-dir: dist/

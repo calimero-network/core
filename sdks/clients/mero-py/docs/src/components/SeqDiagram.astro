@@ -1,0 +1,23 @@
+---
+/**
+ * SeqDiagram — the bespoke animated sequence-diagram engine, mounted as an
+ * Astro island. Data-driven from MDX; rendered + wired by diagrams.client.ts.
+ *
+ *   <SeqDiagram id="d-foo" title="Foo"
+ *     lanes={[{label:'A',color:'#3fb950'}, ...]}
+ *     steps={[{from:0,to:0,label:'...'}, ...]} />
+ */
+interface Lane { label: string; color: string }
+interface Step { from?: number; to?: number; label: string; dashed?: boolean; color?: string; type?: string }
+interface Props { id: string; title: string; lanes: Lane[]; steps: Step[] }
+
+const { id, title, lanes, steps } = Astro.props as Props;
+const data = JSON.stringify({ title, lanes, steps });
+---
+
+<div class="diagram-tools">
+  <button class="replay-btn" data-replay={id}>&#9654; Replay</button>
+</div>
+<div class="diagram-container seq animating" id={id} data-seq={data}></div>
+
+<script>import '../scripts/diagrams.client.ts';</script>
