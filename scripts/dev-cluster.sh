@@ -27,7 +27,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -z "${CORE_TAG:-}" ] && [ -f "$ROOT/ci/core-version" ]; then
   CORE_TAG=$(sed -n 's/^CORE_TAG=//p' "$ROOT/ci/core-version" | head -1)
 fi
-CORE_TAG="${CORE_TAG:-1.0.0-rc.10}"
+CORE_TAG="${CORE_TAG:-1.0.0-rc.29}"
 IMAGE="${MEROD_IMAGE:-ghcr.io/calimero-network/merod:${CORE_TAG}}"
 FORWARDER_IMAGE="alpine/socat:1.8.0.3"
 NAME="merod-local"

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Breaking: sealed requests go to `/sealed`, and the `/sealed/v2` fallback is gone (mero-core)
+
+- `SealedTransport` posts sealed requests to `POST /sealed` (`SEALED_PATH`, was `/sealed/v2`) and
+  opens sessions only at `POST /sealed/handshake`: the one-time retry at `/sealed/v2/handshake` and
+  `LEGACY_HANDSHAKE_PATH` are removed, as core removes the `/sealed/v2*` paths. A node that answers
+  the handshake with `404`, `405` or `403 sealed_required` is reported as a
+  `SealedTransportException`, without trying another path. The wire format (prologue
+  `calimero/sealed-http/v2`, version byte `0x02`) is unchanged.
+- Upgrade notes: nodes must run core 1.0.0-rc.25 or later (the first release serving
+  `/sealed/handshake` and `/sealed`); code that used `LEGACY_HANDSHAKE_PATH` drops it.
+  `ci/core-version` and `scripts/dev-cluster.sh` move to core 1.0.0-rc.29.
+
 ### The sealed handshake and the directory drop `v2` from their paths (mero-core)
 
 - `SealedTransport` opens a session at `POST /sealed/handshake` (`HANDSHAKE_PATH`). A node
