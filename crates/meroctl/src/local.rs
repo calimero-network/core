@@ -315,6 +315,10 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
     }
     std::fs::create_dir_all(&state_dir)?;
     let dir = std::path::absolute(&state_dir)?;
+    // A new cluster (`--fresh`, or none kept here) knows no account a saved
+    // session names: forget those, or the next command answers `401
+    // UNAUTHENTICATED` with a session the old cluster signed.
+    let new_cluster = a.fresh || made(&dir, a.base_port).is_none();
     let (nodes, volume) = plan(a, &dir)?;
     let urls = urls(nodes, a.base_port);
     if let Some(busy) = urls.iter().find(|u| listening(u)) {
@@ -432,6 +436,11 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
         volume: docker.then_some(volume),
     };
     std::fs::write(dir.join(CLUSTER_FILE), serde_json::to_string_pretty(&kept)?)?;
+    if new_cluster {
+        for url in &urls {
+            home.save_session(url, None)?;
+        }
+    }
     save_node(home, &urls[0])?;
     let answer = describe(&state_dir, &state, true);
     Ok((answer, started))

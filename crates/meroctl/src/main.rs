@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use calimero_client::types::ViewsRequestConsistency;
 use calimero_identity::testing::SoftAuthenticator;
 use clap::{Parser, Subcommand};
-use eyre::bail;
+use eyre::{bail, eyre};
 use reqwest::Method;
 use serde_json::{json, Value};
 
@@ -428,7 +428,21 @@ async fn main() -> eyre::Result<()> {
                 let mut pk = load_dev_passkey(dev_passkey)?;
                 let s = env.client.sign_in(&mut pk).await;
                 save_passkey(dev_passkey, &pk)?;
-                s?
+                // The cluster answers the same for a passkey removed from its
+                // account and for a cluster that started over (`local up
+                // --fresh`), so this never signs up on its own: a removed
+                // passkey stays refused. It says what to do for a new cluster.
+                s.map_err(|e| {
+                    if e.code() == Some("PASSKEY_UNKNOWN_HERE") {
+                        eyre!(
+                            "{e}\nIf this cluster started over (`meroctl local up --fresh`), it has no account for {}: \
+                             sign up again with a new passkey file (delete it, or pass another path to --dev-passkey).",
+                            dev_passkey.display()
+                        )
+                    } else {
+                        e.into()
+                    }
+                })?
             } else {
                 let mut pk = SoftAuthenticator::new("localhost", origin);
                 let s = env.client.sign_up(&mut pk, name).await;
