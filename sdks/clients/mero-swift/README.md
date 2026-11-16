@@ -37,7 +37,7 @@ the same methods, the same typed errors, the same retry and failover rules.
 | `MeroKitUI` | `MeroAppSession`, `MeroClient`, `CalimeroAppBackend`, `PlatformPasskey`, the consent page in the system browser. |
 | `MeroKitTestSupport` | `InMemoryAppBackend`, `RecordingContextContract`, `FakeCloudNode` + `FakeCloud` (a node that runs the real sealed channel, and a cluster in memory), `MockURLProtocol`. |
 
-> **Before committing, titling a pull request, or releasing**, read [RELEASING.md](RELEASING.md): the PR title is the release commit, and the rules are shared by every Calimero repository that ships releases.
+> mero-swift is developed in [calimero-network/core](https://github.com/calimero-network/core) under `sdks/clients/mero-swift` and released with core, on core's version. This repository's copy is read only: read [AGENTS.md](AGENTS.md) before changing it.
 
 ## The client
 
