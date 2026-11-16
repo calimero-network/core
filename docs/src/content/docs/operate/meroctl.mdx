@@ -161,9 +161,9 @@ Calimero Cloud's manager API (mdma). Its organizations and clusters take a
 console session (Google sign-in): `cloud login` checks and keeps the session
 token a signed-in console sends, in `{home}/meroctl/cloud.json` (mode `0600`),
 and saves the fresh one the manager sends back on each answer
-(`X-MDMA-Session-Refresh`). No node. A manager (or, for `app publish`, a
-registry) that answers `404` at `/api/...` predates its unversioned routes, and
-the request is sent once more at `/api/v2/...`.
+(`X-MDMA-Session-Refresh`). No node. The manager (and, for `app publish`, the
+registry) is called at `/api/...` only; one that serves nothing but
+`/api/v2/...` answers `404`.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
