@@ -5084,6 +5084,18 @@ fn mpk_declaring(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
 ) -> Vec<u8> {
+    mpk_with_secrets(package, version, wasm, key, outbound, None)
+}
+
+/// [`mpk_declaring`], also declaring `secrets` (name -> hosts) in the signed manifest.
+fn mpk_with_secrets(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    secrets: Option<&[(&str, &str)]>,
+) -> Vec<u8> {
     use sha2::Digest;
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
@@ -5109,6 +5121,20 @@ fn mpk_declaring(
         frontend_aliases: Vec::new(),
         upgrades: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
+        secrets: secrets.map(|s| {
+            s.iter()
+                .map(|(name, host)| {
+                    (
+                        (*name).to_owned(),
+                        calimero_bundle::BundleSecret {
+                            hosts: vec![(*host).to_owned()],
+                            description: String::new(),
+                            required: true,
+                        },
+                    )
+                })
+                .collect()
+        }),
         services: None,
         pipelines: Vec::new(),
         signature: None,
@@ -5295,6 +5321,139 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
     assert!(
         failures["explode"].as_str().unwrap().contains("BeatFailed"),
         "{failures}"
+    );
+}
+
+/// A release that declares its secrets gets only those, and only to their hosts: the same
+/// action that reached the echo host with `ECHO_KEY` fails once the running release
+/// declares another name, though the operator bound `ECHO_KEY` to the package; a release
+/// whose secret names a host no outbound prefix covers is refused at install.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_fills_only_the_secrets_it_declares() {
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const HOST: &str = "echo.outbound.test";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let packages = ["com.calimero.declares-echo", "com.calimero.declares-other"];
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            turnstile: false,
+            secrets: [(
+                "ECHO_KEY".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    value: "s3cret-value".to_owned(),
+                    packages: packages.iter().map(|p| (*p).to_owned()).collect(),
+                    signers: vec![signer],
+                    hosts: vec![HOST.to_owned()],
+                },
+            )]
+            .into(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+
+    // Naming a host the release does not send to: refused before anything is recorded.
+    let e = alice
+        .packages()
+        .upload(mpk_with_secrets(
+            "com.calimero.declares-bad",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[PREFIX],
+            Some(&[("ECHO_KEY", "elsewhere.test")]),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_SECRETS"), "{e}");
+
+    let mut apps = Vec::new();
+    for (package, name) in packages.iter().zip(["ECHO_KEY", "OTHER_KEY"]) {
+        let _ = alice
+            .packages()
+            .upload(mpk_with_secrets(
+                package,
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[PREFIX],
+                Some(&[(name, HOST)]),
+            ))
+            .await
+            .unwrap();
+        let _ = alice
+            .orgs()
+            .outbound_approval(
+                &alice.personal_org().await.unwrap(),
+                package,
+                Some(typed(json!("manifest"))),
+                Some(false),
+                Some(&mut pk),
+            )
+            .await
+            .map(wire)
+            .unwrap();
+        let app = alice
+            .apps()
+            .create(typed(json!({ "name": package, "package": package })))
+            .await
+            .map(wire)
+            .unwrap()["appId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "acme", "value": "acme.com" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "startEnrich",
+                Some(json!({ "key": "acme" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        apps.push(app);
+    }
+
+    // Declares ECHO_KEY for the echo host: filled and redacted.
+    let got = eventually(
+        &alice,
+        &apps[0],
+        "enrichment",
+        json!({ "key": "acme" }),
+        |v| v.is_string(),
+    )
+    .await;
+    assert!(got.as_str().unwrap().starts_with("200 "), "{got}");
+    assert!(got.as_str().unwrap().contains("[redacted]"), "{got}");
+    // Declares only OTHER_KEY: the request naming ECHO_KEY never leaves.
+    let failures = eventually(&alice, &apps[1], "actionFailures", json!({}), |f| {
+        f["enrich"].is_string()
+    })
+    .await;
+    let failure = failures["enrich"].as_str().unwrap();
+    assert!(failure.contains("declares no secret ECHO_KEY"), "{failure}");
+    assert_eq!(
+        strong_view(&alice, &apps[1], "enrichment", json!({ "key": "acme" })).await,
+        Value::Null
     );
 }
 

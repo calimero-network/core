@@ -347,6 +347,12 @@ pub struct PackageVersion {
     /// URL prefixes the app may call out to (the manifest's signed `outbound`).
     #[serde(default)]
     pub outbound: Vec<String>,
+    /// The secrets the release declares (`BundleManifest::secrets`): the node fills only
+    /// these names, each only into a request to one of its hosts. Empty for a release that
+    /// declares none (and every release recorded before), which keeps the operator's
+    /// bindings alone, as before.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, calimero_bundle::BundleSecret>,
     pub installed_by: AccountId,
     pub installed_at: u64,
     /// Who installed this same release again after `installed_by` (an
