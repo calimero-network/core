@@ -48,6 +48,10 @@ export type {
   UnreleasedApp,
 } from './create-workspace';
 
+// Invite
+export { InviteDialog, AcceptInviteDialog, describeCapabilities } from './invite';
+export type { InviteDialogProps, InviteLabels, AcceptInviteDialogProps, CreatedInvite, InviteRole } from './invite';
+
 // Theme
 export { MERO_CSS_VARS, cssVar, defaultMeroTheme, resolveMeroTheme, themeToCssVars } from './theme';
 export type { MeroTheme, ResolvedMeroTheme } from './theme';
