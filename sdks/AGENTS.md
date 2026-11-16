@@ -12,7 +12,11 @@ sdks/
 │   ├── mero-swift/          # Swift       SwiftPM (mirror: calimero-network/swift-sdk), CocoaPods mero-swift
 │   └── mero-kotlin/         # Kotlin      Maven network.calimero:mero-kotlin(-*)
 ├── components/              # UI built on a client
-│   └── mero-react/          # React       npm  @calimero-network/mero-react (on mero-js)
+│   ├── mero-react/          # React       npm  @calimero-network/mero-react (on mero-js)
+│   ├── mero-ui/             # React       npm  @calimero-network/mero-ui (design system; on mero-icons, mero-tokens)
+│   ├── mero-icons/          # React       npm  @calimero-network/mero-icons
+│   ├── mero-tokens/         # TypeScript  npm  @calimero-network/mero-tokens
+│   └── mero-charts/         # React       npm  @calimero-network/mero-charts (on mero-ui)
 ├── package.json             # the pnpm workspace of the JS SDKs (private)
 └── pnpm-workspace.yaml
 ```
@@ -30,8 +34,9 @@ sdks/
   into VERSION and every SDK; the `SDK scope` job (and release.yml) fail while
   any of them differs. Never bump one SDK on its own: SDKs release only with
   core.
-- **Inside the workspace** mero-react depends on mero-js through `workspace:*`;
-  pnpm publishes that as the exact version.
+- **Inside the workspace** mero-react depends on mero-js, mero-ui on mero-icons
+  and mero-tokens, and mero-charts on mero-ui, through `workspace:*`; pnpm
+  publishes that as the exact version.
 - **Generated vs written**: each client's generated layer (types, transport,
   the method list) comes from the node's API document,
   `docs/public/openapi.json`, through the SDK's `generate` command
