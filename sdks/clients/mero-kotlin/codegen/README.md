@@ -57,6 +57,11 @@ closed (`additionalProperties: false`). What is left:
   transport the right type; the wildcard goes as `application/octet-stream`.
 - **`AppAccess`, `Deployer`, `OutboundSelection`** stay mapped to mero-core's sealed types, which
   read and write exactly the union's forms.
+- **Other unions** (an `anyOf` / `oneOf` of more than one branch besides `null`, not mapped to one of
+  mero-core's types below) are free-form JSON (`JsonElement`): `prepare-spec.py` writes `{}` for them.
+  7.26 cannot read them otherwise: a member's `passkeys` (`integer | "3+"`), a runtime that is a
+  string or `{ before }`, an app's `scope` and a run's `outcome` (sealed classes no branch extends),
+  an app's attestation `replicas` (one class with every branch's fields required).
 - **Untyped answers**: `GET /apps/{app}/runs` and `/apps/{app}/runs/{run}` are still free-form.
 - **`POST /apps`** has no `confirmMethods`; the deprecated `createApp` still sends it when given.
 - **A property named `keys`** is generated as `propertyKeys` (`GET /auth/apikeys`, `GET /apps/{app}/storage`).

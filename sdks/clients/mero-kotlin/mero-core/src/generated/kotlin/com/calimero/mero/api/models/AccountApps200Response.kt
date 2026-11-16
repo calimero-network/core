@@ -23,7 +23,6 @@
 
 package com.calimero.mero.api.models
 
-import com.calimero.mero.api.models.AppScope
 import com.calimero.mero.api.models.ClusterRelease
 import com.calimero.mero.api.models.Governance
 import com.calimero.mero.api.models.ReportApp
@@ -35,7 +34,7 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param scope 
+ * @param scope The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.
  * @param governance 
  * @param approvedReleases 
  * @param clusterReleases 
@@ -46,8 +45,9 @@ import kotlinx.serialization.Contextual
 
 data class AccountApps200Response (
 
-    @SerialName(value = "scope")
-    val scope: AppScope,
+    /* The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are. */
+    @Contextual @SerialName(value = "scope")
+    val scope: kotlinx.serialization.json.JsonElement?,
 
     @SerialName(value = "governance")
     val governance: Governance,

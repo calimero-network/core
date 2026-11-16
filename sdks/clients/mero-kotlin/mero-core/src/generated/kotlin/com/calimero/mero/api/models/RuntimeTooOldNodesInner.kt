@@ -23,7 +23,6 @@
 
 package com.calimero.mero.api.models
 
-import com.calimero.mero.api.models.RuntimeTooOldNodesInnerRuntime
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -42,8 +41,8 @@ data class RuntimeTooOldNodesInner (
     @SerialName(value = "node")
     val node: kotlin.Long,
 
-    @SerialName(value = "runtime")
-    val runtime: RuntimeTooOldNodesInnerRuntime
+    @Contextual @SerialName(value = "runtime")
+    val runtime: kotlinx.serialization.json.JsonElement?
 
 ) {
 

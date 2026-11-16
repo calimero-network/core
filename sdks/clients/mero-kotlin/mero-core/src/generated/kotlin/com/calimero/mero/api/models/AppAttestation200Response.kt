@@ -23,7 +23,6 @@
 
 package com.calimero.mero.api.models
 
-import com.calimero.mero.api.models.AppAttestation200ResponseReplicasInner
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -47,7 +46,7 @@ data class AppAttestation200Response (
     val cluster: kotlin.String,
 
     @SerialName(value = "replicas")
-    val replicas: kotlin.collections.List<AppAttestation200ResponseReplicasInner>
+    val replicas: kotlin.collections.List<@Contextual kotlinx.serialization.json.JsonElement?>
 
 ) {
 

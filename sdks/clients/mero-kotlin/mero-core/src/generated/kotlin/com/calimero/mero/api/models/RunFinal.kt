@@ -24,7 +24,6 @@
 package com.calimero.mero.api.models
 
 import com.calimero.mero.api.models.RunFile
-import com.calimero.mero.api.models.RunFinalOutcome
 import com.calimero.mero.api.models.RunFinalUsage
 
 import kotlinx.serialization.Serializable
@@ -48,8 +47,8 @@ data class RunFinal (
     @SerialName(value = "attempt")
     val attempt: kotlin.Long,
 
-    @SerialName(value = "outcome")
-    val outcome: RunFinalOutcome,
+    @Contextual @SerialName(value = "outcome")
+    val outcome: kotlinx.serialization.json.JsonElement?,
 
     @SerialName(value = "outputs")
     val outputs: kotlin.collections.List<RunFile>,
