@@ -2,6 +2,24 @@
 
 Notable changes to MeroKit. Versions are git tags (see [RELEASING.md](RELEASING.md)).
 
+## Unreleased: sealed requests go to `/sealed`, and the `/sealed/v2` fallback is gone
+
+**Breaking.** `SealedTransport` posts sealed requests to `POST /sealed`
+(`SealedTransport.sealedPath`, was `/sealed/v2`) and opens sessions only at
+`POST /sealed/handshake`: the one-time retry at `/sealed/v2/handshake` and
+`SealedTransport.legacyHandshakePath` are removed, as core removes the
+`/sealed/v2*` paths. A node that answers the handshake with `404`, `405` or
+`403 sealed_required` is reported as a `SealedTransportError`, without trying
+another path. The wire format (prologue `calimero/sealed-http/v2`, version byte
+`0x02`) is unchanged. `ci/core-version` and `scripts/dev-cluster.sh` move to
+core 1.0.0-rc.29.
+
+Upgrade notes:
+
+- Nodes must run core 1.0.0-rc.25 or later (the first release serving
+  `/sealed/handshake` and `/sealed`).
+- Code that read `SealedTransport.legacyHandshakePath` drops it.
+
 ## Unreleased: the sealed handshake and the directory drop `v2` from their paths
 
 - `SealedTransport` opens a session at `POST /sealed/handshake`

@@ -21,7 +21,8 @@ the same methods, the same typed errors, the same retry and failover rules.
 - Swift 5.9+, iOS 15+ / macOS 12+. Dependencies: Apple's
   [swift-openapi-runtime](https://github.com/apple/swift-openapi-runtime) and
   [swift-http-types](https://github.com/apple/swift-http-types), pinned exactly.
-- A Calimero 1.0 cluster (core `1.0.0-rc.10`, [`ci/core-version`](ci/core-version)),
+- A Calimero 1.0 cluster (core `1.0.0-rc.25` or later; developed against
+  `1.0.0-rc.29`, [`ci/core-version`](ci/core-version)),
   or `merod local` for development.
 - Docs: <https://calimero-network.github.io/swift-sdk/>
 

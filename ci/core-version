@@ -5,4 +5,4 @@
 # 127.0.0.1:2501-2503 with mock attestation.
 #
 # Shell:  set -a; . ci/core-version; set +a   ->  $CORE_TAG
-CORE_TAG=1.0.0-rc.10
+CORE_TAG=1.0.0-rc.29

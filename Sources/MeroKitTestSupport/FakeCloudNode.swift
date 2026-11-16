@@ -155,9 +155,8 @@ public final class FakeCloudNode: @unchecked Sendable {
         let body = Self.body(request)
         do {
             if path.hasPrefix("/attestation") { return attest(request) }
-            // A current node serves the handshake at both paths (v2 is the deprecated alias).
-            if path == "/sealed/handshake" || path == "/sealed/v2/handshake" { return try handshake(body) }
-            if path == "/sealed/v2" { return try exchange(body) }
+            if path == "/sealed/handshake" { return try handshake(body) }
+            if path == "/sealed" { return try exchange(body) }
         } catch {
             return Self.refusal(400, "malformed")
         }
