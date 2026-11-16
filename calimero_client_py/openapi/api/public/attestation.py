@@ -66,6 +66,11 @@ def _parse_response(
 
         return response_404
 
+    if response.status_code == 503:
+        response_503 = Error.from_dict(response.json())
+
+        return response_503
+
     if client.raise_on_unexpected_status:
         raise errors.UnexpectedStatus(response.status_code, response.content)
     else:
@@ -96,7 +101,9 @@ def sync_detailed(
      In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt
     key and the governance; with `purpose=kms`, what it verified of its KMS; with
     `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an
-    app's bundle hash. A client checks it before it seals anything to the key.
+    app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote
+    at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again
+    then.
 
     **Who:** anyone.
 
@@ -141,7 +148,9 @@ def sync(
      In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt
     key and the governance; with `purpose=kms`, what it verified of its KMS; with
     `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an
-    app's bundle hash. A client checks it before it seals anything to the key.
+    app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote
+    at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again
+    then.
 
     **Who:** anyone.
 
@@ -181,7 +190,9 @@ async def asyncio_detailed(
      In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt
     key and the governance; with `purpose=kms`, what it verified of its KMS; with
     `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an
-    app's bundle hash. A client checks it before it seals anything to the key.
+    app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote
+    at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again
+    then.
 
     **Who:** anyone.
 
@@ -224,7 +235,9 @@ async def asyncio(
      In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt
     key and the governance; with `purpose=kms`, what it verified of its KMS; with
     `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an
-    app's bundle hash. A client checks it before it seals anything to the key.
+    app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote
+    at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again
+    then.
 
     **Who:** anyone.
 

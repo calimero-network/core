@@ -22,7 +22,7 @@ codes the document lists for the method beyond the ones every call can get
 (`UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, ...): see
 [errors](/reference/errors/).
 
-Generated from core `c3611043c`.
+Generated from core `cf1666aa0`.
 
 ## `client.apps`
 
@@ -257,7 +257,7 @@ Generated from core `c3611043c`.
 
 | Method | Route | What it does |
 | --- | --- | --- |
-| `attestation(nonce, app=…, app_hash=…, purpose=…)` | `GET /attestation` | The node's attestation. *Refusals:* `400 BAD_HASH`, `400 BAD_NONCE` |
+| `attestation(nonce, app=…, app_hash=…, purpose=…)` | `GET /attestation` | The node's attestation. *Refusals:* `400 BAD_HASH`, `400 BAD_NONCE`, `503 BUSY` |
 | `health()` | `GET /health` | Node health |
 | `publisher_binding(signer)` | `GET /publishers/{signer}` | Whether a signing key is bound |
 | `releases_public()` | `GET /releases` | The cluster's releases |
