@@ -10,7 +10,7 @@
     {"path": "abi-codegen/src/calimero_abi_codegen/__init__.py", "format": "regex", "pattern": "^__version__ = \"([^\"]+)\""}
   ],
   "depends_on": [],
-  "inputs": ["docs/public/openapi.json"],
+  "inputs": ["docs/public/openapi.json", "crates/app-abi/tests/py", "crates/app-abi/tests/golden/*.py"],
   "generate": "bash scripts/generate.sh",
   "generated": [
     "calimero_client_py/openapi",

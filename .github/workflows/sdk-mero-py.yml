@@ -1,0 +1,401 @@
+name: SDK mero-py
+
+# mero-py (sdks/clients/mero-py): the Python client, a PyO3 extension built
+# with maturin plus a client generated from docs/public/openapi.json. Called by
+# sdks.yml (tests, on every change that reaches it) and by release.yml with
+# `publish: true` on a core tag (tests, then the sdist and the abi3 wheels,
+# then PyPI).
+#
+# The publish job declares no `permissions:` and so takes the caller's: a
+# called workflow can only narrow what its caller grants, and a job here that
+# asked for `id-token: write` would fail sdks.yml, which grants `contents: read`,
+# before anything ran. release.yml's calling job grants `id-token: write`, and
+# PyPI's trusted publisher for `mero-py` names release.yml and the `pypi`
+# environment, whose reviewers are the gate.
+#
+# No caches: this workflow publishes, and a cache restored here could have been
+# written by another branch (zizmor cache-poisoning).
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: "Build the sdist and every wheel and publish them to PyPI (release.yml on a core tag)"
+        type: boolean
+        required: false
+        default: false
+      dry-run:
+        description: "With publish: build and verify everything, upload nothing"
+        type: boolean
+        required: false
+        default: true
+
+defaults:
+  run:
+    shell: bash
+    working-directory: sdks/clients/mero-py
+
+jobs:
+  test:
+    name: mero-py tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # pyo3's build script reads the interpreter on PATH: pin one the pinned
+      # pyo3 supports.
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the pinned Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+        with:
+          components: rustfmt
+
+      - name: No tracked file is binary
+        run: |
+          binary=$(git ls-files --eol -- . | awk '$1=="i/-text"')
+          if [ -n "$binary" ]; then
+            echo "$binary" >&2
+            exit 1
+          fi
+
+      - name: Install the package and its dev tools
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          pip install maturin==1.15.0
+          pip install -e ".[dev]"
+
+      - name: Check Python formatting (Black)
+        run: black --check .
+
+      # calimero_client_py/openapi, facade.py and the docs' method reference
+      # are generated from docs/public/openapi.json (sdk.json `generate`):
+      # regenerate them and fail on any difference.
+      - name: The generated client is this core's document's
+        run: |
+          pip install openapi-python-client==0.26.2
+          python scripts/generate_openapi_client.py --check
+
+      # pyo3 only turns a Rust panic into a Python exception when it unwinds.
+      - name: Check the release profile unwinds
+        run: |
+          python -c "import tomllib, sys; sys.exit(tomllib.load(open('Cargo.toml', 'rb')).get('profile', {}).get('release', {}).get('panic') == 'abort')" || {
+            echo "[profile.release] must not set panic = \"abort\"" >&2
+            exit 1
+          }
+
+      - name: Check Rust formatting
+        run: cargo fmt --check
+
+      # Without `--features python`, deliberately: that feature turns on pyo3's
+      # `extension-module`, which leaves libpython unlinked, right for a wheel's
+      # shared object and fatal for a test binary.
+      - name: Run Rust tests
+        run: cargo test --locked
+
+      # The cluster tests skip here (no merod); e2e.yml's `clients` job runs them.
+      - name: Run Python tests
+        run: pytest tests/ -v --tb=short
+
+      - name: Compile the examples
+        run: python -m py_compile examples/*.py abi-codegen/examples/generated_client/*.py
+
+      - name: Build the sdist and this platform's wheel
+        run: |
+          maturin build --release --locked --sdist --out dist
+          ls -la dist/
+
+      - name: Install the wheel as mero-py and import it
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-venv"
+          "$RUNNER_TEMP/wheel-venv/bin/pip" install "httpx>=0.23.0,<0.29.0" "attrs>=22.2.0" mypy==1.18.2
+          "$RUNNER_TEMP/wheel-venv/bin/pip" install --no-index --find-links dist mero-py
+          cd "$RUNNER_TEMP" && "$RUNNER_TEMP/wheel-venv/bin/python" -c "import calimero, calimero_client_py as c; assert c.Client is c.CloudClient; print(calimero.__version__, c.VERSION)"
+
+      # The Python clients `meroctl app codegen` writes (crates/app-abi's
+      # goldens) call this package's facade: import, call and type-check them
+      # against the wheel just built.
+      - name: The app-ABI golden clients work with this wheel
+        working-directory: crates/app-abi/tests/py
+        run: |
+          "$RUNNER_TEMP/wheel-venv/bin/python" smoke.py
+          "$RUNNER_TEMP/wheel-venv/bin/mypy" --strict --follow-untyped-imports ../golden/*.py
+
+  abi-codegen:
+    name: mero-py abi-codegen
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: sdks/clients/mero-py/abi-codegen
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install it
+        run: pip install -e . pytest==9.1.1 pytest-cov==7.1.0
+
+      - name: Run its tests
+        run: pytest
+
+  # Cargo.toml builds against core's crates at a release tag. This builds the
+  # client against this tree's crates instead, so a change to them that breaks
+  # it shows here rather than at the next pin bump. The three move together,
+  # or cargo resolves two copies of the crates they share. Reported, not
+  # gating, until the pin moves to this tree (see the SDK's AGENTS.md).
+  against-core:
+    name: mero-py against this core
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the pinned Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Check against this tree's calimero-client, -identity and -sealed
+        run: |
+          set -euo pipefail
+          for crate in client identity sealed; do
+            sed -i -E "s#^calimero-$crate = \\{ git = \"[^\"]*\", tag = \"[^\"]*\"#calimero-$crate = { path = \"../../../crates/$crate\"#" Cargo.toml
+          done
+          grep -n '^calimero-.* = { path' Cargo.toml
+          cargo check --all-targets
+
+  # ---------------------------------------------------------------- publish
+
+  build-source:
+    name: mero-py sdist
+    if: inputs.publish
+    needs: [test, abi-codegen]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      - name: Build the source distribution
+        run: |
+          pip install maturin==1.15.0
+          maturin sdist --out dist
+          ls -la dist/
+
+      - name: Upload it
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mero-py-sdist
+          path: sdks/clients/mero-py/dist/*.tar.gz
+          retention-days: 1
+
+  # One abi3 wheel per platform (`abi3-py39`, set by the `python` feature): it
+  # installs on every CPython from 3.9 on, so nobody compiles a pyo3 extension
+  # plus `ring` and `aws-lc-sys` from source.
+  build-wheels:
+    name: mero-py wheel (${{ matrix.name }})
+    if: inputs.publish
+    needs: [test, abi-codegen]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: "2014"
+            smoke: true
+          # Built on an arm64 runner rather than cross-compiled: aws-lc-sys and
+          # ring build their C and assembly for the host they run on.
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64
+            manylinux: "2014"
+            smoke: true
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            manylinux: ""
+            smoke: true
+          # Cross-compiled on the arm64 runner; the x86_64 macOS runners are gone.
+          - name: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            manylinux: ""
+            smoke: false
+          - name: windows-x86_64
+            os: windows-latest
+            target: x64
+            manylinux: ""
+            smoke: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+
+      # `aws-lc-sys` assembles its x86_64 primitives with NASM on windows-msvc.
+      - name: Install NASM
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+
+      - name: Build the wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          maturin-version: v1.15.0
+          working-directory: sdks/clients/mero-py
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --locked --out dist
+          # Core's TDX attestation links OpenSSL on Linux, built from source
+          # (`openssl` with `vendored`, Cargo.toml); its Configure needs Perl
+          # core modules the manylinux2014 image leaves out.
+          before-script-linux: yum install -y perl-core
+
+      - name: Show what was produced
+        run: ls -la dist/
+
+      # The wheel imports and answers on the machine it was built for (a
+      # cross-compiled one cannot run here).
+      - name: Import the wheel
+        if: matrix.smoke
+        run: |
+          # The generated client's dependencies from the index, the wheel from dist/.
+          python -m pip install "httpx>=0.23.0,<0.29.0" "attrs>=22.2.0"
+          python -m pip install --no-index --find-links dist mero-py
+          # Away from the checkout, whose package directories would shadow the wheel's.
+          cd "$RUNNER_TEMP"
+          python -c "import calimero, calimero_client_py as c; assert c.Client is c.CloudClient; print(calimero.__version__, c.VERSION)"
+
+      - name: Upload the wheel
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mero-py-wheel-${{ matrix.name }}
+          path: sdks/clients/mero-py/dist/*.whl
+          retention-days: 1
+
+  # Every wheel is required: a platform whose wheel is missing falls back to
+  # the sdist, which means compiling the extension from source there. `needs`
+  # waits for every matrix entry; one that fails blocks the release.
+  publish:
+    name: mero-py to PyPI
+    if: inputs.publish
+    needs: [build-source, build-wheels]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    # No `permissions:`: the caller's (release.yml grants id-token: write). See the top.
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout VERSION
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: VERSION
+          sparse-checkout-cone-mode: false
+          path: core
+
+      - name: Download the sdist
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mero-py-sdist
+          path: dist/
+
+      - name: Download the wheels
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: mero-py-wheel-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Verify what is about to be published
+        run: |
+          echo "Artifacts staged for PyPI:"
+          ls -la dist/
+          for file in dist/*.tar.gz; do
+            echo "Checking $file"
+            tar -tzf "$file" | head -10
+          done
+          missing=0
+          # One pattern per platform: the platform tag after any manylinux or
+          # macOS floor (`manylinux_2_17_x86_64.manylinux2014_x86_64`, `macosx_11_0_arm64`).
+          for platform in 'manylinux_*_x86_64' 'manylinux_*_aarch64' 'macosx_*_arm64' 'macosx_*_x86_64' 'win_amd64'; do
+            # shellcheck disable=SC2086 # the pattern is meant to glob
+            found=$(ls dist/*-abi3-$platform*.whl 2>/dev/null || true)
+            if [ -n "$found" ]; then
+              echo "$platform wheel present: $found"
+            else
+              echo "::error::no abi3 $platform wheel in dist/; refusing to publish a release without it"
+              missing=1
+            fi
+          done
+          # Every file is mero-py at core's VERSION (PEP 440: 1.0.0-rc.30 is 1.0.0rc30).
+          version=$(tr -d '[:space:]' < core/VERSION)
+          pep440=$(echo "$version" | sed -E 's/-rc\./rc/; s/-beta\./b/; s/-alpha\./a/')
+          for file in dist/*; do
+            case "$(basename "$file")" in
+              mero_py-"$pep440"-*.whl | mero_py-"$pep440".tar.gz) ;;
+              *) echo "::error::$file is not mero-py $pep440"; missing=1 ;;
+            esac
+          done
+          exit $missing
+
+      - name: Publish to PyPI
+        if: ${{ !inputs.dry-run }}
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+
+      - name: Dry run
+        if: inputs.dry-run
+        run: |
+          echo "dry run: built and verified $(ls dist | wc -l) files, uploaded nothing" | tee -a "$GITHUB_STEP_SUMMARY"
