@@ -2,7 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`meroctl app new` writes an agent guide** (`meroctl`): the new project gets an
+  `AGENTS.md` (its layout, the build, test, ABI and codegen loop for the app, the
+  rules a change follows, and what stays with the person: passkeys, signing keys,
+  publishing, Cloud) and a `CLAUDE.md` that imports it, so a coding agent asked to
+  "build X on Calimero" starts from the project's own instructions.
+
 ### Fixed
+
+- **An app's error is shown** (`calimero-client`, so `meroctl`): `meroctl call`
+  printed only `422 APP_ERROR: the app refused the call`. The client's error text
+  now ends with what the node's `details` says went wrong: the app's error code and
+  fields (`422 APP_ERROR: the app refused the call (NotFound: {"key":"a"})`), a
+  trap's kind (`422 TRAP`) and the error a failed `init` ended with
+  (`422 INIT_FAILED`). Other codes' details, meant for the program, stay out of it.
 
 - **A node makes its quotes off its async workers, one at a time**
   (`calimero-node`): `GET /attestation` (and a job node's, a waiting node's and
