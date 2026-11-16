@@ -1,5 +1,5 @@
 //! `meroctl namespace`: organizations, v1's namespaces. An organization holds
-//! members (with roles), teams (`meroctl group`), invites and instances.
+//! members (with roles), teams (`meroctl team`), invites and instances.
 
 use std::path::PathBuf;
 
@@ -55,6 +55,7 @@ pub enum NamespaceCmd {
         name: String,
     },
     Get {
+        #[arg(value_name = "ORG")]
         namespace: String,
     },
     /// The organizations this account belongs to, with its role.
@@ -62,17 +63,19 @@ pub enum NamespaceCmd {
     List,
     /// Delete the organization with its teams, invites and instances (the owner's).
     Delete {
+        #[arg(value_name = "ORG")]
         namespace: String,
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
     /// Make an invitation token.
     Invite {
+        #[arg(value_name = "ORG")]
         namespace: String,
         #[arg(long, value_enum, default_value = "member")]
         role: Role,
         /// Teams the invitee joins too.
-        #[arg(long = "group")]
+        #[arg(long = "team", alias = "group", value_name = "TEAM")]
         groups: Vec<String>,
         #[arg(long)]
         ttl_secs: Option<u64>,
@@ -89,17 +92,22 @@ pub enum NamespaceCmd {
     },
     /// Leave the organization.
     Leave {
+        #[arg(value_name = "ORG")]
         namespace: String,
         /// Approve with this passkey file (development clusters).
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
     /// The organization's teams.
+    #[command(name = "teams", alias = "groups")]
     Groups {
+        #[arg(value_name = "ORG")]
         namespace: String,
     },
     /// Create a team.
+    #[command(name = "create-team", alias = "create-group")]
     CreateGroup {
+        #[arg(value_name = "ORG")]
         namespace: String,
         name: String,
         /// Nest it under this team.
@@ -115,18 +123,20 @@ pub enum NamespaceCmd {
     Metadata(MetadataCmd),
     /// Set a member's metadata (theirs, or an admin's); `null` clears it.
     MemberMetadata {
+        #[arg(value_name = "ORG")]
         namespace: String,
         account: String,
         metadata: String,
     },
     /// Set the capabilities (v1's `MemberCapabilities` bits) of a member, of
-    /// a team's members (`--group`), or the organization's default.
+    /// a team's members (`--team`), or the organization's default.
     Capabilities {
+        #[arg(value_name = "ORG")]
         namespace: String,
         capabilities: u32,
         #[arg(long, conflicts_with = "group")]
         account: Option<String>,
-        #[arg(long)]
+        #[arg(long = "team", alias = "group", value_name = "TEAM")]
         group: Option<String>,
         /// Approve with this passkey file (development clusters).
         #[arg(long)]
@@ -135,6 +145,7 @@ pub enum NamespaceCmd {
     /// Approve URL prefixes an application's publisher may call out to from
     /// the organization's instances (the owner's, where the owner holds outbound approvals).
     Outbound {
+        #[arg(value_name = "ORG")]
         namespace: String,
         #[arg(long)]
         package: String,
@@ -150,6 +161,7 @@ pub enum NamespaceCmd {
     /// Approve a mero-tee release to hold the organization's instances
     /// (where the owner holds release approvals).
     ApproveRelease {
+        #[arg(value_name = "ORG")]
         namespace: String,
         version: String,
         #[arg(long)]
@@ -161,6 +173,7 @@ pub enum NamespaceCmd {
 pub enum MembersCmd {
     #[command(alias = "ls")]
     List {
+        #[arg(value_name = "ORG")]
         namespace: String,
         /// Each member's lockout risk instead (owners and admins): passkeys
         /// held (to "3+"), recovery code set, last active day, live sessions.
@@ -170,6 +183,7 @@ pub enum MembersCmd {
     /// Add a member, or change their role.
     #[command(alias = "set-role")]
     Add {
+        #[arg(value_name = "ORG")]
         namespace: String,
         account: String,
         #[arg(long, value_enum, default_value = "member")]
@@ -180,6 +194,7 @@ pub enum MembersCmd {
     },
     #[command(alias = "rm")]
     Remove {
+        #[arg(value_name = "ORG")]
         namespace: String,
         account: String,
         /// Approve with this passkey file (development clusters).
@@ -191,10 +206,12 @@ pub enum MembersCmd {
 #[derive(Debug, Subcommand)]
 pub enum MetadataCmd {
     Get {
+        #[arg(value_name = "ORG")]
         namespace: String,
     },
     /// Replace the metadata (JSON).
     Set {
+        #[arg(value_name = "ORG")]
         namespace: String,
         metadata: String,
     },

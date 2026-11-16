@@ -146,7 +146,7 @@ asks for nothing.
   for every app: `POST /ops/outbound` with the same body, over the Ops API.
   The owner's route then answers that the operator holds them.
 
-With `meroctl`: `namespace outbound <org> --package <pkg> [--prefix <p>]… [--replace]`,
+With `meroctl`: `org outbound <org> --package <pkg> [--prefix <p>]… [--replace]`,
 and `account outbound --package <pkg> …`, which does the same on the account's
 personal organization. On a development cluster add `--dev-passkey <file>` to
 approve the step-up.

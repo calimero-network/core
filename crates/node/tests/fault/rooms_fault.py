@@ -73,8 +73,8 @@ def setup(cl: Cluster, wasm: str):
     (cl.workdir / "cfg").mkdir(parents=True, exist_ok=True)
     pk = cl.workdir / "dev-passkey.json"
     cl.cli(1, "login", "--dev-passkey", str(pk), "--name", "owner", "--origin", ORIGIN)
-    org = cl.cli(1, "namespace", "create", "Acme")["orgId"]
-    app = cl.cli(1, "instance", "create", "--name", "rooms", "--path", wasm, "--namespace", org)["appId"]
+    org = cl.cli(1, "org", "create", "Acme")["orgId"]
+    app = cl.cli(1, "instance", "create", "--name", "rooms", "--path", wasm, "--org", org)["appId"]
     key = cl.cli(1, "account", "api-key", "create", "--label", "rooms-fault",
                  "--dev-passkey", str(pk))["key"]
     return app, key

@@ -28,8 +28,8 @@ Its command names differ from the rest of these docs for a few objects
 | --- | --- |
 | `app` | signed packages (applications), installed once per cluster |
 | `context` | app instances |
-| `namespace` | organizations |
-| `group` | an organization's teams |
+| `org` | organizations (`namespace` before 1.0.0-rc.29, still accepted) |
+| `team` | an organization's teams (`group` before 1.0.0-rc.29, still accepted) |
 | `account` | the signed-in account; each passkey is one of its devices |
 | `local` | a development cluster on this machine, and the build loop around it |
 | `cloud` | Calimero Cloud (organizations, clusters), and a cluster's compute |
@@ -57,7 +57,7 @@ diff` and `app signer`. The commands that need no node (`app new`, `app build`,
 | `--min-release VERSION` | `CALIMERO_MIN_RELEASE` | `2.3.109` | The oldest mero-tee release to trust. |
 | `--api-key KEY` | `CALIMERO_API_KEY` | none | Authenticate with this API key instead of a saved session. |
 | `--ops-token TOKEN` | `CALIMERO_OPS_TOKEN` | none | The operator's token, for `ops` commands. |
-| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex; the node has its public half from `merod --operator-key`): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-namespace`, `ops add-node`, `ops remove-node`, `ops move`, `ops restore`, `ops backup-key --public-key`, `ops set-quotas`, `ops set-pools` and `ops set-prices` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). Without it, meroctl says to pass it. |
+| `--operator-key-file FILE` | `CALIMERO_OPERATOR_KEY_FILE` | none | The operator's Ed25519 key (32-byte seed, hex; the node has its public half from `merod --operator-key`): `ops release`, `ops outbound`, `ops upgrade`, `ops upgrade-org`, `ops add-node`, `ops remove-node`, `ops move`, `ops restore`, `ops backup-key --public-key`, `ops set-quotas`, `ops set-pools` and `ops set-prices` sign the decision with it when the node asks (`428 OPERATOR_SIGNATURE_REQUIRED`). Without it, meroctl says to pass it. |
 
 Which node: `--api`, else `--node`, else the default saved node. Which
 credential: `--api-key`, else the session saved for that node's URL (refreshed
@@ -74,13 +74,13 @@ which only a development cluster's `localhost` relying party accepts.
 Without it, the command sends the request plainly and the node answers
 `412 CONFIRM_REQUIRED`: on a real cluster the owner approves in a browser.
 That holds for `call` (a confirm method), `instance update`, `instance transfer`,
-`instance move`, `namespace delete`, `namespace outbound`,
-`namespace approve-release`, `namespace invite`, `namespace leave`,
-`namespace members add`, `namespace members remove`, `namespace capabilities`,
+`instance move`, `org delete`, `org outbound`,
+`org approve-release`, `org invite`, `org leave`,
+`org members add`, `org members remove`, `org capabilities`,
 `account outbound`, `account approve-release`, `account api-key create`,
-`account api-key revoke`, `account device revoke`, `group delete`,
-`group members add`, `group members remove`, `group settings`, `group leave`,
-`group upgrade trigger`, `group upgrade retry`, `app origins add`,
+`account api-key revoke`, `account device revoke`, `team delete`,
+`team members add`, `team members remove`, `team settings`, `team leave`,
+`team upgrade trigger`, `team upgrade retry`, `app origins add`,
 `app origins remove` and `raw`. `app watch`, `dev start` and `dev watch`
 require it; `local dev` signs up a deployer of its own. `account device add` takes `--approve-with FILE`, a passkey file
 the account already has.
@@ -232,7 +232,7 @@ App instances.
 | `instance alias get [ALIAS]` | `GET /auth/aliases/{alias}` | Resolve an alias (default `default`). |
 | `instance alias list` (`ls`) | `GET /auth/aliases` | This account's aliases. |
 | `instance use INSTANCE` | `PUT /auth/aliases/default` | Make a context the default (the alias `default`). |
-| `instance access INSTANCE owner\|org\|team\|accounts\|public [--group TEAM] [--account ID]...` | `POST /apps/{app}/access` | Who reaches the context. `team` needs `--group`; `accounts` takes `--account` once per account. |
+| `instance access INSTANCE owner\|org\|team\|accounts\|public [--team TEAM] [--account ID]...` | `POST /apps/{app}/access` | Who reaches the context. `team` needs `--team`; `accounts` takes `--account` once per account. |
 | `instance metadata INSTANCE JSON` | `POST /apps/{app}/metadata` | Set the context's metadata; `null` clears it. |
 | `instance storage INSTANCE` | `GET /apps/{app}/storage` | Keys, bytes and blobs the context holds. |
 | `instance abi INSTANCE` | `GET /apps/{app}/abi` | The ABI of the bundle it runs. |
@@ -251,8 +251,8 @@ App instances.
 | `--bundle HASH` | A raw bundle's hash (development clusters). Conflicts with `--path`. |
 | `--path FILE` | A `.mpk`, or a development `.wasm`, installed first. |
 | `--params JSON` | Arguments for the app's `init`. |
-| `--namespace ORG` | Create it in this organization. |
-| `--group TEAM` | With `--namespace`: reached by this team's members (`access: team`). |
+| `--org ORG` | Create it in this organization. |
+| `--team TEAM` | With `--org`: reached by this team's members (`access: team`). |
 | `--alias ALIAS` | Also name it with this alias. |
 
 ## call
@@ -297,7 +297,7 @@ A context's sealed files.
 | `file upload FILE -i INSTANCE` | `POST /apps/{app}/files`, or a session under `/apps/{app}/files/uploads` | Upload a sealed file (its owner or an org member): one request up to 16 MiB, else parts that resume after a dropped connection; prints its `id`, `size`, `sha256` and `index`. |
 | `file download APP ID (-o\|--out) PATH` | `POST /apps/{app}/files/{id}/export`, `GET /apps/{app}/files/{id}/segments/{k}` | Download a sealed file's plaintext: the node sends ciphertext and the file key wrapped to a key made for the call, and every byte is checked before anything is written. |
 
-## namespace
+## org
 
 Organizations. Alias: `ns`. `ROLE` is `guest`, `member`,
 `admin` or `owner`; `JOIN` is `open` (whoever reaches the parent is a member)
@@ -305,46 +305,46 @@ or `restricted` (only the members added).
 
 | Command | Route | Meaning |
 | --- | --- | --- |
-| `namespace create NAME` | `POST /orgs` | Create an organization. |
-| `namespace get ORG` | `GET /orgs/{org}` | One organization. |
-| `namespace list` (`ls`) | `GET /auth/me` | The organizations this account belongs to, with its role. |
-| `namespace delete ORG [--dev-passkey FILE]` | `DELETE /orgs/{org}` | Delete it with its teams, invites and contexts (the owner's). |
-| `namespace invite ORG [--role ROLE] [--group TEAM]... [--ttl-secs N] [--uses N] [--dev-passkey FILE]` | `POST /orgs/{org}/invites` | Make an invitation token. `--role` defaults to `member`; `--group` adds teams the invitee joins. |
-| `namespace join TOKEN` | `POST /invites/{token}/redeem` | Join with an invitation token. |
-| `namespace leave ORG` | `DELETE /orgs/{org}/members/{me}` | Leave the organization. |
-| `namespace groups ORG` | `GET /orgs/{org}` | The organization's teams. |
-| `namespace create-group ORG NAME [--parent TEAM] [--join JOIN]` | `POST /orgs/{org}/teams` | Create a team; `--join` defaults to `restricted`. |
-| `namespace members list ORG [--security]` (`ls`) | `GET /orgs/{org}` | Its members. `--security` (owners and admins, `GET /orgs/{org}/members?detail=security`): each member's passkeys held (to `3+`), recovery code set, last active day and live sessions. |
-| `namespace members add ORG ACCOUNT [--role ROLE]` (`set-role`) | `POST /orgs/{org}/members` | Add a member or change their role (default `member`). `owner` moves ownership. |
-| `namespace members remove ORG ACCOUNT` (`rm`) | `DELETE /orgs/{org}/members/{account}` | Remove a member. |
-| `namespace metadata get ORG` | `GET /orgs/{org}` | The organization's metadata. |
-| `namespace metadata set ORG JSON` | `POST /orgs/{org}/metadata` | Replace it. |
-| `namespace member-metadata ORG ACCOUNT JSON` | `POST /orgs/{org}/members/{account}/metadata` | Set a member's metadata (theirs, or an admin's); `null` clears it. |
-| `namespace capabilities ORG BITS [--account ID \| --group TEAM]` | `POST /orgs/{org}/capabilities` | Set the capability bits of a member, of a team's members, or (neither) the organization's default. |
-| `namespace outbound ORG --package P [--prefix URL]... [--replace] [--dev-passkey FILE]` | `POST /orgs/{org}/outbound` | Approve URL prefixes the package's publisher may call out to from the organization's contexts (default: every prefix its latest release declares). `--replace` sets exactly these, which is how one is revoked. Where the owner holds outbound approvals. |
-| `namespace approve-release ORG VERSION [--dev-passkey FILE]` | `POST /orgs/{org}/releases` | Approve a mero-tee release to hold the organization's contexts. Where the owner holds release approvals. |
+| `org create NAME` | `POST /orgs` | Create an organization. |
+| `org get ORG` | `GET /orgs/{org}` | One organization. |
+| `org list` (`ls`) | `GET /auth/me` | The organizations this account belongs to, with its role. |
+| `org delete ORG [--dev-passkey FILE]` | `DELETE /orgs/{org}` | Delete it with its teams, invites and contexts (the owner's). |
+| `org invite ORG [--role ROLE] [--team TEAM]... [--ttl-secs N] [--uses N] [--dev-passkey FILE]` | `POST /orgs/{org}/invites` | Make an invitation token. `--role` defaults to `member`; `--team` adds teams the invitee joins. |
+| `org join TOKEN` | `POST /invites/{token}/redeem` | Join with an invitation token. |
+| `org leave ORG` | `DELETE /orgs/{org}/members/{me}` | Leave the organization. |
+| `org teams ORG` | `GET /orgs/{org}` | The organization's teams. |
+| `org create-team ORG NAME [--parent TEAM] [--join JOIN]` | `POST /orgs/{org}/teams` | Create a team; `--join` defaults to `restricted`. |
+| `org members list ORG [--security]` (`ls`) | `GET /orgs/{org}` | Its members. `--security` (owners and admins, `GET /orgs/{org}/members?detail=security`): each member's passkeys held (to `3+`), recovery code set, last active day and live sessions. |
+| `org members add ORG ACCOUNT [--role ROLE]` (`set-role`) | `POST /orgs/{org}/members` | Add a member or change their role (default `member`). `owner` moves ownership. |
+| `org members remove ORG ACCOUNT` (`rm`) | `DELETE /orgs/{org}/members/{account}` | Remove a member. |
+| `org metadata get ORG` | `GET /orgs/{org}` | The organization's metadata. |
+| `org metadata set ORG JSON` | `POST /orgs/{org}/metadata` | Replace it. |
+| `org member-metadata ORG ACCOUNT JSON` | `POST /orgs/{org}/members/{account}/metadata` | Set a member's metadata (theirs, or an admin's); `null` clears it. |
+| `org capabilities ORG BITS [--account ID \| --team TEAM]` | `POST /orgs/{org}/capabilities` | Set the capability bits of a member, of a team's members, or (neither) the organization's default. |
+| `org outbound ORG --package P [--prefix URL]... [--replace] [--dev-passkey FILE]` | `POST /orgs/{org}/outbound` | Approve URL prefixes the package's publisher may call out to from the organization's contexts (default: every prefix its latest release declares). `--replace` sets exactly these, which is how one is revoked. Where the owner holds outbound approvals. |
+| `org approve-release ORG VERSION [--dev-passkey FILE]` | `POST /orgs/{org}/releases` | Approve a mero-tee release to hold the organization's contexts. Where the owner holds release approvals. |
 
-## group
+## team
 
 An organization's teams. `ROLE` is `lead`, `member` or
 `read-only`.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
-| `group get ORG TEAM` | `GET /orgs/{org}/teams/{team}` | One team. |
-| `group update ORG TEAM [--name NAME] [--join JOIN]` | `POST /orgs/{org}/teams/{team}` | Rename it or change who may join. |
-| `group delete ORG TEAM [--dev-passkey FILE]` | `DELETE /orgs/{org}/teams/{team}` | Delete it with the teams below it and their contexts; with contexts there, approved with a passkey (`412` names them). |
-| `group reparent ORG TEAM (PARENT \| --top)` | `POST /orgs/{org}/teams/{team}` | Move it under another team, or to the top. |
-| `group subgroups ORG TEAM` | `GET /orgs/{org}` | The teams directly below it. |
-| `group members list ORG TEAM` (`ls`) | `GET /orgs/{org}/teams/{team}` | Its members and read-only members. |
-| `group members add ORG TEAM ACCOUNT [--role ROLE] [--capabilities BITS]` (`set-role`) | `POST /orgs/{org}/teams/{team}/members` | Add a member or change their role (default `member`) or capabilities. |
-| `group members remove ORG TEAM ACCOUNT` (`rm`) | `DELETE /orgs/{org}/teams/{team}/members/{account}` | Remove a member, from the teams below it too. |
-| `group metadata ORG TEAM JSON` | `POST /orgs/{org}/teams/{team}` | Set the team's metadata. |
-| `group settings ORG TEAM --capabilities BITS` | `POST /orgs/{org}/capabilities` | The capabilities every member of the team gets. |
-| `group leave ORG TEAM` | `DELETE /orgs/{org}/teams/{team}/members/{me}` | Leave the team. |
-| `group upgrade trigger ORG --package P --version V [--group TEAM [--cascade]] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /orgs/{org}/upgrade` | Move the organization's contexts of `P` (or one team's, with `--cascade` its subtree) to a release, as one run the owner approves once. |
-| `group upgrade status ORG RUN` | `GET /orgs/{org}/upgrades/{run}` | Follow a run. |
-| `group upgrade retry ORG RUN [--dev-passkey FILE]` | `POST /orgs/{org}/upgrades/{run}/retry` | Run its failed contexts again, as a new run. |
+| `team get ORG TEAM` | `GET /orgs/{org}/teams/{team}` | One team. |
+| `team update ORG TEAM [--name NAME] [--join JOIN]` | `POST /orgs/{org}/teams/{team}` | Rename it or change who may join. |
+| `team delete ORG TEAM [--dev-passkey FILE]` | `DELETE /orgs/{org}/teams/{team}` | Delete it with the teams below it and their contexts; with contexts there, approved with a passkey (`412` names them). |
+| `team reparent ORG TEAM (PARENT \| --top)` | `POST /orgs/{org}/teams/{team}` | Move it under another team, or to the top. |
+| `team subteams ORG TEAM` | `GET /orgs/{org}` | The teams directly below it. |
+| `team members list ORG TEAM` (`ls`) | `GET /orgs/{org}/teams/{team}` | Its members and read-only members. |
+| `team members add ORG TEAM ACCOUNT [--role ROLE] [--capabilities BITS]` (`set-role`) | `POST /orgs/{org}/teams/{team}/members` | Add a member or change their role (default `member`) or capabilities. |
+| `team members remove ORG TEAM ACCOUNT` (`rm`) | `DELETE /orgs/{org}/teams/{team}/members/{account}` | Remove a member, from the teams below it too. |
+| `team metadata ORG TEAM JSON` | `POST /orgs/{org}/teams/{team}` | Set the team's metadata. |
+| `team settings ORG TEAM --capabilities BITS` | `POST /orgs/{org}/capabilities` | The capabilities every member of the team gets. |
+| `team leave ORG TEAM` | `DELETE /orgs/{org}/teams/{team}/members/{me}` | Leave the team. |
+| `team upgrade trigger ORG --package P --version V [--team TEAM [--cascade]] [--migrate EXPORT] [--dev-passkey FILE]` | `POST /orgs/{org}/upgrade` | Move the organization's contexts of `P` (or one team's, with `--cascade` its subtree) to a release, as one run the owner approves once. |
+| `team upgrade status ORG RUN` | `GET /orgs/{org}/upgrades/{run}` | Follow a run. |
+| `team upgrade retry ORG RUN [--dev-passkey FILE]` | `POST /orgs/{org}/upgrades/{run}/retry` | Run its failed contexts again, as a new run. |
 
 ## account
 
@@ -435,7 +435,7 @@ node answers `403` for the others.
 | `ops install PACKAGE[@VERSION] [--version V]` / `ops install --path FILE` | `POST /ops/packages/install`, `POST /ops/packages` | Install a release for the operator's upgrades, from the registry or a signed `.mpk`. |
 | `ops uninstall PACKAGE [--version V]` | `DELETE /ops/packages/{package}[/{version}]` | Uninstall what the operator installed. |
 | `ops upgrade INSTANCE [--version V] [--package P] [--service S] [--bundle HASH] [--migrate EXPORT]` | `POST /ops/apps/{app}/upgrade` | Update a context to an installed release, where the operator holds app upgrades. |
-| `ops upgrade-namespace ORG --package P --version V [--group TEAM [--cascade]] [--migrate EXPORT]` | `POST /ops/orgs/{org}/upgrade` | Update an organization's contexts (or one team's) to a release; follow it with `group upgrade status`. |
+| `ops upgrade-org ORG --package P --version V [--team TEAM [--cascade]] [--migrate EXPORT]` | `POST /ops/orgs/{org}/upgrade` | Update an organization's contexts (or one team's) to a release; follow it with `team upgrade status`. |
 
 <Aside type="note">
   `ops move`, `ops upgrade` and `ops restore` pass `CONTEXT` to the node as given (an app id

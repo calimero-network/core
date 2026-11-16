@@ -91,7 +91,7 @@ def main(argv=None) -> int:
         # One upload of the bundle (its bytes are in the log once): the other apps name it.
         bundle = alice.raw("get", f"apps/{app}")["bundle"]
         team_app = alice.cli("instance", "create", "--name", "replay-team", "--bundle", bundle,
-                             "--namespace", org)["appId"]
+                             "--org", org)["appId"]
         alice.raw("post", f"apps/{team_app}/access", {"access": {"kind": "team", "team": team}})
         bob.call(team_app, "set", {"key": "t", "value": "team"})
         own = alice.cli("instance", "create", "--name", "replay-own", "--bundle", bundle)["appId"]

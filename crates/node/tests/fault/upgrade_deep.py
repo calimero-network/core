@@ -377,7 +377,7 @@ class Person:
         """A dev bundle (raw component) installed and an app of it created."""
         args = ["instance", "create", "--name", name, "--path", str(wasm)]
         if org:
-            args += ["--namespace", org]
+            args += ["--org", org]
         return self.cli(*args)["appId"]
 
     def __repr__(self):

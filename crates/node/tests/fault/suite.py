@@ -157,7 +157,7 @@ class Account:
     def deploy(self, wasm, name="app", org=None):
         args = ["instance", "create", "--name", name, "--path", str(wasm)]
         if org:
-            args += ["--namespace", org]
+            args += ["--org", org]
         return self.cli(*args)["appId"]
 
 
@@ -257,7 +257,7 @@ def frozen_leader(ctx, cl):
 def orgs_and_keys(ctx, cl):
     """Organizations gate apps, scoped API keys, passkey confirmations, removal."""
     alice, bob, carol = ctx.accounts(cl, "alice", "bob", "carol")
-    org = alice.cli("namespace", "create", "Acme")["orgId"]
+    org = alice.cli("org", "create", "Acme")["orgId"]
     token = alice.raw("post", f"orgs/{org}/invites", {"role": "member", "teams": []})["token"]
     bob.raw("post", f"invites/{token}/redeem", {})
     app = alice.deploy(ctx.kv_wasm, "team-kv", org=org)
@@ -382,7 +382,7 @@ def kv_soak(ctx, cl):
     """kv-store's fuzzy load across 4 members for --soak-seconds; per-call latency and throughput report."""
     accts = ctx.accounts(cl, *SOAK_ACCOUNTS)
     owner = accts[0]
-    org = owner.cli("namespace", "create", "mesh")["orgId"]
+    org = owner.cli("org", "create", "mesh")["orgId"]
     for a in accts[1:]:
         token = owner.raw("post", f"orgs/{org}/invites", {"role": "member", "teams": []})["token"]
         a.raw("post", f"invites/{token}/redeem", {})

@@ -79,10 +79,10 @@ meroctl account api-key create --instance kv --read-only --dev-passkey ./dev-pas
 To share an app, create it in an organization of its own and invite people:
 
 ```bash
-meroctl namespace create Acme                          # answers { "orgId": ... }
-meroctl instance create --path kv_store.wasm --name team-kv --namespace <org-id>
-meroctl namespace invite <org-id> --role member --uses 1 --dev-passkey ./dev-passkey.json
-# the invitee, signed in on their own: meroctl namespace join <token>
+meroctl org create Acme                          # answers { "orgId": ... }
+meroctl instance create --path kv_store.wasm --name team-kv --org <org-id>
+meroctl org invite <org-id> --role member --uses 1 --dev-passkey ./dev-passkey.json
+# the invitee, signed in on their own: meroctl org join <token>
 ```
 
 In `meroctl`, an `app` is a signed package, an `instance` an app instance (v1's `context`, still accepted), a

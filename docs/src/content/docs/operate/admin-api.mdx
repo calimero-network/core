@@ -234,44 +234,44 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /orgs` | account holder | `{ name, recoveryKey? }` (a recovery key's public half); `name` is 1 to 64 characters on one line, without surrounding spaces (`400` otherwise) | `namespace create` |
-| `GET /orgs/{org}` | signed in | Members, teams (filtered to those the caller reaches or manages), metadata | `namespace get`, `groups`, `members list`, `metadata get` |
-| `GET /orgs/{org}/members?detail=security` | account holder, owner or admin | Each member's lockout risk: `{ orgId, members: [{ account, name, role, teams, passkeys, recoveryCode, lastActiveDay, sessions }] }`, `passkeys` `1`, `2` or `"3+"`, `lastActiveDay` a UTC day (`YYYY-MM-DD`, `null`: unknown). `403` below admin, `404` outside the organization ([Members' security](/protocol/organizations/#members-security)) | `namespace members list --security` |
-| `DELETE /orgs/{org}` | account holder | Delete with teams, invites and apps (owner; `412` first) | `namespace delete` |
+| `POST /orgs` | account holder | `{ name, recoveryKey? }` (a recovery key's public half); `name` is 1 to 64 characters on one line, without surrounding spaces (`400` otherwise) | `org create` |
+| `GET /orgs/{org}` | signed in | Members, teams (filtered to those the caller reaches or manages), metadata | `org get`, `teams`, `members list`, `metadata get` |
+| `GET /orgs/{org}/members?detail=security` | account holder, owner or admin | Each member's lockout risk: `{ orgId, members: [{ account, name, role, teams, passkeys, recoveryCode, lastActiveDay, sessions }] }`, `passkeys` `1`, `2` or `"3+"`, `lastActiveDay` a UTC day (`YYYY-MM-DD`, `null`: unknown). `403` below admin, `404` outside the organization ([Members' security](/protocol/organizations/#members-security)) | `org members list --security` |
+| `DELETE /orgs/{org}` | account holder | Delete with teams, invites and apps (owner; `412` first) | `org delete` |
 | `POST /orgs/{org}/name` | account holder | `{ name, confirm? }`: rename the organization (owner or admin; `412` first), the name as `POST /orgs` takes it → `{ orgId, name }`. `403` below admin, `404` outside the organization ([Organizations](/protocol/organizations/#organizations)) | - |
-| `POST /orgs/{org}/metadata` | signed in | `{ metadata }` | `namespace metadata set` |
+| `POST /orgs/{org}/metadata` | signed in | `{ metadata }` | `org metadata set` |
 | `GET /orgs/{org}/usage` | org admin | What today's runs of the apps the org is the developer of used: `apps`, `developerFuelToday`, `developerWritesToday` (decimal strings), the quotas (D78); a member gets `403` | |
-| `POST /orgs/{org}/members` | account holder | `{ account, role, confirm? }`; `owner` moves ownership. `412` first | `namespace members add` |
-| `DELETE /orgs/{org}/members/{account}` | account holder | Remove a member, or leave. `412` first; the retry's JSON body is `{ confirm }` | `namespace members remove`, `namespace leave` |
-| `POST /orgs/{org}/members/{account}/metadata` | signed in | `{ metadata }` | `namespace member-metadata` |
+| `POST /orgs/{org}/members` | account holder | `{ account, role, confirm? }`; `owner` moves ownership. `412` first | `org members add` |
+| `DELETE /orgs/{org}/members/{account}` | account holder | Remove a member, or leave. `412` first; the retry's JSON body is `{ confirm }` | `org members remove`, `org leave` |
+| `POST /orgs/{org}/members/{account}/metadata` | signed in | `{ metadata }` | `org member-metadata` |
 | `POST /orgs/{org}/members/{account}/teams` | account holder | `{ teams: [{ team, role?, capabilities? }], confirm? }`: the account's row in each team (1 to 64, each once), each judged as `POST /orgs/{org}/teams/{team}/members`; all or nothing. `400 BAD_TEAMS`; `412` first | |
 | `DELETE /orgs/{org}/members/{account}/teams` | account holder | `{ teams: [team], confirm? }`: out of each team (or leave them), the teams below included, each judged as `DELETE /orgs/{org}/teams/{team}/members/{account}`; all or nothing. `400 BAD_TEAMS`; `412` first | |
-| `POST /orgs/{org}/capabilities` | account holder | `{ account?, team?, capabilities, confirm? }`. `412` first | `namespace capabilities`, `group settings` |
+| `POST /orgs/{org}/capabilities` | account holder | `{ account?, team?, capabilities, confirm? }`. `412` first | `org capabilities`, `team settings` |
 | `POST /orgs/{org}/all-apps` | account holder | `{ account, allApps, confirm? }`: give a member every app added to the organization from now on, or stop it (owner or admin; `412` first). `403` below admin, `404` outside the organization ([Every app added later](/protocol/organizations/#every-app-added-later)) | - |
-| `POST /orgs/{org}/invites` | account holder | `{ role, teams, ttlSecs?, uses?, allApps?, confirm? }` → a token. `412` first; `allApps: true` (owner or admin, `403` below) also gives whoever redeems it every app added later | `namespace invite` |
+| `POST /orgs/{org}/invites` | account holder | `{ role, teams, ttlSecs?, uses?, allApps?, confirm? }` → a token. `412` first; `allApps: true` (owner or admin, `403` below) also gives whoever redeems it every app added later | `org invite` |
 | `GET /orgs/{org}/invites` | session | `{ invites: [{ inviteKey, role, teams, usesLeft, expiresAt, expired, createdBy, createdAt, allApps }] }`: the invites the caller may see, never a token | |
 | `DELETE /orgs/{org}/invites/{key}` | session | Revoke an invite by its key; `412` first | |
-| `POST /invites/{token}/redeem` | account holder | Join (no passkey prompt: the node signs with the token's key) | `namespace join` |
+| `POST /invites/{token}/redeem` | account holder | Join (no passkey prompt: the node signs with the token's key) | `org join` |
 | `POST /orgs/{org}/recovery` | account holder | `{ publicKey, confirm? }`: set, rotate or (`null`) remove the recovery key (owner; `412` first); cancels a recovery under way | - |
 | `POST /orgs/{org}/recovery/start` | account holder | `{ nonce, signature }`: the seed's signature handing the org to the caller → `{ startedAt, readyAt }`. `403 WRONG_RECOVERY_KEY`, `409 RECOVERY_PENDING` | - |
 | `POST /orgs/{org}/recovery/cancel` | account holder | Cancel the recovery under way (owner; `412` first) | - |
 | `POST /orgs/{org}/recovery/finish` | account holder | Become the owner once `readyAt` passed (the account that started it; `412` first; `409 RECOVERY_NOT_READY` before) | - |
-| `POST /orgs/{org}/teams` | account holder | `{ name, parent?, join: everyone \| invite }`: an admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who writes `parent` and holds `CREATE_CHILD_TEAM` there (a restricted team only) | `namespace create-group` |
-| `GET /orgs/{org}/teams/{team}` | signed in | One team | `group get`, `group members list` |
-| `POST /orgs/{org}/teams/{team}` | account holder | `{ name?, join?, parent?, metadata? }` | `group update`, `reparent`, `metadata` |
-| `DELETE /orgs/{org}/teams/{team}` | account holder | Delete with the teams and apps below | `group delete` |
-| `POST /orgs/{org}/teams/{team}/members` | account holder | `{ account, lead?, role?, capabilities?, confirm? }`. `412` first. A session on a package's frontend may do this on its own package's teams only | `group members add` |
-| `DELETE /orgs/{org}/teams/{team}/members/{account}` | account holder | Remove, or leave. `412` first; the retry's JSON body is `{ confirm }` | `group members remove`, `group leave` |
+| `POST /orgs/{org}/teams` | account holder | `{ name, parent?, join: everyone \| invite }`: an admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who writes `parent` and holds `CREATE_CHILD_TEAM` there (a restricted team only) | `org create-team` |
+| `GET /orgs/{org}/teams/{team}` | signed in | One team | `team get`, `team members list` |
+| `POST /orgs/{org}/teams/{team}` | account holder | `{ name?, join?, parent?, metadata? }` | `team update`, `reparent`, `metadata` |
+| `DELETE /orgs/{org}/teams/{team}` | account holder | Delete with the teams and apps below | `team delete` |
+| `POST /orgs/{org}/teams/{team}/members` | account holder | `{ account, lead?, role?, capabilities?, confirm? }`. `412` first. A session on a package's frontend may do this on its own package's teams only | `team members add` |
+| `DELETE /orgs/{org}/teams/{team}/members/{account}` | account holder | Remove, or leave. `412` first; the retry's JSON body is `{ confirm }` | `team members remove`, `team leave` |
 | `GET /orgs/{org}/app-teams` | signed in (a member) | `{ mode, appTeams }`: each app team's package, id, name, `join`, member count, default capabilities, and whether the caller is in it or manages it (a guest: only their own) | |
 | `POST /orgs/{org}/app-teams` | account holder | `{ apps?: [{ package, name?, instances?, join?, keep?, childTeams? }], shared?, confirm? }` (owner or admin): give apps app teams, or open or close one (`join`), keeping everyone or the accounts in `keep`; `childTeams` lets that team's members make private channels below it (`CREATE_CHILD_TEAM`), or no longer. `412` first | |
 | `GET /orgs/{org}/apps[?after=ID&limit=N]` | signed in (a member) | As `GET /auth/apps`, for the organization's apps the caller reaches or manages; `404` to a non-member | |
-| `POST /orgs/{org}/releases` | account holder | `{ version, approved, confirm? }` (owner) | `namespace approve-release` |
-| `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `namespace outbound` |
-| `POST /orgs/{org}/upgrade` | account holder | `{ package, version, team?, cascade?, migrate?, confirm? }`: an upgrade run (owner) | `group upgrade trigger` |
+| `POST /orgs/{org}/releases` | account holder | `{ version, approved, confirm? }` (owner) | `org approve-release` |
+| `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `org outbound` |
+| `POST /orgs/{org}/upgrade` | account holder | `{ package, version, team?, cascade?, migrate?, confirm? }`: an upgrade run (owner) | `team upgrade trigger` |
 | `POST /orgs/{org}/packages/{package}/upgrade` | account holder | `{ version, migrate?, confirm? }`: a publisher's upgrade run over every instance on the cluster of a package that declares `upgrades: publisher`, by the publisher organization's `MANAGE_APPLICATION` holders; `412` first | |
 | `GET /orgs/{org}/backup-key`, `POST /orgs/{org}/backup-key` | account holder | The organization's [recovery-disk](/operate/deployment/#backups-and-the-recovery-disk) backup key `{ holder, key, apps }` (any member), or set it (`{ publicKey, confirm? }`, 64 hex, an X25519 public key; org-wide `MANAGE_APPLICATION`, where owners upgrade apps; `412` first; `409 FEATURE_NOT_ACTIVE` below 1.0.0-rc.20) | |
-| `GET /orgs/{org}/upgrades/{run}` | signed in (a member) | A run's progress | `group upgrade status` |
-| `POST /orgs/{org}/upgrades/{run}/retry` | account holder, or ops for an operator's run | Retry the failed apps as a new run | `group upgrade retry` |
+| `GET /orgs/{org}/upgrades/{run}` | signed in (a member) | A run's progress | `team upgrade status` |
+| `POST /orgs/{org}/upgrades/{run}/retry` | account holder, or ops for an operator's run | Retry the failed apps as a new run | `team upgrade retry` |
 
 ## Consent requests
 
@@ -352,7 +352,7 @@ there.
 | `POST /ops/packages`, `POST /ops/packages/install`, `GET /ops/packages` | Install (upload or registry) and list the releases the operator upgrades to | `ops install`, `ops packages` |
 | `DELETE /ops/packages/{package}[/{version}]` | Uninstall what the operator installed | `ops uninstall` |
 | `POST /ops/apps/{app}/upgrade` | `{ bundle? \| package?, version?, service?, migrate? }`, where the operator holds app upgrades | `ops upgrade` |
-| `POST /ops/orgs/{org}/upgrade` | `{ package, version, team?, cascade?, migrate? }`, an operator's upgrade run | `ops upgrade-namespace` |
+| `POST /ops/orgs/{org}/upgrade` | `{ package, version, team?, cascade?, migrate? }`, an operator's upgrade run | `ops upgrade-org` |
 
 Quotas (`POST /ops/quotas` changes the fields it names; a field left out keeps
 its value):

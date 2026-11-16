@@ -81,7 +81,7 @@ class Organization(Case):
 
     def seed(self, w):
         alice, bob = w.account("alice"), w.account("bob")
-        self.org = alice.cli("namespace", "create", "Upgrade Org")["orgId"]
+        self.org = alice.cli("org", "create", "Upgrade Org")["orgId"]
         w.shared["org"] = self.org
         token = alice.raw("post", f"orgs/{self.org}/invites", {"role": "member", "teams": []})["token"]
         bob.raw("post", f"invites/{token}/redeem", {})

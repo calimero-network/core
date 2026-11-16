@@ -231,7 +231,7 @@ run, then each app upgraded in turn. There are three kinds, by who starts it:
 `meroctl group upgrade trigger <org> --package P --version V [--group T
 [--cascade]]` starts an organization's run, `meroctl group upgrade status
 <org> <run>` follows it and `meroctl group upgrade retry <org> <run>` retries
-it; `meroctl ops upgrade-namespace` starts the operator's. A publisher's run
+it; `meroctl ops upgrade-org` starts the operator's. A publisher's run
 has no command yet: `meroctl raw post /orgs/<org>/packages/<package>/upgrade
 '{"version":"V"}'`.
 
