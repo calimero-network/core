@@ -1,3 +1,9 @@
+## [35.5.0](https://github.com/calimero-network/mero-js/compare/mero-js-v35.4.0...mero-js-v35.5.0) (2026-11-16)
+
+### Features
+
+* **api:** sync with core c51ae279a ([#391](https://github.com/calimero-network/mero-js/issues/391)) ([4d084ce](https://github.com/calimero-network/mero-js/commit/4d084ce19a741871743a949a09af97159facb524))
+
 ## [35.4.0](https://github.com/calimero-network/mero-js/compare/mero-js-v35.3.0...mero-js-v35.4.0) (2026-11-15)
 
 ### Features
