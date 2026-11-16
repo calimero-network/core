@@ -43,15 +43,13 @@ binds, and only the attested process can open it.
   router a direct request takes, and streams the response back as sealed frames
   (a head, body frames, an end frame), so server-sent events are sealed too and
   a truncated response is detected.
-- **Legacy paths.** Releases up to 1.0.0-rc.24 served the two at
-  `/sealed/v2/handshake` and `/sealed/v2`. A node still serves those, the
-  same bytes, with a `Deprecation` header, until the release
-  `crates/node/api-deprecations.toml` names. A client opens its session at
-  `/sealed/handshake` and, when the node does not serve it (`404`, `405`, or
-  `403 sealed_required` from a node that seals everything), once more at the
-  legacy path, and then posts that session's requests to `/sealed/v2`: a new
-  client or peer reaches an older node through a rollout. The `v2` named no
-  wire format; the version byte does.
+- **Earlier paths.** Releases up to 1.0.0-rc.24 served the two at
+  `/sealed/v2/handshake` and `/sealed/v2`, and 1.0.0-rc.25 to 1.0.0-rc.29
+  served those too, deprecated. A node no longer does, and a client no longer
+  tries them: a client or peer reaches nodes of 1.0.0-rc.25 and later, and a
+  client that still posts to `/sealed/v2` gets `404` (or `403 sealed_required`
+  from a node that seals everything). The `v2` named no wire format; the
+  version byte does, and it is still `0x02`.
 
 | Property | Value |
 | --- | --- |
