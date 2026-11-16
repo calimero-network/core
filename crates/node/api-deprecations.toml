@@ -38,10 +38,10 @@ why = "/auth/me no longer answers the account's own outbound approvals: they are
 
 [[cutover]]
 route = "POST /sealed/v2/handshake"
-pr = 5098
+pr = 5102
 why = "deprecated since 1.0.0-rc.25 for POST /sealed/handshake: clients and peers of 1.0.0-rc.24 or earlier, and SDKs that open sessions only there, no longer reach a node"
 
 [[cutover]]
 route = "POST /sealed/v2"
-pr = 5098
+pr = 5102
 why = "deprecated since 1.0.0-rc.25 for POST /sealed: every SDK released before this one (mero-js up to 35.7.0, MeroKit and mero-kotlin up to 6.1.0) posts its sealed requests here and must upgrade to one that posts to /sealed"
