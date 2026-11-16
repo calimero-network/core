@@ -255,7 +255,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/invites
      * Make an invite
-     * A token for &#x60;role&#x60; and &#x60;teams&#x60;, &#x60;uses&#x60; times within &#x60;ttlSecs&#x60;; &#x60;allApps&#x60; (an admin&#39;s) also gives every app added later. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * A token for &#x60;role&#x60; and &#x60;teams&#x60;, &#x60;uses&#x60; times within &#x60;ttlSecs&#x60;; &#x60;allApps&#x60; (an admin&#39;s) also gives every app added later; &#x60;capabilities&#x60; (bits) is what a new member gets as their own setting, no more than the creator holds (&#x60;403&#x60;), and &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param inviteCreateRequest 
      * @return InviteCreate200Response
@@ -288,7 +288,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/invites
      * Make an invite
-     * A token for &#x60;role&#x60; and &#x60;teams&#x60;, &#x60;uses&#x60; times within &#x60;ttlSecs&#x60;; &#x60;allApps&#x60; (an admin&#39;s) also gives every app added later. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * A token for &#x60;role&#x60; and &#x60;teams&#x60;, &#x60;uses&#x60; times within &#x60;ttlSecs&#x60;; &#x60;allApps&#x60; (an admin&#39;s) also gives every app added later; &#x60;capabilities&#x60; (bits) is what a new member gets as their own setting, no more than the creator holds (&#x60;403&#x60;), and &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param inviteCreateRequest 
      * @return ApiResponse<InviteCreate200Response?>
@@ -1112,7 +1112,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs
      * Create an organization
-     * &#x60;recoveryKey&#x60; is the public half of an organization recovery key.  **Who:** a passkey session (an API key is refused).
+     * &#x60;recoveryKey&#x60; is the public half of an organization recovery key. &#x60;capabilities&#x60; (bits) is what members can do unless set for them, in place of the default; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (&#x60;personal&#x60; in &#x60;/auth/me&#x60;), which this does not make.  **Who:** a passkey session (an API key is refused).
      * @param orgCreateRequest 
      * @return OrgCreate200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -1144,7 +1144,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs
      * Create an organization
-     * &#x60;recoveryKey&#x60; is the public half of an organization recovery key.  **Who:** a passkey session (an API key is refused).
+     * &#x60;recoveryKey&#x60; is the public half of an organization recovery key. &#x60;capabilities&#x60; (bits) is what members can do unless set for them, in place of the default; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (&#x60;personal&#x60; in &#x60;/auth/me&#x60;), which this does not make.  **Who:** a passkey session (an API key is refused).
      * @param orgCreateRequest 
      * @return ApiResponse<OrgCreate200Response?>
      * @throws IllegalStateException If the request is not correctly configured

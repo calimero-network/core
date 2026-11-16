@@ -172,6 +172,22 @@ class OpsFacade internal constructor(
         api(null, operator, emptySet()).ops.opsDeploymentsGranted()
 
     /**
+     * Whether the cluster accepts a job node
+     *
+     * Runs the check the leader makes before it sends a job node work: a quote that passes the release policy, this cluster and node, this cluster's identity, a release not retired (not the per-app release approval). `admitted` carries the attested `release`; `refused` (final), with the reason: a 400 or 404 from the node, a 2xx that is oversized or does not decode, a failed verification, or a 400 or 404 from the collateral source on the PCK certificate or TCB info request; `unreachable` (transient), with the reason: anything else, including no answer, any other status from the node and any other collateral failure. `503` when this node's directory is stale. A verified answer is reused for up to a minute.
+     *
+     * **Who:** the ops token.
+     *
+     * `GET /ops/job-nodes/{id}/attestation` (`ops_job_node_attestation`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun jobNodeAttestation(
+        id: kotlin.String,
+    ): OpsJobNodeAttestation200Response =
+        api(null, null, emptySet()).ops.opsJobNodeAttestation(id = id)
+
+    /**
      * Prometheus metrics
      *
      * Including per-app usage for billing. `--metrics-listen ADDR` also serves it as plain `GET /metrics` there.

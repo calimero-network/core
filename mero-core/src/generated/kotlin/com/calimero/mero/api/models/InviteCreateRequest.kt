@@ -38,6 +38,7 @@ import kotlinx.serialization.Contextual
  * @param ttlSecs 
  * @param uses 
  * @param allApps 
+ * @param capabilities 
  * @param confirm 
  */
 @Serializable
@@ -58,6 +59,9 @@ data class InviteCreateRequest (
 
     @SerialName(value = "allApps")
     val allApps: kotlin.Boolean? = null,
+
+    @SerialName(value = "capabilities")
+    val capabilities: kotlin.Long? = null,
 
     @SerialName(value = "confirm")
     val confirm: Confirm? = null

@@ -33,6 +33,7 @@ import kotlinx.serialization.Contextual
  *
  * @param kind 
  * @param org 
+ * @param personal 
  */
 @Serializable
 
@@ -42,7 +43,10 @@ data class AppScopeOneOf (
     val kind: AppScopeOneOf.Kind,
 
     @SerialName(value = "org")
-    val org: kotlin.String
+    val org: kotlin.String,
+
+    @SerialName(value = "personal")
+    val personal: kotlin.Boolean? = null
 
 ) {
 

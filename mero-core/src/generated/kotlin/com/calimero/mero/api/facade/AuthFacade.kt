@@ -20,7 +20,7 @@ class AuthFacade internal constructor(
     /**
      * The account's own apps
      *
-     * Outside any organization (a package-bound session: its package's): each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
+     * The apps the account owns, in any organization (a package-bound session: its package's), with its personal organization's `approvedReleases`: each app's release, the newer releases it may upgrade to, its last upgrade, its replicas' releases and `lastWriteAt`.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -47,25 +47,6 @@ class AuthFacade internal constructor(
      */
     suspend fun accountBackupKey(): BackupKeyAnswer =
         api(null, null, emptySet()).accounts.accountBackupKey()
-
-    /**
-     * Approve outbound prefixes for the account's apps
-     *
-     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
-     *
-     * `POST /auth/outbound` (`account_outbound_approval`).
-     *
-     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
-     *
-     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
-     */
-    suspend fun accountOutboundApproval(
-        `package`: kotlin.String,
-        prefixes: com.calimero.mero.OutboundSelection? = null,
-        replace: kotlin.Boolean? = null,
-        passkey: PasskeyProvider? = null,
-    ): OutboundApproved =
-        api(passkey, null, emptySet()).accounts.accountOutboundApproval(accountOutboundApprovalRequest = AccountOutboundApprovalRequest(`package` = `package`, prefixes = prefixes, replace = replace))
 
     /**
      * Prove the account to another party
@@ -154,26 +135,6 @@ class AuthFacade internal constructor(
         registration: Registration,
     ): AccountRecoveryStart200Response =
         api(null, null, emptySet()).accounts.accountRecoveryStart(accountRecoveryStartRequest = AccountRecoveryStartRequest(challengeId = challengeId, code = code, registration = registration))
-
-    /**
-     * Approve a mero-tee release for the account's apps
-     *
-     * Where the owner holds release approvals; `412` first.
-     *
-     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
-     *
-     * `POST /auth/releases` (`account_release_approval`).
-     *
-     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
-     *
-     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
-     */
-    suspend fun accountReleaseApproval(
-        version: kotlin.String,
-        approved: kotlin.Boolean? = null,
-        passkey: PasskeyProvider? = null,
-    ): ApprovedReleases =
-        api(passkey, null, emptySet()).accounts.accountReleaseApproval(accountReleaseApprovalRequest = AccountReleaseApprovalRequest(version = version, approved = approved))
 
     /**
      * Set the account's backup key
@@ -379,7 +340,7 @@ class AuthFacade internal constructor(
     /**
      * The caller's account
      *
-     * The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations, approvals and recovery state, and how the caller came (`via`).
+     * The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: the one made at sign-up, where its instances go unless they name another; its approvals are that organization's), recovery state, and how the caller came (`via`).
      *
      * **Who:** signed in (a session or an API key).
      *

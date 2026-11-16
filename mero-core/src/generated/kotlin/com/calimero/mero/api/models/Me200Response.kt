@@ -26,7 +26,6 @@ package com.calimero.mero.api.models
 import com.calimero.mero.api.models.Me200ResponseOrgsInner
 import com.calimero.mero.api.models.Me200ResponsePasskeysInner
 import com.calimero.mero.api.models.Me200ResponseRecoveryPending
-import com.calimero.mero.api.models.OutboundApproval
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -41,8 +40,6 @@ import kotlinx.serialization.Contextual
  * @param orgs 
  * @param via 
  * @param passkeyId 
- * @param approvedReleases 
- * @param outboundApprovals 
  * @param app 
  * @param origin 
  * @param recoveryCode 
@@ -69,12 +66,6 @@ data class Me200Response (
 
     @SerialName(value = "passkeyId")
     val passkeyId: kotlin.String?,
-
-    @SerialName(value = "approvedReleases")
-    val approvedReleases: kotlin.collections.List<kotlin.String>,
-
-    @Contextual @SerialName(value = "outboundApprovals")
-    val outboundApprovals: kotlin.collections.Map<kotlin.String, OutboundApproval>,
 
     @SerialName(value = "app")
     val app: kotlin.String? = null,

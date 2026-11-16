@@ -35,6 +35,7 @@ import kotlinx.serialization.Contextual
  * @param orgId 
  * @param name 
  * @param role 
+ * @param personal 
  */
 @Serializable
 
@@ -47,7 +48,10 @@ data class Me200ResponseOrgsInner (
     val name: kotlin.String,
 
     @Contextual @SerialName(value = "role")
-    val role: OrgRole
+    val role: OrgRole,
+
+    @SerialName(value = "personal")
+    val personal: kotlin.Boolean? = null
 
 ) {
 

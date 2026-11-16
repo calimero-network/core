@@ -33,6 +33,7 @@ import kotlinx.serialization.Contextual
  *
  * @param name 
  * @param recoveryKey 
+ * @param capabilities 
  */
 @Serializable
 
@@ -42,7 +43,10 @@ data class OrgCreateRequest (
     val name: kotlin.String,
 
     @SerialName(value = "recoveryKey")
-    val recoveryKey: kotlin.String? = null
+    val recoveryKey: kotlin.String? = null,
+
+    @SerialName(value = "capabilities")
+    val capabilities: kotlin.Long? = null
 
 ) {
 

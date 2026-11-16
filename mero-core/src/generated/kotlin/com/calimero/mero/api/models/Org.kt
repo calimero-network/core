@@ -35,7 +35,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later.
+ * An organization as `GET /orgs/{org}` answers it. `members` maps each account to its role, `capabilities` and `defaultCapabilities` are capability bits, `outboundApprovals` is keyed by package signer, `upgradeRuns` by run id; `recovery` is absent when the organization set no recovery key, `allApps` when no member gets every app added later, `personal` unless it is its owner's personal organization (where instances created without naming an organization go).
  *
  * @param orgId 
  * @param name 
@@ -50,6 +50,7 @@ import kotlinx.serialization.Contextual
  * @param upgradeRuns 
  * @param recovery 
  * @param allApps 
+ * @param personal 
  * @param mode 
  * @param releaseApprovers 
  * @param publishes 
@@ -98,6 +99,9 @@ data class Org (
 
     @SerialName(value = "allApps")
     val allApps: kotlin.collections.List<kotlin.String>? = null,
+
+    @SerialName(value = "personal")
+    val personal: kotlin.Boolean? = null,
 
     @SerialName(value = "mode")
     val mode: Org.Mode? = null,

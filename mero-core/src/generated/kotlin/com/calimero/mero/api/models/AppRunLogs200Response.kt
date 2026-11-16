@@ -23,7 +23,7 @@
 
 package com.calimero.mero.api.models
 
-import com.calimero.mero.api.models.Confirm
+import com.calimero.mero.api.models.AppRunLogs200ResponseLogsInner
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -32,22 +32,14 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param version 
- * @param approved 
- * @param confirm 
+ * @param logs 
  */
 @Serializable
 
-data class AccountReleaseApprovalRequest (
+data class AppRunLogs200Response (
 
-    @SerialName(value = "version")
-    val version: kotlin.String,
-
-    @SerialName(value = "approved")
-    val approved: kotlin.Boolean? = null,
-
-    @SerialName(value = "confirm")
-    val confirm: Confirm? = null
+    @SerialName(value = "logs")
+    val logs: kotlin.collections.List<AppRunLogs200ResponseLogsInner>
 
 ) {
 

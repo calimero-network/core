@@ -23,7 +23,6 @@
 
 package com.calimero.mero.api.models
 
-import com.calimero.mero.api.models.Confirm
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -32,29 +31,34 @@ import kotlinx.serialization.Contextual
 /**
  * 
  *
- * @param `package` 
- * @param prefixes 
- * @param replace 
- * @param confirm 
+ * @param state 
+ * @param node 
+ * @param release 
  */
 @Serializable
 
-data class AccountOutboundApprovalRequest (
+data class OpsJobNodeAttestation200ResponseOneOf (
 
-    @SerialName(value = "package")
-    val `package`: kotlin.String,
+    @SerialName(value = "state")
+    val state: OpsJobNodeAttestation200ResponseOneOf.State,
 
-    @SerialName(value = "prefixes")
-    val prefixes: com.calimero.mero.OutboundSelection? = null,
+    @SerialName(value = "node")
+    val node: kotlin.Long,
 
-    @SerialName(value = "replace")
-    val replace: kotlin.Boolean? = null,
-
-    @SerialName(value = "confirm")
-    val confirm: Confirm? = null
+    @SerialName(value = "release")
+    val release: kotlin.String
 
 ) {
 
+    /**
+     * 
+     *
+     * Values: ADMITTED
+     */
+    @Serializable
+    enum class State(val value: kotlin.String) {
+        @SerialName(value = "admitted") ADMITTED("admitted");
+    }
 
 }
 

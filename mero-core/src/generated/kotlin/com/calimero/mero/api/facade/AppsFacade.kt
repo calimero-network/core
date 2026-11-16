@@ -70,7 +70,7 @@ class AppsFacade internal constructor(
     /**
      * Create an app instance
      *
-     * From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`) or the caller's own. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
+     * From a release (`package`, `version`, `service`), a deployment's offer (`deployment`), or an uploaded `bundle`; in an organization (`org`), or, naming none, the caller's personal organization. Every app is in an organization. `initArgs` go to the app's `init` and `metadata` is kept as given (both free-form JSON). Answers once `init` committed; `compute` says whether the app has a compute component.
      *
      * **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      *
@@ -235,6 +235,23 @@ class AppsFacade internal constructor(
         run: kotlin.String,
     ): Run =
         api(null, null, emptySet()).apps.appRun(app = app, run = run)
+
+    /**
+     * A compute run's attempt logs
+     *
+     * Each attempt's module log, as a sealed file of the app: `{ attempt, id, size, sha256 }`. Only for those who may handle the app's files; the bytes are a files export.
+     *
+     * **Who:** signed in (a session or an API key).
+     *
+     * `GET /apps/{app}/runs/{run}/logs` (`app_run_logs`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun runLogs(
+        app: kotlin.String,
+        run: kotlin.String,
+    ): AppRunLogs200Response =
+        api(null, null, emptySet()).apps.appRunLogs(app = app, run = run)
 
     /**
      * An app's compute runs
@@ -590,7 +607,7 @@ class AppsFacade internal constructor(
     /**
      * A pipeline run's receipt
      *
-     * The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key.
+     * The owner and the organization's members. For an ended run: the receipt, the answering node and its signature over it, by the node's receipt key. `version=2` adds what each job's report signs to its proof (`job`) and each job node's attestation (`jobAttestations`); the default, `1`, leaves them out.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -601,8 +618,9 @@ class AppsFacade internal constructor(
     suspend fun pipelineReceiptReceipt(
         app: kotlin.String,
         run: kotlin.String,
+        version: kotlin.Long? = null,
     ): PipelineReceiptReceipt200Response =
-        api(null, null, emptySet()).apps.pipelineReceiptReceipt(app = app, run = run)
+        api(null, null, emptySet()).apps.pipelineReceiptReceipt(app = app, run = run, version = version)
 
     /**
      * Cancel a pipeline run
@@ -866,7 +884,7 @@ class AppsFacade internal constructor(
     /**
      * Read with a view method
      *
-     * Read on a caught-up replica (`consistency: "strong"`, the default; any value but `"stale"` reads as it), or (`"stale"`) on the one answering; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
+     * Read linearizably (`consistency: "strong"`, the default; any value but `"stale"` reads as it): the replica answering waits until it applied the index the app's leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (`"stale"`) on the replica answering, as it stands; `minIndex` waits until the replica applied it (`503 NOT_CAUGHT_UP`). `args`, `result` and each event's `data` are the app's own JSON, free-form here: the app's ABI (`GET /apps/{app}/abi`, or its OpenAPI document) types them.
      *
      * **Who:** whoever the app's access admits (a public app: anyone).
      *

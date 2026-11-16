@@ -32,6 +32,7 @@ import kotlinx.serialization.Contextual
  * 
  *
  * @param orgId 
+ * @param teamId 
  * @param token 
  * @param org 
  * @param name 
@@ -43,6 +44,9 @@ data class ConsentPageResult200ResponseOutcome (
 
     @SerialName(value = "orgId")
     val orgId: kotlin.String? = null,
+
+    @SerialName(value = "teamId")
+    val teamId: kotlin.String? = null,
 
     @SerialName(value = "token")
     val token: kotlin.String? = null,

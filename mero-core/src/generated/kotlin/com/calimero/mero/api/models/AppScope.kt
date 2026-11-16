@@ -33,10 +33,11 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.JsonClassDiscriminator
 
 /**
- * The scope whose approvals cover an app: its organization, or its owner's account (never named).
+ * The scope whose approvals cover an app: its organization (`personal: true` when it is its owner's personal organization). `account` is only `GET /auth/apps`' own scope: the apps the account owns, wherever they are.
  *
  * @param kind 
  * @param org 
+ * @param personal 
  */
 @Serializable
 
@@ -49,6 +50,8 @@ sealed class AppScope {
     abstract val kind: AppScope.Kind
     @SerialName(value = "org")
     abstract val org: kotlin.String
+    @SerialName(value = "personal")
+    abstract val personal: kotlin.Boolean?
     /**
      * 
      *

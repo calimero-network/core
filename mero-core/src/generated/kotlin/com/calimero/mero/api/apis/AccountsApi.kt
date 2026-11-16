@@ -28,14 +28,12 @@ import okhttp3.Call
 import okhttp3.HttpUrl
 
 import com.calimero.mero.api.models.AccountApps200Response
-import com.calimero.mero.api.models.AccountOutboundApprovalRequest
 import com.calimero.mero.api.models.AccountProof
 import com.calimero.mero.api.models.AccountProofProveRequest
 import com.calimero.mero.api.models.AccountRecoveryBeginRequest
 import com.calimero.mero.api.models.AccountRecoveryFinishRequest
 import com.calimero.mero.api.models.AccountRecoveryStart200Response
 import com.calimero.mero.api.models.AccountRecoveryStartRequest
-import com.calimero.mero.api.models.AccountReleaseApprovalRequest
 import com.calimero.mero.api.models.AccountSetBackupKeyRequest
 import com.calimero.mero.api.models.ActivityList200Response
 import com.calimero.mero.api.models.AliasGet200Response
@@ -44,7 +42,6 @@ import com.calimero.mero.api.models.AliasSetRequest
 import com.calimero.mero.api.models.ApikeyCreate200Response
 import com.calimero.mero.api.models.ApikeyCreateRequest
 import com.calimero.mero.api.models.ApikeyList200Response
-import com.calimero.mero.api.models.ApprovedReleases
 import com.calimero.mero.api.models.BackupKeyAnswer
 import com.calimero.mero.api.models.ConfirmOnly
 import com.calimero.mero.api.models.Error
@@ -53,7 +50,6 @@ import com.calimero.mero.api.models.LoginBeginRequest
 import com.calimero.mero.api.models.LoginFinishRequest
 import com.calimero.mero.api.models.LogoutAll200Response
 import com.calimero.mero.api.models.Me200Response
-import com.calimero.mero.api.models.OutboundApproved
 import com.calimero.mero.api.models.PasskeyAddFinish200Response
 import com.calimero.mero.api.models.PasskeyAddFinishRequest
 import com.calimero.mero.api.models.PasskeyLabelRequest
@@ -97,7 +93,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /auth/apps
      * The account&#39;s own apps
-     * Outside any organization (a package-bound session: its package&#39;s): each app&#39;s release, the newer releases it may upgrade to, its last upgrade, its replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** signed in (a session or an API key).
+     * The apps the account owns, in any organization (a package-bound session: its package&#39;s), with its personal organization&#39;s &#x60;approvedReleases&#x60;: each app&#39;s release, the newer releases it may upgrade to, its last upgrade, its replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** signed in (a session or an API key).
      * @param after  (optional)
      * @param limit  (optional)
      * @return AccountApps200Response
@@ -130,7 +126,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /auth/apps
      * The account&#39;s own apps
-     * Outside any organization (a package-bound session: its package&#39;s): each app&#39;s release, the newer releases it may upgrade to, its last upgrade, its replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** signed in (a session or an API key).
+     * The apps the account owns, in any organization (a package-bound session: its package&#39;s), with its personal organization&#39;s &#x60;approvedReleases&#x60;: each app&#39;s release, the newer releases it may upgrade to, its last upgrade, its replicas&#39; releases and &#x60;lastWriteAt&#x60;.  **Who:** signed in (a session or an API key).
      * @param after  (optional)
      * @param limit  (optional)
      * @return ApiResponse<AccountApps200Response?>
@@ -241,80 +237,6 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
         return RequestConfig(
             method = RequestMethod.GET,
             path = "/auth/backup-key",
-            query = localVariableQuery,
-            headers = localVariableHeaders,
-            requiresAuthentication = true,
-            body = localVariableBody
-        )
-    }
-
-    /**
-     * POST /auth/outbound
-     * Approve outbound prefixes for the account&#39;s apps
-     * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param accountOutboundApprovalRequest 
-     * @return OutboundApproved
-     * @throws IllegalStateException If the request is not correctly configured
-     * @throws IOException Rethrows the OkHttp execute method exception
-     * @throws UnsupportedOperationException If the API returns an informational or redirection response
-     * @throws ClientException If the API returns a client error response
-     * @throws ServerException If the API returns a server error response
-     */
-    @Suppress("UNCHECKED_CAST")
-    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun accountOutboundApproval(accountOutboundApprovalRequest: AccountOutboundApprovalRequest) : OutboundApproved = withContext(Dispatchers.IO) {
-        val localVarResponse = accountOutboundApprovalWithHttpInfo(accountOutboundApprovalRequest = accountOutboundApprovalRequest)
-
-        return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OutboundApproved
-            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
-            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
-            ResponseType.ClientError -> {
-                val localVarError = localVarResponse as ClientError<*>
-                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
-            }
-            ResponseType.ServerError -> {
-                val localVarError = localVarResponse as ServerError<*>
-                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
-            }
-        }
-    }
-
-    /**
-     * POST /auth/outbound
-     * Approve outbound prefixes for the account&#39;s apps
-     * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param accountOutboundApprovalRequest 
-     * @return ApiResponse<OutboundApproved?>
-     * @throws IllegalStateException If the request is not correctly configured
-     * @throws IOException Rethrows the OkHttp execute method exception
-     */
-    @Suppress("UNCHECKED_CAST")
-    @Throws(IllegalStateException::class, IOException::class)
-    suspend fun accountOutboundApprovalWithHttpInfo(accountOutboundApprovalRequest: AccountOutboundApprovalRequest) : ApiResponse<OutboundApproved?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = accountOutboundApprovalRequestConfig(accountOutboundApprovalRequest = accountOutboundApprovalRequest)
-
-        return@withContext request<AccountOutboundApprovalRequest, OutboundApproved>(
-            localVariableConfig
-        )
-    }
-
-    /**
-     * To obtain the request config of the operation accountOutboundApproval
-     *
-     * @param accountOutboundApprovalRequest 
-     * @return RequestConfig
-     */
-    fun accountOutboundApprovalRequestConfig(accountOutboundApprovalRequest: AccountOutboundApprovalRequest) : RequestConfig<AccountOutboundApprovalRequest> {
-        val localVariableBody = accountOutboundApprovalRequest
-        val localVariableQuery: MultiValueMap = mutableMapOf()
-        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
-        localVariableHeaders["Content-Type"] = "application/json"
-        localVariableHeaders["Accept"] = "application/json"
-
-        return RequestConfig(
-            method = RequestMethod.POST,
-            path = "/auth/outbound",
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,
@@ -688,80 +610,6 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = false,
-            body = localVariableBody
-        )
-    }
-
-    /**
-     * POST /auth/releases
-     * Approve a mero-tee release for the account&#39;s apps
-     * Where the owner holds release approvals; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param accountReleaseApprovalRequest 
-     * @return ApprovedReleases
-     * @throws IllegalStateException If the request is not correctly configured
-     * @throws IOException Rethrows the OkHttp execute method exception
-     * @throws UnsupportedOperationException If the API returns an informational or redirection response
-     * @throws ClientException If the API returns a client error response
-     * @throws ServerException If the API returns a server error response
-     */
-    @Suppress("UNCHECKED_CAST")
-    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun accountReleaseApproval(accountReleaseApprovalRequest: AccountReleaseApprovalRequest) : ApprovedReleases = withContext(Dispatchers.IO) {
-        val localVarResponse = accountReleaseApprovalWithHttpInfo(accountReleaseApprovalRequest = accountReleaseApprovalRequest)
-
-        return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as ApprovedReleases
-            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
-            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
-            ResponseType.ClientError -> {
-                val localVarError = localVarResponse as ClientError<*>
-                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
-            }
-            ResponseType.ServerError -> {
-                val localVarError = localVarResponse as ServerError<*>
-                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
-            }
-        }
-    }
-
-    /**
-     * POST /auth/releases
-     * Approve a mero-tee release for the account&#39;s apps
-     * Where the owner holds release approvals; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
-     * @param accountReleaseApprovalRequest 
-     * @return ApiResponse<ApprovedReleases?>
-     * @throws IllegalStateException If the request is not correctly configured
-     * @throws IOException Rethrows the OkHttp execute method exception
-     */
-    @Suppress("UNCHECKED_CAST")
-    @Throws(IllegalStateException::class, IOException::class)
-    suspend fun accountReleaseApprovalWithHttpInfo(accountReleaseApprovalRequest: AccountReleaseApprovalRequest) : ApiResponse<ApprovedReleases?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = accountReleaseApprovalRequestConfig(accountReleaseApprovalRequest = accountReleaseApprovalRequest)
-
-        return@withContext request<AccountReleaseApprovalRequest, ApprovedReleases>(
-            localVariableConfig
-        )
-    }
-
-    /**
-     * To obtain the request config of the operation accountReleaseApproval
-     *
-     * @param accountReleaseApprovalRequest 
-     * @return RequestConfig
-     */
-    fun accountReleaseApprovalRequestConfig(accountReleaseApprovalRequest: AccountReleaseApprovalRequest) : RequestConfig<AccountReleaseApprovalRequest> {
-        val localVariableBody = accountReleaseApprovalRequest
-        val localVariableQuery: MultiValueMap = mutableMapOf()
-        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
-        localVariableHeaders["Content-Type"] = "application/json"
-        localVariableHeaders["Accept"] = "application/json"
-
-        return RequestConfig(
-            method = RequestMethod.POST,
-            path = "/auth/releases",
-            query = localVariableQuery,
-            headers = localVariableHeaders,
-            requiresAuthentication = true,
             body = localVariableBody
         )
     }
@@ -1723,7 +1571,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /auth/me
      * The caller&#39;s account
-     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations, approvals and recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
+     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: the one made at sign-up, where its instances go unless they name another; its approvals are that organization&#39;s), recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
      * @return Me200Response
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1754,7 +1602,7 @@ open class AccountsApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /auth/me
      * The caller&#39;s account
-     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations, approvals and recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
+     * The account, its passkeys (with &#x60;addedAt&#x60; and &#x60;lastSignInAt&#x60;), organizations (&#x60;personal&#x60;: the one made at sign-up, where its instances go unless they name another; its approvals are that organization&#39;s), recovery state, and how the caller came (&#x60;via&#x60;).  **Who:** signed in (a session or an API key).
      * @return ApiResponse<Me200Response?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception

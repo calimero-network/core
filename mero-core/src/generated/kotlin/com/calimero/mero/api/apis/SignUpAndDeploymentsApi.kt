@@ -672,7 +672,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
     /**
      * GET /deployments/{id}/orgs
      * The organizations a deployment serves
-     * For its managers: each organization with instances from it, its name (&#x60;null&#x60; when unknown), member counts (&#x60;activeMembers30d&#x60;: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization are only counted (&#x60;outsideOrgs&#x60;). Never who the members are.  **Who:** signed in (a session or an API key).
+     * For its managers: each organization with instances from it, its name (&#x60;null&#x60; when unknown), member counts (&#x60;activeMembers30d&#x60;: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or in a personal organization, are only counted (&#x60;outsideOrgs&#x60;). Never who the members are.  **Who:** signed in (a session or an API key).
      * @param id 
      * @return DeploymentOrgs200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -704,7 +704,7 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
     /**
      * GET /deployments/{id}/orgs
      * The organizations a deployment serves
-     * For its managers: each organization with instances from it, its name (&#x60;null&#x60; when unknown), member counts (&#x60;activeMembers30d&#x60;: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization are only counted (&#x60;outsideOrgs&#x60;). Never who the members are.  **Who:** signed in (a session or an API key).
+     * For its managers: each organization with instances from it, its name (&#x60;null&#x60; when unknown), member counts (&#x60;activeMembers30d&#x60;: active in the last 30 days), its instances and the releases they run, and when its first was created (RFC 3339); instances outside an organization, or in a personal organization, are only counted (&#x60;outsideOrgs&#x60;). Never who the members are.  **Who:** signed in (a session or an API key).
      * @param id 
      * @return ApiResponse<DeploymentOrgs200Response?>
      * @throws IllegalStateException If the request is not correctly configured

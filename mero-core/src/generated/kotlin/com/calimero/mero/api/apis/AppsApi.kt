@@ -40,6 +40,7 @@ import com.calimero.mero.api.models.AppMethod200Response
 import com.calimero.mero.api.models.AppMethodRequest
 import com.calimero.mero.api.models.AppMove200Response
 import com.calimero.mero.api.models.AppMoveRequest
+import com.calimero.mero.api.models.AppRunLogs200Response
 import com.calimero.mero.api.models.AppRuns200Response
 import com.calimero.mero.api.models.AppStorage200Response
 import com.calimero.mero.api.models.AppTransferRequest
@@ -340,7 +341,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps
      * Create an app instance
-     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;; in an organization (&#x60;org&#x60;) or the caller&#39;s own. &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;; in an organization (&#x60;org&#x60;), or, naming none, the caller&#39;s personal organization. Every app is in an organization. &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param appCreateRequest 
      * @return AppCreate200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -372,7 +373,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps
      * Create an app instance
-     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;; in an organization (&#x60;org&#x60;) or the caller&#39;s own. &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * From a release (&#x60;package&#x60;, &#x60;version&#x60;, &#x60;service&#x60;), a deployment&#39;s offer (&#x60;deployment&#x60;), or an uploaded &#x60;bundle&#x60;; in an organization (&#x60;org&#x60;), or, naming none, the caller&#39;s personal organization. Every app is in an organization. &#x60;initArgs&#x60; go to the app&#39;s &#x60;init&#x60; and &#x60;metadata&#x60; is kept as given (both free-form JSON). Answers once &#x60;init&#x60; committed; &#x60;compute&#x60; says whether the app has a compute component.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param appCreateRequest 
      * @return ApiResponse<AppCreate200Response?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -1017,6 +1018,82 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
         return RequestConfig(
             method = RequestMethod.GET,
             path = "/apps/{app}/runs/{run}".replace("{"+"app"+"}", encodeURIComponent(app.toString())).replace("{"+"run"+"}", encodeURIComponent(run.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /apps/{app}/runs/{run}/logs
+     * A compute run&#39;s attempt logs
+     * Each attempt&#39;s module log, as a sealed file of the app: &#x60;{ attempt, id, size, sha256 }&#x60;. Only for those who may handle the app&#39;s files; the bytes are a files export.  **Who:** signed in (a session or an API key).
+     * @param app 
+     * @param run 
+     * @return AppRunLogs200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appRunLogs(app: kotlin.String, run: kotlin.String) : AppRunLogs200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = appRunLogsWithHttpInfo(app = app, run = run)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppRunLogs200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/runs/{run}/logs
+     * A compute run&#39;s attempt logs
+     * Each attempt&#39;s module log, as a sealed file of the app: &#x60;{ attempt, id, size, sha256 }&#x60;. Only for those who may handle the app&#39;s files; the bytes are a files export.  **Who:** signed in (a session or an API key).
+     * @param app 
+     * @param run 
+     * @return ApiResponse<AppRunLogs200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appRunLogsWithHttpInfo(app: kotlin.String, run: kotlin.String) : ApiResponse<AppRunLogs200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appRunLogsRequestConfig(app = app, run = run)
+
+        return@withContext request<Unit, AppRunLogs200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appRunLogs
+     *
+     * @param app 
+     * @param run 
+     * @return RequestConfig
+     */
+    fun appRunLogsRequestConfig(app: kotlin.String, run: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/runs/{run}/logs".replace("{"+"app"+"}", encodeURIComponent(app.toString())).replace("{"+"run"+"}", encodeURIComponent(run.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,
@@ -2574,9 +2651,10 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/pipeline-runs/{run}/receipt
      * A pipeline run&#39;s receipt
-     * The owner and the organization&#39;s members. For an ended run: the receipt, the answering node and its signature over it, by the node&#39;s receipt key.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. For an ended run: the receipt, the answering node and its signature over it, by the node&#39;s receipt key. &#x60;version&#x3D;2&#x60; adds what each job&#39;s report signs to its proof (&#x60;job&#x60;) and each job node&#39;s attestation (&#x60;jobAttestations&#x60;); the default, &#x60;1&#x60;, leaves them out.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
+     * @param version  (optional)
      * @return PipelineReceiptReceipt200Response
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -2586,8 +2664,8 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun pipelineReceiptReceipt(app: kotlin.String, run: kotlin.String) : PipelineReceiptReceipt200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = pipelineReceiptReceiptWithHttpInfo(app = app, run = run)
+    suspend fun pipelineReceiptReceipt(app: kotlin.String, run: kotlin.String, version: kotlin.Long? = null) : PipelineReceiptReceipt200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = pipelineReceiptReceiptWithHttpInfo(app = app, run = run, version = version)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as PipelineReceiptReceipt200Response
@@ -2607,17 +2685,18 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/pipeline-runs/{run}/receipt
      * A pipeline run&#39;s receipt
-     * The owner and the organization&#39;s members. For an ended run: the receipt, the answering node and its signature over it, by the node&#39;s receipt key.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. For an ended run: the receipt, the answering node and its signature over it, by the node&#39;s receipt key. &#x60;version&#x3D;2&#x60; adds what each job&#39;s report signs to its proof (&#x60;job&#x60;) and each job node&#39;s attestation (&#x60;jobAttestations&#x60;); the default, &#x60;1&#x60;, leaves them out.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
+     * @param version  (optional)
      * @return ApiResponse<PipelineReceiptReceipt200Response?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun pipelineReceiptReceiptWithHttpInfo(app: kotlin.String, run: kotlin.String) : ApiResponse<PipelineReceiptReceipt200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = pipelineReceiptReceiptRequestConfig(app = app, run = run)
+    suspend fun pipelineReceiptReceiptWithHttpInfo(app: kotlin.String, run: kotlin.String, version: kotlin.Long?) : ApiResponse<PipelineReceiptReceipt200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = pipelineReceiptReceiptRequestConfig(app = app, run = run, version = version)
 
         return@withContext request<Unit, PipelineReceiptReceipt200Response>(
             localVariableConfig
@@ -2629,11 +2708,17 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
      *
      * @param app 
      * @param run 
+     * @param version  (optional)
      * @return RequestConfig
      */
-    fun pipelineReceiptReceiptRequestConfig(app: kotlin.String, run: kotlin.String) : RequestConfig<Unit> {
+    fun pipelineReceiptReceiptRequestConfig(app: kotlin.String, run: kotlin.String, version: kotlin.Long?) : RequestConfig<Unit> {
         val localVariableBody = null
-        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableQuery: MultiValueMap = mutableMapOf<kotlin.String, kotlin.collections.List<kotlin.String>>()
+            .apply {
+                if (version != null) {
+                    put("version", listOf(version.toString()))
+                }
+            }
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Accept"] = "application/json"
 
@@ -3808,7 +3893,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/views
      * Read with a view method
-     * Read on a caught-up replica (&#x60;consistency: \&quot;strong\&quot;&#x60;, the default; any value but &#x60;\&quot;stale\&quot;&#x60; reads as it), or (&#x60;\&quot;stale\&quot;&#x60;) on the one answering; &#x60;minIndex&#x60; waits until the replica applied it (&#x60;503 NOT_CAUGHT_UP&#x60;). &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Read linearizably (&#x60;consistency: \&quot;strong\&quot;&#x60;, the default; any value but &#x60;\&quot;stale\&quot;&#x60; reads as it): the replica answering waits until it applied the index the app&#39;s leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (&#x60;\&quot;stale\&quot;&#x60;) on the replica answering, as it stands; &#x60;minIndex&#x60; waits until the replica applied it (&#x60;503 NOT_CAUGHT_UP&#x60;). &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
      * @param app 
      * @param viewsRequest 
      * @return Views200Response
@@ -3841,7 +3926,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/views
      * Read with a view method
-     * Read on a caught-up replica (&#x60;consistency: \&quot;strong\&quot;&#x60;, the default; any value but &#x60;\&quot;stale\&quot;&#x60; reads as it), or (&#x60;\&quot;stale\&quot;&#x60;) on the one answering; &#x60;minIndex&#x60; waits until the replica applied it (&#x60;503 NOT_CAUGHT_UP&#x60;). &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
+     * Read linearizably (&#x60;consistency: \&quot;strong\&quot;&#x60;, the default; any value but &#x60;\&quot;stale\&quot;&#x60; reads as it): the replica answering waits until it applied the index the app&#39;s leader names once it confirmed it leads, and sends the view to the leader if it cannot catch up; or (&#x60;\&quot;stale\&quot;&#x60;) on the replica answering, as it stands; &#x60;minIndex&#x60; waits until the replica applied it (&#x60;503 NOT_CAUGHT_UP&#x60;). &#x60;args&#x60;, &#x60;result&#x60; and each event&#39;s &#x60;data&#x60; are the app&#39;s own JSON, free-form here: the app&#39;s ABI (&#x60;GET /apps/{app}/abi&#x60;, or its OpenAPI document) types them.  **Who:** whoever the app&#39;s access admits (a public app: anyone).
      * @param app 
      * @param viewsRequest 
      * @return ApiResponse<Views200Response?>

@@ -44,7 +44,7 @@ data class PipelineReceiptReceipt200Response (
     val receipt: kotlinx.serialization.json.JsonElement?,
 
     @SerialName(value = "node")
-    val node: kotlin.String,
+    val node: kotlin.Long,
 
     @SerialName(value = "signature")
     val signature: kotlin.String

@@ -90,6 +90,24 @@ class PackagesFacade internal constructor(
         api(passkey, null, emptySet()).packages.originsRemove(`package` = `package`, originsRemoveRequest = OriginsRemoveRequest(origin = origin))
 
     /**
+     * A release's capabilities
+     *
+     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+     *
+     * **Who:** signed in (a session or an API key).
+     *
+     * `GET /packages/{package}/{version}/capabilities` (`package_capabilities`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun capabilities(
+        `package`: kotlin.String,
+        version: kotlin.String,
+        service: kotlin.String? = null,
+    ): PackageCapabilities200Response =
+        api(null, null, emptySet()).packages.packageCapabilities(`package` = `package`, version = version, service = service)
+
+    /**
      * One package
      *
      * The versions the caller may see; `404` when none.

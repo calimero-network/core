@@ -35,6 +35,7 @@ import com.calimero.mero.api.models.OriginsList200Response
 import com.calimero.mero.api.models.OriginsRemove200Response
 import com.calimero.mero.api.models.OriginsRemoveRequest
 import com.calimero.mero.api.models.Package
+import com.calimero.mero.api.models.PackageCapabilities200Response
 import com.calimero.mero.api.models.PackageInstallRequest
 import com.calimero.mero.api.models.PackageList200Response
 import com.calimero.mero.api.models.PackageOrigin
@@ -362,6 +363,90 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
         return RequestConfig(
             method = RequestMethod.DELETE,
             path = "/package-origins/{package}".replace("{"+"package"+"}", encodeURIComponent(`package`.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /packages/{package}/{version}/capabilities
+     * A release&#39;s capabilities
+     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: &#x60;bundle&#x60; is the service WASM&#39;s hash, &#x60;outbound&#x60; the sorted prefixes it may call out to and &#x60;abi&#x60; the embedded &#x60;calimero:abi&#x60; verbatim (&#x60;null&#x60; when it embeds none). &#x60;service&#x60; names the service whose card to read (default: the release&#39;s only one). A session bound to the package reads every release of it. &#x60;404&#x60; for a release the caller may not see, &#x60;400 NO_SUCH_SERVICE&#x60; for an unknown service or no &#x60;service&#x60; on a release with several, &#x60;400 BAD_REQUEST&#x60; for an over-long &#x60;service&#x60;.  **Who:** signed in (a session or an API key).
+     * @param `package` 
+     * @param version 
+     * @param service  (optional)
+     * @return PackageCapabilities200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun packageCapabilities(`package`: kotlin.String, version: kotlin.String, service: kotlin.String? = null) : PackageCapabilities200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = packageCapabilitiesWithHttpInfo(`package` = `package`, version = version, service = service)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PackageCapabilities200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /packages/{package}/{version}/capabilities
+     * A release&#39;s capabilities
+     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: &#x60;bundle&#x60; is the service WASM&#39;s hash, &#x60;outbound&#x60; the sorted prefixes it may call out to and &#x60;abi&#x60; the embedded &#x60;calimero:abi&#x60; verbatim (&#x60;null&#x60; when it embeds none). &#x60;service&#x60; names the service whose card to read (default: the release&#39;s only one). A session bound to the package reads every release of it. &#x60;404&#x60; for a release the caller may not see, &#x60;400 NO_SUCH_SERVICE&#x60; for an unknown service or no &#x60;service&#x60; on a release with several, &#x60;400 BAD_REQUEST&#x60; for an over-long &#x60;service&#x60;.  **Who:** signed in (a session or an API key).
+     * @param `package` 
+     * @param version 
+     * @param service  (optional)
+     * @return ApiResponse<PackageCapabilities200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun packageCapabilitiesWithHttpInfo(`package`: kotlin.String, version: kotlin.String, service: kotlin.String?) : ApiResponse<PackageCapabilities200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = packageCapabilitiesRequestConfig(`package` = `package`, version = version, service = service)
+
+        return@withContext request<Unit, PackageCapabilities200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation packageCapabilities
+     *
+     * @param `package` 
+     * @param version 
+     * @param service  (optional)
+     * @return RequestConfig
+     */
+    fun packageCapabilitiesRequestConfig(`package`: kotlin.String, version: kotlin.String, service: kotlin.String?) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf<kotlin.String, kotlin.collections.List<kotlin.String>>()
+            .apply {
+                if (service != null) {
+                    put("service", listOf(service.toString()))
+                }
+            }
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/packages/{package}/{version}/capabilities".replace("{"+"package"+"}", encodeURIComponent(`package`.toString())).replace("{"+"version"+"}", encodeURIComponent(version.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,

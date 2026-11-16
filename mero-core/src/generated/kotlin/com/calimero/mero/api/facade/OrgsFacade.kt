@@ -57,7 +57,7 @@ class OrgsFacade internal constructor(
     /**
      * Make an invite
      *
-     * A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives every app added later. `412` first.
+     * A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives every app added later; `capabilities` (bits) is what a new member gets as their own setting, no more than the creator holds (`403`), and `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. `412` first.
      *
      * **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -74,9 +74,10 @@ class OrgsFacade internal constructor(
         ttlSecs: kotlin.Long? = null,
         uses: kotlin.Long? = null,
         allApps: kotlin.Boolean? = null,
+        capabilities: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
     ): InviteCreate200Response =
-        api(passkey, null, emptySet()).organizations.inviteCreate(org = org, inviteCreateRequest = InviteCreateRequest(role = role, teams = teams, ttlSecs = ttlSecs, uses = uses, allApps = allApps))
+        api(passkey, null, emptySet()).organizations.inviteCreate(org = org, inviteCreateRequest = InviteCreateRequest(role = role, teams = teams, ttlSecs = ttlSecs, uses = uses, allApps = allApps, capabilities = capabilities))
 
     /**
      * The organization's invites
@@ -268,7 +269,7 @@ class OrgsFacade internal constructor(
     /**
      * Create an organization
      *
-     * `recoveryKey` is the public half of an organization recovery key.
+     * `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.
      *
      * **Who:** a passkey session (an API key is refused).
      *
@@ -279,8 +280,9 @@ class OrgsFacade internal constructor(
     suspend fun create(
         name: kotlin.String,
         recoveryKey: kotlin.String? = null,
+        capabilities: kotlin.Long? = null,
     ): OrgCreate200Response =
-        api(null, null, emptySet()).organizations.orgCreate(orgCreateRequest = OrgCreateRequest(name = name, recoveryKey = recoveryKey))
+        api(null, null, emptySet()).organizations.orgCreate(orgCreateRequest = OrgCreateRequest(name = name, recoveryKey = recoveryKey, capabilities = capabilities))
 
     /**
      * Delete an organization

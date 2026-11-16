@@ -136,7 +136,7 @@ open class ConsentApi(basePath: kotlin.String = defaultBasePath, client: Call.Fa
     /**
      * GET /consent/{request}/result
      * What became of a consent request
-     * &#x60;decidedAt&#x60; (Unix seconds) is &#x60;null&#x60; while it is pending. &#x60;outcome&#x60;, once approved, is what the approval made: &#x60;{ orgId }&#x60; for &#x60;createOrg&#x60;, &#x60;{ token }&#x60; for &#x60;createInvite&#x60;, &#x60;{ org }&#x60; for &#x60;acceptInvite&#x60;, &#x60;{ orgId, name }&#x60; for &#x60;renameOrg&#x60;, &#x60;{ apps }&#x60; (the apps deleted) for &#x60;deleteOrg&#x60;; absent for the other kinds.  **Who:** a passkey session (an API key is refused).
+     * &#x60;decidedAt&#x60; (Unix seconds) is &#x60;null&#x60; while it is pending. &#x60;outcome&#x60;, once approved, is what the approval made: &#x60;{ orgId }&#x60; for &#x60;createOrg&#x60; (with &#x60;teamId&#x60;, the asking app&#39;s own team the organization starts with, when an app&#39;s frontend asked on a cluster that makes it), &#x60;{ token }&#x60; for &#x60;createInvite&#x60;, &#x60;{ org }&#x60; for &#x60;acceptInvite&#x60;, &#x60;{ orgId, name }&#x60; for &#x60;renameOrg&#x60;, &#x60;{ apps }&#x60; (the apps deleted) for &#x60;deleteOrg&#x60;; absent for the other kinds.  **Who:** a passkey session (an API key is refused).
      * @param request 
      * @return ConsentPageResult200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -168,7 +168,7 @@ open class ConsentApi(basePath: kotlin.String = defaultBasePath, client: Call.Fa
     /**
      * GET /consent/{request}/result
      * What became of a consent request
-     * &#x60;decidedAt&#x60; (Unix seconds) is &#x60;null&#x60; while it is pending. &#x60;outcome&#x60;, once approved, is what the approval made: &#x60;{ orgId }&#x60; for &#x60;createOrg&#x60;, &#x60;{ token }&#x60; for &#x60;createInvite&#x60;, &#x60;{ org }&#x60; for &#x60;acceptInvite&#x60;, &#x60;{ orgId, name }&#x60; for &#x60;renameOrg&#x60;, &#x60;{ apps }&#x60; (the apps deleted) for &#x60;deleteOrg&#x60;; absent for the other kinds.  **Who:** a passkey session (an API key is refused).
+     * &#x60;decidedAt&#x60; (Unix seconds) is &#x60;null&#x60; while it is pending. &#x60;outcome&#x60;, once approved, is what the approval made: &#x60;{ orgId }&#x60; for &#x60;createOrg&#x60; (with &#x60;teamId&#x60;, the asking app&#39;s own team the organization starts with, when an app&#39;s frontend asked on a cluster that makes it), &#x60;{ token }&#x60; for &#x60;createInvite&#x60;, &#x60;{ org }&#x60; for &#x60;acceptInvite&#x60;, &#x60;{ orgId, name }&#x60; for &#x60;renameOrg&#x60;, &#x60;{ apps }&#x60; (the apps deleted) for &#x60;deleteOrg&#x60;; absent for the other kinds.  **Who:** a passkey session (an API key is refused).
      * @param request 
      * @return ApiResponse<ConsentPageResult200Response?>
      * @throws IllegalStateException If the request is not correctly configured
