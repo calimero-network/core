@@ -47,11 +47,12 @@ subprojects {
 // Maven Central (Central Portal) aggregation
 // ---------------------------------------------------------------------------
 //
-// Central takes ONE bundle per release, not a repository deploy, so the two
-// library modules are zipped together and uploaded as a unit. nmcp does that on
-// top of whatever `maven-publish` already produced in each module — it reads no
-// AGP classes, which is why it works on AGP 8.5.2 where
-// com.vanniktech.maven.publish requires 8.13+.
+// Central takes ONE bundle per release, not a repository deploy, so the three
+// library modules (mero-kotlin, mero-kotlin-compose, mero-kotlin-testkit) are
+// zipped together and uploaded as a unit. nmcp does that on top of whatever
+// `maven-publish` already produced in each module — it reads no AGP classes,
+// which is why it works on AGP 8.5.2 where com.vanniktech.maven.publish
+// requires 8.13+.
 //
 // `nmcpZipAggregation` builds the bundle and `nmcpCheckAggregationFiles` validates
 // it, both without credentials — so the shape of a release is checkable in CI
@@ -60,9 +61,10 @@ nmcpAggregation {
     centralPortal {
         username = providers.gradleProperty("mavenCentralUsername")
         password = providers.gradleProperty("mavenCentralPassword")
-        // Uploads, validates and publishes, with no click in the Portal: every merge
-        // that release-on-merge.yml tags reaches Central by itself. Irreversible: a
-        // version can never be replaced, deleted or re-published on Central.
+        // Uploads, validates and publishes, with no click in the Portal: every core
+        // release tag reaches Central by itself (release.yml, through
+        // sdk-mero-kotlin.yml). Irreversible: a version can never be replaced,
+        // deleted or re-published on Central.
         publishingType = "AUTOMATIC"
     }
 }
@@ -70,4 +72,5 @@ nmcpAggregation {
 dependencies {
     nmcpAggregation(project(":mero-core"))
     nmcpAggregation(project(":mero-compose"))
+    nmcpAggregation(project(":mero-testkit"))
 }

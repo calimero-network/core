@@ -20,7 +20,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "kotlin-sdk"
+rootProject.name = "mero-kotlin"
 
 include(":mero-core")
 include(":mero-compose")

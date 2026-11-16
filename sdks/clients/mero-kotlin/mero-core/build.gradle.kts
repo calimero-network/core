@@ -75,20 +75,20 @@ dependencies {
     testImplementation(project(":mero-testkit"))
 }
 
-group = providers.gradleProperty("GROUP").getOrElse("com.calimero.mero")
-version = providers.gradleProperty("VERSION_NAME").getOrElse("0.1.0")
+group = providers.gradleProperty("GROUP").get()
+version = providers.gradleProperty("VERSION_NAME").get()
 
 publishing {
     publications {
         register<MavenPublication>("release") {
             groupId = group.toString()
-            artifactId = "mero-core"
+            artifactId = "mero-kotlin"
             version = project.version.toString()
             afterEvaluate { from(components["release"]) }
             pom {
-                name.set("mero-core")
+                name.set("mero-kotlin")
                 description.set("Calimero Android SDK — core: the Calimero 1.0 client (attestation, sealed transport, passkeys).")
-                url.set("https://github.com/calimero-network/kotlin-sdk")
+                url.set("https://github.com/calimero-network/core/tree/master/sdks/clients/mero-kotlin")
                 licenses {
                     license {
                         name.set("MIT")
@@ -102,8 +102,8 @@ publishing {
                     }
                 }
                 scm {
-                    url.set("https://github.com/calimero-network/kotlin-sdk")
-                    connection.set("scm:git:https://github.com/calimero-network/kotlin-sdk.git")
+                    url.set("https://github.com/calimero-network/core")
+                    connection.set("scm:git:https://github.com/calimero-network/core.git")
                 }
             }
         }
@@ -111,7 +111,7 @@ publishing {
     repositories {
         maven {
             name = "GitHubPackages"
-            url = uri("https://maven.pkg.github.com/calimero-network/kotlin-sdk")
+            url = uri("https://maven.pkg.github.com/calimero-network/core")
             credentials {
                 username = System.getenv("GITHUB_ACTOR") ?: providers.gradleProperty("gpr.user").orNull
                 password = System.getenv("GITHUB_TOKEN") ?: providers.gradleProperty("gpr.token").orNull
