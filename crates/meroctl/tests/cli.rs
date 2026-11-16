@@ -652,14 +652,7 @@ fn scenario(root: &Path, url: &str) {
     let org = alice.run(&["org", "create", "acme"]);
     let org = s(&org["orgId"]);
     assert!(alice.run(&["org", "list"]).to_string().contains(&org));
-    let team = alice.run(&[
-        "org",
-        "create-team",
-        &org,
-        "eng",
-        "--join",
-        "restricted",
-    ]);
+    let team = alice.run(&["org", "create-team", &org, "eng", "--join", "restricted"]);
     let team = s(&team["teamId"]);
     assert!(alice
         .run(&["org", "teams", &org])
@@ -671,14 +664,7 @@ fn scenario(root: &Path, url: &str) {
         "team"
     );
     let _ = alice.run(&["team", "metadata", &org, &team, r#"{"colour":"blue"}"#]);
-    let sub = alice.run(&[
-        "org",
-        "create-team",
-        &org,
-        "infra",
-        "--parent",
-        &team,
-    ]);
+    let sub = alice.run(&["org", "create-team", &org, "infra", "--parent", &team]);
     let sub = s(&sub["teamId"]);
     assert!(alice
         .run(&["team", "subteams", &org, &team])

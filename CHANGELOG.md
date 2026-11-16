@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **`meroctl namespace` is `meroctl org`, and `group` is `team`**, as the docs
+  say: `org` with `teams` and `create-team`, `team` with `subteams`, `--org` and
+  `--team` (on `instance create`, `instance access`, `org invite`, `org
+  capabilities`, `team upgrade trigger`, `ops upgrade-org`) and `ops upgrade-org`.
+  `namespace`/`ns`, `group`, `groups`, `create-group`, `subgroups`,
+  `--namespace`, `--group` and `ops upgrade-namespace` still parse, hidden, for
+  one release. Answers are unchanged (`orgId`, `teamId`, ...).
+
 ### Fixed
 
 - **A local cluster that started over is no longer a puzzle**: after `meroctl

@@ -611,10 +611,11 @@ mod tests {
                     && !l.contains("contextid");
                 // `org` and `team`, not v1's `namespace` and `group` (a Raft
                 // group is another thing, named so).
-                let old_org = (l.contains("namespace") && !l.contains("v1's namespaces"))
-                    || (l.contains("group")
-                        && !l.contains("v1's groups")
-                        && !l.contains("raft group"));
+                let old_org = !l.contains("v1's")
+                    && (l.contains("namespace")
+                        || (l.contains("group")
+                            && !l.contains("raft group")
+                            && !l.contains("system group")));
                 if (old_instance || old_org) && !l.contains("is its old name") {
                     found.push(format!("{path}: {}", line.trim()));
                 }
