@@ -1,0 +1,226 @@
+/* The workspace review. */
+/* Public tokens are the --cw-* properties; --_* resolve them with defaults that follow the page's color-scheme. */
+.mero-cw,
+.mero-cw-review {
+  --_ink: var(--cw-ink, light-dark(#0f1117, #eceef5));
+  --_muted: var(--cw-muted, light-dark(#6b7280, #9097ab));
+  --_line: var(--cw-line, light-dark(#e6e8ee, rgba(255, 255, 255, 0.16)));
+  --_surface: var(--cw-surface, light-dark(#ffffff, #161b2b));
+  --_primary-bg: var(--cw-primary-bg, light-dark(#0f1117, #eceef5));
+  --_primary-ink: var(--cw-primary-ink, light-dark(#ffffff, #0f1117));
+  --_focus: var(--cw-link, light-dark(#3b5bfd, #9aafff));
+  --_good-bg: var(--cw-good-bg, light-dark(#dcfce7, #0e3324));
+  --_good-ink: var(--cw-good-ink, light-dark(#15803d, #7fe0b0));
+  --_bad-bg: var(--cw-bad-bg, light-dark(#ffe4ea, #3d0f1e));
+  --_bad-ink: var(--cw-bad-ink, light-dark(#a2194b, #f78bb0));
+  --_busy-bg: var(--cw-busy-bg, light-dark(#e3e9ff, #1c2650));
+  --_busy-ink: var(--cw-busy-ink, light-dark(#3451d1, #9aafff));
+  --_warn-bg: var(--cw-warn-bg, light-dark(#fff1d6, #3a2a08));
+  --_warn-ink: var(--cw-warn-ink, light-dark(#8a5a00, #f2c36b));
+  --_code-bg: var(--cw-code-bg, light-dark(#f4f5f8, #1f2538));
+  font-family: var(--cw-font, inherit);
+}
+
+.mero-cw-review [data-kind="verified"] { --_tone: var(--_good-ink); --_tone-bg: var(--_good-bg); }
+.mero-cw-review [data-kind="refused"] { --_tone: var(--_bad-ink); --_tone-bg: var(--_bad-bg); }
+.mero-cw-review [data-kind="checking"] { --_tone: var(--_busy-ink); --_tone-bg: var(--_busy-bg); }
+.mero-cw-review [data-kind="unsealed"] { --_tone: var(--_muted); --_tone-bg: color-mix(in srgb, var(--_muted) 14%, var(--_surface)); }
+.mero-cw-shield__icon { flex: none; color: var(--_tone); }
+.mero-cw-shield__tick { flex: none; margin-top: 2px; color: var(--_muted); }
+@media (prefers-reduced-motion: no-preference) {
+  [data-kind="checking"] .mero-cw-shield__icon { animation: mero-cw-shield-pulse 1.4s ease-in-out infinite; }
+}
+@keyframes mero-cw-shield-pulse { 50% { opacity: 0.4; } }
+
+.mero-cw-review {
+  box-sizing: border-box;
+  width: 100%;
+  color: var(--_ink);
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: left;
+}
+.mero-cw-review *,
+.mero-cw-review *::before,
+.mero-cw-review *::after { box-sizing: border-box; }
+.mero-cw-review__title { margin: 0; font-size: 18px; font-weight: 700; line-height: 1.3; }
+.mero-cw-review__title:focus { outline: none; }
+.mero-cw-review__lede { margin: 4px 0 6px; color: var(--_muted); }
+.mero-cw-review__muted,
+.mero-cw-review__sub { color: var(--_muted); font-size: 12.5px; }
+.mero-cw-review__muted { margin: 8px 0 0; }
+.mero-cw-review__sub { display: block; margin-top: 2px; }
+.mero-cw-review__mono { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; overflow-wrap: anywhere; }
+.mero-cw-review__icon { flex: none; }
+.mero-cw-review__nobreak { white-space: nowrap; }
+
+.mero-cw-review__sec { padding: 14px 0; border-top: 1px solid var(--_line); }
+.mero-cw-review__h { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; font-size: 13px; font-weight: 700; letter-spacing: 0.02em; }
+.mero-cw-review__h .mero-cw-shield__icon { margin-top: -1px; }
+
+.mero-cw-review__kv { display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.mero-cw-review__kv > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; }
+.mero-cw-review__kv dt { color: var(--_muted); }
+.mero-cw-review__kv dd { margin: 0; overflow-wrap: anywhere; }
+.mero-cw-review__kv--raw { margin-bottom: 12px; }
+.mero-cw-review__tone--good { color: var(--_good-ink); }
+.mero-cw-review__tone--bad { color: var(--_bad-ink); font-weight: 600; }
+
+.mero-cw-review__copy,
+.mero-cw-review__link {
+  margin-left: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--_focus);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+.mero-cw-review__link { display: inline-flex; align-items: center; gap: 4px; }
+.mero-cw-review__copy:hover,
+.mero-cw-review__link:hover { text-decoration: underline; }
+
+.mero-cw-review__sum { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.mero-cw-review__sum li { display: flex; align-items: flex-start; gap: 10px; }
+.mero-cw-review__ic { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--_chip-bg); color: var(--_muted); }
+.mero-cw-review__sum li[data-tone="warn"] .mero-cw-review__ic { background: var(--_warn-bg); color: var(--_warn-ink); }
+.mero-cw-review__sum li[data-tone="ok"] .mero-cw-review__ic { background: var(--_good-bg); color: var(--_good-ink); }
+.mero-cw-review__tx { display: flex; flex-direction: column; min-width: 0; padding-top: 3px; }
+.mero-cw-review__tx span { color: var(--_muted); font-size: 12.5px; overflow-wrap: anywhere; }
+
+.mero-cw-review__more { margin-top: 0; }
+.mero-cw-review__sum + .mero-cw-review__more { margin-top: 10px; }
+.mero-cw-review__more > summary,
+.mero-cw-review__how > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  color: var(--_focus);
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.mero-cw-review summary::-webkit-details-marker { display: none; }
+.mero-cw-review__more > summary::after,
+.mero-cw-review__how > summary::after,
+.mero-cw-review__grp > summary::after,
+.mero-cw-review__act > summary::after {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin: 0 3px;
+  border: solid currentColor;
+  border-width: 0 2px 2px 0;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+.mero-cw-review details[open] > summary::after { transform: rotate(45deg); }
+.mero-cw-review summary:focus-visible,
+.mero-cw-review__btn:focus-visible,
+.mero-cw-review__chip:focus-visible,
+.mero-cw-review__copy:focus-visible,
+.mero-cw-review__link:focus-visible { outline: 2px solid var(--_focus); outline-offset: 2px; border-radius: 6px; }
+
+.mero-cw-review__chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.mero-cw-review__chip {
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--_line);
+  border-radius: 999px;
+  background: var(--_surface);
+  color: var(--_ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mero-cw-review__chip[aria-pressed="true"] { border-color: transparent; background: var(--_primary-bg); color: var(--_primary-ink); }
+
+.mero-cw-review__grp { margin-top: 8px; border: 1px solid var(--_line); border-radius: 12px; }
+.mero-cw-review__grp > summary { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 12px; cursor: pointer; list-style: none; color: var(--_muted); }
+.mero-cw-review__grp-text { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.mero-cw-review__grp-text b { color: var(--_ink); }
+.mero-cw-review__grp-text span { font-size: 12.5px; }
+.mero-cw-review__count { flex: none; min-width: 22px; padding: 1px 7px; border-radius: 999px; background: var(--_chip-bg); color: var(--_ink); font-size: 12px; font-weight: 600; text-align: center; }
+.mero-cw-review__acts { border-top: 1px solid var(--_line); }
+.mero-cw-review__act + .mero-cw-review__act { border-top: 1px solid var(--_line); }
+.mero-cw-review__act > summary,
+.mero-cw-review__act-head { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 12px; cursor: pointer; list-style: none; color: var(--_muted); }
+.mero-cw-review__act-head { cursor: default; }
+.mero-cw-review__act-main { display: flex; flex: 1 1 0; flex-direction: column; gap: 1px; min-width: 0; }
+.mero-cw-review__act-title { color: var(--_ink); font-weight: 600; overflow-wrap: anywhere; }
+.mero-cw-review__act-doc { font-size: 12px; font-style: italic; overflow-wrap: anywhere; }
+.mero-cw-review__act-doc code, .mero-cw-review__said code { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; font-style: normal; }
+.mero-cw-review__act > summary::after { margin-left: 0; }
+.mero-cw-review__tags { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 4px; max-width: 55%; }
+.mero-cw-review__tag { padding: 1px 8px; border-radius: 999px; background: var(--_chip-bg); color: var(--_muted); font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+.mero-cw-review__tag--passkey { background: var(--_warn-bg); color: var(--_warn-ink); }
+.mero-cw-review__tag--public { background: var(--_busy-bg); color: var(--_busy-ink); }
+.mero-cw-review__facts { padding: 2px 12px 12px; }
+.mero-cw-review__facts .mero-cw-review__kv { font-size: 12.5px; }
+.mero-cw-review__said { margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--_line); border-radius: 8px; }
+.mero-cw-review__said span { color: var(--_muted); font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.mero-cw-review__said p { margin: 2px 0 0; font-style: italic; overflow-wrap: anywhere; }
+.mero-cw-review__note { margin: 10px 0 0; color: var(--_muted); font-size: 12px; }
+
+.mero-cw-review__claims { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.mero-cw-review__claims li { display: flex; align-items: flex-start; gap: 7px; }
+.mero-cw-review__claims .mero-cw-shield__tick { margin-top: 3px; color: var(--_good-ink); }
+.mero-cw-review__claims--plain b { font-weight: 500; color: var(--_muted); }
+.mero-cw-review__claims + .mero-cw-review__grey { margin-top: 10px; }
+.mero-cw-review__how { margin-top: 6px; }
+.mero-cw-review__how ul { margin: 0 0 4px; padding-left: 18px; color: var(--_muted); font-size: 12.5px; }
+.mero-cw-review__except { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+.mero-cw-review__except li { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--_warn-bg); color: var(--_warn-ink); font-weight: 600; overflow-wrap: anywhere; }
+.mero-cw-review__except .mero-cw-review__icon { margin-top: 2px; }
+.mero-cw-review__grey { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--_tone-bg); color: var(--_ink); }
+.mero-cw-review__grey span { color: var(--_muted); font-size: 12.5px; }
+
+.mero-cw-review__alert { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin: 10px 0 4px; padding: 10px 12px; border-radius: 10px; background: var(--_bad-bg); color: var(--_bad-ink); }
+.mero-cw-review__alert p { flex: 1 1 220px; margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+
+/* Sticks to the bottom of whatever scrolls (an app's dialog, or the page), so Back and Create stay in reach on a short screen.
+   A scroller with bottom padding sets --cw-review-inset to it, so the row sits flush with the edge. */
+.mero-cw-review__buttons {
+  position: sticky;
+  bottom: calc(0px - var(--cw-review-inset, 0px));
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 14px 0 calc(env(safe-area-inset-bottom, 0px) + 8px);
+  border-top: 1px solid var(--_line);
+  background: var(--_surface);
+}
+.mero-cw-review__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 18px;
+  border: 1px solid var(--_line);
+  border-radius: 999px;
+  background: var(--_surface);
+  color: var(--_ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mero-cw-review__btn:hover:not(:disabled) { border-color: var(--_ink); }
+.mero-cw-review__btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.mero-cw-review__buttons .mero-cw-review__btn { white-space: nowrap; }
+.mero-cw-review__btn--primary { border-color: transparent; background: var(--_primary-bg); color: var(--_primary-ink); }
+.mero-cw-review__btn--primary:hover:not(:disabled) { border-color: transparent; opacity: 0.88; }
+
+@media (max-width: 480px) {
+  .mero-cw-review__kv > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .mero-cw-review__kv dt { font-size: 12px; }
+  .mero-cw-review__buttons .mero-cw-review__btn { flex: 1; padding: 0 12px; }
+  .mero-cw-review__buttons .mero-cw-review__btn--primary { flex: 2; }
+}

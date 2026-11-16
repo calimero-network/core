@@ -27,6 +27,27 @@ export * from './hooks';
 export { ConnectButton, LoginModal, CalimeroLogo, shortAccount } from './components';
 export type { ConnectButtonProps, LoginModalProps, LoginModalTab, CalimeroLogoProps } from './components';
 
+// Create workspace
+export {
+  CreateWorkspaceDialog,
+  WorkspaceReview,
+  ConsentPopupReturn,
+  CONSENT_RETURN_MESSAGE,
+  useCreateWorkspace,
+  useCreateWorkspaceResume,
+  clusterName,
+} from './create-workspace';
+export type {
+  CreateWorkspaceDialogProps,
+  CreateWorkspaceLabels,
+  WorkspaceReviewProps,
+  CreatedWorkspace,
+  CreatePhase,
+  UseCreateWorkspaceOptions,
+  ReviewRelease,
+  UnreleasedApp,
+} from './create-workspace';
+
 // Theme
 export { MERO_CSS_VARS, cssVar, defaultMeroTheme, resolveMeroTheme, themeToCssVars } from './theme';
 export type { MeroTheme, ResolvedMeroTheme } from './theme';
