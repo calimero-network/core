@@ -75,12 +75,19 @@ is a bug, and the CI checks below fail it.
 
 ## What is deprecated or cut over now
 
-`crates/node/api-deprecations.toml` deprecates, since 1.0.0-rc.25, the
-sealed channel's paths `POST /sealed/v2/handshake` and `POST /sealed/v2`
-(now `/sealed/handshake` and `/sealed`; removable from 1.0.0-rc.28). The
-envelope serves them outside the router, so `calimero-sealed` sets their
-`Deprecation` header itself; clients fall back to them against an older node
-([The sealed channel](/protocol/networking/#the-sealed-channel)). Its `[[cutover]]` entries are the ones 1.0.0-rc.20 made when
+`crates/node/api-deprecations.toml` deprecates nothing now. Its
+`[[cutover]]` entries: the release after 1.0.0-rc.29 removes the sealed
+channel's paths `POST /sealed/v2/handshake` and `POST /sealed/v2`
+(deprecated since 1.0.0-rc.25 for `/sealed/handshake` and `/sealed`), and its
+clients and peers no longer fall back to them
+([The sealed channel](/protocol/networking/#the-sealed-channel)). The
+deprecation ran its 3 releases, but every SDK released before it (mero-js up
+to 35.7.0, MeroKit and mero-kotlin up to 6.1.0) still posts its sealed
+requests to `/sealed/v2`, so it is declared a hard cutover for clients:
+they upgrade to an SDK release that posts to `/sealed`. Nodes of 1.0.0-rc.25
+and later serve the new paths, so a cluster rolls from any of them. The
+same release's `meroctl` calls the app registry and the Cloud's manager at
+`/api/...` only. The other `[[cutover]]` entries are the ones 1.0.0-rc.20 made when
 every app moved into an organization (#5015): `POST /auth/releases` and
 `POST /auth/outbound` are gone (approve on the personal organization,
 `POST /orgs/{org}/releases` and `/orgs/{org}/outbound`), and so is

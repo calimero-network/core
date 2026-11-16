@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Removed
+
+- **The sealed channel's `v2` paths, `POST /sealed/v2/handshake` and
+  `POST /sealed/v2`** (`calimero-sealed`; deprecated since 1.0.0-rc.25 for
+  `/sealed/handshake` and `/sealed`). A node no longer serves them (a request
+  there gets `404`, or `403 sealed_required` from a node that seals
+  everything), and the client (`meroctl`, `calimero-client`, a node calling
+  its peers) no longer falls back to them: it reaches nodes of 1.0.0-rc.25 and
+  later, which every rollout from 1.0.0-rc.25 on already is. The version byte
+  (`0x02`) and the Noise prologue are unchanged.
+  **Hard cutover** for clients: every SDK released before this (mero-js up to
+  35.7.0, MeroKit and mero-kotlin up to 6.1.0) posts its sealed requests to
+  `/sealed/v2`, and clients of 1.0.0-rc.24 or earlier also open their sessions
+  at `/sealed/v2/handshake`; none of them reaches a node of this release.
+  Upgrade them to an SDK release that posts to `/sealed` before the cluster
+  moves. Stored data and the peer protocol are unaffected: a cluster rolls
+  from 1.0.0-rc.25 or later as before (`[[cutover]]` in
+  `crates/node/api-deprecations.toml`).
+- **`meroctl` no longer falls back to `/api/v2/...`**: `app publish` and the
+  `cloud` commands call the app registry and the Cloud's manager at `/api/...`
+  only, which both serve; a service that answers `404` there is reported, not
+  tried again at `/api/v2/...`.
+
 ## [1.0.0-rc.29] - 2026-11-16
 
 ### Added
