@@ -152,22 +152,41 @@ public final class CalimeroAppBackend: MeroAppBackend, Sendable {
     }
 
     public func listContexts(groupId: String) async throws -> [String] {
-        try await listContextEntries(groupId: groupId).map(\.id)
+        try await listedApps(groupId).map(\.id)
     }
 
     public func listContextEntries(groupId: String) async throws -> [AppContextEntry] {
+        let listed = try await listedApps(groupId)
+        // A name set with `setContextName` is the app's metadata `name`, which
+        // no listing carries: each app's own record does.
+        let named = await withTaskGroup(of: (String, String?).self) { group in
+            for app in listed {
+                group.addTask { (app.id, try? await self.appRecord(app.id)["metadata"]?["name"]?.stringValue) }
+            }
+            var out: [String: String] = [:]
+            for await (id, name) in group { if let name { out[id] = name } }
+            return out
+        }
+        return listed.map { AppContextEntry(id: $0.id, name: named[$0.id] ?? $0.name) }
+    }
+
+    /// The apps directly in `groupId`, with the names they were created with.
+    private func listedApps(_ groupId: String) async throws -> [(id: String, name: String)] {
         let place = locate(groupId)
+        let listed: [(id: String, name: String)]
         if let team = place.team {
-            return try await fetchTeam(place.org, team).apps.map { AppContextEntry(id: $0.appId, name: $0.name) }
+            listed = try await fetchTeam(place.org, team).apps.map { ($0.appId, $0.name) }
+        } else {
+            // The org's own: its apps that no team holds.
+            let org = try await fetchOrg(place.org)
+            var inTeams = Set<String>()
+            for team in org.teams.keys {
+                for app in (try? await fetchTeam(place.org, team).apps) ?? [] { inTeams.insert(app.appId) }
+            }
+            listed = try await fetchApps().filter { $0.org == place.org && !inTeams.contains($0.appId) }
+                .map { ($0.appId, $0.name) }
         }
-        // The org's own: its apps that no team holds.
-        let org = try await fetchOrg(place.org)
-        var inTeams = Set<String>()
-        for team in org.teams.keys {
-            for app in (try? await fetchTeam(place.org, team).apps) ?? [] { inTeams.insert(app.appId) }
-        }
-        return try await fetchApps().filter { $0.org == place.org && !inTeams.contains($0.appId) }
-            .map { AppContextEntry(id: $0.appId, name: $0.name) }
+        return listed
     }
 
     public func isMember(contextId: String) async throws -> Bool {
