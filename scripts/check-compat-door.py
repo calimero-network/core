@@ -8,10 +8,10 @@ wrote. Earlier data and clusters survive it only through a reader, so the body s
     Reader: <the migration or decoder for the old shape, and the test that reads it>
     Hard cutover: <what breaks and for whom>
 
-and a hard cutover also adds a "Hard cutover" line to CHANGELOG.md in the same PR (mdma's
-release_compat CUTOVERS takes the release that ships it). A PR that moves a format version
-(`STORE_FORMAT`, `SNAPSHOT_FORMAT`, `ENTRY_FORMAT`, the WIT package version or
-`SUPPORTED_ABI_VERSIONS`) must state its door at all.
+and a hard cutover also adds a "Hard cutover" line to its changelog entry, its file in
+changelog.d/, in the same PR (mdma's release_compat CUTOVERS takes the release that ships it).
+A PR that moves a format version (`STORE_FORMAT`, `SNAPSHOT_FORMAT`, `ENTRY_FORMAT`, the WIT
+package version or `SUPPORTED_ABI_VERSIONS`) must state its door at all.
 
 Reads the body from $PR_BODY and the PR's diff from stdin:
 
@@ -47,12 +47,17 @@ VERSION_LINE_RE = re.compile(
 )
 
 
+# Where a PR's changelog entry is: its own file in changelog.d/ (scripts/changelog.py), or
+# CHANGELOG.md itself (a release PR, which gathers the entries).
+CHANGELOG_PATH_RE = re.compile(r" b/(?:changelog\.d/(?!README\.md$)[^/]+\.md|CHANGELOG\.md)$")
+
+
 def changelog_adds_cutover(diff: str) -> bool:
-    """Whether the diff adds a line naming a hard cutover to CHANGELOG.md."""
+    """Whether the diff adds a line naming a hard cutover to a changelog entry."""
     in_changelog = False
     for line in diff.splitlines():
         if line.startswith("diff --git "):
-            in_changelog = line.endswith(" b/CHANGELOG.md")
+            in_changelog = bool(CHANGELOG_PATH_RE.search(line))
         elif in_changelog and line.startswith("+") and not line.startswith("+++"):
             if "hard cutover" in line.lower():
                 return True
@@ -82,7 +87,10 @@ def problems(body: str, diff: str) -> list[str]:
             "or `Hard cutover: <what breaks and for whom>`"
         ]
     if cutover and not changelog_adds_cutover(diff):
-        return ["`Hard cutover:` needs a line in CHANGELOG.md saying \"Hard cutover\" in this PR"]
+        return [
+            "`Hard cutover:` needs a line saying \"Hard cutover\" in this PR's changelog entry "
+            "(its file in changelog.d/)"
+        ]
     return []
 
 

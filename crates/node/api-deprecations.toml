@@ -19,7 +19,7 @@
 # tests hold to the `date` here).
 #
 # [[cutover]]: removed at once, which breaks earlier clients, apps or nodes; also marked
-# "Hard cutover" in CHANGELOG.md and in mdma's release_compat CUTOVERS.
+# "Hard cutover" in the PR's changelog.d/ entry and in mdma's release_compat CUTOVERS.
 #   route = "...", field = "...", wit = "0.6.0" or abi = 2   # what it removes
 #   pr    = 4999                                              # the PR that removes it
 #   why   = "..."                                             # what breaks, and for whom

@@ -18,6 +18,7 @@ PLAIN = "diff --git a/crates/node/src/api.rs b/crates/node/src/api.rs\n+fn x() {
 BUMP = "diff --git a/crates/log/src/format.rs b/crates/log/src/format.rs\n" + "-pub const STORE_" + "FORMAT: u32 = 1;\n+pub const STORE_" + "FORMAT: u32 = 2;\n"
 WIT = "diff --git a/crates/app-wit/wit/calimero-app.wit b/crates/app-wit/wit/calimero-app.wit\n" + "+" + "package calimero:app@0.5.2;\n"
 CHANGELOG = "diff --git a/CHANGELOG.md b/CHANGELOG.md\n+- Sealed files move to segments. **Hard cutover**: no reader for whole-file records.\n"
+ENTRY = "diff --git a/changelog.d/sealed-segments.md b/changelog.d/sealed-segments.md\n+- Sealed files move to segments. **Hard cutover**: no reader for whole-file records.\n"
 ONE_WAY = "## Merge Danger\n\n**Door:** one-way\n"
 
 CASES = [
@@ -28,13 +29,16 @@ CASES = [
     ("a one-way door with its reader passes", ONE_WAY + "Reader: `format::MIGRATIONS[1]`, test `a_v1_store_opens`\n", BUMP, 0),
     ("an empty reader line does not count", ONE_WAY + "Reader:\n", PLAIN, 1),
     ("a hard cutover with its CHANGELOG line passes", ONE_WAY + "**Hard cutover:** clusters with sealed files are wiped\n", PLAIN + CHANGELOG, 0),
+    ("a hard cutover with its line in its changelog.d entry passes", ONE_WAY + "Hard cutover: clusters are wiped\n", PLAIN + ENTRY, 0),
+    ("changelog.d/README.md is not an entry", ONE_WAY + "Hard cutover: x\n",
+     "diff --git a/changelog.d/README.md b/changelog.d/README.md\n+Hard cutover\n", 1),
     ("a hard cutover without the CHANGELOG line fails", ONE_WAY + "Hard cutover: clusters are wiped\n", PLAIN, 1),
     ("a store format bump must state its door", "## Description\n", BUMP, 1),
     ("a WIT version move must state its door", "## Description\n", WIT, 1),
     ("a door in an HTML comment is not a door", "<!--\n**Door:** two-way\n-->", BUMP, 1),
     ("a door in a code fence is not a door", "```\nDoor: two-way\n```", BUMP, 1),
     ("both doors at once fail", "Door: one-way\nDoor: two-way\nReader: x\n", PLAIN, 1),
-    ("the CHANGELOG line must be in CHANGELOG.md", ONE_WAY + "Hard cutover: x\n",
+    ("the line must be in a changelog entry", ONE_WAY + "Hard cutover: x\n",
      "diff --git a/docs/x.md b/docs/x.md\n+Hard cutover\n", 1),
 ]
 

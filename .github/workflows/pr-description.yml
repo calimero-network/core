@@ -52,3 +52,20 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: git diff HEAD^1 HEAD | python3 scripts/check-compat-door.py
+
+  # Changelog entries are one file per PR in changelog.d/, gathered into CHANGELOG.md when a
+  # release is cut (scripts/changelog.py; RELEASING.md): each must be one the release can gather.
+  changelog:
+    name: Changelog entries
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Test the script
+        run: python3 scripts/tests/changelog-test.py
+
+      - name: Every entry in changelog.d is well formed
+        run: python3 scripts/changelog.py check

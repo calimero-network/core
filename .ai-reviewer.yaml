@@ -54,6 +54,7 @@ ignore:
   - "**/snapshots/**"
   - "**/*.wasm"
   - "CHANGELOG.md"
+  - "changelog.d/**"
   - "graphify-out/**"
   - "docs/**"
 

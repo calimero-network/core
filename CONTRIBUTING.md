@@ -53,8 +53,12 @@ The shared release version of the public crates is `version` under
 [RELEASING.md](RELEASING.md) has the whole flow, what a release publishes,
 and the rules for titles and breaking changes shared by every repository.
 
-A release PR (`chore(release): cut X`) sets that version and adds a dated
-`CHANGELOG.md` section for the changes since the last release; merging it to
+A pull request that changes behaviour adds its changelog entry as its own file
+in [`changelog.d/`](changelog.d/README.md), not in `CHANGELOG.md`.
+
+A release PR (`chore(release): cut X`) sets that version and gathers those
+files into a dated `CHANGELOG.md` section (`python3 scripts/changelog.py release X`,
+which deletes them); merging it to
 master publishes the release (`release.yml`: the tag, the binaries, the image).
 It also keeps the [upgrade path](docs/src/content/docs/contribute/testing.mdx#upgrade-path)
 pointed at the latest published release:
@@ -66,8 +70,9 @@ pointed at the latest published release:
   and at the latest in the next release PR, so cutting X+1 pins X if nothing did.
   The `Upgrade path` job warns while a newer version is tagged.
 - **Hard cutovers.** A change the upgrade path cannot pass without wiping
-  clusters is listed in the release's CHANGELOG section as a hard cutover
-  ("no interop with earlier nodes ...; existing clusters are recreated"), and
+  clusters says **Hard cutover** in its `changelog.d/` entry, so the release's
+  CHANGELOG section lists it ("no interop with earlier nodes ...; existing
+  clusters are recreated"), and
   mdma's `release_compat` CUTOVERS gets the release. Its PR set the pin to
   `hard-cutover: ...`; the release PR after it sets the pin back to a version
   once the cutover release is published.

@@ -155,10 +155,15 @@ check lints them) and to what counts as breaking.
   `Cargo.toml` (`1.0.0-rc.30` at the time of writing). Nothing else holds it.
 - **Release pull request.** `chore(release): cut X` sets that version to `X`
   and turns `CHANGELOG.md`'s `## [Unreleased]` into a dated `## [X] - YYYY-MM-DD`
-  section with the changes since the last release. `CHANGELOG.md` is
-  hand-written: every pull request that changes behaviour adds its entry under
-  `[Unreleased]`. Deciding to cut a release and merging this pull request is a
-  human's call; an agent drafts one only when asked.
+  section with the changes since the last release. The entries are
+  hand-written, one file per pull request: every pull request that changes
+  behaviour adds its own file to [`changelog.d/`](changelog.d/README.md) and never
+  edits `CHANGELOG.md`, so no two pull requests conflict over it. The release pull
+  request gathers them with `python3 scripts/changelog.py release X`, which writes
+  the dated section in the order the entries merged and deletes the files; the
+  `Changelog entries` check (`pr-description.yml`) keeps every file gatherable.
+  Deciding to cut a release and merging this pull request is a human's call; an
+  agent drafts one only when asked.
 - **Merge to master.** [`release.yml`](.github/workflows/release.yml) runs on
   every push to master. Its `prepare` job reads the version; when no GitHub Release named `X` exists yet, it creates the release
   and its tag `X` (the bare version, no `v`) at the merged commit, marked as a
