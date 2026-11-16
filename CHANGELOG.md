@@ -1,3 +1,9 @@
+## [11.8.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.7.0...mero-react-v11.8.0) (2026-11-16)
+
+### Features
+
+* **invite:** tell onJoined whether the account was already a member ([#144](https://github.com/calimero-network/mero-react/issues/144)) ([7c09492](https://github.com/calimero-network/mero-react/commit/7c09492021f7c58a00929cbacd35ba8870faee91))
+
 ## [11.7.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.6.0...mero-react-v11.7.0) (2026-11-16)
 
 ### Features
