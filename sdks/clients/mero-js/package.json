@@ -1,6 +1,6 @@
 {
   "name": "@calimero-network/mero-js",
-  "version": "36.0.0",
+  "version": "1.0.0-rc.30",
   "description": "JavaScript client for Calimero 1.0: attested TEE nodes, a sealed channel, passkeys and API keys",
   "type": "module",
   "exports": {

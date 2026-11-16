@@ -18,6 +18,7 @@ export function MockMeroProvider({ children, ...overrides }: MockMeroProviderPro
   const isAuthenticated = overrides.isAuthenticated ?? false;
   const value: MeroContextValue = {
     client: null,
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- provides the deprecated alias
     mero: null,
     nodeUrl: 'https://node.example.com',
     cluster: null,
@@ -33,6 +34,7 @@ export function MockMeroProvider({ children, ...overrides }: MockMeroProviderPro
     signUp: none,
     signOut: async () => undefined,
     signOutEverywhere: async () => undefined,
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- provides the deprecated alias
     logout: noop,
     appId: null,
     setAppId: noop,

@@ -1,0 +1,29 @@
+{
+  "name": "mero-js",
+  "kind": "client",
+  "language": "typescript",
+  "published": [
+    {
+      "registry": "npm",
+      "name": "@calimero-network/mero-js"
+    }
+  ],
+  "version_files": [
+    {
+      "path": "package.json",
+      "format": "json",
+      "key": "version"
+    }
+  ],
+  "depends_on": [],
+  "inputs": [
+    "docs/public/openapi.json",
+    "crates/client/tests/fixtures/receipt-vectors.json"
+  ],
+  "generate": "pnpm run generate",
+  "generated": [
+    "src/generated",
+    "src/client/fixtures/receipt-vectors.json"
+  ],
+  "workflow": ".github/workflows/sdk-mero-js.yml"
+}

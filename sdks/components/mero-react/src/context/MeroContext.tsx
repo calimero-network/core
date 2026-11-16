@@ -309,6 +309,7 @@ export function MeroProvider({
   const value = useMemo<MeroContextValue>(
     () => ({
       client,
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- provides the deprecated alias
       mero: client,
       nodeUrl,
       cluster: chosenCluster,
@@ -324,6 +325,7 @@ export function MeroProvider({
       signUp,
       signOut,
       signOutEverywhere,
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- provides the deprecated alias
       logout,
       appId,
       setAppId,

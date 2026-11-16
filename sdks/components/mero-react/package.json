@@ -1,6 +1,6 @@
 {
   "name": "@calimero-network/mero-react",
-  "version": "11.8.0",
+  "version": "1.0.0-rc.30",
   "description": "React bindings for the Calimero 1.0 client (mero-js CalimeroClient)",
   "type": "module",
   "main": "dist/index.cjs",
@@ -33,7 +33,7 @@
     "prepublishOnly": "pnpm build && pnpm typecheck"
   },
   "dependencies": {
-    "@calimero-network/mero-js": "^35.6.0"
+    "@calimero-network/mero-js": "workspace:*"
   },
   "peerDependencies": {
     "react": "^18.0.0 || ^19.0.0",
