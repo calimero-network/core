@@ -1,3 +1,9 @@
+## [35.7.0](https://github.com/calimero-network/mero-js/compare/mero-js-v35.6.0...mero-js-v35.7.0) (2026-11-16)
+
+### Features
+
+* **sealed:** open sessions at /sealed/handshake and default to /api/directory ([#395](https://github.com/calimero-network/mero-js/issues/395)) ([a6b34f9](https://github.com/calimero-network/mero-js/commit/a6b34f9b5cf6eae86cc27dc2582122157eb8b09d))
+
 ## [35.6.0](https://github.com/calimero-network/mero-js/compare/mero-js-v35.5.0...mero-js-v35.6.0) (2026-11-16)
 
 ### Features
