@@ -388,7 +388,7 @@ MEROD_BINARY=/path/to/merod KV_STORE_WASM=/path/to/kv_store.wasm pnpm test:clust
 `KV_STORE_WASM` is core's kv component (`apps/v2-fixtures/kv`, a `calimero:app`
 component for `wasm32-wasip2`). Without the variables they use
 `../core/target/debug/merod` and `../core/target/app-components/kv.wasm` from a
-sibling core checkout (1.0.0-rc.24 or later), built there with core's
+sibling core checkout (1.0.0-rc.25 or later), built there with core's
 `meroctl`:
 
 ```bash

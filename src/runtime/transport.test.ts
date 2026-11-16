@@ -602,7 +602,7 @@ describe('a dropped channel never writes the node state', () => {
     const gate = new Promise<'unreachable' | 'ok'>((ok) => (release = ok));
     const fetched = (async (input: RequestInfo | URL) => {
       const path = new URL(String(input)).pathname;
-      if (path.endsWith('/sealed/v2/handshake')) {
+      if (path.endsWith('/sealed/handshake')) {
         return new Response(JSON.stringify({ error: { code: 'stale_transport_key' } }), { status: 409 });
       }
       const call = ++calls;

@@ -71,11 +71,8 @@ export class StandInNode {
     for await (const chunk of req) chunks.push(chunk as Buffer);
     const body = new Uint8Array(Buffer.concat(chunks));
     if (req.method === 'GET' && url.pathname === '/attestation') return this.attest(url, res);
-    // A current node serves the handshake at both paths (v2 is the deprecated alias).
-    if (req.method === 'POST' && (url.pathname === '/sealed/handshake' || url.pathname === '/sealed/v2/handshake')) {
-      return this.handshake(body, res);
-    }
-    if (req.method === 'POST' && url.pathname === '/sealed/v2') return this.exchange(body, req, res);
+    if (req.method === 'POST' && url.pathname === '/sealed/handshake') return this.handshake(body, res);
+    if (req.method === 'POST' && url.pathname === '/sealed') return this.exchange(body, req, res);
     res.statusCode = 404;
     res.end();
   }

@@ -103,9 +103,8 @@ with `policy.allowMock`. Nothing is read from the environment.
 ## The sealed channel
 
 After attestation, the client opens a Noise `NK` session to the attested X25519
-key (`POST /sealed/handshake`, prologue `calimero/sealed-http/v2`; a node
-that answers `404` or `405` there predates that path, and the handshake is sent
-once more to `POST /sealed/v2/handshake`), then sends each request as `POST /sealed/v2`: method, path, headers (the
+key (`POST /sealed/handshake`, prologue `calimero/sealed-http/v2`), then sends
+each request as `POST /sealed`: method, path, headers (the
 `Authorization` header among them) and body, sealed with AES-256-GCM. The
 answer streams back in sealed, numbered frames, event streams included. This is
 byte for byte core's `calimero-sealed`.
