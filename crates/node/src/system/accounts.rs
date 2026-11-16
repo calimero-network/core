@@ -297,7 +297,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 (Admission::OrgInvite, Some(r)) => {
                     // A new account is never a member yet: every use is
                     // spent, as before the free redemption existed.
-                    Some(s.redeem_org_invite(&r.invite_key, &id, r.now, false, false)?)
+                    Some(s.redeem_org_invite(&r.invite_key, &id, r.now, false, r.clamp_grants)?)
                 }
                 (Admission::SignUpInvite, Some(r)) => {
                     s.spend_sign_up_invite(&r.invite_key);

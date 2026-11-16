@@ -419,7 +419,15 @@ impl SystemCmd {
             }
             Self::RedeemInvite {
                 clamp_grants: true, ..
+            }
+            | Self::CreateAccount {
+                invite:
+                    Some(crate::system::SignUpRedemption {
+                        clamp_grants: true, ..
+                    }),
+                ..
             } => vec![Feature::InviteCapabilities],
+            Self::CreateAccount { .. } => Vec::new(),
             Self::RedeemInvite { .. } => Vec::new(),
             Self::CreateInvite { invite, .. } => {
                 invite_features(invite.all_apps, invite.capabilities.is_some())
@@ -464,7 +472,6 @@ impl SystemCmd {
             | Self::ReleaseRun { .. }
             | Self::SetReplicas { .. }
             | Self::SetAccess { .. }
-            | Self::CreateAccount { .. }
             | Self::AddPasskey { .. }
             | Self::RemovePasskey { .. }
             | Self::RevokeAllSessions { .. }

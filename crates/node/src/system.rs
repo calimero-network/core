@@ -838,6 +838,12 @@ pub struct SignUpRedemption {
     /// Unix seconds, signed: the invite's expiry is judged against it.
     pub now: u64,
     pub signature: String,
+    /// An organization invite's `all_apps` grant stands only while its
+    /// creator is still an admin, as for `RedeemInvite { clamp_grants }`.
+    /// Absent (`false`) in an earlier release's entry, which replays
+    /// granting as minted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clamp_grants: bool,
 }
 
 /// How the sign-up policy let an account in ([`SystemState::admits`]).

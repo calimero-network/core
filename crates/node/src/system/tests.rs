@@ -8154,6 +8154,7 @@ mod sign_up {
                 invite_key: crate::proof::invite_key(t),
                 now,
                 signature: crate::proof::sign_invite_redeem(t, id, now),
+                clamp_grants: false,
             }),
             refresh,
             consent,
@@ -8205,6 +8206,58 @@ mod sign_up {
         );
     }
 
+    /// `cmd`, a sign-up, as the API logs it once every node reads the flag.
+    fn clamped(mut cmd: SystemCmd) -> SystemCmd {
+        if let SystemCmd::CreateAccount {
+            invite: Some(r), ..
+        } = &mut cmd
+        {
+            r.clamp_grants = true;
+        }
+        cmd
+    }
+
+    /// Signing up with an organization invite that gives every app added
+    /// later grants it only while the invite's creator is still an admin,
+    /// as redeeming it does; an entry without the flag grants as minted.
+    #[test]
+    fn a_sign_up_with_an_all_apps_invite_is_clamped_like_a_redeem() {
+        let granted = |clamp: bool, creator_role: &str, id: &str| {
+            let mut m = machine(SignUp::Open);
+            org_invite(&mut m, "inv_x");
+            let o = m.state.orgs.get_mut("org").unwrap();
+            let _prev = o.members.insert(
+                "alice".into(),
+                serde_json::from_value(json!(creator_role)).unwrap(),
+            );
+            let invite = m
+                .state
+                .invites
+                .get_mut(&crate::proof::invite_key("inv_x"))
+                .unwrap();
+            invite.all_apps = true;
+            invite.created_by = "alice".into();
+            let cmd = signing_up(id, Some("inv_x"), 10);
+            let cmd = if clamp { clamped(cmd) } else { cmd };
+            let _ok = m.run(cmd).unwrap();
+            assert!(m.state.orgs["org"].members.contains_key(id), "joined");
+            m.state.orgs["org"].all_apps.contains(id)
+        };
+        assert!(granted(true, "owner", "c"), "the creator still owns it");
+        assert!(!granted(true, "member", "c"), "the creator was demoted");
+        assert!(
+            granted(false, "member", "c"),
+            "as an earlier release logged it"
+        );
+
+        let plain = signing_up("c", Some("inv_x"), 10);
+        assert!(plain.features().is_empty());
+        assert_eq!(
+            clamped(plain).features(),
+            [super::super::cluster_version::Feature::InviteCapabilities]
+        );
+    }
+
     fn refused(r: Result<serde_json::Value, String>) -> String {
         let e = r.unwrap_err();
         assert!(e.starts_with(SIGN_UP_PREFIX), "{e}");
@@ -8253,6 +8306,7 @@ mod sign_up {
                 invite_key: crate::proof::invite_key("inv_org"),
                 now: 10,
                 signature: crate::proof::sign_invite_redeem("inv_guess", "a", 10),
+                clamp_grants: false,
             }),
             refresh,
             consent,
