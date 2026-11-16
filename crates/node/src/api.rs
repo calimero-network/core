@@ -993,6 +993,10 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     } else {
         report_data(&nonce, &app_hash, &transport_key)
     };
+    #[cfg(feature = "testing")]
+    if let Some(delay) = crate::testing::quote_delay(&node.config.public_url) {
+        std::thread::sleep(delay);
+    }
     let q =
         quote(node.config.attestation, report).map_err(|e| ApiError::internal(&e.to_string()))?;
     let doc = AttestationDoc {

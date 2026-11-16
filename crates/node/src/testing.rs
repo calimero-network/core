@@ -26,6 +26,30 @@ pub(crate) fn attestation_delay(public_url: &str) -> Option<Duration> {
         .map(|(_, d)| *d)
 }
 
+/// Nodes whose quotes take long, by public URL.
+static SLOW_QUOTES: Mutex<Vec<(String, Duration)>> = Mutex::new(Vec::new());
+
+/// Make each quote of the node at `public_url` take `delay` on the thread that
+/// makes it (`std::thread::sleep`), as a TDX quote blocks in the kernel for
+/// about a second, so a test sees what a quote holds while it runs. Unlike
+/// [`slow_attestation`], which waits asynchronously before the quote.
+pub fn slow_quotes(public_url: &str, delay: Duration) {
+    if let Ok(mut s) = SLOW_QUOTES.lock() {
+        s.retain(|(u, _)| u != public_url);
+        s.push((public_url.to_owned(), delay));
+    }
+}
+
+/// The delay [`slow_quotes`] set for the node at `public_url`.
+pub(crate) fn quote_delay(public_url: &str) -> Option<Duration> {
+    SLOW_QUOTES
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(u, _)| u == public_url)
+        .map(|(_, d)| *d)
+}
+
 /// The timeout of the HTTP client nodes share for peers, job nodes and attestation, when a
 /// test set one: nodes started after [`shared_http_timeout`] in this process use it instead of
 /// [`crate::node::SHARED_HTTP_TIMEOUT`].
