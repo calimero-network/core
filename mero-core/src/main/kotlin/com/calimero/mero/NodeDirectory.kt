@@ -22,7 +22,7 @@ import java.net.URLEncoder
  */
 
 /** The Calimero Cloud control plane's public node directory. */
-const val DEFAULT_DIRECTORY: String = "https://manager.cloud.calimero.network/api/v2/directory"
+const val DEFAULT_DIRECTORY: String = "https://manager.cloud.calimero.network/api/directory"
 
 /** How long a listing stands when the directory does not say. */
 private const val DEFAULT_REFRESH_SECONDS = 60.0

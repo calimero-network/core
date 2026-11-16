@@ -230,6 +230,79 @@ class SealedTransportTest {
     }
 
     @Test
+    fun `opens the session at the unversioned handshake path`() {
+        val node = StandInNode { _, _ -> ok() }
+        val net = FakeNet(node::handle)
+        val sealed = SealedTransport(base, node.transportKey, net.client)
+        get(sealed.client, "/admin-api/health").use { assertEquals(200, it.code) }
+        assertEquals("/sealed/handshake", HANDSHAKE_PATH)
+        assertEquals(listOf("$base/sealed/handshake", "$base$SEALED_PATH"), net.requests.toList())
+    }
+
+    @Test
+    fun `opens the session at the v2 path when the node answers 404 or 405 at the new one`() {
+        // A node released before /sealed/handshake routes only the v2 path.
+        for (status in listOf(404, 405)) {
+            val node = StandInNode { _, _ -> ok() }
+            val net =
+                FakeNet { request, body ->
+                    if (request.url.toString() == "$base$HANDSHAKE_PATH") {
+                        FakeNet.respond(request, status, "Not Found", "text/plain")
+                    } else {
+                        node.handle(request, body)
+                    }
+                }
+            val sealed = SealedTransport(base, node.transportKey, net.client)
+            get(sealed.client, "/admin-api/health").use { assertEquals("$status", 200, it.code) }
+            assertEquals(
+                "$status",
+                listOf("$base/sealed/handshake", "$base/sealed/v2/handshake", "$base$SEALED_PATH"),
+                net.requests.toList(),
+            )
+            assertEquals("$status", 1, node.handshakes)
+        }
+    }
+
+    @Test
+    fun `opens the session at the v2 path when a sealed-only node answers 403 sealed_required`() {
+        // An older node that seals everything refuses an unknown path as unsealed.
+        val node = StandInNode { _, _ -> ok() }
+        val net =
+            FakeNet { request, body ->
+                if (request.url.toString() == "$base$HANDSHAKE_PATH") {
+                    refusal(request, 403, "sealed_required")
+                } else {
+                    node.handle(request, body)
+                }
+            }
+        val sealed = SealedTransport(base, node.transportKey, net.client)
+        get(sealed.client, "/admin-api/health").use { assertEquals(200, it.code) }
+        assertEquals(
+            listOf("$base/sealed/handshake", "$base/sealed/v2/handshake", "$base$SEALED_PATH"),
+            net.requests.toList(),
+        )
+    }
+
+    @Test
+    fun `reports a 404 from the v2 handshake path too, without trying again`() {
+        val net = FakeNet { request, _ -> FakeNet.respond(request, 404, "Not Found", "text/plain") }
+        val sealed = SealedTransport(base, transportKey, net.client)
+        val error = assertRefuses("HTTP 404") { get(sealed.client, "/admin-api/health") }
+        assertEquals(404, (error as SealedTransportException).status)
+        assertEquals(listOf("$base$HANDSHAKE_PATH", "$base$LEGACY_HANDSHAKE_PATH"), net.requests.toList())
+    }
+
+    @Test
+    fun `does not try the v2 handshake path on any other refusal`() {
+        for ((status, code) in listOf(400 to "malformed", 403 to "forbidden", 409 to "stale_transport_key", 500 to "internal")) {
+            val net = FakeNet { request, _ -> refusal(request, status, code) }
+            val sealed = SealedTransport(base, transportKey, net.client)
+            assertRefuses("") { get(sealed.client, "/admin-api/health") }
+            assertEquals("$status", listOf("$base$HANDSHAKE_PATH"), net.requests.toList())
+        }
+    }
+
+    @Test
     fun `never sends a request outside the node in the clear`() {
         val carrier = FakeNet { _, _ -> error("sent") }
         val sealed = SealedTransport(base, transportKey, carrier.client)

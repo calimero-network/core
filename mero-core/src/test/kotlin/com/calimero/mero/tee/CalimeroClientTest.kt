@@ -17,6 +17,7 @@ import com.calimero.mero.ConsentRequest
 import com.calimero.mero.ConsentResult
 import com.calimero.mero.ConsentScope
 import com.calimero.mero.ConsentTeamMembership
+import com.calimero.mero.DEFAULT_DIRECTORY
 import com.calimero.mero.Deployer
 import com.calimero.mero.DirectoryError
 import com.calimero.mero.DirectoryFailure
@@ -1142,6 +1143,11 @@ class CalimeroClientTest {
             }
             assertEquals("each node tried once per request", listOf(7, 7), down.nodes.map { it.requests.size })
         }
+
+    @Test
+    fun `defaults to the Calimero Cloud directory`() {
+        assertEquals("https://manager.cloud.calimero.network/api/directory", DEFAULT_DIRECTORY)
+    }
 
     @Test
     fun `connects to a cluster by name through the node directory, its zone first`() =

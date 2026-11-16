@@ -39,7 +39,7 @@ for byte:
 
 ```text
 handshake   Noise_NK_25519_AESGCM_SHA256, prologue "calimero/sealed-http/v2"
-  request   POST /sealed/v2/handshake   0x02 ‖ transport_pk ‖ Noise message 1
+  request   POST /sealed/handshake      0x02 ‖ transport_pk ‖ Noise message 1
   response  0x02 ‖ Noise message 2 (payload = session_id(16) ‖ lifetime secs, u32 BE)
 exchange    POST /sealed/v2
   header    0x02 ‖ session_id(16) ‖ request_id (u64 BE; from 1, each used once)
@@ -47,6 +47,10 @@ exchange    POST /sealed/v2
   response  frames: u32 BE length ‖ AES-256-GCM(resp key, nonce = request_id ‖ index, aad = header, kind ‖ data)
   inner     u32 BE head length ‖ head (JSON) ‖ body
 ```
+
+A node released before `POST /sealed/handshake` existed answers `404` or `405` there; the
+handshake is then sent once more to `POST /sealed/v2/handshake` (`LEGACY_HANDSHAKE_PATH`), which
+newer nodes still serve as a deprecated alias. Any other refusal is reported as it is.
 
 Responses stream frame by frame, so server-sent events are sealed too. A restarted node
 (`stale_transport_key`) is attested again; a dropped session (`unknown_session`) is reopened and

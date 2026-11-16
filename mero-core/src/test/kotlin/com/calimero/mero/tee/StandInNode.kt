@@ -54,7 +54,8 @@ internal class StandInNode(
         body: ByteArray,
     ): Response? =
         when (request.url.toString()) {
-            "$base$HANDSHAKE_PATH" -> handshake(request, body)
+            // A current node serves the handshake at both paths (v2 is the deprecated alias).
+            "$base$HANDSHAKE_PATH", "$base$LEGACY_HANDSHAKE_PATH" -> handshake(request, body)
             "$base$SEALED_PATH" -> exchange(request, body)
             else -> null
         }

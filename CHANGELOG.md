@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### The sealed handshake and the directory drop `v2` from their paths (mero-core)
+
+- `SealedTransport` opens a session at `POST /sealed/handshake` (`HANDSHAKE_PATH`). A node
+  released before that path answers `404` or `405` there, and the handshake is then sent once
+  more to `POST /sealed/v2/handshake` (the new `LEGACY_HANDSHAKE_PATH`), so older nodes are still
+  reached. Any other refusal is reported as before.
+- `DEFAULT_DIRECTORY` is `https://manager.cloud.calimero.network/api/directory` (was
+  `.../api/v2/directory`, which the manager still serves).
+
 ### Consent: organization management kinds (mero-core)
 
 - The ten consent page kinds of calimero-network/core#5018 as `ConsentRequest` cases: `LeaveOrg`,
