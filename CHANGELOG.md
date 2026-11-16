@@ -1,3 +1,9 @@
+## [35.6.0](https://github.com/calimero-network/mero-js/compare/mero-js-v35.5.0...mero-js-v35.6.0) (2026-11-16)
+
+### Features
+
+* capabilities on organization and invite creation ([#397](https://github.com/calimero-network/mero-js/issues/397)) ([484ed8d](https://github.com/calimero-network/mero-js/commit/484ed8dd550d6e118c35c790c211359c62444834))
+
 ## [35.5.0](https://github.com/calimero-network/mero-js/compare/mero-js-v35.4.0...mero-js-v35.5.0) (2026-11-16)
 
 ### Features
