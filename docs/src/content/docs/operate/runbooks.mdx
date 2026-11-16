@@ -569,7 +569,7 @@ app's data moves only to nodes on a release approved for it.
    ```
 
    Where owners hold them (the default), each organization's owner approves it
-   with a passkey (`POST /orgs/{org}/releases`; `meroctl namespace
+   with a passkey (`POST /orgs/{org}/releases`; `meroctl org
    approve-release` on development clusters). A person's own apps are in their
    personal organization, which they approve for (`meroctl account
    approve-release`). Until then, nodes on the new release get none of that
@@ -625,14 +625,14 @@ Who upgrades depends on `--app-upgrades`.
   granted it), approves each upgrade with their own passkey: `POST /apps/{app}/upgrade { version }`, or an
   organization-wide run `POST /orgs/{org}/upgrade { package, version, team?,
   cascade? }` approved once. Development clusters: `meroctl instance update`,
-  `meroctl group upgrade trigger`.
+  `meroctl team upgrade trigger`.
 - **Operator.** Install the release the operator upgrades to, then upgrade:
 
   ```bash
   meroctl ops install com.example.kv@1.3.0
   meroctl ops upgrade <app-id> --version 1.3.0
-  meroctl ops upgrade-namespace <org> --package com.example.kv --version 1.3.0 [--group <team> --cascade]
-  meroctl group upgrade status <org> <run>
+  meroctl ops upgrade-org <org> --package com.example.kv --version 1.3.0 [--team <team> --cascade]
+  meroctl team upgrade status <org> <run>
   ```
 
 An upgrade is code only: the state stays as the old release wrote it and the

@@ -35,11 +35,16 @@ pub enum ContextCmd {
         /// Arguments for the app's `init`, JSON.
         #[arg(long)]
         params: Option<String>,
-        /// Create it in this organization (namespace).
-        #[arg(long)]
+        /// Create it in this organization.
+        #[arg(long = "org", alias = "namespace", value_name = "ORG")]
         namespace: Option<String>,
-        /// Reached by this team's members (a group of `--namespace`).
-        #[arg(long, requires = "namespace")]
+        /// Reached by this team's members (a team of `--org`).
+        #[arg(
+            long = "team",
+            alias = "group",
+            value_name = "TEAM",
+            requires = "namespace"
+        )]
         group: Option<String>,
         /// Also name it with this alias.
         #[arg(long)]
@@ -89,12 +94,13 @@ pub enum ContextCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// Move the instance to another organization (namespace), its data where
+    /// Move the instance to another organization, its data where
     /// it is: whoever manages it now, as an admin of the target, approves
     /// with a passkey.
     Move {
         #[arg(value_name = "INSTANCE")]
         context: String,
+        #[arg(value_name = "ORG")]
         namespace: String,
         /// Bring the members of its organization who reach it along.
         #[arg(long)]
@@ -127,8 +133,8 @@ pub enum ContextCmd {
         context: String,
         #[arg(value_enum)]
         kind: AccessKind,
-        /// For `team`: the team (a group).
-        #[arg(long)]
+        /// For `team`: the team.
+        #[arg(long = "team", alias = "group", value_name = "TEAM")]
         group: Option<String>,
         /// For `accounts`: who.
         #[arg(long = "account")]
@@ -349,7 +355,7 @@ pub async fn run(cmd: ContextCmd, env: &Env) -> eyre::Result<Value> {
                 AccessKind::Org => Access::Org,
                 AccessKind::Public => Access::Public,
                 AccessKind::Team => Access::Team {
-                    team: group.ok_or_else(|| eyre::eyre!("which team? --group"))?,
+                    team: group.ok_or_else(|| eyre::eyre!("which team? --team"))?,
                 },
                 AccessKind::Accounts => Access::Accounts { accounts },
             };

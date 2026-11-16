@@ -649,12 +649,12 @@ fn scenario(root: &Path, url: &str) {
     assert!(refused.contains("UPGRADE_KEY_ONLY"), "{refused}");
 
     // namespace and group: an organization, its teams, members, metadata.
-    let org = alice.run(&["namespace", "create", "acme"]);
+    let org = alice.run(&["org", "create", "acme"]);
     let org = s(&org["orgId"]);
-    assert!(alice.run(&["namespace", "list"]).to_string().contains(&org));
+    assert!(alice.run(&["org", "list"]).to_string().contains(&org));
     let team = alice.run(&[
-        "namespace",
-        "create-group",
+        "org",
+        "create-team",
         &org,
         "eng",
         "--join",
@@ -662,18 +662,18 @@ fn scenario(root: &Path, url: &str) {
     ]);
     let team = s(&team["teamId"]);
     assert!(alice
-        .run(&["namespace", "groups", &org])
+        .run(&["org", "teams", &org])
         .to_string()
         .contains(&team));
-    let _ = alice.run(&["namespace", "metadata", "set", &org, r#"{"plan":"team"}"#]);
+    let _ = alice.run(&["org", "metadata", "set", &org, r#"{"plan":"team"}"#]);
     assert_eq!(
-        alice.run(&["namespace", "metadata", "get", &org])["metadata"]["plan"],
+        alice.run(&["org", "metadata", "get", &org])["metadata"]["plan"],
         "team"
     );
-    let _ = alice.run(&["group", "metadata", &org, &team, r#"{"colour":"blue"}"#]);
+    let _ = alice.run(&["team", "metadata", &org, &team, r#"{"colour":"blue"}"#]);
     let sub = alice.run(&[
-        "namespace",
-        "create-group",
+        "org",
+        "create-team",
         &org,
         "infra",
         "--parent",
@@ -681,12 +681,12 @@ fn scenario(root: &Path, url: &str) {
     ]);
     let sub = s(&sub["teamId"]);
     assert!(alice
-        .run(&["group", "subgroups", &org, &team])
+        .run(&["team", "subteams", &org, &team])
         .to_string()
         .contains(&sub));
-    let _ = alice.run(&["group", "reparent", &org, &sub, "--top"]);
+    let _ = alice.run(&["team", "reparent", &org, &sub, "--top"]);
     assert!(!alice
-        .run(&["group", "subgroups", &org, &team])
+        .run(&["team", "subteams", &org, &team])
         .to_string()
         .contains(&sub));
 
@@ -699,7 +699,7 @@ fn scenario(root: &Path, url: &str) {
     let bob_id =
         s(&bob.run(&["login", "--dev-passkey", path(&bob_pk), "--name", "bob"])["accountId"]);
     let token = s(&alice.run(&[
-        "namespace",
+        "org",
         "invite",
         &org,
         "--role",
@@ -707,11 +707,11 @@ fn scenario(root: &Path, url: &str) {
         "--dev-passkey",
         pk,
     ])["token"]);
-    let _ = bob.run(&["namespace", "join", &token]);
-    let members = alice.run(&["namespace", "members", "list", &org]);
+    let _ = bob.run(&["org", "join", &token]);
+    let members = alice.run(&["org", "members", "list", &org]);
     assert!(members.to_string().contains(&bob_id), "{members}");
     let _ = alice.run(&[
-        "group",
+        "team",
         "members",
         "add",
         &org,
@@ -723,11 +723,11 @@ fn scenario(root: &Path, url: &str) {
         pk,
     ]);
     assert!(alice
-        .run(&["group", "members", "list", &org, &team])
+        .run(&["team", "members", "list", &org, &team])
         .to_string()
         .contains(&bob_id));
     let _ = alice.run(&[
-        "group",
+        "team",
         "members",
         "remove",
         &org,
@@ -737,15 +737,15 @@ fn scenario(root: &Path, url: &str) {
         pk,
     ]);
     let _ = alice.run(&[
-        "namespace",
+        "org",
         "member-metadata",
         &org,
         &bob_id,
         r#"{"title":"eng"}"#,
     ]);
-    let _ = bob.run(&["namespace", "leave", &org, "--dev-passkey", path(&bob_pk)]);
+    let _ = bob.run(&["org", "leave", &org, "--dev-passkey", path(&bob_pk)]);
     assert!(!alice
-        .run(&["namespace", "members", "list", &org])
+        .run(&["org", "members", "list", &org])
         .to_string()
         .contains(&bob_id));
 
@@ -759,11 +759,11 @@ fn scenario(root: &Path, url: &str) {
         "1.0.0",
         "--name",
         "team-kv",
-        "--namespace",
+        "--org",
         &org,
     ]);
     let started = alice.run(&[
-        "group",
+        "team",
         "upgrade",
         "trigger",
         &org,
@@ -777,7 +777,7 @@ fn scenario(root: &Path, url: &str) {
     let run = s(&started["runId"]);
     let mut finished = Value::Null;
     for _ in 0..200 {
-        finished = alice.run(&["group", "upgrade", "status", &org, &run]);
+        finished = alice.run(&["team", "upgrade", "status", &org, &run]);
         if finished["finished"] == json!(true) {
             break;
         }
@@ -943,9 +943,9 @@ fn scenario(root: &Path, url: &str) {
         .try_run(&["instance", "transfer", "notes", &me])
         .unwrap_err();
     assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
-    let asked = alice.try_run(&["namespace", "delete", &org]).unwrap_err();
+    let asked = alice.try_run(&["org", "delete", &org]).unwrap_err();
     assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
-    let _ = alice.run(&["namespace", "delete", &org, "--dev-passkey", pk]);
+    let _ = alice.run(&["org", "delete", &org, "--dev-passkey", pk]);
     let _ = alice.run(&["instance", "delete", &raw]);
     let _ = alice.run(&["instance", "alias", "remove", "notes"]);
     let _ = alice.run(&["logout"]);

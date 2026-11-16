@@ -31,12 +31,16 @@ impl TeamRole {
 #[derive(Debug, Subcommand)]
 pub enum GroupCmd {
     Get {
+        #[arg(value_name = "ORG")]
         namespace: String,
+        #[arg(value_name = "TEAM")]
         group: String,
     },
     /// Rename a team or change who may join it.
     Update {
+        #[arg(value_name = "ORG")]
         namespace: String,
+        #[arg(value_name = "TEAM")]
         group: String,
         #[arg(long)]
         name: Option<String>,
@@ -46,7 +50,9 @@ pub enum GroupCmd {
     /// Delete a team with the teams below it and their instances (with
     /// instances there, approved with a passkey).
     Delete {
+        #[arg(value_name = "ORG")]
         namespace: String,
+        #[arg(value_name = "TEAM")]
         group: String,
         /// Approve with this passkey file (development clusters).
         #[arg(long)]
@@ -54,7 +60,9 @@ pub enum GroupCmd {
     },
     /// Move a team under another (`--top`: to the top of the organization).
     Reparent {
+        #[arg(value_name = "ORG")]
         namespace: String,
+        #[arg(value_name = "TEAM")]
         group: String,
         #[arg(required_unless_present = "top")]
         parent: Option<String>,
@@ -62,21 +70,28 @@ pub enum GroupCmd {
         top: bool,
     },
     /// The teams directly below one.
+    #[command(name = "subteams", alias = "subgroups")]
     Subgroups {
+        #[arg(value_name = "ORG")]
         namespace: String,
+        #[arg(value_name = "TEAM")]
         group: String,
     },
     #[command(subcommand)]
     Members(MembersCmd),
     /// Set the team's metadata (JSON).
     Metadata {
+        #[arg(value_name = "ORG")]
         namespace: String,
+        #[arg(value_name = "TEAM")]
         group: String,
         metadata: String,
     },
     /// Set the capabilities every member of the team gets.
     Settings {
+        #[arg(value_name = "ORG")]
         namespace: String,
+        #[arg(value_name = "TEAM")]
         group: String,
         #[arg(long)]
         capabilities: u32,
@@ -86,14 +101,16 @@ pub enum GroupCmd {
     },
     /// Leave the team.
     Leave {
+        #[arg(value_name = "ORG")]
         namespace: String,
+        #[arg(value_name = "TEAM")]
         group: String,
         /// Approve with this passkey file (development clusters).
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// v1's group upgrades: move the organization's instances (or one team's,
-    /// `--group`, with `--cascade` its subtree) to a release, then follow and retry.
+    /// Move the organization's instances (or one team's, `--team`, with
+    /// `--cascade` its subtree) to a release, then follow and retry.
     #[command(subcommand)]
     Upgrade(UpgradeCmd),
 }
@@ -101,11 +118,18 @@ pub enum GroupCmd {
 #[derive(Debug, Subcommand)]
 pub enum MembersCmd {
     #[command(alias = "ls")]
-    List { namespace: String, group: String },
+    List {
+        #[arg(value_name = "ORG")]
+        namespace: String,
+        #[arg(value_name = "TEAM")]
+        group: String,
+    },
     /// Add a member, or change their role or capabilities.
     #[command(alias = "set-role")]
     Add {
+        #[arg(value_name = "ORG")]
         namespace: String,
+        #[arg(value_name = "TEAM")]
         group: String,
         account: String,
         #[arg(long, value_enum, default_value = "member")]
@@ -118,7 +142,9 @@ pub enum MembersCmd {
     },
     #[command(alias = "rm")]
     Remove {
+        #[arg(value_name = "ORG")]
         namespace: String,
+        #[arg(value_name = "TEAM")]
         group: String,
         account: String,
         /// Approve with this passkey file (development clusters).
@@ -130,12 +156,13 @@ pub enum MembersCmd {
 #[derive(Debug, Subcommand)]
 pub enum UpgradeCmd {
     Trigger {
+        #[arg(value_name = "ORG")]
         namespace: String,
         #[arg(long)]
         package: String,
         #[arg(long)]
         version: String,
-        #[arg(long)]
+        #[arg(long = "team", alias = "group", value_name = "TEAM")]
         group: Option<String>,
         #[arg(long, requires = "group")]
         cascade: bool,
@@ -146,11 +173,13 @@ pub enum UpgradeCmd {
         dev_passkey: Option<PathBuf>,
     },
     Status {
+        #[arg(value_name = "ORG")]
         namespace: String,
         run: String,
     },
     /// Run the failed instances of a run again, as a new run.
     Retry {
+        #[arg(value_name = "ORG")]
         namespace: String,
         run: String,
         #[arg(long)]

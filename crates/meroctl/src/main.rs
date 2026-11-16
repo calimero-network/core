@@ -4,8 +4,8 @@
 //! attested, sealed client the SDKs use (`calimero-client`): the node's
 //! quote is checked before anything is sent. Where v1 had an "application"
 //! this has a signed package (`app`); a context is an app instance
-//! (`instance`); a namespace is an organization (`namespace`); a group is one
-//! of its teams (`group`); an identity is an account with passkeys
+//! (`instance`); a namespace is an organization (`org`); a group is one
+//! of its teams (`team`); an identity is an account with passkeys
 //! (`account`). The operator's commands (`ops`) take `--ops-token`.
 
 use std::path::PathBuf;
@@ -54,7 +54,7 @@ use env::{
     ),
     about = "Command line for Calimero nodes",
     after_help = "Examples:\n  \
-        meroctl dev new my-app\n  \
+        meroctl app new my-app\n  \
         meroctl node add local http://127.0.0.1:2501 --allow-mock\n  \
         meroctl --node local login --dev-passkey ./dev-passkey.json\n  \
         meroctl --node local app install --path ./kv-store.mpk\n  \
@@ -203,11 +203,13 @@ enum Cmd {
     /// node; and a cluster's compute (pipelines, run logs).
     #[command(subcommand)]
     Cloud(cloud::CloudCmd),
-    /// Organizations (v1's namespaces): members, invites, groups, metadata, approvals.
-    #[command(subcommand, alias = "ns")]
+    /// Organizations (v1's namespaces): members, invites, teams, metadata, approvals.
+    /// `namespace` (and `ns`) is its old name, kept as a hidden alias.
+    #[command(subcommand, name = "org", aliases = ["namespace", "ns"])]
     Namespace(namespace::NamespaceCmd),
     /// An organization's teams (v1's groups): members, metadata, reparent, upgrades.
-    #[command(subcommand)]
+    /// `group` is its old name, kept as a hidden alias.
+    #[command(subcommand, name = "team", alias = "group")]
     Group(group::GroupCmd),
     /// This account: passkeys (devices), API keys, usage, approvals.
     #[command(subcommand)]
@@ -595,19 +597,25 @@ mod tests {
     }
 
     /// No help a user can see calls an app instance a context (its name before
-    /// 1.0.0-rc.26): every visible command's help, the examples included. The
-    /// one line that names the old alias and the answer's `contextId` aside.
+    /// 1.0.0-rc.26), an organization a namespace or a team a group (before
+    /// 1.0.0-rc.29): every visible command's help, the examples included. The
+    /// lines that name the old aliases and the answer's `contextId` aside.
     #[test]
-    fn help_says_instance_not_context() {
+    fn help_says_instance_org_and_team() {
         fn walk(cmd: &mut clap::Command, path: &str, found: &mut Vec<String>) {
             let help = cmd.render_long_help().to_string();
             for line in help.lines() {
                 let l = line.to_lowercase();
-                if l.contains("context")
-                    && !l.contains("is its old name")
+                let old_instance = l.contains("context")
                     && !l.contains("v1's contexts")
-                    && !l.contains("contextid")
-                {
+                    && !l.contains("contextid");
+                // `org` and `team`, not v1's `namespace` and `group` (a Raft
+                // group is another thing, named so).
+                let old_org = (l.contains("namespace") && !l.contains("v1's namespaces"))
+                    || (l.contains("group")
+                        && !l.contains("v1's groups")
+                        && !l.contains("raft group"));
+                if (old_instance || old_org) && !l.contains("is its old name") {
                     found.push(format!("{path}: {}", line.trim()));
                 }
             }
@@ -625,7 +633,7 @@ mod tests {
         walk(&mut cmd, "meroctl", &mut found);
         assert!(
             found.is_empty(),
-            "help still says context:\n{}",
+            "help still says context, namespace or group:\n{}",
             found.join("\n")
         );
     }
@@ -664,6 +672,81 @@ mod tests {
             &["meroctl", "call", "--instance", "kv", "get"],
             &["meroctl", "call", "-i", "kv", "get"],
             &["meroctl", "blob", "list", "-c", "kv"],
+            // v1's `namespace` and `group` are `org` and `team`: the old commands,
+            // their `groups`/`create-group`/`subgroups` and `--namespace`/`--group` still parse.
+            &["meroctl", "namespace", "create", "acme"],
+            &["meroctl", "ns", "list"],
+            &["meroctl", "namespace", "groups", "o"],
+            &["meroctl", "namespace", "create-group", "o", "eng"],
+            &["meroctl", "namespace", "invite", "o", "--group", "t"],
+            &["meroctl", "group", "get", "o", "t"],
+            &["meroctl", "group", "subgroups", "o", "t"],
+            &[
+                "meroctl",
+                "instance",
+                "create",
+                "--name",
+                "kv",
+                "--package",
+                "p",
+                "--namespace",
+                "o",
+                "--group",
+                "t",
+            ],
+            &[
+                "meroctl",
+                "ops",
+                "upgrade-namespace",
+                "o",
+                "--package",
+                "p",
+                "--version",
+                "1",
+            ],
+            &["meroctl", "org", "create", "acme"],
+            &["meroctl", "org", "teams", "o"],
+            &["meroctl", "org", "create-team", "o", "eng"],
+            &["meroctl", "org", "invite", "o", "--team", "t"],
+            &["meroctl", "team", "get", "o", "t"],
+            &["meroctl", "team", "subteams", "o", "t"],
+            &[
+                "meroctl",
+                "team",
+                "upgrade",
+                "trigger",
+                "o",
+                "--package",
+                "p",
+                "--version",
+                "1",
+                "--team",
+                "t",
+            ],
+            &[
+                "meroctl",
+                "instance",
+                "create",
+                "--name",
+                "kv",
+                "--package",
+                "p",
+                "--org",
+                "o",
+                "--team",
+                "t",
+            ],
+            &["meroctl", "instance", "access", "kv", "team", "--team", "t"],
+            &[
+                "meroctl",
+                "ops",
+                "upgrade-org",
+                "o",
+                "--package",
+                "p",
+                "--version",
+                "1",
+            ],
             // Docker is the default; `--docker` from before stays accepted.
             &["meroctl", "local", "up", "--docker"],
             &["meroctl", "local", "up", "--local"],

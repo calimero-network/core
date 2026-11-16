@@ -457,9 +457,9 @@ def redact_job(cl):
                    cwd=ROOT, check=True)
     package, version = cl.registry.publish(mpk)
     cl.cli(1, "app", "install", f"{package}@{version}")
-    org = cl.cli(1, "namespace", "create", "Redact")["orgId"]
+    org = cl.cli(1, "org", "create", "Redact")["orgId"]
     app = cl.cli(1, "instance", "create", "--name", "redact", "--package", package, "--version", version,
-                 "--namespace", org)["appId"]
+                 "--org", org)["appId"]
     owner = {"home": wd / "cfg", "passkey": wd / "dev-passkey.json"}
     admin, member, other = sign_up(cl, wd, "ada"), sign_up(cl, wd, "bob"), sign_up(cl, wd, "cyd")
     admin_client = Client(cl, app, join_org(cl, owner, admin, org, "admin"))
@@ -562,11 +562,11 @@ def main():
         (wd / "cfg").mkdir(parents=True, exist_ok=True)
         (wd / "operator.key").write_text(OPERATOR_SEED)
         cl.cli(1, "login", "--dev-passkey", str(wd / "dev-passkey.json"), "--name", "owner", "--origin", ORIGIN)
-        org = cl.cli(1, "namespace", "create", "Acme")["orgId"]
+        org = cl.cli(1, "org", "create", "Acme")["orgId"]
         package, version = registry.publish(mpk)
         cl.cli(1, "app", "install", f"{package}@{version}")
         app = cl.cli(1, "instance", "create", "--name", "compute", "--package", package, "--version", version,
-                     "--namespace", org)["appId"]
+                     "--org", org)["appId"]
         key = cl.cli(1, "account", "api-key", "create", "--label", "compute-e2e",
                       "--dev-passkey", str(wd / "dev-passkey.json"))["key"]
         identity = cl.ops(1, "ops/cluster")["identity"]

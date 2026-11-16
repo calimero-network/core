@@ -22,8 +22,8 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | `file download INSTANCE ID -o OUT` | a sealed file's plaintext, streamed to `OUT.part` and renamed onto `OUT` only after every check passed (`Client::export_file_to`); `pipeline download` does the same per output | `/apps/{app}/files/{id}/export`, `.../segments/{k}` |
 | `run logs APP RUN [--attempt N]`, `pipeline logs APP RUN --step S [--index I]` | print a compute run's module log (stdout, stderr and `log` lines) read through the files export; the latest attempt unless `--attempt`; a pipeline step's run is its `--index`th | `/apps/{app}/runs/{run}/logs`, `/apps/{app}/files/{id}/export` |
 | (new) `pipeline validate/estimate/run/retry/get/cancel/watch/runs/receipt/logs/download` | an instance's pipeline runs: check a pipeline source, estimate, start, follow (`watch`, SSE), the signed receipt (`receipt --verify`) | `/pipelines/validate`, `/apps/{app}/pipelines/*`, `/apps/{app}/pipeline-runs*` |
-| `namespace ...` | organizations: members, invites, groups, metadata, capabilities, outbound and release approvals | `/orgs*`, `/invites/*` |
-| `group ...` | teams: members, metadata, reparent, subgroups, settings; `group upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
+| `org ...` | organizations: members, invites, teams, metadata, capabilities, outbound and release approvals | `/orgs*`, `/invites/*` |
+| `team ...` | teams: members, metadata, reparent, subteams, settings; `team upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
 | `account ...` | the account: devices (passkeys), API keys, usage, approvals | `/auth/*` |
 | `dev start/watch` | install, create, keep pushing a build (`dev new` is a hidden alias of `app new`) | |
 | (new) `app new/build/codegen/abi show\|diff/signer new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone), `calimero-app-build`'s builder and `abi_tools`, `mero-sign`'s library, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), `pack --service NAME=PATH` (or the crate's `services`) writes a multi-service manifest, and `pack` opens what it wrote with `VerifiedBundle` before writing it; the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
@@ -33,7 +33,7 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | (new) `login`, `logout [--all]`, `whoami`, `attest [node\|app INSTANCE]` | file passkeys on dev clusters; cluster verification | `/auth/*`, `/attestation` |
 | (new) `attest release [--file F --nonce N]` (`attest-release` hidden) | verify a `merod attest` release attestation (no session, no sealed channel) | `/attestation/release` |
 | (new) `proxy [--listen ADDR] [--allow-remote] [--openapi FILE]` | the API as plain HTTP on loopback, each request through the attested, sealed `Transport` (`proxy.rs`) | every route; `GET /openapi.json` |
-| (new) `ops ...` | the operator, `--ops-token`: status, cluster, metrics, placement, add-node, remove-node, move, backup, restore, backup-key, recovery-keygen, recover, pools/set-pools, prices/set-prices, quotas/set-quotas, release, outbound, packages/install/uninstall, upgrade, upgrade-namespace | `/ops/*` |
+| (new) `ops ...` | the operator, `--ops-token`: status, cluster, metrics, placement, add-node, remove-node, move, backup, restore, backup-key, recovery-keygen, recover, pools/set-pools, prices/set-prices, quotas/set-quotas, release, outbound, packages/install/uninstall, upgrade, upgrade-org | `/ops/*` |
 
 Dropped, with no meaning here: `context sync`, `group sync` (Raft replicates),
 `context identity`, `account pair-*`/`seal-to`/`device-init` (a passkey is the
@@ -47,8 +47,8 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
 - Sessions are kept per node URL in `{home}/meroctl/sessions.json` (0600) and
   refreshed when they expire. An instance argument is an alias of the account or
   an id (`Env::app`).
-- What an owner approves (`instance update`, `instance transfer`, `namespace delete`, approvals,
-  `group upgrade trigger/retry`, `app origins add/remove`) takes `--dev-passkey FILE` on a development
+- What an owner approves (`instance update`, `instance transfer`, `org delete`, approvals,
+  `team upgrade trigger/retry`, `app origins add/remove`) takes `--dev-passkey FILE` on a development
   cluster: `DevPasskey` loads it, gives it to the generated method as its
   `passkey` (the routes the document marks `x-calimero-step-up`) and saves it
   after; without it the request is sent as is and the node answers `412
@@ -75,10 +75,12 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
 - `main` runs the commands that need no node (`node`, `local`, `cloud` but
   `cloud compute`, `app`'s offline ones: `AppCmd::is_offline`) before it
   resolves a node, so they never read `--node`/`--api`. The old spellings
-  (`dev new`, `pipeline`, `run logs`, `attest-release`, `attest --context`, `context` (now `instance`) and `--context`/`-c` (now `--instance`/`-i`))
+  (`dev new`, `pipeline`, `run logs`, `attest-release`, `attest --context`, `context` (now `instance`) and `--context`/`-c` (now `--instance`/`-i`),
+  `namespace`/`ns` (now `org`, with `teams`, `create-team`), `group` (now `team`, with `subteams`),
+  `--namespace`/`--group` (now `--org`/`--team`) and `ops upgrade-namespace` (now `upgrade-org`))
   stay as hidden aliases for one release; `old_spellings_still_parse` and
   `the_command_tree_is_consistent` (clap's `debug_assert`) pin the tree, and
-  `help_says_instance_not_context` keeps every visible help saying instance.
+  `help_says_instance_org_and_team` keeps every visible help saying instance, org and team.
 - `local up` without ownership leaves the cluster running; `local dev` owns
   what it started (`Started`, stopped on drop). Readiness is every port
   listening and `merod local`'s `ops token` line in the log.

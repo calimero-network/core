@@ -58,8 +58,28 @@ def knows_instance(meroctl: str) -> bool:
     return _KNOWS_INSTANCE[meroctl]
 
 
+# `org`/`team` (`--org`/`--team`, `teams`, `create-team`, `subteams`,
+# `ops upgrade-org`) from 1.0.0-rc.29; before, `namespace`/`group` and theirs.
+_KNOWS_ORG: dict[str, bool] = {}
+_OLD_TOP = {"org": "namespace", "team": "group"}
+_OLD_SUB = {"teams": "groups", "create-team": "create-group", "subteams": "subgroups",
+            "upgrade-org": "upgrade-namespace"}
+_OLD_FLAG = {"--org": "--namespace", "--team": "--group"}
+
+
+def knows_org(meroctl: str) -> bool:
+    if meroctl not in _KNOWS_ORG:
+        probe = subprocess.run([meroctl, "org", "--help"], capture_output=True, timeout=30)
+        _KNOWS_ORG[meroctl] = probe.returncode == 0
+    return _KNOWS_ORG[meroctl]
+
+
 def spelled_for(meroctl: str, args) -> list[str]:
     args = [str(a) for a in args]
+    if not knows_org(meroctl):
+        args = [_OLD_TOP.get(a, a) if i == 0 else _OLD_SUB.get(a, a) if i == 1 else a
+                for i, a in enumerate(args)]
+        args = [_OLD_FLAG.get(a, a) for a in args]
     if knows_instance(meroctl):
         return args
     old = ["context" if (i == 0 and a == "instance") else a for i, a in enumerate(args)]

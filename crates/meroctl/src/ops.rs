@@ -41,7 +41,7 @@ impl NodeRole {
 
 #[derive(Debug, Subcommand)]
 pub enum OpsCmd {
-    /// Node, group and directory counts.
+    /// Node, Raft group and directory counts.
     Status,
     /// The cluster's name and identity key: what `merod run --job-node --cluster-identity`
     /// takes, so a job node serves only this cluster.
@@ -80,7 +80,7 @@ pub enum OpsCmd {
     /// Write encrypted snapshots of the instances this node leads, and of the
     /// system group when it leads it.
     Backup {
-        /// Every group this node holds, leader or not: what a node of a
+        /// Every Raft group this node holds, leader or not: what a node of a
         /// cluster that lost its majority still has (disaster recovery).
         #[arg(long)]
         all: bool,
@@ -196,14 +196,16 @@ pub enum OpsCmd {
         migrate: Option<String>,
     },
     /// Update an organization's instances (or one team's) to a release, where
-    /// the operator holds app upgrades. Follow it with `meroctl group upgrade status`.
+    /// the operator holds app upgrades. Follow it with `meroctl team upgrade status`.
+    #[command(name = "upgrade-org", alias = "upgrade-namespace")]
     UpgradeNamespace {
+        #[arg(value_name = "ORG")]
         namespace: String,
         #[arg(long)]
         package: String,
         #[arg(long)]
         version: String,
-        #[arg(long)]
+        #[arg(long = "team", alias = "group", value_name = "TEAM")]
         group: Option<String>,
         #[arg(long, requires = "group")]
         cascade: bool,

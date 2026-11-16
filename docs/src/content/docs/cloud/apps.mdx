@@ -27,7 +27,7 @@ of one a node's data still holds; such an app can still be listed and deleted.
   `POST /apps { name, bundle, initArgs, org?, access? }` (or `{ name, package,
   version }`). Every instance is in an organization: naming none puts it in the
   creator's personal organization, made at sign-up (`meroctl instance create`
-  without `--namespace`). `initArgs` (JSON) is what `#[app::init]` receives; a failed init answers
+  without `--org`). `initArgs` (JSON) is what `#[app::init]` receives; a failed init answers
   `422 INIT_FAILED` instead of leaving a dead instance.
 - **Identity.** `env::caller()` is the caller: an account, an API key (with its
   account), another app, or the system. There are no per-app identities or keys:
