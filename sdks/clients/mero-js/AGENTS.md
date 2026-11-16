@@ -1,8 +1,10 @@
 # mero-js - agent guide
 
-> **Before committing, titling a PR, or releasing, read [RELEASING.md](RELEASING.md).**
-> PRs are squash-merged and the PR title is the release commit: its type decides
-> whether this repository releases, and which version (the table in RELEASING.md).
+> mero-js lives in calimero-network/core under `sdks/clients/mero-js` and ships
+> with core: one version (core's root `VERSION`), one tag, one release. Read
+> [sdks/AGENTS.md](../../AGENTS.md) (the SDK rules) and core's
+> [RELEASING.md](../../../RELEASING.md) before committing or titling a PR. Never
+> edit `version` in `package.json` by hand (`python3 scripts/sdks.py version-sync`).
 
 `@calimero-network/mero-js` is the JavaScript/TypeScript client for Calimero 1.0
 (browser and Node 18+): `CalimeroClient` verifies a node's TDX attestation, seals
@@ -15,39 +17,76 @@ calls apps. See [README.md](README.md) and the docs site, whose source is `docs/
 - `src/sealed/`: the sealed channel (Noise) and release checks.
 - `src/package/`: building and signing a compute-only `.mpk` (golden vectors in `fixtures/` come from core's `calimero-bundle`).
 - `src/routes/`: the route client the generated methods call through.
-- `src/client/`: `CalimeroClient` and its helpers. `receipts.ts` mirrors core's `calimero-client` receipt checks (the receipt and each job's report); its vectors in `fixtures/receipt-vectors.json` are core's: `pnpm refresh:receipt-vectors`, never hand-edited.
+- `src/client/`: `CalimeroClient` and its helpers. `receipts.ts` mirrors core's `calimero-client` receipt checks; its vectors, `fixtures/receipt-vectors.json`, are a copy of core's `crates/client/tests/fixtures/receipt-vectors.json` made by `pnpm generate`, never hand-edited.
 - `src/generated/`: **generated, do not edit** (see below).
 - `tests/cluster/`: the cluster suite (`vitest.cluster.config.ts`); `tests/consumer/` is what `typecheck:consumer` compiles; unit tests sit beside the code as `src/**/*.test.ts`, and `typecheck:tests` (`tsconfig.test.json`) compiles them with `tests/cluster` and `tests/support`.
+- `examples/`: one directory per example (see below).
+- `docs/`: the docs site (Astro/Starlight, its own npm project, not in the workspace).
+- `sdk.json`: how core's CI treats this SDK (`scripts/sdks.py`).
 
 ## Build, test, lint
 
-pnpm (version pinned by `packageManager` in `package.json`), Node 20 in CI.
-These are the steps `ci.yml` runs:
+The package is a member of the pnpm workspace in `sdks/` (pnpm and its version
+come from `sdks/package.json`; the one lockfile is `sdks/pnpm-lock.yaml`). Node 20
+in CI. These are the steps `.github/workflows/sdk-mero-js.yml` runs:
 
 ```bash
-pnpm install --frozen-lockfile
-pnpm check:api            # regenerates src/generated and fails on any diff
+cd sdks && pnpm install --frozen-lockfile && cd clients/mero-js
+pnpm check:api            # regenerates (pnpm generate) and fails on any diff
 pnpm build
+pnpm build:examples
 pnpm test:unit
 pnpm typecheck
-pnpm typecheck:consumer
+pnpm typecheck:consumer   # tests/consumer against the built dist/, strict NodeNext
 pnpm typecheck:tests      # tsconfig.json excludes *.test.ts; this checks them
 pnpm lint                 # eslint; pnpm lint:fix to fix
 ```
 
-`pnpm test:cluster` runs `tests/cluster/` against a real merod 1.0: CI fetches one with
-`scripts/download-released-merod.sh` and sets `MEROD_BINARY` and `KV_STORE_WASM`.
-The docs site (`docs/`, npm, Node 24) is checked with `npm ci && npm run check` in `docs/`.
-
 ## Generated code: core's OpenAPI document
 
-`src/generated/api.ts` and `src/generated/methods.ts` are generated from core's node
-API document, vendored at `openapi/core-openapi.json` (the core commit is in
-`openapi/SOURCE`). Never hand-edit them; CI's `pnpm check:api` fails on any drift.
+`src/generated/api.ts` and `src/generated/methods.ts` are generated from the node
+API document in this same tree, `docs/public/openapi.json` (read as
+`../../../docs/public/openapi.json`, no network, no vendored copy). Never
+hand-edit them.
 
-- Regenerate from the vendored document: `pnpm gen:api`
-  (`openapi-typescript`, then `scripts/gen-methods.mjs`).
-- Take a newer document from core: `scripts/refresh-openapi.sh [<core ref>]`
-  (`pnpm refresh:openapi`), which also regenerates.
-- A wrong route, body or type is fixed in core's document, or in the generator,
-  not in the output. `openapi-sync.yml` opens the sync PRs from core on its own.
+- `pnpm generate` (what `sdk.json`'s `generate` runs, and
+  `python3 scripts/sdks.py generate mero-js` from core's root) regenerates
+  everything `sdk.json` lists under `generated`: `pnpm gen:api`
+  (`openapi-typescript`, then `scripts/gen-methods.mjs`) and
+  `pnpm refresh:receipt-vectors` (copies core's receipt vectors).
+- `pnpm check:api` regenerates and fails when the committed output differs.
+- A wrong route, body or type is fixed in the server (which regenerates
+  `docs/public/openapi.json`) or in the generator, not in the output. When the
+  document changes on master, core's `sdk-regenerate.yml` opens the pull request
+  that regenerates every SDK.
+
+## Examples
+
+`examples/node-script/`: a Node script that checks a node's health and calls
+core's `apps/kv-store` with an API key. `pnpm build:examples` compiles it with
+`tsc` against the built `dist/` (as an outside consumer would, through the
+package's own `exports`), so run `pnpm build` first. A new example gets its own
+directory and is added to `build:examples`.
+
+## Cluster tests against this tree's merod
+
+`pnpm test:cluster` runs `tests/cluster/` against a real merod: the suite starts
+three `merod run --dev` nodes itself (`tests/cluster/cluster.ts`) from
+`MEROD_BINARY` and installs the kv component from `KV_STORE_WASM`. Both default
+to this tree's build (`target/debug/merod`, `target/app-components/kv.wasm`),
+so from core's root:
+
+```bash
+cargo build -p merod -p meroctl                             # target/debug/merod, meroctl
+cargo run -p calimero-app-build --example build-test-apps   # target/app-components/*.wasm (kv, compute, ...)
+cd sdks/clients/mero-js && pnpm build && pnpm test:cluster
+```
+
+Optional: `MEROCTL=<meroctl>` starts a job node, and with
+`COMPUTE_WASM=target/app-components/compute.wasm`
+`COMPUTE_FIXTURE_DIR=apps/v2-fixtures/compute` the pipeline test runs
+(`MERO_JS_REQUIRE_COMPUTE=1` makes it fail instead of skip); `ROOMS_WASM` runs
+the rooms test; `MEROD_V2_LOGS=1` shows the nodes' logs. Core's `e2e.yml`
+(`clients`) sets these against its release build.
+`scripts/download-released-merod.sh` fetches a released merod and kv fixture
+instead, as the old repository's CI did.

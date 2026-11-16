@@ -6,11 +6,11 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-export const BINARY = process.env.MEROD_BINARY ?? resolve(__dirname, '../../../core/target/debug/merod');
+export const BINARY = process.env.MEROD_BINARY ?? resolve(__dirname, '../../../../../target/debug/merod');
 /** `merod run FLAGS`; `MEROD_RUN=0` runs the binary with the flags alone (a wrapper script, say). */
 export const RUN_SUBCOMMAND = process.env.MEROD_RUN !== '0';
 export const KV_STORE_WASM =
-  process.env.KV_STORE_WASM ?? resolve(__dirname, '../../../core/target/app-components/kv.wasm');
+  process.env.KV_STORE_WASM ?? resolve(__dirname, '../../../../../target/app-components/kv.wasm');
 
 async function freePort(): Promise<number> {
   return new Promise((ok, fail) => {
