@@ -29,6 +29,8 @@ export const ORG_CAPABILITIES = {
    * (`client.orgs.publisher`). Organization-wide only. Bit 9 is left unused.
    */
   APPROVE_RELEASES: 1 << 10,
+  /** Create a restricted team below a team one writes, without leading it; the creator leads the new team. */
+  CREATE_CHILD_TEAM: 1 << 11,
 } as const;
 
 export type OrgCapability = keyof typeof ORG_CAPABILITIES;

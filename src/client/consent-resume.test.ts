@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { StandInNode } from '../../tests/support/stand-in-node.js';
 import { CalimeroClient, CalimeroError } from './calimero-client.js';
+import { orgCapabilities } from './capabilities.js';
 import {
   CONSENT_STORAGE_KEY,
   acceptInviteConsent,
@@ -110,6 +111,22 @@ describe('organization consent requests', () => {
     await c.openConsentPage(acceptInviteConsent('inv-secret', RETURN), navigate);
     expect(last().body).toEqual({ kind: 'acceptInvite', subject: { token: 'inv-secret' }, returnTo: RETURN });
     expect(opened).toEqual([PAGE, PAGE, PAGE]);
+  });
+
+  it('carries capability bits on createOrg and createInvite, and leaves them out otherwise', async () => {
+    const c = client();
+    const started = { requestId: ID, url: PAGE, code: await confirmationCode(ID), expiresAt: 9e9 };
+    node.answer = () => ({ status: 200, json: started });
+    const navigate = () => undefined;
+    const caps = orgCapabilities('INVITE_MEMBERS', 'CREATE_CHILD_TEAM');
+
+    await c.openConsentPage(createOrgConsent('Acme', RETURN, caps), navigate);
+    expect(last().body).toEqual({ kind: 'createOrg', subject: { name: 'Acme', capabilities: caps }, returnTo: RETURN });
+    await c.openConsentPage(createOrgConsent('Acme', RETURN, 0), navigate);
+    expect(last().body).toEqual({ kind: 'createOrg', subject: { name: 'Acme', capabilities: 0 }, returnTo: RETURN });
+
+    await c.openConsentPage(createInviteConsent({ org: 'org-1', role: 'member', teams: [], capabilities: caps }, RETURN), navigate);
+    expect(last().body).toMatchObject({ kind: 'createInvite', subject: { capabilities: caps } });
   });
 
   it("types the result's outcome by kind", async () => {

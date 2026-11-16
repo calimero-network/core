@@ -509,9 +509,16 @@ export function upgradeConsent(
   return { kind: 'upgrade', subject: { app, toVersion }, returnTo };
 }
 
-/** The consent request that creates an organization named `name`; its outcome names the new `orgId`. */
-export function createOrgConsent(name: string, returnTo: string): ConsentRequest & { kind: 'createOrg' } {
-  return { kind: 'createOrg', subject: { name }, returnTo };
+/**
+ * The consent request that creates an organization named `name`; its outcome names the new `orgId`.
+ * `capabilities` (`ORG_CAPABILITIES` bits) is what members get unless set for them, in place of the default.
+ */
+export function createOrgConsent(
+  name: string,
+  returnTo: string,
+  capabilities?: number,
+): ConsentRequest & { kind: 'createOrg' } {
+  return { kind: 'createOrg', subject: capabilities === undefined ? { name } : { name, capabilities }, returnTo };
 }
 
 /** The consent request that creates an invite to `subject.org`; its outcome carries the invite's `token`. */

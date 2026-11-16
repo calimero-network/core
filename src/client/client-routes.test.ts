@@ -836,6 +836,20 @@ describe('the rest of the node API', () => {
     await expect(c.apps.move({ app: 'a-1', toOrg: 'o-2' }, { confirm: passkeyConfirm(passkey) })).rejects.toMatchObject({ active: '' });
   });
 
+  it('sends capability bits on org create and invite create, and surfaces FEATURE_NOT_ACTIVE', async () => {
+    const c = client();
+    const capabilities = orgCapabilities('INVITE_MEMBERS', 'CREATE_CHILD_TEAM');
+    node.answer = () => ({ status: 200, json: { orgId: 'org-1' } });
+    await c.orgs.create({ name: 'Acme', capabilities });
+    expect(last().body).toEqual({ name: 'Acme', capabilities });
+    node.answer = () => ({ status: 200, json: { token: 'inv-1' } });
+    await c.orgs.inviteCreate({ org: 'o-1', role: 'member', capabilities }, { confirm: passkeyConfirm(passkey) });
+    expect(last().body).toMatchObject({ role: 'member', capabilities });
+    const details = { feature: 'capabilities', needs: '1.0.0-rc.29', active: '1.0.0-rc.28' };
+    node.answer = () => ({ status: 409, json: { error: 'FEATURE_NOT_ACTIVE', message: '', details } });
+    expect(await c.orgs.create({ name: 'Acme', capabilities }).catch((e: unknown) => e)).toBeInstanceOf(FeatureNotActive);
+  });
+
   it("lists an organization's members' lockout risk for its admins (core #4902)", async () => {
     const c = client();
     const MEMBERS = [
@@ -1071,7 +1085,16 @@ describe('core 1.0.0-rc.7+ routes', () => {
   });
 });
 
+// Core's `caps::DEFINED` (crates/node/src/types.rs): bits 0-8, 10 and 11; the OpenAPI document does not list them.
+const CORE_DEFINED_CAPABILITIES = ((1 << 9) - 1) | (1 << 10) | (1 << 11);
+
 describe('ORG_CAPABILITIES', () => {
+  it('covers exactly the bits core defines, each once', () => {
+    const bits = Object.values(ORG_CAPABILITIES);
+    expect(new Set(bits).size).toBe(bits.length);
+    expect(bits.reduce((mask, bit) => mask | bit, 0)).toBe(CORE_DEFINED_CAPABILITIES);
+  });
+
   it("has core's bit values", () => {
     expect(ORG_CAPABILITIES).toEqual({
       CREATE_APP: 1,
@@ -1084,6 +1107,7 @@ describe('ORG_CAPABILITIES', () => {
       MANAGE_VISIBILITY: 128,
       MANAGE_METADATA: 256,
       APPROVE_RELEASES: 1024,
+      CREATE_CHILD_TEAM: 2048,
     });
     expect(orgCapabilities('CREATE_APP', 'MANAGE_APPLICATION')).toBe(17);
   });

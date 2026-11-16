@@ -2729,7 +2729,7 @@ export interface paths {
         put?: never;
         /**
          * Create an organization
-         * @description `recoveryKey` is the public half of an organization recovery key. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.
+         * @description `recoveryKey` is the public half of an organization recovery key. `capabilities` (bits) is what members can do unless set for them, in place of the default; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. Every account also has a personal organization from sign-up (`personal` in `/auth/me`), which this does not make.
          *
          *     **Who:** a passkey session (an API key is refused).
          */
@@ -2907,7 +2907,7 @@ export interface paths {
         put?: never;
         /**
          * Make an invite
-         * @description A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives every app added later. `412` first.
+         * @description A token for `role` and `teams`, `uses` times within `ttlSecs`; `allApps` (an admin's) also gives every app added later; `capabilities` (bits) is what a new member gets as their own setting, no more than the creator holds (`403`), and `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29. `412` first.
          *
          *     **Who:** a passkey session (an API key is refused). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -10311,6 +10311,8 @@ export interface operations {
                     kind: "createOrg";
                     subject: {
                         name: string;
+                        /** Format: int64 */
+                        capabilities?: number;
                     };
                     returnTo: string;
                 } | {
@@ -10326,6 +10328,8 @@ export interface operations {
                         /** Format: int64 */
                         uses?: number;
                         allApps?: boolean;
+                        /** Format: int64 */
+                        capabilities?: number;
                     };
                     returnTo: string;
                 } | {
@@ -10446,7 +10450,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description `BAD_REQUEST`: the request is malformed */
+            /** @description `BAD_REQUEST`: the request is malformed; `UNKNOWN_CAPABILITIES` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -10464,8 +10468,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14058,6 +14071,8 @@ export interface operations {
                 "application/json": {
                     name: string;
                     recoveryKey?: string;
+                    /** Format: int64 */
+                    capabilities?: number;
                 };
             };
         };
@@ -14073,7 +14088,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description `BAD_REQUEST`: the request is malformed */
+            /** @description `BAD_REQUEST`: the request is malformed; `UNKNOWN_CAPABILITIES` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -14093,6 +14108,15 @@ export interface operations {
             };
             /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14874,6 +14898,8 @@ export interface operations {
                     /** Format: int64 */
                     uses?: number;
                     allApps?: boolean;
+                    /** Format: int64 */
+                    capabilities?: number;
                     confirm?: components["schemas"]["Confirm"];
                 };
             };
@@ -14890,7 +14916,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE` */
+            /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CAPABILITIES`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -14908,7 +14934,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
                 headers: {
                     [name: string]: unknown;
