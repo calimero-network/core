@@ -1,0 +1,5 @@
+# The JavaScript SDKs, one workspace so mero-react builds against this tree's
+# mero-js (`workspace:*`, published as the exact same version).
+packages:
+  - "clients/mero-js"
+  - "components/mero-react"

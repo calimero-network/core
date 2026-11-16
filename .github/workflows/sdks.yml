@@ -1,0 +1,216 @@
+name: SDKs
+
+# The SDKs under sdks/ (mero-js, mero-py, mero-swift, mero-kotlin, mero-react):
+# each is tested by its own reusable workflow, sdk-<name>.yml, and only when a
+# change can reach it (scripts/sdks.py scope, from each SDK's sdk.json).
+#
+# Every PR, with no `paths:` filter, as ci-checks.yml does: `SDKs` is the one
+# required check, and it passes when every SDK job passed or was skipped
+# because the change cannot reach it. A filter would leave the required check
+# pending whenever it skipped.
+#
+# Not here: publishing (release.yml, from the same tag as core, at VERSION) and
+# regenerating the clients after master's API document changes
+# (sdk-regenerate.yml opens that pull request).
+
+on:
+  push:
+    branches: ["master"]
+  merge_group:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdks-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  # Which SDKs this change reaches, and the checks that need no toolchain: the
+  # scope rules' own tests, and one version for every SDK (VERSION).
+  # Fails closed: when the change's files cannot be listed, every SDK runs.
+  scope:
+    name: SDK scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      mero-js: ${{ steps.decide.outputs.mero-js }}
+      mero-react: ${{ steps.decide.outputs.mero-react }}
+      mero-py: ${{ steps.decide.outputs.mero-py }}
+      mero-swift: ${{ steps.decide.outputs.mero-swift }}
+      mero-kotlin: ${{ steps.decide.outputs.mero-kotlin }}
+      any: ${{ steps.decide.outputs.any }}
+      sdks: ${{ steps.decide.outputs.sdks }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Test the SDK rules
+        run: python3 scripts/tests/sdks-test.py
+
+      - name: Every SDK states VERSION
+        run: python3 scripts/sdks.py version-check
+
+      - name: Decide which SDKs this change reaches
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          FROM: ${{ github.event.before || github.event.merge_group.base_sha }}
+          TO: ${{ github.event.merge_group.head_sha || github.sha }}
+        run: |
+          set -uo pipefail
+          # Every failure below leaves `files` empty, and sdks.py runs every SDK
+          # on empty input: skipping is the silent direction.
+          files=""
+          case "$EVENT" in
+            pull_request)
+              if listed=$(gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[].filename') \
+                && [ "$(grep -c . <<<"$listed")" -lt 3000 ]; then
+                files=$listed
+              fi
+              ;;
+            push | merge_group)
+              if [ -n "${FROM//0/}" ] \
+                && listed=$(gh api "repos/$REPO/compare/$FROM...$TO" --jq '.files[].filename') \
+                && [ "$(grep -c . <<<"$listed")" -lt 300 ]; then
+                files=$listed
+              fi
+              ;;
+          esac
+          [ -n "$files" ] || echo "::notice::could not list this change's files; every SDK runs"
+          printf '%s\n' "$files" | python3 scripts/sdks.py scope >> "$GITHUB_OUTPUT"
+
+  mero-js:
+    name: mero-js
+    needs: scope
+    if: needs.scope.outputs.mero-js != 'false'
+    uses: ./.github/workflows/sdk-mero-js.yml
+
+  mero-react:
+    name: mero-react
+    needs: scope
+    if: needs.scope.outputs.mero-react != 'false'
+    uses: ./.github/workflows/sdk-mero-react.yml
+
+  mero-py:
+    name: mero-py
+    needs: scope
+    if: needs.scope.outputs.mero-py != 'false'
+    uses: ./.github/workflows/sdk-mero-py.yml
+
+  mero-swift:
+    name: mero-swift
+    needs: scope
+    if: needs.scope.outputs.mero-swift != 'false'
+    uses: ./.github/workflows/sdk-mero-swift.yml
+
+  mero-kotlin:
+    name: mero-kotlin
+    needs: scope
+    if: needs.scope.outputs.mero-kotlin != 'false'
+    uses: ./.github/workflows/sdk-mero-kotlin.yml
+
+  # Does each SDK's generated layer match master's API document as of this
+  # change? Reported, not required: a server change merges on its own, and
+  # sdk-regenerate.yml then opens the pull request that regenerates the SDKs
+  # (as the per-repository openapi-sync did before the SDKs moved here).
+  codegen:
+    name: SDK codegen drift
+    needs: scope
+    if: needs.scope.outputs.any != 'false'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: sdks/package.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: sdks/pnpm-lock.yaml
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the JS workspace
+        working-directory: sdks
+        run: pnpm install --frozen-lockfile
+
+      - name: Regenerate every SDK from docs/public/openapi.json
+        env:
+          SDKS: ${{ needs.scope.outputs.sdks }}
+        run: |
+          set -euo pipefail
+          mapfile -t names < <(jq -r '.[]' <<<"$SDKS")
+          python3 scripts/sdks.py generate "${names[@]}"
+
+      - name: Report what differs
+        env:
+          SDKS: ${{ needs.scope.outputs.sdks }}
+        run: |
+          set -euo pipefail
+          mapfile -t names < <(jq -r '.[]' <<<"$SDKS")
+          mapfile -t paths < <(python3 scripts/sdks.py generated "${names[@]}")
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "no SDK in this change generates code" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -z "$(git status --porcelain --untracked-files=all -- "${paths[@]}")" ]; then
+            echo "every SDK's generated code matches docs/public/openapi.json" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## Generated SDK code differs from docs/public/openapi.json"
+            echo
+            echo "Run \`python3 scripts/sdks.py generate\` and commit, or let sdk-regenerate.yml open the pull request once this merges."
+            echo
+            echo '```'
+            git --no-pager diff --stat -- "${paths[@]}"
+            git status --porcelain --untracked-files=all -- "${paths[@]}"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::warning::generated SDK code differs from docs/public/openapi.json (see the summary)"
+
+  # The required status check: every SDK job passed, or was skipped because
+  # `scope` found the change cannot reach it. A failed or skipped `scope`
+  # fails it. `codegen` reports and is not required.
+  sdks:
+    name: SDKs
+    if: ${{ !cancelled() }}
+    needs: [scope, mero-js, mero-react, mero-py, mero-swift, mero-kotlin]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every SDK job to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -e '
+            .scope.result == "success"
+            and (.scope.outputs as $scope
+              | to_entries | map(select(.key != "scope")) | all(
+                  .value.result == "success"
+                  or (.value.result == "skipped" and $scope[.key] == "false")
+                ))' <<<"$NEEDS"
