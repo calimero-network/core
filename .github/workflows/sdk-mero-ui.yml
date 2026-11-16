@@ -1,0 +1,169 @@
+name: SDK mero-ui
+
+# mero-ui (sdks/components/mero-ui, npm @calimero-network/mero-ui: the design
+# system's components, on the workspace's mero-icons and mero-tokens): tested on
+# every change that reaches it (sdks.yml, from scripts/sdks.py scope), published
+# by release.yml from a core tag (`publish: true`) after mero-icons and
+# mero-tokens, at the version package.json already states: VERSION
+# (scripts/sdks.py version-check). Its `@calimero-network/mero-icons:
+# workspace:*` is published as that same version; mero-tokens is a build-time
+# dependency, bundled into dist/.
+#
+# The publish job declares no permissions of its own: a called workflow's job
+# may not ask for more than its caller grants, and asking for `id-token: write`
+# here would fail sdks.yml (contents: read) even with the job skipped. The
+# caller grants `contents: read` and `id-token: write` (npm trusted publishing,
+# OIDC; there is no npm token) to the job that calls this with `publish: true`.
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: "Publish @calimero-network/mero-ui to npm after the tests pass"
+        type: boolean
+        required: false
+        default: false
+      dry-run:
+        description: "With publish: pack and run `npm publish --dry-run`, upload nothing"
+        type: boolean
+        required: false
+        default: true
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: sdks/components/mero-ui
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: sdks/package.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: sdks/pnpm-lock.yaml
+
+      - name: Install the JS workspace
+        working-directory: sdks
+        run: pnpm install --frozen-lockfile
+
+      # The workspace packages resolve each other through their built dist/.
+      - name: Build mero-tokens and mero-icons
+        working-directory: sdks
+        run: pnpm --filter @calimero-network/mero-tokens --filter @calimero-network/mero-icons build
+
+      - name: Build
+        run: pnpm build
+
+      - name: Every file package.json exports names exists
+        run: |
+          node -e "
+            const fs = require('fs');
+            const walk = (e) => (typeof e === 'string' ? fs.accessSync(e) : Object.values(e).forEach(walk));
+            walk(require('./package.json').exports);
+          "
+
+      - name: Tests
+        run: pnpm test
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      # examples/storybook: every component of the four design-system packages.
+      - name: Lint the storybook
+        working-directory: sdks
+        run: pnpm --filter mero-ui-storybook lint
+
+      - name: Build the storybook
+        run: pnpm build-storybook
+
+  publish:
+    name: Publish to npm
+    needs: test
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: sdks/package.json
+
+      # Node 24's npm does trusted publishing (OIDC) with provenance.
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          scope: "@calimero-network"
+          token: false
+
+      - name: Every SDK states VERSION
+        run: python3 scripts/sdks.py version-check
+
+      - name: Install the JS workspace
+        working-directory: sdks
+        run: pnpm install --frozen-lockfile
+
+      - name: Build mero-tokens and mero-icons
+        working-directory: sdks
+        run: pnpm --filter @calimero-network/mero-tokens --filter @calimero-network/mero-icons build
+
+      - name: Build
+        working-directory: sdks/components/mero-ui
+        run: pnpm build
+
+      - name: Publish @calimero-network/mero-ui
+        working-directory: sdks/components/mero-ui
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          # A prerelease (1.0.0-rc.30) goes to `next`, so `latest` never steps
+          # back to an rc; a final to `latest`.
+          case "$version" in
+            *-*) tag=next ;;
+            *) tag=latest ;;
+          esac
+          if [ "$DRY_RUN" != "true" ] \
+            && [ "$(npm view "$name@$version" version 2>/dev/null || true)" = "$version" ]; then
+            echo "::notice::$name@$version is already on npm; nothing to publish"
+            exit 0
+          fi
+          # pnpm pack writes the tarball npm uploads (a workspace:* dependency
+          # becomes the exact version there).
+          rm -rf "$RUNNER_TEMP/pack" && mkdir -p "$RUNNER_TEMP/pack"
+          pnpm pack --pack-destination "$RUNNER_TEMP/pack"
+          tarball=$(ls "$RUNNER_TEMP"/pack/*.tgz)
+          if [ "$DRY_RUN" = "true" ]; then
+            npm publish "$tarball" --access public --tag "$tag" --dry-run
+            echo "::notice::dry run: would publish $name@$version (tag $tag)"
+          else
+            npm publish "$tarball" --provenance --access public --tag "$tag"
+            echo "::notice::published $name@$version (tag $tag)"
+          fi
