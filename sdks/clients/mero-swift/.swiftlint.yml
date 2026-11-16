@@ -1,14 +1,14 @@
 included:
   - Sources
   - Tests
-  - Examples
+  - examples
 
 excluded:
   - .build
   # Written by scripts/generate-openapi.sh; never edited by hand.
   - Sources/MeroAPI/Generated
   - Sources/MeroKit/Api/Generated
-  - Examples/MeroSampleApp/MeroSampleApp.xcodeproj
+  - examples/MeroSampleApp/MeroSampleApp.xcodeproj
 
 # Keep the ruleset practical for an SDK with large hand-ported DTO files.
 disabled_rules:

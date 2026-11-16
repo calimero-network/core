@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "MeroKit",
+    name: "mero-swift",
     platforms: [
         .iOS(.v15),
         .macOS(.v12),
@@ -95,7 +95,7 @@ let package = Package(
             ]
         ),
         // Real end-to-end tests against a live node. Skipped automatically unless
-        // MERO_E2E_NODE_URL is set (see .github/workflows/e2e.yml).
+        // MERO_E2E_NODE_URL is set (see TESTING.md).
         .testTarget(
             name: "MeroKitE2ETests",
             dependencies: ["MeroKit", "MeroAPI"],

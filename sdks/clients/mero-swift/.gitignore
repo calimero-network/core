@@ -10,7 +10,7 @@ DerivedData/
 # generate-ios.sh build output — contains your signing Team ID in entitlements; never commit
 .ios-build*
 # xcodegen-generated Info.plist (regenerated from project.yml; not a source file)
-Examples/MeroSampleApp/Sources/Generated-Info.plist
+examples/MeroSampleApp/Sources/Generated-Info.plist
 
 # Local merod node data + logs (run-app.sh / test-all.sh)
 .mero-node/
@@ -38,3 +38,6 @@ ci/merobox/res/curb-app.mpk
 # Local simulator UDIDs written by chat-multi-e2e.sh / run-app-2.sh
 .udid_a
 .udid_b
+
+# A library resolves its dependencies in its consumer (they are pinned exact in Package.swift)
+/Package.resolved

@@ -4,9 +4,9 @@
 | --- | --- |
 | Unit and journey tests (no node) | `swift test` |
 | The generated API is current, as CI checks it | `scripts/generate-openapi.sh check` (builds swift-openapi-generator once into `.build/openapi-generator`) |
-| Lint, as CI runs it | `swiftlint lint --strict` and `swift-format lint --recursive --strict Sources Tests Examples` |
+| Lint, as CI runs it | `swiftlint lint --strict` and `swift-format lint --recursive --strict Sources Tests examples` |
 | Against a development cluster | `scripts/dev-cluster.sh up`, then `MERO_E2E_NODE_URL=http://127.0.0.1:2501 [MERO_E2E_BUNDLE=kv_store.wasm] swift test --filter MeroKitE2ETests` |
-| The sample's UI tests | CI (`ui.yml`) runs them in the simulator against the in-app cluster (`-uitest-mock`) |
+| The sample's UI tests | `cd examples/MeroSampleApp && xcodegen generate`, then `xcodebuild test` (CI: core's `sdk-mero-swift.yml`, `ui-tests` input) runs them in the simulator against the in-app cluster (`-uitest-mock`) |
 
 The journey tests run `CalimeroClient`, `CloudAppBackend` and `MeroAppSession`
 against `FakeCloudNode` (MeroKitTestSupport): mock attestation, a real Noise NK

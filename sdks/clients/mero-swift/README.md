@@ -1,4 +1,4 @@
-# MeroKit — Calimero Swift SDK
+# mero-swift (MeroKit) — Calimero Swift SDK
 
 **Calimero** is your app's whole backend, like Firebase. Except nobody can read
 your data, not even us. It gives an app auth (passkeys, sessions, scoped API
@@ -27,8 +27,18 @@ the same methods, the same typed errors, the same retry and failover rules.
 - Docs: <https://calimero-network.github.io/swift-sdk/>
 
 ```swift
-.package(url: "https://github.com/calimero-network/swift-sdk", branch: "master")
+.package(url: "https://github.com/calimero-network/swift-sdk", exact: "1.0.0-rc.30"),
+// a target:
+.product(name: "MeroKit", package: "swift-sdk"),
 ```
+
+The package is named `mero-swift` and the CocoaPods pod is `mero-swift`
+(`pod 'mero-swift'`); the modules you import keep their names (`import MeroKit`,
+`MeroAPI`, `MeroKitUI`, `MeroKitTestSupport`), so code that built against
+MeroKit builds unchanged. SwiftPM names a remote package by its URL, so
+`package: "swift-sdk"` stays right. Versions are core's (`1.0.0-rc.N`): the SDK
+is released with core and tagged in calimero-network/swift-sdk, a read-only
+mirror of core's `sdks/clients/mero-swift`.
 
 | Product | What it is |
 | --- | --- |
@@ -155,7 +165,7 @@ context → app instance, application → package, invitation → invite token
 
 ## The sample app
 
-[`Examples/MeroSampleApp`](Examples/MeroSampleApp) (`xcodegen generate`) is
+[`examples/MeroSampleApp`](examples/MeroSampleApp) (`xcodegen generate`) is
 the SDK Explorer: Home, Chat (mero-chat, `com.calimero.chat`, on orgs and
 teams) and SDK tabs. Sign in to a Calimero Cloud cluster with a passkey, or
 "Manually enter node URL" for `merod local` (mock attestation, software
@@ -169,7 +179,7 @@ swift build && swift test
 scripts/generate-openapi.sh                     # regenerate MeroAPI + the facade from openapi/openapi.json
 scripts/generate-openapi.sh refresh docs/openapi   # vendor core's document from a branch, tag or commit first
 swiftlint lint --strict
-swift-format lint --recursive --strict Sources Tests Examples
+swift-format lint --recursive --strict Sources Tests examples
 scripts/dev-cluster.sh up                       # merod local on :2501-2503 (Docker on a Mac)
 MERO_E2E_NODE_URL=http://127.0.0.1:2501 swift test --filter MeroKitE2ETests   # against it
 ```
