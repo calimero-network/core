@@ -2488,6 +2488,7 @@ async fn a_frontend_creates_an_organization_with_member_capabilities_in_one_appr
     .await
     .unwrap_err();
     assert_eq!(status(&e), 400, "{e}");
+    assert_eq!(e.code(), Some("UNKNOWN_CAPABILITIES"), "{e}");
     let made = create(json!({ "name": "calimero", "capabilities": wanted }))
         .await
         .unwrap();
@@ -2647,14 +2648,20 @@ async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
         .await
         .unwrap_err();
     assert_eq!(status(&e), 400, "{e}");
-    let refused = ask(
+    assert_eq!(e.code(), Some("UNKNOWN_CAPABILITIES"), "{e}");
+    let e = post(
         &in_app,
-        &back,
-        "createInvite",
-        json!({ "org": org, "role": "member", "capabilities": 1 << 20 }),
+        "consent/requests",
+        json!({
+            "kind": "createInvite",
+            "subject": { "org": org, "role": "member", "capabilities": 1 << 20 },
+            "returnTo": back,
+        }),
     )
-    .await;
-    assert_eq!(status_of(refused), 400);
+    .await
+    .unwrap_err();
+    assert_eq!(status(&e), 400, "{e}");
+    assert_eq!(e.code(), Some("UNKNOWN_CAPABILITIES"), "{e}");
 
     // Bob holds create-apps and invite, nothing else: he grants no more.
     let over = granted | 0b1000; // and manage members
@@ -2667,15 +2674,20 @@ async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
     .await
     .unwrap_err();
     assert_eq!(status(&e), 403, "{e}");
-    assert!(e.to_string().contains("grants only capabilities"), "{e}");
-    let refused = ask(
+    assert_eq!(e.code(), Some("CANNOT_GRANT_UNHELD"), "{e}");
+    let e = post(
         &bob_in_app,
-        &back,
-        "createInvite",
-        json!({ "org": org, "role": "member", "capabilities": over }),
+        "consent/requests",
+        json!({
+            "kind": "createInvite",
+            "subject": { "org": org, "role": "member", "capabilities": over },
+            "returnTo": back,
+        }),
     )
-    .await;
-    assert_eq!(status_of(refused), 403);
+    .await
+    .unwrap_err();
+    assert_eq!(status(&e), 403, "{e}");
+    assert_eq!(e.code(), Some("CANNOT_GRANT_UNHELD"), "{e}");
     let made = ask(
         &bob_in_app,
         &back,

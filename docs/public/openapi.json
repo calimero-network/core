@@ -11220,7 +11220,7 @@
             }
           },
           "400": {
-            "description": "`BAD_REQUEST`: the request is malformed",
+            "description": "`BAD_REQUEST`: the request is malformed; `UNKNOWN_CAPABILITIES`",
             "content": {
               "application/json": {
                 "schema": {
@@ -11229,7 +11229,8 @@
               }
             },
             "x-calimero-codes": [
-              "BAD_REQUEST"
+              "BAD_REQUEST",
+              "UNKNOWN_CAPABILITIES"
             ]
           },
           "401": {
@@ -11246,7 +11247,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -11255,6 +11256,7 @@
               }
             },
             "x-calimero-codes": [
+              "CANNOT_GRANT_UNHELD",
               "FORBIDDEN"
             ]
           },
@@ -18309,7 +18311,7 @@
             }
           },
           "400": {
-            "description": "`BAD_REQUEST`: the request is malformed",
+            "description": "`BAD_REQUEST`: the request is malformed; `UNKNOWN_CAPABILITIES`",
             "content": {
               "application/json": {
                 "schema": {
@@ -18318,7 +18320,8 @@
               }
             },
             "x-calimero-codes": [
-              "BAD_REQUEST"
+              "BAD_REQUEST",
+              "UNKNOWN_CAPABILITIES"
             ]
           },
           "401": {
@@ -19796,7 +19799,7 @@
             }
           },
           "400": {
-            "description": "`EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE`",
+            "description": "`EXPIRED_CHALLENGE`; `UNKNOWN_CAPABILITIES`; `UNKNOWN_CHALLENGE`; `WRONG_CHALLENGE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -19806,6 +19809,7 @@
             },
             "x-calimero-codes": [
               "EXPIRED_CHALLENGE",
+              "UNKNOWN_CAPABILITIES",
               "UNKNOWN_CHALLENGE",
               "WRONG_CHALLENGE"
             ]
@@ -19824,7 +19828,7 @@
             ]
           },
           "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "description": "`CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
             "content": {
               "application/json": {
                 "schema": {
@@ -19833,6 +19837,7 @@
               }
             },
             "x-calimero-codes": [
+              "CANNOT_GRANT_UNHELD",
               "FORBIDDEN"
             ]
           },

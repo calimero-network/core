@@ -1940,10 +1940,7 @@ async fn create_org_request(
     crate::system::org_name_fits(&name).map_err(|why| ApiError::bad_request("BAD_REQUEST", why))?;
     let capabilities = subject.capabilities;
     if capabilities.is_some_and(|c| !crate::types::Org::defined_caps(c)) {
-        return Err(ApiError::bad_request(
-            "BAD_REQUEST",
-            crate::system::UNKNOWN_CAPABILITIES,
-        ));
+        return Err(crate::node::unknown_capabilities());
     }
     if capabilities.is_some() {
         // Before the page: an earlier release would drop the field.
@@ -2022,10 +2019,7 @@ async fn create_invite_request(
         .capabilities
         .is_some_and(|c| !crate::types::Org::defined_caps(c))
     {
-        return Err(ApiError::bad_request(
-            "BAD_REQUEST",
-            crate::system::UNKNOWN_CAPABILITIES,
-        ));
+        return Err(crate::node::unknown_capabilities());
     }
     let uses = subject.uses.unwrap_or(1).max(1);
     let org = subject.org;
@@ -2045,7 +2039,7 @@ async fn create_invite_request(
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
     }
     if !may_grant {
-        return Err(ApiError::forbidden(crate::system::CANNOT_GRANT_UNHELD));
+        return Err(crate::node::cannot_grant_unheld());
     }
     // Before the page: an earlier release would drop these fields.
     node.require_features(&crate::system::cluster_version::invite_features(

@@ -482,8 +482,8 @@ restricted team they are not in.
 `capabilities` (bits) is what a new member holds as their own setting
 (`Org::capabilities`) once they redeem it, in place of the organization's
 default; a member already in keeps theirs. An inviter below admin may give
-only bits they hold organization-wide (`403`, judged by the log too, so every
-node agrees); the owner and admins hold every bit. The consent's arguments
+only bits they hold organization-wide (`403 CANNOT_GRANT_UNHELD`, judged by the
+log too, so every node agrees; bits no capability has are `400 UNKNOWN_CAPABILITIES`); the owner and admins hold every bit. The consent's arguments
 then name `capabilities`, and the invite's earlier shape (none) is unchanged
 (`409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.29).
 `POST /invites/{token}/redeem`, by a signed-in person (no passkey prompt): the

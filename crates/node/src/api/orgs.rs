@@ -136,10 +136,7 @@ pub(crate) async fn create_org(
     crate::system::org_name_fits(&name).map_err(malformed)?;
     if let Some(bits) = capabilities {
         if !crate::types::Org::defined_caps(bits) {
-            return Err(ApiError::bad_request(
-                "BAD_REQUEST",
-                crate::system::UNKNOWN_CAPABILITIES,
-            ));
+            return Err(crate::node::unknown_capabilities());
         }
         node.require_features(&[Feature::OrgCapabilities]).await?;
     }
@@ -1035,14 +1032,11 @@ pub(crate) async fn create_invite(
     }
     if let Some(bits) = body.capabilities {
         if !crate::types::Org::defined_caps(bits) {
-            return Err(ApiError::bad_request(
-                "BAD_REQUEST",
-                crate::system::UNKNOWN_CAPABILITIES,
-            ));
+            return Err(crate::node::unknown_capabilities());
         }
         let may = node.sys(|s| s.orgs.get(&org).is_none_or(|o| o.may_grant(&actor, bits)));
         if !may {
-            return Err(ApiError::forbidden(crate::system::CANNOT_GRANT_UNHELD));
+            return Err(crate::node::cannot_grant_unheld());
         }
     }
     // Before the passkey step-up: an earlier release would drop the fields.
