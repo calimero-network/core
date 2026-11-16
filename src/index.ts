@@ -50,7 +50,7 @@ export type {
 
 // Invite
 export { InviteDialog, AcceptInviteDialog, describeCapabilities } from './invite';
-export type { InviteDialogProps, InviteLabels, AcceptInviteDialogProps, AcceptInviteLabels, CreatedInvite, InviteRole } from './invite';
+export type { InviteDialogProps, InviteLabels, AcceptInviteDialogProps, AcceptInviteLabels, JoinedInvite, CreatedInvite, InviteRole } from './invite';
 
 // Theme
 export { MERO_CSS_VARS, cssVar, defaultMeroTheme, resolveMeroTheme, themeToCssVars } from './theme';

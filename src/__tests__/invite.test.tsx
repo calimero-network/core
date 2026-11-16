@@ -503,7 +503,7 @@ describe('AcceptInviteDialog', () => {
     const { client, onJoined } = acceptSetup();
     await waitFor(() => expect(join().disabled).toBe(false));
     fireEvent.click(join());
-    await waitFor(() => expect(onJoined).toHaveBeenCalledWith({ org: 'org-1' }));
+    await waitFor(() => expect(onJoined).toHaveBeenCalledWith({ org: 'org-1', alreadyMember: false }));
     expect(client.orgs.inviteRedeem).toHaveBeenCalledWith({ token: 'tok-5' });
     expect(open).not.toHaveBeenCalled();
   });
@@ -517,7 +517,7 @@ describe('AcceptInviteDialog', () => {
     const sent = (client.consent.pageCreate.mock.calls[0]![0] as { body: { kind: string; subject: { token: string } } }).body;
     expect(sent).toMatchObject({ kind: 'acceptInvite', subject: { token: 'tok-5' } });
     await act(async () => decide(accepted));
-    await waitFor(() => expect(onJoined).toHaveBeenCalledWith({ org: 'org-7' }));
+    await waitFor(() => expect(onJoined).toHaveBeenCalledWith({ org: 'org-7', alreadyMember: false }));
     expect(client.orgs.inviteRedeem).not.toHaveBeenCalled();
   });
 
@@ -555,7 +555,7 @@ describe('AcceptInviteDialog', () => {
     expect(await screen.findByText("You're already in Ada's game")).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Join' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(onJoined).toHaveBeenCalledWith({ org: 'org-1' });
+    expect(onJoined).toHaveBeenCalledWith({ org: 'org-1', alreadyMember: true });
     expect(client.orgs.inviteRedeem).not.toHaveBeenCalled();
     expect(client.consent.pageCreate).not.toHaveBeenCalled();
     expect(open).not.toHaveBeenCalled();
@@ -566,7 +566,7 @@ describe('AcceptInviteDialog', () => {
     const { client, onJoined } = acceptSetup(me, {}, { org: 'org-1' });
     await waitFor(() => expect(join().disabled).toBe(false));
     fireEvent.click(join());
-    await waitFor(() => expect(onJoined).toHaveBeenCalledWith({ org: 'org-1' }));
+    await waitFor(() => expect(onJoined).toHaveBeenCalledWith({ org: 'org-1', alreadyMember: false }));
     expect(client.orgs.inviteRedeem).toHaveBeenCalled();
   });
 
@@ -626,7 +626,7 @@ describe('AcceptInviteDialog', () => {
     sessionStorage.setItem(ACCEPT_KEY, JSON.stringify({}));
     window.history.replaceState({}, '', '/?request_id=req-1&result=approved');
     const { onJoined } = acceptSetup(UNBOUND, { resumeConsent: vi.fn(async () => accepted) }, { open: false });
-    await waitFor(() => expect(onJoined).toHaveBeenCalledWith({ org: 'org-7' }));
+    await waitFor(() => expect(onJoined).toHaveBeenCalledWith({ org: 'org-7', alreadyMember: false }));
     window.history.replaceState({}, '', '/');
   });
 });

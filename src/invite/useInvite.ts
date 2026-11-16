@@ -7,6 +7,12 @@ import { useConsentResume, useNodeConsent } from '../consent-flow/useNodeConsent
 
 export type InviteRole = Exclude<OrgRole, 'owner'>;
 
+/** What `onJoined` gets: the org, and whether the account was already in it (nothing was redeemed). */
+export interface JoinedInvite {
+  org: string;
+  alreadyMember: boolean;
+}
+
 /** An invite just created. */
 export interface CreatedInvite {
   token: string;
@@ -94,7 +100,7 @@ export function useInviteResume({ linkBase, onCreated }: { linkBase?: string; on
 }
 
 /** Joins with an invite token: through the node's consent page for a session bound to the app, else directly. */
-export function useInviteAccept({ returnTo, noun, onJoined, onError }: { returnTo: string; noun: string; onJoined: (joined: { org: string }) => void; onError?: (error: unknown) => void }) {
+export function useInviteAccept({ returnTo, noun, onJoined, onError }: { returnTo: string; noun: string; onJoined: (joined: JoinedInvite) => void; onError?: (error: unknown) => void }) {
   const ctx = useMero();
   const { start, ...flow } = useNodeConsent<Record<string, never>>({ storageKey: ACCEPT_KEY, onError });
   const accept = (token: string) =>
@@ -108,21 +114,21 @@ export function useInviteAccept({ returnTo, noun, onJoined, onError }: { returnT
       done: (outcome) => {
         const org = 'direct' in outcome ? outcome.direct : orgOf(outcome.consent);
         if (!org) return noOrg(noun);
-        onJoined({ org });
+        onJoined({ org, alreadyMember: false });
         return undefined;
       },
     });
   return { accept, ...flow };
 }
 
-export function useAcceptResume({ noun, onJoined }: { noun: string; onJoined: (joined: { org: string }) => void }) {
+export function useAcceptResume({ noun, onJoined }: { noun: string; onJoined: (joined: JoinedInvite) => void }) {
   return useConsentResume<Record<string, never>>({
     storageKey: ACCEPT_KEY,
     valid: isObject,
     onApproved: (_intent, result) => {
       const org = orgOf(result);
       if (!org) return noOrg(noun);
-      onJoined({ org });
+      onJoined({ org, alreadyMember: false });
       return undefined;
     },
   });

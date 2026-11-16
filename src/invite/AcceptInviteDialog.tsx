@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { CalimeroClient, PasskeyProvider } from '@calimero-network/mero-js';
 import { useMero } from '../context';
 import { ApprovalCard, DialogShell, WithClient } from '../consent-flow/DialogShell';
-import { useAcceptResume, useInviteAccept } from './useInvite';
+import { useAcceptResume, useInviteAccept, type JoinedInvite } from './useInvite';
 
 /** The dialog's wording, so each app keeps its own. */
 export interface AcceptInviteLabels {
@@ -27,8 +27,8 @@ export interface AcceptInviteDialogProps {
   labels?: AcceptInviteLabels;
   /** Called when the node refuses the join or the request, with the error itself (to clear a spent stored token, say). A declined approval is not an error. */
   onError?: (error: unknown) => void;
-  /** Called once the person has joined (or, with `org`, chose to continue as a member), from the dialog or from a full-page approval. */
-  onJoined: (joined: { org: string }) => void;
+  /** Called once the person has joined (`alreadyMember: false`), or, with `org`, chose to continue as a member (`alreadyMember: true`; nothing was redeemed), from the dialog or from a full-page approval. */
+  onJoined: (joined: JoinedInvite) => void;
   /** Where the node's consent page sends the person back. Default: this origin's root, where the app mounts `ConsentPopupReturn`. */
   returnTo?: string;
   client?: CalimeroClient;
@@ -99,7 +99,7 @@ function Dialog({ open, onClose, token, org, appName, labels, onJoined, onError,
       <div>
         <h2 className="mero-cw-title">{`You're already in ${name}`}</h2>
         <p className="mero-cw-sub">{`The invitation was for ${name}, and you are already a member, so there is nothing to accept. It is still unused for the person it was meant for.`}</p>
-        <button type="button" className="mero-cw-btn mero-cw-btn--primary mero-cw-btn--full" onClick={() => onJoined({ org })}>
+        <button type="button" className="mero-cw-btn mero-cw-btn--primary mero-cw-btn--full" onClick={() => onJoined({ org, alreadyMember: true })}>
           Continue
         </button>
       </div>
