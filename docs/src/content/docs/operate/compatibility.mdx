@@ -103,8 +103,8 @@ stored data: a cluster on an earlier release is recreated, not rolled
    deprecation), `date` (the day it merges), `remove_after` (at least 3
    releases after `since`) and `replacement`. The node then answers the route
    with `Deprecation: @<date>` and the `Link`.
-2. Say so in `CHANGELOG.md` under the release's **Deprecated** heading, and in
-   the clients that use it.
+2. Say so in the PR (its title lands in the release notes) and in the clients
+   that use it.
 3. In the release `remove_after` names or later, remove it; the entry may go
    in the same change.
 
@@ -114,8 +114,9 @@ A hard cutover is declared in the PR that ships it, before the release:
 
 1. The PR body's compatibility block says `Door: one-way` and
    `Hard cutover: <what breaks and for whom>`.
-2. `CHANGELOG.md` says **Hard cutover** in the release's entry, with what
-   operators must do (for example: clusters holding sealed files are recreated).
+2. The PR title has `!` (`feat(node)!: ...`), so the release's generated notes
+   list it as breaking, and the body says what operators must do (for example:
+   clusters holding sealed files are recreated).
 3. An API, WIT or ABI removal gets a `[[cutover]]` entry in
    `crates/node/api-deprecations.toml` (`route`, `field`, `wit` or `abi`, with
    `pr` and `why`).
@@ -149,7 +150,7 @@ test>`. A shape with no reader is a hard cutover.
 | Format markers | the node, at start and at apply | A store, snapshot or app entry of a later format: refused by its version, never misread |
 | `Compatibility` | `ci-checks.yml` (part of the required `Rust` check), `scripts/check-api-compat.py` | A route or JSON field removed without a deprecation past its `remove_after` or a `[[cutover]]`; the WIT changed without a version bump, or a non-additive WIT change without a cutover; an ABI version dropped |
 | `Rust tests (2/4)`: "Apps of the previous release, on this tree's node" | `ci-checks.yml` (part of `Rust`) | The last published release's `kv-store-test-fixture.mpk` failing to install, run or upgrade to this tree's build on this tree's node (`crates/node/tests/previous-release/kv-store.json`) |
-| `Compatibility door` | `pr-description.yml`, `scripts/check-compat-door.py` | `Door: one-way` with neither `Reader:` nor `Hard cutover:` (and its CHANGELOG line); a format version moved with no door stated |
+| `Compatibility door` | `pr-description.yml`, `scripts/check-compat-door.py` | `Door: one-way` with neither `Reader:` nor `Hard cutover:` (and `!` in the title); a format version moved with no door stated |
 | `Upgrade path` | `ci-checks.yml` (required through `Rust`), `crates/node/tests/fault/upgrade_path.py` | A cluster started on the release in `.github/upgrade-from`, written to, rolled onto this tree's `merod` as mdma rolls a Cloud cluster, then read back: anything lost fails it; a `hard-cutover:` line there reports the cutover instead of running |
 | `clients against merod` | `e2e.yml` | mero-js's or calimero-client-py's tests failing against this tree's `merod` |
 

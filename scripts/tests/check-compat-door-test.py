@@ -17,25 +17,26 @@ spec.loader.exec_module(door)
 PLAIN = "diff --git a/crates/node/src/api.rs b/crates/node/src/api.rs\n+fn x() {}\n"
 BUMP = "diff --git a/crates/log/src/format.rs b/crates/log/src/format.rs\n" + "-pub const STORE_" + "FORMAT: u32 = 1;\n+pub const STORE_" + "FORMAT: u32 = 2;\n"
 WIT = "diff --git a/crates/app-wit/wit/calimero-app.wit b/crates/app-wit/wit/calimero-app.wit\n" + "+" + "package calimero:app@0.5.2;\n"
-CHANGELOG = "diff --git a/CHANGELOG.md b/CHANGELOG.md\n+- Sealed files move to segments. **Hard cutover**: no reader for whole-file records.\n"
 ONE_WAY = "## Merge Danger\n\n**Door:** one-way\n"
 
 CASES = [
-    # (name, body, diff, problems expected)
+    # (name, body, diff, problems expected[, PR title])
     ("no door and no version moved: nothing to declare", "## Description\n", PLAIN, 0),
     ("a two-way door needs nothing more", "**Door:** two-way", PLAIN, 0),
     ("a one-way door alone fails", ONE_WAY, PLAIN, 1),
     ("a one-way door with its reader passes", ONE_WAY + "Reader: `format::MIGRATIONS[1]`, test `a_v1_store_opens`\n", BUMP, 0),
     ("an empty reader line does not count", ONE_WAY + "Reader:\n", PLAIN, 1),
-    ("a hard cutover with its CHANGELOG line passes", ONE_WAY + "**Hard cutover:** clusters with sealed files are wiped\n", PLAIN + CHANGELOG, 0),
-    ("a hard cutover without the CHANGELOG line fails", ONE_WAY + "Hard cutover: clusters are wiped\n", PLAIN, 1),
+    ("a hard cutover with a breaking title passes", ONE_WAY + "**Hard cutover:** clusters with sealed files are wiped\n", PLAIN, 0,
+     "feat(node)!: sealed files move to segments"),
+    ("a hard cutover without `!` in the title fails", ONE_WAY + "Hard cutover: clusters are wiped\n", PLAIN, 1,
+     "feat(node): sealed files move to segments"),
     ("a store format bump must state its door", "## Description\n", BUMP, 1),
     ("a WIT version move must state its door", "## Description\n", WIT, 1),
     ("a door in an HTML comment is not a door", "<!--\n**Door:** two-way\n-->", BUMP, 1),
     ("a door in a code fence is not a door", "```\nDoor: two-way\n```", BUMP, 1),
     ("both doors at once fail", "Door: one-way\nDoor: two-way\nReader: x\n", PLAIN, 1),
-    ("the CHANGELOG line must be in CHANGELOG.md", ONE_WAY + "Hard cutover: x\n",
-     "diff --git a/docs/x.md b/docs/x.md\n+Hard cutover\n", 1),
+    ("a `!` elsewhere in the title is not a breaking title", ONE_WAY + "Hard cutover: x\n", PLAIN, 1,
+     "fix(node): wipe clusters!"),
 ]
 
 TEMPLATE = (Path(__file__).resolve().parent.parent.parent / ".github" / "pull_request_template.md").read_text()
@@ -47,8 +48,8 @@ CASES += [
 ]
 
 failures = []
-for name, body, diff, want in CASES:
-    got = door.problems(body, diff)
+for name, body, diff, want, *title in CASES:
+    got = door.problems(body, diff, *title)
     if len(got) != want:
         failures.append(f"{name}: got {got}, want {want} problem(s)")
 if failures:

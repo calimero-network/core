@@ -6503,6 +6503,125 @@ async fn peers_that_attest_slower_than_a_heartbeat_still_form_a_cluster() {
         .expect("a system write committed");
 }
 
+/// Anyone may ask for `/attestation`, in the clear and without a credential,
+/// and a TDX quote blocks the thread that makes it for about a second. More
+/// requests than the runtime has workers, each sent again as soon as it is
+/// answered, must not stall the node: `/health` keeps answering promptly, a
+/// system write commits and no election starts; past a short queue the node
+/// answers `503 BUSY` with `Retry-After: 1`. All three nodes share the test's
+/// four workers, as a node's tasks share its runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_flood_of_attestations_does_not_stall_the_node() {
+    const FLOODERS: usize = 16;
+    const FLOOD: Duration = Duration::from_secs(5);
+    let c = Cluster::start(3).await;
+    let node = |i: usize| &c.nodes[i].as_ref().unwrap().node;
+    // A first account, so the system group is known to commit.
+    let _ = signed_up(&c, 1, "alice").await;
+    let before: Vec<u64> = (0..3).map(|i| node(i).system.status().term).collect();
+
+    calimero_node::testing::slow_quotes(&node(0).config.public_url, Duration::from_secs(1));
+    let flooded = c.urls[0].clone();
+    let until = std::time::Instant::now() + FLOOD;
+    let flooders: Vec<_> = (0..FLOODERS)
+        .map(|_| {
+            let url = flooded.clone();
+            tokio::spawn(async move {
+                let http = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(30))
+                    .build()
+                    .unwrap();
+                let (mut ok, mut busy) = (0_u32, 0_u32);
+                while std::time::Instant::now() < until {
+                    let nonce = hex::encode(calimero_identity::random::<32>());
+                    let Ok(r) = http
+                        .get(format!("{url}attestation?nonce={nonce}"))
+                        .send()
+                        .await
+                    else {
+                        continue;
+                    };
+                    let status = r.status().as_u16();
+                    let retry_after = r
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_owned);
+                    let body: Value = r.json().await.unwrap_or_default();
+                    match status {
+                        200 => ok += 1,
+                        503 if body["error"] == "BUSY" && retry_after.as_deref() == Some("1") => {
+                            busy += 1;
+                        }
+                        _ => panic!("/attestation answered {status} {retry_after:?} {body}"),
+                    }
+                }
+                (ok, busy)
+            })
+        })
+        .collect();
+
+    // Meanwhile: a system write through another node, and `/health` of the
+    // flooded node and of another, every 200 ms.
+    let write = {
+        let client = c.client(1);
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let mut pk = SoftAuthenticator::new("localhost", ORIGIN);
+            let signed = client.sign_up(&mut pk, "bob-during-a-flood").await;
+            (signed.map(|_| ()), started.elapsed())
+        })
+    };
+    let http = reqwest::Client::new();
+    let mut slowest = Duration::ZERO;
+    while std::time::Instant::now() < until {
+        for url in [&c.urls[0], &c.urls[1]] {
+            let started = std::time::Instant::now();
+            let answer = tokio::time::timeout(
+                Duration::from_secs(5),
+                http.get(format!("{url}health")).send(),
+            )
+            .await;
+            let took = started.elapsed();
+            assert!(
+                matches!(answer, Ok(Ok(ref r)) if r.status().is_success()),
+                "{url}health did not answer during the flood: {answer:?}"
+            );
+            slowest = slowest.max(took);
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        slowest < Duration::from_millis(500),
+        "/health took {slowest:?} during the flood"
+    );
+    let (signed, took) = write.await.unwrap();
+    signed.expect("a system write commits during the flood");
+    assert!(
+        took < Duration::from_secs(5),
+        "the system write took {took:?}"
+    );
+    let (mut ok, mut busy) = (0, 0);
+    for f in flooders {
+        let (o, b) = f.await.unwrap();
+        ok += o;
+        busy += b;
+    }
+    let after: Vec<u64> = (0..3).map(|i| node(i).system.status().term).collect();
+    eprintln!(
+        "flood: /health at most {slowest:?}, system write {took:?}, attestations {ok} answered and {busy} busy, terms {before:?} -> {after:?}"
+    );
+    assert_eq!(
+        after, before,
+        "the system group held an election during the flood"
+    );
+    assert!(ok > 0, "no attestation was answered during the flood");
+    assert!(
+        busy > 0,
+        "no attestation was refused BUSY during the flood ({ok} answered)"
+    );
+}
+
 /// A system write the group cannot commit answers `503 UNAVAILABLE` in
 /// bounded time instead of waiting forever. eu-shared-2 (2026-10-30): its
 /// system group could not commit, and a sign-up and a node registration each

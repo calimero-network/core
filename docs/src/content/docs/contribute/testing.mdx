@@ -449,9 +449,9 @@ existing cluster. It merges only with one of:
   usual answer: the new node reads both formats, as `calimero-log` reads the
   old `log.redb`);
 - a declared **hard cutover**: the PR replaces the version in
-  `.github/upgrade-from` with `hard-cutover: <PR> <why>`, marks it in
-  `CHANGELOG.md` ("no interop with earlier nodes ...; existing clusters are
-  recreated"), and mdma adds it to `mdma_common/release_compat.py`'s
+  `.github/upgrade-from` with `hard-cutover: <PR> <why>`, has `!` in its title
+  and says in its body what operators must do ("no interop with earlier nodes
+  ...; existing clusters are recreated"), and mdma adds it to `mdma_common/release_compat.py`'s
   `CUTOVERS`, whose epochs refuse to roll a cluster across it. The job reports
   the cutover instead of running until the next release puts a version back.
 
