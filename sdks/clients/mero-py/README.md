@@ -209,10 +209,8 @@ pytest              # Python tests
 ```
 
 The Rust core depends on `calimero-client`, `calimero-identity` and
-`calimero-sealed` from
-[`github.com/calimero-network/core`](https://github.com/calimero-network/core),
-pinned by tag in `Cargo.toml`, so the first build fetches and compiles those too
-(a network connection is required for the initial build). `AGENTS.md` has the
+`calimero-sealed` from this core tree (`../../../crates/`, path dependencies),
+so it always builds against the core it ships with. `AGENTS.md` has the
 rest: the layout, the generator, CI and releases.
 
 ## Related repositories

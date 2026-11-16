@@ -21,7 +21,7 @@ include = [
 ]
 
 # Its own workspace: core's root Cargo.toml lists its members and this is not
-# one of them (it builds against core's crates at a release tag, below).
+# one of them (it builds against core's crates by path, below).
 [workspace]
 
 [lib]
@@ -31,17 +31,15 @@ name = "calimero_client_py"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Core's client at 1.0.0-rc.19: receipt-key quotes bind the cluster and node id
-# (`calimero.tee-attest.receipt-key.v3`), which `verify_app_cluster` checks.
-#
-# The three move TOGETHER or not at all: moving one alone makes cargo resolve two
-# copies of the crates they share, and the error names types rather than
-# revisions, which reads as a code problem rather than a resolution one.
-calimero-client = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.19", features = ["testing"] }
-calimero-identity = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.19", features = ["testing"] }
+# Core's crates from this tree (sdks/clients/mero-py is three directories below
+# core's root), so the client always builds against the core it ships with.
+# They are path dependencies, not members: this crate keeps its own workspace
+# (above) and its own Cargo.lock.
+calimero-client = { path = "../../../crates/client", features = ["testing"] }
+calimero-identity = { path = "../../../crates/identity", features = ["testing"] }
 # The sealed channel the generated client's requests go through (`SealedClient.request`):
 # core's `Client` answers JSON only, so each node keeps its own channel for them.
-calimero-sealed = { git = "https://github.com/calimero-network/core", tag = "1.0.0-rc.19" }
+calimero-sealed = { path = "../../../crates/sealed" }
 # Signs the operator's decisions (`use_operator_key`); the major core uses.
 ed25519-dalek = "3"
 # Core's client reports transport errors over eyre (`Error::Transport`).

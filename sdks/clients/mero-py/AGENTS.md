@@ -63,14 +63,21 @@ Python exception only when it unwinds.
 `Cargo.lock`. The crate is not a member of core's workspace (the root
 `Cargo.toml` lists its members explicitly) and must not become one.
 
-### Core's crates: a release tag, not a path
+### Core's crates: this tree's, by path
 
-`calimero-client`, `calimero-identity` and `calimero-sealed` come from
-`github.com/calimero-network/core` at a release tag (`Cargo.toml`), not from
-this tree's `crates/`. The three move together or not at all. CI's
-`mero-py against this core` job builds the client with path dependencies on
-this tree's crates and reports the result without failing. Once that job is
-green, the tag can become a path.
+`calimero-client`, `calimero-identity` and `calimero-sealed` are path
+dependencies on this tree's `crates/`. They pull in `calimero-tee-attestation`
+and `calimero-tee-release` too. The extension therefore always builds against
+the core it ships with: a change to those crates that breaks the client fails
+this SDK's CI in the same pull request. `sdk.json` `inputs` lists those five
+crates, plus core's root `Cargo.toml` (their workspace settings) and
+`rust-toolchain.toml`. Update that list when the client starts using another
+core crate. `cargo metadata` in this directory lists every path package.
+
+The sdist still works. `maturin sdist` copies the five crates, and core's root
+`Cargo.toml` for their `workspace = true` settings, into the archive under
+their own paths, and a wheel builds from the unpacked sdist alone (CI's
+`mero-py sdist builds on its own` job).
 
 ## Generated code
 
@@ -98,7 +105,8 @@ regeneration added, removed or changed.
 `test_org_recovery.py` and `test_upgrade_keys.py` start a cluster of `merod`
 and run the client against it. They read `MEROD_BINARY` and `KV_STORE_WASM`
 (both default to this core tree's `target/`) and skip when the binary is
-missing. From core's root, built as e2e.yml builds them:
+missing. `MEROD_PORT_BASE=3100` keeps the nodes' ports counting up from 3100
+instead of the OS's picks, for a machine that runs other clusters. From core's root, built as e2e.yml builds them:
 
 ```bash
 cargo build --release -p merod -p meroctl

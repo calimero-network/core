@@ -10,7 +10,18 @@
     {"path": "abi-codegen/src/calimero_abi_codegen/__init__.py", "format": "regex", "pattern": "^__version__ = \"([^\"]+)\""}
   ],
   "depends_on": [],
-  "inputs": ["docs/public/openapi.json", "crates/app-abi/tests/py", "crates/app-abi/tests/golden/*.py"],
+  "inputs": [
+    "docs/public/openapi.json",
+    "crates/client",
+    "crates/identity",
+    "crates/sealed",
+    "crates/tee-attestation",
+    "crates/tee-release",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "crates/app-abi/tests/py",
+    "crates/app-abi/tests/golden/*.py"
+  ],
   "generate": "bash scripts/generate.sh",
   "generated": [
     "calimero_client_py/openapi",

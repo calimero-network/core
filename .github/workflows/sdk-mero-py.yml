@@ -4,7 +4,8 @@ name: SDK mero-py
 # with maturin plus a client generated from docs/public/openapi.json. Called by
 # sdks.yml (tests, on every change that reaches it) and by release.yml with
 # `publish: true` on a core tag (tests, then the sdist and the abi3 wheels,
-# then PyPI).
+# then PyPI). The extension builds against this tree's crates (path
+# dependencies), so it always matches the core it ships with.
 #
 # The publish job declares no `permissions:` and so takes the caller's: a
 # called workflow can only narrow what its caller grants, and a job here that
@@ -158,16 +159,14 @@ jobs:
       - name: Run its tests
         run: pytest
 
-  # Cargo.toml builds against core's crates at a release tag. This builds the
-  # client against this tree's crates instead, so a change to them that breaks
-  # it shows here rather than at the next pin bump. The three move together,
-  # or cargo resolves two copies of the crates they share. Reported, not
-  # gating, until the pin moves to this tree (see the SDK's AGENTS.md).
-  against-core:
-    name: mero-py against this core
+  # The sdist carries the core crates the extension builds from (path
+  # dependencies: maturin copies them in, with core's root Cargo.toml for
+  # their workspace settings). Build a wheel from it alone, away from this
+  # tree, so pip's source fallback on a platform without a wheel works.
+  sdist:
+    name: mero-py sdist builds on its own
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    continue-on-error: true
     permissions:
       contents: read
     steps:
@@ -184,21 +183,23 @@ jobs:
       - name: Install the pinned Rust toolchain
         uses: ./.github/actions/rust-toolchain
 
-      - name: Check against this tree's calimero-client, -identity and -sealed
+      - name: Build the sdist, then a wheel from it alone
         run: |
           set -euo pipefail
-          for crate in client identity sealed; do
-            sed -i -E "s#^calimero-$crate = \\{ git = \"[^\"]*\", tag = \"[^\"]*\"#calimero-$crate = { path = \"../../../crates/$crate\"#" Cargo.toml
-          done
-          grep -n '^calimero-.* = { path' Cargo.toml
-          cargo check --all-targets
+          pip install maturin==1.15.0
+          maturin sdist --out "$RUNNER_TEMP/sdist"
+          mkdir "$RUNNER_TEMP/unpacked"
+          tar -xzf "$RUNNER_TEMP"/sdist/mero_py-*.tar.gz -C "$RUNNER_TEMP/unpacked"
+          cd "$RUNNER_TEMP"/unpacked/mero_py-*
+          maturin build --locked --out "$RUNNER_TEMP/wheel"
+          ls -la "$RUNNER_TEMP/wheel"
 
   # ---------------------------------------------------------------- publish
 
   build-source:
     name: mero-py sdist
     if: inputs.publish
-    needs: [test, abi-codegen]
+    needs: [test, abi-codegen, sdist]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -233,7 +234,7 @@ jobs:
   build-wheels:
     name: mero-py wheel (${{ matrix.name }})
     if: inputs.publish
-    needs: [test, abi-codegen]
+    needs: [test, abi-codegen, sdist]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     permissions:
