@@ -8,10 +8,11 @@ sidebar:
 ## Add the package
 
 ```swift
-.package(url: "https://github.com/calimero-network/swift-sdk", branch: "master")
+.package(url: "https://github.com/calimero-network/swift-sdk", exact: "1.0.0-rc.30")
 ```
 
-Products: `MeroKit` (the client), `MeroKitUI` (SwiftUI session and app layer),
+The package (and the CocoaPods pod) is `mero-swift`, on Calimero core's version;
+the modules keep their names (`import MeroKit`). Products: `MeroKit` (the client), `MeroKitUI` (SwiftUI session and app layer),
 `MeroKitTestSupport` (fakes for your tests).
 
 ## A development cluster
@@ -19,7 +20,7 @@ Products: `MeroKit` (the client), `MeroKitUI` (SwiftUI session and app layer),
 ```sh
 # in calimero-network/core, on Linux:
 cargo run -p merod -- local     # 3 nodes on 127.0.0.1:2501-2503, mock attestation
-# on a Mac (merod 1.0 is Linux only), in a swift-sdk checkout, with Docker:
+# on a Mac (merod 1.0 is Linux only), in core's sdks/clients/mero-swift (or a swift-sdk checkout), with Docker:
 scripts/dev-cluster.sh up
 ```
 

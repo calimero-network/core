@@ -1,52 +1,133 @@
-# swift-sdk (MeroKit) - agent guide
+# mero-swift (MeroKit): agent guide
 
-> **Before committing, titling a PR, or releasing, read [RELEASING.md](RELEASING.md).**
-> PRs are squash-merged and the PR title is the release commit: its type decides
-> whether this repository releases, and which version (the table in RELEASING.md).
+> mero-swift lives in calimero-network/core at `sdks/clients/mero-swift` and
+> releases with core, on core's version (the root `VERSION`). Read
+> [core's `sdks/AGENTS.md`](https://github.com/calimero-network/core/blob/master/sdks/AGENTS.md)
+> and core's `RELEASING.md` before
+> changing how it is built, versioned or published.
+> calimero-network/swift-sdk is a read-only mirror of this directory: never
+> change it there.
 
-MeroKit is the native Swift SDK for Calimero 1.0 (Swift 5.9+, iOS 15+ / macOS 12+),
-the Swift port of mero-js's `CalimeroClient`: attestation, the sealed channel,
-passkeys, organizations, teams, app instances and live events. It ships as a
-Swift package (`Package.swift`) and a CocoaPods spec (`MeroKit.podspec`). See
-[README.md](README.md), [TESTING.md](TESTING.md) and the docs site, whose source is `docs/`.
+mero-swift is the native Swift SDK for Calimero 1.0 (Swift 5.9+, iOS 15+ /
+macOS 12+), the Swift port of mero-js's `CalimeroClient`: attestation, the
+sealed channel, passkeys, organizations, teams, app instances and live events.
+See [README.md](README.md), [TESTING.md](TESTING.md) and the docs site, whose
+source is `docs/`.
+
+## Names
+
+| What | Name |
+| --- | --- |
+| SwiftPM package (`Package.swift` `name`) | `mero-swift` |
+| CocoaPods pod | `mero-swift` (`mero-swift.podspec`, `module_name` `MeroKit`) |
+| Modules and products people import | unchanged: `MeroKit`, `MeroAPI`, `MeroKitUI`, `MeroKitTestSupport` (and the `MeroExample` executable) |
+| SwiftPM URL | `https://github.com/calimero-network/swift-sdk` (the mirror) |
+
+Renaming the package and the pod changes no source: `import MeroKit` keeps
+working. SwiftPM names a remote package by its URL, so consumers keep
+`.product(name: "MeroKit", package: "swift-sdk")`; a path dependency on this
+directory is named by the directory, `package: "mero-swift"`. Never rename a
+module or product: that breaks every app that imports it.
 
 ## Layout
 
 - `Sources/MeroKit/`: the client, sealed channel, TEE trust, passkeys and app layer.
-- `Sources/MeroAPI/Generated/` and `Sources/MeroKit/Api/Generated/`: **generated, do not edit** (see below).
+- `Sources/MeroAPI/Generated/` and `Sources/MeroKit/Api/Generated/`: **generated, do not edit** (below).
 - `Sources/MeroKitUI/`: SwiftUI session, platform passkeys, consent page.
 - `Sources/MeroKitTestSupport/`: fakes (`FakeCloudNode`, `FakeCloud`, `MockURLProtocol`, ...).
-- `Tests/`: `MeroKitTests` (unit and journey), `MeroKitUITests`, `MeroKitE2ETests` (need a node).
-- `Examples/MeroSampleApp/`: the sample app `ui.yml` tests in the simulator.
-- `ci/core-version`: the core release the SDK targets.
+- `Tests/`: `MeroKitTests` (unit and journey), `MeroKitUITests`, `MeroKitE2ETests` (need a node; skipped without `MERO_E2E_NODE_URL`).
+- `examples/MeroSampleApp/`: the sample app (XcodeGen `project.yml`; the `.xcodeproj` is generated, not committed).
+- `openapi/`: the generator's configuration (`openapi-generator-config.yaml`) and version (`generator`).
+- `scripts/`: the generator, and `dev-cluster.sh` (a `merod local` cluster on a Mac, at `ci/core-version`).
+- `docs/`: the Starlight docs site (npm). Its old build and deploy workflows were not ported to core.
+- `CHANGELOG.md`: the history from when this was its own repository. New entries go in core's release notes.
 
 ## Build, test, lint
 
-These are the steps `ci.yml` runs (macOS):
+What `.github/workflows/sdk-mero-swift.yml` runs (macOS), from this directory:
 
 ```bash
-swift build -v
-swift test -v
+swift build
+swift test
 swiftlint lint --strict
-swift-format lint --recursive --strict Sources Tests Examples
-scripts/generate-openapi.sh check      # the generated sources are current
+swift-format lint --recursive --strict Sources Tests examples
+cd examples/MeroSampleApp && xcodegen generate && \
+  xcodebuild build-for-testing -project MeroSampleApp.xcodeproj -scheme MeroSampleApp \
+    -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
 ```
 
-Against a development cluster: `scripts/dev-cluster.sh up`, then
-`MERO_E2E_NODE_URL=http://127.0.0.1:2501 swift test --filter MeroKitE2ETests`
-(see [TESTING.md](TESTING.md)). The docs site (`docs/`, npm) is checked with
-`npm ci && npm run check` in `docs/`.
+The sample's XCUITest suite (simulator, against the in-app cluster,
+`-uitest-mock`) runs when the workflow is called with `ui-tests: true`. The
+live-node e2e suite is not in CI: run it by hand, `scripts/dev-cluster.sh up`
+then `MERO_E2E_NODE_URL=http://127.0.0.1:2501 swift test --filter MeroKitE2ETests`.
 
 ## Generated code: core's OpenAPI document
 
 `Sources/MeroAPI/Generated/` (`Types.swift`, `Client.swift`, by
 swift-openapi-generator) and `Sources/MeroKit/Api/Generated/Facade.swift` (by
-`scripts/generate-facade.py`) are generated from core's OpenAPI document, vendored
-at `openapi/openapi.json` (the core commit is in `openapi/source`), and checked
-in. Never hand-edit them; CI's `generated` job fails on any drift.
+`scripts/generate-facade.py`) are generated from core's `docs/public/openapi.json`,
+read in place (`../../../docs/public/openapi.json`, nothing fetched), and
+checked in. They are `sdk.json`'s `generated`. Never hand-edit them.
 
-- Regenerate: `scripts/generate-openapi.sh`.
-- Take a newer document from core: `scripts/generate-openapi.sh refresh [<core ref>]`, which also regenerates.
-- A wrong route or type is fixed in core's document, `scripts/openapi-normalize.py`,
-  `scripts/generate-facade.py` or `openapi/openapi-generator-config.yaml`, not in
-  the output. `openapi-sync.yml` opens the sync PRs from core on its own.
+- Regenerate: `python3 scripts/sdks.py generate mero-swift` at core's root
+  (runs `scripts/generate-openapi.sh` here). The first run builds
+  swift-openapi-generator (`openapi/generator`'s version) into
+  `.build/openapi-generator`, which needs network once.
+- `scripts/generate-openapi.sh check` fails when the checked-in output is stale.
+- A wrong route or type is fixed in core's server (and so its document),
+  `scripts/openapi-normalize.py`, `scripts/generate-facade.py` or
+  `openapi/openapi-generator-config.yaml`, never in the output.
+
+## Self-contained
+
+This directory must build on its own, because the mirror is this directory
+alone: nothing here may reference a file outside it. The one exception is
+the generator's input, core's OpenAPI document; the mirror carries the
+generated output instead, so building there never needs it.
+
+## Version
+
+The SDK states core's `VERSION` in `mero-swift.podspec` (`spec.version`) and
+in the install snippets of `README.md` and the docs quickstart (`exact:`).
+They are `sdk.json`'s `version_files`; `python3 scripts/sdks.py version-sync`
+writes them. Never bump them by hand. `ci/core-version` is not one: it is the
+merod release `scripts/dev-cluster.sh` runs.
+
+## Release: the SwiftPM mirror and CocoaPods
+
+SwiftPM needs `Package.swift` at the root of a git repository, so
+calimero-network/swift-sdk stays as a read-only mirror. A core release calls
+`sdk-mero-swift.yml` with `publish: true`, which:
+
+1. `git subtree split --prefix=sdks/clients/mero-swift` (this directory's
+   history as a branch whose root is this directory);
+2. pushes it to calimero-network/swift-sdk as `master` and tags it with
+   VERSION (no `v`), as the organization's GitHub App
+   (`vars.ACTIONS_APP_ID` / `secrets.ACTIONS_APP_PRIVATE_KEY`);
+3. with `cocoapods: true`, `pod trunk push mero-swift.podspec`
+   (`secrets.COCOAPODS_TRUNK_TOKEN`). Off by default: MeroKit depends on
+   swift-openapi-runtime and swift-http-types, which are not on the CocoaPods
+   trunk, so the pod cannot build until the podspec can depend on them (or
+   vendors them).
+
+`dry-run: true` (the default) splits and prints what it would push, and
+pushes nothing. The split carries swift-sdk's own commits unchanged (it was
+imported with its history, not squashed), so each release fast-forwards the
+mirror's `master`; the push is never forced, and fails if someone committed
+to the mirror.
+
+## Core's App ABI check against this directory
+
+`.github/workflows/app-abi-native-clients.yml` (`scripts/check-app-abi-clients.py
+swift`) compiles the Swift clients `meroctl app codegen` writes against a
+released swift-sdk (`SWIFT_SDK_VERSION`). To check against this directory
+instead, its generated `Package.swift` needs:
+
+- `.package(path: "<core checkout>/sdks/clients/mero-swift")` in place of the
+  `url:`/`exact:` dependency (an absolute path, as the package is written to a
+  temporary directory);
+- `.product(name: "MeroKit", package: "mero-swift")`: a path dependency is
+  named by its directory, not `swift-sdk`;
+- `sdks/clients/mero-swift/**` (and `docs/public/openapi.json`, which reaches
+  the generated layer) among the workflow's `paths`, and a macOS runner with
+  network access for swift-openapi-runtime and swift-http-types.
