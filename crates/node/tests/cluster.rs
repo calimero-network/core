@@ -6608,6 +6608,9 @@ async fn a_flood_of_attestations_does_not_stall_the_node() {
         busy += b;
     }
     let after: Vec<u64> = (0..3).map(|i| node(i).system.status().term).collect();
+    eprintln!(
+        "flood: /health at most {slowest:?}, system write {took:?}, attestations {ok} answered and {busy} busy, terms {before:?} -> {after:?}"
+    );
     assert_eq!(
         after, before,
         "the system group held an election during the flood"

@@ -62,6 +62,14 @@ half commits the quote to a key that lives only in that VM's memory. A caller
 that verifies the quote therefore knows the key belongs to a process running
 the measured image, and nobody else can open what is sealed to it.
 
+Every request carries a fresh nonce, so every request is a new quote, and a
+TDX quote blocks its thread in the kernel for about a second. A node makes one
+quote at a time, on its blocking pool rather than the workers that run Raft and
+the API, and lets a few more requests wait for it; past that it answers
+`503 BUSY` with `Retry-After: 1` at once (`MAX_CONCURRENT_QUOTES`,
+`MAX_QUEUED_QUOTES`, `QUOTE_WAIT`; [Limits](/protocol/limits/#node-limits)).
+A client sends the request again after the delay.
+
 ## What the verifier checks
 
 <SeqDiagram

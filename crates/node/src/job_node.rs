@@ -27,7 +27,7 @@ use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::attest::{job_key_binding, quote, AttestationDoc, Mode, Release};
+use crate::attest::{job_key_binding, AttestationDoc, Mode, Quoter, Release};
 use crate::error::ApiError;
 use crate::node::attested_release;
 
@@ -85,6 +85,8 @@ struct JobNode {
     runs: runs::Runs,
     scratch: PathBuf,
     dirs: AtomicU64,
+    /// Makes this node's quotes, off the async workers and one at a time.
+    quoter: Quoter,
     /// While set, every run answers `running`, as a stuck node would (feature `testing`).
     #[cfg(feature = "testing")]
     stuck: AtomicBool,
@@ -271,6 +273,7 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
     let job_key = ed25519_dalek::SigningKey::from_bytes(&calimero_identity::random::<32>());
     let public = job_key.verifying_key().to_bytes();
     let node_id = config.node_id;
+    let quoter = Quoter::new(config.attestation);
     let job = Arc::new(JobNode {
         config,
         transport: Arc::clone(&transport),
@@ -280,6 +283,7 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
         runs: runs::Runs::default(),
         scratch,
         dirs: AtomicU64::new(0),
+        quoter,
         #[cfg(feature = "testing")]
         stuck: AtomicBool::new(false),
         #[cfg(feature = "testing")]
@@ -428,8 +432,7 @@ async fn attestation(
         job.config.node_id,
         Some(&job.config.cluster_identity),
     ));
-    let quote =
-        quote(job.config.attestation, report).map_err(|e| ApiError::internal(&e.to_string()))?;
+    let quote = job.quoter.quote(report).await?;
     let doc = AttestationDoc {
         quote: STANDARD.encode(quote),
         transport_key: hex::encode(transport_key),
