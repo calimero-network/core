@@ -439,6 +439,7 @@ impl Outcome {
                 app: x.app,
                 method: x.method,
                 args,
+                on_behalf_of: None,
             });
         }
         let mut started = Vec::with_capacity(actions.len());
@@ -3274,6 +3275,7 @@ mod tests {
             app: "no-such-app".into(),
             method: "setFromApp".into(),
             args: json!({}),
+            on_behalf_of: None,
         };
         let done = ComponentCmd::XcallDone {
             seq: 0,

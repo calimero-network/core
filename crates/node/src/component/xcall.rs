@@ -49,6 +49,10 @@ pub struct XcallOut {
     pub app: String,
     pub method: String,
     pub args: Value,
+    /// The person the sending run served, set by its leader once the cluster runs
+    /// `Feature::OnBehalfOf`; the delivery carries it to the target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<crate::types::Caller>,
 }
 
 /// A message waiting in the outbox.
@@ -61,6 +65,10 @@ pub struct Outgoing {
     pub args: Value,
     /// The entry timestamp it was sent at (app time).
     pub sent_ms: u64,
+    /// [`XcallOut::on_behalf_of`]: a row an earlier release wrote has none, and is
+    /// delivered as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<crate::types::Caller>,
 }
 
 /// A message that was never delivered (D29).
@@ -133,6 +141,7 @@ impl XcallHead {
                 method: x.method.clone(),
                 args: x.args.clone(),
                 sent_ms: ts_ms,
+                on_behalf_of: x.on_behalf_of.clone(),
             };
             match serde_json::to_vec(&out) {
                 Ok(v) => tx.put_hidden(rows::COUT, &row(rows::COUT, seq), &v),

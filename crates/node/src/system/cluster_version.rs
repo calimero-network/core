@@ -108,10 +108,17 @@ pub enum Feature {
     /// `CreateApp` naming the apps its release created with it (`AppRecord::links`): an
     /// earlier release drops them, so its replicas would list the instance without its unit.
     AppLinks,
+    /// A run's xcalls carrying the person it serves (`XcallOut::on_behalf_of`,
+    /// `CallRequest::on_behalf_of`): an earlier release drops the field from the
+    /// outbox row and the forwarded request, so the same delivery would reach the
+    /// target with the person on one leader and without on another. Not a system
+    /// command: the app path reads it from the logged cluster version
+    /// (`Node::delegates`).
+    OnBehalfOf,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 27] = [
+pub const FEATURES: [Feature; 28] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -137,6 +144,7 @@ pub const FEATURES: [Feature; 27] = [
     Feature::PublishedRunByRelease,
     Feature::OrgCapabilities,
     Feature::InviteCapabilities,
+    Feature::OnBehalfOf,
     Feature::AppLinks,
     Feature::UnitUpgrade,
 ];
@@ -171,9 +179,18 @@ impl Feature {
             Self::PublishedRunByRelease => "publishedRunByRelease",
             Self::OrgCapabilities => "orgCapabilities",
             Self::InviteCapabilities => "inviteCapabilities",
+            Self::OnBehalfOf => "onBehalfOf",
             Self::AppLinks => "appLinks",
             Self::UnitUpgrade => "unitUpgrade",
         }
+    }
+
+    /// Whether a system command carries it ([`SystemCmd::features`]). `false` for a
+    /// shape on an app's path, which the node reads from the logged cluster version
+    /// itself ([`Feature::OnBehalfOf`]).
+    #[must_use]
+    pub const fn system(self) -> bool {
+        !matches!(self, Self::OnBehalfOf)
     }
 
     /// The first core release that applies it. The features of a release
@@ -203,7 +220,7 @@ impl Feature {
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
             Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
-            Self::AppLinks | Self::UnitUpgrade => "1.0.0-rc.30",
+            Self::OnBehalfOf | Self::AppLinks | Self::UnitUpgrade => "1.0.0-rc.30",
         }
     }
 }
@@ -630,6 +647,7 @@ mod tests {
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
         match feature {
+            Feature::OnBehalfOf => unreachable!("not carried by a system command"),
             Feature::InviteCapabilities => SystemCmd::CreateInvite {
                 invite_key: "k".into(),
                 invite: serde_json::from_value(json!({
@@ -988,7 +1006,7 @@ mod tests {
     #[test]
     fn a_feature_is_never_proposed_while_an_older_node_holds_the_log() {
         let mut nodes = cluster(&[RC16, RC16, RC14]);
-        for feature in FEATURES {
+        for feature in FEATURES.into_iter().filter(|f| f.system()) {
             let cmd = uses(feature);
             let needs = cmd.features();
             assert!(needs.contains(&feature), "{feature:?}: {needs:?}");
@@ -1022,6 +1040,7 @@ mod tests {
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
             .iter()
+            .filter(|f| f.system())
             .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC30].contains(&f.since()));
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
@@ -1379,6 +1398,20 @@ mod tests {
             let refused = check(Some(below), &invite_features(all_apps, capabilities)).unwrap_err();
             assert_eq!(refused.feature, feature);
         }
+    }
+
+    /// The delegated caller is an app-path shape: no system command carries it, and the
+    /// node reads it from the logged version alone.
+    #[test]
+    fn the_delegated_caller_turns_on_with_its_release() {
+        assert!(!Feature::OnBehalfOf.system());
+        assert!(FEATURES
+            .iter()
+            .filter(|f| !f.system())
+            .eq([Feature::OnBehalfOf].iter()));
+        assert!(check(None, &[Feature::OnBehalfOf]).is_err());
+        assert!(check(Some(RC29), &[Feature::OnBehalfOf]).is_err());
+        assert!(check(Some(Feature::OnBehalfOf.since()), &[Feature::OnBehalfOf]).is_ok());
     }
 
     #[test]

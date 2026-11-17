@@ -12,6 +12,10 @@ pub fn caller() -> Caller {
     denied()
 }
 
+pub fn on_behalf_of() -> Option<Caller> {
+    denied()
+}
+
 pub fn app_id() -> String {
     denied()
 }

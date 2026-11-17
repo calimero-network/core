@@ -312,6 +312,13 @@ pub struct CallRequest {
     /// `internal/call`. The target runs it as a delivery, so it makes none of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_from: Option<String>,
+    /// A delivery's or a synchronous xcall's origin: the person (account or API key) the
+    /// source app's run served, which the target reads as `env::on_behalf_of()` beside
+    /// `Caller::App(source)`. Set only by the node that ran the source (`NodeXcall`, the
+    /// outbox's delivery), and only once the cluster runs `Feature::OnBehalfOf`; peers pass
+    /// it along on `internal/call`. Never from a client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<Caller>,
     /// The system index the request's read-index round named on the node that
     /// judged it (`Principal::sys_index`): every system write committed before
     /// the request arrived is at or below it. The replica that runs the call
@@ -358,6 +365,7 @@ impl CallRequest {
             xcall: None,
             action: None,
             sync_from: None,
+            on_behalf_of: None,
             sys_index: None,
         }
     }
@@ -386,6 +394,9 @@ pub struct ViewRequest {
     pub strong: bool,
     #[serde(default)]
     pub min_index: u64,
+    /// A synchronous `xcall_view`'s origin, as [`CallRequest::on_behalf_of`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<Caller>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

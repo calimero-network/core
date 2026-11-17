@@ -211,6 +211,21 @@ is its command line.
   (`a_feature_is_never_proposed_while_an_older_node_holds_the_log`,
   `an_entry_an_older_node_cannot_decode_splits_the_state`),
   `the_cluster_version_rises_to_what_every_node_supports`.
+  A feature may also gate a shape on an app's path (`Feature::system` is
+  `false`): no system command names it, and the node reads it from the logged
+  version alone. `Feature::OnBehalfOf` is one (below).
+- **On whose behalf** (`Node::delegates`, `forwarded` in `node/component.rs`;
+  docs: protocol xcall "On whose behalf"): a run passes the person it serves
+  (its own `Account`/`ApiKey` caller, or the person it was called for) to the
+  apps it calls, as `CallRequest::on_behalf_of` / `ViewRequest::on_behalf_of`
+  for a synchronous xcall and `XcallOut::on_behalf_of` -> `Outgoing::on_behalf_of`
+  (the outbox row) for a message; the target's host core gets it with
+  `HostCore::with_origin` (`env::on_behalf_of()`), beside `Caller::App(source)`.
+  Timers, actions, `init` and public callers pass none. Only from the logged
+  cluster version that brings `Feature::OnBehalfOf` (rc.30): before it no run
+  names anyone, so an older node dropping the field changes nothing. A row an
+  earlier release wrote has none and is delivered as before. Regression:
+  `an_xcall_names_the_person_its_run_served` (`tests/component_cluster.rs`).
 - **API** (`api.rs`, handlers by area in `api/<area>.rs`, each with its `routes()` that `router` merges; helpers more than one area uses stay in `api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).

@@ -69,6 +69,11 @@ NOT_COVERED = [
      "`links` is written only once every node runs this release (`Feature::AppLinks`); "
      "`creating_an_instance_creates_the_apps_its_release_uses` (`component_cluster.rs`) covers it on one "
      "build, and a record without it reads as before (`serde(default)`)"),
+    ("Apps", "The person a run serves, carried to the apps it calls (`env::on_behalf_of`, `Feature::OnBehalfOf`)",
+     "it stores nothing of its own (an outbox row only gains the person while the message waits), and the deep "
+     "fixtures are built from the old release's source, whose kv fixture has no method that reads it; "
+     "`an_xcall_names_the_person_its_run_served` (`component_cluster.rs`) covers message, call and view on one "
+     "build, and the `xcall` case still relays across the roll. A case once the upgrade-from release has it"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "

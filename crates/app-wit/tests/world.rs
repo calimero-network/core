@@ -30,7 +30,7 @@ fn world_parses_and_imports_exactly_the_spec_set() {
         .select_world(&[pkg], Some("app"))
         .expect("world app exists");
     let world = &resolve.worlds[world_id];
-    assert_eq!(WORLD, "calimero:app/app@0.5.1");
+    assert_eq!(WORLD, "calimero:app/app@0.5.2");
 
     let mut imports = BTreeSet::new();
     for item in world.imports.values() {
@@ -74,7 +74,7 @@ fn imports_of_world(name: &str) -> BTreeSet<String> {
 
 #[test]
 fn compute_world_imports_exactly_its_allow_list_and_exports_only_run() {
-    assert_eq!(COMPUTE_WORLD, "calimero:app/compute@0.5.1");
+    assert_eq!(COMPUTE_WORLD, "calimero:app/compute@0.5.2");
     let expected: BTreeSet<String> = compute_allowed_imports()
         .iter()
         .map(|s| s.to_string())
@@ -99,17 +99,17 @@ fn compute_world_has_no_state_xcall_or_http() {
         "storage", "xcall", "context", "events", "action", "search", "runs",
     ] {
         assert!(
-            !imports.contains(&format!("calimero:app/{name}@0.5.1")),
+            !imports.contains(&format!("calimero:app/{name}@0.5.2")),
             "{name}"
         );
     }
     assert!(imports.iter().all(|i| !i.starts_with("wasi:http/")));
-    assert!(imports.contains("calimero:app/job@0.5.1"));
+    assert!(imports.contains("calimero:app/job@0.5.2"));
 }
 
 #[test]
 fn app_world_does_not_import_job() {
-    assert!(!imports_of_world("app").contains("calimero:app/job@0.5.1"));
+    assert!(!imports_of_world("app").contains("calimero:app/job@0.5.2"));
 }
 
 #[test]

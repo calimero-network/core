@@ -379,3 +379,73 @@ fn a_captcha_service_answers_in_the_same_call() {
         "{e:?}"
     );
 }
+
+/// `env::on_behalf_of`: the person the calling app's run served, carried by the node, never
+/// by an argument. A plain delivery has none; one sent for an account or a key names it;
+/// a run started by a person passes that person to every app it calls, by message or
+/// synchronously, and a timer or another app's run passes none of its own.
+#[test]
+fn a_delivery_names_the_person_the_sending_run_served() {
+    let mut t = TestApp::new(
+        component(),
+        Org::new().members(["bob", "carol"]),
+        1_700_000_000_000,
+    );
+    let get = |t: &mut TestApp, k: &str| t.as_("owner").view("get", json!({ "key": k })).unwrap();
+
+    t.deliver("app-a", "recordWho", json!({ "key": "plain" }))
+        .unwrap();
+    assert_eq!(get(&mut t, "plain"), json!("none"));
+    t.deliver_for("app-a", "bob", "recordWho", json!({ "key": "bob" }))
+        .unwrap();
+    assert_eq!(get(&mut t, "bob"), json!("account:bob"));
+    t.deliver_for_key("app-a", "k1", "bob", "recordWho", json!({ "key": "key" }))
+        .unwrap();
+    assert_eq!(get(&mut t, "key"), json!("key:k1"));
+    // A person calling this app directly is its caller, not someone it serves.
+    assert_eq!(
+        t.as_("bob").view("whoView", json!({})).unwrap(),
+        json!("none")
+    );
+
+    // What this app sends for Bob carries Bob.
+    t.as_("bob")
+        .call("relayWho", json!({ "app": "other", "key": "k" }))
+        .unwrap();
+    let sent = t.take_xcalls();
+    assert_eq!(
+        sent[0].on_behalf_of,
+        Some(calimero_sdk::env::Caller::Account("bob".into()))
+    );
+    t.as_("owner")
+        .call("relayWho", json!({ "app": "other", "key": "k" }))
+        .unwrap();
+    assert_eq!(
+        t.take_xcalls()[0].on_behalf_of,
+        Some(calimero_sdk::env::Caller::Account("owner".into()))
+    );
+
+    // Synchronously too: the other app's mock sees the person.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = std::sync::Arc::clone(&seen);
+    t.mock_app("other", move |c| {
+        log.lock().unwrap().push(c.on_behalf_of.clone());
+        Ok(if c.view { json!("ok") } else { json!(null) })
+    });
+    t.api_key("k2", "bob")
+        .call("callWho", json!({ "app": "other", "key": "k" }))
+        .unwrap();
+    t.as_("carol")
+        .call("askWho", json!({ "app": "other" }))
+        .unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            Some(calimero_sdk::env::Caller::ApiKey {
+                key_id: "k2".into(),
+                account: "bob".into()
+            }),
+            Some(calimero_sdk::env::Caller::Account("carol".into())),
+        ]
+    );
+}

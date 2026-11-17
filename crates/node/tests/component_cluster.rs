@@ -4978,6 +4978,96 @@ async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 }
 
+/// A run started by a person passes that person to the apps it calls (`env::on_behalf_of`
+/// in the target, beside `Caller::App(source)`): by message, by a synchronous call and by a
+/// synchronous view, once the cluster runs the release that carries it (the system leader
+/// logs that version shortly after start). A person calling the target directly is its
+/// caller, not someone it serves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_xcall_names_the_person_its_run_served() {
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let mut apps = Vec::new();
+    for name in ["source", "target"] {
+        apps.push(
+            alice
+                .apps()
+                .create(typed(json!({ "name": name, "bundle": &bundle })))
+                .await
+                .map(|a| a.app_id)
+                .unwrap(),
+        );
+    }
+    let (source, target) = (apps[0].clone(), apps[1].clone());
+    let me = format!("account:{alice_id}");
+
+    // By message: wait for the cluster version, then for the delivery.
+    let mut seen = Value::Null;
+    for i in 0..300 {
+        let key = format!("m{i}");
+        let _r = who_call(
+            &alice,
+            &source,
+            "relayWho",
+            json!({ "app": target, "key": key }),
+        )
+        .await;
+        for _ in 0..20 {
+            seen = strong_view(&alice, &target, "get", json!({ "key": key })).await;
+            if !seen.is_null() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if seen == json!(me) {
+            break;
+        }
+        assert_eq!(seen, json!("none"), "only a person or none is ever named");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(seen, json!(me));
+
+    // Synchronously, a call and a view.
+    let _r = who_call(
+        &alice,
+        &source,
+        "callWho",
+        json!({ "app": target, "key": "sync" }),
+    )
+    .await;
+    assert_eq!(
+        strong_view(&alice, &target, "get", json!({ "key": "sync" })).await,
+        json!(me)
+    );
+    let asked = who_call(&alice, &source, "askWho", json!({ "app": target })).await;
+    assert_eq!(asked, json!(me));
+
+    // Calling the target directly: Alice is the caller; the target serves no one else.
+    assert_eq!(
+        strong_view(&alice, &target, "whoView", json!({})).await,
+        json!("none")
+    );
+}
+
+async fn who_call(client: &Client, app: &str, method: &str, args: Value) -> Value {
+    client
+        .apps()
+        .call(app, method, Some(args), None, None)
+        .await
+        .unwrap()
+        .result
+}
+
 /// The upgrade suite's case: an app's dead letters move with it. A new replica catches
 /// up from the log, the send and its dead-lettering applied in one batch, and lists the
 /// dead letter its leader wrote; a node that no longer holds a replica answers

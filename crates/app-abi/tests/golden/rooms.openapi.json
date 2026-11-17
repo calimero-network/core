@@ -1894,6 +1894,6 @@
   "x-calimero": {
     "abiVersion": 1,
     "stateVersion": 1,
-    "world": "calimero:app@0.5.1"
+    "world": "calimero:app@0.5.2"
   }
 }

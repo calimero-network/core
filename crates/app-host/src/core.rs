@@ -115,6 +115,8 @@ pub struct HostCore {
     state: Arc<dyn StateView>,
     applied_index: u64,
     inv: Invocation,
+    /// The person the calling app's run serves ([`HostCore::with_origin`]).
+    origin: Option<Caller>,
     dir: Arc<dyn Directory>,
     blobs: Arc<dyn BlobHost>,
     search: Arc<dyn SearchHost>,
@@ -185,6 +187,7 @@ impl HostCore {
             state,
             applied_index,
             inv,
+            origin: None,
             dir,
             blobs: Arc::new(NoBlobs),
             search: Arc::new(NoSearch),
@@ -431,6 +434,38 @@ impl HostCore {
     #[must_use]
     pub fn caller(&self) -> &Caller {
         &self.inv.caller
+    }
+
+    /// The person the calling app's run serves (`context.on-behalf-of`): set by the node on a
+    /// delivery or a synchronous xcall from a run that had one; none otherwise.
+    #[must_use]
+    pub fn on_behalf_of(&self) -> Option<&Caller> {
+        self.origin.as_ref()
+    }
+
+    /// Names the person the calling app's run serves. Only a run another app calls
+    /// (`Caller::App`, as a delivery or a view) carries one, and only an account or an API
+    /// key: anything else is the node's mistake, refused here.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidInvocation::OriginOutsideXcall`].
+    pub fn with_origin(mut self, origin: Option<Caller>) -> Result<Self, InvalidInvocation> {
+        let Some(origin) = origin else {
+            self.origin = None;
+            return Ok(self);
+        };
+        let from_app = matches!(self.inv.caller, Caller::App(_))
+            && matches!(
+                self.inv.kind,
+                InvocationKind::XcallDeliver | InvocationKind::View
+            );
+        let person = matches!(origin, Caller::Account(_) | Caller::ApiKey { .. });
+        if !(from_app && person) {
+            return Err(InvalidInvocation::OriginOutsideXcall);
+        }
+        self.origin = Some(origin);
+        Ok(self)
     }
 
     #[must_use]

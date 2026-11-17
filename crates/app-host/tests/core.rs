@@ -465,7 +465,7 @@ fn context_comes_from_the_invocation_and_directory() {
 fn abi_reads_method_attributes() {
     let abi = Abi::from_json(&json!({
         "abiVersion": 1,
-        "world": "calimero:app@0.5.1",
+        "world": "calimero:app@0.5.2",
         "methods": {
             "init": { "kind": "init", "params": [], "returns": null },
             "book": { "kind": "call", "params": [["roomId", "string"]], "returns": "string" },
@@ -1590,4 +1590,42 @@ fn synchronous_xcalls_are_keyed_bounded_and_one_hop_deep() {
         core_for(&state, &inv(InvocationKind::Call)).xcall_call("captcha", "verify", b"{}"),
         Ok(Err(XCALL_SYNC_UNAVAILABLE.to_owned()))
     );
+}
+
+/// `context.on-behalf-of`: only a run another app called (a delivery or a view with
+/// `Caller::App`) carries an origin, and only an account or an API key; anything else is the
+/// node's mistake and refused before the run.
+#[test]
+fn only_a_run_another_app_called_carries_a_person_it_serves() {
+    let person = Caller::Account("bob".into());
+    let key = Caller::ApiKey {
+        key_id: "k1".into(),
+        account: "bob".into(),
+    };
+    let state = BTreeMap::new();
+    for kind in [InvocationKind::XcallDeliver, InvocationKind::View] {
+        let mut i = inv(kind);
+        i.caller = Caller::App("source".into());
+        for origin in [person.clone(), key.clone()] {
+            let core = core_for(&state, &i)
+                .with_origin(Some(origin.clone()))
+                .unwrap();
+            assert_eq!(core.on_behalf_of(), Some(&origin));
+        }
+        assert_eq!(core_for(&state, &i).on_behalf_of(), None);
+        for not_a_person in [Caller::App("other".into()), Caller::System, Caller::Public] {
+            let refused = core_for(&state, &i).with_origin(Some(not_a_person));
+            assert_eq!(refused.err(), Some(InvalidInvocation::OriginOutsideXcall));
+        }
+    }
+    // A person's own call, a timer and an action serve no one but their caller.
+    let mut call = inv(InvocationKind::Call);
+    call.caller = Caller::Account("alice".into());
+    let mut call_from_app = inv(InvocationKind::Call);
+    call_from_app.caller = Caller::App("source".into());
+    for i in [call, call_from_app, inv(InvocationKind::Action)] {
+        let refused = core_for(&state, &i).with_origin(Some(person.clone()));
+        assert_eq!(refused.err(), Some(InvalidInvocation::OriginOutsideXcall));
+        assert!(core_for(&state, &i).with_origin(None).is_ok());
+    }
 }
