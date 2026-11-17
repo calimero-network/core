@@ -105,6 +105,20 @@ pub struct AppIdentity {
     /// request to one of its hosts (and to a host the operator bound it to). `None`: a
     /// release that declares none, filled from the operator's bindings alone, as before.
     pub secrets: Option<BTreeMap<String, Vec<String>>>,
+    /// Values the instance's owner set for declared names (`PUT /apps/{app}/secrets/{name}`
+    /// in merod): one wins over the operator's for its name, and goes only to that name's
+    /// declared hosts. Empty for a release that declares none.
+    pub own: OwnSecrets,
+}
+
+/// An instance's own secret values, by name. Its `Debug` names them, never a value.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct OwnSecrets(pub BTreeMap<String, Zeroizing<String>>);
+
+impl fmt::Debug for OwnSecrets {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_set().entries(self.0.keys()).finish()
+    }
 }
 
 /// What the approver (the app's organization, or the operator where it holds
@@ -619,10 +633,20 @@ impl OutboundService {
                     bail!("the release declares secret {name} for other hosts than {host}");
                 }
             }
-            let provider = self
-                .secrets
-                .as_ref()
-                .ok_or_else(|| eyre!("this node has no secrets for outbound requests"))?;
+            // The instance's own value for a declared name, checked against its declared
+            // hosts above, wins over the operator's.
+            if let Some(value) = app.own.0.get(name).filter(|_| app.secrets.is_some()) {
+                out.extend_from_slice(value.as_bytes());
+                used.push(value.clone());
+                rest = &after[end + suffix.len()..];
+                continue;
+            }
+            let provider = self.secrets.as_ref().ok_or_else(|| {
+                eyre!(
+                    "no value for secret {name}: this node has no secrets for outbound requests, \
+                     and the app's owner set none"
+                )
+            })?;
             let secret = provider
                 .secret(app, name)?
                 .ok_or_else(|| eyre!("this node has no secret {name} for {}", app.package))?;

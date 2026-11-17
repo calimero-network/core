@@ -65,6 +65,20 @@ fn as_of(versions: &[Version], seq: u64) -> Option<&Option<Vec<u8>>> {
         .map(|(_, value)| value)
 }
 
+/// The most a run's cursors held at once: entries, and the bytes of their keys and values.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Buffered {
+    pub(crate) entries: usize,
+    pub(crate) bytes: usize,
+}
+
+impl Buffered {
+    fn note(&mut self, entries: usize, bytes: usize) {
+        self.entries = self.entries.max(entries);
+        self.bytes = self.bytes.max(bytes);
+    }
+}
+
 /// A range over the overlay merged with the committed state, resumed from the last key
 /// it returned. It reads the state as of its opening: the committed state (fixed for the
 /// run) plus the writes made before `range_open`, never later ones, so a scan that moves
@@ -92,17 +106,22 @@ impl Cursor {
         }
     }
 
-    /// Up to `max` live entries (stored keys). The committed side is read lazily, one
+    /// Up to `max` live entries (stored keys) and, past the first, at most `max_bytes` of
+    /// keys and values together: the batch stops before the entry that would pass it, which
+    /// the next batch starts with. The first entry is always returned, so a cursor never
+    /// stalls on one entry larger than `max_bytes`. The committed side is read lazily, one
     /// entry ahead of the merge, so at most `max + 1` entries are held at once; `buffered`
-    /// is raised to that count.
+    /// is raised to that count and to the bytes they hold.
     pub(crate) fn next_batch(
         &mut self,
         state: &dyn StateView,
         overlay: &Overlay,
         max: usize,
-        buffered: &mut usize,
+        max_bytes: usize,
+        buffered: &mut Buffered,
     ) -> Vec<KeyValue> {
         let mut out = Vec::new();
+        let mut bytes = 0_usize;
         if max == 0 {
             return out;
         }
@@ -141,11 +160,27 @@ impl Cursor {
                     }
                 }
             };
-            *buffered = (*buffered).max(out.len() + usize::from(pending.is_some()));
+            let pending_bytes = pending.as_ref().map_or(0, |(k, v)| k.len() + v.len());
+            buffered.note(
+                out.len() + usize::from(pending.is_some()),
+                bytes + pending_bytes,
+            );
+            // The bytes the entry this round would return adds, before it is copied.
+            let next_bytes = if order == Ordering::Greater {
+                pending_bytes
+            } else {
+                overlay_head.as_ref().map_or(0, |(k, slot)| {
+                    slot.as_ref().map_or(0, |v| k.len() + v.len())
+                })
+            };
+            if !out.is_empty() && bytes.saturating_add(next_bytes) > max_bytes {
+                break;
+            }
             if order == Ordering::Greater {
                 // SAFETY: guaranteed by the match above: `order` is `Greater` only when `pending` is `Some`.
                 let (key, value) = pending.take().expect("pending entry");
                 self.last = Some(key.clone());
+                bytes += key.len() + value.len();
                 out.push((key, value));
             } else {
                 if order == Ordering::Equal {
@@ -157,11 +192,16 @@ impl Cursor {
                 overlay_head = overlay_side.next();
                 self.last = Some(key.clone());
                 if let Some(value) = slot {
+                    bytes += key.len() + value.len();
                     out.push((key.clone(), value.clone()));
                 }
             }
         }
-        *buffered = (*buffered).max(out.len() + usize::from(pending.is_some()));
+        let pending_bytes = pending.as_ref().map_or(0, |(k, v)| k.len() + v.len());
+        buffered.note(
+            out.len() + usize::from(pending.is_some()),
+            bytes + pending_bytes,
+        );
         out
     }
 

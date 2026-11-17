@@ -38,7 +38,8 @@ impl Statement {
         Self {
             subject: subject.to_owned(),
             method: method.to_owned(),
-            args: serde_json::to_string(args).unwrap_or_default(),
+            // `Value`'s `Display` is its compact JSON and cannot fail.
+            args: args.to_string(),
             nonce: calimero_identity::b64url(&calimero_identity::random::<16>()),
         }
     }
@@ -397,7 +398,10 @@ pub fn recovery_key(code: &str) -> String {
 /// names the passkey the recovery adds, so a signature cannot add another.
 #[must_use]
 pub fn recover_message(key: &str, account: &str, credential: &Credential, now: u64) -> Vec<u8> {
-    let public = serde_json::to_vec(&credential.public_key).unwrap_or_default();
+    // SAFETY: guaranteed by `PublicKey`'s shape (strings and byte strings only), which
+    // serde_json always writes; an empty fallback would drop the passkey from what is signed.
+    let public = serde_json::to_vec(&credential.public_key)
+        .expect("a passkey's public key always serializes");
     let mut m = RECOVER_DOMAIN.to_vec();
     for part in [key.as_bytes(), account.as_bytes(), credential.id.as_bytes()] {
         m.extend_from_slice(part);

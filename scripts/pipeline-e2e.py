@@ -98,10 +98,10 @@ def data(i):
 
 
 def run_pipeline(ctl, app, ids, timeout):
-    started = ctl("pipeline", "run", app, PIPELINE, "--input", "docs=" + ",".join(ids))
+    started = ctl("cloud", "compute", "pipeline", "run", app, PIPELINE, "--input", "docs=" + ",".join(ids))
     deadline = time.time() + timeout
     while time.time() < deadline:
-        view = ctl("pipeline", "get", app, started["run"])
+        view = ctl("cloud", "compute", "pipeline", "get", app, started["run"])
         if view["state"] != "running":
             return started["run"], view
         time.sleep(1)
@@ -111,11 +111,11 @@ def run_pipeline(ctl, app, ids, timeout):
 def prove(ctl, mpk, version, args, wd):
     """Every step against the cluster `ctl` reaches; returns the app to clean up."""
     package = "com.calimero.pipeline-e2e"
-    ns = ["--namespace", args.namespace] if args.namespace else []
+    ns = ["--org", args.namespace] if args.namespace else []
 
     def create():
         ctl("app", "install", "--path", str(mpk))
-        return ctl("context", "create", "--name", f"pipeline-e2e-{version.split('.')[-1]}", "--package", package,
+        return ctl("instance", "create", "--name", f"pipeline-e2e-{version.split('.')[-1]}", "--package", package,
                    "--version", version, *ns)["appId"]
 
     app = step("install the package and create the compute-only app", create)
@@ -127,7 +127,7 @@ def prove(ctl, mpk, version, args, wd):
         for i in range(len(SIZES)):
             f = wd / f"in-{i}.bin"
             f.write_bytes(data(i))
-            up = ctl("file", "upload", str(f), "--context", app)
+            up = ctl("file", "upload", str(f), "--instance", app)
             need(up["size"] == SIZES[i] and up["sha256"] == hashlib.sha256(data(i)).hexdigest(), f"file {i}: {up}")
             ids.append(up["id"])
         return ids
@@ -145,7 +145,7 @@ def prove(ctl, mpk, version, args, wd):
 
         def outputs():
             out = wd / "out"
-            ctl("pipeline", "download", app, run, "--out", str(out))
+            ctl("cloud", "compute", "pipeline", "download", app, run, "--out", str(out))
             first = data(0) + data(1)
             if args.tamper:
                 first = first[:-1] + bytes([first[-1] ^ 1])
@@ -158,7 +158,7 @@ def prove(ctl, mpk, version, args, wd):
         first_digest = step("outputs match the expected bytes", outputs)
 
         def receipt():
-            got = ctl("pipeline", "receipt", app, run, "--verify")
+            got = ctl("cloud", "compute", "pipeline", "receipt", app, run, "--verify")
             need(got["verified"] is True and len(got["outputs"]) == 3 and all(o["matches"] for o in got["outputs"]),
                  f"receipt: {got}")
 
@@ -168,7 +168,7 @@ def prove(ctl, mpk, version, args, wd):
             again_run, again = run_pipeline(ctl, app, ids, args.timeout)
             need(again["state"] == "succeeded", f"state {again['state']}")
             need(all(s["cached"] for s in again["steps"].values()), f"not cached: {again['steps']}")
-            ctl("pipeline", "download", app, again_run, "--out", str(wd / "again"))
+            ctl("cloud", "compute", "pipeline", "download", app, again_run, "--out", str(wd / "again"))
             need(hashlib.sha256((wd / "again" / "all-0.bin").read_bytes()).hexdigest() == first_digest,
                  "the cached collect output differs from the first run's")
 
@@ -178,7 +178,7 @@ def prove(ctl, mpk, version, args, wd):
 
 def clean(ctl, app):
     try:
-        ctl("context", "delete", app)
+        ctl("instance", "delete", app)
         ctl("app", "uninstall", "com.calimero.pipeline-e2e")
     except Exception as e:  # leaving a test app behind is reported, not fatal
         say(f"note: cleanup incomplete: {str(e)[:200]}")
@@ -220,7 +220,7 @@ def main():
         if args.local:
             os.environ.pop("CALIMERO_API_KEY", None)
             ctl("login", "--dev-passkey", str(wd / "dev-passkey.json"), "--name", "owner", "--origin", ORIGIN)
-            args.namespace = ctl("namespace", "create", "pipeline-e2e")["orgId"]
+            args.namespace = ctl("org", "create", "pipeline-e2e")["orgId"]
             cluster.start_job(JOB, cluster.ops(1, "ops/cluster")["identity"])
             cluster.operate("add-node", str(JOB), cluster.url(JOB), "--role", "job")
             time.sleep(3)

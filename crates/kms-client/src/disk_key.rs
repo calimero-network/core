@@ -238,6 +238,22 @@ fn ensure_on_ram_filesystem(path: &Utf8Path) -> EyreResult<()> {
     Ok(())
 }
 
+/// Whether `dir` (which must exist) is on a RAM-backed filesystem (tmpfs or ramfs): in a
+/// TD, memory the host cannot read. `false` when that cannot be told.
+#[must_use]
+pub fn is_on_ram_filesystem(dir: &std::path::Path) -> bool {
+    let Ok(dir) = dir.canonicalize() else {
+        return false;
+    };
+    let Ok(dir) = Utf8PathBuf::from_path_buf(dir) else {
+        return false;
+    };
+    let Ok(mountinfo) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return false;
+    };
+    filesystem_of(&mountinfo, &dir).is_some_and(|fstype| RAM_FILESYSTEMS.contains(&fstype))
+}
+
 /// The filesystem type of the longest mount point containing `dir`.
 ///
 /// `/proc/self/mountinfo` lines are

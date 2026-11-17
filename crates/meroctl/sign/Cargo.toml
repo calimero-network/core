@@ -1,0 +1,27 @@
+[package]
+name = "meroctl-sign"
+description = "Signing Calimero bundle manifests (Ed25519 over the JCS manifest); the command line is `meroctl app sign`"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+readme = "README.md"
+publish = false
+
+[lib]
+name = "meroctl_sign"
+
+[dependencies]
+calimero-app-abi.workspace = true
+calimero-bundle.workspace = true
+calimero-utils-fs.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+serde_json.workspace = true
+serde = { workspace = true, features = ["derive"] }
+base64.workspace = true
+eyre.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

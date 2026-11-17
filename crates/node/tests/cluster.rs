@@ -954,6 +954,7 @@ fn mpk_full(
         upgrades,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         secrets: None,
+        uses: None,
         services: None,
         pipelines: Vec::new(),
         signature: None,
@@ -4831,6 +4832,7 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
             },
             strong: false,
             min_index: at,
+            via: None,
         })
         .await
         .unwrap();

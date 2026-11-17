@@ -4,26 +4,43 @@
 pub const WIT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/wit");
 
 /// The fully qualified world every app component targets.
-pub const WORLD: &str = "calimero:app/app@0.5.1";
+pub const WORLD: &str = "calimero:app/app@0.5.3";
 
 /// The fully qualified world of a component holding only an app's compute methods.
-pub const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.1";
+pub const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.3";
+
+/// Whether an ABI's `world` names the compute world: [`COMPUTE_WORLD`], or the same world at
+/// an older `0.5` patch, which a compute component built before the newest patch names (an
+/// older patch is a subset of this one, so it still runs).
+#[must_use]
+pub fn names_compute_world(world: &str) -> bool {
+    let patch = |w: &str| -> Option<(String, u32)> {
+        let (name, version) = w.split_once('@')?;
+        Some((name.to_owned(), version.strip_prefix("0.5.")?.parse().ok()?))
+    };
+    match (patch(world), patch(COMPUTE_WORLD)) {
+        (Some((name, patch)), Some((newest_name, newest))) => {
+            name == newest_name && patch <= newest
+        }
+        _ => false,
+    }
+}
 
 /// Most bytes one `wasi:random` call returns; the host refuses more and the SDK asks in pieces.
 pub const MAX_RANDOM_BYTES_PER_CALL: usize = 1024 * 1024;
 
 const ALLOWED_IMPORTS: &[&str] = &[
-    "calimero:app/types@0.5.1",
-    "calimero:app/storage@0.5.1",
-    "calimero:app/context@0.5.1",
-    "calimero:app/events@0.5.1",
-    "calimero:app/blobs@0.5.1",
-    "calimero:app/search@0.5.1",
-    "calimero:app/files@0.5.1",
-    "calimero:app/xcall@0.5.1",
-    "calimero:app/action@0.5.1",
-    "calimero:app/runs@0.5.1",
-    "calimero:app/rebuild@0.5.1",
+    "calimero:app/types@0.5.3",
+    "calimero:app/storage@0.5.3",
+    "calimero:app/context@0.5.3",
+    "calimero:app/events@0.5.3",
+    "calimero:app/blobs@0.5.3",
+    "calimero:app/search@0.5.3",
+    "calimero:app/files@0.5.3",
+    "calimero:app/xcall@0.5.3",
+    "calimero:app/action@0.5.3",
+    "calimero:app/runs@0.5.3",
+    "calimero:app/rebuild@0.5.3",
     "wasi:io/error@0.2.12",
     "wasi:io/poll@0.2.12",
     "wasi:io/streams@0.2.12",
@@ -39,9 +56,9 @@ const ALLOWED_IMPORTS: &[&str] = &[
 ];
 
 const COMPUTE_ALLOWED_IMPORTS: &[&str] = &[
-    "calimero:app/types@0.5.1",
-    "calimero:app/files@0.5.1",
-    "calimero:app/job@0.5.1",
+    "calimero:app/types@0.5.3",
+    "calimero:app/files@0.5.3",
+    "calimero:app/job@0.5.3",
     "wasi:io/error@0.2.12",
     "wasi:io/poll@0.2.12",
     "wasi:io/streams@0.2.12",

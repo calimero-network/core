@@ -14,10 +14,10 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 ## The node
 
 - [node](node/AGENTS.md) (`calimero-node`) - the node itself: system group, app groups, routing, the HTTP and Ops API, packages, blobs, files and compute runs, the job node, presence, search, app frontends, backups, storage key. Its `AGENTS.md` is the node's mental model.
-- [log](log/AGENTS.md) (`calimero-log`) - multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration.
+- [log](log/AGENTS.md) (`calimero-log`) - multi-group Raft (openraft) over one RocksDB per node on the TD's encrypted data disk; sealed snapshots.
 - [sealed](sealed/AGENTS.md) (`calimero-sealed`) - the sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js.
 - [identity](identity/AGENTS.md) (`calimero-identity`) - WebAuthn passkeys, session tokens, API keys, confirm challenges.
-- [client](client/AGENTS.md) (`calimero-client`) - the Rust client; `attest::verify` is the one quote check clients and peers share; its route layer is generated from the node's OpenAPI document (`tools/client-gen`).
+- [client](client/AGENTS.md) (`calimero-client`) - the Rust client; `attest::verify` is the one quote check clients and peers share; its route layer is generated from the node's OpenAPI document (`crates/client/gen`).
 - [kms-client](kms-client/AGENTS.md) (`calimero-kms-client`) - the mero-kms client: release policy, key release, `kms disk-key`.
 - [outbound](outbound/AGENTS.md) (`calimero-outbound`) - the gated outbound HTTPS client and secrets for runs.
 - [search](search/AGENTS.md) (`calimero-search`) - per-app full-text search (tantivy), derived in memory.
@@ -58,9 +58,18 @@ node refuses its bundles and answers `410 UNSUPPORTED_ENGINE` for an app it left
 
 - [build-utils](build-utils/AGENTS.md) (`calimero-build-utils`) - `build.rs` helpers: release version, git and rustc metadata.
 - [git-hooks](git-hooks/AGENTS.md) (`calimero-git-hooks`) - installs `.githooks/pre-commit` on any build.
-- `utils/fs` (`calimero-utils-fs`) - writing an owner-only secret file on Unix and Windows; used by `merod`, `meroctl` and `tools/mero-sign`.
+- `utils/fs` (`calimero-utils-fs`) - writing an owner-only secret file on Unix and Windows; used by `merod`, `meroctl` and `crates/meroctl/sign`.
 
-Tools (`mero-sign` and `mero-compute`, libraries behind `meroctl`; `client-gen`, `search-bench`) are under [`../tools`](../tools/AGENTS.md).
+## Tools
+
+Each sits in the directory of the crate it serves; none ships a binary of its own.
+
+- `meroctl/sign` (`meroctl-sign`) - the library `meroctl app sign`, `app signer` and `app pack` sign with (Ed25519 over the JCS manifest, the `did:key` signer id, the ABI check against the last release); `--dev` uses the well-known development key, which a public registry refuses. Also fuzzed by `fuzz/`'s `bundle_open`.
+- `meroctl/compute` (`meroctl-compute`) - the library behind `meroctl local compute run` (meroctl's `compute` feature, on by default): one compute method of a compute component alone, as a job node would; its `README.md` has the flags and what it leaves out.
+- `client/gen` (`calimero-client-gen`) - generates `calimero-client`'s route layer (`client/src/generated/`) from `docs/public/openapi.json`: `cargo run -p calimero-client-gen`. Its test (`the_checked_in_client_is_what_the_document_generates`) fails while the checked-in code differs.
+- `search/bench` (`calimero-search-bench`) - `calimero-search`'s engine over the node's `RamDirectory` (and `MmapDirectory`): index size, query latency, memory, a query's host time against the work it reports: `cargo run --release -p calimero-search-bench`. Its `README.md` holds the results; CI's `benchmarks.yml` uploads a report.
+
+These were `tools/mero-sign`, `tools/mero-compute`, `tools/client-gen` and `tools/search-bench`. The binaries `mero-app-build`, `mero-sign`, `mero-compute` and `scripts/pack-component.py` were removed after 1.0.0-rc.24, which shipped them as shims; `meroctl` replaces them. A stopped node's store is inspected with `merod inspect`.
 
 ## Removed crates
 
