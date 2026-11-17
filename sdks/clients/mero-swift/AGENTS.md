@@ -58,8 +58,9 @@ cd examples/MeroSampleApp && xcodegen generate && \
 The sample's XCUITest suite (simulator, against the in-app cluster,
 `-uitest-mock`) runs when the workflow is called with `ui-tests: true`. The
 live-node e2e suite (`Tests/MeroKitE2ETests`: the node API as mero-js's
-cluster tests cover it, and the app layer, `CalimeroAppBackend`) is not in
-CI: run it by hand against a `merod local` cluster, as TESTING.md shows
+cluster tests cover it, and the app layer, `CalimeroAppBackend`) runs in core's
+`e2e.yml` (job `clients-swift`: macOS, the change's merod built there; a
+skipped case fails it). By hand, against a `merod local` cluster, as TESTING.md shows
 (`scripts/dev-cluster.sh up`, then `MERO_E2E_NODE_URL`, `MERO_E2E_NODES`,
 `MERO_E2E_BUNDLE` and `MERO_E2E_MPK`).
 

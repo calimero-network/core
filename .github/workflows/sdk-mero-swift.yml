@@ -8,7 +8,7 @@ name: SDK mero-swift
 # Test: build and unit tests, SwiftLint and swift-format, and the sample app
 # built for the iOS Simulator; with `ui-tests`, its XCUITest suite too. The
 # live-node e2e suite (MeroKitE2ETests) is not run here: it needs a
-# `merod local` cluster and is run by hand (the SDK's TESTING.md). The
+# `merod local` cluster, so e2e.yml's `clients-swift` job runs it. The
 # generated layer's drift against docs/public/openapi.json is sdks.yml's
 # `SDK codegen drift` job.
 #
