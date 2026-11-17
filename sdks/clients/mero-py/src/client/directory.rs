@@ -25,6 +25,11 @@ const REFRESH_MAX: Duration = Duration::from_secs(24 * 60 * 60);
 /// How long a directory request may take.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The largest listing read: a cluster's nodes are a few hundred bytes each,
+/// and the directory is not trusted, so a bigger answer is refused before it
+/// is held in memory.
+const MAX_LISTING_BYTES: usize = 1024 * 1024;
+
 /// One node the directory lists.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Entry {
@@ -159,9 +164,12 @@ pub(crate) async fn fetch(
         status,
         message: format!("could not list cluster '{cluster}' from {url}: {why}"),
     };
+    // A redirect is not followed: the listing comes from the directory the
+    // caller named, not from wherever (or over whatever scheme) it points.
     let http = roots
         .builder()
         .timeout(FETCH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| failed(0, e.to_string()))?;
     let answer = http
@@ -179,9 +187,10 @@ pub(crate) async fn fetch(
     if !status.is_success() {
         return Err(failed(status.as_u16(), format!("answered {status}")));
     }
-    let body: Value = answer
-        .json()
+    let bytes = calimero_sealed::client::read_body_capped(answer, MAX_LISTING_BYTES)
         .await
+        .map_err(|e| failed(0, format!("{e:#}")))?;
+    let body: Value = serde_json::from_slice(&bytes)
         .map_err(|e| failed(0, format!("the answer is not JSON: {e}")))?;
     parse(cluster, &body)
 }
