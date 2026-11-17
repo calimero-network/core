@@ -137,8 +137,8 @@ hosts = ["api.example.com"]
 A job node (`job-node = true`) keeps only `scratch/`, the files of the runs it
 holds, emptied at each start.
 
-A directory that still holds the earlier `log.redb` file is migrated into
-`store/` on start, and the old file is renamed `log.redb.migrated`.
+A `store/` from before store format 2 is refused at start; the node starts on a
+new data directory (a rollout's new nodes always do).
 
 ## Registry
 

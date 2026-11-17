@@ -3,46 +3,28 @@
 //!
 //! | Format | Written by | Rows |
 //! | --- | --- | --- |
-//! | 0 | every release up to 1.0.0-rc.15 (no `format` row) | exactly format 1's |
-//! | 1 | every release since | format 0's, plus the `format` row |
+//! | 0 | every release up to 1.0.0-rc.15 (no `format` row) | every value sealed under the storage key |
+//! | 1 | up to 1.0.0-rc.30 | format 0's, plus the `format` row |
+//! | 2 | every release since | as they are, on the TD's encrypted data disk; node rows and snapshot rows sealed |
 //!
-//! A store marked newer than [`STORE_FORMAT`] is refused ([`NewerStore`]): a release never
-//! reads what a later one wrote, so a node rolls forward only. An older store is brought
-//! forward one step at a time through [`MIGRATIONS`], the marker written after each step, so a
-//! crash part way resumes at the step it stopped in (every step must be safe to run again on
-//! the store it left). An empty store (new, or created and never written) takes
-//! [`STORE_FORMAT`] at once.
+//! This release reads format 2 only. An empty store (new, or created and never written)
+//! takes [`STORE_FORMAT`] at once; any other format is refused ([`OtherStore`]), and the
+//! node does not start: format 2 was a hard cutover, which reads no earlier store, and a
+//! release never reads what a later one wrote.
 //!
-//! Changing the shape of any row (a column's key layout, a sealed value's encoding, a
-//! machine's rows) raises [`STORE_FORMAT`] and appends the step that rewrites the old rows;
-//! a step that cannot exist is a hard cutover, declared by a breaking PR (`!` in its title) and mdma's release
-//! compatibility table before it ships (docs: protocol/storage, "Format versions"). Snapshots
-//! carry rows too: the same change raises the snapshot format ([`crate::SNAPSHOT_FORMAT`]).
+//! Changing the shape of any row (a column's key layout, a value's encoding, a machine's
+//! rows) raises [`STORE_FORMAT`]; with no step to bring old rows forward that is a hard
+//! cutover, declared by a breaking PR (`!` in its title), `.github/upgrade-from` and mdma's
+//! release compatibility table before it ships (docs: protocol/storage, "Format versions").
+//! Snapshots carry rows too: a change to a snapshot row raises [`crate::SNAPSHOT_FORMAT`].
 
 use crate::store::Db;
 
-/// The store format this release writes, and the newest it reads.
+/// The store format this release writes, and the only one it reads.
 pub const STORE_FORMAT: u32 = 2;
 
 /// The node row the format is kept in.
 pub(crate) const ROW: &str = "format";
-
-/// One step: brings a store from format `n` to `n + 1`.
-type Migration = fn(&Db) -> eyre::Result<()>;
-
-/// `MIGRATIONS[n]` brings a store from format `n` to `n + 1`; one per format below the current.
-const MIGRATIONS: [Migration; STORE_FORMAT as usize] = [from_unmarked, unseal_rows];
-
-/// Format 0 (no marker, up to 1.0.0-rc.15) holds the rows format 1 does: nothing to rewrite.
-fn from_unmarked(_db: &Db) -> eyre::Result<()> {
-    Ok(())
-}
-
-/// Format 1 sealed every value under the storage key; format 2 stores them as they are,
-/// on the TD's encrypted data disk (see [`crate::store`]).
-fn unseal_rows(db: &Db) -> eyre::Result<()> {
-    db.unseal_rows()
-}
 
 /// What opening found, for the log line [`crate::Engine::open`] writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,20 +33,24 @@ pub enum Settled {
     Created,
     /// The store was already at [`STORE_FORMAT`].
     Current,
-    /// The store was at `from` and has been brought to [`STORE_FORMAT`].
-    Migrated { from: u32 },
 }
 
-/// The store was written by a later release than this one.
+/// The store is in another format than this release reads (`None`: an unmarked one, from
+/// before the marker).
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "the store is in format {found}, which a later release wrote; this release reads store \
-     formats up to {current}. A node rolls forward only: run the release that wrote it, or a \
-     later one",
+    "the store is in format {}, and this release reads format {current} only. {}",
+    found.map_or_else(|| "0".to_owned(), |f| f.to_string()),
+    if found.is_some_and(|f| f > STORE_FORMAT) {
+        "A later release wrote it: a node rolls forward only, so run that release or a later one"
+    } else {
+        "Format 2 was a hard cutover, which reads no earlier store: start the node on a new data \
+         directory (the cluster's data comes back from a peer, or from recovery files)"
+    },
     current = STORE_FORMAT
 )]
-pub struct NewerStore {
-    pub found: u32,
+pub struct OtherStore {
+    pub found: Option<u32>,
 }
 
 /// The store's format: its marker, `None` when it has none (format 0, or empty).
@@ -77,29 +63,22 @@ pub(crate) fn marked(db: &Db) -> eyre::Result<Option<u32>> {
     })
 }
 
-/// Read the store's format and bring it to [`STORE_FORMAT`], or refuse it ([`NewerStore`]).
+/// Read the store's format: mark an empty store [`STORE_FORMAT`], refuse any other.
 pub(crate) fn settle(db: &Db) -> eyre::Result<Settled> {
-    let from = match marked(db)? {
-        Some(found) if found > STORE_FORMAT => return Err(NewerStore { found }.into()),
-        Some(STORE_FORMAT) => return Ok(Settled::Current),
-        Some(older) => older,
+    match marked(db)? {
+        Some(STORE_FORMAT) => Ok(Settled::Current),
         None if db.is_empty()? => {
             db.put_sealed_meta(ROW, &STORE_FORMAT)?;
-            return Ok(Settled::Created);
+            Ok(Settled::Created)
         }
-        None => 0,
-    };
-    for (n, step) in (from..).zip(&MIGRATIONS[from as usize..]) {
-        step(db).map_err(|e| eyre::eyre!("migrating the store from format {n}: {e}"))?;
-        db.put_sealed_meta(ROW, &(n + 1))?;
+        found => Err(OtherStore { found }.into()),
     }
-    Ok(Settled::Migrated { from })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{meta_key, state_key, NODE_ROWS};
+    use crate::store::NODE_ROWS;
 
     const KEY: [u8; 32] = [1; 32];
 
@@ -112,45 +91,31 @@ mod tests {
         assert_eq!(settle(&db).unwrap(), Settled::Current, "marked once");
     }
 
-    /// A store as 1.0.0-rc.15 and every release before the marker left it: rows, no `format`.
+    /// Format 2 is a hard cutover: a store from before (format 1, or unmarked with rows) is
+    /// refused, named as such and left as it was; so is one a later release wrote.
     #[test]
-    fn a_store_from_before_the_marker_opens_with_its_rows_and_is_marked() {
-        let dir = tempfile::tempdir().unwrap();
-        {
+    fn any_other_store_format_is_refused_and_left_as_it_was() {
+        for (found, says) in [
+            (Some(1), "hard cutover"),
+            (None, "hard cutover"),
+            (Some(STORE_FORMAT + 1), "rolls forward only"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
             let db = Db::open(dir.path(), &KEY).unwrap();
-            format_1_rows(&db);
+            db.put_meta(1, "vote", &7_u64).unwrap();
+            if let Some(f) = found {
+                db.put_sealed_meta(ROW, &f).unwrap();
+            }
+            let e = settle(&db).unwrap_err();
+            assert_eq!(
+                e.downcast_ref::<OtherStore>().map(|o| o.found),
+                Some(found),
+                "{e}"
+            );
+            assert!(e.to_string().contains(says), "{found:?}: {e}");
+            assert_eq!(marked(&db).unwrap(), found, "untouched");
+            assert_eq!(db.get_meta::<u64>(1, "vote").unwrap(), Some(7));
         }
-        let db = Db::open(dir.path(), &KEY).unwrap();
-        assert_eq!(marked(&db).unwrap(), None);
-        assert_eq!(settle(&db).unwrap(), Settled::Migrated { from: 0 });
-        assert_eq!(marked(&db).unwrap(), Some(STORE_FORMAT));
-        assert_eq!(db.get_meta::<u64>(1, "vote").unwrap(), Some(7));
-        assert_eq!(db.get_meta::<u64>(NODE_ROWS, "rollback").unwrap(), Some(3));
-        assert_eq!(
-            db.get_blob("bundle").unwrap().as_deref(),
-            Some(&b"wasm"[..])
-        );
-        assert_eq!(db.list_segments().unwrap(), vec!["aa"]);
-    }
-
-    #[test]
-    fn a_store_from_a_later_release_is_refused_and_left_as_it_was() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(dir.path(), &KEY).unwrap();
-        db.put_sealed_meta(ROW, &(STORE_FORMAT + 1)).unwrap();
-        let e = settle(&db).unwrap_err();
-        assert_eq!(
-            e.downcast_ref::<NewerStore>().map(|n| n.found),
-            Some(STORE_FORMAT + 1),
-            "{e}"
-        );
-        let text = e.to_string();
-        assert!(
-            text.contains(&format!("format {}", STORE_FORMAT + 1))
-                && text.contains(&format!("up to {STORE_FORMAT}")),
-            "names both formats: {text}"
-        );
-        assert_eq!(marked(&db).unwrap(), Some(STORE_FORMAT + 1), "untouched");
     }
 
     #[test]
@@ -175,88 +140,5 @@ mod tests {
             vec![NODE_ROWS]
         );
         assert!(db.list_segments().unwrap().is_empty());
-    }
-
-    /// Rows as releases up to store format 1 wrote them: every value sealed, a segment's
-    /// index row empty and unsealed.
-    fn format_1_rows(db: &Db) {
-        db.put_format_1_row("meta", meta_key(1, "vote"), b"7")
-            .unwrap();
-        db.put_format_1_row("meta", meta_key(NODE_ROWS, "rollback"), b"3")
-            .unwrap();
-        db.put_format_1_row("blobs", b"bundle".to_vec(), b"wasm")
-            .unwrap();
-        db.put_format_1_row("blobs", b"seg.aa".to_vec(), b"segment")
-            .unwrap();
-        db.put_format_1_row("state", state_key(1, 0, b"row"), b"value")
-            .unwrap();
-        // `put_segment`'s index row was never sealed.
-        db.put_segment("aa", b"segment").unwrap();
-        db.put_format_1_row("blobs", b"seg.aa".to_vec(), b"segment")
-            .unwrap();
-    }
-
-    /// Store format 1 sealed every value under the storage key, the same bytes the TD's
-    /// encrypted data disk encrypts again; format 2 stores them as they are. The step
-    /// opens every row and writes it back, and the store reads as before.
-    #[test]
-    fn a_format_1_store_is_unsealed_and_reads_as_before() {
-        let dir = tempfile::tempdir().unwrap();
-        {
-            let db = Db::open(dir.path(), &KEY).unwrap();
-            format_1_rows(&db);
-            db.put_sealed_meta(ROW, &1_u32).unwrap();
-        }
-        let db = Db::open(dir.path(), &KEY).unwrap();
-        assert_eq!(marked(&db).unwrap(), Some(1));
-        assert_eq!(settle(&db).unwrap(), Settled::Migrated { from: 1 });
-        assert_eq!(marked(&db).unwrap(), Some(STORE_FORMAT));
-        assert_eq!(db.get_meta::<u64>(1, "vote").unwrap(), Some(7));
-        assert_eq!(db.get_meta::<u64>(NODE_ROWS, "rollback").unwrap(), Some(3));
-        assert_eq!(
-            db.get_blob("bundle").unwrap().as_deref(),
-            Some(&b"wasm"[..])
-        );
-        assert_eq!(
-            db.get_segment("aa").unwrap().as_deref(),
-            Some(&b"segment"[..])
-        );
-        assert_eq!(db.list_segments().unwrap(), vec!["aa"]);
-        assert_eq!(
-            db.get_state(1, 0, b"row").unwrap().as_deref(),
-            Some(&b"value"[..])
-        );
-        assert_eq!(
-            db.raw_row("state", &state_key(1, 0, b"row"))
-                .unwrap()
-                .as_deref(),
-            Some(&b"value"[..]),
-            "stored as it is"
-        );
-        assert_eq!(settle(&db).unwrap(), Settled::Current, "once");
-    }
-
-    /// A node stopped part way through resumes after the last batch it wrote, and never
-    /// opens a row it already wrote back (which would no longer open).
-    #[test]
-    fn an_interrupted_unsealing_resumes_after_its_last_batch() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = Db::open(dir.path(), &KEY).unwrap();
-        for name in ["a", "b", "c"] {
-            db.put_format_1_row("blobs", name.as_bytes().to_vec(), name.as_bytes())
-                .unwrap();
-        }
-        db.put_sealed_meta(ROW, &1_u32).unwrap();
-        // As if a batch through "a" had been written before the node stopped.
-        db.put_blob("a", b"a").unwrap();
-        db.put_sealed_meta(
-            "unseal-v2.blobs",
-            &serde_json::json!({ "after": hex::encode("a") }),
-        )
-        .unwrap();
-        assert_eq!(settle(&db).unwrap(), Settled::Migrated { from: 1 });
-        for name in ["a", "b", "c"] {
-            assert_eq!(db.get_blob(name).unwrap().as_deref(), Some(name.as_bytes()));
-        }
     }
 }

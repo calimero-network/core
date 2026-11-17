@@ -299,14 +299,10 @@ sequence.
 ## Upgrading the on-disk format
 
 The store names its format (`calimero_log::STORE_FORMAT`, 2) in a sealed node
-row, settled when the engine opens it: a store a later release wrote is
-refused, an older one is brought forward one registered step at a time
-([Format versions](/protocol/storage/#format-versions)). A data directory that
-still holds the single-file store of before (`log.redb`) is migrated by
-`calimero-log` when it opens: entries, vote, commit and purge marks, blobs, and
-each machine's old whole-state snapshot (imported through `Machine::import`);
-the old file is kept beside, renamed `log.redb.migrated`
-(`crates/log/src/migration_tests.rs`).
+row, settled when the engine opens it: an empty store takes it, any other
+format is refused ([Format versions](/protocol/storage/#format-versions)).
+No earlier store, and no `log.redb` store from before RocksDB, is read: a
+rollout's new nodes start empty and receive their data by snapshot.
 
 :::caution[1.0.0-rc.20 is a hard cutover]
 Every app is in an organization from 1.0.0-rc.20 on, and a data directory or

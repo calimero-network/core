@@ -83,23 +83,17 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   data, so a copy of the store carries the counter it had.
 - Format versions (`format.rs`, `machine::SNAPSHOT_FORMAT`): the store keeps its format in
   the sealed node row `format` (`STORE_FORMAT`, 2). `Engine::open` settles it before anything
-  else: a newer store is refused (`NewerStore`, the node does not start), an empty one is
-  marked current, an older one (no row: format 0, every release up to 1.0.0-rc.15, whose rows
-  are format 1's) goes through `MIGRATIONS` one step at a time, the marker written after each.
-  Format 1 to 2 (`Db::unseal_rows`) opens every sealed row and writes it back as it is, a
-  batch at a time with the key it reached in the same write (node row `unseal-v2.<column>`),
-  so a node stopped part way resumes; segment index rows and node rows are left as they
-  are. It changes no snapshot: `SNAPSHOT_FORMAT` stays 1, since snapshot rows are sealed
-  as before. Tests: `format::tests` (`a_format_1_store_is_unsealed_and_reads_as_before`,
-  `an_interrupted_unsealing_resumes_after_its_last_batch`).
+  else: an empty one is marked current, any other format is refused.
+  This release reads format 2 only, and refuses any other (`OtherStore`, the node does not
+  start); there is no migration step, and no reader of the redb store before RocksDB. A
+  rollout never meets an older store: a new release's nodes start on empty data directories
+  (each release has its own K_r) and receive their data by snapshot, whose format is
+  unchanged; only a node restarted in place on an older directory (development) is refused. Tests: `format::tests`
+  (`any_other_store_format_is_refused_and_left_as_it_was`).
   A snapshot file's first line is `CALIMERO-SNAPSHOT-<SNAPSHOT_FORMAT>`; a later format is
   refused by it, not by its frames. A change to any row's shape raises `STORE_FORMAT` (and
   `SNAPSHOT_FORMAT`, since snapshots carry rows) and appends its step. Tests:
   `format::tests`, `machine::snapshot_format`.
-- Migration (`legacy.rs`): a data dir holding the previous redb file (`log.redb`) is
-  migrated on `Engine::open` (entries, vote, commit and purge marks, blobs; the old
-  whole-state snapshot is imported by the group's machine via `Machine::import`) and
-  the file renamed `log.redb.migrated`.
 - Entries are capped at `MAX_ENTRY_BYTES` (1 MiB; `WriteError::TooLarge`): openraft
   gives each append RPC one heartbeat interval, so a huge entry would never reach a
   follower. Large content goes to the sealed blob store (`Engine::put_blob`/`get_blob`).
@@ -112,7 +106,7 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 Tests: `cargo test -p calimero-log` runs a 3-node cluster in one process
 (replication, failover, restart from disk, a lost or older commit index, learner catch-up, no plaintext in snapshot files,
 a disk machine restarting without replay, a ~6 MiB state streamed to a new node) and
-the redb migration (`migration_tests.rs`).
+the store format (`format::tests`).
 
 Bench: `cargo bench -p calimero-log --bench log` (`benches/log.rs`): a proposal
 appended, committed and applied on one group, on 1 node and on a 3-node group

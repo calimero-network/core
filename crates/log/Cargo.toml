@@ -12,7 +12,6 @@ publish = false
 base64.workspace = true
 eyre.workspace = true
 openraft = { version = "0.9.25", features = ["serde", "storage-v2"] }
-redb = "4.5"
 ring.workspace = true
 rocksdb.workspace = true
 serde = { workspace = true, features = ["derive"] }

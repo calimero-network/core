@@ -53,7 +53,8 @@ LUKS2 volume (`aes-xts-plain64`, `hmac-sha256` integrity) inside the TD. A node
 that takes its storage key from mero-kms refuses to start without that disk's
 record (`--kms-disk-evidence`) unless its data directory is in memory (tmpfs).
 Store format 1 sealed each of those values under K_c as well, encrypting the same
-bytes twice; a node opens a format-1 store once and writes it back as it is.
+bytes twice; format 2 dropped that and reads no earlier store (a rollout's new
+nodes start empty and receive their data by snapshot).
 
 ```text
 K_r = HKDF-SHA256(ikm = KMS key, salt = "calimero.cloud.storage.v1", info = cluster name)

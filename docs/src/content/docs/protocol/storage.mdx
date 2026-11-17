@@ -43,9 +43,7 @@ front and bound as associated data to its column tag, its group and its key
 format, the rollback counter) and every row of a snapshot file, sealed as the
 snapshot is built and opened as it is installed. A snapshot row's associated data
 names its machine key but not its generation, the shape every release writes, so
-nodes of either store format exchange snapshots. Format 1 sealed every value this
-way; the step to format 2 opens each row and writes it back, a batch at a time
-with its progress in a node row, so a node stopped part way resumes.
+nodes of either store format exchange snapshots. Format 1 sealed every value this way; format 2 reads no store from before it.
 
 Two further keys are derived from K_c (`HMAC-SHA256(K_c, label)`):
 
@@ -172,18 +170,18 @@ refuses what a later release wrote instead of misreading it:
 
 | Container | Where the version is | This release | Unmarked (written before markers) |
 | --- | --- | --- | --- |
-| The store (every row of every column) | node row `format` in `meta` (sealed, `calimero_log::STORE_FORMAT`) | 2 (rows as they are; format 1 sealed every value under K_c) | format 0: every release up to 1.0.0-rc.15, the same rows as format 1 |
+| The store (every row of every column) | node row `format` in `meta` (sealed, `calimero_log::STORE_FORMAT`) | 2 (rows as they are; only format 2 is read) | refused, as every format before 2 |
 | Snapshot and backup files | the first line, `CALIMERO-SNAPSHOT-<n>` (`calimero_log::SNAPSHOT_FORMAT`) | 1 | none: every file so far says 1 |
 | A component app's log entries (with the outcomes and file marks they carry) | `{"v":<n>,` as the start of the entry (`component::ENTRY_FORMAT`) | 1 | format 1: no entry so far carries a marker |
 | Sealed files and their segments | the domain strings the chunk AAD and the file id are bound to (`calimero.file.v1`, `calimero.file.segments.v1`) | v1 | none |
 | Recovery files (`.rbak`) | the first line, `calimero.recovery-backup.v1`, and the header's `format` (`calimero_client::recovery::FORMAT`) | 1 | none |
 
 The store's format is settled when the engine opens it, before any group
-starts: a store marked newer than this release reads is refused (`the store is
-in format N, which a later release wrote`), and the node does not start; an
-older one is brought forward one registered step at a time, the marker written
-after each step, so a crash part way resumes where it stopped; an empty store
-takes the current format. A snapshot or backup of a later format is refused
+starts: an empty store takes the current format, and a store in any other
+format is refused (`the store is in format N, and this release reads format 2
+only`), and the node does not start. No earlier store is read; a rollout
+never needs one, since a new release's nodes start on empty data directories
+and receive their data by snapshot, whose format is unchanged. A snapshot or backup of a later format is refused
 by its first line, and an app entry of a later format applies as a no-op that
 names its format on every replica of this release (the release that raises the
 entry format writes it only once every replica of the group reads it).

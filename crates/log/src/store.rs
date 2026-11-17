@@ -16,7 +16,7 @@
 //! integrity, keyed by mero-kms under the signed release policy and opened
 //! inside the TD, which merod requires in production (`--kms-disk-evidence`).
 //! Sealing every value under the storage key as well (format 1 and before)
-//! encrypted the same bytes twice; [`crate::format`] unseals a store that did.
+//! encrypted the same bytes twice, and is no longer read ([`crate::format`]).
 //! What leaves this disk is still sealed here: a snapshot file's frames, and the
 //! rows in them, under the storage key ([`Db::seal_state`]), so any node of the
 //! cluster opens it and a backup copied elsewhere stays sealed. The format row
@@ -147,21 +147,6 @@ pub fn unwrap_hidden(raw: &[u8]) -> Option<(&[u8], &[u8])> {
     Some((key, &raw[4 + len..]))
 }
 
-/// The node row (`<name>.<column>`) recording how far [`Db::unseal_rows`] got.
-const UNSEAL_PROGRESS: &str = "unseal-v2";
-/// Rows, and bytes, [`Db::unseal_rows`] writes per batch.
-const UNSEAL_BATCH_ROWS: usize = 4096;
-const UNSEAL_BATCH_BYTES: usize = 16 * 1024 * 1024;
-
-/// How far [`Db::unseal_rows`] got through one column.
-#[derive(serde::Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-enum Unsealed {
-    /// Every row up to and including this key (hex) is written back opened.
-    After(String),
-    Done,
-}
-
 /// The node's column families.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Column {
@@ -173,16 +158,6 @@ pub(crate) enum Column {
 
 impl Column {
     const ALL: [Self; 4] = [Self::Log, Self::Meta, Self::State, Self::Blobs];
-
-    /// The column's tag in every AAD.
-    const fn tag(self) -> u8 {
-        match self {
-            Self::Log => TAG_LOG,
-            Self::Meta => TAG_META,
-            Self::State => TAG_STATE,
-            Self::Blobs => TAG_BLOB,
-        }
-    }
 
     const fn name(self) -> &'static str {
         match self {
@@ -229,10 +204,9 @@ const SEGMENT_BLOB: &str = "seg.";
 /// Key prefix of a segment's empty index row in the `meta` column; no group id starts with it.
 const SEGMENT_INDEX: &[u8] = b"seg/";
 
-const TAG_LOG: u8 = 1;
+/// The tags in a sealed row's AAD: a node row's (`meta`), a snapshot row's (`state`).
 const TAG_META: u8 = 2;
 const TAG_STATE: u8 = 3;
-const TAG_BLOB: u8 = 4;
 
 fn group_prefix(group: GroupId) -> [u8; 8] {
     group.to_be_bytes()
@@ -829,117 +803,6 @@ impl Db {
                 Ok(())
             }
         }
-    }
-
-    /// Store format 1 to 2: open every sealed row and write it back as it is.
-    ///
-    /// A store can be larger than one batch, so it goes a batch at a time, each batch
-    /// with the key it reached ([`UNSEAL_PROGRESS`], a sealed node row) in the same
-    /// atomic write: a node stopped part way resumes after the last batch written, and
-    /// never meets a row it already opened. The rows that were never sealed (a
-    /// segment's empty index row) and the sealed node rows themselves are left alone.
-    pub(crate) fn unseal_rows(&self) -> eyre::Result<()> {
-        for col in Column::ALL {
-            let name = format!("{UNSEAL_PROGRESS}.{}", col.name());
-            let mut after: Option<Vec<u8>> = match self.get_sealed_meta::<Unsealed>(&name)? {
-                Some(Unsealed::Done) => continue,
-                Some(Unsealed::After(key)) => Some(hex::decode(key)?),
-                None => None,
-            };
-            loop {
-                let mut tx = Transaction::default();
-                let (mut rows, mut bytes) = (0_usize, 0_usize);
-                let mut last = None;
-                let from = after.clone().unwrap_or_default();
-                self.scan(col, &from, |k, v| {
-                    if after.as_deref() == Some(k) {
-                        return Ok(true);
-                    }
-                    if rows >= UNSEAL_BATCH_ROWS || bytes >= UNSEAL_BATCH_BYTES {
-                        return Ok(false);
-                    }
-                    last = Some(k.to_vec());
-                    rows += 1;
-                    bytes += k.len() + v.len();
-                    if self.stays_sealed(col, k) {
-                        return Ok(true);
-                    }
-                    let plain = self
-                        .sealer
-                        .open(&self.sealed_aad(col, k)?, v)
-                        .map_err(|e| eyre::eyre!("{} row {}: {e}", col.name(), hex::encode(k)))?;
-                    tx.raw_put(col, k.to_vec(), plain);
-                    Ok(true)
-                })?;
-                let Some(reached) = last else {
-                    break;
-                };
-                self.stage_meta(
-                    &mut tx,
-                    NODE_ROWS,
-                    &name,
-                    &Unsealed::After(hex::encode(&reached)),
-                )?;
-                self.write(&tx, true)?;
-                after = Some(reached);
-            }
-            self.put_sealed_meta(&name, &Unsealed::Done)?;
-        }
-        Ok(())
-    }
-
-    /// Rows the step leaves as they are: a segment's empty index row, which format 1
-    /// never sealed, and the node's own rows, which stay sealed.
-    fn stays_sealed(&self, col: Column, key: &[u8]) -> bool {
-        matches!(col, Column::Meta)
-            && (key.starts_with(SEGMENT_INDEX) || key.starts_with(&group_prefix(NODE_ROWS)))
-    }
-
-    /// The AAD a format-1 row of `col` under `key` was sealed with.
-    fn sealed_aad(&self, col: Column, key: &[u8]) -> eyre::Result<Vec<u8>> {
-        Ok(match col {
-            Column::State => {
-                let group = GroupId::from_be_bytes(
-                    key.get(..8)
-                        .and_then(|g| g.try_into().ok())
-                        .ok_or_else(|| eyre::eyre!("a state row without its group"))?,
-                );
-                let machine_key = key
-                    .get(12..)
-                    .ok_or_else(|| eyre::eyre!("a state row without its generation"))?;
-                aad(TAG_STATE, Some(group), machine_key)
-            }
-            Column::Log | Column::Meta | Column::Blobs => aad(col.tag(), None, key),
-        })
-    }
-
-    /// A row as store format 1 wrote it, sealed under the storage key (tests of the
-    /// migration only): `col` one of `log`, `meta`, `state`, `blobs`.
-    #[cfg(test)]
-    pub(crate) fn put_format_1_row(
-        &self,
-        col: &str,
-        key: Vec<u8>,
-        plain: &[u8],
-    ) -> eyre::Result<()> {
-        let col = Column::ALL
-            .into_iter()
-            .find(|c| c.name() == col)
-            .ok_or_else(|| eyre::eyre!("no column {col}"))?;
-        let sealed = self.sealer.seal(&self.sealed_aad(col, &key)?, plain)?;
-        let mut tx = Transaction::default();
-        tx.raw_put(col, key, sealed);
-        self.write(&tx, true)
-    }
-
-    /// A row as stored, unopened (tests only).
-    #[cfg(test)]
-    pub(crate) fn raw_row(&self, col: &str, key: &[u8]) -> eyre::Result<Option<Vec<u8>>> {
-        let col = Column::ALL
-            .into_iter()
-            .find(|c| c.name() == col)
-            .ok_or_else(|| eyre::eyre!("no column {col}"))?;
-        self.raw_get(col, key)
     }
 
     /// Seal a state row of `group` for a snapshot file, bound to its group and

@@ -14,7 +14,7 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 ## The node
 
 - [node](node/AGENTS.md) (`calimero-node`) - the node itself: system group, app groups, routing, the HTTP and Ops API, packages, blobs, files and compute runs, the job node, presence, search, app frontends, backups, storage key. Its `AGENTS.md` is the node's mental model.
-- [log](log/AGENTS.md) (`calimero-log`) - multi-group Raft (openraft) over one sealed RocksDB per node; snapshots; the `log.redb` migration.
+- [log](log/AGENTS.md) (`calimero-log`) - multi-group Raft (openraft) over one RocksDB per node on the TD's encrypted data disk; sealed snapshots.
 - [sealed](sealed/AGENTS.md) (`calimero-sealed`) - the sealed HTTP transport (wire format v2), server middleware and client; byte-compatible with mero-js.
 - [identity](identity/AGENTS.md) (`calimero-identity`) - WebAuthn passkeys, session tokens, API keys, confirm challenges.
 - [client](client/AGENTS.md) (`calimero-client`) - the Rust client; `attest::verify` is the one quote check clients and peers share; its route layer is generated from the node's OpenAPI document (`crates/client/gen`).
