@@ -47,25 +47,26 @@ It prints progress as the run reports it, then the result, each output and the u
 | ------------------------ | ---------------------- | ---------------------- |
 | `kv-store`               | Simple key-value store | `UnorderedMap`, events, a typed error; `TestApp` tests and `scenarios/*.json` |
 | `kv-store-init`          | KV with custom init | `#[app::init]` seeding the first state as the owner |
-| `org-gated`              | Org notes | `env::org_role` / `env::in_team`: gate methods on the caller's organization role and teams; `scenarios/cluster/` changes a team mid-run |
+| `org-gated`              | Org notes | `env::org_role` / `env::in_team`: gate methods on the caller's organization role and teams; `scenarios/cluster/` changes a team mid-run; also the node's org fixture (`crates/node/tests`) |
 | `sorted-kv-store`        | Ordered KV store | A `Table` read in key order: range / prefix / page / first / last through its cursor |
 | `sorted-set-store`       | Ordered set | A `Table` whose record is the element: range / prefix / page / min / max |
-| `authored-sorted-kv-store` | Shared noticeboard | Per-note authors checked against `env::caller()`, topic slices through a `Table` index, and why the two go together |
+| `noticeboard`            | Shared noticeboard | Per-note authors checked against `env::caller()`, topic slices through a `Table` index, and why the two go together |
 | `indexed-issue-tracker`  | Issue tracker | `Table` indexes, a label table and maintained counts: filter, count and page by field values without scanning |
 | `indexed-forum`          | Forum  | Tables with compound and optional-field indexes and maintained counts; a tag index as one row per tag; moderation as explicit checks against `env::caller()` and a moderators table |
 | `permissions-showcase`   | Team space | One table per write policy, each an explicit check: values written only in `init`, write-once messages, moderator-removed announcements, author-owned pages and revisions, evidence keyed by its SHA-256 |
-| `name-registry-admin`    | Usernames | Claim, verdict and admin tables: one owner per name, decided by the admins (the first claim applied wins); the app owner is the first admin, `setAdmins` hands the role on, a lost claim is renewed with `rebid` after a release |
-| `components-demo`        | Access-control patterns | An owned cell, a writer set and a role registry, each a table plus a check against `env::caller()` |
-| `kv-store-with-shared-storage` | Writer-set KV | A writer set as table rows plus an explicit check, and its rotation; `crates/node/tests/shared_storage.rs` runs it on a cluster |
-| `kv-store-with-user-and-frozen-storage` | Per-user + immutable KV | `PerUser` values keyed by the caller's account, a `Frozen` content-addressed store with its own `ContentHash` (`sha2`) |
+| `name-registry`          | Usernames | Claim, verdict and admin tables: one owner per name, decided by the admins (the first claim applied wins); the app owner is the first admin, `setAdmins` hands the role on, a lost claim is renewed with `rebid` after a release |
+| `access-control`         | Access-control patterns | An owned cell, a writer set and a role registry, each a table plus a check against `env::caller()` |
+| `kv-store-writer-sets`   | Writer-set KV | A writer set as table rows plus an explicit check, and its rotation; `crates/node/tests/shared_storage.rs` runs it on a cluster |
+| `kv-store-per-user-frozen` | Per-user + immutable KV | `PerUser` values keyed by the caller's account, a `Frozen` content-addressed store with its own `ContentHash` (`sha2`) |
 | `custom-key-store`       | Custom key type | A `ToKeyPart` newtype key (`Slug` over a `String`, normalized), and why a struct without it does not compile |
 | `team-metrics`           | Team metrics with badges | Per-team counts and a bitmask as a plain record |
 | `rooms`                  | Room booking | The node's Rooms tests (`crates/node/tests/rooms.rs`) and the fault test |
 | `compute-redact`         | CSV redaction | `#[app::compute]` runs: a preview then one run per part, a queue of at most 4 active runs, the compute component (`meroctl app build --compute-out`) that may import only the compute world; the policy is set by an admin and copied into each job; `share` publishes a done job's outputs (`compute::publish`) and `link` grants a download (`blobs.grant`) |
-| `v2-fixtures/kv`         | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls, actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
-| `v2-fixtures/compute` | The compute fixture | Compute methods that stream files, report progress and break each cap; `crates/node/tests/job_runs.rs` and `crates/meroctl/compute/tests` |
-| `v2-fixtures/notes-v1`, `notes-v2` | Two releases of one app | The consent page's upgrade diff (`an_upgrades_page_names_what_the_components_abis_change` in `crates/node/tests/consent_page.rs`) |
-| `v2-fixtures/org-gated`, `captcha`, `files` | Node test fixtures | What `crates/node/tests` needs that the example apps do not show |
+| `fixture-kv`             | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls, actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
+| `fixture-compute`        | The compute fixture | Compute methods that stream files, report progress and break each cap; `crates/node/tests/job_runs.rs` and `crates/meroctl/compute/tests` |
+| `fixture-notes-v1`, `fixture-notes-v2` | Two releases of one app | The consent page's upgrade diff (`an_upgrades_page_names_what_the_components_abis_change` in `crates/node/tests/consent_page.rs`) |
+| `fixture-captcha`        | Captcha service | Synchronous xcalls (`env::xcall_call`) from other apps of the org, and a Turnstile check with `env::fetch`; `crates/node/tests/component_cluster.rs` |
+| `fixture-files`          | The files fixture | Deterministic files kept by `BlobRef`, and the refusal to stream them back outside a compute run; `crates/node/tests` |
 
 ## Component apps
 
@@ -110,8 +111,8 @@ app-name/
 | File                                | Purpose         |
 | ----------------------------------- | --------------- |
 | `kv-store/src/lib.rs`               | Basic component app |
-| `components-demo/src/lib.rs`        | Auth patterns   |
-| `v2-fixtures/kv/src/lib.rs`         | Every host feature the node tests |
+| `access-control/src/lib.rs`         | Auth patterns   |
+| `fixture-kv/src/lib.rs`             | Every host feature the node tests |
 | `crates/sdk/AGENTS.md`          | The SDK itself |
 
 ## Scenarios

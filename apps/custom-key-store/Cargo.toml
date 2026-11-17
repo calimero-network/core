@@ -3,7 +3,7 @@ name = "custom-key-store"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "A custom key type on the v2 app SDK: a newtype slug as a map key"
+description = "A custom key type on the component SDK: a newtype slug as a map key"
 
 [lib]
 crate-type = ["cdylib"]

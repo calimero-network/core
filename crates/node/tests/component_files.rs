@@ -1,5 +1,5 @@
 //! Files of a component app on a cluster, through the client and the `files` fixture
-//! (`apps/v2-fixtures/files`): stored on the replicas before the entry, retained by `BlobRef` and
+//! (`apps/fixture-files`): stored on the replicas before the entry, retained by `BlobRef` and
 //! collected when nothing refers to them. A guest reads a sealed file only inside a compute run
 //! (`compute_runs.rs`), so these tests read through the provider such a run uses.
 
@@ -79,7 +79,7 @@ async fn start_with(c: Cluster) -> Fixture {
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
         .packages()
-        .bundle_put(common::component("files"))
+        .bundle_put(common::component("fixture-files"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -1890,7 +1890,7 @@ async fn org_with_a_public_app(f: &Fixture) -> Org {
         .to_owned();
     let bundle = alice
         .packages()
-        .bundle_put(common::component("files"))
+        .bundle_put(common::component("fixture-files"))
         .await
         .map(|b| b.hash)
         .unwrap();

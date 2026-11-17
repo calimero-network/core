@@ -1,5 +1,5 @@
 [package]
-name = "org-gated-notes"
+name = "org-gated"
 version = "0.1.0"
 edition = "2021"
 publish = false

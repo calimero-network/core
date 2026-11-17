@@ -3,7 +3,7 @@ name = "team-metrics"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Per-team counts and a badge bitmask on the v2 app SDK"
+description = "Per-team counts and a badge bitmask on the component SDK"
 
 [lib]
 crate-type = ["cdylib"]

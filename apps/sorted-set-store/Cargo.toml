@@ -3,7 +3,7 @@ name = "sorted-set-store"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Element-ordered set on the v2 app SDK: range, prefix, page, first, last"
+description = "Element-ordered set on the component SDK: range, prefix, page, first, last"
 
 [lib]
 crate-type = ["cdylib"]

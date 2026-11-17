@@ -126,8 +126,8 @@ JOBS: dict = {
     # sealed, attestation); the test and the scripts it runs are the rest. The old
     # release's fixtures come from its tag, so this tree's copies of them do not count.
     "upgrade_path": (
-        # apps/v2-fixtures/kv: this tree's kv, the release the app upgrades to.
-        lambda: ["crates/merod", "crates/meroctl", "crates/meroctl/sign", "crates/app-build", "apps/v2-fixtures/kv"],
+        # apps/fixture-kv: this tree's kv, the release the app upgrades to.
+        lambda: ["crates/merod", "crates/meroctl", "crates/meroctl/sign", "crates/app-build", "apps/fixture-kv"],
         False,
         (
             ".github/upgrade-from",

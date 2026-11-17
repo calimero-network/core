@@ -3,7 +3,7 @@ name = "kv-store-init"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "A key-value store whose init seeds entries, on the v2 app SDK"
+description = "A key-value store whose init seeds entries, on the component SDK"
 
 [lib]
 crate-type = ["cdylib"]

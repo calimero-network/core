@@ -1,0 +1,20 @@
+[package]
+name = "noticeboard"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A shared noticeboard on the component SDK: per-note authors and topic slices"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk = { path = "../../crates/sdk" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-sdk = { path = "../../crates/sdk", features = ["testing"] }
+calimero-app-build = { path = "../../crates/app-build" }
+serde_json = "1"
+
+# Standalone, like apps/rooms: the tests build this crate for wasm32-wasip2.
+[workspace]

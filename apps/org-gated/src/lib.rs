@@ -2,7 +2,7 @@
 //! `env::in_team`): members read the pinned note, admins write it, and a team's members
 //! write that team's note. Method names and arguments are the ABI's camelCase ones.
 //!
-//! `apps/v2-fixtures/org-gated` is the node's component fixture of the same shape. `scenarios/` holds the app-level scenarios (run by
+//! The node's cluster tests run it too (`crates/node/tests/component_cluster.rs`). `scenarios/` holds the app-level scenarios (run by
 //! `tests/scenarios.rs`) and `scenarios/cluster/` the one that changes a team mid-run.
 
 use calimero_sdk::env::{Caller, OrgRole};

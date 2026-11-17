@@ -3,7 +3,7 @@ name = "sorted-kv-store"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Key-ordered key-value store on the v2 app SDK: range, prefix, page, first, last"
+description = "Key-ordered key-value store on the component SDK: range, prefix, page, first, last"
 
 [lib]
 crate-type = ["cdylib"]

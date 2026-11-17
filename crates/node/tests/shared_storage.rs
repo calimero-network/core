@@ -2,7 +2,7 @@
 //! is refused inside the app, so it is never committed: the node runs a call
 //! once, on the leader, with no peer to re-check it at merge.
 //!
-//! Builds the component `apps/kv-store-with-shared-storage` from this checkout
+//! Builds the component `apps/kv-store-writer-sets` from this checkout
 //! (cached under `$CARGO_TARGET_DIR/app-components`).
 
 use calimero_client::types::ViewsRequestConsistency;
@@ -19,7 +19,7 @@ mod harness;
 use harness::{signed_up, typed, wire, Cluster};
 
 fn shared_kv_wasm() -> Vec<u8> {
-    harness::fixture("apps/kv-store-with-shared-storage")
+    harness::fixture("apps/kv-store-writer-sets")
 }
 
 async fn map_get(cl: &Client, app: &str, key: &str) -> Value {

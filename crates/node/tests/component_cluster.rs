@@ -1,5 +1,5 @@
 //! A three-node cluster in one process, driven only through the client, over
-//! sealed channels, with the real v2 fixture components (`apps/v2-fixtures/*`,
+//! sealed channels, with the real app components (`apps/fixture-*`, `apps/org-gated`,
 //! built on first use by `common::component`).
 
 mod common;
@@ -16,7 +16,7 @@ use reqwest::Method;
 use serde_json::{json, Value};
 
 fn kv_wasm() -> Vec<u8> {
-    common::component("kv")
+    common::component("fixture-kv")
 }
 
 fn wasm(name: &str) -> Vec<u8> {
@@ -3129,7 +3129,7 @@ async fn compute_and_compute_result_methods_are_refused_to_clients() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
         .packages()
-        .bundle_put(wasm("compute"))
+        .bundle_put(wasm("fixture-compute"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -6086,7 +6086,7 @@ async fn a_call_verifies_a_captcha_with_another_app_in_the_same_request() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let captcha_bundle = alice
         .packages()
-        .bundle_put(wasm("captcha"))
+        .bundle_put(wasm("fixture-captcha"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -6242,7 +6242,7 @@ async fn a_call_checks_a_turnstile_token_through_a_captcha_service() {
         .upload(mpk_declaring(
             PACKAGE,
             "0.1.0",
-            &wasm("captcha"),
+            &wasm("fixture-captcha"),
             &publisher,
             &[calimero_outbound::TURNSTILE_VERIFY_URL],
         ))

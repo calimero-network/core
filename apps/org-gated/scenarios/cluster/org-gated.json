@@ -46,7 +46,7 @@
       "name": "Alice deploys org-gated in the organization",
       "type": "deploy",
       "account": "alice",
-      "wasm": "{{env.CORE_WASM_DIR}}/org_gated_notes.wasm",
+      "wasm": "{{env.CORE_WASM_DIR}}/org_gated.wasm",
       "app_name": "org-gated",
       "org": "{{org}}",
       "outputs": {

@@ -125,7 +125,7 @@ nodes run outside the log ([Compute actions](/protocol/compute-actions/)).
 A component has one key space: its own keys, which the node keeps as hidden rows of
 the app's group, sealed on disk. Per-caller data is rows keyed by
 `env::caller()`, and writer sets are rows the app checks before it writes
-(`apps/kv-store-with-shared-storage`); the host keeps no space of its own inside
+(`apps/kv-store-writer-sets`); the host keeps no space of its own inside
 an app's keys. (SDK 0.12 apps had a private and a host space beside the shared
 one; they are gone with that SDK.)
 
@@ -211,7 +211,7 @@ write it guards, such as a captcha service verifying a Turnstile token:
   covers the code that made the request and its TLS connection, not the remote
   server's answer: the same trust as an action's request.
 
-`apps/v2-fixtures/captcha`'s `verifyTurnstile` is the example; the kv
+`apps/fixture-captcha`'s `verifyTurnstile` is the example; the kv
 fixture's `setHumanTurnstile` reaches it with a synchronous xcall, so the
 token is checked and the form written in one request.
 
