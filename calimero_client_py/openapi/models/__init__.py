@@ -59,6 +59,7 @@ from .app_delete_response_200 import AppDeleteResponse200
 from .app_entry import AppEntry
 from .app_error import AppError
 from .app_executor import AppExecutor
+from .app_links import AppLinks
 from .app_list_response_200 import AppListResponse200
 from .app_metadata_body import AppMetadataBody
 from .app_metadata_response_200 import AppMetadataResponse200
@@ -92,6 +93,7 @@ from .app_teams_scope_response_200_teams_item import AppTeamsScopeResponse200Tea
 from .app_transfer_body import AppTransferBody
 from .app_upgrade_body import AppUpgradeBody
 from .app_upgrade_response_200 import AppUpgradeResponse200
+from .app_upgrade_unit_body import AppUpgradeUnitBody
 from .app_usage_response_200 import AppUsageResponse200
 from .app_xcalls_response_200 import AppXcallsResponse200
 from .applied import Applied
@@ -601,6 +603,8 @@ from .upgrade_pending import UpgradePending
 from .upgrade_pending_nodes_item import UpgradePendingNodesItem
 from .upgrade_run import UpgradeRun
 from .upgrade_run_failed import UpgradeRunFailed
+from .upgrade_run_targets import UpgradeRunTargets
+from .upgrade_run_targets_additional_property import UpgradeRunTargetsAdditionalProperty
 from .upload_abort_response_200 import UploadAbortResponse200
 from .upload_begin_body import UploadBeginBody
 from .upload_begin_response_200 import UploadBeginResponse200
@@ -669,6 +673,7 @@ __all__ = (
     "AppExecutor",
     "Applied",
     "AppliedStatus",
+    "AppLinks",
     "AppListResponse200",
     "AppMetadataBody",
     "AppMetadataResponse200",
@@ -701,6 +706,7 @@ __all__ = (
     "AppTransferBody",
     "AppUpgradeBody",
     "AppUpgradeResponse200",
+    "AppUpgradeUnitBody",
     "AppUsageResponse200",
     "AppXcallsResponse200",
     "Assertion",
@@ -1143,6 +1149,8 @@ __all__ = (
     "UpgradePendingNodesItem",
     "UpgradeRun",
     "UpgradeRunFailed",
+    "UpgradeRunTargets",
+    "UpgradeRunTargetsAdditionalProperty",
     "UploadAbortResponse200",
     "UploadBeginBody",
     "UploadBeginResponse200",

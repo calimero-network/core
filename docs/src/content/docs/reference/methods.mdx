@@ -22,7 +22,7 @@ codes the document lists for the method beyond the ones every call can get
 (`UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, ...): see
 [errors](/reference/errors/).
 
-Generated from core `cf1666aa0`.
+Generated from core `afd3a1955`.
 
 ## `client.apps`
 
@@ -66,7 +66,8 @@ Generated from core `cf1666aa0`.
 | `runs(app, limit=…, before=…)` | `GET /apps/{app}/runs` | An app's compute runs. *Refusals:* `400 BAD_CURSOR`, `400 BAD_LIMIT` |
 | `storage(app)` | `GET /apps/{app}/storage` | What an app stores |
 | `transfer(app, to, confirm=None)` | `POST /apps/{app}/transfer` | Hand an app to another account. **passkey** |
-| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `409 CONFLICT`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
+| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `409 CONFLICT`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
+| `upgrade_unit(app, version, confirm=None)` | `POST /apps/{app}/upgrade-unit` | Upgrade an app and the apps it created, in one consent. **passkey**. *Refusals:* `400 NOT_A_UNIT`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 USES_NOT_INSTALLED` |
 | `upload_abort(app, upload)` | `DELETE /apps/{app}/files/uploads/{upload}` | Abort an upload |
 | `upload_begin(app, size)` | `POST /apps/{app}/files/uploads` | Begin a file upload. *Refusals:* `429 QUOTA_EXCEEDED` |
 | `upload_complete(app, upload)` | `POST /apps/{app}/files/uploads/{upload}/complete` | Commit an upload. *Refusals:* `409 UPLOAD_INCOMPLETE` |

@@ -64,6 +64,7 @@ from .openapi.api.apps import app_runs as _app_runs
 from .openapi.api.apps import app_storage as _app_storage
 from .openapi.api.apps import app_transfer as _app_transfer
 from .openapi.api.apps import app_upgrade as _app_upgrade
+from .openapi.api.apps import app_upgrade_unit as _app_upgrade_unit
 from .openapi.api.apps import app_usage as _app_usage
 from .openapi.api.apps import app_xcalls as _app_xcalls
 from .openapi.api.apps import blob_delete as _blob_delete
@@ -244,6 +245,7 @@ from .openapi.models import AppMoveBody
 from .openapi.models import AppTeamsScopeBody
 from .openapi.models import AppTransferBody
 from .openapi.models import AppUpgradeBody
+from .openapi.models import AppUpgradeUnitBody
 from .openapi.models import AttestationPurpose
 from .openapi.models import ConfirmOnly
 from .openapi.models import ConsentPageCreateBodyType0
@@ -559,6 +561,13 @@ _APP_TRANSFER = Operation(
 )
 _APP_UPGRADE = Operation(
     _app_upgrade, "app_upgrade", body=AppUpgradeBody, answer="json", confirm=True
+)
+_APP_UPGRADE_UNIT = Operation(
+    _app_upgrade_unit,
+    "app_upgrade_unit",
+    body=AppUpgradeUnitBody,
+    answer="json",
+    confirm=True,
 )
 _UPLOAD_ABORT = Operation(
     _upload_abort,
@@ -1439,6 +1448,24 @@ class Apps(Group):
                 "migrate": migrate,
             },
             confirm=confirm,
+        )
+
+    def upgrade_unit(self, *, app, version, confirm=None):
+        """Upgrade an app and the apps it created, in one consent (`POST /apps/{app}/upgrade-unit`, `app_upgrade_unit`).
+
+        An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            version: body `version`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: UpgradeRun
+        """
+        return self._run(
+            _APP_UPGRADE_UNIT, (app,), {}, {"version": version}, confirm=confirm
         )
 
     def upload_abort(self, *, app, upload):
@@ -5213,7 +5240,7 @@ class Public(Group):
     def attestation(self, *, nonce, app=UNSET, app_hash=UNSET, purpose=UNSET):
         """The node's attestation (`GET /attestation`, `attestation`).
 
-        In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+        In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
 
         **Who:** anyone.
 

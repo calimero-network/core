@@ -39,6 +39,7 @@ class OrgUpgradeRuns:
         d = dict(src_dict)
         org_upgrade_runs = cls()
 
+        from ..models.upgrade_run_targets import UpgradeRunTargets
         from ..models.upgrade_run_failed import UpgradeRunFailed
 
         additional_properties = {}

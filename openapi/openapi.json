@@ -6242,7 +6242,7 @@
             ]
           },
           "409": {
-            "description": "`CONFLICT`: the state does not allow it now; `RELEASE_DEADLINE`; `RUNTIME_TOO_OLD`. `details` of `RELEASE_DEADLINE`: a `ReleaseDeadline`, `RUNTIME_TOO_OLD`: a `RuntimeTooOld`.",
+            "description": "`CONFLICT`: the state does not allow it now; `OUTSIDE_UNIT_RANGE`; `RELEASE_DEADLINE`; `RUNTIME_TOO_OLD`. `details` of `RELEASE_DEADLINE`: a `ReleaseDeadline`, `RUNTIME_TOO_OLD`: a `RuntimeTooOld`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6252,6 +6252,7 @@
             },
             "x-calimero-codes": [
               "CONFLICT",
+              "OUTSIDE_UNIT_RANGE",
               "RELEASE_DEADLINE",
               "RUNTIME_TOO_OLD"
             ],
@@ -6312,6 +6313,161 @@
                 "$ref": "#/components/schemas/Applied"
               }
             }
+          }
+        }
+      }
+    },
+    "/apps/{app}/upgrade-unit": {
+      "post": {
+        "operationId": "app_upgrade_unit",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Upgrade an app and the apps it created, in one consent",
+        "description": "An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "type": "string"
+                  },
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "required": [
+                  "version"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpgradeRun"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`EXPIRED_CHALLENGE`; `NOT_A_UNIT`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "EXPIRED_CHALLENGE",
+              "NOT_A_UNIT",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "409": {
+            "description": "`CONFLICT`: the state does not allow it now; `FEATURE_NOT_ACTIVE`; `USES_NOT_INSTALLED`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFLICT",
+              "FEATURE_NOT_ACTIVE",
+              "USES_NOT_INSTALLED"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
           }
         }
       }
@@ -6696,7 +6852,7 @@
         ],
         "x-calimero-group": "public",
         "summary": "The node's attestation",
-        "description": "In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.\n\n**Who:** anyone.",
+        "description": "In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.\n\n**Who:** anyone.",
         "security": [],
         "x-calimero-who": "anyone",
         "x-calimero-sealed": false,
@@ -28049,6 +28205,24 @@
           },
           "finished": {
             "type": "boolean"
+          },
+          "targets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "package": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "package",
+                "version"
+              ]
+            }
           }
         },
         "required": [
@@ -28173,6 +28347,12 @@
                   "index"
                 ]
               }
+            }
+          },
+          "links": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
             }
           }
         },
