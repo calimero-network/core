@@ -1,18 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!--
-      No backup: the app's preferences hold the node URL and the session (encrypted).
+      No backup, and (Android 12+) no device-to-device transfer either: the app's preferences hold
+      the node URL and the session (encrypted).
       No cleartext: release builds speak https only. The debug manifest (src/debug) allows http
       to the loopback dev node and the emulator's host alias, nothing else.
     -->
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="Mero Sample"
         android:supportsRtl="true"
-        android:theme="@style/Theme.MeroSample">
+        android:theme="@style/Theme.MeroSample"
+        tools:targetApi="31">
 
         <activity
             android:name=".MainActivity"
