@@ -105,11 +105,13 @@ describe("WorkspaceReview", () => {
     review();
     expect(screen.getByRole("heading", { level: 2, name: "Review before creating" })).toBeTruthy();
     await ready();
-    for (const name of ["The app", "What it can do", "Where it runs", "Your data"]) expect(section(name)).toBeTruthy();
-    const app = section("The app");
-    expect(within(app).getByText("Mero CRM v1.4.0")).toBeTruthy();
-    expect(within(app).getByText("did:key:z6Mk…2doK")).toBeTruthy();
-    expect(within(app).getByText("bundle 7f3a…c91e, from the signed release")).toBeTruthy();
+    for (const name of ["Where it runs", "Your data", "What it can do", "Technical details"]) expect(section(name)).toBeTruthy();
+    expect(screen.getByText("Mero CRM")).toBeTruthy();
+    expect(screen.getByText("Version 1.4.0")).toBeTruthy();
+    expect(within(section("Where it runs")).getByText("Verified")).toBeTruthy();
+    const tech = section("Technical details");
+    expect(within(tech).getByText("did:key:z6Mk…2doK")).toBeTruthy();
+    expect(within(tech).getByText("bundle 7f3a…c91e, from the signed release")).toBeTruthy();
   });
 
   it("says the code comes from the signed release and never that the node attested it", async () => {
@@ -124,7 +126,7 @@ describe("WorkspaceReview", () => {
     connect(sealed);
     review();
     await ready();
-    fireEvent.click(within(section("The app")).getByRole("button", { name: "Copy publisher" }));
+    fireEvent.click(within(section("Technical details")).getByRole("button", { name: "Copy publisher" }));
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith(card().signer));
   });
 
@@ -133,8 +135,8 @@ describe("WorkspaceReview", () => {
     connect(sealed);
     review();
     await ready();
-    fireEvent.click(within(section("The app")).getByRole("button", { name: "Copy publisher" }));
-    expect(await within(section("The app")).findByText("Could not copy")).toBeTruthy();
+    fireEvent.click(within(section("Technical details")).getByRole("button", { name: "Copy publisher" }));
+    expect(await within(section("Technical details")).findByText("Could not copy")).toBeTruthy();
   });
 
   it("goes back or creates, and cannot create twice", async () => {
@@ -183,13 +185,16 @@ describe("what it can do", () => {
     review();
     await ready();
     const can = section("What it can do");
-    expect(within(can).getByText("Shows 1 thing to anyone")).toBeTruthy();
-    expect(within(can).getByText("Contacts 1 outside service")).toBeTruthy();
     expect(within(can).getByText("Runs 1 task on its own")).toBeTruthy();
     expect(within(can).queryByText(/No other app can use your data/)).toBeNull();
-    expect(within(can).getByText("See all 4 actions")).toBeTruthy();
+    // What anyone can see and the outside services are named once, under Your data.
+    expect(within(can).queryByText("Shows 1 thing to anyone")).toBeNull();
+    expect(within(can).queryByText("Contacts 1 outside service")).toBeNull();
+    expect(within(section("Your data")).getByText("Anyone can see: Pipeline summary")).toBeTruthy();
+    const tech = section("Technical details");
+    expect(within(tech).getByText("See all 4 actions")).toBeTruthy();
     for (const label of ["Needs your passkey", "Visible to anyone", "Changes your data", "Reads your data", "Runs on its own", "Outside services", "Updates it broadcasts"]) {
-      expect(within(can).getByText(label)).toBeTruthy();
+      expect(within(tech).getByText(label)).toBeTruthy();
     }
   });
 
@@ -208,7 +213,7 @@ describe("what it can do", () => {
     connect(sealed, async () => withCall);
     review();
     await ready();
-    expect(within(section("What it can do")).getByText("Lets anyone use 1 action without signing in")).toBeTruthy();
+    expect(within(section("What it can do")).queryByText("Lets anyone use 1 action without signing in")).toBeNull();
     expect(within(section("Your data")).getByText("Anyone can change: Join waitlist")).toBeTruthy();
     expect(within(section("Your data")).getByText("Anyone can see: Pipeline summary")).toBeTruthy();
   });
@@ -217,7 +222,7 @@ describe("what it can do", () => {
     connect(sealed);
     review();
     await ready();
-    const can = section("What it can do");
+    const can = section("Technical details");
     const all = within(can).getByRole("button", { name: /^All/ });
     const publicChip = within(can).getByRole("button", { name: "Public (1)" });
     expect(all.getAttribute("aria-pressed")).toBe("true");
@@ -233,7 +238,7 @@ describe("what it can do", () => {
     connect(sealed);
     review();
     await ready();
-    const can = section("What it can do");
+    const can = section("Technical details");
     const passkey = within(can).getByText("Needs your passkey").closest("details") as HTMLElement;
     const row = within(passkey).getByText("Delete workspace").closest("details") as HTMLDetailsElement;
     expect(row.open).toBe(false);
@@ -253,7 +258,7 @@ describe("what it can do", () => {
     connect(sealed, async () => c);
     review();
     await ready();
-    const row = within(section("What it can do")).getAllByText("Move issue")[0]!.closest("details") as HTMLDetailsElement;
+    const row = within(section("Technical details")).getAllByText("Move issue")[0]!.closest("details") as HTMLDetailsElement;
     const said = row.querySelector("summary [data-publisher]");
     expect(said?.textContent).toBe("Moves an issue to another column.");
     const full = row.querySelector(".mero-cw-review__facts [data-publisher]") as HTMLElement;
@@ -269,7 +274,7 @@ describe("what it can do", () => {
     connect(sealed);
     review();
     await ready();
-    const raw = within(section("What it can do")).getByText("Signed facts").closest("details") as HTMLElement;
+    const raw = within(section("Technical details")).getByText("Signed facts").closest("details") as HTMLElement;
     for (const text of ["manifest-hash", BUNDLE, card().signer, "mpk-hash"]) expect(within(raw).getByText(text)).toBeTruthy();
 
     const blobs: Blob[] = [];
@@ -291,21 +296,21 @@ describe("what it can do", () => {
     review();
     const can = section("What it can do");
     expect(await within(can).findByText("This app publishes no action list.")).toBeTruthy();
-    expect(within(can).getByText("Contacts 1 outside service")).toBeTruthy();
+    expect(within(section("Your data")).getByText("Leaves the sealed hardware: api.stripe.com")).toBeTruthy();
     expect(within(can).queryByText(/No other app can use your data/)).toBeNull();
-    expect(within(can).queryByRole("button", { name: "Download full ABI (JSON)" })).toBeNull();
+    expect(within(section("Technical details")).queryByRole("button", { name: "Download full ABI (JSON)" })).toBeNull();
     expect(within(section("Your data")).getByText(/publishes no action list/)).toBeTruthy();
   });
 });
 
 describe("where it runs", () => {
-  it("names the cluster, the nodes and the release, and links the public verifier", async () => {
+  it("names the cluster once and the release, and links the public verifier", async () => {
     connect(sealed);
     review();
     await ready();
-    const where = section("Where it runs");
-    expect(within(where).getByText("Calimero Cloud eu-shared-2")).toBeTruthy();
-    expect(within(where).getByText("3 nodes")).toBeTruthy();
+    expect(within(section("Where it runs")).getByText("Calimero Cloud eu-shared-2")).toBeTruthy();
+    const where = section("Technical details");
+    expect(within(where).queryByText("Calimero Cloud eu-shared-2")).toBeNull();
     expect(within(where).getByText("mero-tee v2.3.148")).toBeTruthy();
     expect(within(where).getByRole("link", { name: /Verify/ }).getAttribute("href")).toBe(verifyNodeUrl(NODE, "2.3.148"));
   });
@@ -316,7 +321,7 @@ describe("where it runs", () => {
     connect({ ...sealed, url });
     review();
     await ready();
-    const dd = within(section("Where it runs")).getByText("Node").nextElementSibling as HTMLElement;
+    const dd = within(section("Technical details")).getByText("Node").nextElementSibling as HTMLElement;
     expect(dd.textContent).toBe(host);
     expect(dd.querySelectorAll("wbr")).toHaveLength(4);
     const first = dd.firstElementChild as HTMLElement;
@@ -328,16 +333,9 @@ describe("where it runs", () => {
     connect(sealed, async () => card(), undefined, undefined, "Calimero Cloud eu-shared-2");
     review();
     await ready();
-    const dd = within(section("Where it runs")).getByText("Cluster").nextElementSibling as HTMLElement;
+    const dd = within(section("Where it runs")).getByText("Calimero Cloud eu-shared-2") as HTMLElement;
     expect(dd.querySelector(".mero-cw-review__nobreak")).toBeNull();
     expect(dd.querySelector("wbr")).toBeNull();
-  });
-
-  it("keeps the nodes line for a cluster whose name happens to mention nodes", async () => {
-    connect(sealed, async () => card(), undefined, undefined, "Cluster of 3 nodes");
-    review();
-    await ready();
-    expect(within(section("Where it runs")).getByText("Nodes")).toBeTruthy();
   });
 
   it("shows a local target once, as its label already says how many nodes there are", async () => {
@@ -354,10 +352,11 @@ describe("where it runs", () => {
     connect(mock);
     review();
     await ready();
-    const where = section("Where it runs");
+    expect(within(section("Where it runs")).getByText("Not sealed")).toBeTruthy();
+    const where = section("Technical details");
     expect(within(where).queryByRole("link")).toBeNull();
     expect(within(where).queryByText(/mero-tee v/)).toBeNull();
-    expect(within(where).getByText("Test server: not sealed")).toBeTruthy();
+    expect(within(section("Your data")).getByText("Test server: not sealed")).toBeTruthy();
   });
 });
 
@@ -370,7 +369,7 @@ describe("your data", () => {
     for (const text of ["Only you control it.", "Only people invited to it can open it.", "Calimero can't read it."]) expect(within(data).getByText(text)).toBeTruthy();
     expect(data.textContent).not.toContain("you invite");
     expect(data.textContent).not.toMatch(/you own/i);
-    const how = within(data).getByText("How we know").closest("details") as HTMLElement;
+    const how = within(section("Technical details")).getByText("How we know").closest("div") as HTMLElement;
     expect(within(how).getByText("Runs Calimero's published, signed node software (release v2.3.148)")).toBeTruthy();
     expect(within(how).getByText("Running in an Intel TDX enclave (not debug)")).toBeTruthy();
   });
@@ -384,7 +383,7 @@ describe("your data", () => {
     expect(within(data).getByText("Only people invited to it can open it, as this test server enforces it")).toBeTruthy();
     expect(data.querySelector(".mero-cw-shield__tick")).toBeNull();
     expect(within(data).queryByText("Calimero can't read it.")).toBeNull();
-    expect(within(data).queryByText("How we know")).toBeNull();
+    expect(screen.queryByText("How we know")).toBeNull();
     expect(within(data).getByText("Test server: not sealed").closest("[data-kind]")?.getAttribute("data-kind")).toBe("unsealed");
   });
 
@@ -474,14 +473,15 @@ describe("a node that is not trusted", () => {
     await screen.findByText("bundle 7f3a…c91e, from the release as this test server lists it");
     expect(screen.queryByText(/from the signed release/)).toBeNull();
     const can = section("What it can do");
-    expect(within(can).getByText("Facts as this test server lists them")).toBeTruthy();
+    const tech = section("Technical details");
+    expect(within(tech).getByText("Facts as this test server lists them")).toBeTruthy();
     const noApps = within(can).getByText("No other app can use your data, as this test server lists it").closest("li") as HTMLElement;
     expect(noApps.getAttribute("data-tone")).toBeNull();
     expect(noApps.querySelector("path")?.getAttribute("d")).toBe(CHECK_PATH);
     expect(within(can).queryByText("No other app can use your data")).toBeNull();
-    expect(within(can).queryByText("Signed facts")).toBeNull();
-    fireEvent.click(within(can).getByText(/^See all/));
-    expect(within(can).getByText(/come from the release as this test server lists it/)).toBeTruthy();
+    expect(within(tech).queryByText("Signed facts")).toBeNull();
+    fireEvent.click(within(tech).getByText(/^See all/));
+    expect(within(tech).getByText(/come from the release as this test server lists it/)).toBeTruthy();
   });
 
   it("asks for the card only after the node's check verified it", async () => {

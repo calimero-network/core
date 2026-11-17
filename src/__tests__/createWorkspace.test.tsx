@@ -1,5 +1,5 @@
 import type React from 'react';
-import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NodeVerificationState } from '@calimero-network/mero-js';
 import {
@@ -560,7 +560,8 @@ describe('the dialog as a whole', () => {
     const client = fakeClient({ verification: () => verified, verify: async () => verified, packageCapabilities: vi.fn(async () => card), nodes: [NODE] });
     render(<CreateWorkspaceDialog open client={client} release={R} onCreated={vi.fn()} onClose={vi.fn()} />);
     await toReview('A', 'B');
-    expect(screen.getByText('Mero Chat v1.0.0')).toBeTruthy();
+    expect(screen.getByText('Mero Chat')).toBeTruthy();
+    expect(screen.getByText('Version 1.0.0')).toBeTruthy();
   });
 
   it('says the newest release is being read while release is null', () => {
@@ -584,11 +585,11 @@ describe('the dialog as a whole', () => {
     const mk = () => fakeClient({ nodeUrl: host, verification: () => state, verify: async () => state, packageCapabilities: vi.fn(async () => card), nodes: [host] });
     plain({}, mk());
     await toReview();
-    expect(screen.getByText('eu-shared-1')).toBeTruthy();
+    expect(within(screen.getByRole('region', { name: 'Where it runs' })).getByText('eu-shared-1')).toBeTruthy();
     cleanup();
     plain({ cluster: 'Acme cluster' }, mk());
     await toReview();
-    expect(screen.getByText('Acme cluster')).toBeTruthy();
+    expect(within(screen.getByRole('region', { name: 'Where it runs' })).getByText('Acme cluster')).toBeTruthy();
   });
 });
 
@@ -640,7 +641,7 @@ describe('a noun for the thing being created', () => {
     expect(screen.getByText('Name your lobby, and choose how others in it will see you.')).toBeTruthy();
     expect(screen.getByLabelText('Lobby name')).toBeTruthy();
     await toReview('L', 'Me', 'Lobby name');
-    expect(screen.getByText('Check what this app can do and where it will run before you create the lobby.')).toBeTruthy();
+    expect(screen.getByText('What this app can do with your lobby, and where it runs.')).toBeTruthy();
     expect(createButtonNamed('Create lobby')).toBeTruthy();
     expect(screen.queryByText(/workspace/i)).toBeNull();
   });

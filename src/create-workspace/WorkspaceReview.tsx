@@ -4,7 +4,7 @@ import type { CalimeroClient, PackageCapabilities } from "@calimero-network/mero
 
 import { useCard, useNodeVerification, type ReviewRelease, type UnreleasedApp } from "../node-shield/nodeChecks";
 import { ExternalIcon, Icon, ShieldIcon, Tick, type IconName } from "./shieldIcons";
-import { describeShield, hostOf } from "../node-shield/shieldView";
+import { describeShield, hostOf, type ShieldKind } from "../node-shield/shieldView";
 import { HostText } from "./HostText";
 import { useCopy } from "./useCopy";
 import {
@@ -239,18 +239,21 @@ function Diverged({ divergence }: { divergence: "release" | "code" }) {
   );
 }
 
-/** The four sections. */
-function ReviewBody({ review, release, cluster, local, noun }: { review: Review; release: ReviewRelease | UnreleasedApp; cluster?: string; local?: boolean; noun: string }) {
+const STATUS: Record<ShieldKind, string> = { verified: "Verified", checking: "Checking…", unsealed: "Not sealed", refused: "Refused" };
+/** Summary lines that the exceptions under "Your data" already name. */
+const IN_EXCEPTIONS = new Set<SummaryLine["id"]>(["public", "publicCalls", "outside"]);
+
+/** The visible review: the app, where it runs, what happens to the data and what the app can do. Everything else waits under Technical details. */
+function ReviewBody({ review, release, cluster, noun }: { review: Review; release: ReviewRelease | UnreleasedApp; cluster?: string; noun: string }) {
   const { client, state, loaded, retry } = review;
   const view = describeShield(state, { code: null });
   const card = loaded.status === "ready" ? loaded.card : null;
   const sealed = view.kind === "verified";
   const nodeRelease = state.status === "verified" && !state.mock ? state.release : undefined;
   const code = card ? codeLine(card, null, sealed) : null;
-  const summary = card ? summarize(card, sealed) : [];
   const risks = card ? exceptions(card, sealed) : [];
+  const summary = card ? summarize(card, sealed).filter((line) => !(risks.length > 0 && IN_EXCEPTIONS.has(line.id))) : [];
   const statements = dataStatements(view.kind, "creator", noun);
-  const nodes = client && !local ? `${client.nodes.length} ${client.nodes.length === 1 ? "node" : "nodes"}` : "";
   const unreleased = loaded.status === 'none';
   const unknown = unreleased
     ? "This build has no signed release, so what it can do and what leaves the sealed hardware is not known."
@@ -259,6 +262,7 @@ function ReviewBody({ review, release, cluster, local, noun }: { review: Review;
     : !card.abi
       ? "This app publishes no action list, so what it makes visible to anyone is not known."
       : null;
+  const appName = card?.name ?? release.package;
 
   return (
     <>
@@ -274,110 +278,25 @@ function ReviewBody({ review, release, cluster, local, noun }: { review: Review;
         </div>
       )}
 
-      <Section title="The app">
-        <dl className="mero-cw-review__kv">
-          <div>
-            <dt>App</dt>
-            <dd>{unreleased ? `${release.package} (unreleased build)` : `${card?.name ?? release.package} v${release.version}`}</dd>
-          </div>
-          {card && (
-            <div>
-              <dt>Publisher</dt>
-              <dd>
-                <span className="mero-cw-review__mono" title={card.signer}>
-                  {shortSigner(card.signer)}
-                </span>
-                <CopyButton text={card.signer} label="Copy publisher" />
-              </dd>
-            </div>
-          )}
-          {code && (
-            <div>
-              <dt>Code</dt>
-              <dd className={code.tone ? `mero-cw-review__tone--${code.tone}` : undefined}>
-                <span>{code.text}</span>
-                {code.note && <span className="mero-cw-review__sub">{code.note}</span>}
-              </dd>
-            </div>
-          )}
-        </dl>
+      <div className="mero-cw-review__app">
+        <span className="mero-cw-review__tile" aria-hidden="true">
+          {appName.replace(/^.*\./, "").charAt(0).toUpperCase()}
+        </span>
+        <span className="mero-cw-review__app-text">
+          <b>{appName}</b>
+          <span>{unreleased ? "Unreleased build" : `Version ${release.version}`}</span>
+        </span>
+      </div>
+
+      <Section title="Where it runs">
+        <p className="mero-cw-review__where" data-kind={view.kind}>
+          <ShieldIcon kind={view.kind} />
+          <span className="mero-cw-review__where-name">{cluster ? <HostText text={cluster} /> : "Your node"}</span>
+          <span className="mero-cw-review__pill">{STATUS[view.kind]}</span>
+        </p>
       </Section>
 
-      <Section title="What it can do">
-        {loaded.status === "loading" && (
-          <p className="mero-cw-review__muted" role="status">
-            Loading what this app can do…
-          </p>
-        )}
-        {loaded.status === "error" && <p className="mero-cw-review__muted">Not available until the review loads.</p>}
-        {unreleased && <p className="mero-cw-review__muted">This app has no published release yet, so there is no signed review to show.</p>}
-        {loaded.status === "refused" && <p className="mero-cw-review__muted">Not available: this node did not pass its check.</p>}
-        {card && (
-          <>
-            {summary.length > 0 && (
-              <ul className="mero-cw-review__sum">
-                {summary.map((line) => (
-                  <li key={line.id} data-tone={line.tone}>
-                    <span className="mero-cw-review__ic">
-                      <Icon name={SUMMARY_ICON(line)} />
-                    </span>
-                    <span className="mero-cw-review__tx">
-                      <b>{line.title}</b>
-                      <span>{line.detail}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {!card.abi && <p className="mero-cw-review__muted">This app publishes no action list.</p>}
-            <AllActions card={card} signed={sealed} />
-            <SignedFacts card={card} signed={sealed} />
-          </>
-        )}
-      </Section>
-
-      <Section title="Where it runs" kind={view.kind}>
-        <dl className="mero-cw-review__kv">
-          <div>
-            <dt>Cluster</dt>
-            <dd>{cluster && <HostText text={cluster} />}</dd>
-          </div>
-          {nodes && (
-            <div>
-              <dt>Nodes</dt>
-              <dd>{nodes}</dd>
-            </div>
-          )}
-          {nodeRelease && (
-            <div>
-              <dt>Software</dt>
-              <dd>
-                <span className="mero-cw-review__mono">{`mero-tee v${nodeRelease}`}</span>
-                {view.verifyUrl && (
-                  <a className="mero-cw-review__link" href={view.verifyUrl} target="_blank" rel="noopener noreferrer" title="Opens the public verifier, which re-checks this node from outside the app">
-                    Verify
-                    <ExternalIcon />
-                  </a>
-                )}
-              </dd>
-            </div>
-          )}
-          {!sealed && (
-            <div>
-              <dt>Status</dt>
-              <dd>{view.title}</dd>
-            </div>
-          )}
-          {state.status === "verified" && (
-            <div>
-              <dt>Node</dt>
-              <dd className="mero-cw-review__mono"><HostText text={hostOf(state.url)} /></dd>
-            </div>
-          )}
-        </dl>
-      </Section>
-
-      <Section title="Your data" kind={code?.divergence ? "refused" : view.kind}>
+      <Section title="Your data">
         {code?.divergence ? (
           <Diverged divergence={code.divergence} />
         ) : (
@@ -387,24 +306,12 @@ function ReviewBody({ review, release, cluster, local, noun }: { review: Review;
                 {statements.map((text) => (
                   <li key={text}>
                     {sealed && <Tick />}
-                    <b>{text}</b>
+                    <span>{text}</span>
                   </li>
                 ))}
               </ul>
             )}
-            {sealed ? (
-              <details className="mero-cw-review__how">
-                <summary>
-                  <span>How we know</span>
-                </summary>
-                <ul>
-                  {nodeRelease && <li>{`Runs Calimero's published, signed node software (release v${nodeRelease})`}</li>}
-                  {view.checks.map((text) => (
-                    <li key={text}>{text}</li>
-                  ))}
-                </ul>
-              </details>
-            ) : (
+            {!sealed && (
               <p className="mero-cw-review__grey" data-kind={view.kind}>
                 <b>{view.title}</b>
                 <span>{view.sub}</span>
@@ -427,6 +334,100 @@ function ReviewBody({ review, release, cluster, local, noun }: { review: Review;
           </>
         )}
       </Section>
+
+      <Section title="What it can do">
+        {loaded.status === "loading" && (
+          <p className="mero-cw-review__muted" role="status">
+            Loading what this app can do…
+          </p>
+        )}
+        {loaded.status === "error" && <p className="mero-cw-review__muted">Not available until the review loads.</p>}
+        {unreleased && <p className="mero-cw-review__muted">This app has no published release yet, so there is no signed review to show.</p>}
+        {loaded.status === "refused" && <p className="mero-cw-review__muted">Not available: this node did not pass its check.</p>}
+        {card && summary.length > 0 && (
+          <ul className="mero-cw-review__sum">
+            {summary.map((line) => (
+              <li key={line.id} data-tone={line.tone}>
+                <span className="mero-cw-review__ic">
+                  <Icon name={SUMMARY_ICON(line)} />
+                </span>
+                <span className="mero-cw-review__tx">
+                  <b>{line.title}</b>
+                  <span>{line.detail}</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {card && !card.abi && <p className="mero-cw-review__muted">This app publishes no action list.</p>}
+      </Section>
+
+      <section className="mero-cw-review__tech" aria-label="Technical details">
+        <details className="mero-cw-review__more">
+          <summary>
+            <span>Technical details</span>
+          </summary>
+          <dl className="mero-cw-review__kv">
+            {card && (
+              <div>
+                <dt>Publisher</dt>
+                <dd>
+                  <span className="mero-cw-review__mono" title={card.signer}>
+                    {shortSigner(card.signer)}
+                  </span>
+                  <CopyButton text={card.signer} label="Copy publisher" />
+                </dd>
+              </div>
+            )}
+            {code && (
+              <div>
+                <dt>Code</dt>
+                <dd className={code.tone ? `mero-cw-review__tone--${code.tone}` : undefined}>
+                  <span>{code.text}</span>
+                  {code.note && <span className="mero-cw-review__sub">{code.note}</span>}
+                </dd>
+              </div>
+            )}
+            {nodeRelease && (
+              <div>
+                <dt>Software</dt>
+                <dd>
+                  <span className="mero-cw-review__mono">{`mero-tee v${nodeRelease}`}</span>
+                  {view.verifyUrl && (
+                    <a className="mero-cw-review__link" href={view.verifyUrl} target="_blank" rel="noopener noreferrer" title="Opens the public verifier, which re-checks this node from outside the app">
+                      Verify
+                      <ExternalIcon />
+                    </a>
+                  )}
+                </dd>
+              </div>
+            )}
+            {state.status === "verified" && (
+              <div>
+                <dt>Node</dt>
+                <dd className="mero-cw-review__mono"><HostText text={hostOf(state.url)} /></dd>
+              </div>
+            )}
+          </dl>
+          {sealed && !code?.divergence && (
+            <div className="mero-cw-review__how">
+              <b>How we know</b>
+              <ul>
+                {nodeRelease && <li>{`Runs Calimero's published, signed node software (release v${nodeRelease})`}</li>}
+                {view.checks.map((text) => (
+                  <li key={text}>{text}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {card && (
+            <>
+              <AllActions card={card} signed={sealed} />
+              <SignedFacts card={card} signed={sealed} />
+            </>
+          )}
+        </details>
+      </section>
     </>
   );
 }
@@ -456,7 +457,7 @@ export interface WorkspaceReviewProps {
  * card and the node's own check. Read by the person before "Create workspace",
  * which stays disabled while the node has refused its check.
  */
-export function WorkspaceReview({ client, cluster, local, noun = "workspace", release, creating = false, disabled = false, onBack, onCreate }: WorkspaceReviewProps) {
+export function WorkspaceReview({ client, cluster, noun = "workspace", release, creating = false, disabled = false, onBack, onCreate }: WorkspaceReviewProps) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => heading.current?.focus(), []);
   const review = useReview(client, release);
@@ -466,9 +467,9 @@ export function WorkspaceReview({ client, cluster, local, noun = "workspace", re
       <h2 ref={heading} tabIndex={-1} className="mero-cw-review__title">
         Review before creating
       </h2>
-      <p className="mero-cw-review__lede">{`Check what this app can do and where it will run before you create the ${noun}.`}</p>
-      <ReviewBody review={review} release={release} cluster={cluster} local={local} noun={noun} />
-      {refused && <p className="mero-cw-review__muted">Create is unavailable: this node did not pass its check.</p>}
+      <p className="mero-cw-review__lede">{`What this app can do with your ${noun}, and where it runs.`}</p>
+      <ReviewBody review={review} release={release} cluster={cluster} noun={noun} />
+      {refused && <p className="mero-cw-review__muted" role="note">Create is unavailable: this node did not pass its check.</p>}
       <div className="mero-cw-review__buttons">
         <button type="button" className="mero-cw-review__btn" disabled={creating} onClick={onBack}>
           Back
