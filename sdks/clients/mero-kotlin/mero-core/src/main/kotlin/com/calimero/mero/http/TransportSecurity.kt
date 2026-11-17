@@ -1,5 +1,6 @@
 package com.calimero.mero.http
 
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.net.URI
 
 /**
@@ -56,8 +57,8 @@ object TransportSecurity {
     /** Throw [InsecureTransportException] if [url] is plain http/ws to a node host that is not local (unless [allowInsecureHttp]). */
     @JvmStatic
     fun checkNodeUrl(url: String) {
-        val uri = plaintext(url) ?: return
-        if (!isLocalHost(uri.host.orEmpty())) throw InsecureTransportException(redacted(uri), "node")
+        val target = plaintext(url) ?: return
+        if (!isLocalHost(target.host)) throw InsecureTransportException(target.redacted, "node")
     }
 
     /**
@@ -69,8 +70,8 @@ object TransportSecurity {
         url: String,
         role: String,
     ) {
-        val uri = plaintext(url) ?: return
-        if (!isLoopbackHost(uri.host.orEmpty())) throw InsecureTransportException(redacted(uri), role)
+        val target = plaintext(url) ?: return
+        if (!isLoopbackHost(target.host)) throw InsecureTransportException(target.redacted, role)
     }
 
     /** `localhost`, `127.0.0.0/8`, `::1`, and the Android emulator's alias for its host machine, `10.0.2.2`. */
@@ -92,12 +93,27 @@ object TransportSecurity {
     }
 
     /** [url] parsed, when it is plain http/ws and the rules apply; null otherwise. */
-    private fun plaintext(url: String): URI? {
+    private fun plaintext(url: String): Plaintext? {
         if (allowInsecureHttp) return null
-        val uri = runCatching { URI(url.trim()) }.getOrNull() ?: return null
-        val scheme = uri.scheme?.lowercase()
-        return uri.takeIf { scheme == "http" || scheme == "ws" }
+        val trimmed = url.trim()
+        val uri = runCatching { URI(trimmed) }.getOrNull()
+        if (uri != null) {
+            val scheme = uri.scheme?.lowercase()
+            return if (scheme == "http" || scheme == "ws") Plaintext(uri.host.orEmpty(), redacted(uri)) else null
+        }
+        // java.net.URI refuses what OkHttp still sends (a space in the path, say): judge that by
+        // OkHttp's reading of it rather than letting it through unchecked.
+        val scheme = trimmed.substringBefore("://", "").lowercase()
+        if (scheme != "http" && scheme != "ws") return null
+        val parsed = ("http://" + trimmed.substringAfter("://")).toHttpUrlOrNull()
+        return Plaintext(parsed?.host.orEmpty(), "$scheme://${parsed?.host.orEmpty()}")
     }
+
+    /** A plaintext URL's host, and the URL as an error may print it. */
+    private class Plaintext(
+        val host: String,
+        val redacted: String,
+    )
 
     /** The URL without its query, fragment or user info, which may carry a token. */
     private fun redacted(uri: URI): String =

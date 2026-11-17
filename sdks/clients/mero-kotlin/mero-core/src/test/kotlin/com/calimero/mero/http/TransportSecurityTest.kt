@@ -14,6 +14,20 @@ class TransportSecurityTest {
     }
 
     @Test
+    fun `a URL java's parser refuses is still judged, not let through`() {
+        // OkHttp sends these (it escapes the space); java.net.URI cannot read them.
+        for (url in listOf("http://node.example/a b", "HTTP://node.example/x y?t=secret", "ws://node.example/ socket")) {
+            val service = runCatching { TransportSecurity.checkServiceUrl(url, "release mirror") }.exceptionOrNull()
+            assertTrue("$url: $service", service is InsecureTransportException)
+            assertFalse(service!!.message.orEmpty().contains("secret"))
+            val node = runCatching { TransportSecurity.checkNodeUrl(url) }.exceptionOrNull()
+            assertTrue("$url: $node", node is InsecureTransportException)
+        }
+        TransportSecurity.checkServiceUrl("http://localhost:2428/a b", "release mirror")
+        TransportSecurity.checkNodeUrl("http://192.168.1.5:2428/a b")
+    }
+
+    @Test
     fun `local hosts`() {
         for (host in listOf(
             "localhost", "127.0.0.1", "127.8.9.10", "::1", "[::1]", "10.0.2.2", "10.1.2.3", "172.16.0.1",
