@@ -178,7 +178,7 @@ public struct UpgradeRun: Codable, Sendable, Equatable {
 
 /// One of an app's blobs: `blobId` base58 (what apps print), `id` hex. (== mero-js `BlobInfo`.)
 ///
-/// A component app's sealed file (core rc.9+, ``CalimeroClient/uploadFile(_:_:)``)
+/// A component app's sealed file (``CalimeroClient/uploadFile(_:_:)``)
 /// lists with `sealed` true and the plaintext's `sha256` (hex), for the app's
 /// owner and its organization's members only; `size` is the plaintext's.
 public struct BlobInfo: Codable, Sendable, Equatable {

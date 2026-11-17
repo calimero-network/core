@@ -726,19 +726,6 @@ public actor CalimeroClient {
 
     // MARK: - Bundles and blobs
 
-    /// Upload a sealed file for component app `app` (core rc.9+,
-    /// `POST /apps/{app}/blobs?sealed=true`): sealed under a key of its own
-    /// that only the app's code reads, replicated on the app's replicas. Its
-    /// owner and its organization's members only (`403` to others), charged
-    /// to the organization's file quota (``QuotaExceeded``); a non-component
-    /// app answers `409 NOT_SUPPORTED`. Answers its id, the plaintext's
-    /// `size` and `sha256`, and the upload's log `index`. No route serves,
-    /// replaces or deletes a sealed file: the app's runs open it by id.
-    public func uploadFile(_ app: String, _ data: Data) async throws -> BlobInfo {
-        try decode(
-            BlobInfo.self, try await answerBytes { try await self.apps.blobUpload(app: app, body: data, sealed: true) })
-    }
-
     /// ``downloadBlob(_:_:)`` (or, with `grant`,
     /// ``downloadBlobGranted(_:_:grant:)``) with the content type the node
     /// serves it as: the uploader's, for a component app;
