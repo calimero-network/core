@@ -16,6 +16,7 @@ pub struct Org {
     pub(crate) members: BTreeSet<String>,
     pub(crate) guests: BTreeSet<String>,
     pub(crate) teams: BTreeMap<String, BTreeSet<String>>,
+    pub(crate) links: BTreeMap<String, String>,
 }
 
 impl Org {
@@ -73,6 +74,14 @@ impl Org {
                 .or_default()
                 .extend(accounts.into_iter().map(Into::into));
         }
+        self
+    }
+
+    /// Links `app` under `name`, as the node does for a unit member or an attached app:
+    /// `env::linked(name)` answers it, from `init` on.
+    #[must_use]
+    pub fn link(mut self, name: impl Into<String>, app: impl Into<String>) -> Self {
+        self.links.insert(name.into(), app.into());
         self
     }
 
@@ -142,5 +151,9 @@ impl Directory for HarnessDir {
             .map(|role| (ORG_ID.to_owned(), role))
             .into_iter()
             .collect()
+    }
+
+    fn linked(&self, name: &str) -> Option<String> {
+        self.0.links.get(name).cloned()
     }
 }

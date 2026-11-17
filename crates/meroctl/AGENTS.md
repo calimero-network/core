@@ -25,13 +25,13 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | `org ...` | organizations: members, invites, teams, metadata, capabilities, outbound and release approvals | `/orgs*`, `/invites/*` |
 | `team ...` | teams: members, metadata, reparent, subteams, settings; `team upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
 | `account ...` | the account: devices (passkeys), API keys, usage, approvals | `/auth/*` |
-| `dev start/watch` | install, create, keep pushing a build (`dev new` is a hidden alias of `app new`) | |
-| (new) `app new/build/codegen/abi show\|diff/signer new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone, plus an `AGENTS.md` for coding agents (`agents_md`) and a `CLAUDE.md` importing it; test `dev_new_starts_a_project_from_an_app_of_the_apps_repo`), `calimero-app-build`'s builder and `abi_tools`, `mero-sign`'s library, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), `pack --service NAME=PATH` (or the crate's `services`) writes a multi-service manifest, and `pack` opens what it wrote with `VerifiedBundle` before writing it; the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
+| `dev start/watch` | install, create, keep pushing a build | |
+| (new) `app new/build/codegen/abi show\|diff/signer new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone, plus an `AGENTS.md` for coding agents (`agents_md`) and a `CLAUDE.md` importing it; test `dev_new_starts_a_project_from_an_app_of_the_apps_repo`), `calimero-app-build`'s builder and `abi_tools`, `meroctl-sign`, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), `pack --service NAME=PATH` (or the crate's `services`) writes a multi-service manifest, and `pack` opens what it wrote with `VerifiedBundle` before writing it; the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
 | (new) `local up/down/status/dev/test/compute run` | `merod local` (the release's image by default, `docker_ready` checking Docker first; `--local` or `MEROD`: the binary; `--registry-url`, default the public registry) in the background, state in `--dir`/`meroctl-local.json`, saved as node `local`; `dev` builds, uploads a raw bundle as a fresh deployer, writes `app/.env.development.local`, runs `pnpm dev` on :5173 and rebuilds on save; `compute run` is `mero-compute` (feature `compute`, default on) | `/bundles` |
-| (new) `cloud login/logout/orgs/clusters list\|create/use`, `cloud compute pipeline\|logs` | the Cloud manager (mdma) with a console session in `{home}/meroctl/cloud.json` (refreshed from `X-MDMA-Session-Refresh`); `use` saves a cluster's node as the default; `cloud compute` is the old top-level `pipeline` and `run logs` (hidden aliases) | `/api/orgs`, `/api/clusters` |
+| (new) `cloud login/logout/orgs/clusters list\|create/use`, `cloud compute pipeline\|logs` | the Cloud manager (mdma) with a console session in `{home}/meroctl/cloud.json` (refreshed from `X-MDMA-Session-Refresh`); `use` saves a cluster's node as the default | `/api/orgs`, `/api/clusters` |
 | `network status` | `/health` | |
 | (new) `login`, `logout [--all]`, `whoami`, `attest [node\|app INSTANCE]` | file passkeys on dev clusters; cluster verification | `/auth/*`, `/attestation` |
-| (new) `attest release [--file F --nonce N]` (`attest-release` hidden) | verify a `merod attest` release attestation (no session, no sealed channel) | `/attestation/release` |
+| (new) `attest release [--file F --nonce N]` | verify a `merod attest` release attestation (no session, no sealed channel) | `/attestation/release` |
 | (new) `proxy [--listen ADDR] [--allow-remote] [--openapi FILE]` | the API as plain HTTP on loopback, each request through the attested, sealed `Transport` (`proxy.rs`) | every route; `GET /openapi.json` |
 | (new) `ops ...` | the operator, `--ops-token`: status, cluster, metrics, placement, add-node, remove-node, move, backup, restore, backup-key, recovery-keygen, recover, pools/set-pools, prices/set-prices, quotas/set-quotas, release, outbound, packages/install/uninstall, upgrade, upgrade-org | `/ops/*` |
 
@@ -77,9 +77,10 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   (`dev new`, `pipeline`, `run logs`, `attest-release`, `attest --context`, `context` (now `instance`) and `--context`/`-c` (now `--instance`/`-i`),
   `namespace`/`ns` (now `org`, with `teams`, `create-team`), `group` (now `team`, with `subteams`),
   `--namespace`/`--group` (now `--org`/`--team`) and `ops upgrade-namespace` (now `upgrade-org`))
-  stay as hidden aliases for one release, and each one an invocation uses prints a warning on
-  stderr naming its replacement (`old_spellings`, test
-  `old_spellings_are_named_with_their_replacements`); `old_spellings_still_parse` and
+  warned in 1.0.0-rc.30 and are refused since; a refused command line that used one gets a
+  note naming its replacement under clap's error (`old_spellings`, tests
+  `old_spellings_are_refused_and_named`, `old_spellings_are_named_with_their_replacements`);
+  `the_current_spellings_parse` and
   `the_command_tree_is_consistent` (clap's `debug_assert`) pin the tree, and
   `help_says_instance_org_and_team` keeps every visible help saying instance, org and team.
 - `local up` without ownership leaves the cluster running; `local dev` owns

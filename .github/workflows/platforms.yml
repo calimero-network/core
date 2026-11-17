@@ -32,12 +32,11 @@ on:
       - rust-toolchain.toml
       - ".cargo/**"
       - "crates/**"
-      - "tools/**"
       - ".github/workflows/platforms.yml"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
-      - "tools/mero-sign/README.md"
+      - "crates/meroctl/sign/README.md"
 
 permissions:
   contents: read

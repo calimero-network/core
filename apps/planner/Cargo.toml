@@ -1,0 +1,29 @@
+[package]
+name = "planner"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A team planner that brings its own calendar: every instance creates one with it (uses, mode = create)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.calimero]
+package = "com.calimero.example.planner"
+
+# Each instance of the planner gets a calendar of its own, created with it in the same
+# organization and owned by the same person (`<instance>.calendar`).
+[package.metadata.calimero.uses]
+calendar = { package = "com.calimero.example.calendar", range = "^0.1", mode = "create" }
+
+[dependencies]
+calimero-sdk = { path = "../../crates/sdk" }
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-sdk = { path = "../../crates/sdk", features = ["testing"] }
+calimero-app-build = { path = "../../crates/app-build" }
+serde_json = "1"
+
+# Standalone, like the other examples: the tests build this crate for wasm32-wasip2.
+[workspace]

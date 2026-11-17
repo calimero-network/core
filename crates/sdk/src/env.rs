@@ -92,9 +92,28 @@ pub fn caller() -> Caller {
     backend::caller()
 }
 
+/// The app this call came through, when another app called as the person it serves:
+/// `caller()` is then that person (an account or an API key), who granted the app this method
+/// (`PUT /apps/{app}/delegations/{target}`), and the app's own rules for the person apply.
+/// `None` for every other run, including another app's call as itself (`Caller::App`).
+///
+/// Use it when a call through an app should get less than the person's own call, e.g.
+/// read-only through a plugin.
+pub fn via() -> Option<String> {
+    backend::via()
+}
+
 /// This app's id.
 pub fn app_id() -> String {
     backend::app_id()
+}
+
+/// The app this instance's release references under `name` (`uses` in the release's
+/// `Cargo.toml` metadata): the member the node created with this instance, or the app its
+/// owner attached. `None` when nothing is linked under that name. Read it whenever you call
+/// the app: an owner may attach another one later.
+pub fn linked(name: &str) -> Option<String> {
+    backend::linked(name)
 }
 
 /// The account that owns the app.

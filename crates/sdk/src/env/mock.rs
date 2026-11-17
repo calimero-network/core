@@ -13,8 +13,12 @@ use crate::error::{AppError, Result};
 pub struct MockState {
     /// The caller of the run.
     pub caller: Caller,
+    /// The app a person's call came through (`env::via`).
+    pub via: Option<String>,
     /// The app id.
     pub app_id: String,
+    /// The apps linked by name (`env::linked`).
+    pub links: HashMap<String, String>,
     /// The app owner's account.
     pub owner: String,
     /// The app's org.
@@ -45,7 +49,9 @@ impl Default for MockState {
     fn default() -> Self {
         Self {
             caller: Caller::System,
+            via: None,
             app_id: "app".into(),
+            links: HashMap::new(),
             owner: "owner".into(),
             org: None,
             roles: HashMap::new(),
@@ -84,8 +90,16 @@ pub fn caller() -> Caller {
     read(|s| s.caller.clone())
 }
 
+pub fn via() -> Option<String> {
+    read(|s| s.via.clone())
+}
+
 pub fn app_id() -> String {
     read(|s| s.app_id.clone())
+}
+
+pub fn linked(name: &str) -> Option<String> {
+    read(|s| s.links.get(name).cloned())
 }
 
 pub fn app_owner() -> String {
