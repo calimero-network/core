@@ -127,6 +127,82 @@ pub fn is_outbound_url(url: &str) -> bool {
         && !url.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 
+/// Most secrets one release declares.
+pub const MAX_SECRETS: usize = 16;
+/// Most hosts one declared secret may go to.
+pub const MAX_SECRET_HOSTS: usize = 8;
+/// Most bytes of a declared secret's description.
+pub const MAX_SECRET_DESCRIPTION_BYTES: usize = 256;
+/// Most bytes of a secret's name.
+pub const MAX_SECRET_NAME_BYTES: usize = 64;
+
+/// One secret a release declares (`BundleManifest::secrets`).
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BundleSecret {
+    /// The hosts it may be sent to: each the host of one of the release's `outbound`
+    /// prefixes, lowercase.
+    pub hosts: Vec<String>,
+    /// What it is, for whoever supplies it ("NEAR AI Cloud API key").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// The app does not work without it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub required: bool,
+}
+
+/// Whether `name` may name a secret: `A-Z`, `0-9` and `_`, starting with a letter, at most
+/// [`MAX_SECRET_NAME_BYTES`]. The same names `{{secret:NAME}}` takes.
+#[must_use]
+pub fn is_secret_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_SECRET_NAME_BYTES
+        && name.starts_with(|c: char| c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// The host of an `outbound` prefix (`https://api.example.com/v1/` -> `api.example.com`),
+/// lowercase; `None` for a prefix [`is_outbound_url`] refuses or one with a port.
+#[must_use]
+pub fn outbound_host(prefix: &str) -> Option<String> {
+    if !is_outbound_url(prefix) {
+        return None;
+    }
+    let rest = prefix.strip_prefix("https://")?;
+    let authority = rest.split('/').next()?;
+    if authority.contains(':') {
+        return None;
+    }
+    Some(authority.to_ascii_lowercase())
+}
+
+/// Why a manifest's `secrets` are refused.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SecretsError {
+    #[error("a release declares at most {MAX_SECRETS} secrets")]
+    TooMany,
+    #[error("secret name {0:?} must be A-Z, 0-9 and _, starting with a letter, at most {MAX_SECRET_NAME_BYTES} bytes")]
+    BadName(String),
+    #[error("secret {0} names no host")]
+    NoHosts(String),
+    #[error("secret {0} names more than {MAX_SECRET_HOSTS} hosts")]
+    TooManyHosts(String),
+    #[error("secret {name} names {host}, which no outbound prefix of the release covers")]
+    HostNotDeclared { name: String, host: String },
+    #[error("secret {0}'s description is longer than {MAX_SECRET_DESCRIPTION_BYTES} bytes")]
+    LongDescription(String),
+}
+
+impl SecretsError {
+    /// The stable code a node answers with.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        "BAD_SECRETS"
+    }
+}
+
 /// Most apps one release references.
 pub const MAX_USES: usize = 16;
 /// Most bytes of a reference's name.
@@ -209,6 +285,51 @@ impl UsesError {
 }
 
 impl BundleManifest {
+    /// Checks `secrets` against the rules a node enforces at install: valid names, at most
+    /// [`MAX_SECRETS`], each with 1 to [`MAX_SECRET_HOSTS`] hosts, every host the host of one
+    /// of the release's `outbound` prefixes (so a secret goes only where the release already
+    /// says data goes), and a short description.
+    ///
+    /// # Errors
+    ///
+    /// The first rule a declared secret breaks.
+    pub fn check_secrets(&self) -> Result<(), SecretsError> {
+        let Some(secrets) = &self.secrets else {
+            return Ok(());
+        };
+        if secrets.len() > MAX_SECRETS {
+            return Err(SecretsError::TooMany);
+        }
+        let hosts: std::collections::BTreeSet<String> = self
+            .outbound
+            .iter()
+            .filter_map(|p| outbound_host(p))
+            .collect();
+        for (name, secret) in secrets {
+            if !is_secret_name(name) {
+                return Err(SecretsError::BadName(name.clone()));
+            }
+            if secret.hosts.is_empty() {
+                return Err(SecretsError::NoHosts(name.clone()));
+            }
+            if secret.hosts.len() > MAX_SECRET_HOSTS {
+                return Err(SecretsError::TooManyHosts(name.clone()));
+            }
+            if secret.description.len() > MAX_SECRET_DESCRIPTION_BYTES {
+                return Err(SecretsError::LongDescription(name.clone()));
+            }
+            for host in &secret.hosts {
+                if !hosts.contains(host) {
+                    return Err(SecretsError::HostNotDeclared {
+                        name: name.clone(),
+                        host: host.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Checks `uses` against the rules a node enforces at install: valid names, at most
     /// [`MAX_USES`], a package other than the release's own, a semver range, a locked
     /// version inside it, and an ABI digest of the right shape.
@@ -476,6 +597,15 @@ pub struct BundleManifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outbound: Vec<String>,
 
+    /// The secrets the app's outbound requests name (`{{secret:NAME}}`), by name: the
+    /// hosts each may go to (each the host of an `outbound` prefix) and what it is, so
+    /// whoever deploys the app knows what to supply ([`BundleSecret`]). Signed with the
+    /// rest. A node that keeps it fills only a declared name, and only into a request to
+    /// one of its hosts; absent, the node fills any secret its operator bound to the
+    /// package, as before. An older node ignores the field (the signature is over the
+    /// raw manifest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<BTreeMap<String, BundleSecret>>,
     /// The other apps this release calls, by the name its code knows each by
     /// ([`BundleUse`]): the package, the semver range it works with, the release it was
     /// built against and that release's ABI, and whether the reference is created with
@@ -569,6 +699,7 @@ impl BundleManifest {
             links: _,
             frontend_aliases: _,
             outbound: _,
+            secrets: _,
             uses: _,
             upgrades: _,
             signature: _,
@@ -695,8 +826,17 @@ impl BundleManifest {
 #[cfg(test)]
 mod tests {
     use calimero_primitives::application::ApplicationId;
+    use serde_json::Value;
 
     use super::*;
+
+    fn with_secrets(outbound: &[&str], secrets: Value) -> BundleManifest {
+        serde_json::from_value(serde_json::json!({
+            "version": "1.0", "package": "com.example.s", "appVersion": "1.0.0",
+            "minRuntimeVersion": "0.1.0", "outbound": outbound, "secrets": secrets,
+        }))
+        .unwrap()
+    }
 
     fn with_uses(uses: serde_json::Value) -> BundleManifest {
         serde_json::from_value(serde_json::json!({
@@ -704,6 +844,84 @@ mod tests {
             "minRuntimeVersion": "0.1.0", "uses": uses,
         }))
         .unwrap()
+    }
+
+    /// A secret goes only where the release already says data goes: each host is an
+    /// `outbound` prefix's host; names, counts and descriptions are bounded.
+    #[test]
+    fn declared_secrets_name_only_hosts_the_release_sends_to() {
+        let out = ["https://cloud-api.near.ai/v1/chat/completions"];
+        let ok = with_secrets(
+            &out,
+            serde_json::json!({ "NEAR_AI_API_KEY": {
+                "hosts": ["cloud-api.near.ai"], "description": "NEAR AI key", "required": true } }),
+        );
+        assert_eq!(ok.check_secrets(), Ok(()));
+        let s = &ok.secrets.as_ref().unwrap()["NEAR_AI_API_KEY"];
+        assert!(s.required);
+        // Signed as written: it reads back the same.
+        let again: BundleManifest =
+            serde_json::from_value(serde_json::to_value(&ok).unwrap()).unwrap();
+        assert_eq!(again.secrets, ok.secrets);
+
+        let err = |secrets| with_secrets(&out, secrets).check_secrets().unwrap_err();
+        assert!(matches!(
+            err(serde_json::json!({ "K": { "hosts": ["evil.example"] } })),
+            SecretsError::HostNotDeclared { .. }
+        ));
+        assert!(matches!(
+            err(serde_json::json!({ "lower": { "hosts": ["cloud-api.near.ai"] } })),
+            SecretsError::BadName(_)
+        ));
+        assert!(matches!(
+            err(serde_json::json!({ "K": { "hosts": [] } })),
+            SecretsError::NoHosts(_)
+        ));
+        let many: serde_json::Map<String, Value> = (0..=MAX_SECRETS)
+            .map(|i| {
+                (
+                    format!("K{i}"),
+                    serde_json::json!({ "hosts": ["cloud-api.near.ai"] }),
+                )
+            })
+            .collect();
+        assert_eq!(err(Value::Object(many)), SecretsError::TooMany);
+        let long = "x".repeat(MAX_SECRET_DESCRIPTION_BYTES + 1);
+        assert!(matches!(
+            err(
+                serde_json::json!({ "K": { "hosts": ["cloud-api.near.ai"], "description": long } })
+            ),
+            SecretsError::LongDescription(_)
+        ));
+        // An unknown key in a secret is refused when the manifest is read.
+        let unknown: Result<BundleManifest, _> = serde_json::from_value(serde_json::json!({
+            "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
+            "secrets": { "K": { "hosts": [], "value": "leaked" } },
+        }));
+        assert!(unknown.is_err());
+        // No secrets: nothing to check, and nothing written.
+        let none = with_secrets(&out, Value::Null);
+        assert_eq!(none.check_secrets(), Ok(()));
+        assert!(serde_json::to_value(&none)
+            .unwrap()
+            .get("secrets")
+            .is_none());
+    }
+
+    #[test]
+    fn an_outbound_prefixs_host_is_its_lowercase_authority() {
+        assert_eq!(
+            outbound_host("https://API.Example.com/v1/").as_deref(),
+            Some("api.example.com")
+        );
+        assert_eq!(
+            outbound_host("https://api.example.com").as_deref(),
+            Some("api.example.com")
+        );
+        assert_eq!(outbound_host("https://api.example.com:8443/"), None);
+        assert_eq!(outbound_host("http://api.example.com/"), None);
+        assert!(is_secret_name("NEAR_AI_API_KEY"));
+        assert!(!is_secret_name("1KEY") && !is_secret_name("key") && !is_secret_name(""));
     }
 
     /// A release names the apps it calls: the package, a semver range, the locked
