@@ -1,0 +1,20 @@
+[package]
+name = "name-registry"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Usernames on the component SDK: one owner per name, decided by the admins"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk = { path = "../../crates/sdk" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-sdk = { path = "../../crates/sdk", features = ["testing"] }
+calimero-app-build = { path = "../../crates/app-build" }
+serde_json = "1"
+
+# Standalone, like apps/rooms: the tests build this crate for wasm32-wasip2.
+[workspace]

@@ -40,7 +40,7 @@ fn echo_guest_builds_into_a_component_with_only_world_imports() {
     assert_eq!(abi_of(&built.component).unwrap(), Some(expected));
 }
 
-/// The cluster fixtures (`apps/v2-fixtures/*`) build into components that import only the
+/// The cluster fixtures (`apps/fixture-kv`, `apps/team-space`) build into components that import only the
 /// world's interfaces (allowed or stubbed), and carry an ABI.
 #[test]
 fn fixtures_build_with_world_imports_only() {
@@ -49,8 +49,8 @@ fn fixtures_build_with_world_imports_only() {
         .chain(stubbed_imports())
         .map(|s| (*s).to_owned())
         .collect();
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures");
-    for name in ["kv", "org-gated"] {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps");
+    for name in ["fixture-kv", "team-space"] {
         let built = build_component(&root.join(name), &target())
             .unwrap_or_else(|e| panic!("build {name}: {e}"));
         assert!(!built.imports.is_empty(), "{name}");
@@ -87,7 +87,7 @@ fn pinned(import: &str) -> String {
 
 #[test]
 fn a_crate_with_compute_methods_builds_a_second_component_that_cannot_reach_state_or_http() {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/fixture-compute");
     let built = build_components(&fixture, &target()).expect("build");
     let compute = built.compute.expect("a compute component");
 
@@ -157,7 +157,7 @@ fn the_cache_keeps_both_components_and_whether_there_is_a_compute_one() {
     let wit = root.join("crates/app-wit");
     let also = [sdk.as_path(), macros.as_path(), wit.as_path()];
 
-    let fixture = root.join("apps/v2-fixtures/compute");
+    let fixture = root.join("apps/fixture-compute");
     let first = build_components_cached(&fixture, &also, cache.path()).expect("build");
     let compute = first.compute.clone().expect("a compute component");
     assert_ne!(first.app, compute);

@@ -8,7 +8,7 @@
 //! goes to its owner's personal organization, made once and reused, and moves
 //! out of it into an organization its owner administers.
 //!
-//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
 
 #![allow(

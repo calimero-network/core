@@ -4,7 +4,7 @@
 //! stops it at once; a raw bundle, another package or another signer is
 //! refused; and a node that saw only the log cannot forge its proof.
 //!
-//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
 
 use std::time::Duration;

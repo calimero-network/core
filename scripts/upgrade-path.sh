@@ -67,14 +67,17 @@ scripts/build-upgrade-deep-fixtures.sh "$FROM_DIR"
 cargo build --release -p merod -p meroctl
 MEROCTL="$TARGET/release/meroctl"
 mkdir -p "$TARGET/app-components" "$TARGET/upgrade-path-fixtures"
-"$MEROCTL" app build apps/v2-fixtures/kv --out "$TARGET/app-components/kv.wasm"
+"$MEROCTL" app build apps/fixture-kv --out "$TARGET/app-components/kv.wasm"
 "$MEROCTL" app pack --wasm "$TARGET/app-components/kv.wasm" \
   --package com.calimero.kv-store --app-version 2.0.0 --out "$TARGET/upgrade-path-fixtures/kv-next.mpk"
 # The pipeline cases' package, installed on the old release: the compute component the
 # release's own tools built from its tag (build-release-fixtures.sh), so it imports no
 # calimero:app version newer than that release knows, and the release's fanout pipeline.
+# An older release keeps its test fixtures under apps/v2-fixtures/.
+FANOUT="$FROM_DIR/src/apps/fixture-compute/pipelines/fanout.yaml"
+[ -e "$FANOUT" ] || FANOUT="$FROM_DIR/src/apps/v2-fixtures/compute/pipelines/fanout.yaml"
 "$MEROCTL" app pack --compute "$FROM_DIR/compute-compute.wasm" \
-  --pipeline "$FROM_DIR/src/apps/v2-fixtures/compute/pipelines/fanout.yaml" \
+  --pipeline "$FANOUT" \
   --package com.calimero.upgrade.pipelines --app-version 1.0.0 --out "$TARGET/upgrade-path-fixtures/pipelines.mpk"
 
 status=0
