@@ -120,6 +120,17 @@ pub enum StorageError {
     /// A text has no character with this id.
     #[error("no character with id {0}")]
     UnknownId(u64),
+    /// One edit would pass a run's write limits (`MAX_RUN_WRITES`, `MAX_RUN_BYTES`), so it
+    /// was refused before any write; split it over several calls.
+    #[error(
+        "the edit needs {writes} writes of {bytes} bytes, over a run's 10,000 writes or 1 MiB"
+    )]
+    EditTooLarge {
+        /// The writes it would make.
+        writes: usize,
+        /// The bytes it would write, as the host counts them.
+        bytes: usize,
+    },
 }
 
 /// A failure of a table operation.
