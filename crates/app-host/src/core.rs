@@ -57,6 +57,12 @@ pub const ENTRY_TOO_LARGE: &str = "entry too large";
 pub const MAX_WRITES: u32 = 10_000;
 /// Entries one `range_next` returns at most.
 pub const MAX_RANGE_BATCH: u32 = 1_000;
+/// Bytes of keys and values one `range_next` returns at most, past its first entry (which
+/// is always returned, so a cursor never stalls). The host gathers a batch before the
+/// guest sees it, so without it 1,000 values of about 1 MiB each (a value is bounded only
+/// by [`MAX_RUN_BYTES`] as it is written) would make the host hold about 1 GiB for one
+/// call, far past the 64 MiB a guest can take. 4 MiB stays well below that.
+pub const MAX_RANGE_BATCH_BYTES: usize = 4 * 1024 * 1024;
 /// Range cursors one run may hold open at once.
 pub const MAX_OPEN_CURSORS: usize = 1_024;
 /// Bytes of app log one run keeps; later lines are dropped after one marker line.
@@ -146,7 +152,7 @@ pub struct HostCore {
     rng: ChaCha20Rng,
     cursors: BTreeMap<u32, Cursor>,
     next_cursor: u32,
-    peak_buffered: usize,
+    peak_buffered: crate::overlay::Buffered,
     provider: Arc<dyn Files>,
     files: FileTable,
     progress: Option<Progress>,
@@ -209,7 +215,7 @@ impl HostCore {
             rng,
             cursors: BTreeMap::new(),
             next_cursor: 0,
-            peak_buffered: 0,
+            peak_buffered: crate::overlay::Buffered::default(),
             provider: Arc::new(NoFiles),
             files: FileTable::default(),
             progress: None,
@@ -380,14 +386,21 @@ impl HostCore {
         Ok(CursorId(id))
     }
 
-    /// The next entries of a cursor, at most `max` (capped at `MAX_RANGE_BATCH`), with
-    /// keys as the guest wrote them. An exhausted cursor returns an empty list.
+    /// The next entries of a cursor, at most `max` (capped at `MAX_RANGE_BATCH`) and, past
+    /// the first, at most `MAX_RANGE_BATCH_BYTES` of keys and values, with keys as the guest
+    /// wrote them. A shorter batch is not the end: only an empty list is.
     pub fn range_next(&mut self, id: CursorId, max: u32) -> Result<Vec<KeyValue>, HostDenied> {
         let Some(cursor) = self.cursors.get_mut(&id.0) else {
             return Err(HostDenied::new("unknown cursor"));
         };
         let max = max.min(MAX_RANGE_BATCH) as usize;
-        let batch = cursor.next_batch(&*self.state, &self.overlay, max, &mut self.peak_buffered);
+        let batch = cursor.next_batch(
+            &*self.state,
+            &self.overlay,
+            max,
+            MAX_RANGE_BATCH_BYTES,
+            &mut self.peak_buffered,
+        );
         Ok(batch
             .into_iter()
             .map(|(key, value)| (key[GENERATION_PREFIX..].to_vec(), value))
@@ -1099,7 +1112,14 @@ impl HostCore {
     #[cfg(feature = "testing")]
     #[must_use]
     pub fn peak_buffered(&self) -> usize {
-        self.peak_buffered
+        self.peak_buffered.entries
+    }
+
+    /// The most bytes of range keys and values held at once by any cursor of this run.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn peak_buffered_bytes(&self) -> usize {
+        self.peak_buffered.bytes
     }
 
     // --- policy ----------------------------------------------------------------------
