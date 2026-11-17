@@ -99,7 +99,7 @@ pub(crate) use orgs::{
     CapabilitiesBody, InviteBody,
 };
 pub use pipeline_events::MAX_RUN_SUBSCRIBERS_PER_APP;
-pub(crate) use upgrades::{refuse_stalled, upgrade_app, UpgradeBody};
+pub(crate) use upgrades::{refuse_stalled, unit_plan, upgrade_app, upgrade_unit, UpgradeBody};
 // The request bodies the OpenAPI registry names as `super::<Body>`.
 #[cfg(test)]
 use {

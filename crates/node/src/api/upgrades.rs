@@ -1074,16 +1074,37 @@ async fn app_upgrade_unit(
 ) -> ApiResult {
     let app_id = node.canonical_app_id(&app_id);
     let p = holder(&node, &headers).await?;
-    let account = p.account()?;
-    owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
-    let app = node.app(&app_id).await?;
+    let version = body.version.clone();
+    upgrade_unit(&node, &p, &app_id, &version, body.confirm.take()).await
+}
+
+/// What upgrading a unit to `version` moves: the instance's target release, each member's
+/// target (`UpgradeRun::targets`) and the member records. The route's and the consent
+/// page's one plan, judged on the state as it is now.
+pub(crate) struct UnitPlan {
+    pub app: crate::types::AppRecord,
+    pub target: PackageRef,
+    pub targets: BTreeMap<String, crate::types::RunTarget>,
+    pub members: Vec<crate::types::AppRecord>,
+}
+
+/// [`UnitPlan`] for `app_id` to `version`, as `account` (who must be one who may upgrade
+/// it); the release is installed from the registry first if the cluster lacks it.
+pub(crate) async fn unit_plan(
+    node: &Node,
+    account: &str,
+    app_id: &str,
+    version: &str,
+) -> Result<UnitPlan, ApiError> {
+    owner_holds(node, |g| g.app_upgrades, "app upgrades")?;
+    let app = node.app(app_id).await?;
     if app.links.is_empty() {
         return Err(ApiError::bad_request(
             "NOT_A_UNIT",
             "this app was created with no apps of its own: upgrade it with /apps/{app}/upgrade",
         ));
     }
-    if !node.sys(|s| s.may_upgrade(&app, &account)) {
+    if !node.sys(|s| s.may_upgrade(&app, account)) {
         return Err(ApiError::forbidden(
             "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
         ));
@@ -1091,23 +1112,16 @@ async fn app_upgrade_unit(
     let current = node
         .release_of_app(&app)
         .ok_or_else(|| ApiError::bad_request("NOT_A_UNIT", "this app runs no package release"))?;
-    // Installed from the registry first if the cluster lacks the release.
     let _bundle = node
-        .resolve_release(
-            &current.at.package,
-            Some(&body.version),
-            None,
-            &account,
-            false,
-        )
+        .resolve_release(&current.at.package, Some(version), None, account, false)
         .await;
-    let target = crate::system::PackageRef {
+    let target = PackageRef {
         package: current.at.package.clone(),
-        version: body.version.clone(),
+        version: version.to_owned(),
         service: current.at.service.clone(),
         compute: false,
     };
-    let unit = super::apps::unit_members(&node, &target).await?;
+    let unit = super::apps::unit_members(node, &target).await?;
     if let Some(added) = unit.members.keys().find(|n| !app.links.contains_key(*n)) {
         return Err(ApiError::conflict(&format!(
             "{}@{} creates {added}, which this instance does not have: a unit gains members only when it is created",
@@ -1144,22 +1158,41 @@ async fn app_upgrade_unit(
         );
         members.push(member);
     }
+    Ok(UnitPlan {
+        app,
+        target,
+        targets,
+        members,
+    })
+}
+
+/// Upgrade the unit of `app_id` to `version` as `p`, with `confirm` the step-up's answer:
+/// the route's, and the consent page's for an `upgradeUnit` request.
+pub(crate) async fn upgrade_unit(
+    node: &Node,
+    p: &Principal,
+    app_id: &str,
+    version: &str,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
+    let account = p.account()?;
+    let plan = unit_plan(node, &account, app_id, version).await?;
     // Before the passkey step-up: a node that could not apply the run's targets would
     // refuse each member's upgrade.
-    if !targets.is_empty() {
+    if !plan.targets.is_empty() {
         node.require_features(&[crate::system::cluster_version::Feature::UnitUpgrade])
             .await?;
     }
     let consent = consent(
-        &node,
-        &p,
-        &format!("org:{}", app.org),
+        node,
+        p,
+        &format!("org:{}", plan.app.org),
         "__upgrade_unit",
         &json!({
-            "app": app_id, "package": target.package, "version": target.version,
-            "targets": targets,
+            "app": plan.app.app_id, "package": plan.target.package,
+            "version": plan.target.version, "targets": plan.targets,
         }),
-        body.confirm.take(),
+        confirm,
     )
     .await?;
     let who = Upgrader {
@@ -1172,26 +1205,21 @@ async fn app_upgrade_unit(
         run: None,
     };
     let run = OrgUpgradeBody {
-        package: target.package,
-        version: target.version,
+        package: plan.target.package,
+        version: plan.target.version,
         team: None,
         cascade: false,
         migrate: None,
         confirm: None,
         operator_proof: None,
     };
-    let mut apps = vec![app.clone()];
-    apps.extend(members);
-    start_run_with(
-        node,
-        app.org.clone(),
-        run,
-        apps,
-        Upgrader { ..who },
-        false,
-        targets,
-    )
-    .await
+    let node = node
+        .shared()
+        .ok_or_else(|| ApiError::unavailable("the node is shutting down"))?;
+    let org = plan.app.org.clone();
+    let mut apps = vec![plan.app];
+    apps.extend(plan.members);
+    start_run_with(node, org, run, apps, who, false, plan.targets).await
 }
 
 /// A unit member is not moved on its own off the range the instance that created it

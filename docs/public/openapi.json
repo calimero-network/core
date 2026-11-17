@@ -11640,6 +11640,41 @@
                       "kind": {
                         "type": "string",
                         "enum": [
+                          "upgradeUnit"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "app": {
+                            "type": "string"
+                          },
+                          "toVersion": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "app",
+                          "toVersion"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
                           "outbound"
                         ]
                       },
@@ -12391,6 +12426,7 @@
                       "enum": [
                         "release",
                         "upgrade",
+                        "upgradeUnit",
                         "outbound",
                         "createOrg",
                         "createInvite",

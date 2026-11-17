@@ -32,6 +32,8 @@ struct Declares<'a> {
     aliases: &'a [&'a str],
     /// `upgrades: publisher`.
     publisher_upgrades: bool,
+    /// `uses`, as the manifest's JSON.
+    uses: Option<Value>,
 }
 
 /// A signed single-service `.mpk` of `PACKAGE`, and its manifest's hash.
@@ -90,7 +92,7 @@ fn release_of(
         frontend_aliases: d.aliases.iter().map(|a| (*a).to_owned()).collect(),
         outbound: d.outbound.iter().map(|u| (*u).to_owned()).collect(),
         secrets: None,
-        uses: None,
+        uses: d.uses.clone().map(|u| serde_json::from_value(u).unwrap()),
         upgrades: d
             .publisher_upgrades
             .then_some(calimero_bundle::UpgradeAuthority::Publisher),
@@ -2805,4 +2807,80 @@ async fn a_sign_in_from_a_frontend_installed_a_moment_ago_reaches_a_node_behind(
         "the frontend's origin is judged on fresh state: {:?}",
         signed_in.err()
     );
+}
+
+/// A unit upgrades on the page in one approval: an app's frontend asks `upgradeUnit`, the
+/// page shows the instance's capability sheet and each member's that moves, and the one
+/// passkey assertion moves them all (the consent of `__upgrade_unit`, member targets
+/// included).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_upgrades_on_the_page_in_one_approval() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
+    let kv = "com.test.unit-kv";
+    let uses = |version: &str| Declares {
+        uses: Some(json!({ "kv": { "package": kv, "range": "^0.1", "version": version } })),
+        ..Declares::default()
+    };
+    for (package, version, d) in [
+        (kv, "0.1.0", Declares::default()),
+        (kv, "0.1.1", Declares::default()),
+        (PACKAGE, "1.0.0", uses("0.1.0")),
+        (PACKAGE, "2.0.0", uses("0.1.1")),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let member = made["links"]["kv"].as_str().unwrap().to_owned();
+
+    // The app's frontend asks; the person approves on the node's page.
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let back = format!("{app_origin}/1.0.0/");
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgradeUnit", "subject": { "app": notes, "toVersion": "2.0.0" }, "returnTo": back }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["kind"], "upgradeUnit", "{model}");
+    assert_eq!(
+        model["title"], "Update notes and the apps it uses",
+        "{model}"
+    );
+    let apps = model["apps"].as_array().unwrap();
+    assert_eq!(apps.len(), 2, "{model}");
+    assert_eq!(apps[1]["upgrade"]["to"]["version"], "0.1.1", "{model}");
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["__method"], "__upgrade_unit", "{args}");
+    assert_eq!(args["targets"][&member]["version"], "0.1.1", "{args}");
+
+    for (app, version) in [(&notes, "2.0.0"), (&member, "0.1.1")] {
+        let _moved = get_until(&alice, &format!("apps/{app}"), |a| {
+            a["release"]["version"] == version
+        })
+        .await;
+    }
 }

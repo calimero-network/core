@@ -2521,6 +2521,11 @@ impl Node {
         )
     }
 
+    /// This node as the `Arc` it lives in, for work that outlives a borrowed request.
+    pub(crate) fn shared(&self) -> Option<Arc<Self>> {
+        self.this.lock().ok().and_then(|w| w.upgrade())
+    }
+
     pub async fn store_blob(&self, bytes: &[u8], app: Option<&str>) -> Result<String, ApiError> {
         if bytes.len() > MAX_BLOB_BYTES {
             return Err(blob_too_large());
