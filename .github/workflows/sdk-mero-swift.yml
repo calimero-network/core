@@ -1,0 +1,235 @@
+name: SDK mero-swift
+
+# mero-swift (sdks/clients/mero-swift): the Swift SDK, its package named
+# mero-swift, its modules MeroKit, MeroAPI, MeroKitUI and
+# MeroKitTestSupport. sdks.yml calls this to test it (when scripts/sdks.py
+# scope says a change reaches it); a release calls it with `publish: true`.
+#
+# Test: build and unit tests, SwiftLint and swift-format, and the sample app
+# built for the iOS Simulator; with `ui-tests`, its XCUITest suite too. The
+# live-node e2e suite (MeroKitE2ETests) is not run here: it needs a
+# `merod local` cluster, so e2e.yml's `clients-swift` job runs it. The
+# generated layer's drift against docs/public/openapi.json is sdks.yml's
+# `SDK codegen drift` job.
+#
+# Publish: SwiftPM needs Package.swift at a repository's root, so
+# calimero-network/swift-sdk is a read-only mirror of this directory. The
+# publish job splits it out (`git subtree split`), fast-forwards the mirror's
+# master to it and tags it with VERSION, as the organization's GitHub App.
+# There is no CocoaPods pod: its trunk turns read-only on 2026-12-02, and
+# MeroKit's dependencies (swift-openapi-runtime, swift-http-types) are not on it.
+# `dry-run` (the default) prints what it would push and pushes nothing.
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: Push this directory to the SwiftPM mirror and tag it with VERSION
+        type: boolean
+        default: false
+      dry-run:
+        description: With publish, print what would be pushed and push nothing
+        type: boolean
+        default: true
+      ui-tests:
+        description: Also run the sample app's XCUITest suite in the iOS Simulator
+        type: boolean
+        default: false
+    secrets:
+      ACTIONS_APP_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  SDK_DIR: sdks/clients/mero-swift
+  MIRROR: calimero-network/swift-sdk
+
+jobs:
+  build-test:
+    name: mero-swift build and test
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: sdks/clients/mero-swift
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+  lint:
+    name: mero-swift lint
+    runs-on: macos-15
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: sdks/clients/mero-swift
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install linters
+        run: brew install swiftlint swift-format
+
+      - name: SwiftLint
+        run: swiftlint lint --strict --reporter github-actions-logging
+
+      - name: swift-format lint
+        run: swift-format lint --recursive --strict Sources Tests examples
+
+  examples:
+    name: mero-swift examples
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: sdks/clients/mero-swift/examples/MeroSampleApp
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # generate-ios.sh rewrites this key to the developer's Mac LAN IP for a
+      # physical-device install; committed, it points every simulator run at an
+      # address a runner cannot reach.
+      - name: The sample app's default node URL is loopback
+        run: |
+          set -euo pipefail
+          URL=$(sed -n 's/.*DefaultNodeURL: *"\(.*\)".*/\1/p' project.yml)
+          echo "DefaultNodeURL: ${URL:-<unset>}"
+          case "$URL" in
+            http://localhost:*|http://127.0.0.1:*) ;;
+            *) echo "::error file=$SDK_DIR/examples/MeroSampleApp/project.yml::DefaultNodeURL must be a loopback URL, got '${URL:-<unset>}'"; exit 1 ;;
+          esac
+
+      - name: Generate the Xcode project
+        run: xcodegen generate
+
+      - name: Build the sample app and its UI tests
+        run: |
+          set -o pipefail
+          xcodebuild build-for-testing \
+            -project MeroSampleApp.xcodeproj \
+            -scheme MeroSampleApp \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Run the UI tests
+        if: inputs.ui-tests
+        run: |
+          set -o pipefail
+          # Any available iPhone simulator, whatever the runner image has.
+          DEVICE=$(xcrun simctl list devices available | grep -oE 'iPhone 1[0-9][^(]*' | head -1 | xargs)
+          echo "Using simulator: ${DEVICE:-iPhone 16}"
+          # -retry-tests-on-failure absorbs launch flakes; a broken test still
+          # fails every iteration.
+          xcodebuild test \
+            -project MeroSampleApp.xcodeproj \
+            -scheme MeroSampleApp \
+            -destination "platform=iOS Simulator,name=${DEVICE:-iPhone 16}" \
+            -retry-tests-on-failure -test-iterations 3 \
+            | tee xcuitest.log
+          grep -qE "Test Suite '(All tests|Selected tests)' passed" xcuitest.log \
+            && grep -q "\*\* TEST SUCCEEDED \*\*" xcuitest.log \
+            || { echo "::error::UI tests did not pass"; exit 1; }
+
+      - name: Upload the UI test log
+        if: ${{ failure() && inputs.ui-tests }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mero-swift-xcuitest-log
+          path: sdks/clients/mero-swift/examples/MeroSampleApp/xcuitest.log
+          if-no-files-found: ignore
+
+  # Split this directory out and fast-forward the mirror to it. The split keeps
+  # swift-sdk's own commits (imported with their history), so the mirror's
+  # master is an ancestor and the push is never forced: it fails if someone
+  # committed to the mirror.
+  mirror:
+    name: mero-swift SwiftPM mirror
+    needs: [build-test, lint, examples]
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The whole history: the split rewrites every commit of this directory.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Every SDK states VERSION
+        run: python3 scripts/sdks.py version-check
+
+      - name: Split sdks/clients/mero-swift
+        id: split
+        run: |
+          set -euo pipefail
+          version=$(tr -d '[:space:]' < VERSION)
+          split=$(git subtree split --prefix="$SDK_DIR")
+          git show "$split:Package.swift" > /dev/null
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$split" >> "$GITHUB_OUTPUT"
+          echo "split $SDK_DIR at $(git rev-parse HEAD) -> $split (VERSION $version)"
+
+      - name: Mint a token for the mirror
+        id: token
+        if: ${{ !inputs.dry-run }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ACTIONS_APP_ID }}
+          private-key: ${{ secrets.ACTIONS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: swift-sdk
+          # The branch and the tag.
+          permission-contents: write
+
+      - name: Push master and the tag
+        env:
+          DRY_RUN: ${{ inputs.dry-run }}
+          TOKEN: ${{ steps.token.outputs.token }}
+          VERSION: ${{ steps.split.outputs.version }}
+          SPLIT: ${{ steps.split.outputs.commit }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/$MIRROR.git"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry run: would push $SPLIT to $url as refs/heads/master and refs/tags/$VERSION"
+            git --no-pager log --oneline -5 "$SPLIT"
+            git ls-tree --name-only "$SPLIT"
+            {
+              echo "### mero-swift mirror (dry run)"
+              echo
+              echo "Would push \`$SPLIT\` to \`$MIRROR\` as \`master\` and tag \`$VERSION\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          # The tag is new, or already on this commit (a rerun).
+          existing=$(git -c http.extraheader="$auth" ls-remote "$url" "refs/tags/$VERSION" | awk '{print $1}')
+          if [ -n "$existing" ] && [ "$existing" != "$SPLIT" ]; then
+            echo "::error::$MIRROR already has the tag $VERSION on $existing, not $SPLIT"
+            exit 1
+          fi
+          # Core's own tag of the same name is this checkout's: push the commit, not a local tag.
+          git -c http.extraheader="$auth" push "$url" "$SPLIT:refs/heads/master" "$SPLIT:refs/tags/$VERSION"
+          echo "pushed $SPLIT to $MIRROR master and $VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
