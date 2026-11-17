@@ -67,3 +67,39 @@ fn status_still_finds_a_cluster_in_the_old_place() {
     let answer = status(tmp.path(), &tmp.path().join("home"));
     assert_eq!(answer["running"], true, "{answer}");
 }
+
+fn up(home: &Path, dir: &Path, extra: &[&str]) -> std::process::Output {
+    let mut args = vec!["local", "up", "--dir", dir.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    Command::new(env!("CARGO_BIN_EXE_meroctl"))
+        .env("CALIMERO_HOME", home)
+        // No `docker` on PATH, and no `MEROD`: `local up` stops at its Docker check.
+        .env("PATH", "/nonexistent")
+        .env_remove("MEROD")
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+// A first `local up` that stopped before any node started (Docker not running)
+// left a `merod.log` behind, and the next `up` took it for a cluster an earlier
+// meroctl had made: three nodes, refusing `--nodes 1`, the default.
+#[test]
+fn an_up_that_never_started_leaves_no_cluster_behind() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let dir = tmp.path().join("cluster");
+
+    let first = up(&home, &dir, &["--base-port", "29501"]);
+    assert!(!first.status.success());
+    let err = String::from_utf8_lossy(&first.stderr);
+    assert!(err.contains("Docker"), "{err}");
+
+    let again = up(&home, &dir, &["--base-port", "29501", "--nodes", "1"]);
+    assert!(!again.status.success());
+    let err = String::from_utf8_lossy(&again.stderr);
+    assert!(
+        err.contains("Docker") && !err.contains("has 3 nodes"),
+        "the failed up was taken for a cluster: {err}"
+    );
+}

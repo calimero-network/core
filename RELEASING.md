@@ -155,12 +155,18 @@ check lints them) and to what counts as breaking.
   `Cargo.toml` (`1.0.0-rc.30` at the time of writing). The SDKs under `sdks/`
   ship on it too: the root `VERSION` and every SDK's manifests copy it, written
   by `python3 scripts/sdks.py version-sync` ([sdks/AGENTS.md](sdks/AGENTS.md)).
-- **Release pull request.** `chore(release): cut X` sets that version to `X`,
-  runs `python3 scripts/sdks.py version-sync`, and turns `CHANGELOG.md`'s `## [Unreleased]` into a dated `## [X] - YYYY-MM-DD`
-  section with the changes since the last release. `CHANGELOG.md` is
-  hand-written: every pull request that changes behaviour adds its entry under
-  `[Unreleased]`. Deciding to cut a release and merging this pull request is a
-  human's call; an agent drafts one only when asked.
+- **Release pull request.** `chore(release): cut X` sets that version to `X`
+  and runs `python3 scripts/sdks.py version-sync`, and nothing else. Deciding to
+  cut a release and merging this pull request is a human's call; an agent
+  drafts one only when asked.
+- **Release notes, not a changelog file.** Core keeps no `CHANGELOG.md`: a
+  hand-written one conflicted in nearly every pull request. The release's notes
+  are generated when it is created (`gh release create --generate-notes`): every
+  pull request merged since the previous release, by its title. So the title
+  is the changelog entry: what changed, for whom, with `!` when it breaks
+  something (a hard cutover always does). What a caller or operator must do goes
+  in the PR body, which the notes link. Entries up to 1.0.0-rc.30 are in the
+  [last `CHANGELOG.md`](https://github.com/calimero-network/core/blob/5757c837baf65fc1b58c79b111c489acfb05a300/CHANGELOG.md).
 - **Merge to master.** [`release.yml`](.github/workflows/release.yml) runs on
   every push to master. Its `prepare` job reads the version; when no GitHub Release named `X` exists yet, it creates the release
   and its tag `X` (the bare version, no `v`) at the merged commit, marked as a

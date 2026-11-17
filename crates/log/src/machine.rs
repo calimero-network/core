@@ -18,7 +18,7 @@
 
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 use openraft::storage::RaftStateMachine;
@@ -123,6 +123,10 @@ const FRAME_BYTES: usize = 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 /// Rows written per batch while installing a snapshot.
 const INSTALL_BATCH_BYTES: usize = 4 * 1024 * 1024;
+/// Builds that may be thrown away because an install or a replace switched
+/// the group's state while their file was written, before a build holds off
+/// installs and replaces for its whole length ([`StateMachine::build`]).
+const BUILDS_BEFORE_HOLDING_INSTALLS: usize = 2;
 
 fn io(e: impl std::fmt::Display) -> StorageError {
     StorageIOError::write_state_machine(AnyError::error(e.to_string())).into()
@@ -319,11 +323,7 @@ impl<M: Machine> StateMachine<M> {
         let generation = load_generation(&db, group)?;
         // A crash mid-install leaves rows of a generation never switched to.
         db.drop_other_generations(group, generation)?;
-        let state = GroupState {
-            db: Arc::clone(&db),
-            group,
-            generation: Arc::new(AtomicU32::new(generation)),
-        };
+        let state = GroupState::new(Arc::clone(&db), group, generation);
         machine.attach(state.clone());
         let mut applied: AppliedMeta = db.get_meta(group, "applied")?.unwrap_or_default();
         if applied.last_applied.is_none() {
@@ -390,13 +390,54 @@ impl<M: Machine> StateMachine<M> {
         self.db.snapshot_dir.join(name)
     }
 
+    /// Build a snapshot of the applied state and record it as the one the
+    /// group serves.
+    ///
+    /// openraft runs a build beside the installs and applies of its state
+    /// machine worker, so an install (or a replace) can switch the group's
+    /// state while a build writes its file. A build whose generation was
+    /// switched meanwhile is of a state the group no longer holds: it is
+    /// thrown away and built again, and the record the install left stands.
+    /// After [`BUILDS_BEFORE_HOLDING_INSTALLS`] such builds, the next one holds
+    /// off installs and replaces while it runs. Never an error for this:
+    /// openraft treats a failed build as fatal to the group's Raft core.
     fn build(&mut self) -> eyre::Result<Snapshot<TypeConfig>> {
+        for _ in 0..BUILDS_BEFORE_HOLDING_INSTALLS {
+            let (record, generation) = self.write_snapshot()?;
+            #[cfg(feature = "testing")]
+            self.db
+                .pause_build(self.group, crate::testing::BuildPoint::Record);
+            let held = self.state.lock_snapshot_record();
+            if self.state.generation.load(Ordering::Acquire) == generation {
+                return self.serve_built(record);
+            }
+            drop(held);
+            let _removed = std::fs::remove_file(self.snapshot_path(&record.file));
+        }
+        // Installs or replaces keep switching the state under the builds: this
+        // one holds them off (and the applies queued behind an install on
+        // openraft's worker) until it is recorded.
+        let state = self.state.clone();
+        let _held = state.lock_snapshot_record();
+        let (record, _) = self.write_snapshot()?;
+        self.serve_built(record)
+    }
+
+    /// Write a snapshot file of the applied state: its record, and the state
+    /// generation it holds the rows of.
+    fn write_snapshot(&mut self) -> eyre::Result<(SnapshotRecord, u32)> {
         self.snapshots_built += 1;
-        let generation = self.state.generation.load(Ordering::Acquire);
-        // Under the read lock no batch applies, so the meta below and the view
-        // the scan reads are the same state. The scan's view is pinned when it
-        // opens, so the lock is not held while the file is written.
+        #[cfg(feature = "testing")]
+        self.db
+            .pause_build(self.group, crate::testing::BuildPoint::Read);
+        // Under the read lock no batch applies and no install or replace
+        // switches the generation (each does under the write lock), so the
+        // generation, the meta below and the view the scan pins are one state.
+        // The scan's view is pinned when it opens, before the guard drops, so
+        // the lock is not held while the file is written, and an install that
+        // then drops this generation's rows does not take them from the view.
         let st = self.shared.read().map_err(|e| eyre::eyre!("{e}"))?;
+        let generation = self.state.generation.load(Ordering::Acquire);
         let last = st.last_applied;
         let meta = SnapshotMeta {
             last_log_id: last,
@@ -458,20 +499,39 @@ impl<M: Machine> StateMachine<M> {
         })?;
         drop(guard);
         w.finish()?;
-        self.keep_snapshot(SnapshotRecord {
-            meta: meta.clone(),
-            file: name,
-        })?;
+        Ok((SnapshotRecord { meta, file: name }, generation))
+    }
+
+    /// Record a snapshot this node built as the one the group serves, and
+    /// hand it to openraft. The caller holds the snapshot-record lock.
+    fn serve_built(&self, record: SnapshotRecord) -> eyre::Result<Snapshot<TypeConfig>> {
+        // Opened first: a record that is not kept has its file deleted, and
+        // openraft reads only the meta of a built snapshot.
+        let file = std::fs::File::open(self.snapshot_path(&record.file))?;
+        let meta = record.meta.clone();
+        self.keep_snapshot(record)?;
         Ok(Snapshot {
             meta,
-            snapshot: Box::new(tokio::fs::File::from_std(std::fs::File::open(&path)?)),
+            snapshot: Box::new(tokio::fs::File::from_std(file)),
         })
     }
 
     /// Record `record` as the snapshot this group serves, and delete the one
-    /// it replaces.
+    /// it replaces. A record no newer than the one served is not kept and its
+    /// file is deleted instead: the group already serves that state or a
+    /// later one (an install's, for a build that ended after it), unless its
+    /// file is gone. The caller holds the snapshot-record lock.
     fn keep_snapshot(&self, record: SnapshotRecord) -> eyre::Result<()> {
         let previous: Option<SnapshotRecord> = self.db.get_meta(self.group, "snapshot")?;
+        if let Some(p) = &previous {
+            if p.file != record.file
+                && p.meta.last_log_id >= record.meta.last_log_id
+                && self.snapshot_path(&p.file).exists()
+            {
+                let _removed = std::fs::remove_file(self.snapshot_path(&record.file));
+                return Ok(());
+            }
+        }
         self.db.put_meta(self.group, "snapshot", &record)?;
         if let Some(p) = previous {
             if p.file != record.file {
@@ -520,6 +580,9 @@ impl<M: Machine> StateMachine<M> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        // A build that read the old generation sees the switch when it comes
+        // to record its file, and never records over the snapshot kept here.
+        let _held = self.state.lock_snapshot_record();
         {
             let mut st = self.shared.write().map_err(|e| eyre::eyre!("{e}"))?;
             let mut switch = Transaction::default();
@@ -753,6 +816,9 @@ pub(crate) fn replace_state<M: Machine>(
         let _ = db.drop_generation(group, next);
         return Err(e);
     }
+    // A build that read the old generation sees the switch when it comes to
+    // record its file, and never brings back the snapshot dropped here.
+    let _held = state.lock_snapshot_record();
     {
         let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
         let mut switch = Transaction::default();
@@ -933,6 +999,9 @@ pub(crate) fn replace_state_rows<M: Machine>(
         let _ = db.drop_generation(group, next);
         return Err(e);
     }
+    // A build that read the old generation sees the switch when it comes to
+    // record its file, and never brings back the snapshot dropped here.
+    let _held = state.lock_snapshot_record();
     {
         let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
         let mut switch = Transaction::default();
@@ -948,6 +1017,9 @@ pub(crate) fn replace_state_rows<M: Machine>(
     }
     Ok(count)
 }
+
+#[cfg(all(test, feature = "testing"))]
+mod build_races;
 
 #[cfg(test)]
 mod snapshot_format {
