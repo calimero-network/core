@@ -8,7 +8,7 @@
 
 ## What This Crate Does
 
-Holds the `calimero:app@0.5.2` world: the spec's 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1) and `context.via` and `context.linked` (0.5.2), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
+Holds the `calimero:app@0.5.3` world: the spec's 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1), `context.via` (0.5.2) and `context.linked` (0.5.3), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
 
 ## The compute world
 
@@ -25,7 +25,7 @@ The compute world imports no state, xcall, context, events, blobs, search, actio
 - `xcall.call` and `xcall.view` (synchronous xcalls): the spec's `xcall` has only `send`, the outbox. These wait for another app's answer in the same run (`docs/src/content/docs/protocol/xcall.mdx`, "Synchronous xcalls"); a node before them refuses a component that imports them (unknown import).
 
 - `context.via` (0.5.2): for a call another app made as the person it serves, with their grant (`caller` is that person), the app it came through; see `docs/src/content/docs/protocol/xcall.mdx`, "As the person".
-- `context.linked` (0.5.2): the app linked under a name of the release's `uses` (a unit member or an attached app); none in a compute run. The host asks `Directory::linked`, which answers none by default.
+- `context.linked` (0.5.3): the app linked under a name of the release's `uses` (a unit member or an attached app); none in a compute run. The host asks `Directory::linked`, which answers none by default.
 
 ## Rules
 
