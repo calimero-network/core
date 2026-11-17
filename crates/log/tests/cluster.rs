@@ -15,6 +15,9 @@ use calimero_log::{
 #[derive(Default)]
 struct Kv {
     map: BTreeMap<String, String>,
+    /// Commands starting with this are ones this node cannot apply (as the
+    /// node's machines meet an entry a later release wrote): it fails the batch.
+    refuses: Option<&'static str>,
     /// Panic in the next apply, after it changed the map (as a machine with a
     /// bug would, halfway through an entry).
     panic_next: Arc<std::sync::atomic::AtomicBool>,
@@ -23,7 +26,14 @@ struct Kv {
 impl Machine for Kv {
     const IN_MEMORY: bool = true;
 
-    fn apply(&mut self, _index: u64, command: &[u8], _state: &mut StateTx<'_>) -> Vec<u8> {
+    fn apply(&mut self, index: u64, command: &[u8], state: &mut StateTx<'_>) -> Vec<u8> {
+        if self
+            .refuses
+            .is_some_and(|p| command.starts_with(p.as_bytes()))
+        {
+            state.fail(format_args!("entry {index} does not decode here"));
+            return Vec::new();
+        }
         let s = String::from_utf8_lossy(command);
         let (k, v) = s.split_once('=').unwrap_or((&s, ""));
         let prev = self.map.insert(k.to_owned(), v.to_owned());
@@ -116,6 +126,15 @@ async fn start_node(
     id: NodeId,
     dir: &tempfile::TempDir,
 ) -> (Arc<Engine>, Arc<Group<Kv>>) {
+    start_node_with(net, id, dir, Kv::default()).await
+}
+
+async fn start_node_with(
+    net: &Arc<Net>,
+    id: NodeId,
+    dir: &tempfile::TempDir,
+    machine: Kv,
+) -> (Arc<Engine>, Arc<Group<Kv>>) {
     let engine = Engine::open(
         id,
         dir.path(),
@@ -124,7 +143,7 @@ async fn start_node(
         config(),
     )
     .unwrap();
-    let group = engine.start_group(1, Kv::default()).await.unwrap();
+    let group = engine.start_group(1, machine).await.unwrap();
     let _prev = net.engines.write().unwrap().insert(id, Arc::clone(&engine));
     (engine, group)
 }
@@ -187,6 +206,64 @@ async fn replicates_to_every_node() {
         assert!(g.wait_applied(index, Duration::from_secs(5)).await);
         assert_eq!(get(g, "a").as_deref(), Some("1"));
     }
+}
+
+/// A node whose machine cannot apply an entry (`StateTx::fail`) stops its
+/// group on it: nothing of it or after it applies there, not even later
+/// entries of the same batch, while the other nodes go on. This is what the
+/// node's machines do with an entry a later release wrote (B4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_batch_stops_that_nodes_group_on_the_entry() {
+    let net = Arc::new(Net::default());
+    let mut dirs = Vec::new();
+    let mut groups = HashMap::new();
+    for id in 1..=3 {
+        let dir = tempfile::tempdir().unwrap();
+        let kv = Kv {
+            refuses: (id == 3).then_some("new:"),
+            ..Kv::default()
+        };
+        let (_e, g) = start_node_with(&net, id, &dir, kv).await;
+        let _prev = groups.insert(id, g);
+        dirs.push(dir);
+    }
+    let voters: BTreeMap<NodeId, String> = (1..=3).map(|i| (i, format!("node-{i}"))).collect();
+    groups[&1].initialize(voters).await.unwrap();
+    let c = Cluster { net, dirs, groups };
+    // Node 3 must not lead: its own proposal would stop the leader.
+    let first = put(&c, "a", "1").await;
+    for g in c.groups.values() {
+        assert!(g.wait_applied(first, Duration::from_secs(5)).await);
+    }
+    let _down = c.net.down.lock().unwrap().insert(3);
+    let refused = put(&c, "new:x", "1").await;
+    let after = put(&c, "b", "2").await;
+    let _up = c.net.down.lock().unwrap().remove(&3);
+    // Both reach node 3 in one append, so one batch holds them.
+    for id in [1, 2] {
+        assert!(
+            c.groups[&id]
+                .wait_applied(after, Duration::from_secs(5))
+                .await
+        );
+        assert_eq!(get(&c.groups[&id], "b").as_deref(), Some("2"));
+    }
+    let stopped = &c.groups[&3];
+    assert!(
+        !stopped.wait_applied(refused, Duration::from_secs(2)).await,
+        "node 3 applied past the entry it cannot apply"
+    );
+    assert_eq!(get(stopped, "new:x"), None);
+    assert_eq!(get(stopped, "b"), None, "an entry after it applied");
+    // The group stops there and, restarted, stops there again: it never
+    // moves past the entry, and says so in its status.
+    let reason = stopped.stopped();
+    assert!(
+        reason.is_some() || stopped.status().restarts > 0,
+        "node 3's group neither stopped nor restarted"
+    );
+    assert!(!stopped.wait_applied(refused, Duration::from_secs(2)).await);
+    assert_eq!(get(stopped, "b"), None, "an entry after it applied");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -748,6 +825,36 @@ impl DiskCluster {
         let dir = self.stop(id).await;
         self.start_node(id, dir).await
     }
+}
+
+/// Review finding B3: a state row a replica could not read during an apply read
+/// as absent, and the replica applied the entry anyway, answering (and writing)
+/// differently from the others. The read fault now fails the batch, so that
+/// replica stops on the entry instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_row_a_replica_cannot_read_stops_it_rather_than_applying_differently() {
+    let c = DiskCluster::new(3).await;
+    let first = c.put("a", "1").await;
+    for g in c.groups.values() {
+        assert!(g.wait_applied(first, Duration::from_secs(5)).await);
+    }
+    let leader = c.leader().await;
+    let faulty = (1..=3).find(|id| *id != leader).unwrap();
+    calimero_log::testing::fail_state_reads(c.dirs[&faulty].path(), 1);
+    let second = c.put("a", "2").await;
+    for (id, g) in &c.groups {
+        if *id != faulty {
+            assert!(g.wait_applied(second, Duration::from_secs(5)).await);
+        }
+    }
+    let applied_anyway = c.groups[&faulty]
+        .wait_applied(second, Duration::from_secs(2))
+        .await;
+    calimero_log::testing::heal_state_reads(c.dirs[&faulty].path(), 1);
+    assert!(
+        !applied_anyway,
+        "the replica applied an entry over a row it could not read"
+    );
 }
 
 /// A stopped node's stored commit index (group 1).

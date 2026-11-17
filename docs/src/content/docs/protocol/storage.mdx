@@ -14,8 +14,7 @@ Everything a node persists is in its data directory (`--data-dir`, by default
 ├── snapshots/      sealed snapshot files, one current per group
 ├── components/     compiled components, each with a MAC under a key from K_c
 ├── cluster-key     K_c, AES-256-GCM under HMAC-SHA256(K_r, "calimero.cluster-key.wrap.v1")
-├── signing-key     the receipt key, under HMAC-SHA256(K_r, "calimero.signing-key.wrap.v1")
-└── log.redb.migrated   (only if the node was upgraded from the redb store)
+└── signing-key     the receipt key, under HMAC-SHA256(K_r, "calimero.signing-key.wrap.v1")
 ```
 
 The database is opened with tuned column and table options
@@ -56,6 +55,16 @@ A machine can hide a key (`StateTx::put_hidden`). The row is then stored at
 `tag ‖ HMAC(group ‖ tag ‖ key)` (33 bytes), and the value, before sealing, is
 `u32 BE key length ‖ key ‖ value`. The disk then shows neither which keys an app
 uses nor how they sort; reading a hidden key needs K_c.
+
+### A row an apply cannot read
+
+An entry's apply reads rows through its batch (`StateTx`). A read that fails (a
+storage fault, a hidden row that is not a hidden row's shape, a row the machine
+cannot decode) fails the batch: nothing in it commits, the applied index stays
+where it was, and the group stops on that entry on this node. Reading the row as
+absent would apply the entry differently from the replicas that read it, with
+nothing to show for it. A machine's `restore` and a hidden-row scan fail the same
+way; only answers (views, routes) read a fault as absent, and log it.
 
 ## An app group's rows
 
@@ -182,9 +191,10 @@ format is refused (`the store is in format N, and this release reads format 2
 only`), and the node does not start. No earlier store is read; a rollout
 never needs one, since a new release's nodes start on empty data directories
 and receive their data by snapshot, whose format is unchanged. A snapshot or backup of a later format is refused
-by its first line, and an app entry of a later format applies as a no-op that
-names its format on every replica of this release (the release that raises the
-entry format writes it only once every replica of the group reads it).
+by its first line, and an app entry of a later format stops the app's group on
+the replica that meets it, which logs the format it found (the release that
+raises the entry format writes it only once every replica of the group reads it,
+so only a replica on an older release than its group meets one).
 
 Changing a row, a snapshot's framing or an entry's meaning raises the matching
 number in the same change and keeps a reader (a migration step, or the old
@@ -196,11 +206,9 @@ table before it ships. The
 
 ## Migration from the previous format
 
-A data directory holding the previous single redb file (`log.redb`) is migrated
-when the engine opens it: entries, votes, commit and purge marks, blobs, and
-each machine's old whole-state snapshot, which the app machine imports into its
-rows (the app's keys, events, idempotency records with their expiry ring). The old
-file is kept, renamed `log.redb.migrated`.
+No release reads an earlier store in place: the redb store from before RocksDB,
+and store format 1, are refused as above. A cluster moves onto a new release by
+adding nodes with empty data directories, which receive their data by snapshot.
 
 1.0.0-rc.20 is a hard cutover on top of this: a data directory or log that
 holds an app outside an organization is not read, so clusters are recreated

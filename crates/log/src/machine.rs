@@ -435,6 +435,12 @@ impl<M: Machine> StateMachine<M> {
                     out.push(Bytes::default());
                 }
             }
+            // A machine that could not apply an entry (one it cannot decode,
+            // a row it cannot read) stops the group there: applying what
+            // follows would build on a state the other nodes do not have.
+            if tx.failed() {
+                break;
+            }
         }
         // The batch's writes and the index they bring the state to land
         // together; readers, held off by the lock, see neither until then.

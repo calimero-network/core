@@ -293,6 +293,45 @@ pub fn check(active: Option<&str>, features: &[Feature]) -> Result<(), NotActive
     Ok(())
 }
 
+/// What the gate ([`admit`]) decides for a proposal.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// The logged version brings every feature: propose it.
+    Admitted,
+    /// Every node supports the features now, but the logged version is below
+    /// them: log this version first (`SetClusterVersion`), then judge again on
+    /// the logged one. Proposed before it, an entry would be in the log while
+    /// the version that keeps older nodes out (`may_join`) is not.
+    LogFirst(String),
+    /// Not every node supports them.
+    Refused(NotActive),
+}
+
+/// The gate every proposal goes through (`Node::require_features`): on the
+/// logged version, or, when every node supports the features already
+/// ([`floor`]), on that version once it is logged. Only `SetClusterVersion`
+/// itself (the entry that logs the floor), and a floor below the release that
+/// brings it, are admitted on the floor alone.
+#[must_use]
+pub fn admit(logged: Option<&str>, floor: Option<&str>, features: &[Feature]) -> Admission {
+    if check(logged, features).is_ok() {
+        return Admission::Admitted;
+    }
+    let active = effective(logged, floor);
+    if let Err(refused) = check(active.as_deref(), features) {
+        return Admission::Refused(refused);
+    }
+    // Below rc.16 no node decodes `SetClusterVersion`, so nothing can be
+    // logged: those features are judged on the floor alone, as before.
+    let loggable = check(active.as_deref(), &[Feature::ClusterVersion]).is_ok();
+    match active {
+        Some(v) if loggable && features.iter().any(|f| *f != Feature::ClusterVersion) => {
+            Admission::LogFirst(v)
+        }
+        _ => Admission::Admitted,
+    }
+}
+
 /// The newest version every node supports: the oldest of what each
 /// advertises, or `None` when one could not say (or there are none).
 #[must_use]
@@ -638,8 +677,8 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::{
-        advertised, check, effective, floor, may_join, supported, Feature, ABOVE_A_NODE, FEATURES,
-        NOT_EVERY_NODE, NOT_FORWARD,
+        admit, advertised, check, effective, floor, may_join, supported, Admission, Feature,
+        ABOVE_A_NODE, FEATURES, NOT_EVERY_NODE, NOT_FORWARD,
     };
     use crate::system::{compare_versions, OrgQuotas, ScopeApp, SystemCmd, SystemMachine};
     use crate::types::TeamJoin;
@@ -951,15 +990,24 @@ mod tests {
     }
 
     /// Propose `cmd` through the gate a node runs before it proposes
-    /// (`Node::require_features`): the logged version, or what every node
-    /// advertises now. Admitted, every node applies it.
+    /// (`Node::require_features`, [`admit`]): the logged version, or what
+    /// every node advertises now, logged first. Admitted, every node applies it.
     fn propose(nodes: &mut [Replica], cmd: &SystemCmd) -> Result<(), super::NotActive> {
         let logged = nodes[0].machine.state.cluster_version.clone();
         let low = floor(nodes.iter().map(|n| Some(n.release)));
-        check(
-            effective(logged.as_deref(), low.as_deref()).as_deref(),
-            &cmd.features(),
-        )?;
+        match admit(logged.as_deref(), low.as_deref(), &cmd.features()) {
+            Admission::Admitted => {}
+            Admission::Refused(refused) => return Err(refused),
+            Admission::LogFirst(version) => {
+                let raise = SystemCmd::SetClusterVersion {
+                    version,
+                    nodes: (1..)
+                        .zip(nodes.iter().map(|n| n.release.to_owned()))
+                        .collect(),
+                };
+                propose(nodes, &raise)?;
+            }
+        }
         for n in nodes.iter_mut() {
             let _answer = n.apply(cmd);
         }
@@ -984,6 +1032,97 @@ mod tests {
             !same_state(&nodes),
             "the older node kept the state before it"
         );
+    }
+
+    /// Reproduction (B4): every node runs rc.16 and no version is logged yet,
+    /// so the gate admits a feature of rc.16 on what the nodes advertise. Were
+    /// the entry proposed then, a node on rc.15 registered before the leader
+    /// logs rc.16 would still be admitted at the logged version (`may_join`),
+    /// and reach an entry it cannot decode. The version is logged first.
+    #[test]
+    fn a_feature_is_proposed_only_once_the_version_that_keeps_older_nodes_out_is_logged() {
+        let mut nodes = cluster(&[RC16, RC16, RC16]);
+        let feature = FEATURES
+            .iter()
+            .copied()
+            .find(|f| f.since() == RC16 && *f != Feature::ClusterVersion)
+            .unwrap();
+        propose(&mut nodes, &uses(feature)).unwrap();
+        let logged = nodes[0].machine.state.cluster_version.clone();
+        assert!(
+            !may_join(logged.as_deref(), Some(RC15)),
+            "an rc.15 node would join a log holding {feature:?} at the logged version {logged:?}"
+        );
+        assert_eq!(logged.as_deref(), Some(RC16));
+        assert!(same_state(&nodes));
+    }
+
+    /// `SetClusterVersion` is the one entry admitted on what the nodes
+    /// advertise alone: it is what logs it.
+    #[test]
+    fn only_the_cluster_version_itself_is_admitted_before_it_is_logged() {
+        let raise = [Feature::ClusterVersion];
+        assert_eq!(admit(None, Some(RC16), &raise), Admission::Admitted);
+        assert_eq!(
+            admit(None, Some(RC16), &[Feature::AttachApp]),
+            Admission::Refused(check(Some(RC16), &[Feature::AttachApp]).unwrap_err())
+        );
+        let quotas = [Feature::OrgQuotas];
+        assert_eq!(
+            admit(Some(RC14), Some(RC16), &quotas),
+            Admission::LogFirst(RC16.into())
+        );
+        assert_eq!(admit(Some(RC16), Some(RC14), &quotas), Admission::Admitted);
+        assert!(matches!(
+            admit(Some(RC14), Some(RC14), &quotas),
+            Admission::Refused(_)
+        ));
+        assert!(matches!(
+            admit(Some(RC14), None, &quotas),
+            Admission::Refused(_)
+        ));
+        // Below rc.16 nothing decodes `SetClusterVersion`: the floor alone.
+        assert_eq!(admit(None, Some(RC15), &quotas), Admission::Admitted);
+    }
+
+    /// Reproduction (B4): a system entry this node cannot decode (a later
+    /// release's command) was skipped, so the node kept serving a state the
+    /// others no longer had (a revoked API key still working there). The
+    /// group's batch now fails, which stops its Raft core on that entry.
+    #[test]
+    fn an_entry_this_node_cannot_decode_stops_the_system_group() {
+        struct NoPeers;
+        impl calimero_log::Transport for NoPeers {
+            fn send(
+                &self,
+                _target: calimero_log::NodeId,
+                _addr: String,
+                _group: calimero_log::GroupId,
+                _request: calimero_log::RpcRequest,
+            ) -> calimero_log::BoxFuture<Result<calimero_log::RpcResponse, String>> {
+                Box::pin(async { Err("no peers".to_owned()) })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let engine = calimero_log::Engine::open(
+            1,
+            dir.path(),
+            &[7; 32],
+            std::sync::Arc::new(NoPeers),
+            calimero_log::Config::default(),
+        )
+        .unwrap();
+        let group = engine.group_state(1);
+        let mut m = SystemMachine::default();
+        let before = serde_json::to_value(&m.state).unwrap();
+        let mut tx = calimero_log::StateTx::new(&group);
+        let later = br#"{"op":"revokeApiKeyOfALaterRelease","keyId":"k"}"#;
+        let _answer = calimero_log::Machine::apply(&mut m, 7, later, &mut tx);
+        assert!(
+            tx.commit().is_err(),
+            "the batch committed: the node skipped the entry and goes on"
+        );
+        assert_eq!(serde_json::to_value(&m.state).unwrap(), before);
     }
 
     /// What an rc.14 node decodes `ScopeApp` as: it refuses unknown fields,

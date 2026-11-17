@@ -1402,11 +1402,18 @@ impl AppMachine {
         match entry_format(command) {
             Some(format) if format <= ENTRY_FORMAT => {}
             format => {
+                // Applied as a no-op, it would leave this replica on a state the
+                // replicas that read it no longer have: the group stops instead.
+                let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::App);
                 tracing::error!(
                     index,
                     ?format,
-                    "an entry in a format this release does not read: applied as a no-op"
+                    undecodable = n,
+                    "an entry in a format this release does not read: the group stops here; run a release that reads it"
                 );
+                tx.fail(format_args!(
+                    "app entry {index} is in format {format:?}, which this release does not read"
+                ));
                 let detail = format.map_or_else(
                     || "entry format marker is not a number".to_owned(),
                     |f| {
@@ -1693,19 +1700,25 @@ impl AppMachine {
             }
             Err(e) => {
                 // As in the system log (`system::cluster_version`): a feature gate keeps
-                // every entry within what each replica applies, so this is a bug.
+                // every entry within what each replica applies, so one this replica cannot
+                // decode was written by a later release. Skipped, it would leave this replica
+                // on a state the others no longer have: the group stops on it instead.
                 let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::App);
                 error!(index, error = %e, undecodable = n,
-                    "an app entry this node cannot decode was skipped: its state now differs from the replicas that applied it");
-                Applied {
+                    "an app entry this node cannot decode: the group stops here; run a release that reads it");
+                tx.fail(format_args!("app entry {index} does not decode: {e}"));
+                return crate::app::applied_bytes(
                     index,
-                    status: Status::Trap,
-                    result: Value::Null,
-                    error: json!({ "kind": "Fault", "detail": format!("not a component's entry: {e}") }),
-                    events: Vec::new(),
-                    conflict: true,
-                    timeout: false,
-                }
+                    &Applied {
+                        index,
+                        status: Status::Trap,
+                        result: Value::Null,
+                        error: json!({ "kind": "Fault", "detail": format!("not a component's entry: {e}") }),
+                        events: Vec::new(),
+                        conflict: true,
+                        timeout: false,
+                    },
+                );
             }
         };
         self.expire_component(tx, entry_ts_ms);
@@ -1726,24 +1739,41 @@ impl AppMachine {
 // `AppMachine` (`outgoing`, `action_record`, `component_replay`) are for the node's
 // routes and its leader's polls, between batches.
 
+/// A row read inside an apply, decoded. A row that does not decode fails the batch
+/// (`StateTx::fail`) and reads as absent: the replica stops on this entry rather than
+/// apply it as if the row were not there, which the other replicas would not do.
+fn decode_in<T: serde::de::DeserializeOwned>(
+    tx: &StateTx<'_>,
+    family: u8,
+    raw: &[u8],
+) -> Option<T> {
+    match serde_json::from_slice(raw) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tx.fail(format_args!(
+                "a row of family {family} does not decode: {e}"
+            ));
+            None
+        }
+    }
+}
+
 /// The outbox's message `seq` as `tx` leaves it.
 fn outgoing_in(tx: &StateTx<'_>, seq: u64) -> Option<xcall::Outgoing> {
     let raw = tx.get_hidden(rows::COUT, &xcall::outbox_key(seq))?;
-    serde_json::from_slice(&raw).ok()
+    decode_in(tx, rows::COUT, &raw)
 }
 
 /// Pending action `id` as `tx` leaves it.
 fn action_in(tx: &StateTx<'_>, id: &str) -> Option<ActionRecord> {
     let raw = tx.get_hidden(rows::CACT, &action::action_key(id))?;
-    serde_json::from_slice(&raw).ok()
+    decode_in(tx, rows::CACT, &raw)
 }
 
 /// The answer remembered for `caller`'s key `key` as `tx` leaves it.
 fn replay_in(tx: &StateTx<'_>, caller: &Caller, key: &str) -> Option<Applied> {
     let raw = tx.get_hidden(rows::CIDEM, idem_key(caller, key).as_bytes())?;
-    serde_json::from_slice::<IdemRecord>(&raw)
-        .ok()
-        .map(|r| r.applied)
+    decode_in::<IdemRecord>(tx, rows::CIDEM, &raw).map(|r| r.applied)
 }
 
 /// A blob id as the host commands carry it (hex).
@@ -1752,13 +1782,14 @@ pub(crate) fn parse_hex32(id: &str) -> Option<[u8; 32]> {
     (hex::encode(raw) == id).then_some(raw)
 }
 
-/// A hidden row of `family` read as JSON; none when absent or unreadable.
+/// A hidden row of `family` read as JSON; none when absent. One that cannot be read
+/// or decoded fails the batch (see `decode_in`).
 pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
     tx: &StateTx<'_>,
     family: u8,
     key: &str,
 ) -> Option<T> {
-    serde_json::from_slice(&tx.get_hidden(family, key.as_bytes())?).ok()
+    decode_in(tx, family, &tx.get_hidden(family, key.as_bytes())?)
 }
 
 /// Writes `value` as the JSON hidden row `key` of `family`.
@@ -1803,7 +1834,7 @@ const SECRETS_ROW: &[u8] = b"all";
 
 fn instance_secrets_in(tx: &StateTx<'_>) -> InstanceSecrets {
     tx.get_hidden(rows::CSECRET, SECRETS_ROW)
-        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .and_then(|raw| decode_in(tx, rows::CSECRET, &raw))
         .unwrap_or_default()
 }
 
@@ -2085,6 +2116,66 @@ mod tests {
         assert!(!Outcome::default().is_retryable());
     }
 
+    /// Review finding B3: a row an apply read but could not decode read as absent, and
+    /// the batch went on (a pipeline step applied as if its run were unknown, a replayed
+    /// call ran again, an idempotency record was dropped). It now fails the batch.
+    #[test]
+    fn a_row_an_apply_cannot_decode_fails_the_batch() {
+        let rig = Rig::new();
+        let state = rig.engine.group_state(5);
+        let mut tx = StateTx::new(&state);
+        tx.put_hidden(rows::CRUN, b"run-1", b"not json");
+        tx.put_hidden(rows::CIDEM, b"system|k", b"not json");
+        tx.commit().unwrap();
+
+        let tx = StateTx::new(&state);
+        assert!(get_json::<RunRecord>(&tx, rows::CRUN, "run-1").is_none());
+        assert!(
+            tx.failed(),
+            "an undecodable run record reads as an unknown run"
+        );
+
+        let tx = StateTx::new(&state);
+        let caller = Caller::System;
+        let _absent = replay_in(&tx, &caller, "k");
+        assert!(
+            tx.failed(),
+            "an undecodable idempotency record reads as no record"
+        );
+
+        let tx = StateTx::new(&state);
+        assert!(get_json::<RunRecord>(&tx, rows::CRUN, "run-2").is_none());
+        assert!(!tx.failed(), "an absent row is no fault");
+    }
+
+    /// The same for retention: an idempotency record this replica cannot decode is not
+    /// dropped as expired (the others still answer from theirs); the batch fails.
+    #[test]
+    fn an_undecodable_idempotency_record_is_never_expired() {
+        let rig = Rig::new();
+        let state = rig.engine.group_state(5);
+        let mut rings = [idempotency::Ring::default(); 2];
+        let mut tx = StateTx::new(&state);
+        idempotency::record(&mut tx, &IDEM_ROWS, &mut rings, 0, "acct|k", b"not json");
+        tx.commit().unwrap();
+
+        let mut tx = StateTx::new(&state);
+        let limits = idempotency::Limits {
+            keep: [0, 0],
+            ..idempotency::Limits::default()
+        };
+        idempotency::expire(
+            &mut tx,
+            &IDEM_ROWS,
+            &mut rings,
+            limits,
+            Some(u64::MAX),
+            stamps,
+        );
+        assert!(tx.failed(), "the record was dropped as expired");
+        assert_eq!(rings[0].first, 0, "the ring moved past the record");
+    }
+
     /// A machine on a real, empty group state (the log's store, in a temp dir).
     struct Rig {
         _dir: tempfile::TempDir,
@@ -2131,6 +2222,15 @@ mod tests {
             let out = calimero_log::Machine::apply(&mut self.machine, index, cmd, &mut tx);
             tx.commit().unwrap();
             serde_json::from_slice(&out).unwrap()
+        }
+
+        /// Applies `cmd` and answers whether its batch failed to commit, which stops
+        /// a running group's Raft core on that entry.
+        fn apply_stops(&mut self, index: u64, cmd: &[u8]) -> bool {
+            let state = self.engine.group_state(5);
+            let mut tx = StateTx::new(&state);
+            let _out = calimero_log::Machine::apply(&mut self.machine, index, cmd, &mut tx);
+            tx.commit().is_err()
         }
 
         /// Applies `cmds`, the first at index `first`, as one batch, the way a replica
@@ -2301,28 +2401,42 @@ mod tests {
     /// later release marks newer is applied as a no-op that names its format, so a replica
     /// still on this release never applies part of it.
     #[test]
-    fn an_entry_in_a_later_format_is_refused_and_an_unmarked_one_applies() {
+    fn an_entry_in_a_later_format_stops_the_group_and_an_unmarked_one_applies() {
         assert_eq!(entry_format(&init(0)), Some(1));
         let mut r = Rig::new();
         let _i = r.apply(1, &init(0));
         let unmarked = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
         let newer = [&b"{\"v\":2,"[..], &unmarked[1..]].concat();
         assert_eq!(entry_format(&newer), Some(2));
-        let a = r.apply(2, &newer);
-        assert!(a.conflict);
-        let detail = a.error["detail"].as_str().unwrap_or_default();
         assert!(
-            detail.contains("entry format 2") && detail.contains("up to 1"),
-            "{detail}"
+            r.apply_stops(2, &newer),
+            "applied as a no-op, the replica would go on without what the others applied"
         );
         assert!(held(&r).is_empty(), "nothing of it applied");
-        assert_eq!(r.machine.state.last_index, 2, "its position moves");
+        assert_eq!(r.machine.state.last_index, 1, "the group stopped before it");
         let garbled = [&b"{\"v\":\"x\","[..], &unmarked[1..]].concat();
         assert_eq!(entry_format(&garbled), None);
-        assert!(r.apply(3, &garbled).conflict);
-        let ok = file_call(3, 1, Status::Ok, vec![mark(1)], vec![]);
-        assert!(!r.apply(4, &ok).conflict);
+        assert!(r.apply_stops(2, &garbled));
+        let ok = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
+        assert!(!r.apply(2, &ok).conflict);
         assert_eq!(held(&r), [fid(1)]);
+    }
+
+    /// Reproduction (B4): an app entry this replica cannot decode (a later
+    /// release's command) was skipped, and the replica went on serving a state
+    /// the others no longer had. Its batch now fails and the group stops there.
+    #[test]
+    fn an_entry_this_replica_cannot_decode_stops_the_group() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let later = br#"{"op":"aCommandOfALaterRelease","baseIndex":1}"#;
+        assert!(
+            r.apply_stops(2, later),
+            "the batch committed: the replica skipped the entry and goes on"
+        );
+        assert_eq!(r.machine.state.last_index, 1, "the group stopped before it");
+        let ok = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
+        assert!(!r.apply(2, &ok).conflict);
     }
 
     #[test]
@@ -3304,9 +3418,13 @@ mod tests {
         let mut r = Rig::new();
         let _i = r.apply(1, &init(0));
         // As merod before this release logged an SDK 0.12 app's blob removal.
+        // It decodes as no component entry, so the group stops on it.
         let v1 = serde_json::to_vec(&json!({ "op": "blobForget", "id": "00" })).unwrap();
-        let out = r.apply(2, &v1);
-        assert!(out.conflict, "a wasmer entry applied to a component app");
+        assert!(
+            r.apply_stops(2, &v1),
+            "a wasmer entry applied to a component app"
+        );
+        assert_eq!(r.machine.state.last_index, 1);
     }
 
     #[test]
