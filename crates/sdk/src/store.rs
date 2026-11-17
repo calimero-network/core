@@ -27,6 +27,11 @@ pub const MAX_KEY_BYTES: usize = 1024;
 pub const MAX_SDK_KEY_BYTES: usize = MAX_KEY_BYTES - 1;
 /// The most entries the host returns for one cursor read.
 pub const MAX_RANGE_BATCH: u32 = 1000;
+/// The most writes (`put`, `delete`, `add`) the host allows one run (its `MAX_WRITES`).
+pub const MAX_RUN_WRITES: usize = 10_000;
+/// The most bytes the host lets one run write (its `MAX_RUN_BYTES`): the key and value of
+/// every `put` and `add` and the key of every `delete`.
+pub const MAX_RUN_BYTES: usize = 1024 * 1024;
 
 /// A forward or reverse read of a key range, a batch at a time.
 pub trait RangeCursor {
