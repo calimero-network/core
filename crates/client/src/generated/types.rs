@@ -3617,6 +3617,12 @@ pub struct ConsentPageCreateRequestUpgradeUnitSubject {
     pub to_version: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ConsentPageCreateRequestDelegateSubject {
+    pub app: String,
+    pub target: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConsentPageCreateRequestOutboundScopeAccount {
     #[serde(rename = "account")]
@@ -3898,6 +3904,12 @@ pub enum ConsentPageCreateRequest {
         return_to: String,
         subject: ConsentPageCreateRequestUpgradeUnitSubject,
     },
+    #[serde(rename = "delegate")]
+    Delegate {
+        #[serde(rename = "returnTo")]
+        return_to: String,
+        subject: ConsentPageCreateRequestDelegateSubject,
+    },
     #[serde(rename = "outbound")]
     Outbound {
         #[serde(rename = "returnTo")]
@@ -4006,6 +4018,8 @@ pub enum ConsentPageResultResponseKind {
     Upgrade,
     /// `upgradeUnit`.
     UpgradeUnit,
+    /// `delegate`.
+    Delegate,
     /// `outbound`.
     Outbound,
     /// `createOrg`.
@@ -4046,6 +4060,7 @@ impl ConsentPageResultResponseKind {
             Self::Release => "release",
             Self::Upgrade => "upgrade",
             Self::UpgradeUnit => "upgradeUnit",
+            Self::Delegate => "delegate",
             Self::Outbound => "outbound",
             Self::CreateOrg => "createOrg",
             Self::CreateInvite => "createInvite",
@@ -4077,6 +4092,7 @@ impl<'de> Deserialize<'de> for ConsentPageResultResponseKind {
             "release" => Self::Release,
             "upgrade" => Self::Upgrade,
             "upgradeUnit" => Self::UpgradeUnit,
+            "delegate" => Self::Delegate,
             "outbound" => Self::Outbound,
             "createOrg" => Self::CreateOrg,
             "createInvite" => Self::CreateInvite,

@@ -221,7 +221,12 @@ is its command line.
   (`system::delegation_args`), both apps reachable by them and in one organization
   (`Feature::Delegation`, rc.31); `DELETE` takes it back without a passkey;
   `GET /apps/{app}/delegations` lists the caller's own. Deleting either app drops
-  the grant (`remove_app`). A run whose caller is a person offers that person to
+  the grant (`remove_app`). The grant route is `holder` (never a package-bound
+  session); an app's frontend asks on the consent page (`delegate { app, target }`,
+  `consent_page::delegate_request`: both apps and the methods from
+  `api::apps::delegation_plan`, the page stale when the source's release moved, and
+  `act` runs `api::apps::delegate` after checking the methods are still those shown).
+  Regression: `an_apps_frontend_asks_to_act_as_the_person_in_another_app_on_the_page`. A run whose caller is a person offers that person to
   the apps it calls (`forwarded`): a synchronous call or view (`NodeXcall::person`)
   and a message (`XcallOut::on_behalf_of` -> `Outgoing::on_behalf_of`, written only
   from the logged cluster version that brings `Feature::Delegation`,
@@ -1290,7 +1295,7 @@ is its command line.
   `a_custom_domains_host_names_one_origin`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
-  `POST /consent/requests { kind: release|upgrade|outbound|createOrg|createInvite|acceptInvite|leaveOrg|removeMember|setMemberRole|setMemberTeams|removeMemberTeams|revokeInvite|renameOrg|deleteOrg|setCapabilities|setAllApps,
+  `POST /consent/requests { kind: release|upgrade|upgradeUnit|delegate|outbound|createOrg|createInvite|acceptInvite|leaveOrg|removeMember|setMemberRole|setMemberTeams|removeMemberTeams|revokeInvite|renameOrg|deleteOrg|setCapabilities|setAllApps,
   scope?, subject, returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
   `withdraw: true` withdrawing its approval) and gets `{ requestId, url,
   expiresAt, code }` (`consent_page::confirmation_code`, shown on the page
