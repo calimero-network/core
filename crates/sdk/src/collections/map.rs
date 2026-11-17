@@ -19,8 +19,8 @@ use crate::error::StorageError;
 use crate::store::{check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
 use crate::table::{FindOpts, Iter, Page};
 
-use super::map_value::decode_value;
-pub use super::map_value::MapValue;
+use super::slots::decode_value;
+pub use super::slots::MapValue;
 
 /// A map from tuple keys to CBOR values, ordered by key.
 pub struct UnorderedMap<K: ToKey, V, S: Store = DefaultStore> {

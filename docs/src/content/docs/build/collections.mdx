@@ -106,9 +106,9 @@ every entry it reads. A view that answers a client should still return one
 | Type | Operations |
 | --- | --- |
 | `Cell<T>` | `get`, `set`, `clear`, `is_set`, `get_or_default`, `replace` and `take` (return the old value), `update(\|old\| new)` |
-| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values`, `retain`; a value can be a collection ([Collections as map values](#collections-as-map-values)) |
+| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values`, `retain`; a value can be a collection ([Collections inside collections](#collections-inside-collections)) |
 | `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `retain` |
-| `Vector<T>` | `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
+| `Vector<T>` | A collection per position ([Collections inside collections](#collections-inside-collections)), or values: `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
 | `Counter` | `get`, `add`, `increment`, `decrement` (stops at zero), `reset` |
 | `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of`, `page` and `iter` as `(hex, value)` in hash order |
 | `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` and `contains_for(account)` read another's; `page`, `iter` and `iter_with` list `(account, value)` in account order |
@@ -118,11 +118,13 @@ every entry it reads. A view that answers a client should still return one
 Despite its name, `UnorderedMap` reads in key order (`page`, `range`, `first`,
 `last`), so it also serves as a sorted map.
 
-### Collections as map values
+### Collections inside collections
 
-A map's value can be a collection: a `Vector` per account, a `Set` per tag, a
-map of maps, a `Table` per team. Write the type and use it; there is nothing to
-declare.
+Any container with a slot per key can hold a whole collection in each slot: a
+map per key, a `Vector` per position, a `PerUser` per account. The collection
+can be any collection or a `Table`, and so on as deep as you like: a `Vector`
+per account, a `Set` per tag, a map of maps, a `Table` per team, a grid as a
+`Vector<Vector<T>>`. Write the type and use it; there is nothing to declare.
 
 ```rust
 #[app::state(version = 1)]
@@ -145,6 +147,29 @@ For a collection value, the map's methods answer per key:
 | `contains(&k)` / `is_empty()` | Whether `k`'s collection, or any, holds anything: one cursor read. |
 | `remove(&k)` / `clear()` | Removes `k`'s whole collection, or every one; returns how many stored entries there were. |
 | `iter()` / `keys()` | Every key that holds anything, in key order, with its collection: two host calls per key, however large its collection. |
+
+A `Vector` of collections appends with `push_new()`, which returns the
+position and its empty collection; `get(i)` answers `Option<C>`, `pop()`
+removes the last collection whole, and `iter()` reads only the length. A
+`PerUser` of collections answers the caller's own with `get()` and anyone's
+with `get_for(account)`; `remove()` removes the caller's whole collection.
+
+```rust
+rounds: Vector<Set<String>>,          // a set of players per round
+inbox: PerUser<Vector<Message>>,      // each account's own messages
+
+let (round, mut players) = self.rounds.push_new()?;
+players.insert(&account)?;
+self.inbox.get()?.push(&message)?;    // the caller's own inbox
+```
+
+A `Set`, a `Frozen` and a `Cell` cannot hold collections: a set's elements are
+its keys, with no slot beside them (use a map from the element to its
+collection), a frozen value is addressed by its own content, and a cell is a
+single slot (`Cell<Vector<T>>` is just a `Vector`).
+
+A key whose collection was emptied no longer counts: `contains`, `is_empty`
+and `keys` skip it (its stored length stays at 0 until `remove` clears it).
 
 Each key's collection costs exactly what a state field's does: a write per
 element, its own stored length, reads through its own cursor. Nothing is

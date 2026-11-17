@@ -6,10 +6,10 @@ mod cell;
 mod counter;
 mod frozen;
 mod map;
-mod map_value;
 mod per_user;
 mod rich_text;
 mod set;
+mod slots;
 mod text;
 mod vector;
 
@@ -17,10 +17,10 @@ pub use cell::Cell;
 pub use counter::Counter;
 pub use frozen::{CborSha256, ContentHash, Frozen};
 pub use map::UnorderedMap;
-pub use map_value::MapValue;
 pub use per_user::PerUser;
 pub use rich_text::{Mark, RichText, Span};
 pub use set::Set;
+pub use slots::{MapValue, UserValue, VecElement};
 pub use text::Text;
 pub use vector::Vector;
 
