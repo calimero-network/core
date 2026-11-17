@@ -1168,11 +1168,24 @@ fn scope_words(scope: &Value) -> String {
 fn plain_date(secs: u64) -> String {
     i64::try_from(secs)
         .ok()
-        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-        .map_or_else(
-            || crate::system::rfc3339(secs),
-            |t| t.format("%b %-d, %Y (UTC)").to_string(),
-        )
+        .and_then(|s| time::OffsetDateTime::from_unix_timestamp(s).ok())
+        .and_then(|t| {
+            t.format(time::macros::format_description!(
+                "[month repr:short] [day padding:none], [year] (UTC)"
+            ))
+            .ok()
+        })
+        .unwrap_or_else(|| crate::system::rfc3339(secs))
+}
+
+#[cfg(test)]
+mod plain_date_tests {
+    /// As chrono wrote it (`%b %-d, %Y (UTC)`): an unpadded day.
+    #[test]
+    fn a_date_reads_as_it_did() {
+        assert_eq!(super::plain_date(1_763_164_800), "Nov 15, 2025 (UTC)");
+        assert_eq!(super::plain_date(1_762_300_800), "Nov 5, 2025 (UTC)");
+    }
 }
 
 /// Whose data, as a person reads it: "Acme's", "your".
