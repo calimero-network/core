@@ -5084,6 +5084,19 @@ fn mpk_declaring(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
 ) -> Vec<u8> {
+    mpk_using(package, version, wasm, key, outbound, Value::Null)
+}
+
+/// [`mpk_declaring`], also declaring `uses` (the manifest's JSON for it) in the signed
+/// manifest.
+fn mpk_using(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    uses: Value,
+) -> Vec<u8> {
     use sha2::Digest;
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
@@ -5109,6 +5122,7 @@ fn mpk_declaring(
         frontend_aliases: Vec::new(),
         upgrades: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
+        uses: serde_json::from_value(uses).unwrap(),
         services: None,
         pipelines: Vec::new(),
         signature: None,
@@ -5295,6 +5309,63 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
     assert!(
         failures["explode"].as_str().unwrap().contains("BeatFailed"),
         "{failures}"
+    );
+}
+
+/// A release names the apps it calls in its signed manifest (`uses`): a node refuses one
+/// that breaks the rules before anything is recorded (`400 BAD_USES`), and the release's
+/// capability card lists the references of one it took, before any instance exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_names_the_apps_it_uses_on_its_card() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let abi = format!("sha256:{}", "b".repeat(64));
+
+    let e = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.uses-bad",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            json!({ "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.2.0" } }),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_USES"), "{e}");
+
+    let _ = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.notes",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            json!({
+                "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.1.0", "abi": abi },
+                "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+            }),
+        ))
+        .await
+        .unwrap();
+    let card: Value = alice
+        .transport()
+        .json(calimero_client::Request::new(
+            reqwest::Method::GET,
+            "packages/com.calimero.notes/0.1.0/capabilities".to_owned(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        card["uses"],
+        json!({
+            "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+            "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "mode": "create",
+                    "version": "0.1.0", "abi": abi },
+        })
     );
 }
 

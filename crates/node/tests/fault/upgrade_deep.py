@@ -54,6 +54,11 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
+    ("Packages", "The apps a release references (`uses` in the signed manifest, on its capability card)",
+     "nothing is stored: the node checks them at install and reads them from the release's manifest; the "
+     "deep fixtures are packed by the old release's meroctl, which writes no `uses`. "
+     "`a_release_names_the_apps_it_uses_on_its_card` (`component_cluster.rs`) covers install and the card "
+     "on one build. A case once units create and link referenced apps"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "

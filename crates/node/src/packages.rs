@@ -286,6 +286,9 @@ impl Node {
                 )));
             }
         }
+        manifest
+            .check_uses()
+            .map_err(|e| ApiError::bad_request(e.code(), &e.to_string()))?;
         let upgrades = manifest.upgrades.unwrap_or_default();
         let in_order = self.sys(|s| {
             s.packages

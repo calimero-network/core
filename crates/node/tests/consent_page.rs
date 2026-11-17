@@ -89,6 +89,7 @@ fn release_of(
         frontend: None,
         frontend_aliases: d.aliases.iter().map(|a| (*a).to_owned()).collect(),
         outbound: d.outbound.iter().map(|u| (*u).to_owned()).collect(),
+        uses: None,
         upgrades: d
             .publisher_upgrades
             .then_some(calimero_bundle::UpgradeAuthority::Publisher),

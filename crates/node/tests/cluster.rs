@@ -953,6 +953,7 @@ fn mpk_full(
         frontend_aliases: Vec::new(),
         upgrades,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
+        uses: None,
         services: None,
         pipelines: Vec::new(),
         signature: None,

@@ -463,6 +463,97 @@ fn icon_uri(path: &Path) -> eyre::Result<String> {
     ))
 }
 
+/// The apps the crate references, as its `[package.metadata.calimero.uses]` declares them
+/// (`name = { package, range, mode }`), each with the release and ABI digest its
+/// `calimero.lock` pins (`[[uses]] name, package, version, range, mode, abi`) and, when the
+/// vendored ABI (`calimero/abi/<name>.json`) is there, checked against it. Without a lock
+/// the references are packed unpinned, with a note. Checked as a node checks them at
+/// install (`BundleManifest::check_uses`).
+fn uses_of(
+    meta: &CrateMeta,
+    package: &str,
+) -> eyre::Result<Option<std::collections::BTreeMap<String, calimero_bundle::BundleUse>>> {
+    use std::collections::BTreeMap;
+    let Some(table) = meta.table.get("uses") else {
+        return Ok(None);
+    };
+    let declared: BTreeMap<String, calimero_bundle::BundleUse> = serde_json::to_value(table)
+        .and_then(serde_json::from_value)
+        .wrap_err("[package.metadata.calimero.uses]: each NAME takes { package, range, mode }")?;
+    let lock_path = meta.dir.join("calimero.lock");
+    let mut uses = declared.clone();
+    if lock_path.exists() {
+        #[derive(serde::Deserialize)]
+        struct Lock {
+            #[serde(default)]
+            uses: Vec<Locked>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Locked {
+            name: String,
+            package: String,
+            version: String,
+            #[serde(default)]
+            range: String,
+            mode: calimero_bundle::UseMode,
+            abi: String,
+        }
+        let lock: Lock = toml::from_str(&std::fs::read_to_string(&lock_path)?)
+            .wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+        for l in lock.uses {
+            let Some(u) = uses.get_mut(&l.name) else {
+                bail!(
+                    "calimero.lock pins {} but [package.metadata.calimero.uses] does not declare it: update the lock",
+                    l.name
+                );
+            };
+            if l.package != u.package || l.range != u.range || l.mode != u.mode {
+                bail!(
+                    "calimero.lock pins {} as {} {} ({:?}) but Cargo.toml declares {} {} ({:?}): update the lock",
+                    l.name, l.package, l.range, l.mode, u.package, u.range, u.mode
+                );
+            }
+            let vendored = meta
+                .dir
+                .join("calimero/abi")
+                .join(format!("{}.json", l.name));
+            if vendored.exists() {
+                use sha2::Digest as _;
+                let digest = format!(
+                    "sha256:{}",
+                    hex::encode(sha2::Sha256::digest(std::fs::read(&vendored)?))
+                );
+                if digest != l.abi {
+                    bail!(
+                        "{} is not the ABI calimero.lock pins for {} ({}): update the lock",
+                        vendored.display(),
+                        l.name,
+                        l.abi
+                    );
+                }
+            }
+            u.version = Some(l.version);
+            u.abi = Some(l.abi);
+        }
+        if let Some(missing) = uses.iter().find(|(_, u)| u.version.is_none()) {
+            bail!("calimero.lock does not pin {}: update the lock", missing.0);
+        }
+    } else if !uses.is_empty() {
+        eprintln!("note: no calimero.lock: references packed without a pinned release or ABI");
+    }
+    let probe = calimero_bundle::BundleManifest {
+        uses: Some(uses.clone()),
+        ..serde_json::from_value(json!({
+            "version": "1.0", "package": package, "appVersion": "0.0.0",
+            "minRuntimeVersion": "0.0.0",
+        }))?
+    };
+    probe
+        .check_uses()
+        .map_err(|e| eyre!("[package.metadata.calimero.uses]: {e}"))?;
+    Ok((!uses.is_empty()).then_some(uses))
+}
+
 /// What the manifest carries besides the artifacts, from the crate's
 /// `[package.metadata.calimero]` and the flags, the keys `mero-component bundle`
 /// (and `cargo mero` before it) read: `metadata` (`name`, `description`,
@@ -888,6 +979,9 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     }
     if !outbound.is_empty() {
         let _ = manifest.insert("outbound".into(), json!(outbound));
+    }
+    if let Some(uses) = uses_of(&meta, &package)? {
+        let _ = manifest.insert("uses".into(), serde_json::to_value(&uses)?);
     }
     let upgrades = match a.upgrades {
         Some(Upgrades::Owner) => Some("owner".to_owned()),
