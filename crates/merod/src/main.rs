@@ -407,9 +407,6 @@ async fn storage_key(
         }
     };
     if let Some(path) = &args.kms_disk_evidence {
-        // Reported only: a record that cannot be read leaves the disk's KMS
-        // "not reported" in the attestation, which is true, rather than
-        // keeping a node whose disk is already open from starting.
         match calimero_kms_client::disk_key::read_evidence(path) {
             Ok(evidence) => kms_keys.disk = Some(evidence),
             Err(e) => {
@@ -418,6 +415,22 @@ async fn storage_key(
         }
     }
     Ok((storage_key, (kms_keys, rollback)))
+}
+
+/// A production node (its storage key from mero-kms) runs only where the TD keeps its
+/// data from the host: a data disk it encrypts itself, whose key's record it was started
+/// with (`--kms-disk-evidence`), or memory (a data directory on tmpfs).
+fn require_encrypted_disk(key_from_kms: bool, kept_from_host: bool) -> eyre::Result<()> {
+    if key_from_kms && !kept_from_host {
+        eyre::bail!(
+            "the store is not sealed by the node, so its data directory must be on a data disk \
+             the TD encrypts with a key from mero-kms: pass --kms-disk-evidence with the record \
+             `merod kms disk-key --evidence-out` wrote (mero-tee's image does this), or keep \
+             the data directory on tmpfs. A plain data disk would hold the cluster's data in \
+             the clear"
+        );
+    }
+    Ok(())
 }
 
 fn parse_peers(args: &NodeArgs) -> eyre::Result<BTreeMap<u64, String>> {
@@ -531,6 +544,15 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     let peer_measurements = peer_measurements(&args, dev)?;
     let attestation_verifier_url = attestation_verifier_url(&args)?;
     let (storage_key, (kms_keys, rollback)) = storage_key(&args, dev, &cluster, node_id).await?;
+    // The store keeps its rows as they are (store format 2), relying on the TD to keep
+    // them from the host: on the data disk it encrypts with a key from mero-kms
+    // (mero-tee's LUKS2 volume, whose record is `--kms-disk-evidence`), or in its memory
+    // (a memory-only node's data directory on tmpfs).
+    std::fs::create_dir_all(&data_dir)?;
+    require_encrypted_disk(
+        kms_keys.storage.is_some(),
+        kms_keys.disk.is_some() || calimero_kms_client::disk_key::is_on_ram_filesystem(&data_dir),
+    )?;
     let outbound = match (&args.settings, &args.outbound) {
         (Some(path), _) => Some(read_settings(path)?),
         (None, o) => o.clone(),
@@ -680,5 +702,20 @@ async fn main() -> eyre::Result<()> {
         }
         Cmd::Kms(KmsCmd::DiskKey(cmd)) => cmd.run().await,
         Cmd::Attest(args) => attest(home.as_ref(), args).await,
+    }
+}
+
+#[cfg(test)]
+mod disk_tests {
+    use super::require_encrypted_disk;
+
+    /// The store is not sealed by the node: a node with a key from mero-kms runs only on
+    /// the TD's encrypted data disk; a development node (no KMS) runs anywhere.
+    #[test]
+    fn a_kms_node_needs_its_encrypted_disk_and_a_dev_node_does_not() {
+        let e = require_encrypted_disk(true, false).unwrap_err().to_string();
+        assert!(e.contains("--kms-disk-evidence"), "{e}");
+        assert!(require_encrypted_disk(true, true).is_ok());
+        assert!(require_encrypted_disk(false, false).is_ok());
     }
 }

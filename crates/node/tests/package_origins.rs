@@ -82,6 +82,7 @@ fn release_with(package: &str, version: &str, frontend: &[(&str, &[u8])]) -> Vec
         upgrades: None,
         outbound: Vec::new(),
         secrets: None,
+        uses: None,
         services: None,
         pipelines: Vec::new(),
         signature: None,

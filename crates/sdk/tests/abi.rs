@@ -193,7 +193,7 @@ fn abi_lists_every_method_with_its_attributes() {
     );
 
     assert_eq!(abi_json["abiVersion"], 1);
-    assert_eq!(abi_json["world"], "calimero:app@0.5.1");
+    assert_eq!(abi_json["world"], "calimero:app@0.5.3");
     assert_eq!(
         abi_json["state"],
         json!({
@@ -455,7 +455,7 @@ fn callers_follow_d13() {
 }
 
 /// `init` takes arguments by name, like a call: what the node passes from `POST /apps`
-/// `initArgs` (`meroctl context create --params`) reaches it, the ABI lists its parameters, and
+/// `initArgs` (`meroctl instance create --params`) reaches it, the ABI lists its parameters, and
 /// bad arguments fail it with `BadArgs`.
 #[test]
 fn init_takes_arguments_like_a_call() {

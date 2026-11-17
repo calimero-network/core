@@ -42,10 +42,16 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `Arc<Db>` starts dropping.
 - Storage (`store.rs`): one RocksDB per node (`<data-dir>/store`), opened with
   `tuning`'s column and table options (one bounded block cache,
-  `BLOCK_CACHE_BYTES`). Column families `log`, `meta`, `state`, `blobs`. Every value
-  is sealed with AES-256-GCM under the storage key, bound to its column, group and
-  key. A machine can hide a key (`StateTx::put_hidden`): the row is keyed by an HMAC
-  and the key travels inside the sealed value. Log appends, votes and blobs are
+  `BLOCK_CACHE_BYTES`). Column families `log`, `meta`, `state`, `blobs`. Rows are
+  stored as they are (store format 2): the data directory is on the data disk the TD
+  encrypts itself (mero-tee's LUKS2 volume with integrity, keyed by mero-kms), which
+  merod requires of a node whose storage key comes from mero-kms (`--kms-disk-evidence`,
+  else a data directory on tmpfs). Sealed with AES-256-GCM under the storage key, bound
+  to column, group and key, are only the node's own rows (`NODE_ROWS`: format, rollback
+  counter; a store opened under another key is refused by them) and a snapshot file's
+  rows (`Db::seal_state` as it is built, `open_state` as it is installed), so snapshots
+  keep the shape every release reads. A machine can hide a key (`StateTx::put_hidden`):
+  the row is keyed by an HMAC and the key travels inside the value. Log appends, votes and blobs are
   synced writes; RocksDB shares one WAL sync between concurrent groups. The
   commit index (`save_committed`) is not synced: a node that loses it, or keeps
   an older one, learns it again and applies each entry once (disk and
@@ -55,6 +61,10 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   each applied batch commits its writes and the applied index in one batch, so a
   restart resumes instead of replaying. `Machine::IN_MEMORY` machines (the system
   group) keep state in memory and are checkpointed with each snapshot instead.
+  `Machine::snapshot` answers a `Result`: a state that does not serialize fails the
+  build (logged with the group) and keeps the last checkpoint, never an empty one that
+  a receiving node fails to restore. Regression:
+  `a_state_that_does_not_serialize_builds_no_snapshot_and_keeps_the_checkpoint`.
 - Snapshots: files of sealed frames under `<data-dir>/snapshots`, streamed from a
   RocksDB snapshot (never the whole state in memory), sent in `SNAPSHOT_CHUNK_BYTES`
   chunks. Every node of a cluster shares K_r, so a follower opens a leader's file.
@@ -72,18 +82,18 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   synced like a vote: the node's rollback counter lives in the same store as the
   data, so a copy of the store carries the counter it had.
 - Format versions (`format.rs`, `machine::SNAPSHOT_FORMAT`): the store keeps its format in
-  the sealed node row `format` (`STORE_FORMAT`, 1). `Engine::open` settles it before anything
-  else: a newer store is refused (`NewerStore`, the node does not start), an empty one is
-  marked current, an older one (no row: format 0, every release up to 1.0.0-rc.15, whose rows
-  are format 1's) goes through `MIGRATIONS` one step at a time, the marker written after each.
+  the sealed node row `format` (`STORE_FORMAT`, 2). `Engine::open` settles it before anything
+  else: an empty one is marked current, any other format is refused.
+  This release reads format 2 only, and refuses any other (`OtherStore`, the node does not
+  start); there is no migration step, and no reader of the redb store before RocksDB. A
+  rollout never meets an older store: a new release's nodes start on empty data directories
+  (each release has its own K_r) and receive their data by snapshot, whose format is
+  unchanged; only a node restarted in place on an older directory (development) is refused. Tests: `format::tests`
+  (`any_other_store_format_is_refused_and_left_as_it_was`).
   A snapshot file's first line is `CALIMERO-SNAPSHOT-<SNAPSHOT_FORMAT>`; a later format is
   refused by it, not by its frames. A change to any row's shape raises `STORE_FORMAT` (and
   `SNAPSHOT_FORMAT`, since snapshots carry rows) and appends its step. Tests:
   `format::tests`, `machine::snapshot_format`.
-- Migration (`legacy.rs`): a data dir holding the previous redb file (`log.redb`) is
-  migrated on `Engine::open` (entries, vote, commit and purge marks, blobs; the old
-  whole-state snapshot is imported by the group's machine via `Machine::import`) and
-  the file renamed `log.redb.migrated`.
 - Entries are capped at `MAX_ENTRY_BYTES` (1 MiB; `WriteError::TooLarge`): openraft
   gives each append RPC one heartbeat interval, so a huge entry would never reach a
   follower. Large content goes to the sealed blob store (`Engine::put_blob`/`get_blob`).
@@ -94,9 +104,9 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   caller and the group's members before `handle_rpc`.
 
 Tests: `cargo test -p calimero-log` runs a 3-node cluster in one process
-(replication, failover, restart from disk, a lost or older commit index, learner catch-up, no plaintext on disk,
+(replication, failover, restart from disk, a lost or older commit index, learner catch-up, no plaintext in snapshot files,
 a disk machine restarting without replay, a ~6 MiB state streamed to a new node) and
-the redb migration (`migration_tests.rs`).
+the store format (`format::tests`).
 
 Bench: `cargo bench -p calimero-log --bench log` (`benches/log.rs`): a proposal
 appended, committed and applied on one group, on 1 node and on a 3-node group

@@ -94,6 +94,14 @@ only methods that `allow` this app.
 `deliver(..)` runs one against another `TestApp`; `mock_app(..)` stands in for
 the target of a synchronous call ([Testing](/build/testing/)).
 
+## Call as the person you serve
+
+Every call above reaches the target as your app. To call it as the person your run
+serves, so the target applies its own rules for them, your release lists the methods
+and the person allows it once: see [Build on other apps](/build/guides/other-apps/#5-act-as-the-person).
+To find which instance to call, name it in your release's `uses` and read it with
+`env::linked`.
+
 <Aside type="note">
   Events are for clients. To make another app react, send it a message.
 </Aside>

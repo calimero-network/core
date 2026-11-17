@@ -70,11 +70,11 @@ mkdir -p "$TARGET/app-components" "$TARGET/upgrade-path-fixtures"
 "$MEROCTL" app build apps/v2-fixtures/kv --out "$TARGET/app-components/kv.wasm"
 "$MEROCTL" app pack --wasm "$TARGET/app-components/kv.wasm" \
   --package com.calimero.kv-store --app-version 2.0.0 --out "$TARGET/upgrade-path-fixtures/kv-next.mpk"
-# The pipeline cases' package: the compute fixture's compute component and its pipeline, from this tree.
-"$MEROCTL" app build apps/v2-fixtures/compute --out "$TARGET/app-components/compute-app.wasm" \
-  --compute-out "$TARGET/app-components/compute.wasm"
-"$MEROCTL" app pack --compute "$TARGET/app-components/compute.wasm" \
-  --pipeline apps/v2-fixtures/compute/pipelines/fanout.yaml \
+# The pipeline cases' package, installed on the old release: the compute component the
+# release's own tools built from its tag (build-release-fixtures.sh), so it imports no
+# calimero:app version newer than that release knows, and the release's fanout pipeline.
+"$MEROCTL" app pack --compute "$FROM_DIR/compute-compute.wasm" \
+  --pipeline "$FROM_DIR/src/apps/v2-fixtures/compute/pipelines/fanout.yaml" \
   --package com.calimero.upgrade.pipelines --app-version 1.0.0 --out "$TARGET/upgrade-path-fixtures/pipelines.mpk"
 
 status=0

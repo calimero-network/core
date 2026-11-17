@@ -196,8 +196,16 @@ impl context::Host for StoreData {
         Ok(caller(self.host.caller()))
     }
 
+    fn via(&mut self) -> Result<Option<String>> {
+        Ok(self.host.via().map(str::to_owned))
+    }
+
     fn app_id(&mut self) -> Result<String> {
         Ok(self.host.app_id().to_owned())
+    }
+
+    fn linked(&mut self, name: String) -> Result<Option<String>> {
+        Ok(self.host.linked(&name))
     }
 
     fn app_owner(&mut self) -> Result<String> {
