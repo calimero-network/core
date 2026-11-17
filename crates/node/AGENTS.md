@@ -1762,10 +1762,15 @@ API and system group:
 - **Search** (spec section 7, `component/search.rs`, `Node::component_search`): the ABI's
   `state.search` names each searchable table's text fields; every record
   (`generation ‖ (table, "r", key..)`, `record_table`) is a `calimero-search` document
-  (id = SHA-256 of the stored key). A view brings the app's indexes up to the state it
-  reads before it runs (`ComponentSearch::for_view`, inside `read_local`): from the record
-  keys the entries since touched (`AppMachine::note_touched` at apply, the same
-  `TOUCHED_RING`), else a full scan; a new bundle rebuilds. The run
+  (id = SHA-256 of the stored key). Under the app's read lock a view only takes what its
+  search needs (`ComponentSearch::for_view`, inside `read_local`: the state's `Arc` and the
+  record keys the entries since the indexes' mark touched, `AppMachine::note_touched` at
+  apply, the same `TOUCHED_RING`) and indexes nothing; its first query brings the app's
+  indexes up to that state on the view's own thread (`RunSearch::ready`): from those keys,
+  else (a new bundle, keys the ring lost, a mark another view moved meanwhile) a full scan
+  of its state. A view that never searches indexes nothing. Regressions:
+  `preparing_a_views_search_indexes_nothing_until_it_queries`,
+  `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`. The run
   gets it through `HostCore::with_search` (`RunSearch`): hits are the guest's record keys.
   Derived, in memory, dropped with the app group. Test:
   `views_search_a_components_tables_as_they_change`.
