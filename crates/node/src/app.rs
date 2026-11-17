@@ -111,6 +111,9 @@ pub(crate) mod rows {
     pub const CDEAD: u8 = b'd';
     /// A component's pending actions (D17, `crate::component::action`): `a ‖ id`.
     pub const CACT: u8 = b'a';
+    /// A component's own secret values (`crate::component::InstanceSecrets`), one row:
+    /// `s ‖ all`. Never in the app's storage: no run reads it, only the node's outbound gate.
+    pub const CSECRET: u8 = b's';
 
     pub fn cjob(pipeline_run: &str, job_key: &str) -> String {
         format!("{pipeline_run}/{job_key}")

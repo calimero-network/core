@@ -17,6 +17,7 @@ fn forms() -> AppIdentity {
         package: "com.calimero.mero-forms".to_owned(),
         signer: "did:key:zForms".to_owned(),
         secrets: None,
+        own: OwnSecrets::default(),
     }
 }
 
@@ -278,6 +279,7 @@ fn a_secret_goes_only_to_its_own_hosts_and_only_for_its_own_app() {
         package: "com.example.other".to_owned(),
         signer: "did:key:zOther".to_owned(),
         secrets: None,
+        own: OwnSecrets::default(),
     };
     let stolen = s
         .prepare(
@@ -774,4 +776,45 @@ fn a_release_that_declares_secrets_gets_only_those_and_only_to_their_hosts() {
     assert!(elsewhere.contains("for other hosts"), "{elsewhere}");
     // Declaring nothing: the operator's bindings alone, as before.
     assert!(prepare(&forms()).is_ok());
+}
+
+/// An instance's own value for a declared name wins over the operator's and goes only to
+/// that name's declared hosts; a release that declares nothing never uses one.
+#[test]
+fn an_instances_own_value_wins_for_its_declared_name_only() {
+    let fake = Arc::new(Fake::default());
+    let s = service(&fake);
+    let own = OwnSecrets(BTreeMap::from([(
+        "TURNSTILE_SECRET".to_owned(),
+        Zeroizing::new("owners-own".to_owned()),
+    )]));
+    let declared_for = |host: &str| AppIdentity {
+        secrets: Some(BTreeMap::from([(
+            "TURNSTILE_SECRET".to_owned(),
+            vec![host.to_owned()],
+        )])),
+        own: own.clone(),
+        ..forms()
+    };
+    let prepare = |app: &AppIdentity| {
+        s.prepare(
+            app,
+            &declared(),
+            Some(&approving(&declared())),
+            post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}"),
+        )
+    };
+    let p = prepare(&declared_for(HOST)).unwrap();
+    assert_eq!(&*p.body, b"secret=owners-own");
+    // Its declared hosts are elsewhere: refused, though the value is the instance's.
+    assert!(prepare(&declared_for("api.example.com")).is_err());
+    // A release declaring nothing ignores it: the operator's value.
+    let p = prepare(&AppIdentity {
+        own: own.clone(),
+        ..forms()
+    })
+    .unwrap();
+    assert_eq!(&*p.body, format!("secret={SECRET}").as_bytes());
+    // Never in a debug print.
+    assert!(!format!("{:?}", declared_for(HOST)).contains("owners-own"));
 }

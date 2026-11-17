@@ -63,6 +63,19 @@ bindings alone, as before. The release's capability card
 consent page names a secret it adds or sends elsewhere. A release declaring
 secrets installs only once every node runs 1.0.0-rc.30 (`declaredSecrets`).
 
+Whoever deploys an instance may supply a declared secret's value for that
+instance alone, instead of the operator:
+
+- `PUT /apps/{app}/secrets/{name} { value }` (the owner, or whoever manages the
+  organization's apps, with a passkey step-up over the name and the value's
+  fingerprint, never the value): kept in the app's log on its replicas, sealed,
+  out of the app's own reach (no host function reads it), and filled only into
+  a request to that secret's declared hosts. It wins over the operator's value
+  for that name.
+- `GET /apps/{app}/secrets` lists each declared secret with `source: app` (its
+  fingerprint, who set it and when) or `cluster`, never a value.
+- `DELETE /apps/{app}/secrets/{name}` removes it; the operator's applies again.
+
 The app never holds a secret. A request names one as `{{secret:NAME}}` in a
 header value or the body; the node fills it in from **its operator's**
 secrets, for this app only (the package and signer of the installed release,

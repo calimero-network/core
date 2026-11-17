@@ -1371,6 +1371,22 @@ fn operations() -> Vec<Op> {
             .ok("{ index: uint, status: string, error: any, compute: bool }")
             .step_up()
             .errors(&[(400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
+        get("/apps/{app}/secrets", "app_secrets", SignedIn, "The secrets an app's release declares")
+            .about("For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.")
+            .ok("{ secrets: { [string]: { hosts: string[], description: string, required: bool, source: \"app\" | \"cluster\", fingerprint?: string, setBy?: string, setAt?: uint } } }")
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
+        put("/apps/{app}/secrets/{name}", "app_secret_set", AccountHolder, "Set an app's own value of a declared secret")
+            .about("Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.")
+            .json::<super::apps::SecretBody>("{ value: string, confirm?: #Confirm }")
+            .ok("{ name: string, fingerprint: string, index: uint }")
+            .step_up()
+            .errors(&[(400, "BAD_SECRET"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "CONFLICT"), (409, "CLUSTER_NOT_UPGRADED")]),
+        delete("/apps/{app}/secrets/{name}", "app_secret_clear", AccountHolder, "Remove an app's own value of a secret")
+            .about("The operator's value applies again. Same rules as setting one; a step-up over `{ name }`.")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
+            .ok("{ name: string, index: uint }")
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "CLUSTER_NOT_UPGRADED")]),
         post("/apps/{app}/access", "app_access", Session, "Set who may reach an app")
             .about("A package-bound session: only its own package's app, from one of its package's teams to another.")
             .json::<super::AccessBody>("{ access: #Access }")
