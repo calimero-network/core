@@ -93,7 +93,12 @@ jobs:
               ;;
           esac
           [ -n "$files" ] || echo "::notice::could not list this change's files; every SDK runs"
-          printf '%s\n' "$files" | python3 scripts/sdks.py scope >> "$GITHUB_OUTPUT"
+          verdict=$(printf '%s\n' "$files" | python3 scripts/sdks.py scope) || exit 1
+          printf '%s\n' "$verdict" >> "$GITHUB_OUTPUT"
+          # An SDK with a job below whose directory is not in this tree has nothing to test.
+          for name in mero-js mero-react mero-py mero-swift mero-kotlin mero-icons mero-tokens mero-ui mero-charts; do
+            grep -q "^$name=" <<<"$verdict" || echo "$name=false" >> "$GITHUB_OUTPUT"
+          done
 
   mero-js:
     name: mero-js
@@ -192,16 +197,20 @@ jobs:
           SDKS: ${{ needs.scope.outputs.sdks }}
         run: |
           set -euo pipefail
-          mapfile -t names < <(jq -r '.[]' <<<"$SDKS")
-          python3 scripts/sdks.py generate "${names[@]}"
+          # macOS's bash 3.2 has no mapfile.
+          names=()
+          while IFS= read -r name; do names+=("$name"); done < <(jq -r '.[]' <<<"$SDKS")
+          python3 scripts/sdks.py generate ${names[@]+"${names[@]}"}
 
       - name: Report what differs
         env:
           SDKS: ${{ needs.scope.outputs.sdks }}
         run: |
           set -euo pipefail
-          mapfile -t names < <(jq -r '.[]' <<<"$SDKS")
-          mapfile -t paths < <(python3 scripts/sdks.py generated "${names[@]}")
+          names=()
+          while IFS= read -r name; do names+=("$name"); done < <(jq -r '.[]' <<<"$SDKS")
+          paths=()
+          while IFS= read -r path; do paths+=("$path"); done < <(python3 scripts/sdks.py generated ${names[@]+"${names[@]}"})
           if [ "${#paths[@]}" -eq 0 ]; then
             echo "no SDK in this change generates code" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
