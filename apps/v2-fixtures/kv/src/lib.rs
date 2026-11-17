@@ -168,6 +168,13 @@ impl Kv {
         Ok(page.items.into_iter().collect())
     }
 
+    /// The app linked under `name` now (`env::linked`): a member made with this instance or
+    /// an app its owner attached since.
+    #[app::view]
+    pub fn linked(&self, name: String) -> app::Result<Option<String>> {
+        Ok(env::linked(&name))
+    }
+
     /// Sets `key`; emits `Inserted` for a new key, `Updated` for an existing one.
     pub fn set(&mut self, key: String, value: String) -> app::Result<()> {
         let event = self.upsert(&key, &value)?;

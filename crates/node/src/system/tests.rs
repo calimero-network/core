@@ -9373,3 +9373,81 @@ fn a_person_lets_an_app_act_as_them_with_their_passkey_and_takes_it_back() {
     m.state.remove_app("cal");
     assert!(m.state.delegations.is_empty());
 }
+
+fn link_app(name: &str, target: Option<&str>, consent: Value) -> SystemCmd {
+    SystemCmd::LinkApp {
+        app_id: "oa".into(),
+        name: name.into(),
+        target: target.map(Into::into),
+        actor: "alice".into(),
+        consent,
+    }
+}
+
+/// An attach carries its manager's passkey consent over the name and the app, joins only
+/// another app of the same organization, never replaces a unit member, and goes with the
+/// attached app when that is deleted.
+#[test]
+fn an_app_is_attached_with_its_managers_consent_and_detached_with_it() {
+    let (mut m, mut alice, _bob) = moving();
+    let app = |id: &str, org: &str| -> crate::types::AppRecord {
+        serde_json::from_value(json!({
+            "appId": id, "name": id, "group": 6, "bundle": "b1", "owner": "alice",
+            "org": org, "access": { "kind": "org" }, "replicas": [1, 2, 3], "createdAt": 0
+        }))
+        .unwrap()
+    };
+    let _prev = m.state.apps.insert("ob".into(), app("ob", "org"));
+    let _prev = m.state.apps.insert("nc".into(), app("nc", "new"));
+    let _prev = m
+        .state
+        .apps
+        .get_mut("oa")
+        .unwrap()
+        .links
+        .insert("kv".into(), "ob".into());
+
+    needs_consent(
+        &mut m,
+        &mut alice,
+        ("oa", "__link"),
+        &super::link_app_args("calendar", Some("ob")),
+        &super::link_app_args("calendar", Some("nc")),
+        |c| link_app("calendar", Some("ob"), c),
+    );
+    assert_eq!(m.state.apps["oa"].attached["calendar"], "ob");
+
+    let args = super::link_app_args("calendar", Some("nc"));
+    let c = consent(&mut alice, "oa", "__link", &args);
+    assert!(
+        m.run(link_app("calendar", Some("nc"), c)).is_err(),
+        "another org"
+    );
+    let args = super::link_app_args("kv", Some("ob"));
+    let c = consent(&mut alice, "oa", "__link", &args);
+    assert!(
+        m.run(link_app("kv", Some("ob"), c)).is_err(),
+        "a unit member"
+    );
+    let args = super::link_app_args("Bad Name", Some("ob"));
+    let c = consent(&mut alice, "oa", "__link", &args);
+    assert!(
+        m.run(link_app("Bad Name", Some("ob"), c)).is_err(),
+        "a name"
+    );
+
+    let args = super::link_app_args("calendar", None);
+    let c = consent(&mut alice, "oa", "__link", &args);
+    m.run(link_app("calendar", None, c)).unwrap();
+    assert!(m.state.apps["oa"].attached.is_empty());
+
+    let args = super::link_app_args("calendar", Some("ob"));
+    let c = consent(&mut alice, "oa", "__link", &args);
+    m.run(link_app("calendar", Some("ob"), c)).unwrap();
+    m.state.remove_app("ob");
+    assert!(m.state.apps["oa"].attached.is_empty(), "gone with the app");
+    assert_eq!(
+        m.state.apps["oa"].links["kv"], "ob",
+        "a member's link stays"
+    );
+}

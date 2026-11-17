@@ -2884,3 +2884,91 @@ async fn a_unit_upgrades_on_the_page_in_one_approval() {
         .await;
     }
 }
+
+/// An upgrade whose new release takes an attached app in another range warns on the page: an
+/// attached app lives on its own, so the approval does not move it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_upgrade_warns_when_an_attached_app_falls_outside_its_range() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
+    let cal = "com.test.attached-cal";
+    let uses = |range: &str| Declares {
+        uses: Some(json!({ "calendar": { "package": cal, "range": range, "mode": "attach" } })),
+        ..Declares::default()
+    };
+    for (package, version, d) in [
+        (cal, "2.0.0", Declares::default()),
+        (PACKAGE, "1.0.0", uses("^2")),
+        (PACKAGE, "2.0.0", uses("^3")),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let create = |name: &str, package: &str, version: &str| {
+        typed(json!({ "name": name, "package": package, "version": version }))
+    };
+    let notes = alice
+        .apps()
+        .create(create("notes", PACKAGE, "1.0.0"))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let calendar = alice
+        .apps()
+        .create(create("calendar", cal, "2.0.0"))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let body: calimero_client::types::AppLinkRequest =
+        serde_json::from_value(json!({ "app": calendar })).unwrap();
+    let got = alice
+        .apps()
+        .link(&notes, "calendar", body, Some(&mut alice_key))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(got["inRange"], json!(true), "{got}");
+
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgrade", "subject": { "app": notes, "toVersion": "2.0.0" },
+                "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    assert_eq!(
+        model["upgrade"]["attachedOutOfRange"],
+        json!([{ "name": "calendar", "app": calendar, "package": cal,
+                 "version": "2.0.0", "range": "^3" }]),
+        "{model}"
+    );
+    let flagged = model["attention"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["flag"] == "attachedOutOfRange")
+        .cloned()
+        .unwrap_or_else(|| panic!("no warning: {model}"));
+    assert_eq!(
+        flagged["items"],
+        json!([format!("calendar runs {cal} 2.0.0, outside ^3")]),
+        "{flagged}"
+    );
+}

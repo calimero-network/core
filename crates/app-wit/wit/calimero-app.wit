@@ -48,6 +48,10 @@ interface context {
   // argument; none for any other run. 0.5.2.
   via: func() -> option<string>;
   app-id: func() -> string;
+  // The app this instance's release references under `name` (its signed manifest's `uses`):
+  // a member its creation made, or an app its owner attached. None when nothing is linked
+  // under that name, and in a compute run. 0.5.2.
+  linked: func(name: string) -> option<string>;
   app-owner: func() -> account-id;
   org: func() -> option<org-id>;
   org-role: func(account: account-id) -> option<org-role-t>;
