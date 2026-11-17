@@ -1739,24 +1739,41 @@ impl AppMachine {
 // `AppMachine` (`outgoing`, `action_record`, `component_replay`) are for the node's
 // routes and its leader's polls, between batches.
 
+/// A row read inside an apply, decoded. A row that does not decode fails the batch
+/// (`StateTx::fail`) and reads as absent: the replica stops on this entry rather than
+/// apply it as if the row were not there, which the other replicas would not do.
+fn decode_in<T: serde::de::DeserializeOwned>(
+    tx: &StateTx<'_>,
+    family: u8,
+    raw: &[u8],
+) -> Option<T> {
+    match serde_json::from_slice(raw) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tx.fail(format_args!(
+                "a row of family {family} does not decode: {e}"
+            ));
+            None
+        }
+    }
+}
+
 /// The outbox's message `seq` as `tx` leaves it.
 fn outgoing_in(tx: &StateTx<'_>, seq: u64) -> Option<xcall::Outgoing> {
     let raw = tx.get_hidden(rows::COUT, &xcall::outbox_key(seq))?;
-    serde_json::from_slice(&raw).ok()
+    decode_in(tx, rows::COUT, &raw)
 }
 
 /// Pending action `id` as `tx` leaves it.
 fn action_in(tx: &StateTx<'_>, id: &str) -> Option<ActionRecord> {
     let raw = tx.get_hidden(rows::CACT, &action::action_key(id))?;
-    serde_json::from_slice(&raw).ok()
+    decode_in(tx, rows::CACT, &raw)
 }
 
 /// The answer remembered for `caller`'s key `key` as `tx` leaves it.
 fn replay_in(tx: &StateTx<'_>, caller: &Caller, key: &str) -> Option<Applied> {
     let raw = tx.get_hidden(rows::CIDEM, idem_key(caller, key).as_bytes())?;
-    serde_json::from_slice::<IdemRecord>(&raw)
-        .ok()
-        .map(|r| r.applied)
+    decode_in::<IdemRecord>(tx, rows::CIDEM, &raw).map(|r| r.applied)
 }
 
 /// A blob id as the host commands carry it (hex).
@@ -1765,13 +1782,14 @@ pub(crate) fn parse_hex32(id: &str) -> Option<[u8; 32]> {
     (hex::encode(raw) == id).then_some(raw)
 }
 
-/// A hidden row of `family` read as JSON; none when absent or unreadable.
+/// A hidden row of `family` read as JSON; none when absent. One that cannot be read
+/// or decoded fails the batch (see `decode_in`).
 pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
     tx: &StateTx<'_>,
     family: u8,
     key: &str,
 ) -> Option<T> {
-    serde_json::from_slice(&tx.get_hidden(family, key.as_bytes())?).ok()
+    decode_in(tx, family, &tx.get_hidden(family, key.as_bytes())?)
 }
 
 /// Writes `value` as the JSON hidden row `key` of `family`.
@@ -1816,7 +1834,7 @@ const SECRETS_ROW: &[u8] = b"all";
 
 fn instance_secrets_in(tx: &StateTx<'_>) -> InstanceSecrets {
     tx.get_hidden(rows::CSECRET, SECRETS_ROW)
-        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .and_then(|raw| decode_in(tx, rows::CSECRET, &raw))
         .unwrap_or_default()
 }
 
@@ -2096,6 +2114,66 @@ mod tests {
             ]
         );
         assert!(!Outcome::default().is_retryable());
+    }
+
+    /// Review finding B3: a row an apply read but could not decode read as absent, and
+    /// the batch went on (a pipeline step applied as if its run were unknown, a replayed
+    /// call ran again, an idempotency record was dropped). It now fails the batch.
+    #[test]
+    fn a_row_an_apply_cannot_decode_fails_the_batch() {
+        let rig = Rig::new();
+        let state = rig.engine.group_state(5);
+        let mut tx = StateTx::new(&state);
+        tx.put_hidden(rows::CRUN, b"run-1", b"not json");
+        tx.put_hidden(rows::CIDEM, b"system|k", b"not json");
+        tx.commit().unwrap();
+
+        let tx = StateTx::new(&state);
+        assert!(get_json::<RunRecord>(&tx, rows::CRUN, "run-1").is_none());
+        assert!(
+            tx.failed(),
+            "an undecodable run record reads as an unknown run"
+        );
+
+        let tx = StateTx::new(&state);
+        let caller = Caller::System;
+        let _absent = replay_in(&tx, &caller, "k");
+        assert!(
+            tx.failed(),
+            "an undecodable idempotency record reads as no record"
+        );
+
+        let tx = StateTx::new(&state);
+        assert!(get_json::<RunRecord>(&tx, rows::CRUN, "run-2").is_none());
+        assert!(!tx.failed(), "an absent row is no fault");
+    }
+
+    /// The same for retention: an idempotency record this replica cannot decode is not
+    /// dropped as expired (the others still answer from theirs); the batch fails.
+    #[test]
+    fn an_undecodable_idempotency_record_is_never_expired() {
+        let rig = Rig::new();
+        let state = rig.engine.group_state(5);
+        let mut rings = [idempotency::Ring::default(); 2];
+        let mut tx = StateTx::new(&state);
+        idempotency::record(&mut tx, &IDEM_ROWS, &mut rings, 0, "acct|k", b"not json");
+        tx.commit().unwrap();
+
+        let mut tx = StateTx::new(&state);
+        let limits = idempotency::Limits {
+            keep: [0, 0],
+            ..idempotency::Limits::default()
+        };
+        idempotency::expire(
+            &mut tx,
+            &IDEM_ROWS,
+            &mut rings,
+            limits,
+            Some(u64::MAX),
+            stamps,
+        );
+        assert!(tx.failed(), "the record was dropped as expired");
+        assert_eq!(rings[0].first, 0, "the ring moved past the record");
     }
 
     /// A machine on a real, empty group state (the log's store, in a temp dir).

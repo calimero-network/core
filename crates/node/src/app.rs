@@ -548,7 +548,12 @@ impl Machine for AppMachine {
     }
 
     fn restore(&mut self, _data: &[u8]) -> eyre::Result<()> {
-        let head = match self.state.kv.state.as_ref().and_then(|s| s.get(rows::HEAD)) {
+        // A head that cannot be read is an error, never a fresh app's head.
+        let raw = match self.state.kv.state.as_ref() {
+            Some(s) => s.try_get(rows::HEAD)?,
+            None => None,
+        };
+        let head = match raw {
             Some(raw) => serde_json::from_slice(&raw)?,
             None => Head::default(),
         };
