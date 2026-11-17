@@ -1444,7 +1444,7 @@ async fn waiting_for_our_own_control_places_is_not_a_job_nodes_silence() {
     rig.until("the run runs", || !rig.record(&run).attempts.is_empty())
         .await;
     for n in rig.c.nodes.iter().flatten() {
-        n.node.limit_job_control(0);
+        n.node.limit_job_control(0).await;
     }
     let _ok = rig
         .alice
