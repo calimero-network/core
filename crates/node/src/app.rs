@@ -69,16 +69,13 @@ pub struct Applied {
 /// disk is an HMAC; see `calimero_log::store::hide`); the rest are the node's
 /// bookkeeping.
 pub(crate) mod rows {
-    /// The app's storage: `env::storage_*`, private storage, blobs, writers.
+    /// An SDK 0.12 app's storage (wasmer apps are gone: nothing writes it).
+    #[cfg(test)]
     pub const KV: u8 = b'k';
-    /// Idempotency records, by `caller|key`.
-    pub const IDEM: u8 = b'i';
     /// The [`super::Head`].
     pub const HEAD: &[u8] = b"h";
     /// Event `n`: `e ‖ n`.
     pub const EVENT: u8 = b'e';
-    /// The idempotency keys in the order they expire, per TTL class: `r ‖ class ‖ n`.
-    pub const EXPIRY: u8 = b'r';
 
     /// A component's storage (`crate::component`): its stored keys.
     pub const CKV: u8 = b'c';
@@ -127,12 +124,6 @@ pub(crate) mod rows {
 
     pub fn event(n: u64) -> Vec<u8> {
         let mut k = vec![EVENT];
-        k.extend_from_slice(&n.to_be_bytes());
-        k
-    }
-
-    pub fn expiry(class: u8, n: u64) -> Vec<u8> {
-        let mut k = vec![EXPIRY, class];
         k.extend_from_slice(&n.to_be_bytes());
         k
     }
@@ -274,29 +265,6 @@ impl AppState {
         self.executor = h.executor;
         self.component.head = h.component.unwrap_or_default();
     }
-}
-
-/// The whole-state JSON the storage format before this one kept for an app (an
-/// SDK 0.12 app's: components came after it). Imported as it was.
-#[derive(Deserialize)]
-struct LegacyAppState {
-    kv: BTreeMap<Bytes, Bytes>,
-    bundle: Option<String>,
-    initialized: bool,
-    #[serde(default)]
-    init_error: Option<Value>,
-    last_index: u64,
-    /// `caller|key` to `{ applied, expires_ms }`.
-    #[serde(default)]
-    idempotency: BTreeMap<String, Value>,
-    #[serde(default)]
-    events: VecDeque<EventRecord>,
-    #[serde(default)]
-    pending: BTreeMap<u64, Value>,
-    #[serde(default)]
-    next_pending: u64,
-    #[serde(default)]
-    timer_ticks: BTreeMap<String, u64>,
 }
 
 /// Entities touched per entry, kept in memory for search to catch up from.
@@ -598,51 +566,6 @@ impl Machine for AppMachine {
         self.touched_since = u64::MAX;
         Ok(())
     }
-
-    fn import(&mut self, data: &[u8], tx: &mut StateTx<'_>) -> eyre::Result<()> {
-        self.import_legacy(data, tx)
-    }
-}
-
-impl AppMachine {
-    /// Bring in an app state written by the storage format before this one (an
-    /// SDK 0.12 app's: components came after it), row for row as it was.
-    fn import_legacy(&mut self, data: &[u8], tx: &mut StateTx<'_>) -> eyre::Result<()> {
-        let old: LegacyAppState = serde_json::from_slice(data)?;
-        for (k, v) in &old.kv {
-            tx.put_hidden(rows::KV, &k.0, &v.0);
-        }
-        self.state.set_head(Head {
-            bundle: old.bundle,
-            initialized: old.initialized,
-            init_error: old.init_error,
-            last_index: old.last_index,
-            pending: old.pending,
-            next_pending: old.next_pending,
-            timer_ticks: old.timer_ticks,
-            ..Head::default()
-        });
-        for rec in old.events {
-            tx.put(
-                rows::event(self.state.events_next),
-                serde_json::to_vec(&rec)?,
-            );
-            self.state.events_next += 1;
-        }
-        let expires = |r: &Value| r.get("expires_ms").and_then(Value::as_u64).unwrap_or(0);
-        let mut records: Vec<_> = old.idempotency.into_iter().collect();
-        records.sort_by_key(|(_, r)| expires(r));
-        for (key, r) in records {
-            // The stored key is `caller|key`; the class is the call's key's prefix.
-            let class = crate::idempotency::class_of(key.split_once('|').map_or(&*key, |(_, k)| k));
-            tx.put_hidden(rows::IDEM, key.as_bytes(), &serde_json::to_vec(&r)?);
-            let ring = &mut self.state.legacy.expiry[class];
-            tx.put(rows::expiry(class as u8, ring.next), key.into_bytes());
-            ring.next += 1;
-        }
-        tx.put(rows::HEAD.to_vec(), serde_json::to_vec(&self.state.head())?);
-        Ok(())
-    }
 }
 
 /// What an app's storage holds.
@@ -780,61 +703,6 @@ mod tests {
         let a: Applied = serde_json::from_slice(&out).unwrap();
         assert_eq!(a.status, Status::AppError);
         assert_eq!(m.state.last_index, 1);
-    }
-
-    /// The storage format before this one kept an app as one JSON document; a node
-    /// migrating from it brings every part in, and the state reads back the same.
-    #[test]
-    fn a_legacy_app_state_is_imported() {
-        let dir = tempfile::tempdir().unwrap();
-        let (engine, mut m) = machine(&dir);
-        let legacy = serde_json::json!({
-            "kv": { "YQ==": "MQ==" },
-            "bundle": "abc",
-            "initialized": true,
-            "init_error": null,
-            "last_index": 41,
-            "idempotency": {
-                "acct|k": {
-                    "applied": { "index": 40, "status": "ok", "result": 7, "error": null, "events": [] },
-                    "expires_ms": 9_000_000
-                }
-            },
-            "events": [{ "index": 40, "seq": 0, "kind": "set", "data": "a" }],
-            "pending": { "2": { "followup": { "kind": "handler", "method": "h", "input": [] }, "fromIndex": 40, "depth": 0 } },
-            "next_pending": 3,
-            "timer_ticks": { "tick": 5 }
-        });
-        let state = engine.group_state(9);
-        let mut tx = StateTx::new(&state);
-        m.import(&serde_json::to_vec(&legacy).unwrap(), &mut tx)
-            .unwrap();
-        tx.commit().unwrap();
-        let mut back = AppMachine::new("app".into());
-        back.attach(engine.group_state(9));
-        back.restore(&[]).unwrap();
-        let group = back.state.kv.group().unwrap();
-        assert_eq!(group.get_hidden(rows::KV, b"a"), Some(b"1".to_vec()));
-        assert!(group.get_hidden(rows::IDEM, b"acct|k").is_some());
-        assert_eq!(back.state.bundle.as_deref(), Some("abc"));
-        assert!(back.state.initialized);
-        assert_eq!(back.state.last_index, 41);
-        assert_eq!(back.state.legacy.next_pending, 3);
-        assert_eq!(back.state.legacy.pending.len(), 1);
-        assert_eq!(back.state.legacy.timer_ticks.get("tick"), Some(&5));
-        assert_eq!(back.events_from(0).len(), 1);
-        assert_eq!(back.state.executor(), Some(crate::types::Executor::Wasmer));
-        // Its head writes back as it read: the legacy rows survive an entry.
-        let _a = apply(
-            &mut back,
-            42,
-            &serde_json::json!({ "op": "done", "seqs": [] }),
-        );
-        let mut again = AppMachine::new("app".into());
-        again.attach(engine.group_state(9));
-        again.restore(&[]).unwrap();
-        assert_eq!(again.state.legacy.pending.len(), 1);
-        assert_eq!(again.state.last_index, 42);
     }
 
     /// Review finding A6: an answer that did not serialize was sent as empty bytes, with

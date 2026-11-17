@@ -862,7 +862,6 @@ dependencies = [
  "eyre",
  "hex",
  "openraft",
- "redb",
  "ring",
  "rocksdb",
  "serde",
@@ -5086,15 +5085,6 @@ dependencies = [
  "rustls-pki-types",
  "time",
  "yasna",
-]
-
-[[package]]
-name = "redb"
-version = "4.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b317ef681e18f6091efbfab532eaf924a135c492d9d0299d0fbfae07e92a39b"
-dependencies = [
- "libc",
 ]
 
 [[package]]

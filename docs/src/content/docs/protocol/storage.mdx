@@ -14,8 +14,7 @@ Everything a node persists is in its data directory (`--data-dir`, by default
 ├── snapshots/      sealed snapshot files, one current per group
 ├── components/     compiled components, each with a MAC under a key from K_c
 ├── cluster-key     K_c, AES-256-GCM under HMAC-SHA256(K_r, "calimero.cluster-key.wrap.v1")
-├── signing-key     the receipt key, under HMAC-SHA256(K_r, "calimero.signing-key.wrap.v1")
-└── log.redb.migrated   (only if the node was upgraded from the redb store)
+└── signing-key     the receipt key, under HMAC-SHA256(K_r, "calimero.signing-key.wrap.v1")
 ```
 
 The database is opened with tuned column and table options
@@ -35,13 +34,15 @@ one another.
 
 ## Sealing
 
-Every value is sealed with AES-256-GCM under the cluster key K_c
-([Encryption](/protocol/encryption/)), with a random 96-bit nonce stored in
-front, and bound as associated data to its column tag,
-its group and its key: `"cl" ‖ tag ‖ group ‖ key`. A state row's associated
-data names its machine key but not its generation, so installing a snapshot can
-move sealed rows to the next generation without opening them. A value copied
-to another row, group or column fails to open.
+Rows are stored as they are (store format 2): the data directory is on the data
+disk the TD encrypts itself ([Encryption](/protocol/encryption/)). What is sealed
+with AES-256-GCM under the cluster key K_c, with a random 96-bit nonce stored in
+front and bound as associated data to its column tag, its group and its key
+(`"cl" ‖ tag ‖ group ‖ key`), is the node's own rows (`NODE_ROWS`: the store's
+format, the rollback counter) and every row of a snapshot file, sealed as the
+snapshot is built and opened as it is installed. A snapshot row's associated data
+names its machine key but not its generation, the shape every release writes, so
+nodes of either store format exchange snapshots. Format 1 sealed every value this way; format 2 reads no store from before it.
 
 Two further keys are derived from K_c (`HMAC-SHA256(K_c, label)`):
 
@@ -168,18 +169,18 @@ refuses what a later release wrote instead of misreading it:
 
 | Container | Where the version is | This release | Unmarked (written before markers) |
 | --- | --- | --- | --- |
-| The store (every row of every column) | node row `format` in `meta` (sealed, `calimero_log::STORE_FORMAT`) | 1 | format 0: every release up to 1.0.0-rc.15, the same rows as format 1 |
+| The store (every row of every column) | node row `format` in `meta` (sealed, `calimero_log::STORE_FORMAT`) | 2 (rows as they are; only format 2 is read) | refused, as every format before 2 |
 | Snapshot and backup files | the first line, `CALIMERO-SNAPSHOT-<n>` (`calimero_log::SNAPSHOT_FORMAT`) | 1 | none: every file so far says 1 |
 | A component app's log entries (with the outcomes and file marks they carry) | `{"v":<n>,` as the start of the entry (`component::ENTRY_FORMAT`) | 1 | format 1: no entry so far carries a marker |
 | Sealed files and their segments | the domain strings the chunk AAD and the file id are bound to (`calimero.file.v1`, `calimero.file.segments.v1`) | v1 | none |
 | Recovery files (`.rbak`) | the first line, `calimero.recovery-backup.v1`, and the header's `format` (`calimero_client::recovery::FORMAT`) | 1 | none |
 
 The store's format is settled when the engine opens it, before any group
-starts: a store marked newer than this release reads is refused (`the store is
-in format N, which a later release wrote`), and the node does not start; an
-older one is brought forward one registered step at a time, the marker written
-after each step, so a crash part way resumes where it stopped; an empty store
-takes the current format. A snapshot or backup of a later format is refused
+starts: an empty store takes the current format, and a store in any other
+format is refused (`the store is in format N, and this release reads format 2
+only`), and the node does not start. No earlier store is read; a rollout
+never needs one, since a new release's nodes start on empty data directories
+and receive their data by snapshot, whose format is unchanged. A snapshot or backup of a later format is refused
 by its first line, and an app entry of a later format stops the app's group on
 the replica that meets it, which logs the format it found (the release that
 raises the entry format writes it only once every replica of the group reads it,
@@ -195,11 +196,9 @@ table before it ships. The
 
 ## Migration from the previous format
 
-A data directory holding the previous single redb file (`log.redb`) is migrated
-when the engine opens it: entries, votes, commit and purge marks, blobs, and
-each machine's old whole-state snapshot, which the app machine imports into its
-rows (the app's keys, events, idempotency records with their expiry ring). The old
-file is kept, renamed `log.redb.migrated`.
+No release reads an earlier store in place: the redb store from before RocksDB,
+and store format 1, are refused as above. A cluster moves onto a new release by
+adding nodes with empty data directories, which receive their data by snapshot.
 
 1.0.0-rc.20 is a hard cutover on top of this: a data directory or log that
 holds an app outside an organization is not read, so clusters are recreated

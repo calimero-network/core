@@ -613,8 +613,8 @@ app's data moves only to nodes on a release approved for it.
   gives it another K_r, which does not unwrap its `cluster-key` file, and it
   stops with "this node's storage key does not open its cluster key". Retire
   the old release's mero-kms only once no node of that release remains: a node
-  of it that restarts afterwards cannot open its disk. A data directory from an
-  earlier `merod` storage format (`log.redb`) is migrated at start.
+  of it that restarts afterwards cannot open its disk. A data directory from
+  before store format 2 is refused: start such a node on a new data directory.
 </Aside>
 
 ## Upgrade apps

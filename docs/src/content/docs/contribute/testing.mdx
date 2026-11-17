@@ -18,7 +18,7 @@ path.
 | Layer | Where | What it proves | Speed |
 | --- | --- | --- | --- |
 | Unit tests | `#[cfg(test)]` in each crate | One module's logic: config merging, key sources, quotas, presence rules, outbound gates | Milliseconds |
-| Raft engine | `crates/log` | Replication, failover, restart from disk, learner catch-up, snapshot streaming, no plaintext on disk, the `log.redb` migration | Seconds |
+| Raft engine | `crates/log` | Replication, failover, restart from disk, learner catch-up, snapshot streaming, no plaintext in snapshot files, the store-format migrations, the `log.redb` migration | Seconds |
 | Cluster | `crates/node/tests/cluster.rs` | The node end to end in one process: sign-up, installs, calls, views, events, orgs and teams, upgrades, blobs, governance, replica moves | Seconds to minutes |
 | CLI | `crates/merod/tests/cli.rs`, `crates/meroctl/tests/cli.rs` | `merod init/config/run/inspect` through the binary; every `meroctl` command group against a local cluster | Seconds to minutes |
 | App logic | `TestApp` in `crates/sdk/src/testing` (`cargo test --manifest-path apps/<app>/Cargo.toml`) | An app's methods, events and errors on the real engine | Milliseconds to seconds |

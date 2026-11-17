@@ -1,4 +1,4 @@
-//! Durable, encrypted storage for every group's log, metadata and state.
+//! Durable storage for every group's log, metadata and state.
 //!
 //! One RocksDB database per node holds all groups, opened with the column and
 //! table options `calimero-store` uses (compression, bloom filters,
@@ -11,11 +11,18 @@
 //! | `state` | `group ‖ generation ‖ machine key` | the state machines |
 //! | `blobs` | `name` | content kept outside every log |
 //!
-//! Every value is sealed with AES-256-GCM under the node's storage key, bound
-//! (as AAD) to its column, its group and its key, so a value moved to another
-//! row, group or column fails authentication. A machine's private keys can be
-//! hidden too ([`hide`]): the row is keyed by an HMAC of the key, and the key
-//! itself travels inside the sealed value.
+//! Values are stored as they are (store format 2). The data directory is on a
+//! disk the TD encrypts itself: mero-tee's LUKS2 volume with `hmac-sha256`
+//! integrity, keyed by mero-kms under the signed release policy and opened
+//! inside the TD, which merod requires in production (`--kms-disk-evidence`).
+//! Sealing every value under the storage key as well (format 1 and before)
+//! encrypted the same bytes twice, and is no longer read ([`crate::format`]).
+//! What leaves this disk is still sealed here: a snapshot file's frames, and the
+//! rows in them, under the storage key ([`Db::seal_state`]), so any node of the
+//! cluster opens it and a backup copied elsewhere stays sealed. The format row
+//! stays sealed too, so a store opened under another key is refused at once.
+//! A machine's private keys can be hidden ([`hide`]): the row is keyed by an
+//! HMAC of the key, and the key itself travels inside the value.
 //!
 //! RocksDB takes concurrent writers (one write batch per apply, per group), so
 //! groups never queue behind one another; synced writes share one WAL sync.
@@ -152,16 +159,6 @@ pub(crate) enum Column {
 impl Column {
     const ALL: [Self; 4] = [Self::Log, Self::Meta, Self::State, Self::Blobs];
 
-    /// The column's tag in every AAD.
-    const fn tag(self) -> u8 {
-        match self {
-            Self::Log => TAG_LOG,
-            Self::Meta => TAG_META,
-            Self::State => TAG_STATE,
-            Self::Blobs => TAG_BLOB,
-        }
-    }
-
     const fn name(self) -> &'static str {
         match self {
             Self::Log => "log",
@@ -207,10 +204,9 @@ const SEGMENT_BLOB: &str = "seg.";
 /// Key prefix of a segment's empty index row in the `meta` column; no group id starts with it.
 const SEGMENT_INDEX: &[u8] = b"seg/";
 
-const TAG_LOG: u8 = 1;
+/// The tags in a sealed row's AAD: a node row's (`meta`), a snapshot row's (`state`).
 const TAG_META: u8 = 2;
 const TAG_STATE: u8 = 3;
-const TAG_BLOB: u8 = 4;
 
 fn group_prefix(group: GroupId) -> [u8; 8] {
     group.to_be_bytes()
@@ -234,7 +230,7 @@ fn segment_index_key(hash: &str) -> Vec<u8> {
     [SEGMENT_INDEX, hash.as_bytes()].concat()
 }
 
-fn meta_key(group: GroupId, name: &str) -> Vec<u8> {
+pub(crate) fn meta_key(group: GroupId, name: &str) -> Vec<u8> {
     let mut k = group_prefix(group).to_vec();
     k.extend_from_slice(name.as_bytes());
     k
@@ -246,7 +242,7 @@ fn state_prefix(group: GroupId, generation: u32) -> Vec<u8> {
     k
 }
 
-fn state_key(group: GroupId, generation: u32, key: &[u8]) -> Vec<u8> {
+pub(crate) fn state_key(group: GroupId, generation: u32, key: &[u8]) -> Vec<u8> {
     let mut k = state_prefix(group, generation);
     k.extend_from_slice(key);
     k
@@ -311,6 +307,7 @@ pub struct GroupSummary {
 
 pub struct Db {
     db: Rocks,
+    /// Seals the rows of a snapshot file, and the format row; stored rows are not.
     sealer: Sealer,
     /// Seals snapshot files (see [`crate::machine`]): every node of the
     /// cluster shares the storage key, so a follower opens what a leader built.
@@ -494,31 +491,18 @@ impl Db {
         Ok(())
     }
 
-    fn get_open(
-        &self,
-        col: Column,
-        group: Option<GroupId>,
-        key: &[u8],
-        aad_key: &[u8],
-    ) -> eyre::Result<Option<Vec<u8>>> {
-        let Some(v) = self.raw_get(col, key)? else {
-            return Ok(None);
-        };
-        Ok(Some(self.sealer.open(&aad(col.tag(), group, aad_key), &v)?))
+    /// A node row ([`NODE_ROWS`]): sealed, as every one is (see [`Db::stage_meta`]).
+    pub(crate) fn put_sealed_meta<T: Serialize>(&self, name: &str, value: &T) -> eyre::Result<()> {
+        self.put_meta(NODE_ROWS, name, value)
     }
 
-    fn sealed_put(
+    /// A node row written by [`Db::put_sealed_meta`]; an error when it does not open
+    /// (the store was sealed under another key, or is damaged).
+    pub(crate) fn get_sealed_meta<T: DeserializeOwned>(
         &self,
-        tx: &mut Transaction,
-        col: Column,
-        group: Option<GroupId>,
-        key: Vec<u8>,
-        aad_key: &[u8],
-        plain: &[u8],
-    ) -> eyre::Result<()> {
-        let sealed = self.sealer.seal(&aad(col.tag(), group, aad_key), plain)?;
-        tx.raw_put(col, key, sealed);
-        Ok(())
+        name: &str,
+    ) -> eyre::Result<Option<T>> {
+        self.get_meta(NODE_ROWS, name)
     }
 
     /// Stage `value` as group metadata `name`.
@@ -529,9 +513,17 @@ impl Db {
         name: &str,
         value: &T,
     ) -> eyre::Result<()> {
-        let plain = serde_json::to_vec(value)?;
         let key = meta_key(group, name);
-        self.sealed_put(tx, Column::Meta, None, key.clone(), &key, &plain)
+        let plain = serde_json::to_vec(value)?;
+        // The node's own rows (its format, its rollback counter) stay sealed: they open
+        // only under its key, which is how a store opened under another key is refused.
+        let value = if group == NODE_ROWS {
+            self.sealer.seal(&aad(TAG_META, None, &key), &plain)?
+        } else {
+            plain
+        };
+        tx.raw_put(Column::Meta, key, value);
+        Ok(())
     }
 
     /// Write group metadata `name`, synced (votes must survive power loss).
@@ -552,8 +544,13 @@ impl Db {
         name: &str,
     ) -> eyre::Result<Option<T>> {
         let key = meta_key(group, name);
-        let Some(plain) = self.get_open(Column::Meta, None, &key, &key)? else {
+        let Some(stored) = self.raw_get(Column::Meta, &key)? else {
             return Ok(None);
+        };
+        let plain = if group == NODE_ROWS {
+            self.sealer.open(&aad(TAG_META, None, &key), &stored)?
+        } else {
+            stored
         };
         Ok(Some(serde_json::from_slice(&plain)?))
     }
@@ -561,8 +558,7 @@ impl Db {
     /// Store a blob (content kept outside every log, e.g. a WASM bundle).
     pub fn put_blob(&self, name: &str, bytes: &[u8]) -> eyre::Result<()> {
         let mut tx = Transaction::default();
-        let key = name.as_bytes().to_vec();
-        self.sealed_put(&mut tx, Column::Blobs, None, key.clone(), &key, bytes)?;
+        tx.raw_put(Column::Blobs, name.as_bytes().to_vec(), bytes.to_vec());
         self.write(&tx, true)
     }
 
@@ -570,8 +566,11 @@ impl Db {
     /// `seg/<hash>` in `meta`, so segments can be listed without reading a byte of them.
     pub fn put_segment(&self, hash: &str, bytes: &[u8]) -> eyre::Result<()> {
         let mut tx = Transaction::default();
-        let key = format!("{SEGMENT_BLOB}{hash}").into_bytes();
-        self.sealed_put(&mut tx, Column::Blobs, None, key.clone(), &key, bytes)?;
+        tx.raw_put(
+            Column::Blobs,
+            format!("{SEGMENT_BLOB}{hash}").into_bytes(),
+            bytes.to_vec(),
+        );
         tx.raw_put(Column::Meta, segment_index_key(hash), Vec::new());
         self.write(&tx, true)
     }
@@ -611,16 +610,17 @@ impl Db {
 
     /// Read a blob stored with [`Db::put_blob`].
     pub fn get_blob(&self, name: &str) -> eyre::Result<Option<Vec<u8>>> {
-        let key = name.as_bytes();
-        self.get_open(Column::Blobs, None, key, key)
+        self.raw_get(Column::Blobs, name.as_bytes())
     }
 
     pub(crate) fn put_entries(&self, group: GroupId, entries: &[Entry]) -> eyre::Result<()> {
         let mut tx = Transaction::default();
         for e in entries {
-            let plain = serde_json::to_vec(e)?;
-            let key = log_key(group, e.log_id.index);
-            self.sealed_put(&mut tx, Column::Log, None, key.clone(), &key, &plain)?;
+            tx.raw_put(
+                Column::Log,
+                log_key(group, e.log_id.index),
+                serde_json::to_vec(e)?,
+            );
         }
         self.write(&tx, true)
     }
@@ -632,8 +632,7 @@ impl Db {
             if k > end.as_slice() {
                 return Ok(false);
             }
-            let plain = self.sealer.open(&aad(TAG_LOG, None, k), v)?;
-            out.push(serde_json::from_slice(&plain)?);
+            out.push(serde_json::from_slice(v)?);
             Ok(true)
         })?;
         Ok(out)
@@ -653,8 +652,7 @@ impl Db {
                 return Ok(None);
             }
             let v = it.value().unwrap_or_default();
-            let plain = self.sealer.open(&aad(TAG_LOG, None, k), v)?;
-            return Ok(Some(serde_json::from_slice(&plain)?));
+            return Ok(Some(serde_json::from_slice(v)?));
         }
         it.status()?;
         Ok(None)
@@ -782,12 +780,7 @@ impl Db {
         generation: u32,
         key: &[u8],
     ) -> eyre::Result<Option<Vec<u8>>> {
-        self.get_open(
-            Column::State,
-            Some(group),
-            &state_key(group, generation, key),
-            key,
-        )
+        self.raw_get(Column::State, &state_key(group, generation, key))
     }
 
     /// Stage a state row (`None` deletes it).
@@ -801,7 +794,10 @@ impl Db {
     ) -> eyre::Result<()> {
         let full = state_key(group, generation, key);
         match value {
-            Some(v) => self.sealed_put(tx, Column::State, Some(group), full, key, v),
+            Some(v) => {
+                tx.raw_put(Column::State, full, v.to_vec());
+                Ok(())
+            }
             None => {
                 tx.raw_delete(Column::State, full);
                 Ok(())
@@ -809,26 +805,15 @@ impl Db {
         }
     }
 
-    /// Stage an already sealed state row (a snapshot's, moved as it is).
-    pub(crate) fn stage_sealed_state(
-        tx: &mut Transaction,
-        group: GroupId,
-        generation: u32,
-        key: &[u8],
-        sealed: Vec<u8>,
-    ) {
-        tx.raw_put(Column::State, state_key(group, generation, key), sealed);
-    }
-
-    /// Check a sealed state row without keeping the plaintext.
-    pub(crate) fn verify_state(
+    /// Seal a state row of `group` for a snapshot file, bound to its group and
+    /// machine key (the shape every release's snapshot carries).
+    pub(crate) fn seal_state(
         &self,
         group: GroupId,
         key: &[u8],
-        sealed: &[u8],
-    ) -> eyre::Result<()> {
-        let _plain = self.open_state(group, key, sealed)?;
-        Ok(())
+        plain: &[u8],
+    ) -> eyre::Result<Vec<u8>> {
+        self.sealer.seal(&aad(TAG_STATE, Some(group), key), plain)
     }
 
     /// Visit a group generation's state rows from `from` (a machine key) on:
@@ -848,8 +833,7 @@ impl Db {
                 let Some(key) = k.strip_prefix(prefix.as_slice()) else {
                     return Ok(false);
                 };
-                let plain = self.sealer.open(&aad(TAG_STATE, Some(group), key), v)?;
-                f(key, &plain)
+                f(key, v)
             },
         )
     }
@@ -1318,7 +1302,8 @@ mod node_rows {
     use super::*;
 
     /// The node's rollback counter lives in the store itself: it survives a
-    /// restart, is sealed like every row, and no group's rows touch it.
+    /// restart, stays sealed (node rows do; other rows are stored as they are), and
+    /// no group's rows touch it.
     #[test]
     fn a_node_row_survives_a_reopen_and_opens_only_under_its_key() {
         let dir = tempfile::tempdir().unwrap();

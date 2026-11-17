@@ -1,0 +1,155 @@
+---
+title: Build on other apps
+description: Ship an app that uses other apps, either created with it or already running, upgrade them together, and act in another app as the person who uses yours.
+sidebar:
+  order: 5
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+**Task:** build an app on top of others: an app that brings its own database app,
+or a plugin, such as a booking page, that works on a calendar its user already runs.
+
+Three things make this work, and an app can use any of them:
+
+- **References.** Your release names the apps it uses, in its signed manifest.
+- **Links.** The node tells your code which app instance answers to each reference.
+- **Grants.** The person lets your app call another app as them, so that app's own
+  rules for that person apply.
+
+The other app needs no support for any of it. It sees an ordinary call from you,
+or a call from its own user.
+
+## 1. Name the apps you use
+
+Each reference has a name your code uses, the package it means and the versions it
+takes. Put them in your crate's `Cargo.toml`:
+
+```toml
+[package.metadata.calimero.uses]
+kv = { package = "com.calimero.confidential-kv", range = "^0.1", mode = "create" }
+calendar = { package = "com.example.calendar", range = "^2", mode = "attach", methods = ["listEvents", "createEvent"] }
+```
+
+- `mode = "create"`: each instance of your app gets its own, made with it.
+- `mode = "attach"`: the owner points the reference at an app they already run.
+- `methods`: what your app calls there **as the person** it serves, once they allow
+  it ([step 5](#5-act-as-the-person)). Leave it out to call only as your app.
+
+`meroctl app pack` signs them into the release and checks every method against the
+target's vendored ABI. The node checks the rest at install (`400 BAD_USES`), shows
+the references on the release's capability card, and an upgrade's consent page
+names the apps a new release starts using or uses differently. The full rules are in
+[Packaging and signing](/build/packaging-signing/).
+
+## 2. Use an app created with your instance
+
+When someone creates an instance of your release, the node first creates each
+`create` reference in the same organization, owned by the same person, and named
+`<instance>.<name>`. Your `init` can take their ids:
+
+```rust
+#[app::init]
+pub fn init(links: Option<BTreeMap<String, String>>) -> app::Result<Self> { .. }
+```
+
+Any method can read a link at any time with `env::linked`:
+
+```rust
+pub fn put(&mut self, key: String, value: String) -> app::Result<()> {
+    let kv = env::linked("kv").ok_or(app::err!("no kv linked"))?;
+    let args = std::collections::BTreeMap::from([("key", key), ("value", value)]);
+    env::xcall(&kv, "set", &args)?;
+    Ok(())
+}
+```
+
+The member must admit your app, like any app called by another
+([Cross-app calls](/build/guides/cross-context/#1-admit-the-caller)).
+
+## 3. Use an app the owner already runs
+
+An `attach` reference starts empty. The owner fills it with an app they manage in the
+same organization, confirming with their passkey:
+
+```http
+PUT /apps/{your-app}/links/calendar  { "app": "<their calendar's id>" }
+```
+
+`DELETE` on the same path detaches it, and deleting the calendar detaches it too.
+`GET /apps/{your-app}/links` lists every reference, the app linked under it, the
+release that app runs and whether that release is inside your range (`inRange`).
+
+Read the link each time you call. The owner may attach another app later, or none:
+
+```rust
+let Some(calendar) = env::linked("calendar") else {
+    return Err(app::err!("attach a calendar first"));
+};
+```
+
+## 4. Upgrade together
+
+The apps your instance created upgrade with it, in one approval:
+
+- **From your frontend:** ask the node's consent page with
+  `upgradeUnit { app, toVersion }`. It shows every app's changes on one page.
+- **From a client:** call `POST /apps/{app}/upgrade-unit { version }`.
+
+Each member moves to the release your new version pins for it, else the newest
+installed one inside its range. A member cannot be upgraded on its own outside the
+range your instance takes it with (`409 OUTSIDE_UNIT_RANGE`).
+
+An attached app is never upgraded with yours: it is the owner's own. When a new
+release of yours takes it in another range, the upgrade's consent page warns them.
+
+## 5. Act as the person
+
+By default your call reaches the other app as your app (`Caller::App`), and it never
+learns whom you were serving. To work on the calendar as its user, for example to
+book into their own calendar with their own permissions there, the person allows it
+once:
+
+1. Your release lists the methods in the reference's `methods` (step 1).
+2. Your frontend asks the node's consent page with `delegate { app, target }`.
+   The page names both apps and every method, and the person confirms with their
+   passkey. Your frontend cannot grant this through the API by itself.
+3. From then on, when that person's call runs your app, your calls of those methods
+   reach the calendar **as the person**.
+
+The calendar needs no change. It sees its own user calling, with its usual rules.
+If it wants to treat a call through another app differently, `env::via()` names the
+app it came through:
+
+```rust
+pub fn create_event(&mut self, event: Event) -> app::Result<()> {
+    let env::Caller::Account(who) = env::caller() else {
+        return Err(AppError::forbidden());
+    };
+    if env::via().is_some() && event.private {
+        // Through a plugin, only public events.
+        return Err(AppError::forbidden());
+    }
+    self.events.insert(&event.id, &Event { owner: who, ..event })?;
+    Ok(())
+}
+```
+
+A grant covers only the listed methods, and only while the person still reaches
+both apps. Anything else runs as your app: another method, a timer, an action, or a
+call your app received from another app. A method that needs the person's passkey
+confirmation is refused, so a plugin never confirms for them. The person takes the
+grant back with `DELETE /apps/{app}/delegations/{target}`, and
+`GET /apps/{app}/delegations` lists what they allowed. The protocol is in
+[As the person](/protocol/xcall/#as-the-person).
+
+<Aside type="note">
+  Creating members, unit upgrades, attaching and grants need every node on
+  1.0.0-rc.31 or later. Before that the node refuses them (`409 FEATURE_NOT_ACTIVE`).
+</Aside>
+
+## Test it
+
+In the test harness, `TestApp::link(name, Some(app))` sets what `env::linked`
+returns, and `deliver_for(from, account, method, args)` runs a delivered call as the
+person, with `env::via()` naming `from` ([Testing](/build/testing/)).
