@@ -178,6 +178,26 @@ impl<T: ToKey + FromKey, S: Store> Set<T, S> {
         Iter::new(opts, move |o| self.prefix(prefix, o.clone()))
     }
 
+    /// Keep only the elements `keep` accepts; returns how many were removed. It reads every
+    /// element a page at a time and removes the rejected ones after each page.
+    pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) -> Result<u64, StorageError> {
+        let mut opts = FindOpts::default().limit(crate::table::MAX_LIMIT);
+        let mut removed = 0;
+        loop {
+            let page = self.page(opts.clone())?;
+            for v in &page.items {
+                if !keep(v) {
+                    let _ = self.remove(v)?;
+                    removed += 1;
+                }
+            }
+            match page.next {
+                Some(cursor) => opts.cursor = Some(cursor),
+                None => return Ok(removed),
+            }
+        }
+    }
+
     /// The smallest element.
     pub fn first(&self) -> Result<Option<T>, StorageError> {
         Ok(self.page(FindOpts::default().limit(1))?.items.pop())

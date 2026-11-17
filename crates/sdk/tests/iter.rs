@@ -1,6 +1,6 @@
 //! Iterating collections and tables: every item across pages, read a page at a time.
 
-use calimero_sdk::collections::{Cell, Frozen, PerUser, Set, UnorderedMap, Vector};
+use calimero_sdk::collections::{Cell, Counter, Frozen, PerUser, Set, UnorderedMap, Vector};
 use calimero_sdk::env::{mock, Caller};
 use calimero_sdk::table::FieldSet;
 use calimero_sdk::{
@@ -220,4 +220,100 @@ fn a_table_iterates_every_record_and_an_index() {
     assert_eq!(ada_ids, (0..1_100).step_by(3).collect::<Vec<_>>());
     let unknown = t.find_iter("nope", &[], FindOpts::default()).next();
     assert_eq!(unknown, Some(Err(StorageError::UnknownName("nope".into()))));
+}
+
+#[test]
+fn a_vector_inserts_removes_swaps_and_retains_by_position() {
+    let mut v: Vector<u32, MemStore> = Vector::with_store("v", MemStore::new());
+    let _ = v.extend(&[1, 2, 3, 4]).unwrap();
+    v.insert(0, &0).unwrap();
+    v.insert(5, &5).unwrap();
+    v.insert(3, &9).unwrap();
+    assert_eq!(all(v.iter()), [0, 1, 2, 9, 3, 4, 5]);
+    assert_eq!(
+        v.insert(8, &7).unwrap_err(),
+        StorageError::OutOfBounds { index: 8, len: 7 }
+    );
+    assert_eq!(v.remove(3).unwrap(), 9);
+    assert_eq!(v.remove(0).unwrap(), 0);
+    assert_eq!(all(v.iter()), [1, 2, 3, 4, 5]);
+    assert_eq!(v.len().unwrap(), 5);
+    v.swap(0, 4).unwrap();
+    v.swap(2, 2).unwrap();
+    assert_eq!(all(v.iter()), [5, 2, 3, 4, 1]);
+    assert_eq!(v.update(1, |x| x * 10).unwrap(), 20);
+    assert!(v.contains(&20).unwrap());
+    assert!(!v.contains(&2).unwrap());
+    assert_eq!(v.retain(|x| x % 2 == 1).unwrap(), 2);
+    assert_eq!(all(v.iter()), [5, 3, 1]);
+    assert_eq!(v.len().unwrap(), 3);
+    assert_eq!(
+        v.update(3, |x| x).unwrap_err(),
+        StorageError::OutOfBounds { index: 3, len: 3 }
+    );
+}
+
+#[test]
+fn a_map_updates_with_a_closure_and_retains_across_pages() {
+    let mut m: UnorderedMap<u32, u32, MemStore> = UnorderedMap::with_store("m", MemStore::new());
+    assert_eq!(m.update(&1, |v| Some(v.unwrap_or(0) + 1)).unwrap(), Some(1));
+    assert_eq!(m.update(&1, |v| Some(v.unwrap_or(0) + 1)).unwrap(), Some(2));
+    assert_eq!(m.update(&1, |_| None).unwrap(), None);
+    assert!(m.is_empty().unwrap());
+    let keys: Vec<u32> = (0..2_300).collect();
+    let _ = m.extend(keys.iter().map(|k| (k, k))).unwrap();
+    assert_eq!(m.retain(|k, _| k % 10 == 0).unwrap(), 2_070);
+    assert_eq!(m.len().unwrap(), 230);
+    assert_eq!(all(m.keys()), (0..2_300).step_by(10).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_set_retains_across_pages() {
+    let mut s: Set<u32, MemStore> = Set::with_store("s", MemStore::new());
+    let values: Vec<u32> = (0..2_100).collect();
+    let _ = s.extend(&values).unwrap();
+    assert_eq!(s.retain(|v| *v >= 2_000).unwrap(), 2_000);
+    assert_eq!(s.len().unwrap(), 100);
+    assert_eq!(s.first().unwrap(), Some(2_000));
+}
+
+#[test]
+fn a_counter_decrements_to_zero_and_resets() {
+    let mut c: Counter<MemStore> = Counter::with_store("c", MemStore::new());
+    assert_eq!(c.decrement().unwrap(), 0);
+    c.add(3).unwrap();
+    assert_eq!(c.decrement().unwrap(), 2);
+    c.reset().unwrap();
+    assert_eq!(c.get().unwrap(), 0);
+    assert_eq!(c.increment().unwrap(), 1);
+}
+
+#[test]
+fn clearing_a_table_removes_its_indexes_and_leaves_its_neighbours() {
+    let store = MemStore::new();
+    let mut t: Table<Note, MemStore> = Table::with_store("notes", store.clone());
+    let mut other: Table<Note, MemStore> = Table::with_store("notes2", store.clone());
+    for id in 0..1_200 {
+        t.insert(Note {
+            id,
+            owner: "ada".into(),
+        })
+        .unwrap();
+    }
+    other
+        .insert(Note {
+            id: 1,
+            owner: "ada".into(),
+        })
+        .unwrap();
+    assert_eq!(t.clear().unwrap(), 1_200);
+    assert_eq!(t.iter().count(), 0);
+    let ada = [KeyPart::Str("ada".into())];
+    assert_eq!(t.find_iter("byOwner", &ada, FindOpts::default()).count(), 0);
+    assert_eq!(other.iter().count(), 1);
+    assert_eq!(
+        store.len(),
+        2,
+        "the other table's record and index entry remain"
+    );
 }

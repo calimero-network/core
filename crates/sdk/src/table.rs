@@ -475,6 +475,16 @@ impl<T: Record, S: Store> Table<T, S> {
         Ok(Page { items, next })
     }
 
+    /// Remove every record with its index, unique and count entries, a batch at a time;
+    /// returns how many records there were.
+    pub fn clear(&mut self) -> Result<u64, StorageError> {
+        let records = self.encode(&self.prefix("r", &[], &[]))?;
+        let removed = crate::commons::clear_prefix(&mut self.store, &records);
+        let all = self.encode(&[KeyPart::Str(self.name.clone())])?;
+        let _ = crate::commons::clear_prefix(&mut self.store, &all);
+        Ok(removed)
+    }
+
     /// Every record in key order, a page at a time as the loop reaches it.
     pub fn iter(&self) -> Iter<'_, T> {
         self.scan_iter(FindOpts::default())

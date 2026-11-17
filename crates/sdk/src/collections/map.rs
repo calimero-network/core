@@ -117,6 +117,25 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
         Ok(new)
     }
 
+    /// Set `k` to `f` of its value (`None` when absent): `Some` stores the result, `None`
+    /// removes the key. Returns the new value.
+    pub fn update(
+        &mut self,
+        k: &K,
+        f: impl FnOnce(Option<V>) -> Option<V>,
+    ) -> Result<Option<V>, StorageError> {
+        match f(self.get(k)?) {
+            Some(v) => {
+                let _ = self.insert(k, &v)?;
+                Ok(Some(v))
+            }
+            None => {
+                let _ = self.remove(k)?;
+                Ok(None)
+            }
+        }
+    }
+
     /// Remove `k`, returning the value it held.
     pub fn remove(&mut self, k: &K) -> Result<Option<V>, StorageError> {
         let key = self.storage_key(k)?;
@@ -217,6 +236,26 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
     /// [`UnorderedMap::prefix`] over every page.
     pub fn prefix_iter<'a>(&'a self, prefix: &'a [KeyPart], opts: FindOpts) -> Iter<'a, (K, V)> {
         Iter::new(opts, move |o| self.prefix(prefix, o.clone()))
+    }
+
+    /// Keep only the entries `keep` accepts; returns how many were removed. It reads every
+    /// entry a page at a time and removes the rejected ones after each page.
+    pub fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) -> Result<u64, StorageError> {
+        let mut opts = FindOpts::default().limit(crate::table::MAX_LIMIT);
+        let mut removed = 0;
+        loop {
+            let page = self.page(opts.clone())?;
+            for (k, v) in &page.items {
+                if !keep(k, v) {
+                    let _ = self.remove(k)?;
+                    removed += 1;
+                }
+            }
+            match page.next {
+                Some(cursor) => opts.cursor = Some(cursor),
+                None => return Ok(removed),
+            }
+        }
     }
 
     /// Every key in order.

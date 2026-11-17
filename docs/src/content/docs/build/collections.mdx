@@ -49,6 +49,7 @@ pub struct Booking {
 | `remove(&key)` | Removes the record and its index, unique and count entries; `false` when absent. |
 | `find(index, &prefix, opts)` | Records whose index fields start with `prefix`, in index order, one page at a time. |
 | `scan(opts)` | All records in key order, one page at a time. |
+| `clear()` | Removes every record with its index, unique and count entries; returns how many records there were. |
 | `iter()` / `scan_iter(opts)` / `find_iter(index, &prefix, opts)` | The same reads over every page, as an iterator (see [Iterating](#iterating)). |
 | `count(name, &prefix)` | A maintained count: one read when `prefix` names every field of the count. |
 | `search(text, SearchOpts)` | Full-text search over `#[table(search = [..])]` fields, best match first (views only). |
@@ -103,10 +104,10 @@ every entry it reads. A view that answers a client should still return one
 | Type | Operations |
 | --- | --- |
 | `Cell<T>` | `get`, `set`, `clear`, `is_set`, `get_or_default`, `replace` and `take` (return the old value), `update(\|old\| new)` |
-| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values` |
-| `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter` |
-| `Vector<T>` | `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `swap_remove(i)` (the last element takes its place), `truncate(len)`, `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
-| `Counter` | `get`, `add`, `increment` |
+| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values`, `retain` |
+| `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `retain` |
+| `Vector<T>` | `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
+| `Counter` | `get`, `add`, `increment`, `decrement` (stops at zero), `reset` |
 | `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of`, `page` and `iter` as `(hex, value)` in hash order |
 | `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` and `contains_for(account)` read another's; `page`, `iter` and `iter_with` list `(account, value)` in account order |
 | `Text` | `insert_after(id, str)`, `delete_ids`, `insert(index, str)`, `delete(index, n)`, `read`, `chars`, `id_at`, `index_of`, `len`, `clear` |
@@ -130,6 +131,10 @@ pub struct Store {
 - Lengths and counts are stored and kept with an atomic add on every write, so
   `len` and `count` are one read, never a scan.
 - `clear` deletes in batches of at most 1,000 until nothing is left.
+- `Vector::insert` and `remove` move every later element, a read and a write
+  each; `swap_remove` costs two writes. `Vector::contains` is a scan.
+- `retain` reads every element once; on a map or set it removes after each
+  page, and on a vector it rewrites the elements that move down.
 - A key over 1 KiB is refused (`KeyTooLong`) before any store call.
 - Values are deterministic CBOR; keys are order-preserving tuples, the
   contract the TypeScript SDK produces the same bytes for.

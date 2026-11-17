@@ -193,6 +193,107 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
         Ok(removed)
     }
 
+    /// Set the element at `index` to `f` of it, returning the new value; `OutOfBounds` past
+    /// the end.
+    pub fn update(&mut self, index: u64, f: impl FnOnce(T) -> T) -> Result<T, StorageError> {
+        let len = self.len()?;
+        let old = self
+            .get(index)?
+            .ok_or(StorageError::OutOfBounds { index, len })?;
+        let new = f(old);
+        let _ = self.set(index, &new)?;
+        Ok(new)
+    }
+
+    /// Swap the elements at `a` and `b`; `OutOfBounds` when either is past the end.
+    pub fn swap(&mut self, a: u64, b: u64) -> Result<(), StorageError> {
+        let len = self.len()?;
+        for index in [a, b] {
+            if index >= len {
+                return Err(StorageError::OutOfBounds { index, len });
+            }
+        }
+        if a != b {
+            let at_a = self.get(a)?.ok_or(StorageError::Dangling)?;
+            let at_b = self.set(b, &at_a)?;
+            let _ = self.set(a, &at_b)?;
+        }
+        Ok(())
+    }
+
+    /// Insert `v` at `index`, moving every later element one place up: a read and a write
+    /// for each of them, so it costs the length of the tail. `index == len` pushes;
+    /// `OutOfBounds` past that.
+    pub fn insert(&mut self, index: u64, v: &T) -> Result<(), StorageError> {
+        let len = self.len()?;
+        if index > len {
+            return Err(StorageError::OutOfBounds { index, len });
+        }
+        for i in (index..len).rev() {
+            let bytes = self
+                .store
+                .get(&self.storage_key(i)?)
+                .ok_or(StorageError::Dangling)?;
+            self.store.put(&self.storage_key(i + 1)?, &bytes);
+        }
+        self.store
+            .put(&self.storage_key(index)?, &value::to_vec(v)?);
+        self.store.add(&self.len_key()?, 1);
+        Ok(())
+    }
+
+    /// Remove and return the element at `index`, moving every later element one place
+    /// down (it costs the length of the tail; [`Vector::swap_remove`] costs two writes);
+    /// `OutOfBounds` past the end.
+    pub fn remove(&mut self, index: u64) -> Result<T, StorageError> {
+        let len = self.len()?;
+        if index >= len {
+            return Err(StorageError::OutOfBounds { index, len });
+        }
+        let removed = self.get(index)?.ok_or(StorageError::Dangling)?;
+        for i in index + 1..len {
+            let bytes = self
+                .store
+                .get(&self.storage_key(i)?)
+                .ok_or(StorageError::Dangling)?;
+            self.store.put(&self.storage_key(i - 1)?, &bytes);
+        }
+        self.store.delete(&self.storage_key(len - 1)?);
+        self.store.add(&self.len_key()?, -1);
+        Ok(removed)
+    }
+
+    /// Keep only the elements `keep` accepts, in order, and return how many were removed.
+    /// It reads every element once and rewrites the ones that move down.
+    pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) -> Result<u64, StorageError> {
+        let len = self.len()?;
+        let mut kept = 0;
+        for i in 0..len {
+            let key = self.storage_key(i)?;
+            let bytes = self.store.get(&key).ok_or(StorageError::Dangling)?;
+            if keep(&value::from_slice(&bytes)?) {
+                if kept != i {
+                    self.store.put(&self.storage_key(kept)?, &bytes);
+                }
+                kept += 1;
+            }
+        }
+        self.truncate(kept)
+    }
+
+    /// Whether any element equals `v`: a scan, a page at a time, that stops at the first.
+    pub fn contains(&self, v: &T) -> Result<bool, StorageError>
+    where
+        T: PartialEq,
+    {
+        for item in self.iter() {
+            if item? == *v {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Remove every element, a batch at a time; returns how many there were.
     pub fn clear(&mut self) -> Result<u64, StorageError> {
         let base = self.base()?;
