@@ -209,7 +209,7 @@ impl Feature {
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
             Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
-            Self::OnBehalfOf => "1.0.0-rc.30",
+            Self::OnBehalfOf => "1.0.0-rc.31",
         }
     }
 }

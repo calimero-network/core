@@ -222,7 +222,7 @@ is its command line.
   (the outbox row) for a message; the target's host core gets it with
   `HostCore::with_origin` (`env::on_behalf_of()`), beside `Caller::App(source)`.
   Timers, actions, `init` and public callers pass none. Only from the logged
-  cluster version that brings `Feature::OnBehalfOf` (rc.30): before it no run
+  cluster version that brings `Feature::OnBehalfOf` (rc.31): before it no run
   names anyone, so an older node dropping the field changes nothing. A row an
   earlier release wrote has none and is delivered as before. Regression:
   `an_xcall_names_the_person_its_run_served` (`tests/component_cluster.rs`).
