@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::app::{AppMachine, Status};
-use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
+use crate::attest::{kms_report_data, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
 use crate::node::{CallRequest, JobAttestError, Node, ViewRequest};
@@ -993,8 +993,9 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     } else {
         report_data(&nonce, &app_hash, &transport_key)
     };
-    let q =
-        quote(node.config.attestation, report).map_err(|e| ApiError::internal(&e.to_string()))?;
+    // Off the async workers, one at a time, and only now: after the `app`
+    // lookup, which may wait, so a request that waits there holds no slot.
+    let q = node.quoter.quote(report).await?;
     let doc = AttestationDoc {
         quote: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, q),
         transport_key: hex::encode(transport_key),

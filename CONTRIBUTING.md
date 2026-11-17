@@ -53,9 +53,9 @@ The shared release version of the public crates is `version` under
 [RELEASING.md](RELEASING.md) has the whole flow, what a release publishes,
 and the rules for titles and breaking changes shared by every repository.
 
-A release PR (`chore(release): cut X`) sets that version and adds a dated
-`CHANGELOG.md` section for the changes since the last release; merging it to
-master publishes the release (`release.yml`: the tag, the binaries, the image).
+A release PR (`chore(release): cut X`) sets that version; merging it to
+master publishes the release, with notes generated from the titles of the
+pull requests merged since the last one (`release.yml`: the tag, the binaries, the image).
 It also keeps the [upgrade path](docs/src/content/docs/contribute/testing.mdx#upgrade-path)
 pointed at the latest published release:
 
@@ -66,8 +66,9 @@ pointed at the latest published release:
   and at the latest in the next release PR, so cutting X+1 pins X if nothing did.
   The `Upgrade path` job warns while a newer version is tagged.
 - **Hard cutovers.** A change the upgrade path cannot pass without wiping
-  clusters is listed in the release's CHANGELOG section as a hard cutover
-  ("no interop with earlier nodes ...; existing clusters are recreated"), and
+  clusters is a breaking PR (`!` in its title, so the release notes list it as
+  one) whose body says so ("no interop with earlier nodes ...; existing clusters
+  are recreated"), and
   mdma's `release_compat` CUTOVERS gets the release. Its PR set the pin to
   `hard-cutover: ...`; the release PR after it sets the pin back to a version
   once the cutover release is published.
