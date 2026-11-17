@@ -178,7 +178,8 @@ pub fn args_bytes(args: &Value) -> Vec<u8> {
     if args.is_null() {
         Vec::new()
     } else {
-        serde_json::to_vec(args).unwrap_or_default()
+        // `Value`'s `Display` is its compact JSON and cannot fail.
+        args.to_string().into_bytes()
     }
 }
 
@@ -286,7 +287,7 @@ pub fn final_too_large() -> ApiError {
 /// The entry as bytes, and whether it was replaced: one over `MAX_ENTRY_BYTES` becomes the same
 /// call trapped `HostDenied` (D50); a final loses only its result method's outcome.
 fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
-    let bytes = serde_json::to_vec(&*cmd).unwrap_or_default();
+    let bytes = crate::component::entry_json(cmd);
     if bytes.len() <= calimero_log::MAX_ENTRY_BYTES {
         return (bytes, false);
     }
@@ -313,7 +314,7 @@ fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
         | ComponentCmd::XcallDone { .. }
         | ComponentCmd::ActionEnd { .. } => {}
     }
-    (serde_json::to_vec(&*cmd).unwrap_or_default(), true)
+    (crate::component::entry_json(cmd), true)
 }
 
 /// Whether an applied entry recorded none of the blobs it stored: it conflicted, or apply
@@ -1662,7 +1663,10 @@ impl Node {
                             // same key are two calls of the target.
                             key: Some(format!(
                                 "call:{}:{}",
-                                serde_json::to_string(&req.caller).unwrap_or_default(),
+                                // SAFETY: guaranteed by `Caller`'s shape (an enum of
+                                // strings); an empty caller would merge two callers' keys.
+                                serde_json::to_string(&req.caller)
+                                    .expect("a caller always serializes"),
                                 req.idempotency_key.as_deref().unwrap_or_default()
                             )),
                             // A read-only member's run reaches no outbound host, and
@@ -2207,7 +2211,7 @@ impl Node {
                     "__blob_revoke" => ComponentCmd::BlobRevoke { id: id.clone() },
                     _ => ComponentCmd::BlobForget { id: id.clone() },
                 };
-                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
+                Proposal::Append(crate::component::entry_json(&cmd))
             })
             .await?;
         let a: Applied = serde_json::from_slice(&p.output)
@@ -2326,15 +2330,12 @@ impl Node {
                 if m.action_record(&id).is_none() {
                     return Proposal::Reply(Vec::new());
                 }
-                Proposal::Append(
-                    serde_json::to_vec(&ComponentCmd::ActionEnd {
-                        id: id.clone(),
-                        failed: failed.clone(),
-                        retry,
-                        ts_ms: self.stamp(m),
-                    })
-                    .unwrap_or_default(),
-                )
+                Proposal::Append(crate::component::entry_json(&ComponentCmd::ActionEnd {
+                    id: id.clone(),
+                    failed: failed.clone(),
+                    retry,
+                    ts_ms: self.stamp(m),
+                }))
             })
             .await;
         let key = (app_id.clone(), id.clone());
@@ -2515,14 +2516,11 @@ impl Node {
             let reason = dead.clone();
             let done = g
                 .propose_led(|m, _, _| {
-                    Proposal::Append(
-                        serde_json::to_vec(&ComponentCmd::XcallDone {
-                            seq,
-                            dead: reason.clone(),
-                            ts_ms: self.stamp(m),
-                        })
-                        .unwrap_or_default(),
-                    )
+                    Proposal::Append(crate::component::entry_json(&ComponentCmd::XcallDone {
+                        seq,
+                        dead: reason.clone(),
+                        ts_ms: self.stamp(m),
+                    }))
                 })
                 .await;
             if let Ok(mut r) = self.xcall_retry.lock() {
@@ -2647,7 +2645,7 @@ impl Node {
         }
         let cmd = ComponentCmd::BlobsCollected { ids };
         let logged = g
-            .propose_led(|_, _, _| Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default()))
+            .propose_led(|_, _, _| Proposal::Append(crate::component::entry_json(&cmd)))
             .await;
         match logged {
             // Released by the entry that really took the files off the queue, so a repeat frees nothing.
@@ -2768,7 +2766,8 @@ impl NodeAction {
 /// error as JSON text.
 fn answer_bytes(status: &Status, result: &Value, error: &Value) -> Result<Vec<u8>, String> {
     if *status == Status::Ok {
-        Ok(serde_json::to_vec(result).unwrap_or_default())
+        // `Value`'s `Display` is its compact JSON and cannot fail.
+        Ok(result.to_string().into_bytes())
     } else {
         Err(error.to_string())
     }

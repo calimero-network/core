@@ -336,7 +336,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
                 hash: session.hash(),
                 record: session.record(&account_id, &passkey, app, origin),
             }),
-            consent: serde_json::to_value(&consent).unwrap_or_default(),
+            consent: super::consent_value(&consent)?,
             at: now,
             // Every account has its personal organization from the start,
             // approving the release it signed up through.
@@ -434,7 +434,7 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
         &body.assertion.credential_id,
         app,
         session,
-        serde_json::to_value(&consent).unwrap_or_default(),
+        super::consent_value(&consent)?,
     )
     .await
 }
