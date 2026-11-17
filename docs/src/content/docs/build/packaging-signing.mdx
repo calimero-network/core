@@ -157,6 +157,21 @@ detail.
      `links` in `initArgs` is the node's; a client that sends it is refused.
      `attach` references are never created.
 
+     The owner attaches an app they already run to an `attach` reference with
+     `PUT /apps/{app}/links/{name} { app }` (whoever manages both apps, in one
+     organization, with a passkey; `DELETE` detaches it). The app must run the
+     reference's package (`409 WRONG_PACKAGE`); one outside the range is attached
+     anyway, answered `inRange: false`, and an upgrade's consent page warns when
+     the new release takes an attached app in another range: an attached app lives
+     on its own and is never upgraded with the instance. Deleting the attached app
+     detaches it. `GET /apps/{app}/links` lists every reference of the release the
+     app runs with the app linked under it, the release that app runs and
+     `inRange`. The app's code reads a link at any time, not only in `init`:
+
+     ```rust
+     let kv = env::linked("kv").ok_or(app::err!("no kv linked"))?;
+     ```
+
      A unit upgrades in one consent: an app's frontend asks the node's consent
      page with `upgradeUnit { app, toVersion }` (every app's sheet on one page),
      or a client calls `POST /apps/{app}/upgrade-unit { version }`

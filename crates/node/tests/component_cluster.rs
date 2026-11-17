@@ -8166,3 +8166,182 @@ async fn prices_wait_until_every_node_runs_this_release() {
         1
     );
 }
+
+/// An owner attaches an app they run to an instance's `attach` reference, with a passkey: the
+/// app must run the reference's package (`409 WRONG_PACKAGE`) and the name must be an attach
+/// reference (`409 NOT_AN_ATTACH_REFERENCE`); one outside the range is attached and reported
+/// `inRange: false`. The instance's code reads it with `env::linked` from the next run on,
+/// `GET /apps/{app}/links` lists every reference with what is linked, and a detach or the
+/// attached app's deletion unlinks it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_owner_attaches_an_app_and_the_instance_reads_it_with_linked() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let uses = json!({
+        "kv": { "package": "com.calimero.a-kv", "range": "^0.1", "version": "0.1.0" },
+        "calendar": { "package": "com.example.a-cal", "range": "^2", "mode": "attach" },
+    });
+    for (package, version, u) in [
+        ("com.calimero.a-kv", "0.1.0", Value::Null),
+        ("com.example.a-cal", "2.1.0", Value::Null),
+        ("com.example.a-cal", "3.0.0", Value::Null),
+        ("com.calimero.a-notes", "0.1.0", uses),
+    ] {
+        let _ = alice
+            .packages()
+            .upload(mpk_using(package, version, &kv_wasm(), &publisher, &[], u))
+            .await
+            .unwrap();
+    }
+    let create = |name: &str, package: &str, version: &str| {
+        typed(json!({ "name": name, "package": package, "version": version }))
+    };
+    let made = alice
+        .apps()
+        .create(create("notes", "com.calimero.a-notes", "0.1.0"))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+    let cal = |name: &'static str, version: &'static str| {
+        let alice = &alice;
+        async move {
+            alice
+                .apps()
+                .create(create(name, "com.example.a-cal", version))
+                .await
+                .map(wire)
+                .unwrap()["appId"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    let cal2 = cal("calendar", "2.1.0").await;
+    let cal3 = cal("calendar-next", "3.0.0").await;
+    let linked =
+        |name: &'static str| strong_view(&alice, &notes, "linked", json!({ "name": name }));
+    let row = |links: &Value, name: &str| {
+        links["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == json!(name))
+            .cloned()
+            .unwrap()
+    };
+
+    // Before: the member is linked and in range; the attach reference holds nothing.
+    let links = alice.apps().links(&notes).await.map(wire).unwrap();
+    assert_eq!(
+        row(&links, "kv"),
+        json!({ "name": "kv", "package": "com.calimero.a-kv", "range": "^0.1", "mode": "create",
+                "app": kv, "version": "0.1.0", "inRange": true })
+    );
+    assert_eq!(row(&links, "calendar")["app"], Value::Null);
+    assert_eq!(row(&links, "calendar")["inRange"], Value::Null);
+    assert_eq!(linked("kv").await, json!(kv));
+    assert_eq!(linked("calendar").await, Value::Null);
+
+    let attach = |name: &'static str, app: &str| {
+        let body: calimero_client::types::AppLinkRequest =
+            serde_json::from_value(json!({ "app": app })).unwrap();
+        (name, body)
+    };
+    // Refused before any passkey is asked for: another package, a create reference.
+    let (name, body) = attach("calendar", &kv);
+    let e = alice
+        .apps()
+        .link(&notes, name, body, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("WRONG_PACKAGE"), "{e}");
+    let (name, body) = attach("kv", &cal2);
+    let e = alice
+        .apps()
+        .link(&notes, name, body, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_AN_ATTACH_REFERENCE"), "{e}");
+    // A passkey is required.
+    let (name, body) = attach("calendar", &cal2);
+    let e = alice
+        .apps()
+        .link(&notes, name, body, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+
+    let (name, body) = attach("calendar", &cal2);
+    let got = alice
+        .apps()
+        .link(&notes, name, body, Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        got,
+        json!({ "name": "calendar", "package": "com.example.a-cal", "range": "^2",
+                "mode": "attach", "app": cal2, "version": "2.1.0", "inRange": true })
+    );
+    assert_eq!(linked("calendar").await, json!(cal2));
+    let record = alice.apps().get(&notes).await.map(wire).unwrap();
+    assert_eq!(record["attached"], json!({ "calendar": cal2 }));
+    assert_eq!(
+        record["links"],
+        json!({ "kv": kv }),
+        "a unit's members are apart"
+    );
+
+    // Out of range: attached, with the warning.
+    let (name, body) = attach("calendar", &cal3);
+    let got = alice
+        .apps()
+        .link(&notes, name, body, Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(got["inRange"], json!(false));
+    assert_eq!(got["version"], json!("3.0.0"));
+    let links = alice.apps().links(&notes).await.map(wire).unwrap();
+    assert_eq!(row(&links, "calendar")["inRange"], json!(false));
+    assert_eq!(linked("calendar").await, json!(cal3));
+
+    // Detached with a passkey; detaching again has nothing to detach.
+    let _ok = alice
+        .apps()
+        .unlink(&notes, "calendar", Some(&mut pk))
+        .await
+        .unwrap();
+    assert_eq!(linked("calendar").await, Value::Null);
+    let e = alice
+        .apps()
+        .unlink(&notes, "calendar", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_ATTACHED"), "{e}");
+    let e = alice
+        .apps()
+        .unlink(&notes, "kv", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.code(),
+        Some("NOT_ATTACHED"),
+        "a member is never detached: {e}"
+    );
+
+    // Deleting the attached app unlinks it.
+    let (name, body) = attach("calendar", &cal2);
+    let _ = alice
+        .apps()
+        .link(&notes, name, body, Some(&mut pk))
+        .await
+        .unwrap();
+    let _ = alice.apps().delete(&cal2).await.unwrap();
+    assert_eq!(linked("calendar").await, Value::Null);
+    let record = alice.apps().get(&notes).await.map(wire).unwrap();
+    assert!(record.get("attached").is_none(), "{record}");
+}

@@ -424,6 +424,7 @@ async fn create_instance(
                 release,
                 restore: None,
                 links,
+                attached: BTreeMap::new(),
             }),
         })
         .await?;
@@ -1318,6 +1319,211 @@ async fn app_secret_clear(
     Ok(Json(json!({ "name": name, "index": a.index })))
 }
 
+/// The references of the release `app` runs (`uses` in its signed manifest), by name; none
+/// for an app without a release.
+pub(crate) async fn release_uses(
+    node: &Node,
+    app: &crate::types::AppRecord,
+) -> Result<BTreeMap<String, calimero_bundle::BundleUse>, ApiError> {
+    let Some(release) = node.release_of_app(app) else {
+        return Ok(BTreeMap::new());
+    };
+    let card = crate::consent_page::release_capabilities(
+        node,
+        &release.at.package,
+        &release.version,
+        release.at.service.as_deref(),
+    )
+    .await?;
+    Ok(serde_json::from_value(card["uses"].clone()).unwrap_or_default())
+}
+
+/// Whether `release` is of `u`'s package and inside its range.
+pub(crate) fn in_range(
+    u: &calimero_bundle::BundleUse,
+    release: &crate::system::PackageRef,
+) -> bool {
+    release.package == u.package
+        && semver::VersionReq::parse(&u.range).is_ok_and(|range| {
+            semver::Version::parse(&release.version).is_ok_and(|v| range.matches(&v))
+        })
+}
+
+/// One link of an instance as `GET /apps/{app}/links` answers it: the reference (`null`
+/// fields for a link its release no longer names), the app linked under it, the release
+/// that app runs and whether it is in the reference's range (`null` with nothing linked).
+fn link_row(
+    node: &Node,
+    name: &str,
+    u: Option<&calimero_bundle::BundleUse>,
+    linked: Option<&str>,
+) -> Value {
+    let release = linked
+        .and_then(|id| node.sys(|s| s.apps.get(id).cloned()))
+        .and_then(|a| node.release_of_app(&a))
+        .map(|r| r.at);
+    let fits = match (u, &release) {
+        (Some(u), Some(r)) => Some(in_range(u, r)),
+        _ => None,
+    };
+    json!({
+        "name": name,
+        "package": u.map(|u| &u.package),
+        "range": u.map(|u| &u.range),
+        "mode": u.map(|u| u.mode),
+        "app": linked,
+        "version": release.map(|r| r.version),
+        "inRange": fits,
+    })
+}
+
+/// An instance's links (`GET /apps/{app}/links`): each reference of the release it runs,
+/// with the app linked under it (a unit member made with it, or an app its owner attached),
+/// that app's release and whether it is in range. Who reaches the app reads them.
+async fn app_links(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let _p = gate(&node, &headers, &app, "*", false).await?;
+    let uses = release_uses(&node, &app).await?;
+    let linked = |name: &str| {
+        app.links
+            .get(name)
+            .or_else(|| app.attached.get(name))
+            .map(String::as_str)
+    };
+    let mut rows: Vec<Value> = uses
+        .iter()
+        .map(|(name, u)| link_row(&node, name, Some(u), linked(name)))
+        .collect();
+    for name in app.links.keys().chain(app.attached.keys()) {
+        if !uses.contains_key(name) {
+            rows.push(link_row(&node, name, None, linked(name)));
+        }
+    }
+    Ok(Json(json!({ "app": app_id, "links": rows })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct LinkBody {
+    app: String,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct UnlinkBody {
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Attach an app the caller runs to one of the instance's `attach` references
+/// (`SystemCmd::LinkApp`): whoever manages both apps, in one organization, with a passkey
+/// assertion (412 first). The app must run the reference's package; one outside its range is
+/// attached, and the answer says so (`inRange: false`). Answers the link as `GET .../links`
+/// lists it.
+async fn app_link(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, name)): Path<(String, String)>,
+    Json(body): Json<LinkBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let target_id = node.canonical_app_id(&body.app);
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    let app = node.app(&app_id).await?;
+    let target = node.app(&target_id).await?;
+    if !node.sys(|s| s.manages_app(&app, &actor) && s.manages_app(&target, &actor)) {
+        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
+    }
+    if target_id == app_id || target.org != app.org {
+        return Err(ApiError::bad_request(
+            "NOT_ATTACHABLE",
+            "only another app of the same organization is attached",
+        ));
+    }
+    let uses = release_uses(&node, &app).await?;
+    let Some(u) = uses
+        .get(&name)
+        .filter(|u| u.mode == calimero_bundle::UseMode::Attach)
+    else {
+        return Err(ApiError::new(
+            409,
+            "NOT_AN_ATTACH_REFERENCE",
+            &format!("the release {app_id} runs names no `attach` reference {name}"),
+        ));
+    };
+    let runs = node.release_of_app(&target).map(|r| r.at);
+    if runs.as_ref().is_none_or(|r| r.package != u.package) {
+        return Err(ApiError::new(
+            409,
+            "WRONG_PACKAGE",
+            &format!(
+                "{name} takes an app of {}: {target_id} runs another",
+                u.package
+            ),
+        ));
+    }
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::AttachApp]).await?;
+    let args = crate::system::link_app_args(&name, Some(&target_id));
+    let consent = consent(&node, &p, &app_id, "__link", &args, body.confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::LinkApp {
+            app_id,
+            name: name.clone(),
+            target: Some(target_id.clone()),
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(link_row(&node, &name, Some(u), Some(&target_id))))
+}
+
+/// Detach the app attached under `name` (`SystemCmd::LinkApp` with no target): whoever
+/// manages the instance, with a passkey assertion (412 first). A unit member is never
+/// detached. `404 NOT_ATTACHED` when nothing is attached there.
+async fn app_unlink(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, name)): Path<(String, String)>,
+    Json(body): Json<UnlinkBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    let app = node.app(&app_id).await?;
+    if !node.sys(|s| s.manages_app(&app, &actor)) {
+        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
+    }
+    if !app.attached.contains_key(&name) {
+        return Err(ApiError::new(
+            404,
+            "NOT_ATTACHED",
+            &format!("no app is attached to {app_id} as {name}"),
+        ));
+    }
+    node.require_features(&[Feature::AttachApp]).await?;
+    let args = crate::system::link_app_args(&name, None);
+    let consent = consent(&node, &p, &app_id, "__link", &args, body.confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::LinkApp {
+            app_id,
+            name,
+            target: None,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
 pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/apps", post(app_create).get(app_list))
@@ -1336,6 +1542,8 @@ pub(super) fn routes() -> Router<Arc<Node>> {
             "/apps/{app}/delegations/{target}",
             put(app_delegate).delete(app_undelegate),
         )
+        .route("/apps/{app}/links", get(app_links))
+        .route("/apps/{app}/links/{name}", put(app_link).delete(app_unlink))
         .route("/apps/{app}/xcalls", get(app_xcalls))
         .route("/apps/{app}/secrets", get(app_secrets))
         .route(

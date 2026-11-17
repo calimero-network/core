@@ -55,6 +55,8 @@ record (`--kms-disk-evidence`) unless its data directory is in memory (tmpfs).
 Store format 1 sealed each of those values under K_c as well, encrypting the same
 bytes twice; format 2 dropped that and reads no earlier store (a rollout's new
 nodes start empty and receive their data by snapshot).
+Search indexes, derived data tantivy writes as it is, are kept the same way: on
+that disk when the node has its record, and in memory otherwise.
 
 ```text
 K_r = HKDF-SHA256(ikm = KMS key, salt = "calimero.cloud.storage.v1", info = cluster name)

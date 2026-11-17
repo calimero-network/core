@@ -214,6 +214,12 @@ pub struct AppRecord {
     /// empty, so a record writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub links: BTreeMap<String, AppId>,
+    /// The apps its owner attached for the release's `attach` references (`uses` with
+    /// `mode: attach`), by name: apps of the same organization that live on their own
+    /// (`SystemCmd::LinkApp`). Never a unit member, so a unit's upgrade and range leave them
+    /// alone. Left out when empty, so a record writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attached: BTreeMap<String, AppId>,
 }
 
 /// The backup a restore takes an app's state from (`crate::backup`): the

@@ -85,6 +85,12 @@ NOT_COVERED = [
      "grant is written only once every node runs this release (`Feature::Delegation`); "
      "`an_app_calls_another_as_the_person_only_with_their_grant` (`component_cluster.rs`) covers message, call "
      "and view on one build, and state without grants reads as before (`serde(default)`)"),
+    ("Apps", "An app attached to an instance's `attach` reference (`AppRecord::attached`, `env::linked`)",
+     "the deep fixtures are packed by the old release's meroctl, which writes no `uses`, so no instance has "
+     "a reference to attach to, and a `LinkApp` is written only once every node runs this release "
+     "(`Feature::AttachApp`); `an_owner_attaches_an_app_and_the_instance_reads_it_with_linked` "
+     "(`component_cluster.rs`) covers it on one build, and a record without it reads as before "
+     "(`serde(default)`)"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "

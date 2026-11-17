@@ -928,6 +928,9 @@ pub const CANNOT_GRANT_UNHELD: &str =
 /// A refusal: the package has an app team in this organization already.
 pub const APP_TEAM_EXISTS: &str = "this package has an app team in this organization already";
 
+/// What `LinkApp` answers to someone who does not manage both apps.
+pub const ONLY_MANAGERS_LINK: &str = "only who manages both apps attaches one to the other";
+
 /// What `MoveApp` answers to someone who does not manage the app where it is
 /// now ([`SystemState::manages_app`]).
 pub const ONLY_MANAGERS_MOVE: &str =
@@ -1406,6 +1409,11 @@ impl SystemState {
             sources.retain(|_, t| !t.is_empty());
         }
         self.delegations.retain(|_, s| !s.is_empty());
+        // An app attached elsewhere is detached with it; a unit member's link stays, as the
+        // record that it was made with the instance.
+        for a in self.apps.values_mut() {
+            a.attached.retain(|_, t| t != app_id);
+        }
         let _ring = self.released_runs.remove(app_id);
         if self.compute.remove(app_id).is_some() {
             self.grant_runs();
@@ -4088,6 +4096,7 @@ impl SystemCmd {
             Self::TransferApp { .. } => Area::Apps,
             Self::MoveApp { .. } => Area::Apps,
             Self::SetDelegation { .. } => Area::Apps,
+            Self::LinkApp { .. } => Area::Apps,
             Self::DeleteApp { .. } => Area::Apps,
             Self::ChargeFileBytes { .. } => Area::Compute,
             Self::AcquireRun { .. } => Area::Compute,
@@ -4509,6 +4518,16 @@ pub fn move_app_args(to_org: &str, bring_members: bool) -> Value {
 pub fn delegation_args(target: &str, methods: &[String]) -> Value {
     json!({ "target": target, "methods": methods })
 }
+
+/// What an attach's consent states (`<app> / __link`): the reference's name and the app
+/// attached under it, `null` to detach.
+#[must_use]
+pub fn link_app_args(name: &str, target: Option<&str>) -> Value {
+    json!({ "name": name, "target": target })
+}
+
+/// The most apps one instance has attached (as a release names at most this many references).
+pub const MAX_ATTACHED: usize = calimero_bundle::MAX_USES;
 
 /// The id a `ScopeApps` (or a `MoveApp`) with `nonce` gives a new app team of `package`: the
 /// first of a short series not taken in `org` and not starting with `-`.
@@ -5358,6 +5377,17 @@ pub enum SystemCmd {
         source: AppId,
         target: AppId,
         methods: Option<Vec<String>>,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Attaches `target` under `name`, one of the `attach` references of the release the app
+    /// runs (`AppRecord::attached`), or detaches it (`None`). The manager of both apps, with
+    /// passkey consent (`<app> / __link / { name, target }`, [`link_app_args`]).
+    LinkApp {
+        app_id: AppId,
+        name: String,
+        target: Option<AppId>,
+        actor: AccountId,
         #[serde(default)]
         consent: Value,
     },
