@@ -1088,10 +1088,12 @@ async fn a_disk_machine_restarts_without_replaying_the_log() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_big_state_streams_to_a_new_node() {
     let mut c = DiskCluster::new(3).await;
-    // ~6 MiB of state: six snapshot chunks, several frames.
-    let value = "v".repeat(2048);
+    // ~6 MiB of state: six snapshot chunks, several frames. Written as 600
+    // values of 10 KiB rather than 3000 of 2 KiB: the same bytes in a fifth of
+    // the Raft rounds, which is where this test spends its time.
+    let value = "v".repeat(10 * 1024);
     let mut last = 0;
-    for i in 0..3000 {
+    for i in 0..600 {
         last = c.put(&format!("key-{i:05}"), &value).await;
     }
     let lid = c.leader().await;
@@ -1112,9 +1114,9 @@ async fn a_big_state_streams_to_a_new_node() {
         .await
         .unwrap();
     assert!(g4.wait_applied(last, Duration::from_secs(30)).await);
-    // It installed a snapshot rather than replaying 3000 entries.
-    assert!(c.applies[&4].lock().unwrap().len() < 3000);
-    for i in [0, 1234, 2999] {
+    // It installed a snapshot rather than replaying 600 entries.
+    assert!(c.applies[&4].lock().unwrap().len() < 600);
+    for i in [0, 234, 599] {
         assert_eq!(
             g4.read_local(|m, _| m.get(&format!("key-{i:05}")))
                 .as_deref(),
@@ -1124,7 +1126,7 @@ async fn a_big_state_streams_to_a_new_node() {
     drop(g4);
     let g4 = c.restart(4).await;
     assert_eq!(
-        g4.read_local(|m, _| m.get("key-02999")).as_deref(),
+        g4.read_local(|m, _| m.get("key-00599")).as_deref(),
         Some(value.as_str())
     );
     // The snapshot on disk is sealed too.
