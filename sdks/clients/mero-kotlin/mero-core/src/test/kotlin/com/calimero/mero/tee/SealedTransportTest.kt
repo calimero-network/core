@@ -251,6 +251,46 @@ class SealedTransportTest {
     }
 
     @Test
+    fun `reads no more of an envelope refusal than a refusal ever is`() {
+        // A proxy in front of the node answers the handshake with an endless page: the client
+        // reports the refusal without buffering it.
+        var pulled = 0L
+        val endless =
+            object : Source {
+                override fun read(
+                    sink: Buffer,
+                    byteCount: Long,
+                ): Long {
+                    val chunk = ByteArray(minOf(byteCount, 8192L).toInt()) { 'a'.code.toByte() }
+                    pulled += chunk.size
+                    if (pulled > 32L * 1024 * 1024) return -1
+                    sink.write(chunk)
+                    return chunk.size.toLong()
+                }
+
+                override fun timeout() = Timeout.NONE
+
+                override fun close() = Unit
+            }
+        val net =
+            FakeNet { request, _ ->
+                Response
+                    .Builder()
+                    .request(request)
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(502)
+                    .message("")
+                    .header("content-type", "text/html")
+                    .body(endless.buffer().asResponseBody("text/html".toMediaType()))
+                    .build()
+            }
+        val sealed = SealedTransport(base, transportKey, net.client)
+        val error = assertRefuses("HTTP 502") { get(sealed.client, "/admin-api/health") }
+        assertEquals(502, (error as SealedTransportException).status)
+        assertTrue("read $pulled bytes", pulled < 1024L * 1024)
+    }
+
+    @Test
     fun `does not try another handshake path on any refusal`() {
         val refusals =
             listOf(

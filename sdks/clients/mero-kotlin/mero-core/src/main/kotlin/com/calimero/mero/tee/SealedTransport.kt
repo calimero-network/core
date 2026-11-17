@@ -85,6 +85,9 @@ private const val FRAME_END = 2
  */
 private const val MAX_FRAME_LEN = 1 + 64 * 1024 + 16
 
+/** Far more than the node's JSON refusal of an envelope ever is. */
+private const val MAX_REFUSAL_BYTES = 64L * 1024
+
 /** Far more than a handshake reply (69 bytes) ever is. */
 private const val MAX_HANDSHAKE_REPLY = 1024L
 
@@ -472,7 +475,11 @@ internal fun openResponse(
                 response.close()
                 throw SealedTransportException("The sealed response is malformed")
             }
-    val status = (head["status"] as? JsonPrimitive)?.intOrNull ?: throw SealedTransportException("The sealed response is malformed")
+    val status =
+        (head["status"] as? JsonPrimitive)?.intOrNull ?: run {
+            response.close()
+            throw SealedTransportException("The sealed response is malformed")
+        }
     val headers = Headers.Builder()
     (head["headers"] as? JsonArray)?.forEach { pair ->
         val p = pair as? JsonArray ?: return@forEach
@@ -583,7 +590,11 @@ private fun envelopeRefusal(response: Response): IOException =
         var code: String? = null
         var message = "Sealed request refused: HTTP ${response.code}"
         runCatching {
-            val error = (sealedJson.parseToJsonElement(response.body?.string().orEmpty()) as JsonObject)["error"] as? JsonObject
+            // Unauthenticated, and from whatever proxy sits in front of the node: read no more than
+            // a refusal ever is, so it cannot make the client buffer an unbounded body.
+            val source = response.body?.source()
+            val text = source?.let { if (it.request(MAX_REFUSAL_BYTES + 1)) null else it.readUtf8() }.orEmpty()
+            val error = (sealedJson.parseToJsonElement(text) as JsonObject)["error"] as? JsonObject
             code = error.string("code")
             error.string("message")?.let { message = "Sealed request refused: $it" }
         }
