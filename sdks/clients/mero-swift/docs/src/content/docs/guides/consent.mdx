@@ -15,7 +15,8 @@ the node's own consent page, with their passkey.
 | `client.requestConsent(_ request:)` → `ConsentStarted` | `POST /consent/requests` (sealed): `{ requestId, url, code, expiresAt }`. Refuses a `code` that is not the page's (`CONSENT_CODE_MISMATCH`). |
 | `client.consentResult(_ requestId:)` → `ConsentResult` | `GET /consent/{id}/result` (sealed, the same account): the decision now, with its typed `outcome` |
 | `client.confirmConsentReturn(_ started:, returned:)` → `ConsentResult` | after the page sent the person back: the result of the request the app started, or an error (below) |
-| `client.openConsentPage(_:options:)`, `client.waitForConsent(_:)` | ask and navigate; poll until decided |
+| `client.openConsentPage(_:options:)`, `client.waitForConsent(_:)` | ask and navigate (keeping the request's id in the client's `consentStore`); poll until decided |
+| `client.resumeConsent(_ returned:, requestId:)` → `ConsentResult?` | after the page sent the person back, in a later launch too: the result of the request `openConsentPage` stored |
 | `ConsentLauncher.decide(client:request:callback:…)` (MeroKitUI) | all of the above, with the page in `ASWebAuthenticationSession` (or the browser) |
 
 ## What to ask, and what comes back
@@ -74,6 +75,15 @@ of the request this app started and:
   request: an account has one undecided consent request per node, and a newer
   one replaced it (possibly on a forged page). Ask again;
 - otherwise answers the decision (`approved` or `declined`) and its outcome.
+
+`resumeConsent(url)` does the same for the request `openConsentPage` started,
+whose id it kept in the client's `consentStore` (the app's user defaults by
+default; `MemoryConsentRequestStore` or your own `ConsentRequestStore`
+otherwise), so a return that reaches the app after it was relaunched still
+finds its request. It answers `nil` for a URL with no `request_id`, throws
+`CONSENT_NOT_STARTED` when the app started no request, and forgets the stored
+id once the request is decided or replaced. `withoutConsentReturn(url)` is the
+URL without the parameters the page added.
 
 ## In the app
 

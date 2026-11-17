@@ -38,7 +38,7 @@ module or product: that breaks every app that imports it.
 - `Tests/`: `MeroKitTests` (unit and journey), `MeroKitUITests`, `MeroKitE2ETests` (need a node; skipped without `MERO_E2E_NODE_URL`).
 - `examples/MeroSampleApp/`: the sample app (XcodeGen `project.yml`; the `.xcodeproj` is generated, not committed).
 - `openapi/`: the generator's configuration (`openapi-generator-config.yaml`) and version (`generator`).
-- `scripts/`: the generator, and `dev-cluster.sh` (a `merod local` cluster on a Mac, at `ci/core-version`).
+- `scripts/`: the generator, `refresh-receipt-vectors.sh`, and `dev-cluster.sh` (a `merod local` cluster on a Mac, at `ci/core-version`).
 - `docs/`: the Starlight docs site (npm). Its old build and deploy workflows were not ported to core.
 - `CHANGELOG.md`: the history from when this was its own repository. New entries go in core's release notes.
 
@@ -77,6 +77,11 @@ checked in. They are `sdk.json`'s `generated`. Never hand-edit them.
   swift-openapi-generator (`openapi/generator`'s version) into
   `.build/openapi-generator`, which needs network once.
 - `scripts/generate-openapi.sh check` fails when the checked-in output is stale.
+- `Tests/MeroKitTests/Fixtures/receipts/receipt-vectors.json` is generated
+  too: `scripts/refresh-receipt-vectors.sh` (part of `generate`) copies core's
+  `crates/client/tests/fixtures/receipt-vectors.json`, which `ReceiptTests`
+  checks receipt verification against; `refresh-receipt-vectors.sh check`
+  fails when the copy differs. Never edit the copy.
 - A wrong route or type is fixed in core's server (and so its document),
   `scripts/openapi-normalize.py`, `scripts/generate-facade.py` or
   `openapi/openapi-generator-config.yaml`, never in the output.
@@ -85,8 +90,9 @@ checked in. They are `sdk.json`'s `generated`. Never hand-edit them.
 
 This directory must build on its own, because the mirror is this directory
 alone: nothing here may reference a file outside it. The one exception is
-the generator's input, core's OpenAPI document; the mirror carries the
-generated output instead, so building there never needs it.
+the generators' inputs, core's OpenAPI document and receipt vectors; the
+mirror carries the generated output instead, so building there never needs
+them.
 
 ## Version
 

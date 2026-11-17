@@ -102,3 +102,18 @@ the JavaScript one:
   the Intel-signed collateral for it, valid on 2025-06-27.
 - `rust-sealed-bundle.json`: an HPKE bundle mero-agent-gate (Rust, the `hpke`
   crate) sealed.
+
+## Sealed-file vectors (`sealed-file/`)
+
+`sealed-file-vectors.json` and `sealed-file-multi-segment-vectors.json` are
+mero-js's `src/sealed/fixtures/sealed-file-vectors.ts` and
+`sealed-file-multi-segment-vectors.ts` as JSON, unchanged: golden vectors core's
+Rust reference (`crates/sealed`: `SegmentWriter`, `file_id`, `wrap_export`)
+printed. `SealedFileTests` and `ExportFileTests` check MeroKit against them byte
+for byte, as mero-js's tests do.
+
+## Receipt vectors (`receipts/`)
+
+`receipt-vectors.json` is core's `crates/client/tests/fixtures/receipt-vectors.json`,
+copied by `scripts/refresh-receipt-vectors.sh` (sdk.json's `generate`). Never
+edit it here; `ReceiptTests` runs over it.
