@@ -209,6 +209,10 @@ pub const MAX_USES: usize = 16;
 pub const MAX_USE_NAME_BYTES: usize = 32;
 /// Most bytes of a reference's package or range.
 pub const MAX_USE_FIELD_BYTES: usize = 128;
+/// Most methods of one referenced app a release calls as the person its run serves.
+pub const MAX_USE_METHODS: usize = 64;
+/// Most bytes of one of those methods' names.
+pub const MAX_USE_METHOD_BYTES: usize = 64;
 
 /// How a release holds an app it references (`BundleManifest::uses`).
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -239,6 +243,24 @@ pub struct BundleUse {
     /// That release's ABI, as the app vendored it: `sha256:<64 hex>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub abi: Option<String>,
+    /// The referenced app's methods this release calls as the person its run serves, once
+    /// that person grants it (`SystemCmd::SetDelegation`): the referenced app then sees the
+    /// person as its caller. Empty: the release calls it as itself only. Shown on the
+    /// release's card and on the grant's consent, so the person sees what they allow.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
+}
+
+/// Whether `name` may name a method a release calls as the person: an ABI method name
+/// (`A-Za-z0-9_`, not starting with a digit, at most [`MAX_USE_METHOD_BYTES`]), never one of
+/// the node's own (`__`).
+#[must_use]
+pub fn is_use_method(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_USE_METHOD_BYTES
+        && !name.starts_with("__")
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Whether `name` may name a reference: `a-z`, `0-9` and `_`, starting with a letter, at
@@ -274,6 +296,8 @@ pub enum UsesError {
     },
     #[error("reference {0}'s abi must be sha256: and 64 lowercase hex digits")]
     BadAbi(String),
+    #[error("reference {0}'s methods must be at most {MAX_USE_METHODS} distinct method names, none starting with __")]
+    BadMethods(String),
 }
 
 impl UsesError {
@@ -382,6 +406,13 @@ impl BundleManifest {
                 if hex.len() != 64 || !hex.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
                     return Err(UsesError::BadAbi(name.clone()));
                 }
+            }
+            let distinct: std::collections::BTreeSet<&String> = u.methods.iter().collect();
+            if u.methods.len() > MAX_USE_METHODS
+                || distinct.len() != u.methods.len()
+                || !u.methods.iter().all(|m| is_use_method(m))
+            {
+                return Err(UsesError::BadMethods(name.clone()));
             }
         }
         Ok(())
@@ -966,6 +997,30 @@ mod tests {
             err(kv(serde_json::json!({ "package": "com.example.notes" }))),
             UsesError::SelfReference(_)
         ));
+        // The methods it calls as the person: method names, distinct, none of the node's.
+        let calls = with_uses(serde_json::json!({
+            "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1",
+                    "methods": ["get", "set_if", "listEvents"] },
+        }));
+        assert_eq!(calls.check_uses(), Ok(()));
+        assert_eq!(calls.uses.as_ref().unwrap()["kv"].methods.len(), 3);
+        for methods in [
+            serde_json::json!(["__secret_set"]),
+            serde_json::json!(["get", "get"]),
+            serde_json::json!(["9lives"]),
+            serde_json::json!(["has space"]),
+        ] {
+            assert!(
+                matches!(
+                    err(kv(serde_json::json!({ "methods": methods }))),
+                    UsesError::BadMethods(_)
+                ),
+                "{methods}"
+            );
+        }
+        assert!(serde_json::to_value(&ok).unwrap()["uses"]["kv"]
+            .get("methods")
+            .is_none());
         assert!(matches!(
             err(kv(serde_json::json!({ "package": "" }))),
             UsesError::BadPackage(_)

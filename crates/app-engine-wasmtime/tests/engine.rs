@@ -1360,6 +1360,29 @@ fn a_compute_run_of_the_fixture_writes_its_input_xor_the_seeded_stream() {
     assert_eq!(a.result, format!("[\"{hash}\"]").into_bytes());
 }
 
+/// A compute component built before the newest `calimero:app` patch names the compute
+/// world at that older patch; a job node after the upgrade still runs it.
+#[test]
+fn a_compute_abi_naming_an_older_patch_still_prepares() {
+    let older = serde_json::json!({
+        "abiVersion": 1,
+        "world": "calimero:app/compute@0.5.1",
+        "methods": {},
+    });
+    let job = calimero_app_build::with_abi(&guest("compute_probe"), &older).expect("patch");
+    if let Err(err) = compute_engine().prepare("older-job-hash", &job) {
+        panic!("a compute component naming calimero:app/compute@0.5.1: {err:?}");
+    }
+
+    let app = calimero_app_build::with_abi(&guest("probe"), &older).expect("patch");
+    let err = fixture()
+        .engine
+        .prepare("older-app-hash", &app)
+        .err()
+        .expect("an app component whose ABI names an older compute world");
+    assert!(matches!(err, PrepareError::BadAbi(_)), "{err:?}");
+}
+
 #[test]
 fn each_engine_refuses_an_abi_of_the_other_world() {
     let plain = serde_json::json!({
@@ -1368,7 +1391,7 @@ fn each_engine_refuses_an_abi_of_the_other_world() {
     });
     let compute_abi = serde_json::json!({
         "abiVersion": 1,
-        "world": "calimero:app/compute@0.5.1",
+        "world": "calimero:app/compute@0.5.2",
         "methods": {},
     });
     let job = calimero_app_build::with_abi(&guest("compute_probe"), &plain).expect("patch");

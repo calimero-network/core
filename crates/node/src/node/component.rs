@@ -879,6 +879,10 @@ impl Node {
                 timeout: CALL_FETCH_TIMEOUT,
             })
         });
+        // Whom this run serves, for the apps it calls (each call runs as them only with
+        // their grant, `Node::caller_for`): its own caller when that is a person.
+        let forward = forwarded(&invocation.caller);
+        let via = extras.via.clone();
         let xcalls = extras.key.and_then(|key| {
             let node = self.this.lock().ok()?.upgrade()?;
             let handle = tokio::runtime::Handle::try_current().ok()?;
@@ -888,6 +892,7 @@ impl Node {
                 key,
                 handle,
                 read_only: extras.read_only,
+                person: forward.clone(),
             }) as Arc<dyn calimero_app_host::XcallHost>)
         });
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
@@ -904,7 +909,9 @@ impl Node {
         let owner = self
             .sys(|s| s.apps.get(app_id).map(|a| a.owner.clone()))
             .unwrap_or_default();
-        match HostCore::new(app_id, state, applied, invocation, directory) {
+        match HostCore::new(app_id, state, applied, invocation, directory)
+            .and_then(|host| host.with_via(via))
+        {
             Ok(host) => {
                 let host = host.with_blobs(blobs).with_files(files.clone());
                 let host = match extras.runs {
@@ -941,6 +948,13 @@ impl Node {
                 let mut outcome = Outcome::from_host(out);
                 if !outcome.compute_starts.is_empty() {
                     outcome.name_owner(&owner);
+                }
+                // An outbox row is replicated state: it names the person only once every
+                // replica keeps the field alike (`Feature::Delegation` logged).
+                if self.carries_person() {
+                    for x in &mut outcome.xcalls {
+                        x.on_behalf_of.clone_from(&forward);
+                    }
                 }
                 Ran {
                     outcome,
@@ -1427,6 +1441,7 @@ impl Node {
                         runs: Some(m.runs_provider(None)),
                         compute_component: m.state.component.head.compute_bundle.is_some(),
                         read_only: false,
+                        via: None,
                         secrets: m.instance_secrets(),
                     },
                 );
@@ -1675,6 +1690,7 @@ impl Node {
                             read_only,
                             runs: Some(m.runs_provider(None)),
                             compute_component: m.state.component.head.compute_bundle.is_some(),
+                            via: req.via.clone(),
                             secrets: m.instance_secrets(),
                         },
                     );
@@ -2153,6 +2169,7 @@ impl Node {
             },
         );
         let meter = self.meter(&req.app_id, &bundle);
+        let via = req.via.clone();
         // A view may run up to its deadline: off the async workers.
         let (out, run) = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
@@ -2168,6 +2185,7 @@ impl Node {
                         runs: None,
                         compute_component: false,
                         read_only: false,
+                        via,
                         secrets: crate::component::InstanceSecrets::new(),
                     },
                     search,
@@ -2378,6 +2396,8 @@ impl Node {
             key: format!("action:{}", record.id),
             handle: tokio::runtime::Handle::current(),
             read_only: false,
+            // An action serves no one when it runs (D12): its calls name no person.
+            person: None,
         });
         let meter = self.meter(app_id, &prepared.hash);
         // An action runs outside the machine's lock: the instance's own secrets as applied here.
@@ -2548,6 +2568,14 @@ impl Node {
         if target.executor != Executor::Component {
             return Ok(Some("the target app is not a component".into()));
         }
+        // As the person the sending run served, where they granted the source this method
+        // of the target, judged now (a grant taken back since stops it); else as the app.
+        let (caller, via) = self.caller_for(
+            source,
+            &target.app_id,
+            &msg.method,
+            msg.on_behalf_of.as_ref(),
+        );
         let req = CallRequest {
             idempotency_key: Some(format!(
                 "{}xcall-{source}-{}",
@@ -2558,13 +2586,12 @@ impl Node {
                 source: source.to_owned(),
                 seq: msg.seq,
             }),
+            via,
             ..CallRequest::new(
                 target.app_id.clone(),
                 msg.method.clone(),
                 msg.args.clone(),
-                Caller::App {
-                    app: source.to_owned(),
-                },
+                caller,
             )
         };
         match self.call_component(&req).await {
@@ -2787,6 +2814,7 @@ impl calimero_app_host::ActionHost for NodeAction {
             caller: self.caller.clone(),
             strong: true,
             min_index: 0,
+            via: None,
         };
         let node = Arc::clone(&self.node);
         match self.wait(async move { node.view(&req).await }) {
@@ -2819,6 +2847,79 @@ impl calimero_app_host::ActionHost for NodeAction {
     }
 }
 
+/// The person a run's calls to other apps may run as (`Node::as_person`, with their grant):
+/// its own caller when that is an account or an API key, and none for anyone else. A run
+/// another app called passes no one on: only a person's own grant lets an app act as them.
+fn forwarded(caller: &calimero_app_host::Caller) -> Option<Caller> {
+    use calimero_app_host::Caller as H;
+    match caller {
+        H::Account(account) => Some(Caller::Account {
+            account: account.clone(),
+        }),
+        H::ApiKey { key_id, account } => Some(Caller::ApiKey {
+            key: key_id.clone(),
+            account: account.clone(),
+        }),
+        H::App(_) | H::Public | H::System => None,
+    }
+}
+
+impl Node {
+    /// Whether a message's outbox row names the person its run served: from the logged
+    /// cluster version that brings `Feature::Delegation` on, so every replica applies the
+    /// row alike. Judged on the logged version alone (no round to the nodes).
+    fn carries_person(&self) -> bool {
+        self.sys(|s| {
+            crate::system::cluster_version::check(
+                s.cluster_version.as_deref(),
+                &[crate::system::cluster_version::Feature::Delegation],
+            )
+            .is_ok()
+        })
+    }
+
+    /// Whom `source`'s call of `method` on `target` runs as: `person` (and `via` = `source`)
+    /// where they granted `source` that method of `target` (`SystemState::delegates`) and
+    /// still reach `target`; else `source` itself, with no person named. A grant exists only
+    /// once every node runs a release that carries it (`Feature::Delegation`), so no older
+    /// node drops the person on the way. A method that needs the person's passkey confirmation
+    /// is refused at the target (`ConfirmRequired`), as for any call without one.
+    fn caller_for(
+        &self,
+        source: &str,
+        target: &str,
+        method: &str,
+        person: Option<&Caller>,
+    ) -> (Caller, Option<String>) {
+        let as_app = || {
+            (
+                Caller::App {
+                    app: source.to_owned(),
+                },
+                None,
+            )
+        };
+        let Some(person) = person.filter(|p| p.is_person()) else {
+            return as_app();
+        };
+        let account = match person {
+            Caller::Account { account } | Caller::ApiKey { account, .. } => account.clone(),
+            _ => return as_app(),
+        };
+        let granted = self.sys(|s| {
+            s.delegates(&account, source, target, method)
+                && s.apps
+                    .get(target)
+                    .is_some_and(|t| s.may_reach(t, Some(&account)))
+        });
+        if granted {
+            (person.clone(), Some(source.to_owned()))
+        } else {
+            as_app()
+        }
+    }
+}
+
 /// What a component run reaches besides its own state, by the kind of run.
 #[derive(Clone, Default)]
 struct RunExtras {
@@ -2835,6 +2936,9 @@ struct RunExtras {
     /// A read-only member's call: its synchronous xcalls may view, not call, since a
     /// call commits on the target before this run's outcome is judged.
     read_only: bool,
+    /// The app a person's call came through, for a call another app made as them
+    /// (`CallRequest::via`): `env::via()` here.
+    via: Option<String>,
     /// The instance's own secret values (`AppMachine::instance_secrets`), read with the
     /// state the run sees, for the outbound gate.
     secrets: crate::component::InstanceSecrets,
@@ -2889,6 +2993,9 @@ struct NodeXcall {
     handle: tokio::runtime::Handle,
     /// A read-only member's run: views only.
     read_only: bool,
+    /// The person the run serves: a call or view runs as them where they granted the source
+    /// that method of the target (`Node::as_person`).
+    person: Option<Caller>,
 }
 
 /// The node's refusal of a synchronous xcall, for the guest: the target's ABI refusal as
@@ -2958,17 +3065,14 @@ impl calimero_app_host::XcallHost for NodeXcall {
         }
         let target = self.target(app)?;
         let args = parse_args(args).map_err(|e| xcall_failure(&e))?;
+        let (caller, via) =
+            self.node
+                .caller_for(&self.source, &target, method, self.person.as_ref());
         let req = CallRequest {
             idempotency_key: Some(key.to_owned()),
             sync_from: Some(self.source.clone()),
-            ..CallRequest::new(
-                target,
-                method.to_owned(),
-                args,
-                Caller::App {
-                    app: self.source.clone(),
-                },
-            )
+            via,
+            ..CallRequest::new(target, method.to_owned(), args, caller)
         };
         let node = Arc::clone(&self.node);
         match self.wait(async move { node.call_component(&req).await })? {
@@ -2982,15 +3086,17 @@ impl calimero_app_host::XcallHost for NodeXcall {
     fn view(&self, app: &str, method: &str, args: &[u8]) -> Result<Vec<u8>, String> {
         let target = self.target(app)?;
         let args = parse_args(args).map_err(|e| xcall_failure(&e))?;
+        let (caller, via) =
+            self.node
+                .caller_for(&self.source, &target, method, self.person.as_ref());
         let req = ViewRequest {
             app_id: target,
             method: method.to_owned(),
             args,
-            caller: Caller::App {
-                app: self.source.clone(),
-            },
+            caller,
             strong: true,
             min_index: 0,
+            via,
         };
         let node = Arc::clone(&self.node);
         match self.wait(async move { node.view(&req).await })? {
@@ -3103,6 +3209,7 @@ mod tests {
                 app: "other".into(),
                 method: "set".into(),
                 args: Value::Null,
+                on_behalf_of: None,
             }],
             ..Outcome::default()
         };

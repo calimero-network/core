@@ -58,6 +58,13 @@ impl Caller {
         out
     }
 
+    /// Whether the caller is a person: a signed-in account, or an API key acting for one.
+    /// Only a person is carried to another app as the one a run serves (`on_behalf_of`).
+    #[must_use]
+    pub const fn is_person(&self) -> bool {
+        matches!(self, Self::Account { .. } | Self::ApiKey { .. })
+    }
+
     /// The caller as the component host core sees it (the WIT `caller`, D13).
     #[must_use]
     pub fn to_host(&self) -> calimero_app_host::Caller {

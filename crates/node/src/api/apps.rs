@@ -990,6 +990,154 @@ async fn app_usage(
 }
 
 /// This area's routes, merged into [`super::router`].
+/// The methods of `target` that the release `source` runs lists for its package in its
+/// signed `uses` (`BundleUse::methods`): what a person is asked to let it call as them.
+async fn delegable_methods(
+    node: &Node,
+    source: &crate::types::AppRecord,
+    target: &crate::types::AppRecord,
+) -> Result<Vec<String>, ApiError> {
+    let (Some(from), Some(to)) = (node.release_of_app(source), node.release_of_app(target)) else {
+        return Ok(Vec::new());
+    };
+    let card = crate::consent_page::release_capabilities(
+        node,
+        &from.at.package,
+        &from.version,
+        from.at.service.as_deref(),
+    )
+    .await?;
+    let uses: BTreeMap<String, calimero_bundle::BundleUse> =
+        serde_json::from_value(card["uses"].clone()).unwrap_or_default();
+    let mut methods: Vec<String> = uses
+        .into_values()
+        .filter(|u| u.package == to.at.package)
+        .flat_map(|u| u.methods)
+        .collect();
+    methods.sort();
+    methods.dedup();
+    Ok(methods)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DelegateBody {
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Let `source`'s runs for the caller call `target` as them (`SystemCmd::SetDelegation`):
+/// the methods the release `source` runs lists for `target`'s package in its `uses`, with
+/// the caller's passkey over exactly those (412 first). The caller must reach both apps,
+/// which are in one organization. From then on `target` sees the caller, not `source`, as
+/// the caller of those methods when `source` calls them for this person, and reads
+/// `env::via()` to know it came through `source`. `409 NOTHING_TO_DELEGATE` when the release
+/// lists none.
+async fn app_delegate(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((source_id, target_id)): Path<(String, String)>,
+    Json(body): Json<DelegateBody>,
+) -> ApiResult {
+    let source_id = node.canonical_app_id(&source_id);
+    let target_id = node.canonical_app_id(&target_id);
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    let source = node.app(&source_id).await?;
+    p.within(&node, &source)?;
+    let target = node.app(&target_id).await?;
+    let reaches =
+        node.sys(|s| s.may_reach(&source, Some(&account)) && s.may_reach(&target, Some(&account)));
+    if !reaches || source_id == target_id || source.org != target.org {
+        return Err(ApiError::new(
+            404,
+            "NOT_FOUND",
+            "no such pair of apps of one organization that you reach",
+        ));
+    }
+    let methods = delegable_methods(&node, &source, &target).await?;
+    if methods.is_empty() {
+        return Err(ApiError::new(
+            409,
+            "NOTHING_TO_DELEGATE",
+            &format!("the release {source_id} runs lists no method of {target_id}'s package to call as you"),
+        ));
+    }
+    node.require_features(&[Feature::Delegation]).await?;
+    let args = crate::system::delegation_args(&target_id, &methods);
+    let consent = consent(&node, &p, &source_id, "__delegate", &args, body.confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetDelegation {
+            account,
+            source: source_id.clone(),
+            target: target_id.clone(),
+            methods: Some(methods.clone()),
+            consent,
+        })
+        .await?;
+    Ok(Json(
+        json!({ "source": source_id, "target": target_id, "methods": methods }),
+    ))
+}
+
+/// Take back what the caller let `source` do on `target` as them: no passkey, as it only
+/// narrows. `404` when they granted nothing there.
+async fn app_undelegate(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((source_id, target_id)): Path<(String, String)>,
+) -> ApiResult {
+    let source_id = node.canonical_app_id(&source_id);
+    let target_id = node.canonical_app_id(&target_id);
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    let granted = node.sys(|s| {
+        s.delegations
+            .get(&account)
+            .and_then(|g| g.get(&source_id))
+            .is_some_and(|t| t.contains_key(&target_id))
+    });
+    if !granted {
+        return Err(ApiError::new(
+            404,
+            "NOT_DELEGATED",
+            &format!("you let {source_id} do nothing on {target_id} as you"),
+        ));
+    }
+    node.require_features(&[Feature::Delegation]).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetDelegation {
+            account,
+            source: source_id,
+            target: target_id,
+            methods: None,
+            consent: Value::Null,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// What the caller lets `source` do as them: `{ source, delegations: { target: [method] } }`.
+async fn app_delegations(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(source_id): Path<String>,
+) -> ApiResult {
+    let source_id = node.canonical_app_id(&source_id);
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    let source = node.app(&source_id).await?;
+    p.within(&node, &source)?;
+    let granted = node.sys(|s| {
+        s.delegations
+            .get(&account)
+            .and_then(|g| g.get(&source_id))
+            .cloned()
+            .unwrap_or_default()
+    });
+    Ok(Json(json!({ "source": source_id, "delegations": granted })))
+}
+
 /// Most bytes of an instance's own secret value.
 pub(crate) const MAX_SECRET_VALUE_BYTES: usize = 4096;
 
@@ -1052,6 +1200,7 @@ async fn app_secrets(
             caller: p.caller,
             strong: true,
             min_index: 0,
+            via: None,
         })
         .await?
         .result;
@@ -1182,6 +1331,11 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/access", post(app_access))
         .route("/apps/{app}/transfer", post(app_transfer))
         .route("/apps/{app}/move", post(app_move))
+        .route("/apps/{app}/delegations", get(app_delegations))
+        .route(
+            "/apps/{app}/delegations/{target}",
+            put(app_delegate).delete(app_undelegate),
+        )
         .route("/apps/{app}/xcalls", get(app_xcalls))
         .route("/apps/{app}/secrets", get(app_secrets))
         .route(

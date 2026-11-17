@@ -164,6 +164,20 @@ pub(super) fn authorize(
             proofs.states(&st, app_id, "__move", &|a| *a == args)?;
             Ok(Some(used))
         }
+        SystemCmd::SetDelegation {
+            account,
+            source,
+            target,
+            methods: Some(methods),
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(account, consent)?)?;
+            let args = delegation_args(target, methods);
+            proofs.states(&st, source, "__delegate", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        // Taking a grant back narrows what an app may do as the person: no consent.
+        SystemCmd::SetDelegation { methods: None, .. } => Ok(None),
         SystemCmd::SetReplicas {
             app_id,
             replicas,
@@ -687,6 +701,52 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
             app.access = access;
+            Ok(Value::Null)
+        }
+        SystemCmd::SetDelegation {
+            account,
+            source,
+            target,
+            methods,
+            ..
+        } => {
+            let Some(methods) = methods else {
+                if let Some(sources) = s.delegations.get_mut(&account) {
+                    if let Some(targets) = sources.get_mut(&source) {
+                        let _was = targets.remove(&target);
+                        if targets.is_empty() {
+                            let _gone = sources.remove(&source);
+                        }
+                    }
+                    if sources.is_empty() {
+                        let _gone = s.delegations.remove(&account);
+                    }
+                }
+                return Ok(Value::Null);
+            };
+            let from = s.apps.get(&source).ok_or("no such app")?;
+            let to = s.apps.get(&target).ok_or("no such app to delegate to")?;
+            if source == target {
+                return Err("an app is not delegated to itself");
+            }
+            if !s.may_reach(from, Some(&account)) || !s.may_reach(to, Some(&account)) {
+                return Err("only who reaches both apps lets one act on the other as them");
+            }
+            let distinct: BTreeSet<&String> = methods.iter().collect();
+            if methods.is_empty()
+                || methods.len() > calimero_bundle::MAX_USE_METHODS
+                || distinct.len() != methods.len()
+                || !methods.iter().all(|m| calimero_bundle::is_use_method(m))
+            {
+                return Err("not a list of methods to delegate");
+            }
+            let _was = s
+                .delegations
+                .entry(account)
+                .or_default()
+                .entry(source)
+                .or_default()
+                .insert(target, methods);
             Ok(Value::Null)
         }
         SystemCmd::SetAppMetadata {

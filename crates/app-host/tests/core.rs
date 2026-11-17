@@ -520,7 +520,7 @@ fn context_comes_from_the_invocation_and_directory() {
 fn abi_reads_method_attributes() {
     let abi = Abi::from_json(&json!({
         "abiVersion": 1,
-        "world": "calimero:app@0.5.1",
+        "world": "calimero:app@0.5.2",
         "methods": {
             "init": { "kind": "init", "params": [], "returns": null },
             "book": { "kind": "call", "params": [["roomId", "string"]], "returns": "string" },
@@ -1645,4 +1645,44 @@ fn synchronous_xcalls_are_keyed_bounded_and_one_hop_deep() {
         core_for(&state, &inv(InvocationKind::Call)).xcall_call("captcha", "verify", b"{}"),
         Ok(Err(XCALL_SYNC_UNAVAILABLE.to_owned()))
     );
+}
+
+/// `context.via`: only a person's call another app delivered (a delivery or a view whose
+/// caller is an account or an API key) names the app it came through; anything else is the
+/// node's mistake and refused before the run.
+#[test]
+fn only_a_persons_delivered_call_names_the_app_it_came_through() {
+    let person = Caller::Account("bob".into());
+    let key = Caller::ApiKey {
+        key_id: "k1".into(),
+        account: "bob".into(),
+    };
+    let state = BTreeMap::new();
+    for kind in [InvocationKind::XcallDeliver, InvocationKind::View] {
+        for caller in [person.clone(), key.clone()] {
+            let mut i = inv(kind);
+            i.caller = caller;
+            let core = core_for(&state, &i)
+                .with_via(Some("source".into()))
+                .unwrap();
+            assert_eq!(core.via(), Some("source"));
+            assert_eq!(core_for(&state, &i).via(), None);
+            let refused = core_for(&state, &i).with_via(Some(String::new()));
+            assert_eq!(refused.err(), Some(InvalidInvocation::ViaOutsideXcall));
+        }
+        for not_a_person in [Caller::App("other".into()), Caller::System, Caller::Public] {
+            let mut i = inv(kind);
+            i.caller = not_a_person;
+            let refused = core_for(&state, &i).with_via(Some("source".into()));
+            assert_eq!(refused.err(), Some(InvalidInvocation::ViaOutsideXcall));
+        }
+    }
+    // A person's own call, a timer and an action came through no app.
+    let mut call = inv(InvocationKind::Call);
+    call.caller = Caller::Account("alice".into());
+    for i in [call, inv(InvocationKind::Action)] {
+        let refused = core_for(&state, &i).with_via(Some("source".into()));
+        assert_eq!(refused.err(), Some(InvalidInvocation::ViaOutsideXcall));
+        assert!(core_for(&state, &i).with_via(None).is_ok());
+    }
 }

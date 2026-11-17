@@ -111,10 +111,15 @@ pub enum Feature {
     /// `CreateApp` naming the apps its release created with it (`AppRecord::links`): an
     /// earlier release drops them, so its replicas would list the instance without its unit.
     AppLinks,
+    /// `SetDelegation`, a person letting an app call another as them
+    /// (`SystemState::delegations`): an earlier release cannot decode it, so its replicas
+    /// would hold no grant and deliver the same call as the app on one leader and as the
+    /// person on another.
+    Delegation,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 28] = [
+pub const FEATURES: [Feature; 29] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -143,6 +148,7 @@ pub const FEATURES: [Feature; 28] = [
     Feature::DeclaredSecrets,
     Feature::AppLinks,
     Feature::UnitUpgrade,
+    Feature::Delegation,
 ];
 
 impl Feature {
@@ -178,6 +184,7 @@ impl Feature {
             Self::DeclaredSecrets => "declaredSecrets",
             Self::AppLinks => "appLinks",
             Self::UnitUpgrade => "unitUpgrade",
+            Self::Delegation => "delegation",
         }
     }
 
@@ -208,7 +215,9 @@ impl Feature {
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
             Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
-            Self::DeclaredSecrets | Self::AppLinks | Self::UnitUpgrade => "1.0.0-rc.31",
+            Self::DeclaredSecrets | Self::AppLinks | Self::UnitUpgrade | Self::Delegation => {
+                "1.0.0-rc.31"
+            }
         }
     }
 }
@@ -418,6 +427,7 @@ impl SystemCmd {
                 f
             }
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
+            Self::SetDelegation { .. } => vec![Feature::Delegation],
             Self::SetPools { .. } => vec![Feature::ComputePools],
             Self::ScopeApps {
                 apps, by_release, ..
@@ -638,6 +648,8 @@ mod tests {
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
         match feature {
+            Feature::Delegation => entry(json!({ "op": "setDelegation", "account": "a",
+                "source": "app", "target": "kv-app", "methods": ["get"] })),
             Feature::InviteCapabilities => SystemCmd::CreateInvite {
                 invite_key: "k".into(),
                 invite: serde_json::from_value(json!({

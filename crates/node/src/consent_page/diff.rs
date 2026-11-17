@@ -133,7 +133,7 @@ fn secrets(from: &BundleManifest, to: &BundleManifest) -> Value {
 }
 
 /// The apps each side references: `{ added, removed, kept }` by name, `changed` (a kept name
-/// whose package, range or mode differs, with both sides), and `createdAdded`, the added
+/// whose package, range, mode or methods called as the person differ, with both sides), and `createdAdded`, the added
 /// names the upgrade would create with the app (`create`), which the person approves with it.
 fn uses(from: &BundleManifest, to: &BundleManifest) -> Value {
     let empty = std::collections::BTreeMap::new();
@@ -149,7 +149,10 @@ fn uses(from: &BundleManifest, to: &BundleManifest) -> Value {
         .iter()
         .filter_map(|(name, u)| {
             let t = b.get(name)?;
-            (t.package != u.package || t.range != u.range || t.mode != u.mode)
+            (t.package != u.package
+                || t.range != u.range
+                || t.mode != u.mode
+                || t.methods != u.methods)
                 .then(|| json!({ "name": name, "from": u, "to": t }))
         })
         .collect();
@@ -489,7 +492,7 @@ mod tests {
                 "sweep": { "kind": "timer", "every": "1h", "allowSystem": true },
             },
             "events": { "Changed": { "id": "string" }, "Wiped": null },
-            "world": "calimero:app@0.5.1",
+            "world": "calimero:app@0.5.2",
         });
         let sheet = capability_sheet(
             &side("1.0.0", &from, Some(&a)),

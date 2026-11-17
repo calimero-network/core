@@ -12,6 +12,10 @@ pub fn caller() -> Caller {
     denied()
 }
 
+pub fn via() -> Option<String> {
+    denied()
+}
+
 pub fn app_id() -> String {
     denied()
 }

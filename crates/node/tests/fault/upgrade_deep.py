@@ -80,6 +80,11 @@ NOT_COVERED = [
      "`links` is written only once every node runs this release (`Feature::AppLinks`); "
      "`creating_an_instance_creates_the_apps_its_release_uses` (`component_cluster.rs`) covers it on one "
      "build, and a record without it reads as before (`serde(default)`)"),
+    ("Apps", "A person's grant letting an app call another as them (`SetDelegation`, `env::via`)",
+     "the deep fixtures are packed by the old release's meroctl, which writes no `uses` with `methods`, and a "
+     "grant is written only once every node runs this release (`Feature::Delegation`); "
+     "`an_app_calls_another_as_the_person_only_with_their_grant` (`component_cluster.rs`) covers message, call "
+     "and view on one build, and state without grants reads as before (`serde(default)`)"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "

@@ -171,6 +171,8 @@ pub struct TestApp {
     outbox: Vec<SentXcall>,
     /// Actions logged runs started, with their caller (D17), not run yet.
     started: Vec<(HostCaller, ActionStart)>,
+    /// The person the run being finished passes on to the xcalls it sends.
+    forwarding: Option<HostCaller>,
     next_action: u64,
     http: BTreeMap<String, HttpHandler>,
     /// `mock_app`'s handlers: the other apps synchronous xcalls reach.
@@ -195,10 +197,37 @@ pub struct OtherAppCall {
     pub args: Value,
     /// The key a node would log the call under (`xc:..`); empty for a view.
     pub key: String,
+    /// The person the calling run serves (its own account or API key): a node runs the call
+    /// as them, `env::via()` naming the calling app, when they granted the calling app this
+    /// method of the target; else as the calling app.
+    pub on_behalf_of: Option<crate::env::Caller>,
 }
 
-/// `mock_app`'s handlers, by app.
-struct HarnessApps(BTreeMap<String, AppHandler>);
+/// `mock_app`'s handlers, by app, and the person the run that calls them serves.
+struct HarnessApps(BTreeMap<String, AppHandler>, Option<HostCaller>);
+
+/// The person a run's calls to other apps may run as (with their grant): its own caller
+/// when that is an account or an API key, else none. A run another app called serves no one
+/// it can pass on: only the person's own grant to that app lets it act as them.
+fn forwarded(caller: &HostCaller) -> Option<HostCaller> {
+    match caller {
+        HostCaller::Account(_) | HostCaller::ApiKey { .. } => Some(caller.clone()),
+        HostCaller::App(_) | HostCaller::Public | HostCaller::System => None,
+    }
+}
+
+fn sdk_caller(caller: &HostCaller) -> crate::env::Caller {
+    match caller {
+        HostCaller::Account(a) => crate::env::Caller::Account(a.clone()),
+        HostCaller::ApiKey { key_id, account } => crate::env::Caller::ApiKey {
+            key_id: key_id.clone(),
+            account: account.clone(),
+        },
+        HostCaller::Public => crate::env::Caller::Public,
+        HostCaller::System => crate::env::Caller::System,
+        HostCaller::App(a) => crate::env::Caller::App(a.clone()),
+    }
+}
 
 impl HarnessApps {
     fn answer(&self, app: &str, call: &OtherAppCall) -> Result<Vec<u8>, String> {
@@ -226,6 +255,7 @@ impl calimero_app_host::XcallHost for HarnessApps {
                 method: method.to_owned(),
                 args,
                 key: key.to_owned(),
+                on_behalf_of: self.1.as_ref().map(sdk_caller),
             },
         )
     }
@@ -239,6 +269,7 @@ impl calimero_app_host::XcallHost for HarnessApps {
                 method: method.to_owned(),
                 args,
                 key: String::new(),
+                on_behalf_of: self.1.as_ref().map(sdk_caller),
             },
         )
     }
@@ -330,6 +361,9 @@ pub struct SentXcall {
     pub method: String,
     /// The JSON arguments.
     pub args: Value,
+    /// The person the sending run served: a node delivers the message as them when they
+    /// granted the sending app the method (`t.deliver_for`).
+    pub on_behalf_of: Option<crate::env::Caller>,
 }
 
 /// One engine and compile cache for the whole test process: compiled components are keyed by
@@ -379,6 +413,7 @@ impl TestApp {
             blobs: BTreeMap::new(),
             outbox: Vec::new(),
             started: Vec::new(),
+            forwarding: None,
             next_action: 0,
             http: BTreeMap::new(),
             apps: BTreeMap::new(),
@@ -586,12 +621,69 @@ impl TestApp {
     ///
     /// The delivery's `Failure`.
     pub fn deliver(&mut self, from: &str, method: &str, args: Value) -> Result<Value, Failure> {
-        let caller = HostCaller::App(from.to_owned());
+        self.deliver_with(from, None, method, args)
+    }
+
+    /// Delivers an xcall from app `from` as `account`, who granted `from` this method of the
+    /// app, as a node delivers it: the caller is `Caller::Account(account)` and `env::via()`
+    /// is `from`. The node's access gate for the account comes first, as for a direct call.
+    ///
+    /// # Errors
+    ///
+    /// The delivery's `Failure`.
+    pub fn deliver_for(
+        &mut self,
+        from: &str,
+        account: &str,
+        method: &str,
+        args: Value,
+    ) -> Result<Value, Failure> {
+        let person = HostCaller::Account(account.to_owned());
+        self.deliver_with(from, Some(person), method, args)
+    }
+
+    /// [`TestApp::deliver_for`] as an API key: the caller is `Caller::ApiKey { key_id,
+    /// account }`.
+    ///
+    /// # Errors
+    ///
+    /// The delivery's `Failure`.
+    pub fn deliver_for_key(
+        &mut self,
+        from: &str,
+        key_id: &str,
+        account: &str,
+        method: &str,
+        args: Value,
+    ) -> Result<Value, Failure> {
+        let person = HostCaller::ApiKey {
+            key_id: key_id.to_owned(),
+            account: account.to_owned(),
+        };
+        self.deliver_with(from, Some(person), method, args)
+    }
+
+    fn deliver_with(
+        &mut self,
+        from: &str,
+        person: Option<HostCaller>,
+        method: &str,
+        args: Value,
+    ) -> Result<Value, Failure> {
+        let via = person.as_ref().map(|_| from.to_owned());
+        let caller = person.unwrap_or_else(|| HostCaller::App(from.to_owned()));
         let args = args_bytes(&args);
         if let Some(f) = self.gate(method, &caller, false, Some(&args)) {
             return Err(f);
         }
-        self.run(InvocationKind::XcallDeliver, caller, method, args, None)
+        self.run_with(
+            InvocationKind::XcallDeliver,
+            caller,
+            via,
+            method,
+            args,
+            None,
+        )
     }
 
     /// Answers an action's HTTP requests to `host` (D12) with `handler`; a request to a
@@ -650,7 +742,7 @@ impl TestApp {
         };
         let (engine, prepared) = (self.engine, self.prepared.clone());
         let http = Arc::new(HarnessHttp(self.http.clone()));
-        let apps = Arc::new(HarnessApps(self.apps.clone()));
+        let apps = Arc::new(HarnessApps(self.apps.clone(), None));
         let dir = Arc::new(HarnessDir(self.org.clone()));
         // The action lends the harness to its own sub-calls while it runs.
         let blank = self.blank();
@@ -721,6 +813,7 @@ impl TestApp {
             blobs: BTreeMap::new(),
             outbox: Vec::new(),
             started: Vec::new(),
+            forwarding: None,
             next_action: 0,
             http: BTreeMap::new(),
             apps: BTreeMap::new(),
@@ -818,6 +911,19 @@ impl TestApp {
         args: Vec<u8>,
         timer: Option<TimerCtx>,
     ) -> Result<Value, Failure> {
+        self.run_with(kind, caller, None, method, args, timer)
+    }
+
+    fn run_with(
+        &mut self,
+        kind: InvocationKind,
+        caller: HostCaller,
+        via: Option<String>,
+        method: &str,
+        args: Vec<u8>,
+        timer: Option<TimerCtx>,
+    ) -> Result<Value, Failure> {
+        let forward = forwarded(&caller);
         let is_view = kind == InvocationKind::View;
         let (seq_before, entry_before) = (self.seq, self.last_entry_ms);
         if !is_view {
@@ -856,11 +962,13 @@ impl TestApp {
             inv,
             Arc::new(HarnessDir(self.org.clone())),
         )
-        // SAFETY: the harness builds timer slots exactly for timer invocations.
+        .and_then(|h| h.with_via(via))
+        // SAFETY: the harness builds timer slots exactly for timer invocations, and a
+        // via only for a person's delivery.
         .expect("harness builds valid invocations")
         .with_blobs(Arc::new(HarnessBlobs(self.blobs.clone())))
         .with_search(search)
-        .with_xcall_host(Arc::new(HarnessApps(self.apps.clone())))
+        .with_xcall_host(Arc::new(HarnessApps(self.apps.clone(), forward.clone())))
         .with_http(Arc::new(HarnessHttp(self.http.clone())))
         .with_files(Arc::new(self.files.clone()));
         let budget = if is_view {
@@ -887,7 +995,10 @@ impl TestApp {
             self.started
                 .extend(out.actions.iter().cloned().map(|a| (caller.clone(), a)));
         }
-        self.finish(is_view, emitter, out)
+        self.forwarding = forward;
+        let answer = self.finish(is_view, emitter, out);
+        self.forwarding = None;
+        answer
     }
 
     fn finish(
@@ -920,6 +1031,7 @@ impl TestApp {
                         app: x.app,
                         method: x.method,
                         args,
+                        on_behalf_of: self.forwarding.as_ref().map(sdk_caller),
                     });
                 }
                 if !is_view {

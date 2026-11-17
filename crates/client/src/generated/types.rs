@@ -2522,6 +2522,25 @@ pub struct BlobRevokeResponse {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppDelegationsResponse {
+    pub source: String,
+    pub delegations: BTreeMap<String, Vec<String>>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppDelegateResponse {
+    pub source: String,
+    pub target: String,
+    pub methods: Vec<String>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FilesUploadResponse {
     #[serde(rename = "blobId")]
     pub blob_id: String,

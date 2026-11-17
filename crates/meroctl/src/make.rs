@@ -477,7 +477,9 @@ fn uses_of(
     };
     let declared: BTreeMap<String, calimero_bundle::BundleUse> = serde_json::to_value(table)
         .and_then(serde_json::from_value)
-        .wrap_err("[package.metadata.calimero.uses]: each NAME takes { package, range, mode }")?;
+        .wrap_err(
+            "[package.metadata.calimero.uses]: each NAME takes { package, range, mode, methods }",
+        )?;
     let lock_path = meta.dir.join("calimero.lock");
     let mut uses = declared.clone();
     if lock_path.exists() {
@@ -527,6 +529,22 @@ fn uses_of(
                         vendored.display(),
                         l.name,
                         l.abi
+                    );
+                }
+                // The methods it calls as the person are methods that release has.
+                let abi: serde_json::Value = serde_json::from_slice(&std::fs::read(&vendored)?)
+                    .wrap_err_with(|| format!("reading {}", vendored.display()))?;
+                if let Some(missing) = u
+                    .methods
+                    .iter()
+                    .find(|m| abi["methods"].get(m.as_str()).is_none())
+                {
+                    bail!(
+                        "{} lists method {missing} for {}, which {} {} does not have",
+                        "[package.metadata.calimero.uses]",
+                        l.name,
+                        l.package,
+                        l.version
                     );
                 }
             }

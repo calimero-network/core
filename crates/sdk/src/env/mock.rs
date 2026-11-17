@@ -13,6 +13,8 @@ use crate::error::{AppError, Result};
 pub struct MockState {
     /// The caller of the run.
     pub caller: Caller,
+    /// The app a person's call came through (`env::via`).
+    pub via: Option<String>,
     /// The app id.
     pub app_id: String,
     /// The app owner's account.
@@ -45,6 +47,7 @@ impl Default for MockState {
     fn default() -> Self {
         Self {
             caller: Caller::System,
+            via: None,
             app_id: "app".into(),
             owner: "owner".into(),
             org: None,
@@ -82,6 +85,10 @@ fn read<R>(f: impl FnOnce(&MockState) -> R) -> R {
 
 pub fn caller() -> Caller {
     read(|s| s.caller.clone())
+}
+
+pub fn via() -> Option<String> {
+    read(|s| s.via.clone())
 }
 
 pub fn app_id() -> String {

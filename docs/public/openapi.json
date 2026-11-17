@@ -1633,6 +1633,377 @@
         }
       }
     },
+    "/apps/{app}/delegations": {
+      "get": {
+        "operationId": "app_delegations",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "What you let an app do as you",
+        "description": "The apps you let this app call as you, each with the methods (`SetDelegation`). A session bound to an app's frontend reads its own app's only.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "delegations": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "delegations"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/apps/{app}/delegations/{target}": {
+      "put": {
+        "operationId": "app_delegate",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Let an app call another as you",
+        "description": "The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none.\n\n**Who:** signed in (a session or an API key). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "target": {
+                      "type": "string"
+                    },
+                    "methods": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "target",
+                    "methods"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`; `NOTHING_TO_DELEGATE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE",
+              "NOTHING_TO_DELEGATE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      },
+      "delete": {
+        "operationId": "app_undelegate",
+        "tags": [
+          "Apps"
+        ],
+        "x-calimero-group": "apps",
+        "summary": "Take back what an app may do on another as you",
+        "description": "No passkey: it only narrows. `404 NOT_DELEGATED` when you granted nothing there.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "target",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "404": {
+            "description": "`NOT_DELEGATED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_DELEGATED"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
     "/apps/{app}/events": {
       "get": {
         "operationId": "events",

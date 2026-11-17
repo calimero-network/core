@@ -113,7 +113,7 @@ const DISABLED_FEATURES: WasmFeatures = WasmFeatures::THREADS
     .union(WasmFeatures::CM_ERROR_CONTEXT)
     .union(WasmFeatures::CM_GC);
 
-/// Interfaces are pinned to WASI 0.2.12 (D43) and `calimero:app` 0.5.1; an import of an older
+/// Interfaces are pinned to WASI 0.2.12 (D43) and `calimero:app` 0.5.2; an import of an older
 /// patch of the same minor links through semver matching (Ruling 15), so an app built before
 /// a patch keeps running.
 const PATCHED: [(&str, &str); 2] = [("wasi:", "0.2."), ("calimero:app/", "0.5.")];
@@ -252,7 +252,9 @@ impl Engine for WasmtimeEngine {
         let abi = calimero_app_build::abi_of(component)
             .map_err(|e| PrepareError::BadAbi(e.to_string()))?
             .ok_or(PrepareError::NoAbi)?;
-        let names_compute_world = abi["world"] == calimero_app_wit::COMPUTE_WORLD;
+        let names_compute_world = abi["world"]
+            .as_str()
+            .is_some_and(calimero_app_wit::names_compute_world);
         if names_compute_world != (self.world == World::Compute) {
             return Err(PrepareError::BadAbi(format!(
                 "the ABI is for the {} world, this engine runs the {} world",
@@ -611,34 +613,36 @@ mod tests {
     fn files_at_0_5_0_is_accepted_though_that_interface_first_shipped_at_0_5_1() {
         assert!(import_allowed(World::App, "calimero:app/files@0.5.0"));
         assert!(import_allowed(World::App, "calimero:app/files@0.5.1"));
-        assert!(!import_allowed(World::App, "calimero:app/files@0.5.2"));
+        assert!(import_allowed(World::App, "calimero:app/files@0.5.2"));
+        assert!(!import_allowed(World::App, "calimero:app/files@0.5.3"));
     }
 
     #[test]
     fn the_compute_world_allows_job_files_and_wasi_but_no_state_or_http() {
-        assert!(import_allowed(World::Compute, "calimero:app/job@0.5.1"));
-        assert!(import_allowed(World::Compute, "calimero:app/files@0.5.1"));
+        assert!(import_allowed(World::Compute, "calimero:app/job@0.5.2"));
+        assert!(import_allowed(World::Compute, "calimero:app/files@0.5.2"));
         assert!(import_allowed(World::Compute, "wasi:random/random@0.2.12"));
         assert!(import_allowed(World::Compute, "wasi:cli/stdin@0.2.9"));
         for import in [
-            "calimero:app/storage@0.5.1",
-            "calimero:app/xcall@0.5.1",
-            "calimero:app/context@0.5.1",
-            "calimero:app/runs@0.5.1",
+            "calimero:app/storage@0.5.2",
+            "calimero:app/xcall@0.5.2",
+            "calimero:app/context@0.5.2",
+            "calimero:app/runs@0.5.2",
             "wasi:http/outgoing-handler@0.2.12",
             "wasi:http/types@0.2.12",
         ] {
             assert!(!import_allowed(World::Compute, import), "{import}");
         }
-        assert!(!import_allowed(World::App, "calimero:app/job@0.5.1"));
-        assert!(import_allowed(World::App, "calimero:app/runs@0.5.1"));
+        assert!(!import_allowed(World::App, "calimero:app/job@0.5.2"));
+        assert!(import_allowed(World::App, "calimero:app/runs@0.5.2"));
     }
 
     #[test]
     fn imports_match_the_lists_with_older_patches_only() {
+        assert!(import_allowed(World::App, "calimero:app/storage@0.5.2"));
         assert!(import_allowed(World::App, "calimero:app/storage@0.5.1"));
         assert!(import_allowed(World::App, "calimero:app/storage@0.5.0"));
-        assert!(!import_allowed(World::App, "calimero:app/storage@0.5.2"));
+        assert!(!import_allowed(World::App, "calimero:app/storage@0.5.3"));
         assert!(!import_allowed(World::App, "calimero:app/storage@0.6.0"));
         assert!(!import_allowed(World::App, "calimero:app/nothing@0.5.0"));
         assert!(import_allowed(World::App, "wasi:cli/stdin@0.2.12"));

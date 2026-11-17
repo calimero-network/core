@@ -76,7 +76,41 @@ The node that runs the target checks:
    [personal organization](/protocol/organizations/#personal-organizations),
    and apps of two different organizations never do.
 3. **Provenance.** The target sees the caller as `Caller::App(<source>)`, set by
-   the node; no argument can claim it.
+   the node; no argument can claim it. Only where the person the source's run serves
+   granted it does the call run as that person instead
+   ([As the person](#as-the-person)).
+
+## As the person
+
+An app calls another as itself: the target sees `Caller::App(<source>)` and never
+learns whom the source's run was serving. A person can let an app do more: call
+some methods of another app as them, so the target applies its own rules for that
+person, as if they had called it directly. A calendar that already keeps each
+person's events works unchanged under a scheduling plugin.
+
+- **The release says what it would call.** Each reference in the source's signed
+  `uses` lists the methods of that package it calls as the person (`methods`, at
+  most 64). The release's card shows them, and an upgrade's consent page flags a
+  reference whose methods change.
+- **The person grants it.** `PUT /apps/{source}/delegations/{target}` with the
+  person's passkey over exactly the target and those methods (`<source> /
+  __delegate / { target, methods }`). They must reach both apps, which are in one
+  organization. `DELETE` takes it back without a passkey; `GET
+  /apps/{source}/delegations` lists what they granted. Deleting either app ends it.
+- **The node decides, call by call.** When the source's run was started by the
+  person (their account or an API key of theirs), its message, synchronous call or
+  view of a granted method runs on the target with the person as the caller and
+  `env::via()` (WIT `context.via`, `calimero:app` 0.5.2) naming the source. A
+  message is judged when it is delivered, so a grant taken back meanwhile stops it.
+  Anything else (no grant, another method, a person who no longer reaches the
+  target, a timer or an action, a run another app called) runs as the source app.
+- **The target's checks apply to the person.** A method that needs the person's
+  passkey confirmation is refused (`ConfirmRequired`); a plugin never confirms for
+  them. A target that wants less for a call through an app reads `env::via()`.
+
+Grants exist only once every node runs 1.0.0-rc.31 (`Feature::Delegation`), and a
+message's outbox row names its person from the logged cluster version that brings
+it, so every replica keeps the row alike.
 
 ## Synchronous calls and views
 

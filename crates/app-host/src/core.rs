@@ -121,6 +121,8 @@ pub struct HostCore {
     state: Arc<dyn StateView>,
     applied_index: u64,
     inv: Invocation,
+    /// The app a person's call came through ([`HostCore::with_via`]).
+    via: Option<String>,
     dir: Arc<dyn Directory>,
     blobs: Arc<dyn BlobHost>,
     search: Arc<dyn SearchHost>,
@@ -191,6 +193,7 @@ impl HostCore {
             state,
             applied_index,
             inv,
+            via: None,
             dir,
             blobs: Arc::new(NoBlobs),
             search: Arc::new(NoSearch),
@@ -444,6 +447,38 @@ impl HostCore {
     #[must_use]
     pub fn caller(&self) -> &Caller {
         &self.inv.caller
+    }
+
+    /// The app this call came through (`context.via`): set by the node when another app
+    /// called as the person it serves, who granted it this method (the caller is that
+    /// person); none otherwise.
+    #[must_use]
+    pub fn via(&self) -> Option<&str> {
+        self.via.as_deref()
+    }
+
+    /// Names the app a person's call came through. Only a run another app delivered (a
+    /// delivery or a view) whose caller is that person, an account or an API key, carries
+    /// one: anything else is the node's mistake, refused here.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidInvocation::ViaOutsideXcall`].
+    pub fn with_via(mut self, via: Option<String>) -> Result<Self, InvalidInvocation> {
+        let Some(via) = via else {
+            self.via = None;
+            return Ok(self);
+        };
+        let delivered = matches!(
+            self.inv.kind,
+            InvocationKind::XcallDeliver | InvocationKind::View
+        );
+        let person = matches!(self.inv.caller, Caller::Account(_) | Caller::ApiKey { .. });
+        if !(delivered && person) || via.is_empty() {
+            return Err(InvalidInvocation::ViaOutsideXcall);
+        }
+        self.via = Some(via);
+        Ok(self)
     }
 
     #[must_use]

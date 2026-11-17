@@ -11,8 +11,8 @@ use crate::env::{Audience, Caller, OrgRole};
 use crate::error::{AppError, Result};
 use serde_json::json;
 
-pub fn caller() -> Caller {
-    match context::caller() {
+fn from_wit(caller: types::Caller) -> Caller {
+    match caller {
         types::Caller::Account(a) => Caller::Account(a),
         types::Caller::ApiKey(k) => Caller::ApiKey {
             key_id: k.key_id,
@@ -22,6 +22,14 @@ pub fn caller() -> Caller {
         types::Caller::System => Caller::System,
         types::Caller::App(a) => Caller::App(a),
     }
+}
+
+pub fn caller() -> Caller {
+    from_wit(context::caller())
+}
+
+pub fn via() -> Option<String> {
+    context::via()
 }
 
 pub fn app_id() -> String {
