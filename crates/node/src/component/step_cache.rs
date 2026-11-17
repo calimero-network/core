@@ -46,15 +46,21 @@ pub struct CachedRun {
 /// Caps are not part of it: a deterministic module gives the same output under any caps that let
 /// it finish, so raising a step's limits on a retry must not miss the items that already succeeded.
 #[must_use]
-pub fn cache_key(bundle: &str, method: &str, args: &[u8], input_hashes: &[String]) -> String {
+pub fn cache_key(
+    bundle: &str,
+    method: &str,
+    args: &[u8],
+    input_hashes: &[String],
+) -> Option<String> {
     let doc = json!({
         "bundle": bundle,
         "method": method,
         "args": hex::encode(calimero_identity::sha256(args)),
         "inputs": input_hashes,
     });
-    let bytes = serde_json_canonicalizer::to_vec(&doc).unwrap_or_default();
-    hex::encode(calimero_identity::sha256(&bytes))
+    // No key rather than one every failed key shares (`sha256("")`): the step runs uncached.
+    let bytes = serde_json_canonicalizer::to_vec(&doc).ok()?;
+    Some(hex::encode(calimero_identity::sha256(&bytes)))
 }
 
 impl AppMachine {

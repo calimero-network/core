@@ -379,3 +379,93 @@ fn a_captcha_service_answers_in_the_same_call() {
         "{e:?}"
     );
 }
+
+/// A delivery runs as the app that sent it, or, as a node delivers a call made with the
+/// person's grant, as that person with `env::via()` naming the app. A run started by a person
+/// offers that person to every app it calls, by message or synchronously (each call runs as
+/// them only with their grant).
+#[test]
+fn a_delivery_runs_as_the_app_or_as_the_person_through_it() {
+    let mut t = TestApp::new(
+        component(),
+        Org::new().members(["bob", "carol"]),
+        1_700_000_000_000,
+    );
+    let get = |t: &mut TestApp, k: &str| t.as_("owner").view("get", json!({ "key": k })).unwrap();
+
+    t.deliver("app-a", "recordWho", json!({ "key": "plain" }))
+        .unwrap();
+    assert_eq!(get(&mut t, "plain"), json!("app:app-a"));
+    t.deliver_for("app-a", "bob", "recordWho", json!({ "key": "bob" }))
+        .unwrap();
+    assert_eq!(get(&mut t, "bob"), json!("account:bob via:app-a"));
+    t.deliver_for_key("app-a", "k1", "bob", "recordWho", json!({ "key": "key" }))
+        .unwrap();
+    assert_eq!(get(&mut t, "key"), json!("key:k1 via:app-a"));
+    // A person calling this app directly is its caller, through no app.
+    assert_eq!(
+        t.as_("bob").view("whoView", json!({})).unwrap(),
+        json!("account:bob")
+    );
+    // Through an app as someone the organization does not hold: refused as their own call.
+    let e = t
+        .deliver_for("app-a", "mallory", "recordWho", json!({ "key": "m" }))
+        .unwrap_err();
+    assert!(matches!(e, Failure::Refused { status: 404, .. }), "{e:?}");
+
+    // What this app sends for Bob offers Bob.
+    t.as_("bob")
+        .call("relayWho", json!({ "app": "other", "key": "k" }))
+        .unwrap();
+    let sent = t.take_xcalls();
+    assert_eq!(
+        sent[0].on_behalf_of,
+        Some(calimero_sdk::env::Caller::Account("bob".into()))
+    );
+
+    // Synchronously too: the other app's mock sees whom the call may run as.
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = std::sync::Arc::clone(&seen);
+    t.mock_app("other", move |c| {
+        log.lock().unwrap().push(c.on_behalf_of.clone());
+        Ok(if c.view { json!("ok") } else { json!(null) })
+    });
+    t.api_key("k2", "bob")
+        .call("callWho", json!({ "app": "other", "key": "k" }))
+        .unwrap();
+    t.as_("carol")
+        .call("askWho", json!({ "app": "other" }))
+        .unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![
+            Some(calimero_sdk::env::Caller::ApiKey {
+                key_id: "k2".into(),
+                account: "bob".into()
+            }),
+            Some(calimero_sdk::env::Caller::Account("carol".into())),
+        ]
+    );
+}
+
+/// `env::linked`: the app linked under a name, from `init` on, and an attach or detach seen by
+/// the next run.
+#[test]
+fn linked_reads_the_apps_linked_now() {
+    let mut t = TestApp::new(
+        component(),
+        Org::new().link("kv", "kv-app"),
+        1_700_000_000_000,
+    );
+    let linked = |t: &mut TestApp, name: &str| {
+        t.as_("owner")
+            .view("linked", json!({ "name": name }))
+            .unwrap()
+    };
+    assert_eq!(linked(&mut t, "kv"), json!("kv-app"));
+    assert_eq!(linked(&mut t, "calendar"), json!(null));
+    t.link("calendar", Some("cal-app"));
+    assert_eq!(linked(&mut t, "calendar"), json!("cal-app"));
+    t.link("calendar", None);
+    assert_eq!(linked(&mut t, "calendar"), json!(null));
+}

@@ -20,7 +20,7 @@ cargo test -p calimero-primitives     # dev-deps reimport the crate with `borsh`
 cargo test -p calimero-primitives encoding_tests
 ```
 
-There is no `default` feature; `borsh` is opt-in (`calimero-bundle`, `calimero-search` and `tools/search-bench` enable it).
+There is no `default` feature; `borsh` is opt-in (`calimero-bundle`, `calimero-search` and `crates/search/bench` enable it).
 
 ## Who uses what
 
@@ -31,7 +31,7 @@ target depends on the crate):
 | Module | Items | Used by |
 | --- | --- | --- |
 | `outbound` | `OutboundMethod`, `OutboundRequest`, `OutboundResponse`, the `MAX_*`/`TIMEOUT_MS`/`SECRET_*` limits, `OutboundRefusal::{NotApproved, AwaitingApproval}`, `OutboundSelection` | `calimero-outbound` (the gate), `calimero-node` (`NodeHttp` encodes a component's request; `OutboundSelection` in `api/approvals.rs`, `api.rs`, `system.rs`, `consent_page.rs`) |
-| `search` | `SearchDoc`, `SearchFieldKind`, `SearchFieldSchema`, `SearchIndexSchema`, `SearchValue`, `SearchMode`, `SearchOrder`, `SearchFilter`, `SearchRequest`, `SearchResponse`, `SearchHit` | `calimero-search` (`index.rs`, its tests), `calimero-node` (`component/search.rs`), `tools/search-bench` |
+| `search` | `SearchDoc`, `SearchFieldKind`, `SearchFieldSchema`, `SearchIndexSchema`, `SearchValue`, `SearchMode`, `SearchOrder`, `SearchFilter`, `SearchRequest`, `SearchResponse`, `SearchHit` | `calimero-search` (`index.rs`, its tests), `calimero-node` (`component/search.rs`), `crates/search/bench` |
 | `blobs` | `BlobId` | `calimero-node` (`api.rs`, `api/files.rs`: parse and print a blob id), `calimero-app-downloader` |
 | `application` | `ApplicationId`, `ApplicationSource`, `ApplicationId::for_bundle` | `calimero-app-downloader` (`ApplicationId` in `AppRequest`; `ApplicationSource` only in its unused downloader), `calimero-bundle` tests (`ApplicationId::for_bundle`) |
 | `context` | `ContextId` | `calimero-app-downloader` (`AppRequest::context_id`, always `None` from the node) |

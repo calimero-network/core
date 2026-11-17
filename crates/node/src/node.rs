@@ -312,6 +312,13 @@ pub struct CallRequest {
     /// `internal/call`. The target runs it as a delivery, so it makes none of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_from: Option<String>,
+    /// A delivery or a synchronous xcall made as the person the source app's run served
+    /// (`caller` is that person): the source app it came through, which the target reads
+    /// as `env::via()`. Set only by the node that ran the source (`NodeXcall`, the outbox's
+    /// delivery), and only when the person granted the source that method on the target
+    /// (`Node::as_person`); peers pass it along on `internal/call`. Never from a client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
     /// The system index the request's read-index round named on the node that
     /// judged it (`Principal::sys_index`): every system write committed before
     /// the request arrived is at or below it. The replica that runs the call
@@ -326,14 +333,20 @@ pub struct CallRequest {
 /// request: they change what the app is (its bundle, its blob marks), so
 /// authority over them is the API's (`run_upgrade`, the blob routes), never
 /// the app's or a caller's.
-pub const HOST_METHODS: [&str; 6] = [
+pub const HOST_METHODS: [&str; 8] = [
     "__upgrade",
     "__blob",
     "__blob_forget",
     "__blob_revoke",
     "__pipeline_start",
     "__pipeline_cancel",
+    "__secret_set",
+    "__secret_clear",
 ];
+
+/// The reserved view of an instance's own secrets, answered by its leader: what each holds
+/// (fingerprint, who set it and when), never a value.
+pub const SECRETS_VIEW: &str = "__secrets";
 
 /// Whether a method name is reserved: the node's commands and the runtime's
 /// own exports (`__calimero_*`) are not methods a client, an xcall or a
@@ -358,6 +371,7 @@ impl CallRequest {
             xcall: None,
             action: None,
             sync_from: None,
+            via: None,
             sys_index: None,
         }
     }
@@ -386,6 +400,9 @@ pub struct ViewRequest {
     pub strong: bool,
     #[serde(default)]
     pub min_index: u64,
+    /// A synchronous `xcall_view` made as the person, as [`CallRequest::via`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -940,6 +957,13 @@ impl Node {
     /// Everything the cluster shares or keeps across releases is keyed by
     /// `cluster_key` (K_c, `cluster_key::resolve`), not by this release's K_r.
     pub async fn start(config: Config, cluster_key: [u8; 32]) -> eyre::Result<Arc<Self>> {
+        // Search indexes go to disk only on a data disk the TD encrypts: mero-tee's,
+        // whose key's record merod was started with (`--kms-disk-evidence`).
+        let search_root = config
+            .kms_keys
+            .disk
+            .is_some()
+            .then(|| config.data_dir.join("search"));
         std::fs::create_dir_all(&config.data_dir)?;
         let receipt_key =
             crate::signing_key::load_or_create(&config.data_dir, &config.storage_key)?;
@@ -1063,7 +1087,7 @@ impl Node {
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
             starting: tokio::sync::Mutex::new(()),
-            component_search: crate::component::search::ComponentSearch::default(),
+            component_search: crate::component::search::ComponentSearch::new(search_root),
             this: Mutex::new(Weak::new()),
             checkpoints,
         });
@@ -2449,6 +2473,7 @@ impl Node {
         app_id: &str,
         bundle: &str,
         sent: Arc<std::sync::atomic::AtomicU64>,
+        own: &crate::component::InstanceSecrets,
     ) -> Option<Arc<dyn calimero_outbound::OutboundHost>> {
         let service = self.config.outbound.as_ref()?;
         // The release the app runs, when its record names one for this bundle: releases may
@@ -2481,6 +2506,15 @@ impl Node {
                             .map(|(name, s)| (name.clone(), s.hosts.clone()))
                             .collect()
                     }),
+                    // The owner's own values, for names the release still declares.
+                    own: calimero_outbound::OwnSecrets(
+                        own.iter()
+                            .filter(|(name, _)| release.version.secrets.contains_key(*name))
+                            .map(|(name, s)| {
+                                (name.clone(), zeroize::Zeroizing::new(s.value.0.clone()))
+                            })
+                            .collect(),
+                    ),
                 },
                 approval,
             ))
@@ -2492,6 +2526,11 @@ impl Node {
             app_id.to_owned(),
             sent,
         )
+    }
+
+    /// This node as the `Arc` it lives in, for work that outlives a borrowed request.
+    pub(crate) fn shared(&self) -> Option<Arc<Self>> {
+        self.this.lock().ok().and_then(|w| w.upgrade())
     }
 
     pub async fn store_blob(&self, bytes: &[u8], app: Option<&str>) -> Result<String, ApiError> {
@@ -3223,6 +3262,12 @@ impl Node {
         }
         if executor == Some(Kind::Component)
             && req.host
+            && matches!(req.method.as_str(), "__secret_set" | "__secret_clear")
+        {
+            return self.component_secret_cmd(g, req).await;
+        }
+        if executor == Some(Kind::Component)
+            && req.host
             && matches!(
                 req.method.as_str(),
                 "__pipeline_start" | "__pipeline_cancel"
@@ -3464,7 +3509,10 @@ impl Node {
         ) {
             app.require_app_component()?;
         }
-        if req.method != component::RUN_VIEW && req.method != component::PIPELINE_VIEW {
+        if req.method != component::RUN_VIEW
+            && req.method != component::PIPELINE_VIEW
+            && req.method != SECRETS_VIEW
+        {
             self.abi_gate(&app, &req.method, &req.caller, true, false)
                 .await?;
         }

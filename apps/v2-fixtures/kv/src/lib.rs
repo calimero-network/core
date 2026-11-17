@@ -58,12 +58,35 @@ pub struct Kv {
     enrichments: UnorderedMap<String, String>,
     /// What `onActionFailed` was told, by method.
     action_failures: UnorderedMap<String, String>,
+    /// The apps the node created with this instance (`uses` with `mode: create`), by name,
+    /// as `init` was told them.
+    links: UnorderedMap<String, String>,
 }
 
 /// `{ key }`, as an action passes it on.
 #[derive(serde::Serialize)]
 struct KeyArg<'a> {
     key: &'a str,
+}
+
+/// A method that takes no arguments, as an xcall sends them.
+#[derive(serde::Serialize)]
+struct NoArgs {}
+
+/// Who called and through which app, as the cluster tests compare it: `account:<id>`,
+/// `key:<id>` or `app:<id>`, then ` via:<app>` when another app called as the person
+/// (`env::via`).
+fn who() -> String {
+    let caller = match env::caller() {
+        env::Caller::Account(a) => format!("account:{a}"),
+        env::Caller::ApiKey { key_id, .. } => format!("key:{key_id}"),
+        env::Caller::App(a) => format!("app:{a}"),
+        other => format!("other:{other:?}"),
+    };
+    match env::via() {
+        Some(via) => format!("{caller} via:{via}"),
+        None => caller,
+    }
 }
 
 /// `setFromApp`'s arguments, as an xcall sends them.
@@ -127,9 +150,29 @@ const BEAT_MS: u64 = 3_600_000;
 #[app::logic]
 #[allow(clippy::len_without_is_empty)]
 impl Kv {
+    /// `links`: the apps the node created with this instance, when its release creates
+    /// any (the node passes them; a client never does).
     #[app::init]
-    pub fn init() -> app::Result<Self> {
-        Ok(Self::load())
+    pub fn init(links: Option<std::collections::BTreeMap<String, String>>) -> app::Result<Self> {
+        let mut s = Self::load();
+        for (name, app) in links.unwrap_or_default() {
+            let _prev = s.links.insert(&name, &app)?;
+        }
+        Ok(s)
+    }
+
+    /// What `init` was told of the apps created with this instance.
+    #[app::view]
+    pub fn links(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
+        let page = self.links.page(FindOpts::default().limit(LIST_LIMIT))?;
+        Ok(page.items.into_iter().collect())
+    }
+
+    /// The app linked under `name` now (`env::linked`): a member made with this instance or
+    /// an app its owner attached since.
+    #[app::view]
+    pub fn linked(&self, name: String) -> app::Result<Option<String>> {
+        Ok(env::linked(&name))
     }
 
     /// Sets `key`; emits `Inserted` for a new key, `Updated` for an existing one.
@@ -351,6 +394,37 @@ impl Kv {
     pub fn set_from_app(&mut self, key: String, value: String) -> app::Result<()> {
         let _event = self.upsert(&key, &value)?;
         Ok(())
+    }
+
+    /// Sends `recordWho { key }` to app `app`: the target stores whom this run served.
+    pub fn relay_who(&mut self, app: String, key: String) -> app::Result<()> {
+        env::xcall(&app, "recordWho", &KeyArg { key: &key })?;
+        Ok(())
+    }
+
+    /// Calls `recordWho { key }` on app `app` synchronously.
+    pub fn call_who(&mut self, app: String, key: String) -> app::Result<()> {
+        let _done: Option<()> = env::xcall_call(&app, "recordWho", &KeyArg { key: &key })?;
+        Ok(())
+    }
+
+    /// Asks app `app`'s `whoView` synchronously: whom it saw this run serve.
+    pub fn ask_who(&mut self, app: String) -> app::Result<String> {
+        env::xcall_view(&app, "whoView", &NoArgs {})
+    }
+
+    /// Stores under `key` who called and through which app (`env::caller`, `env::via`).
+    #[app::allow(app = "*")]
+    pub fn record_who(&mut self, key: String) -> app::Result<()> {
+        let _event = self.upsert(&key, &who())?;
+        Ok(())
+    }
+
+    /// Who called and through which app, as `recordWho` stores it.
+    #[app::view]
+    #[app::allow(app = "*")]
+    pub fn who_view(&self) -> app::Result<String> {
+        Ok(who())
     }
 
     /// The platform's report of an xcall it dead-lettered (D29).

@@ -61,6 +61,7 @@ pub fn capability_sheet(from: &Side<'_>, to: &Side<'_>) -> Value {
             to.manifest.outbound.iter().cloned().collect(),
         ),
         "secrets": secrets(from.manifest, to.manifest),
+        "uses": uses(from.manifest, to.manifest),
         "frontend": frontend(from.manifest, to.manifest),
         "interfaces": {
             "uses": set_diff(interfaces(from.manifest, false), interfaces(to.manifest, false)),
@@ -105,6 +106,7 @@ pub fn capability_card(s: &Side<'_>) -> Value {
     card["author"] = json!(s.manifest.metadata.as_ref().and_then(|m| m.author.clone()));
     card["outbound"] = json!(s.manifest.outbound.iter().collect::<BTreeSet<_>>());
     card["secrets"] = json!(s.manifest.secrets.clone().unwrap_or_default());
+    card["uses"] = json!(s.manifest.uses.clone().unwrap_or_default());
     card["abi"] = json!(s.abi);
     card
 }
@@ -127,6 +129,39 @@ fn secrets(from: &BundleManifest, to: &BundleManifest) -> Value {
         .map(|(name, _)| name)
         .collect();
     diff["hostsChanged"] = json!(changed);
+    diff
+}
+
+/// The apps each side references: `{ added, removed, kept }` by name, `changed` (a kept name
+/// whose package, range, mode or methods called as the person differ, with both sides), and `createdAdded`, the added
+/// names the upgrade would create with the app (`create`), which the person approves with it.
+fn uses(from: &BundleManifest, to: &BundleManifest) -> Value {
+    let empty = std::collections::BTreeMap::new();
+    let (a, b) = (
+        from.uses.as_ref().unwrap_or(&empty),
+        to.uses.as_ref().unwrap_or(&empty),
+    );
+    let names = |m: &std::collections::BTreeMap<String, calimero_bundle::BundleUse>| {
+        m.keys().cloned().collect::<BTreeSet<_>>()
+    };
+    let mut diff = set_diff(names(a), names(b));
+    let changed: Vec<Value> = a
+        .iter()
+        .filter_map(|(name, u)| {
+            let t = b.get(name)?;
+            (t.package != u.package
+                || t.range != u.range
+                || t.mode != u.mode
+                || t.methods != u.methods)
+                .then(|| json!({ "name": name, "from": u, "to": t }))
+        })
+        .collect();
+    diff["changed"] = json!(changed);
+    diff["createdAdded"] = json!(b
+        .iter()
+        .filter(|(name, u)| !a.contains_key(*name) && u.mode == calimero_bundle::UseMode::Create)
+        .map(|(name, _)| name)
+        .collect::<Vec<_>>());
     diff
 }
 
@@ -364,6 +399,48 @@ mod tests {
         );
     }
 
+    /// An upgrade's sheet names the apps the target starts or stops using, a reference that
+    /// changes package, range or mode, and the added ones it would create; a release's card
+    /// lists what it references.
+    #[test]
+    fn the_sheet_and_card_name_the_apps_a_release_uses() {
+        let from = manifest(json!({
+            "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
+            "uses": {
+                "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1" },
+                "old": { "package": "com.example.old", "range": "^1", "mode": "attach" },
+            },
+        }));
+        let to = manifest(json!({
+            "version": "1.0", "package": "p", "appVersion": "2.0.0", "minRuntimeVersion": "0.1.0",
+            "uses": {
+                "kv": { "package": "com.calimero.confidential-kv", "range": "^0.2", "version": "0.2.0" },
+                "inference": { "package": "com.calimero.private-inference", "range": "^0.1" },
+                "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+            },
+        }));
+        let sheet = capability_sheet(&side("1.0.0", &from, None), &side("2.0.0", &to, None));
+        assert_eq!(sheet["uses"]["added"], json!(["calendar", "inference"]));
+        assert_eq!(sheet["uses"]["removed"], json!(["old"]));
+        assert_eq!(sheet["uses"]["kept"], json!(["kv"]));
+        assert_eq!(sheet["uses"]["createdAdded"], json!(["inference"]));
+        assert_eq!(sheet["uses"]["changed"][0]["name"], json!("kv"));
+        assert_eq!(sheet["uses"]["changed"][0]["to"]["range"], json!("^0.2"));
+        // A locked version moving inside the same range is not a change of what it uses.
+        let same = manifest(json!({
+            "version": "1.0", "package": "p", "appVersion": "1.0.1", "minRuntimeVersion": "0.1.0",
+            "uses": {
+                "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.1.9" },
+                "old": { "package": "com.example.old", "range": "^1", "mode": "attach" },
+            },
+        }));
+        let sheet = capability_sheet(&side("1.0.0", &from, None), &side("1.0.1", &same, None));
+        assert_eq!(sheet["uses"]["changed"], json!([]));
+        let card = capability_card(&side("2.0.0", &to, None));
+        assert_eq!(card["uses"]["calendar"]["mode"], json!("attach"));
+        assert_eq!(card["uses"]["inference"]["mode"], json!("create"));
+    }
+
     /// The fixture pair: 1.0.0 calls one host and has one alias; 2.0.0 calls
     /// a second host, moves its frontend, adds an alias, a confirmed method, a
     /// public view, an event and a timer, changes a timer's period, drops a
@@ -415,7 +492,7 @@ mod tests {
                 "sweep": { "kind": "timer", "every": "1h", "allowSystem": true },
             },
             "events": { "Changed": { "id": "string" }, "Wiped": null },
-            "world": "calimero:app@0.5.1",
+            "world": "calimero:app@0.5.3",
         });
         let sheet = capability_sheet(
             &side("1.0.0", &from, Some(&a)),

@@ -195,6 +195,16 @@ pub enum CreateBody {
         subject: UpgradeSubject,
         return_to: String,
     },
+    /// Upgrade an app and the apps its release created with it, in one approval.
+    UpgradeUnit {
+        subject: UpgradeSubject,
+        return_to: String,
+    },
+    /// Let an app call another as the person, for the methods its release lists.
+    Delegate {
+        subject: DelegateSubject,
+        return_to: String,
+    },
     /// Let a package's apps in the scope call out to URL prefixes.
     Outbound {
         scope: ScopeBody,
@@ -318,6 +328,14 @@ pub struct UpgradeSubject {
     to_version: String,
 }
 
+/// A `delegate` request: `app` (the asking frontend's own) may call `target` as the person.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DelegateSubject {
+    app: String,
+    target: String,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OutboundSubject {
@@ -398,6 +416,22 @@ enum Action {
         scope: ReleaseScope,
         version: String,
         change: ReleaseChange,
+    },
+    /// A unit's upgrade: the instance to `version`, each member to its target.
+    UpgradeUnit {
+        app: String,
+        version: String,
+        targets: BTreeMap<String, crate::types::RunTarget>,
+        /// Each app's bundle when the page was made, the instance's included.
+        from: BTreeMap<String, String>,
+    },
+    /// A grant: `source` calls `methods` of `target` as the person.
+    Delegate {
+        source: String,
+        target: String,
+        methods: Vec<String>,
+        /// The release `source` ran when the page was made, whose `uses` listed `methods`.
+        source_release: Option<crate::system::PackageRef>,
     },
     Upgrade {
         app: String,
@@ -652,6 +686,28 @@ async fn release_facts(
     }
     let mpk = node.release_mpk(package, v).await?;
     let (bundle, wasm) = crate::packages::verify(mpk)?;
+    Ok(remember(node, &v.mpk, &bundle, &wasm))
+}
+
+/// Keeps what a verified release's manifest and components say under its `.mpk` hash, so
+/// the consent page, the capability card and an instance's create read them without
+/// fetching the `.mpk` again. The node that installs a release calls it with the copy it
+/// just verified.
+pub(crate) fn remember_release_facts(
+    node: &Node,
+    mpk_hash: &str,
+    bundle: &calimero_bundle::VerifiedBundle,
+    wasm: &[crate::packages::Service],
+) {
+    let _facts = remember(node, mpk_hash, bundle, wasm);
+}
+
+fn remember(
+    node: &Node,
+    mpk_hash: &str,
+    bundle: &calimero_bundle::VerifiedBundle,
+    wasm: &[crate::packages::Service],
+) -> Arc<ReleaseFacts> {
     let facts = Arc::new(ReleaseFacts {
         manifest: bundle.manifest().clone(),
         manifest_hash: hex::encode(bundle.manifest_hash()),
@@ -668,8 +724,8 @@ async fn release_facts(
             })
             .collect(),
     });
-    node.consent.cache(&v.mpk, Arc::clone(&facts));
-    Ok(facts)
+    node.consent.cache(mpk_hash, Arc::clone(&facts));
+    facts
 }
 
 /// The `minRuntimeVersion` release `v` of `package` declares, from its
@@ -956,7 +1012,17 @@ pub async fn create(
         }
         CreateBody::Upgrade { subject, return_to } => {
             let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
-            let (action, model) = upgrade_request(&node, &p, &account, subject).await?;
+            let (action, model) = upgrade_request(&node, &p, &account, subject, false).await?;
+            (action, model, to)
+        }
+        CreateBody::UpgradeUnit { subject, return_to } => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = unit_upgrade_request(&node, &p, &account, subject).await?;
+            (action, model, to)
+        }
+        CreateBody::Delegate { subject, return_to } => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = delegate_request(&node, &p, &account, subject).await?;
             (action, model, to)
         }
         CreateBody::Outbound {
@@ -1239,6 +1305,33 @@ fn strings(v: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The apps attached to `app` (`AppRecord::attached`) that the release `to` takes in another
+/// range: `{ name, app, package, version, range }` each. An attached app lives on its own, so
+/// an upgrade never moves it; the page warns instead.
+fn attached_outside(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    to: &calimero_bundle::BundleManifest,
+) -> Vec<Value> {
+    let Some(uses) = to.uses.as_ref() else {
+        return Vec::new();
+    };
+    app.attached
+        .iter()
+        .filter_map(|(name, id)| {
+            let u = uses.get(name)?;
+            let linked = node.sys(|s| s.apps.get(id).cloned())?;
+            let runs = node.release_of_app(&linked)?.at;
+            (!crate::api::apps::in_range(u, &runs)).then(|| {
+                json!({
+                    "name": name, "app": id, "package": runs.package,
+                    "version": runs.version, "range": u.range,
+                })
+            })
+        })
+        .collect()
+}
+
 /// What an upgrade's capability `sheet` lets in that the person should see
 /// before anything else, in plain words: new outbound hosts, new sign-in
 /// origins, methods that newly delete data, a migration, removed methods, a
@@ -1260,6 +1353,42 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
             "secrets",
             "Asks for a new secret, or sends one to other addresses:".to_owned(),
             secrets,
+        ));
+    }
+    let added: Vec<String> = strings(&sheet["uses"]["added"]);
+    let changed: Vec<String> = sheet["uses"]["changed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["name"].as_str().map(str::to_owned))
+        .collect();
+    if !added.is_empty() || !changed.is_empty() {
+        out.push(attention(
+            "usesApps",
+            "Calls other apps it did not call before, or calls them differently:".to_owned(),
+            added.into_iter().chain(changed).collect(),
+        ));
+    }
+    let outside: Vec<String> = sheet["attachedOutOfRange"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|o| {
+            Some(format!(
+                "{} runs {} {}, outside {}",
+                o["name"].as_str()?,
+                o["package"].as_str()?,
+                o["version"].as_str()?,
+                o["range"].as_str()?
+            ))
+        })
+        .collect();
+    if !outside.is_empty() {
+        out.push(attention(
+            "attachedOutOfRange",
+            "Expects other versions of apps you attached to it, which this approval does not upgrade:"
+                .to_owned(),
+            outside,
         ));
     }
     let origins = strings(&sheet["frontend"]["newLoginOrigins"]);
@@ -1591,11 +1720,16 @@ async fn upgrade_request(
     p: &Principal,
     account: &str,
     subject: UpgradeSubject,
+    member_of_unit: bool,
 ) -> Result<(Action, Value), ApiError> {
     owner_holds(node, |g| g.app_upgrades, "app upgrades")?;
     let app_id = node.canonical_app_id(&subject.app);
     let app = node.app(&app_id).await?;
-    p.within(node, &app)?;
+    // A unit's member is another package's app; the frontend that asks reaches the
+    // instance it created (checked for it), and the person approves on the node's page.
+    if !member_of_unit {
+        p.within(node, &app)?;
+    }
     // The route's own authority rules, asked before anything is shown: a
     // package its publisher upgrades is not the instance owner's to approve.
     let (may, unbound) = node.sys(|s| (s.may_upgrade(&app, account), s.upgrades_unbound(&app)));
@@ -1685,6 +1819,11 @@ async fn upgrade_request(
             abi: to_abi.as_ref(),
         },
     );
+    let mut sheet = sheet;
+    let outside = attached_outside(node, &app, &to.manifest);
+    if !outside.is_empty() {
+        sheet["attachedOutOfRange"] = json!(outside);
+    }
     let name = to
         .manifest
         .metadata
@@ -1763,12 +1902,187 @@ async fn upgrade_request(
     ))
 }
 
+/// An `upgradeUnit` request: the plan the route would carry out (`api::unit_plan`), and
+/// one page with the instance's capability sheet and each moving member's, each built and
+/// judged as a single upgrade's page is (`upgrade_request`).
+async fn unit_upgrade_request(
+    node: &Node,
+    p: &Principal,
+    account: &str,
+    subject: UpgradeSubject,
+) -> Result<(Action, Value), ApiError> {
+    let app_id = node.canonical_app_id(&subject.app);
+    let plan = crate::api::unit_plan(node, account, &app_id, &subject.to_version).await?;
+    let (_, root) = upgrade_request(
+        node,
+        p,
+        account,
+        UpgradeSubject {
+            app: app_id.clone(),
+            to_version: subject.to_version.clone(),
+        },
+        false,
+    )
+    .await?;
+    let mut from = BTreeMap::from([(app_id.clone(), plan.app.bundle.clone())]);
+    let mut pages = vec![root.clone()];
+    for member in &plan.members {
+        let Some(t) = plan.targets.get(&member.app_id) else {
+            continue;
+        };
+        let (_, page) = upgrade_request(
+            node,
+            p,
+            account,
+            UpgradeSubject {
+                app: member.app_id.clone(),
+                to_version: t.version.clone(),
+            },
+            true,
+        )
+        .await?;
+        let _prev = from.insert(member.app_id.clone(), member.bundle.clone());
+        pages.push(page);
+    }
+    let name = plan.app.name.clone();
+    let others = pages.len() - 1;
+    let mut points: Vec<Value> = pages.iter().map(|m| m["points"][0].clone()).collect();
+    points.push(json!(
+        "Until you approve, nothing changes: every one of them keeps running its current version."
+    ));
+    let attention: Vec<Value> = pages
+        .iter()
+        .flat_map(|m| {
+            let who = m["scope"]["name"].as_str().unwrap_or_default().to_owned();
+            m["attention"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |mut a| {
+                    if let Some(t) = a["text"].as_str() {
+                        a["text"] = json!(format!("{who}: {t}"));
+                    }
+                    a
+                })
+        })
+        .collect();
+    let notes: Vec<Value> = pages
+        .iter()
+        .flat_map(|m| m["notes"].as_array().cloned().unwrap_or_default())
+        .collect();
+    let mut model = root.clone();
+    if let Some(o) = model.as_object_mut() {
+        let _prev = o.insert("kind".into(), json!("upgradeUnit"));
+        let _prev = o.insert(
+            "headline".into(),
+            json!(format!(
+                "Upgrade {name} and the {others} app(s) it created, in one approval"
+            )),
+        );
+        let _prev = o.insert(
+            "title".into(),
+            json!(format!("Update {name} and the apps it uses")),
+        );
+        let _prev = o.insert("points".into(), json!(points));
+        let _prev = o.insert("attention".into(), json!(attention));
+        let _prev = o.insert("notes".into(), json!(notes));
+        let _prev = o.insert(
+            "apps".into(),
+            json!(pages
+                .iter()
+                .map(|m| json!({ "scope": m["scope"], "headline": m["headline"], "upgrade": m["upgrade"] }))
+                .collect::<Vec<_>>()),
+        );
+    }
+    Ok((
+        Action::UpgradeUnit {
+            app: app_id,
+            version: subject.to_version,
+            targets: plan.targets,
+            from,
+        },
+        model,
+    ))
+}
+
 fn join(items: &[Value]) -> String {
     items
         .iter()
         .filter_map(Value::as_str)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// A `delegate` request: the grant the route would make (`api::apps::delegation_plan`),
+/// asked by the source app's own frontend (or an unbound session), on one page naming both
+/// apps and every method the source would call as the person.
+async fn delegate_request(
+    node: &Node,
+    p: &Principal,
+    account: &str,
+    subject: DelegateSubject,
+) -> Result<(Action, Value), ApiError> {
+    let source_id = node.canonical_app_id(&subject.app);
+    let target_id = node.canonical_app_id(&subject.target);
+    let (source, target, methods) =
+        crate::api::apps::delegation_plan(node, account, &source_id, &target_id).await?;
+    p.within(node, &source)?;
+    let name = |a: &crate::types::AppRecord| {
+        if a.name.is_empty() {
+            a.app_id.clone()
+        } else {
+            a.name.clone()
+        }
+    };
+    let (from, to) = (name(&source), name(&target));
+    let granted: Vec<String> = node.sys(|s| {
+        s.delegations
+            .get(account)
+            .and_then(|g| g.get(&source_id))
+            .and_then(|t| t.get(&target_id))
+            .cloned()
+            .unwrap_or_default()
+    });
+    let source_package = node.release_of_app(&source).map(|r| r.at.package);
+    let target_package = node.release_of_app(&target).map(|r| r.at.package);
+    let model = json!({
+        "kind": "delegate",
+        "scope": { "kind": "app", "app": source_id, "name": from, "org": source.org },
+        "headline": format!("Let {from} use {to} as you"),
+        "title": format!("Allow {from} to act as you in {to}"),
+        "points": [
+            format!(
+                "When you use {from}, it may call {} of {to} as you: {to} sees you, not {from}, and applies your own permissions there.",
+                if methods.len() == 1 { "one method".to_owned() } else { format!("{} methods", methods.len()) }
+            ),
+            format!("{to} still knows the call came through {from}, and decides for itself what to allow."),
+            "It never confirms anything for you: a step that needs your passkey there still asks you.".to_owned(),
+            "Until you approve, it calls only as itself. You can take this back at any time.".to_owned(),
+        ],
+        "attention": [],
+        "app": { "name": from, "package": source_package },
+        "before": format!("Until you approve, {from} calls {to} as itself, without your name."),
+        "after": format!(
+            "Once you approve, {from} may call these methods of {to} as you, when it acts for you. Taking it back needs no passkey."
+        ),
+        "notes": [],
+        "delegate": {
+            "source": { "app": source_id, "name": from, "package": source_package },
+            "target": { "app": target_id, "name": to, "package": target_package },
+            "methods": methods,
+            "alreadyGranted": granted,
+        },
+    });
+    Ok((
+        Action::Delegate {
+            source: source_id,
+            target: target_id,
+            methods,
+            source_release: source.release.clone(),
+        },
+        model,
+    ))
 }
 
 async fn outbound_request(
@@ -2516,6 +2830,27 @@ fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
         | Action::CreateInvite { .. }
         | Action::AcceptInvite { .. } => Ok(()),
         Action::Org(a) => orgs::still_current(node, a),
+        Action::Delegate {
+            source,
+            source_release,
+            ..
+        } => {
+            let now = node.sys(|s| s.apps.get(source).map(|a| a.release.clone()));
+            if now.as_ref() != Some(source_release) {
+                return Err(stale("the release the app runs"));
+            }
+            Ok(())
+        }
+        Action::UpgradeUnit { from, .. } => {
+            let moved = node.sys(|s| {
+                from.iter()
+                    .any(|(app, bundle)| s.apps.get(app).map(|a| &a.bundle) != Some(bundle))
+            });
+            if moved {
+                return Err(stale("an app of the unit's running release"));
+            }
+            Ok(())
+        }
         Action::Upgrade {
             app,
             from_bundle,
@@ -2746,6 +3081,34 @@ async fn act(
             )
             .await?
         }
+        Action::UpgradeUnit {
+            app,
+            version,
+            targets,
+            ..
+        } => {
+            // What the page showed is what is approved: the same members to the same
+            // releases, judged again now.
+            let plan = crate::api::unit_plan(node, &req.account, app, version).await?;
+            if &plan.targets != targets {
+                return Err(stale("the releases the unit's apps would move to"));
+            }
+            crate::api::upgrade_unit(node, &p, app, version, confirm).await?
+        }
+        Action::Delegate {
+            source,
+            target,
+            methods,
+            ..
+        } => {
+            // What the page listed is what is granted: the same methods, judged again now.
+            let (_, _, now) =
+                crate::api::apps::delegation_plan(node, &req.account, source, target).await?;
+            if &now != methods {
+                return Err(stale("the methods the app's release lists"));
+            }
+            crate::api::apps::delegate(node, &p, source, target, confirm).await?
+        }
         Action::Upgrade {
             app,
             package,
@@ -2968,6 +3331,26 @@ mod tests {
         assert!(csp.contains("default-src 'none'"), "{csp}");
         assert!(!csp.contains("unsafe-inline"), "{csp}");
         assert!(csp.contains("connect-src 'self'"), "{csp}");
+    }
+
+    #[test]
+    fn the_page_keeps_its_security_cues_in_the_main_view() {
+        let main = PAGE_HTML
+            .split("<details")
+            .next()
+            .expect("the page has a main view");
+        for cue in [
+            "Check your address bar shows <strong class=\"host\">",
+            "id=\"code\"",
+            "id=\"approve\"",
+            "id=\"decline\"",
+            "id=\"attention\"",
+            "id=\"expires\"",
+        ] {
+            assert!(main.contains(cue), "{cue} is in the main view");
+        }
+        assert!(PAGE_HTML.contains("<summary>Details</summary>"));
+        assert!(!PAGE_HTML.contains("https://"), "no external resource");
     }
 
     #[test]

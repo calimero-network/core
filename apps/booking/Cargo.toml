@@ -1,0 +1,30 @@
+[package]
+name = "booking"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "A booking page on a calendar its owner already runs (uses, mode = attach), adding events to each person's own calendar as them, with their grant"
+
+[lib]
+crate-type = ["cdylib"]
+
+[package.metadata.calimero]
+package = "com.calimero.example.booking"
+
+# The owner attaches a calendar they already run (`PUT /apps/{booking}/links/calendar`).
+# `methods` is what booking calls there as the person it serves, once they grant it
+# (the consent page's `delegate`); without the grant it calls as itself.
+[package.metadata.calimero.uses]
+calendar = { package = "com.calimero.example.calendar", range = "^0.1", mode = "attach", methods = ["addEvent", "myEvents"] }
+
+[dependencies]
+calimero-sdk = { path = "../../crates/sdk" }
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-sdk = { path = "../../crates/sdk", features = ["testing"] }
+calimero-app-build = { path = "../../crates/app-build" }
+serde_json = "1"
+
+# Standalone, like the other examples: the tests build this crate for wasm32-wasip2.
+[workspace]

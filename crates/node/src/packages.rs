@@ -264,6 +264,7 @@ impl Node {
         let mpk_hash = hex::encode(calimero_identity::sha256(&mpk));
         let mpk_size = mpk.len() as u64;
         let (bundle, wasm) = verify(mpk)?;
+        crate::consent_page::remember_release_facts(self, &mpk_hash, &bundle, &wasm);
         let manifest = bundle.manifest();
         let package = manifest.package.clone();
         let signer_id = bundle.signer_id().to_owned();
@@ -288,6 +289,9 @@ impl Node {
         }
         manifest
             .check_secrets()
+            .map_err(|e| ApiError::bad_request(e.code(), &e.to_string()))?;
+        manifest
+            .check_uses()
             .map_err(|e| ApiError::bad_request(e.code(), &e.to_string()))?;
         let upgrades = manifest.upgrades.unwrap_or_default();
         let in_order = self.sys(|s| {

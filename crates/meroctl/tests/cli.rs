@@ -86,6 +86,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         upgrades: None,
         outbound: Vec::new(),
         secrets: None,
+        uses: None,
         services: None,
         pipelines: Vec::new(),
         signature: None,
@@ -507,28 +508,39 @@ fn scenario(root: &Path, url: &str) {
 
     // pipeline: a release without pipelines has none to run; its list is empty.
     let none = alice
-        .try_run(&["pipeline", "run", "notes", "ghost", "--input", "docs=ab"])
+        .try_run(&[
+            "cloud", "compute", "pipeline", "run", "notes", "ghost", "--input", "docs=ab",
+        ])
         .unwrap_err();
     assert!(none.contains("NO_SUCH_PIPELINE"), "{none}");
-    assert_eq!(alice.run(&["pipeline", "runs", "notes"])["runs"], json!([]));
+    assert_eq!(
+        alice.run(&["cloud", "compute", "pipeline", "runs", "notes"])["runs"],
+        json!([])
+    );
     let unknown = alice
-        .try_run(&["pipeline", "get", "notes", "nope"])
+        .try_run(&["cloud", "compute", "pipeline", "get", "notes", "nope"])
         .unwrap_err();
     assert!(unknown.contains("NOT_FOUND"), "{unknown}");
     let unbound = alice
-        .try_run(&["pipeline", "cancel", "notes", "nope"])
+        .try_run(&["cloud", "compute", "pipeline", "cancel", "notes", "nope"])
         .unwrap_err();
     assert!(unbound.contains("NOT_FOUND"), "{unbound}");
     let retry = alice
-        .try_run(&["pipeline", "retry", "notes", "nope", "--limit", "a.fuel=9"])
+        .try_run(&[
+            "cloud", "compute", "pipeline", "retry", "notes", "nope", "--limit", "a.fuel=9",
+        ])
         .unwrap_err();
     assert!(retry.contains("NOT_FOUND"), "{retry}");
     let bad_limit = alice
-        .try_run(&["pipeline", "retry", "notes", "nope", "--limit", "fuel=9"])
+        .try_run(&[
+            "cloud", "compute", "pipeline", "retry", "notes", "nope", "--limit", "fuel=9",
+        ])
         .unwrap_err();
     assert!(bad_limit.contains("STEP.FIELD"), "{bad_limit}");
     let bad = alice
-        .try_run(&["pipeline", "run", "notes", "ghost", "--input", "docs"])
+        .try_run(&[
+            "cloud", "compute", "pipeline", "run", "notes", "ghost", "--input", "docs",
+        ])
         .unwrap_err();
     assert!(bad.contains("NAME=VALUE"), "{bad}");
 

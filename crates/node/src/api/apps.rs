@@ -180,7 +180,7 @@ async fn personal_org(node: &Node, owner: &str) -> Result<String, ApiError> {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CreateAppBody {
     #[serde(default)]
@@ -235,6 +235,22 @@ async fn app_create(
         return Err(ApiError::forbidden("read-only API key"));
     }
     let owner = p.account()?;
+    create_instance(&node, &p, owner, body, 0).await.map(Json)
+}
+
+/// How deep `create` references may nest: an app, the apps it creates, theirs.
+pub(crate) const MAX_UNIT_DEPTH: usize = 3;
+
+/// Creates one instance for `owner`, after the apps its release creates with it (`uses`
+/// with `mode: create`, [`unit_members`]), and waits for its `init`. `depth` counts the
+/// instances above this one in its unit.
+async fn create_instance(
+    node: &Arc<Node>,
+    p: &Principal,
+    owner: String,
+    body: CreateAppBody,
+    depth: usize,
+) -> Result<Value, ApiError> {
     let now = now_secs();
     let (bundle, compute_bundle, release) = match &body.deployment {
         // From a deployment's offer: installed already, and the caller's
@@ -250,7 +266,7 @@ async fn app_create(
                 ApiError::bad_request("BAD_REQUEST", "name the package the deployment offers")
             })?;
             let (bundle, compute, release) = offered_bundle(
-                &node,
+                node,
                 d,
                 package,
                 body.version.as_deref(),
@@ -261,7 +277,7 @@ async fn app_create(
         }
         None => {
             bundle_named(
-                &node,
+                node,
                 body.bundle,
                 body.package.as_deref(),
                 body.version.as_deref(),
@@ -289,7 +305,7 @@ async fn app_create(
     // owner's personal organization, made the first time.
     let org = match body.org {
         Some(org) => org,
-        None => personal_org(&node, &owner).await?,
+        None => personal_org(node, &owner).await?,
     };
     // Past a release deadline the app's approver has not met, no new app;
     // `CreateApp` asks again at the same time.
@@ -327,6 +343,60 @@ async fn app_create(
             "no node runs a release this app's owner approved",
         ));
     }
+    // The apps its release creates with it, made first in the same organization, so its
+    // `init` can be told their ids.
+    let mut init_args = body.init_args;
+    let links = match &release {
+        Some(release) => {
+            let unit = unit_members(node, release).await?;
+            if unit.is_empty() {
+                BTreeMap::new()
+            } else {
+                if depth >= MAX_UNIT_DEPTH {
+                    return Err(ApiError::bad_request(
+                        "UNIT_TOO_DEEP",
+                        &format!("apps a release creates nest at most {MAX_UNIT_DEPTH} deep"),
+                    ));
+                }
+                node.require_features(&[crate::system::cluster_version::Feature::AppLinks])
+                    .await?;
+                if init_args.get("links").is_some() {
+                    return Err(ApiError::bad_request(
+                        "BAD_REQUEST",
+                        "`links` in initArgs is the node's: it names the apps the release creates",
+                    ));
+                }
+                let mut links = BTreeMap::new();
+                for (name, (package, version)) in unit.members {
+                    let member = CreateAppBody {
+                        name: format!("{}.{name}", body.name),
+                        bundle: None,
+                        package: Some(package),
+                        version: Some(version),
+                        service: None,
+                        org: Some(org.clone()),
+                        access: body.access.clone(),
+                        init_args: Value::Null,
+                        metadata: json!({ "unit": { "of": body.name, "as": name } }),
+                        deployment: None,
+                    };
+                    let made = Box::pin(create_instance(node, p, owner.clone(), member, depth + 1))
+                        .await?;
+                    let id = made["appId"].as_str().unwrap_or_default().to_owned();
+                    let _prev = links.insert(name, id);
+                }
+                if unit.init_takes_links {
+                    if !init_args.is_object() {
+                        init_args = json!({});
+                    }
+                    init_args["links"] = json!(links);
+                }
+                links
+            }
+        }
+        None => BTreeMap::new(),
+    };
+    let links_answer = links.clone();
     let app_id = typed_id::<16>();
     let has_compute = compute_bundle.is_some();
     let components = node.sys(|s| s.components_of(release.as_ref()));
@@ -345,7 +415,7 @@ async fn app_create(
                 executor,
                 replicas,
                 created_at: now,
-                init_args: body.init_args,
+                init_args,
                 metadata: body.metadata,
                 last_upgrade: None,
                 deployment: body.deployment,
@@ -353,6 +423,8 @@ async fn app_create(
                 components,
                 release,
                 restore: None,
+                links,
+                attached: BTreeMap::new(),
             }),
         })
         .await?;
@@ -360,7 +432,7 @@ async fn app_create(
     // but its group cannot take a pipeline start before it.
     let deadline = tokio::time::Instant::now() + node.app_start_wait();
     loop {
-        match app_ready(&node, &app_id).await {
+        match app_ready(node, &app_id).await {
             Some(Ok(())) => break,
             Some(Err(error)) => {
                 return Err(init_failed(&app_id, &error));
@@ -374,13 +446,109 @@ async fn app_create(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Ok(Json(json!({
+    Ok(json!({
         "appId": app_id,
         "contextId": hex::encode(sha256(app_id.as_bytes())),
         "group": out["group"],
         "replicas": out["replicas"],
         "compute": has_compute,
-    })))
+        "links": links_answer,
+    }))
+}
+
+/// What a release creates with an instance of it: by name, the package and the release of
+/// each `create` reference in its signed manifest (`uses`), and whether its `init` takes
+/// `links` (then the node passes it the ids).
+pub(crate) struct Unit {
+    pub members: BTreeMap<String, (String, String)>,
+    pub init_takes_links: bool,
+}
+
+impl Unit {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+}
+
+/// The [`Unit`] of `release`, read from its verified manifest and embedded ABI. Each
+/// member's release is the one its lock pinned (`uses.version`), else the newest installed
+/// release of the package inside its range; a package with none is `409
+/// USES_NOT_INSTALLED`, naming what to install.
+pub(crate) async fn unit_members(
+    node: &Node,
+    release: &crate::system::PackageRef,
+) -> Result<Unit, ApiError> {
+    let Some(version) = node.sys(|s| {
+        s.packages
+            .get(&release.package)
+            .and_then(|p| p.versions.get(&release.version))
+            .cloned()
+    }) else {
+        return Ok(Unit {
+            members: BTreeMap::new(),
+            init_takes_links: false,
+        });
+    };
+    let card = crate::consent_page::release_capabilities(
+        node,
+        &release.package,
+        &version,
+        release.service.as_deref(),
+    )
+    .await?;
+    // The card is the node's own (`release_capabilities`); a `uses` it holds
+    // that does not read would create the instance without its unit.
+    let uses: BTreeMap<String, calimero_bundle::BundleUse> = match &card["uses"] {
+        Value::Null => BTreeMap::new(),
+        v => serde_json::from_value(v.clone())
+            .map_err(|e| ApiError::internal(&format!("the release's uses do not read: {e}")))?,
+    };
+    let init_takes_links = card["abi"]["methods"]["init"]["params"]
+        .as_array()
+        .is_some_and(|ps| ps.iter().any(|p| p[0] == "links"));
+    let mut members = BTreeMap::new();
+    for (name, u) in uses {
+        if u.mode != calimero_bundle::UseMode::Create {
+            continue;
+        }
+        let range = semver::VersionReq::parse(&u.range)
+            .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
+        let installed: Vec<String> = node.sys(|s| {
+            s.packages
+                .get(&u.package)
+                .map(|p| p.versions.keys().cloned().collect())
+                .unwrap_or_default()
+        });
+        let chosen = match &u.version {
+            Some(v) if installed.contains(v) => Some(v.clone()),
+            Some(_) => None,
+            None => installed
+                .iter()
+                .filter_map(|v| semver::Version::parse(v).ok().map(|p| (p, v)))
+                .filter(|(p, _)| range.matches(p))
+                .max_by(|a, b| a.0.cmp(&b.0))
+                .map(|(_, v)| v.clone()),
+        };
+        let Some(chosen) = chosen else {
+            return Err(ApiError::new(
+                409,
+                "USES_NOT_INSTALLED",
+                &format!(
+                    "{}@{} creates {name} from {} {}, which is not installed here: install {}",
+                    release.package,
+                    release.version,
+                    u.package,
+                    u.version.as_deref().unwrap_or(&u.range),
+                    u.package,
+                ),
+            ));
+        };
+        let _prev = members.insert(name, (u.package, chosen));
+    }
+    Ok(Unit {
+        members,
+        init_takes_links,
+    })
 }
 
 /// How long creating an app waits for its `init` to commit before answering `503 UNAVAILABLE`
@@ -823,6 +991,572 @@ async fn app_usage(
 }
 
 /// This area's routes, merged into [`super::router`].
+/// The methods of `target` that the release `source` runs lists for its package in its
+/// signed `uses` (`BundleUse::methods`): what a person is asked to let it call as them.
+async fn delegable_methods(
+    node: &Node,
+    source: &crate::types::AppRecord,
+    target: &crate::types::AppRecord,
+) -> Result<Vec<String>, ApiError> {
+    let (Some(from), Some(to)) = (node.release_of_app(source), node.release_of_app(target)) else {
+        return Ok(Vec::new());
+    };
+    let card = crate::consent_page::release_capabilities(
+        node,
+        &from.at.package,
+        &from.version,
+        from.at.service.as_deref(),
+    )
+    .await?;
+    let uses: BTreeMap<String, calimero_bundle::BundleUse> =
+        serde_json::from_value(card["uses"].clone()).unwrap_or_default();
+    let mut methods: Vec<String> = uses
+        .into_values()
+        .filter(|u| u.package == to.at.package)
+        .flat_map(|u| u.methods)
+        .collect();
+    methods.sort();
+    methods.dedup();
+    Ok(methods)
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DelegateBody {
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// What a grant of `source` over `target` would be for `account`: both apps, and the methods
+/// of `target` that the release `source` runs lists for its package. `404` unless the account
+/// reaches both and they are two apps of one organization; `409 NOTHING_TO_DELEGATE` when the
+/// release lists none. The route and the consent page's `delegate` request share it.
+pub(crate) async fn delegation_plan(
+    node: &Node,
+    account: &str,
+    source_id: &str,
+    target_id: &str,
+) -> Result<
+    (
+        crate::types::AppRecord,
+        crate::types::AppRecord,
+        Vec<String>,
+    ),
+    ApiError,
+> {
+    let source = node.app(source_id).await?;
+    let target = node.app(target_id).await?;
+    let account = account.to_owned();
+    let reaches =
+        node.sys(|s| s.may_reach(&source, Some(&account)) && s.may_reach(&target, Some(&account)));
+    if !reaches || source_id == target_id || source.org != target.org {
+        return Err(ApiError::new(
+            404,
+            "NOT_FOUND",
+            "no such pair of apps of one organization that you reach",
+        ));
+    }
+    let methods = delegable_methods(node, &source, &target).await?;
+    if methods.is_empty() {
+        return Err(ApiError::new(
+            409,
+            "NOTHING_TO_DELEGATE",
+            &format!("the release {source_id} runs lists no method of {target_id}'s package to call as you"),
+        ));
+    }
+    Ok((source, target, methods))
+}
+
+/// Let `source`'s runs for the caller call `target` as them (`SystemCmd::SetDelegation`):
+/// the methods the release `source` runs lists for `target`'s package in its `uses`, with
+/// the caller's passkey over exactly those (412 first). The caller must reach both apps,
+/// which are in one organization. From then on `target` sees the caller, not `source`, as
+/// the caller of those methods when `source` calls them for this person, and reads
+/// `env::via()` to know it came through `source`. `409 NOTHING_TO_DELEGATE` when the release
+/// lists none. The account holder's own: an app's frontend asks for it on the consent page
+/// (`delegate`), never here, as for any approval.
+async fn app_delegate(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((source_id, target_id)): Path<(String, String)>,
+    Json(body): Json<DelegateBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let source_id = node.canonical_app_id(&source_id);
+    let target_id = node.canonical_app_id(&target_id);
+    delegate(&node, &p, &source_id, &target_id, body.confirm).await
+}
+
+/// The grant itself, for the route and the consent page alike.
+pub(crate) async fn delegate(
+    node: &Node,
+    p: &Principal,
+    source_id: &str,
+    target_id: &str,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
+    let account = p.account()?;
+    let (_, _, methods) = delegation_plan(node, &account, source_id, target_id).await?;
+    node.require_features(&[Feature::Delegation]).await?;
+    let args = crate::system::delegation_args(target_id, &methods);
+    let consent = consent(node, p, source_id, "__delegate", &args, confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetDelegation {
+            account,
+            source: source_id.to_owned(),
+            target: target_id.to_owned(),
+            methods: Some(methods.clone()),
+            consent,
+        })
+        .await?;
+    Ok(Json(
+        json!({ "source": source_id, "target": target_id, "methods": methods }),
+    ))
+}
+
+/// Take back what the caller let `source` do on `target` as them: no passkey, as it only
+/// narrows. `404` when they granted nothing there.
+async fn app_undelegate(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((source_id, target_id)): Path<(String, String)>,
+) -> ApiResult {
+    let source_id = node.canonical_app_id(&source_id);
+    let target_id = node.canonical_app_id(&target_id);
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    let granted = node.sys(|s| {
+        s.delegations
+            .get(&account)
+            .and_then(|g| g.get(&source_id))
+            .is_some_and(|t| t.contains_key(&target_id))
+    });
+    if !granted {
+        return Err(ApiError::new(
+            404,
+            "NOT_DELEGATED",
+            &format!("you let {source_id} do nothing on {target_id} as you"),
+        ));
+    }
+    node.require_features(&[Feature::Delegation]).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::SetDelegation {
+            account,
+            source: source_id,
+            target: target_id,
+            methods: None,
+            consent: Value::Null,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
+/// What the caller lets `source` do as them: `{ source, delegations: { target: [method] } }`.
+async fn app_delegations(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(source_id): Path<String>,
+) -> ApiResult {
+    let source_id = node.canonical_app_id(&source_id);
+    let p = signed_in(&node, &headers).await?;
+    let account = p.account()?;
+    let source = node.app(&source_id).await?;
+    p.within(&node, &source)?;
+    let granted = node.sys(|s| {
+        s.delegations
+            .get(&account)
+            .and_then(|g| g.get(&source_id))
+            .cloned()
+            .unwrap_or_default()
+    });
+    Ok(Json(json!({ "source": source_id, "delegations": granted })))
+}
+
+/// Most bytes of an instance's own secret value.
+pub(crate) const MAX_SECRET_VALUE_BYTES: usize = 4096;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SecretBody {
+    value: String,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// The app, its release's declared secrets, and the account, for whoever manages the app.
+async fn secrets_gate(
+    node: &Node,
+    headers: &HeaderMap,
+    app_id: &str,
+    holder_only: bool,
+) -> Result<
+    (
+        Principal,
+        crate::types::AppRecord,
+        BTreeMap<String, calimero_bundle::BundleSecret>,
+    ),
+    ApiError,
+> {
+    let app_id = node.canonical_app_id(app_id);
+    let p = if holder_only {
+        holder(node, headers).await?
+    } else {
+        signed_in(node, headers).await?
+    };
+    let app = node.app(&app_id).await?;
+    p.within(node, &app)?;
+    if !manages_app(node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner, or whoever manages its organization's apps, handles its secrets",
+        ));
+    }
+    let declared = node
+        .release_of_app(&app)
+        .map(|r| r.version.secrets)
+        .unwrap_or_default();
+    Ok((p, app, declared))
+}
+
+/// The secrets the release an instance runs declares, and for each whether the instance
+/// has its own value (`source: app`, with its fingerprint, who set it and when) or uses the
+/// operator's (`source: cluster`). Never a value.
+async fn app_secrets(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let (p, app, declared) = secrets_gate(&node, &headers, &app_id, false).await?;
+    let own = node
+        .view(&ViewRequest {
+            app_id: app.app_id.clone(),
+            method: crate::node::SECRETS_VIEW.to_owned(),
+            args: Value::Null,
+            caller: p.caller,
+            strong: true,
+            min_index: 0,
+            via: None,
+        })
+        .await?
+        .result;
+    let secrets: serde_json::Map<String, Value> = declared
+        .into_iter()
+        .map(|(name, d)| {
+            let mut row = json!({
+                "hosts": d.hosts, "description": d.description, "required": d.required,
+                "source": "cluster",
+            });
+            if let Some(o) = own.get(&name).filter(|o| o.is_object()) {
+                row["source"] = json!("app");
+                row["fingerprint"] = o["fingerprint"].clone();
+                row["setBy"] = o["setBy"].clone();
+                row["setAt"] = o["setAt"].clone();
+            }
+            (name, row)
+        })
+        .collect();
+    Ok(Json(json!({ "secrets": secrets })))
+}
+
+/// Set the instance's own value of a secret its release declares, sent only to that
+/// secret's declared hosts and never shown again: the owner's (or whoever manages the
+/// organization's apps), with a step-up over `{ name, fingerprint }` (never the value).
+async fn app_secret_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, name)): Path<(String, String)>,
+    Json(mut body): Json<SecretBody>,
+) -> ApiResult {
+    let (p, app, declared) = secrets_gate(&node, &headers, &app_id, true).await?;
+    if !declared.contains_key(&name) {
+        return Err(ApiError::not_found(
+            "the release this app runs declares no such secret",
+        ));
+    }
+    if body.value.is_empty() || body.value.len() > MAX_SECRET_VALUE_BYTES {
+        return Err(ApiError::bad_request(
+            "BAD_SECRET",
+            &format!("a secret's value is 1 to {MAX_SECRET_VALUE_BYTES} bytes"),
+        ));
+    }
+    // An older node would not apply the command: its replicas would hold no value.
+    node.require_upgraded_nodes().await?;
+    let fingerprint = hex::encode(sha256(body.value.as_bytes()))[..16].to_owned();
+    let account = p.account()?;
+    let _consent = consent(
+        &node,
+        &p,
+        &app.app_id,
+        "__set_secret",
+        &json!({ "name": name, "fingerprint": fingerprint }),
+        body.confirm.take(),
+    )
+    .await?;
+    let a = node
+        .call(&CallRequest {
+            sys_index: p.sys_index,
+            ..CallRequest::host(
+                app.app_id.clone(),
+                "__secret_set",
+                json!({
+                    "name": name, "value": body.value, "fingerprint": fingerprint,
+                    "by": format!("account:{account}"), "at": now_secs(),
+                }),
+                p.caller,
+            )
+        })
+        .await?;
+    if a.status != Status::Ok {
+        return Err(ApiError::conflict(a.error.as_str().unwrap_or("refused")));
+    }
+    Ok(Json(
+        json!({ "name": name, "fingerprint": fingerprint, "index": a.index }),
+    ))
+}
+
+/// Remove the instance's own value of a secret: the operator's applies again. Same rules
+/// as setting one; a step-up over `{ name }`.
+async fn app_secret_clear(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, name)): Path<(String, String)>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let (p, app, _declared) = secrets_gate(&node, &headers, &app_id, true).await?;
+    node.require_upgraded_nodes().await?;
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let _consent = consent(
+        &node,
+        &p,
+        &app.app_id,
+        "__clear_secret",
+        &json!({ "name": name }),
+        confirm,
+    )
+    .await?;
+    let a = node
+        .call(&CallRequest {
+            sys_index: p.sys_index,
+            ..CallRequest::host(
+                app.app_id.clone(),
+                "__secret_clear",
+                json!({ "name": name }),
+                p.caller,
+            )
+        })
+        .await?;
+    if a.status != Status::Ok {
+        return Err(ApiError::not_found(
+            "this app holds no value of that secret",
+        ));
+    }
+    Ok(Json(json!({ "name": name, "index": a.index })))
+}
+
+/// The references of the release `app` runs (`uses` in its signed manifest), by name; none
+/// for an app without a release.
+pub(crate) async fn release_uses(
+    node: &Node,
+    app: &crate::types::AppRecord,
+) -> Result<BTreeMap<String, calimero_bundle::BundleUse>, ApiError> {
+    let Some(release) = node.release_of_app(app) else {
+        return Ok(BTreeMap::new());
+    };
+    let card = crate::consent_page::release_capabilities(
+        node,
+        &release.at.package,
+        &release.version,
+        release.at.service.as_deref(),
+    )
+    .await?;
+    Ok(serde_json::from_value(card["uses"].clone()).unwrap_or_default())
+}
+
+/// Whether `release` is of `u`'s package and inside its range.
+pub(crate) fn in_range(
+    u: &calimero_bundle::BundleUse,
+    release: &crate::system::PackageRef,
+) -> bool {
+    release.package == u.package
+        && semver::VersionReq::parse(&u.range).is_ok_and(|range| {
+            semver::Version::parse(&release.version).is_ok_and(|v| range.matches(&v))
+        })
+}
+
+/// One link of an instance as `GET /apps/{app}/links` answers it: the reference (`null`
+/// fields for a link its release no longer names), the app linked under it, the release
+/// that app runs and whether it is in the reference's range (`null` with nothing linked).
+fn link_row(
+    node: &Node,
+    name: &str,
+    u: Option<&calimero_bundle::BundleUse>,
+    linked: Option<&str>,
+) -> Value {
+    let release = linked
+        .and_then(|id| node.sys(|s| s.apps.get(id).cloned()))
+        .and_then(|a| node.release_of_app(&a))
+        .map(|r| r.at);
+    let fits = match (u, &release) {
+        (Some(u), Some(r)) => Some(in_range(u, r)),
+        _ => None,
+    };
+    json!({
+        "name": name,
+        "package": u.map(|u| &u.package),
+        "range": u.map(|u| &u.range),
+        "mode": u.map(|u| u.mode),
+        "app": linked,
+        "version": release.map(|r| r.version),
+        "inRange": fits,
+    })
+}
+
+/// An instance's links (`GET /apps/{app}/links`): each reference of the release it runs,
+/// with the app linked under it (a unit member made with it, or an app its owner attached),
+/// that app's release and whether it is in range. Who reaches the app reads them.
+async fn app_links(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let app = node.app(&app_id).await?;
+    let _p = gate(&node, &headers, &app, "*", false).await?;
+    let uses = release_uses(&node, &app).await?;
+    let linked = |name: &str| {
+        app.links
+            .get(name)
+            .or_else(|| app.attached.get(name))
+            .map(String::as_str)
+    };
+    let mut rows: Vec<Value> = uses
+        .iter()
+        .map(|(name, u)| link_row(&node, name, Some(u), linked(name)))
+        .collect();
+    for name in app.links.keys().chain(app.attached.keys()) {
+        if !uses.contains_key(name) {
+            rows.push(link_row(&node, name, None, linked(name)));
+        }
+    }
+    Ok(Json(json!({ "app": app_id, "links": rows })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct LinkBody {
+    app: String,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct UnlinkBody {
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Attach an app the caller runs to one of the instance's `attach` references
+/// (`SystemCmd::LinkApp`): whoever manages both apps, in one organization, with a passkey
+/// assertion (412 first). The app must run the reference's package; one outside its range is
+/// attached, and the answer says so (`inRange: false`). Answers the link as `GET .../links`
+/// lists it.
+async fn app_link(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, name)): Path<(String, String)>,
+    Json(body): Json<LinkBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let target_id = node.canonical_app_id(&body.app);
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    let app = node.app(&app_id).await?;
+    let target = node.app(&target_id).await?;
+    if !node.sys(|s| s.manages_app(&app, &actor) && s.manages_app(&target, &actor)) {
+        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
+    }
+    if target_id == app_id || target.org != app.org {
+        return Err(ApiError::bad_request(
+            "NOT_ATTACHABLE",
+            "only another app of the same organization is attached",
+        ));
+    }
+    let uses = release_uses(&node, &app).await?;
+    let Some(u) = uses
+        .get(&name)
+        .filter(|u| u.mode == calimero_bundle::UseMode::Attach)
+    else {
+        return Err(ApiError::new(
+            409,
+            "NOT_AN_ATTACH_REFERENCE",
+            &format!("the release {app_id} runs names no `attach` reference {name}"),
+        ));
+    };
+    let runs = node.release_of_app(&target).map(|r| r.at);
+    if runs.as_ref().is_none_or(|r| r.package != u.package) {
+        return Err(ApiError::new(
+            409,
+            "WRONG_PACKAGE",
+            &format!(
+                "{name} takes an app of {}: {target_id} runs another",
+                u.package
+            ),
+        ));
+    }
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::AttachApp]).await?;
+    let args = crate::system::link_app_args(&name, Some(&target_id));
+    let consent = consent(&node, &p, &app_id, "__link", &args, body.confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::LinkApp {
+            app_id,
+            name: name.clone(),
+            target: Some(target_id.clone()),
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(link_row(&node, &name, Some(u), Some(&target_id))))
+}
+
+/// Detach the app attached under `name` (`SystemCmd::LinkApp` with no target): whoever
+/// manages the instance, with a passkey assertion (412 first). A unit member is never
+/// detached. `404 NOT_ATTACHED` when nothing is attached there.
+async fn app_unlink(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, name)): Path<(String, String)>,
+    Json(body): Json<UnlinkBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let p = holder(&node, &headers).await?;
+    let actor = p.account()?;
+    let app = node.app(&app_id).await?;
+    if !node.sys(|s| s.manages_app(&app, &actor)) {
+        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
+    }
+    if !app.attached.contains_key(&name) {
+        return Err(ApiError::new(
+            404,
+            "NOT_ATTACHED",
+            &format!("no app is attached to {app_id} as {name}"),
+        ));
+    }
+    node.require_features(&[Feature::AttachApp]).await?;
+    let args = crate::system::link_app_args(&name, None);
+    let consent = consent(&node, &p, &app_id, "__link", &args, body.confirm).await?;
+    let _ok = node
+        .sys_write(&SystemCmd::LinkApp {
+            app_id,
+            name,
+            target: None,
+            actor,
+            consent,
+        })
+        .await?;
+    Ok(Json(json!({})))
+}
+
 pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/apps", post(app_create).get(app_list))
@@ -836,5 +1570,17 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/access", post(app_access))
         .route("/apps/{app}/transfer", post(app_transfer))
         .route("/apps/{app}/move", post(app_move))
+        .route("/apps/{app}/delegations", get(app_delegations))
+        .route(
+            "/apps/{app}/delegations/{target}",
+            put(app_delegate).delete(app_undelegate),
+        )
+        .route("/apps/{app}/links", get(app_links))
+        .route("/apps/{app}/links/{name}", put(app_link).delete(app_unlink))
         .route("/apps/{app}/xcalls", get(app_xcalls))
+        .route("/apps/{app}/secrets", get(app_secrets))
+        .route(
+            "/apps/{app}/secrets/{name}",
+            put(app_secret_set).delete(app_secret_clear),
+        )
 }

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use calimero_app_wit::COMPUTE_WORLD;
+use calimero_app_wit::names_compute_world;
 use serde_json::{Map, Value};
 
 use crate::engine::PrepareError;
@@ -104,7 +104,11 @@ impl Abi {
             .iter()
             .map(|(name, method)| Ok((name.clone(), method_abi(name, method)?)))
             .collect::<Result<BTreeMap<_, _>, PrepareError>>()?;
-        if top.get("world").and_then(Value::as_str) == Some(COMPUTE_WORLD) {
+        if top
+            .get("world")
+            .and_then(Value::as_str)
+            .is_some_and(names_compute_world)
+        {
             check_compute_world(&methods)?;
         } else {
             check_compute(&methods)?;
