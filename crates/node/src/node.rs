@@ -2451,7 +2451,14 @@ impl Node {
         sent: Arc<std::sync::atomic::AtomicU64>,
     ) -> Option<Arc<dyn calimero_outbound::OutboundHost>> {
         let service = self.config.outbound.as_ref()?;
-        let release = self.release_of(bundle)?;
+        // The release the app runs, when its record names one for this bundle: releases may
+        // share a WASM, and each declares its own prefixes and secrets. Else (a record from
+        // before, or a run on a bundle the record has moved past) the bundle's release.
+        let record = self.sys(|s| s.apps.get(app_id).cloned());
+        let release = record
+            .filter(|a| a.bundle == bundle)
+            .and_then(|a| self.release_of_app(&a))
+            .or_else(|| self.release_of(bundle))?;
         let (identity, approval) = self.sys(|s| {
             let signer = s.packages.get(&release.at.package)?.signer_id.clone();
             let approval = s.apps.get(app_id).and_then(|app| {
@@ -2465,6 +2472,15 @@ impl Node {
                 calimero_outbound::AppIdentity {
                     package: release.at.package.clone(),
                     signer,
+                    // A release that declares secrets gets only those, to their hosts.
+                    secrets: (!release.version.secrets.is_empty()).then(|| {
+                        release
+                            .version
+                            .secrets
+                            .iter()
+                            .map(|(name, s)| (name.clone(), s.hosts.clone()))
+                            .collect()
+                    }),
                 },
                 approval,
             ))
