@@ -5489,6 +5489,96 @@ async fn creating_an_instance_creates_the_apps_its_release_uses() {
     assert_eq!(got, json!("hi"));
 }
 
+/// A unit upgrades in one consent: `POST /apps/{app}/upgrade-unit` moves the instance to the
+/// new release of its package and each member to the release the new one pins for it, with
+/// one passkey assertion over all of them. A member is not moved on its own off the range
+/// its instance takes it with (`409 OUTSIDE_UNIT_RANGE`, before any step-up); an app with
+/// no members is not a unit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let upload = |package: &'static str, version: &'static str, uses: Value| {
+        mpk_using(package, version, &kv_wasm(), &publisher, &[], uses)
+    };
+    let uses = |kv: &str| json!({ "kv": { "package": "com.calimero.u-kv", "range": "^0.1", "version": kv } });
+    for (package, version, u) in [
+        ("com.calimero.u-kv", "0.1.0", Value::Null),
+        ("com.calimero.u-kv", "0.1.1", Value::Null),
+        ("com.calimero.u-kv", "0.2.0", Value::Null),
+        ("com.calimero.u-notes", "0.1.0", uses("0.1.0")),
+        ("com.calimero.u-notes", "0.2.0", uses("0.1.1")),
+    ] {
+        let _ = alice
+            .packages()
+            .upload(upload(package, version, u))
+            .await
+            .unwrap();
+    }
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": "com.calimero.u-notes", "version": "0.1.0" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+
+    // The member alone, off its range: refused before any passkey is asked for.
+    let e = alice
+        .apps()
+        .upgrade(&kv, typed(json!({ "version": "0.2.0" })), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OUTSIDE_UNIT_RANGE"), "{e}");
+    // The member is not a unit of its own.
+    let e = alice
+        .apps()
+        .upgrade_unit(&kv, "0.1.1", None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_A_UNIT"), "{e}");
+
+    // The unit, in one consent: the instance to 0.2.0, its kv to the 0.1.1 that pins.
+    let run = alice
+        .apps()
+        .upgrade_unit(&notes, "0.2.0", Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        run["targets"],
+        json!({ kv.clone(): { "package": "com.calimero.u-kv", "version": "0.1.1" } })
+    );
+    let org = alice.apps().get(&notes).await.map(wire).unwrap()["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let run_id = run["runId"].as_str().unwrap().to_owned();
+    let mut status = Value::Null;
+    for _ in 0..100 {
+        status = alice
+            .orgs()
+            .upgrade_status(&org, &run_id)
+            .await
+            .map(wire)
+            .unwrap();
+        if status["finished"] == json!(true) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(status["finished"], json!(true), "{status}");
+    assert_eq!(status["failed"], json!({}), "{status}");
+    for (app, version) in [(&notes, "0.2.0"), (&kv, "0.1.1")] {
+        let record = alice.apps().get(app).await.map(wire).unwrap();
+        assert_eq!(record["release"]["version"], json!(version), "{record}");
+    }
+}
+
 /// A synchronous xcall: the forms app (kv) verifies a captcha answer with the captcha
 /// service, another app in the same organization, inside its own call, and writes only if
 /// it passed. The challenge is spent in the captcha app's own log; a second use fails; an
