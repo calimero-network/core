@@ -203,6 +203,29 @@ rest from the leader, so no entry applies twice or is skipped
 `an_in_memory_machine_applies_each_entry_once_after_losing_its_commit_index`
 in `crates/log/tests/cluster.rs`).
 
+A group's Raft core on a node stops when that node cannot go on safely: a
+write the disk refused (EIO, ENOSPC), a machine that panicked in an entry, an
+entry it could not apply. openraft treats each as fatal to the core, so the
+group itself starts it again. As the core stops, the node drops what it applied
+in memory (a batch that never committed, half an entry) and reads the group's
+state and applied index back from the disk: the last committed batch for an app
+group, the last checkpoint for the system group. A stopped replica then answers
+like one that lags (a read that waits for an index waits for it to be applied
+again), and the node forwards its app's calls and views to the other replicas.
+After `RESTART_FIRST` (1 s) it starts a new core on the disk's state, which
+catches up from the log and the leader. A core that stops again within
+`RESTART_MAX` (5 min) waits twice as long before the next try, up to that, with
+up to a quarter of jitter, so a fault that persists (a full disk, an entry this
+release cannot decode) keeps the group stopped without a hot loop. Each stop is
+logged, and `calimero_group_stopped` and `calimero_group_restarts_total` show it
+([Observability](/operate/observability/)). Tests:
+`a_batch_that_fails_to_commit_stops_the_group_which_reloads_and_restarts`,
+`a_machine_that_panics_stops_the_group_which_reloads_and_restarts` and
+`a_fault_that_outlasts_a_restart_backs_off_and_shows_in_the_status` in
+`crates/log/tests/cluster.rs`;
+`a_node_whose_system_group_stopped_on_a_disk_error_rejoins_on_its_own` in
+`crates/node/tests/cluster.rs`.
+
 A **snapshot** is a file of sealed frames under `<data-dir>/snapshots`, written
 from a consistent RocksDB view of the group's rows, never the whole state in
 memory. A follower that needs one receives the file in chunks. Every node of

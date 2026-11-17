@@ -6047,7 +6047,12 @@ impl Machine for SystemMachine {
     }
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
-        self.state = serde_json::from_slice(data)?;
+        // Empty: the group stopped before its first checkpoint, and starts over.
+        self.state = if data.is_empty() {
+            SystemState::default()
+        } else {
+            serde_json::from_slice(data)?
+        };
         Ok(())
     }
 }
