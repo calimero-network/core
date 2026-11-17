@@ -61,7 +61,7 @@ operator bound it to). A release that declares none is filled from the operator'
 bindings alone, as before. The release's capability card
 (`GET /packages/{package}/{version}/capabilities`) lists them, and an upgrade's
 consent page names a secret it adds or sends elsewhere. A release declaring
-secrets installs only once every node runs 1.0.0-rc.30 (`declaredSecrets`).
+secrets installs only once every node runs 1.0.0-rc.31 (`declaredSecrets`).
 
 The app never holds a secret. A request names one as `{{secret:NAME}}` in a
 header value or the body; the node fills it in from **its operator's**
