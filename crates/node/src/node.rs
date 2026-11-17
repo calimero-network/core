@@ -1323,8 +1323,15 @@ impl Node {
     /// FEATURE_NOT_ACTIVE` for one that uses a feature above the cluster
     /// version ([`Node::require_features`]).
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
-        // Nothing is proposed that a node of the cluster would skip.
+        // Nothing is proposed that a node of the cluster cannot apply.
         self.require_features(&cmd.features()).await?;
+        self.sys_propose(cmd).await
+    }
+
+    /// [`Node::sys_write`] past the gate: only for `SetClusterVersion`, which
+    /// the gate itself logs ([`Node::raise_cluster_version_once`] checks it on
+    /// what every node supports).
+    pub(crate) async fn sys_propose(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
         // Long enough to ride out a system leader election, and never longer
         // than `SYSTEM_WRITE_TIMEOUT` in all: bounded by the deadline, not by a

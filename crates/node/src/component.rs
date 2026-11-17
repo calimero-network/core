@@ -1402,11 +1402,18 @@ impl AppMachine {
         match entry_format(command) {
             Some(format) if format <= ENTRY_FORMAT => {}
             format => {
+                // Applied as a no-op, it would leave this replica on a state the
+                // replicas that read it no longer have: the group stops instead.
+                let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::App);
                 tracing::error!(
                     index,
                     ?format,
-                    "an entry in a format this release does not read: applied as a no-op"
+                    undecodable = n,
+                    "an entry in a format this release does not read: the group stops here; run a release that reads it"
                 );
+                tx.fail(format_args!(
+                    "app entry {index} is in format {format:?}, which this release does not read"
+                ));
                 let detail = format.map_or_else(
                     || "entry format marker is not a number".to_owned(),
                     |f| {
@@ -1693,19 +1700,25 @@ impl AppMachine {
             }
             Err(e) => {
                 // As in the system log (`system::cluster_version`): a feature gate keeps
-                // every entry within what each replica applies, so this is a bug.
+                // every entry within what each replica applies, so one this replica cannot
+                // decode was written by a later release. Skipped, it would leave this replica
+                // on a state the others no longer have: the group stops on it instead.
                 let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::App);
                 error!(index, error = %e, undecodable = n,
-                    "an app entry this node cannot decode was skipped: its state now differs from the replicas that applied it");
-                Applied {
+                    "an app entry this node cannot decode: the group stops here; run a release that reads it");
+                tx.fail(format_args!("app entry {index} does not decode: {e}"));
+                return crate::app::applied_bytes(
                     index,
-                    status: Status::Trap,
-                    result: Value::Null,
-                    error: json!({ "kind": "Fault", "detail": format!("not a component's entry: {e}") }),
-                    events: Vec::new(),
-                    conflict: true,
-                    timeout: false,
-                }
+                    &Applied {
+                        index,
+                        status: Status::Trap,
+                        result: Value::Null,
+                        error: json!({ "kind": "Fault", "detail": format!("not a component's entry: {e}") }),
+                        events: Vec::new(),
+                        conflict: true,
+                        timeout: false,
+                    },
+                );
             }
         };
         self.expire_component(tx, entry_ts_ms);
@@ -2133,6 +2146,15 @@ mod tests {
             serde_json::from_slice(&out).unwrap()
         }
 
+        /// Applies `cmd` and answers whether its batch failed to commit, which stops
+        /// a running group's Raft core on that entry.
+        fn apply_stops(&mut self, index: u64, cmd: &[u8]) -> bool {
+            let state = self.engine.group_state(5);
+            let mut tx = StateTx::new(&state);
+            let _out = calimero_log::Machine::apply(&mut self.machine, index, cmd, &mut tx);
+            tx.commit().is_err()
+        }
+
         /// Applies `cmds`, the first at index `first`, as one batch, the way a replica
         /// catching up from the log does: one `StateTx`, committed after the last entry.
         fn apply_batch(&mut self, first: u64, cmds: &[Vec<u8>]) -> Vec<Applied> {
@@ -2301,28 +2323,42 @@ mod tests {
     /// later release marks newer is applied as a no-op that names its format, so a replica
     /// still on this release never applies part of it.
     #[test]
-    fn an_entry_in_a_later_format_is_refused_and_an_unmarked_one_applies() {
+    fn an_entry_in_a_later_format_stops_the_group_and_an_unmarked_one_applies() {
         assert_eq!(entry_format(&init(0)), Some(1));
         let mut r = Rig::new();
         let _i = r.apply(1, &init(0));
         let unmarked = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
         let newer = [&b"{\"v\":2,"[..], &unmarked[1..]].concat();
         assert_eq!(entry_format(&newer), Some(2));
-        let a = r.apply(2, &newer);
-        assert!(a.conflict);
-        let detail = a.error["detail"].as_str().unwrap_or_default();
         assert!(
-            detail.contains("entry format 2") && detail.contains("up to 1"),
-            "{detail}"
+            r.apply_stops(2, &newer),
+            "applied as a no-op, the replica would go on without what the others applied"
         );
         assert!(held(&r).is_empty(), "nothing of it applied");
-        assert_eq!(r.machine.state.last_index, 2, "its position moves");
+        assert_eq!(r.machine.state.last_index, 1, "the group stopped before it");
         let garbled = [&b"{\"v\":\"x\","[..], &unmarked[1..]].concat();
         assert_eq!(entry_format(&garbled), None);
-        assert!(r.apply(3, &garbled).conflict);
-        let ok = file_call(3, 1, Status::Ok, vec![mark(1)], vec![]);
-        assert!(!r.apply(4, &ok).conflict);
+        assert!(r.apply_stops(2, &garbled));
+        let ok = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
+        assert!(!r.apply(2, &ok).conflict);
         assert_eq!(held(&r), [fid(1)]);
+    }
+
+    /// Reproduction (B4): an app entry this replica cannot decode (a later
+    /// release's command) was skipped, and the replica went on serving a state
+    /// the others no longer had. Its batch now fails and the group stops there.
+    #[test]
+    fn an_entry_this_replica_cannot_decode_stops_the_group() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let later = br#"{"op":"aCommandOfALaterRelease","baseIndex":1}"#;
+        assert!(
+            r.apply_stops(2, later),
+            "the batch committed: the replica skipped the entry and goes on"
+        );
+        assert_eq!(r.machine.state.last_index, 1, "the group stopped before it");
+        let ok = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
+        assert!(!r.apply(2, &ok).conflict);
     }
 
     #[test]
@@ -3304,9 +3340,13 @@ mod tests {
         let mut r = Rig::new();
         let _i = r.apply(1, &init(0));
         // As merod before this release logged an SDK 0.12 app's blob removal.
+        // It decodes as no component entry, so the group stops on it.
         let v1 = serde_json::to_vec(&json!({ "op": "blobForget", "id": "00" })).unwrap();
-        let out = r.apply(2, &v1);
-        assert!(out.conflict, "a wasmer entry applied to a component app");
+        assert!(
+            r.apply_stops(2, &v1),
+            "a wasmer entry applied to a component app"
+        );
+        assert_eq!(r.machine.state.last_index, 1);
     }
 
     #[test]

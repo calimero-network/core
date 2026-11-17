@@ -6018,7 +6018,7 @@ impl Machine for SystemMachine {
         &mut self,
         index: u64,
         command: &[u8],
-        _state: &mut calimero_log::StateTx<'_>,
+        state: &mut calimero_log::StateTx<'_>,
     ) -> Vec<u8> {
         self.index = index;
         match serde_json::from_slice::<SystemCmd>(command) {
@@ -6029,11 +6029,14 @@ impl Machine for SystemMachine {
             Err(e) => {
                 // A feature gate keeps every entry within what each node
                 // applies (`cluster_version`): one that does not decode here
-                // means a node proposed above it, and this node's state now
-                // differs from the nodes that applied it.
+                // was written by a later release (this node rolled back, or
+                // joined on an older one). Skipping it would leave this node
+                // serving a state the others no longer have (a revoked key
+                // still working here), so the group stops on it instead.
                 let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::System);
                 error!(index, error = %e, undecodable = n,
-                    "a system entry this node cannot decode was skipped: its state now differs from the nodes that applied it");
+                    "a system entry this node cannot decode: the system group stops here; run a release that reads it");
+                state.fail(format_args!("system entry {index} does not decode: {e}"));
                 err(&format!("malformed command: {e}"))
             }
         }

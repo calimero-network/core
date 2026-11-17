@@ -362,13 +362,13 @@ release.
 ## The cluster version
 
 During a rollout, nodes on the old and the new release replicate one system
-log together, for as long as an app's approver keeps old nodes in use. A node
-applies an entry it cannot decode as `malformed command` and skips it, so an
+log together, for as long as an app's approver keeps old nodes in use. An
 entry only the new release understands (a new command, or a new field that
 changes what an old one does) would change the state of the new nodes alone:
-the old ones would keep answering reads and judging access from the state
-before it, and if the system leader were old, the caller would be refused an
-entry the new nodes applied.
+an old node cannot apply it, and stops its group on it (below), so a cluster
+that proposed one too early would lose its old nodes. Earlier releases
+skipped such an entry instead, and kept answering reads and judging access
+from the state before it (a revoked API key still working there).
 
 So each such shape is a **feature** with the first core release that applies
 it (`system::cluster_version::FEATURES`), and the cluster has an **active
@@ -394,19 +394,32 @@ cluster version**: the newest version every node supports.
 - **The gate.** Every proposal goes through `Node::sys_write`, which refuses a
   command using a feature above the active version with `409
   FEATURE_NOT_ACTIVE`, naming the feature and the version it needs (`details:
-  { feature, needs, active }`), before anything is logged. Until the logged
-  version reaches it, the proposing node judges by what every node supports
-  now, so a cluster rolling between two releases keeps every feature both
-  have. Routes that ask for a passkey step-up check before asking.
+  { feature, needs, active }`), before anything is logged. It judges on the
+  logged version. When that is below but every node supports the feature now,
+  the proposing node first has the version every node supports logged
+  (`SetClusterVersion`, `system::cluster_version::admit`), then judges again on
+  the logged one, so a cluster rolling between two releases keeps every
+  feature both have, and no entry is in the log before the version that keeps
+  older nodes out. Only `SetClusterVersion` itself, and a cluster whose nodes
+  are all below 1.0.0-rc.16 (which cannot decode it), are judged on what the
+  nodes support alone. Routes that ask for a passkey step-up check before
+  asking.
 - **Older nodes stay out.** Once a version is logged, the leader admits no
   node below it to the system group: a rollback means a new cluster, not an
-  older node in this one.
+  older node in this one. As every gated entry follows the version that brings
+  it, the logged version is the one in effect.
 - **Apply never reads it.** An entry applies as it did, so replaying a log is
   unchanged; the gate only decides what is proposed.
 
-A node that still meets an entry it cannot decode logs an error and counts it
-in `calimero_log_undecodable_entries_total{log}` (system or app log): with
-every feature gated it stays at zero.
+A node that still meets an entry it cannot decode (it runs an older release
+than the log, or an app entry of a later [entry format](/protocol/storage/#format-versions))
+never skips it: its batch fails, which stops that group's Raft core on the
+entry, and the node applies nothing after it until it restarts on a release
+that reads it. The group's state there stays as it was before the entry; it
+never moves on without it. It logs an error and counts the entry in
+`calimero_log_undecodable_entries_total{log}` (system or app log): with every
+feature gated it stays at zero. A stopped system group takes the node out of
+the cluster's system log; the other nodes go on.
 
 | Feature | Command or field | Since |
 | --- | --- | --- |

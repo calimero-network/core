@@ -518,8 +518,9 @@ names the feature and the release it needs; `details` is `{ feature, needs,
 active }` (`active: null` when a registered node did not say what it
 supports).
 
-**Why:** a node that cannot decode an entry skips it, and its state would no
-longer match the others'.
+**Why:** a node that cannot decode an entry stops that group on it rather
+than serve a state that no longer matches the others' (`calimero_log_undecodable_entries_total`),
+so nothing is proposed before every node reads it.
 
 **What to do:** finish the rollout: once no app keeps a replica on the old
 nodes, remove them (`DELETE /ops/nodes/{id}`; a node that is stopped but still

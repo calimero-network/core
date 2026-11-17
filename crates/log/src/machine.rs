@@ -664,6 +664,7 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
         let mut last = 0;
         {
             let mut st = self.shared.write().map_err(io)?;
+            let before = (st.last_applied, st.membership.clone());
             let mut tx = StateTx::new(&self.state);
             for entry in entries {
                 st.last_applied = Some(entry.log_id);
@@ -679,11 +680,22 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
                         out.push(Bytes::default());
                     }
                 }
+                // A machine that could not apply an entry (one it cannot decode,
+                // a row it cannot read) stops the group there: applying what
+                // follows would build on a state the other nodes do not have.
+                if tx.failed() {
+                    break;
+                }
             }
             // The batch's writes and the index they bring the state to land
             // together; readers, held off by the lock, see neither until then.
             let mut batch = Transaction::default();
-            tx.into_batch(&mut batch).map_err(io)?;
+            if let Err(e) = tx.into_batch(&mut batch) {
+                (st.last_applied, st.membership) = before;
+                tracing::error!(group = self.group, index = last, error = %e,
+                    "an entry could not be applied: this group stops here until the node restarts");
+                return Err(io(e));
+            }
             if !M::IN_MEMORY && last > 0 {
                 self.db
                     .stage_meta(

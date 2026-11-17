@@ -180,9 +180,10 @@ in format N, which a later release wrote`), and the node does not start; an
 older one is brought forward one registered step at a time, the marker written
 after each step, so a crash part way resumes where it stopped; an empty store
 takes the current format. A snapshot or backup of a later format is refused
-by its first line, and an app entry of a later format applies as a no-op that
-names its format on every replica of this release (the release that raises the
-entry format writes it only once every replica of the group reads it).
+by its first line, and an app entry of a later format stops the app's group on
+the replica that meets it, which logs the format it found (the release that
+raises the entry format writes it only once every replica of the group reads it,
+so only a replica on an older release than its group meets one).
 
 Changing a row, a snapshot's framing or an entry's meaning raises the matching
 number in the same change and keeps a reader (a migration step, or the old
