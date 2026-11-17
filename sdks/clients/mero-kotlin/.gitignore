@@ -35,3 +35,7 @@ merod.pid
 # was committable, and one was (474 KB of it, for ten releases).
 ci/merobox/res/*.mpk
 ci/merobox/res/*.wasm
+
+# Android resources: core's root .gitignore drops `**/res/*` (a Rust
+# convention), which would silently leave out every new resource file here.
+!**/src/*/res/*
