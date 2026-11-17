@@ -14,9 +14,6 @@
 #   remove_after = "1.0.0-rc.19"          # the first release that may ship without it,
 #                                         # at least 3 releases after `since`
 #   replacement  = "POST /auth/new"       # what to use instead, or "nothing"
-# The sealed channel's two paths are served by `calimero-sealed`'s envelope, outside the router:
-# it marks its own legacy paths' answers (`LEGACY_PATHS_DEPRECATED_AT`, which `api::deprecation`'s
-# tests hold to the `date` here).
 #
 # [[cutover]]: removed at once, which breaks earlier clients, apps or nodes; also marked
 # by `!` in its PR's title (the release notes list it as breaking) and in mdma's
@@ -24,20 +21,6 @@
 #   route = "...", field = "...", wit = "0.6.0" or abi = 2   # what it removes
 #   pr    = 4999                                              # the PR that removes it
 #   why   = "..."                                             # what breaks, and for whom
-
-[[deprecated]]
-route = "POST /sealed/v2/handshake"
-since = "1.0.0-rc.25"
-date = 2026-11-13
-remove_after = "1.0.0-rc.28"
-replacement = "POST /sealed/handshake"
-
-[[deprecated]]
-route = "POST /sealed/v2"
-since = "1.0.0-rc.25"
-date = 2026-11-13
-remove_after = "1.0.0-rc.28"
-replacement = "POST /sealed"
 
 [[cutover]]
 route = "POST /auth/releases"
@@ -53,3 +36,13 @@ why = "every app is in an organization, so an account holds no outbound approval
 field = "outboundApprovals"
 pr = 5015
 why = "/auth/me no longer answers the account's own outbound approvals: they are its personal organization's (GET /orgs/{org})"
+
+[[cutover]]
+route = "POST /sealed/v2/handshake"
+pr = 5102
+why = "deprecated since 1.0.0-rc.25 for POST /sealed/handshake: clients and peers of 1.0.0-rc.24 or earlier, and SDKs that open sessions only there, no longer reach a node"
+
+[[cutover]]
+route = "POST /sealed/v2"
+pr = 5102
+why = "deprecated since 1.0.0-rc.25 for POST /sealed: every SDK released before this one (mero-js up to 35.7.0, MeroKit and mero-kotlin up to 6.1.0) posts its sealed requests here and must upgrade to one that posts to /sealed"

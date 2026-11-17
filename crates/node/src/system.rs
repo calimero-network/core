@@ -1175,11 +1175,25 @@ impl Stall {
 pub fn rfc3339(secs: u64) -> String {
     i64::try_from(secs)
         .ok()
-        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-        .map_or_else(
-            || secs.to_string(),
-            |t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        )
+        .and_then(|s| time::OffsetDateTime::from_unix_timestamp(s).ok())
+        .and_then(|t| {
+            t.format(&time::format_description::well_known::Rfc3339)
+                .ok()
+        })
+        .unwrap_or_else(|| secs.to_string())
+}
+
+#[cfg(test)]
+mod time_format_tests {
+    /// The strings chrono wrote before the node moved to `time` (RUSTSEC-2026-0543): the API
+    /// keeps answering them byte for byte.
+    #[test]
+    fn times_read_as_they_did() {
+        assert_eq!(super::rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(super::rfc3339(1_763_164_800), "2025-11-15T00:00:00Z");
+        assert_eq!(super::rfc3339(1_763_208_245), "2025-11-15T12:04:05Z");
+        assert_eq!(super::rfc3339(u64::MAX), u64::MAX.to_string());
+    }
 }
 
 /// What a package signing key signs to bind it to an organization on a

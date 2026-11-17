@@ -264,6 +264,7 @@ impl Node {
         let mpk_hash = hex::encode(calimero_identity::sha256(&mpk));
         let mpk_size = mpk.len() as u64;
         let (bundle, wasm) = verify(mpk)?;
+        crate::consent_page::remember_release_facts(self, &mpk_hash, &bundle, &wasm);
         let manifest = bundle.manifest();
         let package = manifest.package.clone();
         let signer_id = bundle.signer_id().to_owned();

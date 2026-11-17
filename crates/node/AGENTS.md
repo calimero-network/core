@@ -222,7 +222,7 @@ is its command line.
   (the outbox row) for a message; the target's host core gets it with
   `HostCore::with_origin` (`env::on_behalf_of()`), beside `Caller::App(source)`.
   Timers, actions, `init` and public callers pass none. Only from the logged
-  cluster version that brings `Feature::OnBehalfOf` (rc.30): before it no run
+  cluster version that brings `Feature::OnBehalfOf` (rc.31): before it no run
   names anyone, so an older node dropping the field changes nothing. A row an
   earlier release wrote has none and is delivered as before. Regression:
   `an_xcall_names_the_person_its_run_served` (`tests/component_cluster.rs`).
@@ -793,7 +793,7 @@ is its command line.
   (same organization and owner, the release its lock pinned or the newest
   installed one in range, else `409 USES_NOT_INSTALLED`; at most
   `MAX_UNIT_DEPTH` deep), then records them on the instance
-  (`AppRecord::links`, `Feature::AppLinks`, rc.30) and, when the release's
+  (`AppRecord::links`, `Feature::AppLinks`, rc.31) and, when the release's
   `init` takes `links`, passes their ids in `initArgs` (a client's own
   `links` there is refused). A failure after a member was made leaves it in
   place. Regression: `creating_an_instance_creates_the_apps_its_release_uses`.
@@ -813,7 +813,7 @@ is its command line.
   runs `api::upgrade_unit`. Regression: `a_unit_upgrades_on_the_page_in_one_approval`.
   An `attach` reference holds an app its owner already runs (`AppRecord::attached`, apart
   from `links`, so a unit's upgrade, `upgrade_run_apps` and `refuse_off_unit_range` never
-  touch it): `SystemCmd::LinkApp { app_id, name, target }` (`Feature::AttachApp`, rc.30;
+  touch it): `SystemCmd::LinkApp { app_id, name, target }` (`Feature::AttachApp`, rc.31;
   consent `<app> / __link / { name, target }`, `system::link_app_args`; `target: null`
   detaches), judged at apply: whoever manages both apps, another app of the same
   organization, a reference name (`calimero_bundle::is_use_name`) that is not a unit
