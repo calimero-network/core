@@ -85,7 +85,7 @@ pub use env::{Audience, Caller, OrgRole};
 pub use error::{AppError, Result, StorageError, TableError};
 pub use search::{Found, SearchMode, SearchOpts, SearchResults};
 pub use store::{MemStore, RangeCursor, Store};
-pub use table::{FindOpts, Page, Record, Table};
+pub use table::{FindOpts, Iter, Page, Record, Table};
 
 #[cfg(target_arch = "wasm32")]
 pub use store::HostStore;

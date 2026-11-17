@@ -12,16 +12,16 @@ The shared storage encoding (order-preserving tuple keys, deterministic CBOR val
 
 ## Collections
 
-One leader applies every write in log order, so these are plain data structures, not CRDTs (v1's merge semantics have nothing to merge). Every one implements `app::StateField`, so `#[app::state]` lists it in the ABI. Multi-row reads are pages (`FindOpts` in, `Page` out, at most 1,000 rows, `limit + 1` entries read); lengths are stored counts kept with `Store::add`, never a scan; `clear` deletes a batch of at most 1,000 per cursor read until none is left.
+One leader applies every write in log order, so these are plain data structures, not CRDTs (v1's merge semantics have nothing to merge). Every one implements `app::StateField`, so `#[app::state]` lists it in the ABI. Multi-row reads are pages (`FindOpts` in, `Page` out, at most 1,000 rows, `limit + 1` entries read), and each paged type also iterates (`table::Iter`, re-exported at the crate root and not in the prelude: `iter`, `iter_with(opts)`, `prefix_iter`; `Table::{iter, scan_iter, find_iter}`), which reads a page of `limit` (1,000 unset) only when the loop reaches it and yields a failed read once as `Err`; lengths are stored counts kept with `Store::add`, never a scan; `clear` deletes a batch of at most 1,000 per cursor read until none is left.
 
 | Type (v1 counterpart) | Operations |
 | --- | --- |
-| `Cell<T>` (`LwwRegister`) | `get`, `set`, `clear` |
-| `UnorderedMap<K, V>` (`UnorderedMap`, `SortedMap`, `NestedMap` with tuple keys) | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; with `K: FromKey`: `page`, `range`, `prefix` (whole key parts), `starts_with` (last string/bytes part as a prefix), `first`, `last` |
-| `Set<T>` (`UnorderedSet`, `SortedSet`), `T: ToKey + FromKey` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `page`, `range`, `prefix`, `starts_with`, `first`, `last` |
-| `Vector<T>` (`Vector`) | `push` (returns the position), `get`, `set` (`OutOfBounds` past the end), `pop`, `len`, `is_empty`, `page` (positions as `KeyPart::Int` in `from`/`to`), `clear` |
-| `Frozen<T, H = CborSha256>` (`FrozenStorage`) | `insert` (returns the hex hash and whether it was new; the same content writes nothing), `get(hex)`, `contains(hex)`, `hash_of`; `H: ContentHash<T>` picks the address (default SHA-256 of the stored CBOR) |
-| `PerUser<T>` (`UserStorage`) | `get`, `set`, `remove` on the caller's own value (`env::caller()`'s account; `LoginRequired` for non-accounts), `get_for(account)` |
+| `Cell<T>` (`LwwRegister`) | `get`, `set`, `clear`, `is_set`, `get_or_default`, `replace`, `take`, `update` |
+| `UnorderedMap<K, V>` (`UnorderedMap`, `SortedMap`, `NestedMap` with tuple keys) | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`, `get_or_insert_with`, `extend` (new keys); with `K: FromKey`: `page`, `range`, `prefix` (whole key parts), `starts_with` (last string/bytes part as a prefix), `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values` |
+| `Set<T>` (`UnorderedSet`, `SortedSet`), `T: ToKey + FromKey` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (new elements), `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter` |
+| `Vector<T>` (`Vector`) | `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `swap_remove` (the last element moves in), `truncate`, `len`, `is_empty`, `page` (positions as `KeyPart::Int` in `from`/`to`), `iter`, `iter_with`, `clear` |
+| `Frozen<T, H = CborSha256>` (`FrozenStorage`) | `insert` (returns the hex hash and whether it was new; the same content writes nothing), `get(hex)`, `contains(hex)`, `hash_of`, `page`/`iter` as `(hex, value)` in hash order; `H: ContentHash<T>` picks the address (default SHA-256 of the stored CBOR) |
+| `PerUser<T>` (`UserStorage`) | `get`, `set`, `remove` on the caller's own value (`env::caller()`'s account; `LoginRequired` for non-accounts), `get_for(account)`, `contains_for(account)`, `page`/`iter`/`iter_with` as `(account, value)` in account order |
 | `Counter` | `get`, `add`, `increment` |
 | `Text` (`FugueText`) | `insert_after(id, str)`, `delete_ids`, `insert(index, str)`, `delete(index, n)`, `read`, `chars` (with ids), `id_at`, `index_of`, `len`, `clear` |
 | `RichText` (`RichText`) | `text()` / `text_mut()` (a `Text`), `mark(start, end, key, value, expand)`, `mark_ids`, `marks`, `spans`, `clear` |

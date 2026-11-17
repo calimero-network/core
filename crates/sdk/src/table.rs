@@ -63,6 +63,82 @@ pub struct Page<T> {
     pub next: Option<String>,
 }
 
+impl<T> IntoIterator for Page<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
+}
+
+/// Reads one page for [`Iter`].
+type FetchPage<'a, T> = Box<dyn FnMut(&FindOpts) -> Result<Page<T>, StorageError> + 'a>;
+
+/// Every item of a paged read, in the read's order, fetched a page at a time as the loop
+/// reaches it: no read happens before the first `next`, and stopping early (`take`, `find`,
+/// `break`) reads no further pages.
+///
+/// A page is `opts.limit` items (1,000 when unset, the most a page holds), so
+/// `iter_with(FindOpts::default().limit(10))` reads 11 entries per host read. `from`, `to`,
+/// `reverse` and a starting `cursor` apply as they do to one page. A failed read is yielded
+/// once as `Err`, and the iterator ends after it.
+///
+/// Each page is read when the iterator reaches it, so a write between pages to the same
+/// collection is seen by the pages not yet read.
+pub struct Iter<'a, T> {
+    fetch: FetchPage<'a, T>,
+    opts: FindOpts,
+    items: std::vec::IntoIter<T>,
+    done: bool,
+}
+
+impl<'a, T> Iter<'a, T> {
+    /// Iterate the pages `fetch` reads, starting at `opts`.
+    pub fn new(
+        mut opts: FindOpts,
+        fetch: impl FnMut(&FindOpts) -> Result<Page<T>, StorageError> + 'a,
+    ) -> Self {
+        opts.limit = Some(opts.limit.unwrap_or(MAX_LIMIT).clamp(1, MAX_LIMIT));
+        Self {
+            fetch: Box::new(fetch),
+            opts,
+            items: Vec::new().into_iter(),
+            done: false,
+        }
+    }
+}
+
+impl<T> Iterator for Iter<'_, T> {
+    type Item = Result<T, StorageError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(item) = self.items.next() {
+                return Some(Ok(item));
+            }
+            if self.done {
+                return None;
+            }
+            match (self.fetch)(&self.opts) {
+                Ok(page) => {
+                    match page.next {
+                        Some(cursor) => self.opts.cursor = Some(cursor),
+                        None => self.done = true,
+                    }
+                    self.items = page.items.into_iter();
+                }
+                Err(e) => {
+                    self.done = true;
+                    return Some(Err(e));
+                }
+            }
+        }
+    }
+}
+
+impl<T> core::iter::FusedIterator for Iter<'_, T> {}
+
 /// Options of [`Table::find`] and [`Table::scan`].
 #[derive(Clone, Debug, Default)]
 pub struct FindOpts {
@@ -397,6 +473,26 @@ impl<T: Record, S: Store> Table<T, S> {
             .map(|(_, bytes)| value::from_slice(bytes))
             .collect::<Result<_, _>>()?;
         Ok(Page { items, next })
+    }
+
+    /// Every record in key order, a page at a time as the loop reaches it.
+    pub fn iter(&self) -> Iter<'_, T> {
+        self.scan_iter(FindOpts::default())
+    }
+
+    /// [`Table::scan`] over every page from `opts` on.
+    pub fn scan_iter(&self, opts: FindOpts) -> Iter<'_, T> {
+        Iter::new(opts, move |o| self.scan(o.clone()))
+    }
+
+    /// [`Table::find`] over every page from `opts` on.
+    pub fn find_iter<'a>(
+        &'a self,
+        index: &'a str,
+        prefix: &'a [KeyPart],
+        opts: FindOpts,
+    ) -> Iter<'a, T> {
+        Iter::new(opts, move |o| self.find(index, prefix, o.clone()))
     }
 
     /// The maintained count `name` for the records matching `prefix`.

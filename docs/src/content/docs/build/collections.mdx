@@ -49,6 +49,7 @@ pub struct Booking {
 | `remove(&key)` | Removes the record and its index, unique and count entries; `false` when absent. |
 | `find(index, &prefix, opts)` | Records whose index fields start with `prefix`, in index order, one page at a time. |
 | `scan(opts)` | All records in key order, one page at a time. |
+| `iter()` / `scan_iter(opts)` / `find_iter(index, &prefix, opts)` | The same reads over every page, as an iterator (see [Iterating](#iterating)). |
 | `count(name, &prefix)` | A maintained count: one read when `prefix` names every field of the count. |
 | `search(text, SearchOpts)` | Full-text search over `#[table(search = [..])]` fields, best match first (views only). |
 
@@ -75,17 +76,39 @@ Every multi-row read returns a `Page { items, next }`. `FindOpts` sets
 `next`), `reverse`, and `from` (inclusive) / `to` (exclusive) bounds after the
 prefix. A page reads at most `limit + 1` entries.
 
+### Iterating
+
+Every type with pages also iterates: `iter()` from the start, `iter_with(opts)`
+(`reverse`, `from`, `to`, a starting `cursor`), and on maps and sets
+`prefix_iter(&prefix, opts)`. The iterator yields `Result<T, StorageError>` and
+reads the next page only when the loop reaches it, so `take`, `find` or `break`
+stop the reads. A page is `limit` items, 1,000 when unset. A failed read is
+yielded once as `Err` and ends the iteration.
+
+```rust
+for entry in self.items.iter() {
+    let (key, value) = entry?;
+    // ..
+}
+let first_ten: Vec<Booking> = self.bookings.iter().take(10).collect::<Result<_, _>>()?;
+let recent = self.log.iter_with(FindOpts::default().reverse().limit(20)).take(20);
+```
+
+Each run is metered, so walking a large collection in one call costs fuel for
+every entry it reads. A view that answers a client should still return one
+`Page` and its `next`.
+
 ## Collections
 
 | Type | Operations |
 | --- | --- |
-| `Cell<T>` | `get`, `set`, `clear` |
-| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last` |
-| `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `page`, `range`, `prefix`, `starts_with`, `first`, `last` |
-| `Vector<T>` | `push` (returns the position), `get`, `set` (`OutOfBounds` past the end), `pop`, `len`, `is_empty`, `page`, `clear` |
+| `Cell<T>` | `get`, `set`, `clear`, `is_set`, `get_or_default`, `replace` and `take` (return the old value), `update(\|old\| new)` |
+| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values` |
+| `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter` |
+| `Vector<T>` | `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `swap_remove(i)` (the last element takes its place), `truncate(len)`, `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
 | `Counter` | `get`, `add`, `increment` |
-| `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of` |
-| `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` reads another's |
+| `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of`, `page` and `iter` as `(hex, value)` in hash order |
+| `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` and `contains_for(account)` read another's; `page`, `iter` and `iter_with` list `(account, value)` in account order |
 | `Text` | `insert_after(id, str)`, `delete_ids`, `insert(index, str)`, `delete(index, n)`, `read`, `chars`, `id_at`, `index_of`, `len`, `clear` |
 | `RichText` | `text()` / `text_mut()` (a `Text`), `mark(start, end, key, value, expand)`, `mark_ids`, `marks`, `spans`, `clear` |
 

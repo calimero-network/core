@@ -8,7 +8,7 @@ use crate::commons::{clear_prefix, collection_key, key_after, read_count, read_p
 use crate::encoding::key::{self, FromKey, KeyPart, ToKey};
 use crate::error::StorageError;
 use crate::store::{check_key, DefaultStore, Store};
-use crate::table::{FindOpts, Page};
+use crate::table::{FindOpts, Iter, Page};
 
 /// CBOR `null`: what every element's key holds.
 const PRESENT: &[u8] = &[0xF6];
@@ -90,6 +90,23 @@ impl<T: ToKey, S: Store> Set<T, S> {
         Ok(self.len()? == 0)
     }
 
+    /// Insert every value; returns how many were new.
+    pub fn extend<'v>(
+        &mut self,
+        values: impl IntoIterator<Item = &'v T>,
+    ) -> Result<u64, StorageError>
+    where
+        T: 'v,
+    {
+        let mut new = 0;
+        for v in values {
+            if self.insert(v)? {
+                new += 1;
+            }
+        }
+        Ok(new)
+    }
+
     /// Remove every element, a batch at a time; returns how many there were.
     pub fn clear(&mut self) -> Result<u64, StorageError> {
         let base = self.base()?;
@@ -144,6 +161,21 @@ impl<T: ToKey + FromKey, S: Store> Set<T, S> {
             ..opts
         };
         self.page_under(&base, &opts)
+    }
+
+    /// Every element in order, a page at a time as the loop reaches it.
+    pub fn iter(&self) -> Iter<'_, T> {
+        self.iter_with(FindOpts::default())
+    }
+
+    /// [`Set::page`] over every page from `opts` on (`from`, `to`, `reverse`).
+    pub fn iter_with(&self, opts: FindOpts) -> Iter<'_, T> {
+        Iter::new(opts, move |o| self.page(o.clone()))
+    }
+
+    /// [`Set::prefix`] over every page.
+    pub fn prefix_iter<'a>(&'a self, prefix: &'a [KeyPart], opts: FindOpts) -> Iter<'a, T> {
+        Iter::new(opts, move |o| self.prefix(prefix, o.clone()))
     }
 
     /// The smallest element.

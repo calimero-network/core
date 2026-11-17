@@ -12,7 +12,7 @@ use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{DefaultStore, Store};
-use crate::table::{FindOpts, Page};
+use crate::table::{FindOpts, Iter, Page};
 
 /// A list of values by position; it grows and shrinks at the end.
 pub struct Vector<T, S: Store = DefaultStore> {
@@ -123,6 +123,74 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
             .map(|(_, bytes)| value::from_slice(bytes))
             .collect::<Result<_, _>>()?;
         Ok(Page { items, next })
+    }
+
+    /// Every element in position order, a page at a time as the loop reaches it.
+    pub fn iter(&self) -> Iter<'_, T> {
+        self.iter_with(FindOpts::default())
+    }
+
+    /// [`Vector::page`] over every page from `opts` on: `.reverse()` walks from the end,
+    /// `.from(vec![KeyPart::Int(i)])` starts at position `i`.
+    pub fn iter_with(&self, opts: FindOpts) -> Iter<'_, T> {
+        Iter::new(opts, move |o| self.page(o.clone()))
+    }
+
+    /// The first element.
+    pub fn first(&self) -> Result<Option<T>, StorageError> {
+        self.get(0)
+    }
+
+    /// The last element.
+    pub fn last(&self) -> Result<Option<T>, StorageError> {
+        match self.len()?.checked_sub(1) {
+            Some(last) => self.get(last),
+            None => Ok(None),
+        }
+    }
+
+    /// Append every value in order; returns how many were appended.
+    pub fn extend<'v>(
+        &mut self,
+        values: impl IntoIterator<Item = &'v T>,
+    ) -> Result<u64, StorageError>
+    where
+        T: 'v,
+    {
+        let mut n = 0;
+        for v in values {
+            let _ = self.push(v)?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// Remove the element at `index` and return it, moving the last element into its place
+    /// (two writes, not a shift); `OutOfBounds` past the end.
+    pub fn swap_remove(&mut self, index: u64) -> Result<T, StorageError> {
+        let len = self.len()?;
+        if index >= len {
+            return Err(StorageError::OutOfBounds { index, len });
+        }
+        let last = self.pop()?.ok_or(StorageError::Dangling)?;
+        if index == len - 1 {
+            return Ok(last);
+        }
+        self.set(index, &last)
+    }
+
+    /// Keep the first `len` elements and remove the rest, last first; returns how many were
+    /// removed. Nothing happens when the vector is not longer than `len`.
+    pub fn truncate(&mut self, len: u64) -> Result<u64, StorageError> {
+        let have = self.len()?;
+        for index in (len..have).rev() {
+            self.store.delete(&self.storage_key(index)?);
+        }
+        let removed = have.saturating_sub(len);
+        if removed > 0 {
+            self.store.add(&self.len_key()?, -(removed as i64));
+        }
+        Ok(removed)
     }
 
     /// Remove every element, a batch at a time; returns how many there were.

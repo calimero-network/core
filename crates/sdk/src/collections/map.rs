@@ -14,7 +14,7 @@ use crate::encoding::key::{self, FromKey, KeyPart, ToKey};
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{check_key, DefaultStore, Store};
-use crate::table::{FindOpts, Page};
+use crate::table::{FindOpts, Iter, Page};
 
 /// A map from tuple keys to CBOR values, ordered by key.
 pub struct UnorderedMap<K: ToKey, V, S: Store = DefaultStore> {
@@ -83,6 +83,38 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
             self.store.add(&self.count_key()?, 1);
         }
         Ok(old)
+    }
+
+    /// The value at `k`, inserting `make()` first when there is none.
+    pub fn get_or_insert_with(
+        &mut self,
+        k: &K,
+        make: impl FnOnce() -> V,
+    ) -> Result<V, StorageError> {
+        if let Some(v) = self.get(k)? {
+            return Ok(v);
+        }
+        let v = make();
+        let _ = self.insert(k, &v)?;
+        Ok(v)
+    }
+
+    /// Set every pair, as [`UnorderedMap::insert`] does; returns how many keys were new.
+    pub fn extend<'e>(
+        &mut self,
+        entries: impl IntoIterator<Item = (&'e K, &'e V)>,
+    ) -> Result<u64, StorageError>
+    where
+        K: 'e,
+        V: 'e,
+    {
+        let mut new = 0;
+        for (k, v) in entries {
+            if self.insert(k, v)?.is_none() {
+                new += 1;
+            }
+        }
+        Ok(new)
     }
 
     /// Remove `k`, returning the value it held.
@@ -170,6 +202,31 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
             ..opts
         };
         self.page_under(&base, &opts)
+    }
+
+    /// Every entry in key order, a page at a time as the loop reaches it.
+    pub fn iter(&self) -> Iter<'_, (K, V)> {
+        self.iter_with(FindOpts::default())
+    }
+
+    /// [`UnorderedMap::page`] over every page from `opts` on (`from`, `to`, `reverse`).
+    pub fn iter_with(&self, opts: FindOpts) -> Iter<'_, (K, V)> {
+        Iter::new(opts, move |o| self.page(o.clone()))
+    }
+
+    /// [`UnorderedMap::prefix`] over every page.
+    pub fn prefix_iter<'a>(&'a self, prefix: &'a [KeyPart], opts: FindOpts) -> Iter<'a, (K, V)> {
+        Iter::new(opts, move |o| self.prefix(prefix, o.clone()))
+    }
+
+    /// Every key in order.
+    pub fn keys(&self) -> impl Iterator<Item = Result<K, StorageError>> + '_ {
+        self.iter().map(|e| e.map(|(k, _)| k))
+    }
+
+    /// Every value, in key order.
+    pub fn values(&self) -> impl Iterator<Item = Result<V, StorageError>> + '_ {
+        self.iter().map(|e| e.map(|(_, v)| v))
     }
 
     /// The entry with the smallest key.
