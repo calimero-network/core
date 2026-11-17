@@ -9,12 +9,14 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::{clear_prefix, collection_key, key_after, read_count, read_page};
+use crate::commons::{
+    bounds, clear_prefix, collection_key, iter_entries, key_after, read_count, read_page, Entry,
+};
 use crate::encoding::key::{self, FromKey, KeyPart, ToKey};
 use crate::encoding::value;
 use crate::error::StorageError;
-use crate::store::{check_key, DefaultStore, Store};
-use crate::table::{FindOpts, Page};
+use crate::store::{check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
+use crate::table::{FindOpts, Iter, Page};
 
 /// A map from tuple keys to CBOR values, ordered by key.
 pub struct UnorderedMap<K: ToKey, V, S: Store = DefaultStore> {
@@ -85,6 +87,79 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
         Ok(old)
     }
 
+    /// The value at `k`, inserting `make()` first when there is none.
+    pub fn get_or_insert_with(
+        &mut self,
+        k: &K,
+        make: impl FnOnce() -> V,
+    ) -> Result<V, StorageError> {
+        if let Some(v) = self.get(k)? {
+            return Ok(v);
+        }
+        let v = make();
+        let _ = self.insert(k, &v)?;
+        Ok(v)
+    }
+
+    /// Set every pair, as [`UnorderedMap::insert`] does; returns how many keys were new.
+    pub fn extend<'e>(
+        &mut self,
+        entries: impl IntoIterator<Item = (&'e K, &'e V)>,
+    ) -> Result<u64, StorageError>
+    where
+        K: 'e,
+        V: 'e,
+    {
+        // A read and a write per pair, and one `add` for the new keys together (an
+        // `insert` per pair adds one write per new key, against the run's write limit).
+        let mut new = 0;
+        let mut failed = None;
+        for (k, v) in entries {
+            let written = self
+                .storage_key(k)
+                .and_then(|key| Ok((key, value::to_vec(v)?)));
+            match written {
+                Ok((key, bytes)) => {
+                    if self.store.get(&key).is_none() {
+                        new += 1;
+                    }
+                    self.store.put(&key, &bytes);
+                }
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+            }
+        }
+        // The count covers what was written even when a pair failed to encode.
+        if new > 0 {
+            self.store.add(&self.count_key()?, new);
+        }
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(new as u64),
+        }
+    }
+
+    /// Set `k` to `f` of its value (`None` when absent): `Some` stores the result, `None`
+    /// removes the key. Returns the new value.
+    pub fn update(
+        &mut self,
+        k: &K,
+        f: impl FnOnce(Option<V>) -> Option<V>,
+    ) -> Result<Option<V>, StorageError> {
+        match f(self.get(k)?) {
+            Some(v) => {
+                let _ = self.insert(k, &v)?;
+                Ok(Some(v))
+            }
+            None => {
+                let _ = self.remove(k)?;
+                Ok(None)
+            }
+        }
+    }
+
     /// Remove `k`, returning the value it held.
     pub fn remove(&mut self, k: &K) -> Result<Option<V>, StorageError> {
         let key = self.storage_key(k)?;
@@ -118,19 +193,34 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
 }
 
 impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> {
+    /// A stored entry of the map whose keys start after `map_base`.
+    fn decode(map_base: &[u8], (k, v): Entry) -> Result<(K, V), StorageError> {
+        let parts = key_after(&k, map_base)?;
+        let key = K::from_key(&parts)
+            .ok_or_else(|| StorageError::Decode("a key of another type".into()))?;
+        Ok((key, value::from_slice(&v)?))
+    }
+
     fn page_under(&self, base: &[u8], opts: &FindOpts) -> Result<Page<(K, V)>, StorageError> {
         let map_base = self.base()?;
         let (entries, next) = read_page(&self.store, base, opts)?;
         let items = entries
             .into_iter()
-            .map(|(k, v)| {
-                let parts = key_after(&k, &map_base)?;
-                let key = K::from_key(&parts)
-                    .ok_or_else(|| StorageError::Decode("a key of another type".into()))?;
-                Ok((key, value::from_slice(&v)?))
-            })
+            .map(|e| Self::decode(&map_base, e))
             .collect::<Result<_, StorageError>>()?;
         Ok(Page { items, next })
+    }
+
+    /// Every entry under `under` (the map's base plus whole key parts), through one cursor.
+    fn iter_under(&self, under: &[KeyPart], opts: FindOpts) -> Iter<'_, (K, V)> {
+        let map_base = match self.base() {
+            Ok(b) => b,
+            Err(e) => return Iter::failed(e),
+        };
+        let base = [map_base.as_slice(), &key::encode(under)].concat();
+        iter_entries(&self.store, &base, &opts, move |e| {
+            Self::decode(&map_base, e)
+        })
     }
 
     /// Entries in key order (largest key first with `reverse`), one page of at most 1,000;
@@ -170,6 +260,69 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
             ..opts
         };
         self.page_under(&base, &opts)
+    }
+
+    /// Every entry in key order, a page at a time as the loop reaches it.
+    pub fn iter(&self) -> Iter<'_, (K, V)> {
+        self.iter_with(FindOpts::default())
+    }
+
+    /// [`UnorderedMap::page`] over every page from `opts` on (`from`, `to`, `reverse`).
+    pub fn iter_with(&self, opts: FindOpts) -> Iter<'_, (K, V)> {
+        self.iter_under(&[], opts)
+    }
+
+    /// [`UnorderedMap::prefix`] over every page.
+    pub fn prefix_iter(&self, prefix: &[KeyPart], opts: FindOpts) -> Iter<'_, (K, V)> {
+        self.iter_under(prefix, opts)
+    }
+
+    /// Keep only the entries `keep` accepts; returns how many were removed. It reads every
+    /// entry a page at a time and removes the rejected ones after each page.
+    pub fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) -> Result<u64, StorageError> {
+        // One cursor reads every entry once; a rejected one is deleted as it is met (the
+        // cursor never meets a key again), and the count takes one `add` at the end.
+        let map_base = self.base()?;
+        let (start, end) = bounds(&map_base);
+        let mut all = self.store.range(&start, &end, false);
+        let mut removed: i64 = 0;
+        let mut failed = None;
+        'read: loop {
+            let batch = all.next(MAX_RANGE_BATCH);
+            if batch.is_empty() {
+                break;
+            }
+            for (stored, bytes) in batch {
+                match Self::decode(&map_base, (stored.clone(), bytes)) {
+                    Ok((k, v)) if !keep(&k, &v) => {
+                        self.store.delete(&stored);
+                        removed += 1;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        failed = Some(e);
+                        break 'read;
+                    }
+                }
+            }
+        }
+        if removed > 0 {
+            self.store.add(&self.count_key()?, -removed);
+        }
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(removed as u64),
+        }
+    }
+
+    /// Every key in order.
+    pub fn keys(&self) -> impl Iterator<Item = Result<K, StorageError>> + '_ {
+        self.iter().map(|e| e.map(|(k, _)| k))
+    }
+
+    /// Every value, in key order.
+    pub fn values(&self) -> impl Iterator<Item = Result<V, StorageError>> + '_ {
+        self.iter().map(|e| e.map(|(_, v)| v))
     }
 
     /// The entry with the smallest key.
