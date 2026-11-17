@@ -413,31 +413,4 @@ mod tests {
             "[heE|bold=true][!|bold=true,u=1][ |u=1][woOr|link=x,u=1][l|u=1]d"
         );
     }
-
-    #[test]
-    fn an_old_document_s_marks_read_and_follow_its_conversion() {
-        use crate::collections::text::tests::{fixture_store, legacy_edit};
-        use crate::collections::text::Edit;
-
-        let mut d: RichText<MemStore> = RichText::with_store("doc", fixture_store());
-        assert_eq!(
-            render(&d.spans().unwrap()),
-            ">> [hlo|bold=true]xyAB [orld|link=x]!"
-        );
-        assert_eq!(d.marks().unwrap().len(), 2);
-        // The same edit by the old code, on a copy.
-        let mut old: RichText<MemStore> = RichText::with_store("doc", fixture_store());
-        let _ = legacy_edit(old.text_mut(), &Edit::InsertAfter(Some(4), "Z"));
-        let _ = d.text_mut().insert_after(Some(4), "Z").unwrap();
-        assert_eq!(d.spans().unwrap(), old.spans().unwrap());
-        assert_eq!(
-            render(&d.spans().unwrap()),
-            ">> [hloZ|bold=true]xyAB [orld|link=x]!"
-        );
-        let _ = d.mark(3, 6, "i", Some("1"), true).unwrap();
-        assert_eq!(
-            render(&d.spans().unwrap()),
-            ">> [hlo|bold=true,i=1][Z|bold=true]xyAB [orld|link=x]!"
-        );
-    }
 }

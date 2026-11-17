@@ -38,14 +38,12 @@ pub(super) const NODE: &str = "x";
 pub(super) const ROOT: &str = "h";
 
 /// The most characters one run holds: a 10,000-character paste is five runs.
-pub(crate) const MAX_RUN_CHARS: usize = 2048;
+const MAX_RUN_CHARS: usize = 2048;
 /// Typing right after a run's last character grows the run while it is shorter than this,
 /// so a keystroke rewrites at most this many characters.
 const MAX_GROWN_CHARS: u64 = 512;
 /// The most items a tree node holds.
 const FANOUT: usize = 64;
-/// How full a converted document's nodes start, leaving room to insert.
-const BUILD_FILL: usize = 48;
 /// The deepest tree a stored document can have (64^8 runs); past it the rows are corrupt.
 const MAX_DEPTH: usize = 8;
 
@@ -169,9 +167,6 @@ fn shift(live: u64, delta: i64) -> Result<u64, StorageError> {
 pub(super) struct Doc<'a, S: Store> {
     path: &'a KeyPath,
     store: &'a S,
-    /// Every row is in the cache and none in the store: a document converted from the first
-    /// layout in this run.
-    complete: bool,
     runs: BTreeMap<u64, Run>,
     dirty_runs: BTreeSet<u64>,
     links: BTreeMap<u64, NodeRef>,
@@ -188,7 +183,6 @@ impl<'a, S: Store> Doc<'a, S> {
         Self {
             path,
             store,
-            complete: false,
             runs: BTreeMap::new(),
             dirty_runs: BTreeSet::new(),
             links: BTreeMap::new(),
@@ -199,50 +193,6 @@ impl<'a, S: Store> Doc<'a, S> {
             minted: 0,
             live_delta: 0,
         }
-    }
-
-    /// A document built in memory from runs in document order (a document in the first
-    /// layout), every row new; node ids come from the next id.
-    pub(super) fn converted(
-        path: &'a KeyPath,
-        store: &'a S,
-        runs: Vec<(u64, Run)>,
-        next_id: u64,
-    ) -> Result<Self, StorageError> {
-        let mut doc = Self::open(path, store);
-        doc.complete = true;
-        doc.next_id = Some(next_id);
-        let mut level: Vec<(u64, u64)> = Vec::with_capacity(runs.len());
-        for (start, run) in runs {
-            level.push((start, run.live()));
-            let _new = doc.dirty_runs.insert(start);
-            let _old = doc.runs.insert(start, run);
-        }
-        let mut leaf = true;
-        while level.len() > FANOUT {
-            let mut above = Vec::new();
-            for chunk in level.chunks(BUILD_FILL) {
-                let id = doc.mint(1)?;
-                let node = Node {
-                    leaf,
-                    parent: None,
-                    items: chunk.to_vec(),
-                };
-                doc.adopt(&node, Some(id))?;
-                above.push((id, node.live()));
-                doc.put_node(Some(id), node);
-            }
-            level = above;
-            leaf = false;
-        }
-        let root = Node {
-            leaf,
-            parent: None,
-            items: level,
-        };
-        doc.adopt(&root, None)?;
-        doc.put_node(None, root);
-        Ok(doc)
     }
 
     /// Apply an edit to the cached rows.
@@ -546,9 +496,6 @@ impl<'a, S: Store> Doc<'a, S> {
                 return Ok(Some(*start));
             }
         }
-        if self.complete {
-            return Ok(None);
-        }
         let base = key(self.path, RUN, None)?;
         let mut parts = self.path.parts().to_vec();
         parts.push(KeyPart::Str(RUN.into()));
@@ -569,11 +516,7 @@ impl<'a, S: Store> Doc<'a, S> {
 
     fn run(&mut self, start: u64) -> Result<&mut Run, StorageError> {
         if !self.runs.contains_key(&start) {
-            let bytes = if self.complete {
-                None
-            } else {
-                self.store.get(&key(self.path, RUN, Some(start))?)
-            };
+            let bytes = self.store.get(&key(self.path, RUN, Some(start))?);
             let run = Run::decode(&bytes.ok_or_else(missing)?)?;
             let _old = self.runs.insert(start, run);
         }
@@ -584,11 +527,7 @@ impl<'a, S: Store> Doc<'a, S> {
         if let Some(leaf) = self.links.get(&start) {
             return Ok(*leaf);
         }
-        let bytes = if self.complete {
-            None
-        } else {
-            self.store.get(&key(self.path, LINK, Some(start))?)
-        };
+        let bytes = self.store.get(&key(self.path, LINK, Some(start))?);
         let leaf: NodeRef = value::from_slice(&bytes.ok_or_else(missing)?)?;
         let _old = self.links.insert(start, leaf);
         Ok(leaf)
@@ -610,11 +549,7 @@ impl<'a, S: Store> Doc<'a, S> {
         if self.nodes.contains_key(&r) {
             return Ok(());
         }
-        let bytes = if self.complete {
-            None
-        } else {
-            self.store.get(&node_key(self.path, r)?)
-        };
+        let bytes = self.store.get(&node_key(self.path, r)?);
         let node = match (bytes, r) {
             (Some(bytes), _) => value::from_slice(&bytes)?,
             (None, None) => Node::empty_root(),

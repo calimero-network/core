@@ -101,12 +101,3 @@ of more than about a million bytes) is refused with `EditTooLarge` before
 anything is written; send it in parts. Keep one `Text` per document rather
 than one large text for everything, and use a table for document metadata.
 
-### Texts stored by an earlier SDK
-
-Earlier SDKs stored one row per character ever typed, and every edit read all
-of them. Such a text still reads as it is. Its first edit rewrites it as runs,
-in the same call and with the same ids, so clients and marks keep working; the
-old rows are deleted then, or over the next few edits when they are many. A
-text too fragmented to rewrite within one call (on the order of 5,000 separate
-runs) keeps the old layout and its old costs, including the old limit: an edit
-that would write more than 10,000 characters' rows is refused.
