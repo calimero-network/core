@@ -71,12 +71,31 @@
   },
   "state": {
     "fields": {
-      "events": "nested"
+      "events": "unorderedMap"
     },
     "search": {
       "events": []
     },
     "version": 1
+  },
+  "types": {
+    "Event": {
+      "fields": [
+        [
+          "title",
+          "string"
+        ],
+        [
+          "at",
+          "string"
+        ],
+        [
+          "private",
+          "bool"
+        ]
+      ],
+      "kind": "record"
+    }
   },
   "world": "calimero:app@0.5.3"
 }

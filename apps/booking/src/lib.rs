@@ -48,14 +48,10 @@ fn calendar() -> Result<uses::calendar::Client, Error> {
     uses::calendar::Client::linked().ok_or(Error::NoCalendar)
 }
 
-/// When the person (or, without a grant, booking itself) already has something. The
-/// calendar's ABI does not describe `Event`'s shape, so each is its JSON.
+/// When the person (or, without a grant, booking itself) already has something: the
+/// calendar's events, typed from its ABI (`uses::calendar::Event`).
 fn busy_times(calendar: &uses::calendar::Client) -> app::Result<Vec<String>> {
-    Ok(calendar
-        .my_events()?
-        .iter()
-        .filter_map(|e| e["at"].as_str().map(str::to_owned))
-        .collect())
+    Ok(calendar.my_events()?.into_iter().map(|e| e.at).collect())
 }
 
 #[app::logic]
