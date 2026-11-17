@@ -1,4 +1,4 @@
-# search-bench: what full-text search costs on a node
+# calimero-search-bench: what full-text search costs on a node
 
 Engine measurements of per-app full-text search (`crates/search`):
 `ContextIndex` over tantivy's `RamDirectory`, which is what the node
@@ -19,7 +19,7 @@ docs site's *Full-text search* page and in `crates/search/AGENTS.md`. End to end
 ```bash
 # The run below used the release profile with LTO off, for build time:
 export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_PROFILE_RELEASE_OPT_LEVEL=3
-cargo run --release -p search-bench -- --sizes 2000,10000,50000,200000 --docs --out tools/search-bench/results/engine.md
+cargo run --release -p calimero-search-bench -- --sizes 2000,10000,50000,200000 --docs --out crates/search/bench/results/engine.md
 ```
 
 `--only size|memory|cross|gas` runs one section; `--iters N` sets the timed

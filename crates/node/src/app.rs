@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use calimero_log::{Bytes, GroupState, Machine, StateTx};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
 use crate::types::{AppId, EventRecord};
@@ -510,16 +510,40 @@ impl AppMachine {
     /// What applying an entry of an app this node does not run answers: nothing
     /// changes but the app's position in its log, the same on every replica.
     fn unsupported(index: u64) -> Vec<u8> {
-        serde_json::to_vec(&Applied {
+        applied_bytes(
             index,
-            status: Status::AppError,
-            result: Value::Null,
-            error: Value::String(WASMER_GONE.into()),
-            events: Vec::new(),
-            conflict: false,
-        })
-        .unwrap_or_default()
+            &Applied {
+                index,
+                status: Status::AppError,
+                result: Value::Null,
+                error: Value::String(WASMER_GONE.into()),
+                events: Vec::new(),
+                conflict: false,
+            },
+        )
     }
+}
+
+/// An applied entry's answer (an [`Applied`] or a component's) as bytes, never empty.
+///
+/// Both hold JSON values and plain fields, so they serialize; were one ever not to, its
+/// caller is answered a fault that says why, logged here with the entry's index, rather
+/// than empty bytes it reads as no answer at all, far from the cause.
+pub(crate) fn applied_bytes<T: Serialize>(index: u64, answer: &T) -> Vec<u8> {
+    serde_json::to_vec(answer).unwrap_or_else(|e| {
+        tracing::error!(index, error = %e, "an applied entry's answer does not serialize: answered as a fault");
+        // `Value`'s `Display` cannot fail.
+        json!({
+            "index": index,
+            "status": "trap",
+            "result": null,
+            "error": { "kind": "Fault", "detail": format!("the answer does not serialize: {e}") },
+            "events": [],
+            "conflict": false,
+        })
+        .to_string()
+        .into_bytes()
+    })
 }
 
 impl Machine for AppMachine {
@@ -807,5 +831,31 @@ mod tests {
         again.restore(&[]).unwrap();
         assert_eq!(again.state.legacy.pending.len(), 1);
         assert_eq!(again.state.last_index, 42);
+    }
+
+    /// Review finding A6: an answer that did not serialize was sent as empty bytes, with
+    /// nothing logged. It is now a fault that says why, readable as either `Applied`.
+    #[test]
+    fn an_answer_that_does_not_serialize_is_a_fault_never_empty_bytes() {
+        // A map whose keys are not strings is not JSON.
+        let unserializable: std::collections::BTreeMap<Vec<u8>, u8> = [(vec![1], 1)].into();
+        assert!(serde_json::to_vec(&unserializable).is_err());
+        let bytes = applied_bytes(9, &unserializable);
+        let a: Applied = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!((a.index, a.status), (9, Status::Trap));
+        assert_eq!(a.error["kind"], "Fault");
+        let c: crate::component::Applied = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(c.status, Status::Trap);
+        assert!(!c.conflict && !c.timeout);
+
+        let fine = Applied {
+            index: 3,
+            status: Status::Ok,
+            result: json!({ "x": 1 }),
+            error: Value::Null,
+            events: Vec::new(),
+            conflict: false,
+        };
+        assert_eq!(applied_bytes(3, &fine), serde_json::to_vec(&fine).unwrap());
     }
 }

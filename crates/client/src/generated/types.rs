@@ -1429,6 +1429,8 @@ pub struct App {
     pub release: Option<PackageRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore: Option<AppRestore>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<BTreeMap<String, String>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

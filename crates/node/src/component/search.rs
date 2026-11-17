@@ -7,10 +7,11 @@
 //! `generation ‖ (table, "r", key..)` in the SDK's key encoding (`crates/sdk`, encoding
 //! contract); each becomes one document, its id the SHA-256 of the stored key, its fields
 //! the declared ones that hold text (a list of strings is joined). The indexes are
-//! `calimero-search`'s `ContextIndex` in memory: a view first brings them up to the state
-//! it reads, from the record keys the entries since touched (`AppMachine::touched_after`,
-//! kept for `TOUCHED_RING` entries), else by a full scan of the app's records. Derived
-//! data: never in the log or a snapshot, rebuilt after a restart.
+//! `calimero-search`'s `ContextIndex` in memory: a view's first query brings them up to the
+//! state it reads, from the record keys the entries since touched (`AppMachine::touched_after`,
+//! kept for `TOUCHED_RING` entries), else by a full scan of the app's records, on the view's
+//! own thread and never under the app's lock. Derived data: never in the log or a snapshot,
+//! rebuilt after a restart.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -25,6 +26,7 @@ use ring::digest::{digest, SHA256};
 use tracing::{debug, warn};
 
 use crate::app::AppMachine;
+use crate::component::Kv;
 use crate::types::AppId;
 
 /// Bytes of the generation prefix on a stored key (D39).
@@ -170,18 +172,114 @@ struct AppIndexes {
     tables: HashMap<String, TableIndex>,
 }
 
+/// What an app's indexes were last brought up to: kept apart from the indexes, and
+/// only ever locked for a copy, so a view reads it under the app's lock while a
+/// rebuild holds the indexes.
+#[derive(Clone, Default)]
+struct Mark {
+    bundle: String,
+    built_at: u64,
+}
+
+/// One app's indexes and their mark.
+#[derive(Default)]
+struct AppEntry {
+    mark: Mutex<Mark>,
+    indexes: Mutex<AppIndexes>,
+}
+
+impl AppEntry {
+    fn mark(&self) -> Mark {
+        self.mark
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
 /// Full-text search over the component apps hosted here, in memory.
 #[derive(Default)]
 pub struct ComponentSearch {
-    apps: Mutex<HashMap<AppId, Arc<Mutex<AppIndexes>>>>,
+    apps: Mutex<HashMap<AppId, Arc<AppEntry>>>,
+}
+
+/// What a view's state holds for its search: taken under the app's read lock (an
+/// `Arc` of the state and the record keys touched since the mark, never an index),
+/// and indexed only when the view first searches, on the view's own thread.
+struct Pending {
+    app_id: AppId,
+    bundle: String,
+    fields: BTreeMap<String, Vec<String>>,
+    kv: Kv,
+    applied: u64,
+    /// The mark the touched keys were read against.
+    from: Mark,
+    /// Record keys the entries after `from.built_at` touched; `None`: rebuild.
+    touched: Option<Vec<String>>,
+}
+
+/// Where a view's search stands: not yet brought up to its state, or ready (or
+/// refused, with why).
+enum Prepared {
+    Pending(Box<Pending>),
+    Ready,
+    Failed(String),
 }
 
 /// A view's search, bound to its app's indexes.
-pub struct RunSearch(Arc<Mutex<AppIndexes>>);
+pub struct RunSearch {
+    entry: Arc<AppEntry>,
+    state: Mutex<Prepared>,
+}
+
+impl RunSearch {
+    /// Bring the indexes up to the view's state, once, on the first query.
+    fn ready(&self) -> Result<(), String> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = match std::mem::replace(&mut *state, Prepared::Ready) {
+            Prepared::Pending(p) => {
+                let mut ix = self
+                    .entry
+                    .indexes
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                match refresh(&mut ix, &p) {
+                    Ok(()) => {
+                        *self
+                            .entry
+                            .mark
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner) = Mark {
+                            bundle: ix.bundle.clone(),
+                            built_at: ix.built_at,
+                        };
+                        Prepared::Ready
+                    }
+                    Err(e) => {
+                        warn!(app = %p.app_id, error = %e, "component search not brought up to date");
+                        Prepared::Failed(format!("search is unavailable: {e}"))
+                    }
+                }
+            }
+            other => other,
+        };
+        let answer = match &next {
+            Prepared::Failed(e) => Err(e.clone()),
+            Prepared::Pending(_) | Prepared::Ready => Ok(()),
+        };
+        *state = next;
+        answer
+    }
+}
 
 impl SearchHost for RunSearch {
     fn query(&self, q: &SearchQuery) -> Result<SearchPage, String> {
-        let ix = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        self.ready()?;
+        let ix = self
+            .entry
+            .indexes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let Some(table) = ix.tables.get(&q.table) else {
             return Err(format!("table {:?} declares no search fields", q.table));
         };
@@ -220,9 +318,14 @@ impl SearchHost for RunSearch {
 }
 
 impl ComponentSearch {
-    /// The app's search, brought up to the state `m` holds at `applied`, for a view of
-    /// `bundle`, whose ABI declares `fields` (table to text fields). `None` when the app
-    /// declares none, or the index could not be built (the view then gets the WIT error).
+    /// The app's search for a view of `bundle` on the state `m` holds at `applied`,
+    /// whose ABI declares `fields` (table to text fields); `None` when it declares none.
+    ///
+    /// Called under the app's read lock, so it indexes nothing: it keeps the state (an
+    /// `Arc`) and the record keys touched since the indexes were last brought up, and the
+    /// view's first query brings them up to that state, on the view's own thread (off the
+    /// async workers, outside the lock). A view that never searches costs no indexing. An
+    /// index that cannot be built answers that query with an error.
     pub fn for_view(
         &self,
         bundle: &str,
@@ -230,21 +333,49 @@ impl ComponentSearch {
         m: &AppMachine,
         applied: u64,
     ) -> Option<Arc<dyn SearchHost>> {
+        self.prepare(
+            &m.app_id,
+            bundle,
+            fields,
+            Arc::clone(&m.state.component.kv),
+            applied,
+            |since| m.touched_after(since),
+        )
+    }
+
+    fn prepare(
+        &self,
+        app_id: &str,
+        bundle: &str,
+        fields: &BTreeMap<String, Vec<String>>,
+        kv: Kv,
+        applied: u64,
+        touched_after: impl FnOnce(u64) -> Option<Vec<String>>,
+    ) -> Option<Arc<dyn SearchHost>> {
         if fields.is_empty() {
             return None;
         }
         let entry = {
             let mut apps = self.apps.lock().unwrap_or_else(PoisonError::into_inner);
-            Arc::clone(apps.entry(m.app_id.clone()).or_default())
+            Arc::clone(apps.entry(app_id.to_owned()).or_default())
         };
-        {
-            let mut ix = entry.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Err(e) = refresh(&mut ix, bundle, fields, m, applied) {
-                warn!(app = %m.app_id, error = %e, "component search not brought up to date");
-                return None;
-            }
-        }
-        Some(Arc::new(RunSearch(entry)))
+        let from = entry.mark();
+        let touched = (from.bundle == bundle && from.built_at < applied)
+            .then(|| touched_after(from.built_at))
+            .flatten();
+        let pending = Pending {
+            app_id: app_id.to_owned(),
+            bundle: bundle.to_owned(),
+            fields: fields.clone(),
+            kv,
+            applied,
+            from,
+            touched,
+        };
+        Some(Arc::new(RunSearch {
+            entry,
+            state: Mutex::new(Prepared::Pending(Box::new(pending))),
+        }))
     }
 
     /// Forget an app's indexes (it moved off this node, or was deleted).
@@ -257,40 +388,37 @@ impl ComponentSearch {
     }
 }
 
-fn refresh(
-    ix: &mut AppIndexes,
-    bundle: &str,
-    fields: &BTreeMap<String, Vec<String>>,
-    m: &AppMachine,
-    applied: u64,
-) -> Result<(), String> {
-    if ix.bundle == bundle && ix.built_at == applied {
+/// Bring `ix` up to the view's state `p`.
+fn refresh(ix: &mut AppIndexes, p: &Pending) -> Result<(), String> {
+    if ix.bundle == p.bundle && ix.built_at >= p.applied {
+        // Already there, or brought past it by a later view meanwhile: as before, a
+        // view's search may answer from a later state than it reads (C4).
         return Ok(());
     }
-    let kv = &m.state.component.kv;
-    if ix.bundle == bundle {
-        if let Some(touched) = m.touched_after(ix.built_at) {
+    if ix.bundle == p.bundle && ix.built_at == p.from.built_at && p.from.bundle == p.bundle {
+        if let Some(touched) = &p.touched {
             let mut by_table: HashMap<String, Records> = HashMap::new();
             for key in touched.iter().filter_map(|h| hex::decode(h).ok()) {
                 let Some(table) = record_table(&key).filter(|t| ix.tables.contains_key(t)) else {
                     continue;
                 };
-                let value = kv.get(&key).cloned();
+                let value = p.kv.get(&key).cloned();
                 by_table.entry(table).or_default().push((key, value));
             }
             for (table, records) in by_table {
                 if let Some(t) = ix.tables.get_mut(&table) {
-                    t.apply(&records, applied)?;
+                    t.apply(&records, p.applied)?;
                 }
             }
-            ix.built_at = applied;
+            ix.built_at = p.applied;
             return Ok(());
         }
     }
-    // A new bundle, or entries this replica cannot account for: rebuild.
-    debug!(app = %m.app_id, applied, "building component search indexes");
+    // A new bundle, entries this replica cannot account for, or indexes another view
+    // moved since this view's state was taken: rebuild from this view's state.
+    debug!(app = %p.app_id, applied = p.applied, "building component search indexes");
     let mut tables = HashMap::new();
-    for (table, table_fields) in fields {
+    for (table, table_fields) in &p.fields {
         let mut t = TableIndex::new(table, table_fields)?;
         let mut prefix = GENERATION.to_be_bytes().to_vec();
         prefix.push(0x30);
@@ -300,17 +428,17 @@ fn refresh(
                 .flat_map(|b| if b == 0 { vec![0x00, 0xFF] } else { vec![b] }),
         );
         prefix.extend_from_slice(&[0x00, 0x00, 0x30, b'r', 0x00, 0x00]);
-        let records: Records = kv
-            .range(prefix.clone()..)
-            .take_while(|(k, _)| k.starts_with(&prefix))
-            .map(|(k, v)| (k.clone(), Some(v.clone())))
-            .collect();
-        t.apply(&records, applied)?;
+        let records: Records =
+            p.kv.range(prefix.clone()..)
+                .take_while(|(k, _)| k.starts_with(&prefix))
+                .map(|(k, v)| (k.clone(), Some(v.clone())))
+                .collect();
+        t.apply(&records, p.applied)?;
         let _prev = tables.insert(table.clone(), t);
     }
     *ix = AppIndexes {
-        bundle: bundle.to_owned(),
-        built_at: applied,
+        bundle: p.bundle.clone(),
+        built_at: p.applied,
         tables,
     };
     Ok(())
@@ -360,5 +488,150 @@ mod tests {
         let key = stored(&["notes", "r", "1"]);
         let doc = document(&key, &v, &["title".into(), "tags".into(), "n".into()]).unwrap();
         assert_eq!(doc.fields.len(), 2, "{:?}", doc.fields);
+    }
+
+    fn note(title: &str) -> Vec<u8> {
+        let mut v = Vec::new();
+        ciborium::into_writer(
+            &ciborium::Value::Map(vec![("title".into(), title.into())]),
+            &mut v,
+        )
+        .unwrap();
+        v
+    }
+
+    fn fields() -> BTreeMap<String, Vec<String>> {
+        [("notes".to_owned(), vec!["title".to_owned()])].into()
+    }
+
+    fn state(notes: &[(&str, &str)]) -> Kv {
+        Arc::new(
+            notes
+                .iter()
+                .map(|(id, title)| (stored(&["notes", "r", id]), note(title)))
+                .collect(),
+        )
+    }
+
+    fn find(search: &dyn SearchHost, text: &str) -> Vec<Vec<u8>> {
+        let mut keys: Vec<_> = search
+            .query(&SearchQuery {
+                table: "notes".into(),
+                text: text.into(),
+                mode: SearchMode::Words,
+                cursor: 0,
+                limit: 10,
+            })
+            .unwrap()
+            .hits
+            .into_iter()
+            .map(|h| h.key)
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    fn key(id: &str) -> Vec<u8> {
+        stored(&["notes", "r", id])[GENERATION_PREFIX..].to_vec()
+    }
+
+    fn built_at(search: &ComponentSearch, app: &str) -> Option<u64> {
+        let apps = search.apps.lock().unwrap();
+        let entry = apps.get(app)?;
+        let ix = entry.indexes.lock().unwrap();
+        (!ix.tables.is_empty()).then_some(ix.built_at)
+    }
+
+    /// Review finding A5: the index was refreshed, or rebuilt in full, inside
+    /// `for_view`, which runs under the app's read lock on an async worker, for
+    /// every view, searching or not. Preparing a view's search now indexes
+    /// nothing; the view's first query does, on the view's own thread.
+    #[test]
+    fn preparing_a_views_search_indexes_nothing_until_it_queries() {
+        let search = ComponentSearch::default();
+        let kv = state(&[("1", "hello world"), ("2", "other")]);
+        let prepared = search
+            .prepare("app", "b1", &fields(), kv, 5, |_| {
+                panic!("no mark yet: nothing to catch up from")
+            })
+            .unwrap();
+        assert_eq!(built_at(&search, "app"), None, "nothing indexed yet");
+        assert_eq!(find(&*prepared, "hello"), vec![key("1")]);
+        assert_eq!(built_at(&search, "app"), Some(5));
+    }
+
+    /// The next view catches up from the keys the entries since touched, read from its
+    /// own state.
+    #[test]
+    fn a_later_view_catches_up_from_the_keys_touched_since() {
+        let search = ComponentSearch::default();
+        let first = search
+            .prepare("app", "b1", &fields(), state(&[("1", "hello")]), 5, |_| {
+                None
+            })
+            .unwrap();
+        assert_eq!(find(&*first, "hello"), vec![key("1")]);
+        let touched = vec![hex::encode(stored(&["notes", "r", "2"]))];
+        let later = search
+            .prepare(
+                "app",
+                "b1",
+                &fields(),
+                state(&[("1", "hello"), ("2", "hello again")]),
+                7,
+                |since| {
+                    assert_eq!(since, 5);
+                    Some(touched)
+                },
+            )
+            .unwrap();
+        assert_eq!(find(&*later, "hello"), vec![key("1"), key("2")]);
+        assert_eq!(built_at(&search, "app"), Some(7));
+    }
+
+    /// Indexes another view moved between this view's prepare and its query are not
+    /// patched with keys read against the old mark: the view rebuilds from its state.
+    #[test]
+    fn a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state() {
+        let search = ComponentSearch::default();
+        let base = search
+            .prepare("app", "b1", &fields(), state(&[("1", "hello")]), 5, |_| {
+                None
+            })
+            .unwrap();
+        assert_eq!(find(&*base, "hello"), vec![key("1")]);
+        // Prepared at 6 against the mark at 5, queried after another view moved the
+        // indexes to 8 on a new bundle.
+        let stale = search
+            .prepare(
+                "app",
+                "b1",
+                &fields(),
+                state(&[("1", "hello"), ("3", "hello three")]),
+                6,
+                |_| Some(vec![hex::encode(stored(&["notes", "r", "3"]))]),
+            )
+            .unwrap();
+        let other = search
+            .prepare(
+                "app",
+                "b2",
+                &fields(),
+                state(&[("9", "hello nine")]),
+                8,
+                |_| None,
+            )
+            .unwrap();
+        assert_eq!(find(&*other, "hello"), vec![key("9")]);
+        assert_eq!(find(&*stale, "hello"), vec![key("1"), key("3")]);
+        assert_eq!(built_at(&search, "app"), Some(6));
+    }
+
+    #[test]
+    fn an_app_that_declares_no_search_gets_none() {
+        let search = ComponentSearch::default();
+        assert!(search
+            .prepare("app", "b1", &BTreeMap::new(), state(&[]), 1, |_| None)
+            .is_none());
     }
 }

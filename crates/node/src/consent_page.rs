@@ -652,6 +652,28 @@ async fn release_facts(
     }
     let mpk = node.release_mpk(package, v).await?;
     let (bundle, wasm) = crate::packages::verify(mpk)?;
+    Ok(remember(node, &v.mpk, &bundle, &wasm))
+}
+
+/// Keeps what a verified release's manifest and components say under its `.mpk` hash, so
+/// the consent page, the capability card and an instance's create read them without
+/// fetching the `.mpk` again. The node that installs a release calls it with the copy it
+/// just verified.
+pub(crate) fn remember_release_facts(
+    node: &Node,
+    mpk_hash: &str,
+    bundle: &calimero_bundle::VerifiedBundle,
+    wasm: &[crate::packages::Service],
+) {
+    let _facts = remember(node, mpk_hash, bundle, wasm);
+}
+
+fn remember(
+    node: &Node,
+    mpk_hash: &str,
+    bundle: &calimero_bundle::VerifiedBundle,
+    wasm: &[crate::packages::Service],
+) -> Arc<ReleaseFacts> {
     let facts = Arc::new(ReleaseFacts {
         manifest: bundle.manifest().clone(),
         manifest_hash: hex::encode(bundle.manifest_hash()),
@@ -668,8 +690,8 @@ async fn release_facts(
             })
             .collect(),
     });
-    node.consent.cache(&v.mpk, Arc::clone(&facts));
-    Ok(facts)
+    node.consent.cache(mpk_hash, Arc::clone(&facts));
+    facts
 }
 
 /// The `minRuntimeVersion` release `v` of `package` declares, from its

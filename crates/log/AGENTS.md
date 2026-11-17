@@ -55,6 +55,10 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   each applied batch commits its writes and the applied index in one batch, so a
   restart resumes instead of replaying. `Machine::IN_MEMORY` machines (the system
   group) keep state in memory and are checkpointed with each snapshot instead.
+  `Machine::snapshot` answers a `Result`: a state that does not serialize fails the
+  build (logged with the group) and keeps the last checkpoint, never an empty one that
+  a receiving node fails to restore. Regression:
+  `a_state_that_does_not_serialize_builds_no_snapshot_and_keeps_the_checkpoint`.
 - Snapshots: files of sealed frames under `<data-dir>/snapshots`, streamed from a
   RocksDB snapshot (never the whole state in memory), sent in `SNAPSHOT_CHUNK_BYTES`
   chunks. Every node of a cluster shares K_r, so a follower opens a leader's file.

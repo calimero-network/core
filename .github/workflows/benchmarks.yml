@@ -94,7 +94,7 @@ jobs:
           retention-days: 30
 
   # Not criterion: one report of index size, query latency, memory and the
-  # search gas fit (tools/search-bench), uploaded as markdown. Runs when the
+  # search gas fit (crates/search/bench), uploaded as markdown. Runs when the
   # criterion jobs do; its README holds the reference run.
   search-bench:
     name: Search engine bench
@@ -122,7 +122,7 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: "false"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
           CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
-        run: cargo run --release -p search-bench -- --sizes 10000,100000 --out search-bench.md
+        run: cargo run --release -p calimero-search-bench -- --sizes 10000,100000 --out search-bench.md
 
       - name: Upload the report
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -1559,7 +1559,7 @@ impl Node {
                 // the bundle runs now (D70): the replay comes before the ABI check.
                 if let Some(key) = &req.idempotency_key {
                     if let Some(prev) = m.component_replay(&req.caller, key) {
-                        return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
+                        return Proposal::Reply(crate::app::applied_bytes(prev.index, &prev));
                     }
                 }
                 // A message applied here already answers as delivered (D25).
@@ -1572,7 +1572,7 @@ impl Node {
                                 ..Outcome::default()
                             },
                         );
-                        return Proposal::Reply(serde_json::to_vec(&seen).unwrap_or_default());
+                        return Proposal::Reply(crate::app::applied_bytes(seen.index, &seen));
                     }
                 }
                 if let Some(e) = &over_quota {
@@ -1585,7 +1585,7 @@ impl Node {
                         conflict: true,
                         ..Applied::unlogged(applied, Outcome::default())
                     };
-                    return Proposal::Reply(serde_json::to_vec(&again).unwrap_or_default());
+                    return Proposal::Reply(crate::app::applied_bytes(again.index, &again));
                 }
                 // The ABI checks again, against the bundle this replica runs (Ruling 40).
                 if let Err(e) = abi_check(
@@ -1607,9 +1607,10 @@ impl Node {
                     .get(&req.method)
                     .is_some_and(|m| m.kind == MethodKind::View);
                 if read_only && !view {
-                    return Proposal::Reply(
-                        serde_json::to_vec(&read_only_refusal(applied)).unwrap_or_default(),
-                    );
+                    return Proposal::Reply(crate::app::applied_bytes(
+                        applied,
+                        &read_only_refusal(applied),
+                    ));
                 }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
@@ -1681,7 +1682,7 @@ impl Node {
                 // key (D23).
                 if outcome.is_retryable() {
                     let a = Applied::unlogged(applied, outcome);
-                    return Proposal::Reply(serde_json::to_vec(&a).unwrap_or_default());
+                    return Proposal::Reply(crate::app::applied_bytes(a.index, &a));
                 }
                 answered = true;
                 moved_runs = moves_runs(&outcome);
@@ -1690,9 +1691,10 @@ impl Node {
                 // logged side effects too (Ruling 41): an emit-only run is refused like
                 // one that writes keys.
                 if read_only && writes(&outcome) {
-                    return Proposal::Reply(
-                        serde_json::to_vec(&read_only_refusal(applied)).unwrap_or_default(),
-                    );
+                    return Proposal::Reply(crate::app::applied_bytes(
+                        applied,
+                        &read_only_refusal(applied),
+                    ));
                 }
                 let cmd = ComponentCmd::Call(Box::new(CallEntry {
                     method: req.method.clone(),
@@ -2706,7 +2708,7 @@ impl Node {
                             "an active compute run will call {lost}, which the target release does not declare as a result method"
                         ) },
                     });
-                    return Proposal::Reply(serde_json::to_vec(&refused).unwrap_or_default());
+                    return Proposal::Reply(crate::app::applied_bytes(refused.index, &refused));
                 }
                 let mut cmd = ComponentCmd::Upgrade {
                     bundle: bundle.to_owned(),
