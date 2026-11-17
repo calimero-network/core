@@ -39,11 +39,10 @@ Dropped, with no meaning here: `context sync`, `group sync` (Raft replicates),
 `context identity`, `account pair-*`/`seal-to`/`device-init` (a passkey is the
 device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
 
-- The registry and the Cloud's manager are called at `/api/...`, and once more
-  at `/api/v2/...` when the service answers `404` (one from before its
-  unversioned routes): `commons::send_api`. Tests:
-  `publish_pushes_the_bundle_to_the_registry`,
-  `cloud_falls_back_to_an_older_managers_v2_routes`.
+- The registry and the Cloud's manager are called at `/api/...` only, never
+  `/api/v2/...`. Tests: `publish_pushes_the_bundle_to_the_registry` (a
+  service serving only `/api/v2` is refused with its `404`),
+  `cloud_signs_in_lists_and_uses_a_cluster`.
 - Sessions are kept per node URL in `{home}/meroctl/sessions.json` (0600) and
   refreshed when they expire. An instance argument is an alias of the account or
   an id (`Env::app`).
@@ -94,7 +93,9 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   nodes never reaches a majority. The volume is named after the state
   directory (`volume_of`), never the port alone, so two directories on one port
   never share data. A cluster an earlier meroctl made (no `cluster.json`, a
-  `merod.log`) keeps 3 nodes and the port's volume (`made`, `plan`). Tests:
+  `merod.log`) keeps 3 nodes and the port's volume (`made`, `plan`); `up` writes
+  `cluster.json` before it creates `merod.log`, so an `up` that failed to start is
+  never read as such a cluster (`an_up_that_never_started_leaves_no_cluster_behind`). Tests:
   `each_state_directory_gets_a_volume_of_its_own`,
   `a_kept_cluster_starts_with_its_own_node_count`,
   `a_cluster_from_before_keeps_its_nodes_and_volume`.
