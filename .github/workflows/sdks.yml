@@ -154,10 +154,11 @@ jobs:
     if: needs.scope.outputs.mero-charts != 'false'
     uses: ./.github/workflows/sdk-mero-charts.yml
 
-  # Does each SDK's generated layer match master's API document as of this
-  # change? Reported, not required: a server change merges on its own, and
-  # sdk-regenerate.yml then opens the pull request that regenerates the SDKs
-  # (as the per-repository openapi-sync did before the SDKs moved here).
+  # Does each SDK's generated layer match this tree's API document? Required
+  # (through `SDKs`): a change that moves docs/public/openapi.json, or an SDK's
+  # generator, commits the regenerated SDKs with it, so no SDK merges or
+  # releases behind the API it ships with. sdk-regenerate.yml stays the
+  # fallback for a master that drifted anyway.
   codegen:
     name: SDK codegen drift
     needs: scope
@@ -206,7 +207,7 @@ jobs:
           while IFS= read -r name; do names+=("$name"); done < <(jq -r '.[]' <<<"$SDKS")
           python3 scripts/sdks.py generate ${names[@]+"${names[@]}"}
 
-      - name: Report what differs
+      - name: Fail when the generated code differs
         env:
           SDKS: ${{ needs.scope.outputs.sdks }}
         run: |
@@ -226,22 +227,23 @@ jobs:
           {
             echo "## Generated SDK code differs from docs/public/openapi.json"
             echo
-            echo "Run \`python3 scripts/sdks.py generate\` and commit, or let sdk-regenerate.yml open the pull request once this merges."
+            echo "Run \`python3 scripts/sdks.py generate\` and commit the result."
             echo
             echo '```'
             git --no-pager diff --stat -- "${paths[@]}"
             git status --porcelain --untracked-files=all -- "${paths[@]}"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "::warning::generated SDK code differs from docs/public/openapi.json (see the summary)"
+          echo "::error::generated SDK code differs from docs/public/openapi.json: run python3 scripts/sdks.py generate and commit (see the summary)"
+          exit 1
 
-  # The required status check: every SDK job passed, or was skipped because
-  # `scope` found the change cannot reach it. A failed or skipped `scope`
-  # fails it. `codegen` reports and is not required.
+  # The required status check: every SDK job and `codegen` passed, or was
+  # skipped because `scope` found the change cannot reach it. A failed or
+  # skipped `scope` fails it.
   sdks:
     name: SDKs
     if: ${{ !cancelled() }}
-    needs: [scope, mero-js, mero-react, mero-py, mero-swift, mero-kotlin, mero-icons, mero-tokens, mero-ui, mero-charts]
+    needs: [scope, codegen, mero-js, mero-react, mero-py, mero-swift, mero-kotlin, mero-icons, mero-tokens, mero-ui, mero-charts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -254,5 +256,6 @@ jobs:
             and (.scope.outputs as $scope
               | to_entries | map(select(.key != "scope")) | all(
                   .value.result == "success"
-                  or (.value.result == "skipped" and $scope[.key] == "false")
+                  or (.value.result == "skipped"
+                      and (if .key == "codegen" then $scope.any else $scope[.key] end) == "false")
                 ))' <<<"$NEEDS"
