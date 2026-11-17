@@ -21,16 +21,23 @@ public struct CalimeroClientOptions: Sendable {
     public var session: URLSession
     /// How calls and views retry a 503 or a failed connection.
     public var retry: CloudRetryOptions
+    /// Where ``CalimeroClient/openConsentPage(_:options:)`` keeps the id of
+    /// the consent request it started, for
+    /// ``CalimeroClient/resumeConsent(_:requestId:)``; the app's user
+    /// defaults by default (mero-js keeps it in `sessionStorage`).
+    public var consentStore: any ConsentRequestStore
 
     public init(
         baseUrl: String, nodes: [String] = [], policy: CloudPolicy, session: URLSession = .shared,
-        retry: CloudRetryOptions = CloudRetryOptions()
+        retry: CloudRetryOptions = CloudRetryOptions(),
+        consentStore: any ConsentRequestStore = UserDefaultsConsentRequestStore()
     ) {
         self.baseUrl = baseUrl
         self.nodes = nodes
         self.policy = policy
         self.session = session
         self.retry = retry
+        self.consentStore = consentStore
     }
 }
 
@@ -123,6 +130,8 @@ public actor CalimeroClient {
     private var stepUpPasskey: (any PasskeyProvider)?
     private var operatorKey: (any OperatorSigner)?
     private let sleep: @Sendable (Double) async -> Void
+    /// Where ``openConsentPage(_:options:)`` keeps the request it started.
+    let consentStore: any ConsentRequestStore
 
     public init(_ options: CalimeroClientOptions) {
         self.init(options, sleep: { seconds in try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1e9)) })
@@ -134,6 +143,7 @@ public actor CalimeroClient {
         policy = options.policy
         urlSession = options.session
         retry = options.retry
+        consentStore = options.consentStore
         self.sleep = sleep
     }
 
@@ -1042,11 +1052,15 @@ public actor CalimeroClient {
     /// `false` the page is not opened. When the node sends a `code` that is
     /// not ``confirmationCode(_:)`` of `requestId`, this throws a
     /// ``CalimeroError`` (`CONSENT_CODE_MISMATCH`) and does not navigate.
-    /// (== mero-js `openConsentPage(request, options)`.)
+    /// Before navigating it keeps `requestId` in the client's
+    /// ``CalimeroClientOptions/consentStore`` (the id only, nothing of the
+    /// request), for ``resumeConsent(_:requestId:)`` when the page sends the
+    /// person back. (== mero-js `openConsentPage(request, options)`.)
     public func openConsentPage(_ request: ConsentRequest, options: OpenConsentOptions) async throws -> ConsentStarted {
         let started = try await requestConsent(request)
         if let confirm = options.confirm, !(await confirm(started)) { return started }
         guard let url = URL(string: started.url) else { throw AccountError.protocolViolation("bad consent URL") }
+        consentStore.save(started.requestId)
         try await options.navigate(url)
         return started
     }

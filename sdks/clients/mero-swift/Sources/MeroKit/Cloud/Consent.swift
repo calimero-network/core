@@ -237,6 +237,15 @@ extension CalimeroClient {
     /// protocol violation when the outcome does not fit the kind.
     /// (== mero-js `consentResult`.)
     public func consentResult(_ requestId: String) async throws -> ConsentResult {
+        let result = try await readConsentResult(requestId)
+        guard result.requestId == requestId else {
+            throw AccountError.protocolViolation("the node answered another consent request's result")
+        }
+        return result
+    }
+
+    /// `GET /consent/{id}/result`, its outcome checked against its kind; whose request it answers is the caller's to check.
+    func readConsentResult(_ requestId: String) async throws -> ConsentResult {
         guard !requestId.isEmpty else { throw AccountError.invalidInput("a consent request id is needed") }
         let id = requestId.addingPercentEncoding(withAllowedCharacters: .urlPathSegment) ?? requestId
         let answer = try await get("consent/\(id)/result")
@@ -245,9 +254,6 @@ extension CalimeroClient {
             result = try MeroJSON.decode(ConsentResult.self, from: CanonicalJSON.data(answer))
         } catch {
             throw AccountError.protocolViolation("a consent result needs requestId, kind and status")
-        }
-        guard result.requestId == requestId else {
-            throw AccountError.protocolViolation("the node answered another consent request's result")
         }
         try result.checkOutcome()
         return result
@@ -293,5 +299,146 @@ extension CalimeroClient {
                 details: ["requestId": .string(requestId)])
         }
         return result
+    }
+}
+
+/// The key ``UserDefaultsConsentRequestStore`` keeps the started consent
+/// request's id under. (== mero-js `CONSENT_STORAGE_KEY`.)
+public let consentStorageKey = "calimero.consent"
+
+/// Where ``CalimeroClient/openConsentPage(_:options:)`` keeps the id of the
+/// consent request it started, for ``CalimeroClient/resumeConsent(_:requestId:)``.
+/// Only the id: never the request, whose invite token is a credential.
+public protocol ConsentRequestStore: Sendable {
+    func load() -> String?
+    func save(_ requestId: String)
+    func clear()
+}
+
+/// A ``ConsentRequestStore`` in the app's user defaults, so a return after
+/// the app was suspended or relaunched still finds its request.
+public struct UserDefaultsConsentRequestStore: ConsentRequestStore {
+    /// The defaults suite; `nil` for the standard defaults.
+    public let suiteName: String?
+    public let key: String
+
+    public init(suiteName: String? = nil, key: String = consentStorageKey) {
+        self.suiteName = suiteName
+        self.key = key
+    }
+
+    private var defaults: UserDefaults { suiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard }
+
+    public func load() -> String? { defaults.string(forKey: key) }
+    public func save(_ requestId: String) { defaults.set(requestId, forKey: key) }
+    public func clear() { defaults.removeObject(forKey: key) }
+}
+
+/// A ``ConsentRequestStore`` in memory: for tests, or an app that resumes
+/// within one launch only.
+public final class MemoryConsentRequestStore: ConsentRequestStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var requestId: String?
+
+    public init(_ requestId: String? = nil) { self.requestId = requestId }
+
+    public func load() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestId
+    }
+
+    public func save(_ requestId: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.requestId = requestId
+    }
+
+    public func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        requestId = nil
+    }
+}
+
+/// `url` without the parameters the consent page adds when it sends the
+/// person back (`request_id`, `result`). (== mero-js `withoutConsentReturn`.)
+public func withoutConsentReturn(_ url: URL) -> URL {
+    guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+    let kept = (parts.queryItems ?? []).filter { $0.name != "request_id" && $0.name != "result" }
+    parts.queryItems = kept.isEmpty ? nil : kept
+    return parts.url ?? url
+}
+
+extension CalimeroClient {
+    /// On the URL the consent page sent the person back to
+    /// (`returnTo?request_id=…&result=…`, a universal link or the app
+    /// scheme): the decision on the request this app started, read from the
+    /// node (`GET /consent/{id}/result`, sealed), never from the URL. `nil`
+    /// when `returned` carries no `request_id`. The request is `requestId`, or
+    /// the one ``openConsentPage(_:options:)`` stored in the client's
+    /// ``CalimeroClientOptions/consentStore``, which is cleared once the
+    /// request is decided (or replaced). Show the person the URL without the
+    /// parameters with ``withoutConsentReturn(_:)``.
+    ///
+    /// Throws ``CalimeroError``:
+    /// - `CONSENT_NOT_STARTED`: the URL names a request, and this app started none;
+    /// - `CONSENT_REQUEST_MISMATCH`: the URL (or the node) names another
+    ///   request than this app's;
+    /// - `CONSENT_NOT_DECIDED`: this app's request is still pending although
+    ///   the page sent the person back, a sign that another request was
+    ///   approved on a page that was not the node's. Do not act on it;
+    /// - `CONSENT_REPLACED`: the node no longer knows this app's request
+    ///   (`404`): an account has one undecided request per node, and a newer
+    ///   one replaced it, possibly on a page that was not the node's. Do not
+    ///   act on it either.
+    ///
+    /// The URL's `result` is never trusted: the answer's `status` is the
+    /// node's, and an approval's ``ConsentResult/outcome`` is in the answer.
+    /// (== mero-js `resumeConsent`.)
+    public func resumeConsent(_ returned: URL, requestId: String? = nil) async throws -> ConsentResult? {
+        let items = URLComponents(url: returned, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard let back = items.first(where: { $0.name == "request_id" })?.value, !back.isEmpty else { return nil }
+        guard let own = requestId ?? consentStore.load(), !own.isEmpty else {
+            throw CalimeroError(
+                status: 200, code: "CONSENT_NOT_STARTED", message: "this app started no consent request",
+                details: ["returned": .string(back)])
+        }
+        guard back == own else {
+            throw CalimeroError(
+                status: 200, code: "CONSENT_REQUEST_MISMATCH",
+                message: "the consent page returned another request than this app started",
+                details: ["requestId": .string(own), "returned": .string(back)])
+        }
+        let result: ConsentResult
+        do {
+            result = try await readConsentResult(own)
+        } catch let error as CalimeroError where error.status == 404 {
+            // One undecided request per account per node: a newer one replaced
+            // this app's, which then answers 404, perhaps swapped on a forged page.
+            forgetConsent(own)
+            throw CalimeroError(
+                status: 404, code: "CONSENT_REPLACED",
+                message: "this app's consent request was replaced by a newer one",
+                details: ["requestId": .string(own)])
+        }
+        guard result.requestId == own else {
+            throw CalimeroError(
+                status: 200, code: "CONSENT_REQUEST_MISMATCH", message: "the node answered another request",
+                details: ["requestId": .string(own), "returned": .string(result.requestId)])
+        }
+        guard result.status != .pending else {
+            throw CalimeroError(
+                status: 200, code: "CONSENT_NOT_DECIDED",
+                message: "the consent page returned, but this request is still pending",
+                details: ["requestId": .string(own)])
+        }
+        forgetConsent(own)
+        return result
+    }
+
+    /// Drop the stored consent request id, when it is `requestId`.
+    private func forgetConsent(_ requestId: String) {
+        if consentStore.load() == requestId { consentStore.clear() }
     }
 }
