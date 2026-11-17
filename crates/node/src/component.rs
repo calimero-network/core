@@ -1671,7 +1671,7 @@ impl AppMachine {
             self.expire_step_cache(tx, now);
             self.state.component.expire_blobs(tx, now);
         }
-        serde_json::to_vec(&applied).unwrap_or_default()
+        crate::app::applied_bytes(index, &applied)
     }
 }
 

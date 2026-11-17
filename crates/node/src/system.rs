@@ -5921,8 +5921,11 @@ impl Machine for SystemMachine {
         }
     }
 
-    fn snapshot(&self) -> Vec<u8> {
-        serde_json::to_vec(&self.state).unwrap_or_default()
+    fn snapshot(&self) -> eyre::Result<Vec<u8>> {
+        // Never an empty snapshot: restoring one fails on the node that receives it,
+        // far from here, with nothing logged where it happened.
+        serde_json::to_vec(&self.state)
+            .map_err(|e| eyre::eyre!("the system state does not serialize: {e}"))
     }
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
