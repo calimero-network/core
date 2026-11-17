@@ -16,25 +16,13 @@ use std::collections::BTreeMap;
 
 use calimero_sdk::prelude::*;
 
-// `uses::calendar`: the typed client for the calendar, from its ABI vendored in
-// `calimero/abi/calendar.json` (`build.rs`).
-include!(concat!(env!("OUT_DIR"), "/uses.rs"));
+// `uses::calendar()`: the typed client for the calendar, from its vendored ABI.
+app::uses!();
 
 #[app::state(version = 1)]
 pub struct Planner {
     /// How many events members scheduled through this planner.
     scheduled: Counter,
-}
-
-#[app::error]
-pub enum Error {
-    /// No calendar is linked: the planner was not created from its release.
-    NoCalendar,
-}
-
-/// The calendar this planner's instance was created with.
-fn calendar() -> Result<uses::calendar::Client, Error> {
-    uses::calendar::Client::linked().ok_or(Error::NoCalendar)
 }
 
 #[app::logic]
@@ -50,7 +38,7 @@ impl Planner {
     /// Puts an event on the team's calendar, as the planner. The calendar commits it in its
     /// own log first: if this run failed after that, the event would stay.
     pub fn schedule(&mut self, title: String, at: String) -> app::Result<()> {
-        calendar()?.add_event(&title, &at, None)?;
+        uses::calendar()?.add_event(&title, &at, None)?;
         let _total = self.scheduled.increment()?;
         Ok(())
     }
@@ -58,6 +46,6 @@ impl Planner {
     /// The team's agenda: the planner's own events on its calendar.
     #[app::view]
     pub fn agenda(&self) -> app::Result<Vec<uses::calendar::Event>> {
-        Ok(calendar()?.my_events()?)
+        Ok(uses::calendar()?.my_events()?)
     }
 }

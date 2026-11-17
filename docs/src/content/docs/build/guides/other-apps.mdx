@@ -68,15 +68,15 @@ calimero-app-build = { git = "https://github.com/calimero-network/core", tag = "
 ```rust
 // build.rs
 fn main() {
-    if let Err(e) = calimero_app_build::uses::generate() {
-        panic!("{e:#}");
-    }
+    calimero_app_build::uses::build();
 }
 ```
 
 ```rust
 // src/lib.rs
-include!(concat!(env!("OUT_DIR"), "/uses.rs"));
+use calimero_sdk::prelude::*;
+
+app::uses!(); // brings in the `uses` module
 ```
 
 Each reference becomes a module `uses::<name>` with:
@@ -152,9 +152,7 @@ release that app runs and whether that release is inside your range (`inRange`).
 Read the link each time you call. The owner may attach another app later, or none:
 
 ```rust
-let Some(calendar) = uses::calendar::Client::linked() else {
-    app::bail!(Error::NoCalendar); // attach a calendar first
-};
+let calendar = uses::calendar()?; // `NotLinked { name: "calendar" }` until one is attached
 match calendar.add_event(&title, &at, private) {
     Ok(()) => {}
     // The calendar's own error, typed.

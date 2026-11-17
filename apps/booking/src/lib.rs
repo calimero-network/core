@@ -18,10 +18,9 @@
 
 use calimero_sdk::prelude::*;
 
-// `uses::calendar`: the typed client for the calendar, from its ABI vendored in
-// `calimero/abi/calendar.json` (`build.rs`). The reference lists `methods`, so the client has
-// those two: `add_event` and `my_events`.
-include!(concat!(env!("OUT_DIR"), "/uses.rs"));
+// `uses::calendar()`: the typed client for the calendar, from its vendored ABI. The
+// reference lists `methods`, so it has those two: `add_event` and `my_events`.
+app::uses!();
 
 #[app::state(version = 1)]
 pub struct Booking {
@@ -32,8 +31,6 @@ pub struct Booking {
 
 #[app::error]
 pub enum Error {
-    /// The owner has not attached a calendar yet.
-    NoCalendar,
     /// Only the booking page's owner sets its slots.
     OwnerOnly,
     /// That slot is not offered, or the person is already busy then.
@@ -41,11 +38,6 @@ pub enum Error {
     /// A private booking made through booking: the calendar keeps private events to the
     /// person's own calls (`PrivateThroughApp`).
     PrivateNotAllowed,
-}
-
-/// The calendar the owner attached, read on every call: they may attach another one later.
-fn calendar() -> Result<uses::calendar::Client, Error> {
-    uses::calendar::Client::linked().ok_or(Error::NoCalendar)
 }
 
 /// When the person (or, without a grant, booking itself) already has something: the
@@ -75,7 +67,8 @@ impl Booking {
     /// when `private` says so. The calendar commits it in its own log first: if this run
     /// failed after that, the event would stay.
     pub fn book(&mut self, at: String, title: String, private: Option<bool>) -> app::Result<()> {
-        let calendar = calendar()?;
+        // The calendar the owner attached, read on every call: they may attach another later.
+        let calendar = uses::calendar()?;
         let offered = self.slots.contains(&at)?;
         if !offered || busy_times(&calendar)?.contains(&at) {
             app::bail!(Error::SlotTaken { at });
@@ -92,7 +85,7 @@ impl Booking {
     /// The offered slots the caller is still free at.
     #[app::view]
     pub fn free_slots(&self) -> app::Result<Vec<String>> {
-        let busy = busy_times(&calendar()?)?;
+        let busy = busy_times(&uses::calendar()?)?;
         let mut free = Vec::new();
         for slot in self.slots.iter() {
             let slot = slot?;

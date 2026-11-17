@@ -77,7 +77,7 @@ fn without_a_calendar_nothing_is_booked() {
             t.as_("ann")
                 .call("book", json!({ "at": "10:00", "title": "call" }))
         ),
-        "NoCalendar"
+        "NotLinked"
     );
 }
 

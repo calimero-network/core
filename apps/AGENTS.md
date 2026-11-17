@@ -88,7 +88,7 @@ doc comment. Their end-to-end tests are scenario files:
 
 An app whose release declares `[package.metadata.calimero.uses]` (`planner`, `booking`)
 calls each target through a typed client its `build.rs` generates
-(`calimero_app_build::uses::generate()`, a build-dependency on `crates/app-build`, which the
+(`calimero_app_build::uses::build()` in `build.rs`, brought in with `app::uses!()`; a build-dependency on `crates/app-build`, which the
 apps already reach as a dev-dependency, so their lockfiles do not change) from two committed
 files: `calimero.lock` and `calimero/abi/<name>.json`. Refresh them after the target changes
 its ABI, then commit both:

@@ -4,17 +4,16 @@
 //! against each other, and the typed clients generated from them
 //! (`calimero_app_abi::codegen::rust`).
 //!
-//! An app calls [`generate`] from its `build.rs` and includes the result:
+//! An app's `build.rs` is one line, and its code brings the clients in with `app::uses!()`:
 //!
 //! ```ignore
 //! // build.rs
 //! fn main() {
-//!     if let Err(e) = calimero_app_build::uses::generate() {
-//!         panic!("{e:#}");
-//!     }
+//!     calimero_app_build::uses::build();
 //! }
 //! // src/lib.rs
-//! include!(concat!(env!("OUT_DIR"), "/uses.rs"));
+//! app::uses!();
+//! // .. uses::calendar()?.add_event(&title, &at, None)?;
 //! ```
 //!
 //! `meroctl app uses update` writes the lock and the vendored ABI ([`vendor`]), after checking
@@ -341,6 +340,14 @@ pub fn module(dir: &Path) -> EyreResult<String> {
         })
         .collect();
     uses_module(&uses)
+}
+
+/// An app's whole `build.rs`: [`generate`], failing the build with what to fix (a build
+/// script reports an error by panicking).
+pub fn build() {
+    if let Err(e) = generate() {
+        panic!("{e:#}");
+    }
 }
 
 /// For an app's `build.rs`: checks the crate's references (`CARGO_MANIFEST_DIR`) and writes
