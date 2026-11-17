@@ -77,10 +77,17 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 - State machines (`machine.rs`): a `Machine` writes through `StateTx` in `apply`;
   each applied batch commits its writes and the applied index in one batch, so a
   restart resumes instead of replaying. A machine that cannot apply an entry (one
-  it cannot decode) calls `StateTx::fail`: no later entry of the batch is applied,
+  it cannot decode, a row it read but cannot decode) calls `StateTx::fail`, and a
+  `StateTx` read that fails (a storage fault, a malformed hidden row) fails the batch
+  itself and reads as absent: no later entry of the batch is applied,
   the applied index stays where it was, and the batch's error stops the group's
   Raft core there (stop rather than diverge); restarted, it stops there again, with backoff. Regression:
-  `a_failed_batch_stops_that_nodes_group_on_the_entry`. `Machine::IN_MEMORY` machines (the system
+  `a_failed_batch_stops_that_nodes_group_on_the_entry`,
+  `a_row_a_replica_cannot_read_stops_it_rather_than_applying_differently` (B3; the
+  `testing::fail_state_reads` hook makes a node's reads of a group fail).
+  `GroupState::get` (views, routes) still reads a fault as absent and logs it; a
+  machine's `restore` reads with `GroupState::try_get`, and `scan_hidden` fails on a
+  malformed row. `Machine::IN_MEMORY` machines (the system
   group) keep state in memory and are checkpointed with each snapshot instead.
   `Machine::snapshot` answers a `Result`: a state that does not serialize fails the
   build (logged with the group) and keeps the last checkpoint, never an empty one that
