@@ -19,13 +19,66 @@ pub(crate) fn encode(parts: &[KeyPart]) -> Result<Vec<u8>, StorageError> {
     Ok(encoded)
 }
 
-/// The key `(name, kind, rest..)` of a collection, checked.
+/// Where a collection's keys start.
+///
+/// A state field's collection starts at its name, `(name)`, so its keys are
+/// `(name, kind, rest..)` as they always were. A collection that is the value of a map
+/// (`UnorderedMap<K, Vector<T>>`) starts at the map's path, then `"c"` and its key encoded as
+/// one bytes part: `(name, "c", key)`, and so on for each level.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyPath {
+    label: String,
+    parts: Vec<KeyPart>,
+}
+
+impl KeyPath {
+    /// A state field's path: its name.
+    pub fn root(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            parts: vec![KeyPart::Str(name.clone())],
+            label: name,
+        }
+    }
+
+    /// The path of the collection nested under the key `key` here.
+    pub(crate) fn child(&self, key: &[KeyPart]) -> Self {
+        let mut parts = self.parts.clone();
+        parts.push(KeyPart::Str(NESTED.into()));
+        parts.push(KeyPart::Bytes(key::encode(key)));
+        Self {
+            label: self.label.clone(),
+            parts,
+        }
+    }
+
+    /// The state field this path starts at, for error messages.
+    pub(crate) fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// The key parts every key of the collection starts with.
+    pub(crate) fn parts(&self) -> &[KeyPart] {
+        &self.parts
+    }
+
+    /// Whether this is a nested collection's path rather than a state field's.
+    pub(crate) fn is_nested(&self) -> bool {
+        self.parts.len() > 1
+    }
+}
+
+/// The kind part under which a map of collections keeps each key's collection.
+pub(crate) const NESTED: &str = "c";
+
+/// The key `(path.., kind, rest..)` of a collection, checked.
 pub(crate) fn collection_key(
-    name: &str,
+    path: &KeyPath,
     kind: &str,
     rest: &[KeyPart],
 ) -> Result<Vec<u8>, StorageError> {
-    let mut parts = vec![KeyPart::Str(name.into()), KeyPart::Str(kind.into())];
+    let mut parts = path.parts().to_vec();
+    parts.push(KeyPart::Str(kind.into()));
     parts.extend_from_slice(rest);
     encode(&parts)
 }
@@ -61,6 +114,26 @@ pub(crate) fn clear_prefix<S: Store>(store: &mut S, prefix: &[u8]) -> u64 {
             removed += 1;
         }
     }
+}
+
+/// Delete at most `max` keys under `prefix`, in key order, a batch at a time; returns how
+/// many were deleted and whether none is left.
+pub(crate) fn delete_some<S: Store>(store: &mut S, prefix: &[u8], max: u64) -> (u64, bool) {
+    let (start, end) = bounds(prefix);
+    let mut removed = 0;
+    while removed < max {
+        // A fresh cursor per batch: the previous batch is gone, so this one starts after it.
+        let want = (max - removed).min(u64::from(MAX_RANGE_BATCH)) as u32;
+        let batch = store.range(&start, &end, false).next(want);
+        if batch.is_empty() {
+            return (removed, true);
+        }
+        for (k, _) in batch {
+            store.delete(&k);
+            removed += 1;
+        }
+    }
+    (removed, store.range(&start, &end, false).next(1).is_empty())
 }
 
 /// Read up to `limit + 1` entries under the encoded `base` and cut the page at `limit`.

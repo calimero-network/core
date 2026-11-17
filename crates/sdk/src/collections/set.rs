@@ -6,18 +6,19 @@ use core::marker::PhantomData;
 use crate::app::StateField;
 use crate::commons::{
     bounds, clear_prefix, collection_key, iter_entries, key_after, read_count, read_page, Entry,
+    KeyPath,
 };
 use crate::encoding::key::{self, FromKey, KeyPart, ToKey};
 use crate::error::StorageError;
 use crate::store::{check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
-use crate::table::{FindOpts, Iter, Page};
+use crate::table::{FindOpts, Iter, Page, Progress};
 
 /// CBOR `null`: what every element's key holds.
 const PRESENT: &[u8] = &[0xF6];
 
 /// A set of key-encodable elements, ordered by their key encoding.
 pub struct Set<T: ToKey, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _type: PhantomData<fn() -> T>,
 }
@@ -37,7 +38,7 @@ impl<T: ToKey, S: Store> Set<T, S> {
     /// A set on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _type: PhantomData,
         }
@@ -84,12 +85,23 @@ impl<T: ToKey, S: Store> Set<T, S> {
 
     /// How many elements there are: one read of the stored count, never a scan.
     pub fn len(&self) -> Result<u64, StorageError> {
-        read_count(&self.store, &self.count_key()?, &self.name)
+        read_count(&self.store, &self.count_key()?, self.name.label())
     }
 
     /// Whether the set is empty.
     pub fn is_empty(&self) -> Result<bool, StorageError> {
         Ok(self.len()? == 0)
+    }
+
+    /// Remove at most `max` elements, in order, and the count by one `add`; `done` says
+    /// whether the set is empty (see [`UnorderedMap::clear_some`](super::UnorderedMap::clear_some)).
+    pub fn clear_some(&mut self, max: u64) -> Result<Progress, StorageError> {
+        let base = self.base()?;
+        let (removed, done) = crate::commons::delete_some(&mut self.store, &base, max);
+        if removed > 0 {
+            self.store.add(&self.count_key()?, -(removed as i64));
+        }
+        Ok(Progress { removed, done })
     }
 
     /// Insert every value; returns how many were new.
@@ -249,15 +261,27 @@ impl<T: ToKey + FromKey, S: Store> Set<T, S> {
 
     /// The smallest element.
     pub fn first(&self) -> Result<Option<T>, StorageError> {
-        Ok(self.page(FindOpts::default().limit(1))?.items.pop())
+        // One entry through a cursor; a page would read one more to know of a next.
+        self.iter_with(FindOpts::default().limit(1))
+            .next()
+            .transpose()
     }
 
     /// The largest element.
     pub fn last(&self) -> Result<Option<T>, StorageError> {
-        Ok(self
-            .page(FindOpts::default().limit(1).reverse())?
-            .items
-            .pop())
+        self.iter_with(FindOpts::default().limit(1).reverse())
+            .next()
+            .transpose()
+    }
+}
+
+impl<T: ToKey, S: Store> crate::collections::Nestable<S> for Set<T, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _type: PhantomData,
+        }
     }
 }
 

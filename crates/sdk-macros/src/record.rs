@@ -172,10 +172,22 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
     let count = sets(&table.count)?;
 
     let name = &input.ident;
-    let arms = fields.iter().map(|(ident, _)| {
-        let key = camel(&ident.to_string());
-        quote! { #key => #sdk::ToKeyPart::to_key_part(&self.#ident) }
-    });
+    // Only the fields that are part of a key (the record key, a unique constraint, an index,
+    // a count) need `ToKeyPart`; every other field is just stored, so it may be any value:
+    // a list, a float, a nested struct, a `BlobRef`.
+    let mut keyed: std::collections::BTreeSet<String> = key.iter().cloned().collect();
+    for set in table.unique.iter().chain(&table.index).chain(&table.count) {
+        for lit in &set.fields {
+            let _new = keyed.insert(resolve(lit)?);
+        }
+    }
+    let arms = fields
+        .iter()
+        .filter(|(ident, _)| keyed.contains(&camel(&ident.to_string())))
+        .map(|(ident, _)| {
+            let key = camel(&ident.to_string());
+            quote! { #key => #sdk::ToKeyPart::to_key_part(&self.#ident) }
+        });
 
     let ser_fields = fields.iter().map(|(ident, ty)| {
         let rename = camel(&ident.to_string());

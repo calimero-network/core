@@ -34,8 +34,9 @@ struct NoArgs {}
 
 #[app::state(version = 1)]
 pub struct Booking {
-    /// The slots this page offers, as the calendar writes times.
-    slots: Cell<Vec<String>>,
+    /// The slots this page offers, as the calendar writes times, in time order: checking
+    /// one is a single read.
+    slots: Set<String>,
 }
 
 #[app::error]
@@ -71,14 +72,15 @@ impl Booking {
         if env::caller() != env::Caller::Account(env::app_owner()) {
             app::bail!(Error::OwnerOnly);
         }
-        self.slots.set(&slots)?;
+        let _removed = self.slots.clear()?;
+        let _added = self.slots.extend(&slots)?;
         Ok(())
     }
 
     /// Books `at` for the caller: an event in their own calendar (with their grant).
     pub fn book(&mut self, at: String, title: String) -> app::Result<()> {
         let calendar = calendar()?;
-        let offered = self.slots.get()?.unwrap_or_default().contains(&at);
+        let offered = self.slots.contains(&at)?;
         if !offered || busy_times(&calendar)?.contains(&at) {
             app::bail!(Error::SlotTaken { at });
         }
@@ -97,7 +99,13 @@ impl Booking {
     #[app::view]
     pub fn free_slots(&self) -> app::Result<Vec<String>> {
         let busy = busy_times(&calendar()?)?;
-        let slots = self.slots.get()?.unwrap_or_default();
-        Ok(slots.into_iter().filter(|s| !busy.contains(s)).collect())
+        let mut free = Vec::new();
+        for slot in self.slots.iter() {
+            let slot = slot?;
+            if !busy.contains(&slot) {
+                free.push(slot);
+            }
+        }
+        Ok(free)
     }
 }

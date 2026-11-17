@@ -7,16 +7,18 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::{clear_prefix, collection_key, iter_entries, read_count, read_page};
+use crate::commons::{collection_key, iter_entries, read_count, read_page, KeyPath};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
-use crate::table::{FindOpts, Iter, Page};
+use crate::table::{FindOpts, Iter, Page, Progress};
+
+use super::slots::VecElement;
 
 /// A list of values by position; it grows and shrinks at the end.
 pub struct Vector<T, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _type: PhantomData<fn() -> T>,
 }
@@ -25,18 +27,18 @@ impl<T, S: Store> StateField for Vector<T, S> {
     const KIND: &'static str = "vector";
 }
 
-impl<T: Serialize + DeserializeOwned, S: Store + Default> Vector<T, S> {
+impl<T, S: Store + Default> Vector<T, S> {
     /// A vector on the default store.
     pub fn new(name: impl Into<String>) -> Self {
         Self::with_store(name, S::default())
     }
 }
 
-impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
+impl<T, S: Store> Vector<T, S> {
     /// A vector on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _type: PhantomData,
         }
@@ -56,12 +58,60 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
 
     /// How many elements there are: one read of the stored length.
     pub fn len(&self) -> Result<u64, StorageError> {
-        read_count(&self.store, &self.len_key()?, &self.name)
+        read_count(&self.store, &self.len_key()?, self.name.label())
     }
 
     /// Whether the vector is empty.
     pub fn is_empty(&self) -> Result<bool, StorageError> {
         Ok(self.len()? == 0)
+    }
+}
+
+impl<T: VecElement<S>, S: Store> Vector<T, S> {
+    /// The element at `index` (`Option<T>`), or for a vector of collections the collection
+    /// at `index` (`Option<C>`, a handle that reads nothing until used); `None` past the end.
+    pub fn get(&self, index: u64) -> Result<T::Get, StorageError> {
+        T::get(&self.store, &self.name, index)
+    }
+
+    /// Remove the last element and return it; for a vector of collections, remove the last
+    /// collection whole and answer how many stored entries it had.
+    pub fn pop(&mut self) -> Result<Option<T::Popped>, StorageError> {
+        T::pop(&mut self.store, &self.name)
+    }
+
+    /// Every element (or collection) in position order, through one cursor as the loop
+    /// reaches it; a vector of collections reads only its length.
+    pub fn iter(&self) -> Iter<'_, T::Item> {
+        T::entries(&self.store, &self.name)
+    }
+
+    /// Remove every element (or collection), a batch at a time; returns how many stored
+    /// entries there were.
+    pub fn clear(&mut self) -> Result<u64, StorageError> {
+        T::clear(&mut self.store, &self.name)
+    }
+}
+
+impl<C: crate::collections::Nestable<S>, S: Store + Clone> Vector<C, S> {
+    /// For a vector of collections: append an empty collection and return its position and
+    /// the collection. One write (the length); the collection writes as it is filled.
+    pub fn push_new(&mut self) -> Result<(u64, C), StorageError> {
+        let index = self.len()?;
+        let path = self.name.child(&[KeyPart::Int(index.into())]);
+        let _fits = crate::commons::encode(path.parts())?;
+        self.store.add(&self.len_key()?, 1);
+        Ok((index, C::at(path, self.store.clone())))
+    }
+}
+
+impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
+    /// The plain element at `index`; `None` past the end.
+    fn read(&self, index: u64) -> Result<Option<T>, StorageError> {
+        self.store
+            .get(&self.storage_key(index)?)
+            .map(|bytes| value::from_slice(&bytes))
+            .transpose()
     }
 
     /// Append `v`; returns its position.
@@ -71,14 +121,6 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
         self.store.put(&key, &value::to_vec(v)?);
         self.store.add(&self.len_key()?, 1);
         Ok(index)
-    }
-
-    /// The element at `index`; `None` past the end.
-    pub fn get(&self, index: u64) -> Result<Option<T>, StorageError> {
-        self.store
-            .get(&self.storage_key(index)?)
-            .map(|bytes| value::from_slice(&bytes))
-            .transpose()
     }
 
     /// Replace the element at `index`, returning the old one; `OutOfBounds` past the end.
@@ -109,23 +151,6 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
             .range(&self.storage_key(from)?, &self.storage_key(to)?, reverse))
     }
 
-    /// Remove and return the last element.
-    pub fn pop(&mut self) -> Result<Option<T>, StorageError> {
-        let len = self.len()?;
-        let Some(last) = len.checked_sub(1) else {
-            return Ok(None);
-        };
-        let key = self.storage_key(last)?;
-        let old = self
-            .store
-            .get(&key)
-            .ok_or(StorageError::Dangling)
-            .and_then(|b| value::from_slice(&b))?;
-        self.store.delete(&key);
-        self.store.add(&self.len_key()?, -1);
-        Ok(Some(old))
-    }
-
     /// Elements in position order (last first with `reverse`), one page of at most 1,000;
     /// `from` and `to` take positions as `KeyPart::Int`.
     pub fn page(&self, opts: FindOpts) -> Result<Page<T>, StorageError> {
@@ -135,11 +160,6 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
             .map(|(_, bytes)| value::from_slice(bytes))
             .collect::<Result<_, _>>()?;
         Ok(Page { items, next })
-    }
-
-    /// Every element in position order, a page at a time as the loop reaches it.
-    pub fn iter(&self) -> Iter<'_, T> {
-        self.iter_with(FindOpts::default())
     }
 
     /// [`Vector::page`] over every page from `opts` on: `.reverse()` walks from the end,
@@ -153,13 +173,13 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
 
     /// The first element.
     pub fn first(&self) -> Result<Option<T>, StorageError> {
-        self.get(0)
+        self.read(0)
     }
 
     /// The last element.
     pub fn last(&self) -> Result<Option<T>, StorageError> {
         match self.len()?.checked_sub(1) {
-            Some(last) => self.get(last),
+            Some(last) => self.read(last),
             None => Ok(None),
         }
     }
@@ -222,6 +242,18 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
         }
         self.store.add(&self.len_key()?, -1);
         Ok(removed)
+    }
+
+    /// Remove at most `max` elements from the end (a delete each and one `add`); `done` says
+    /// whether the vector is empty. Call it from a timer until `done` to clear a vector too
+    /// large for one run's 10,000 writes.
+    pub fn clear_some(&mut self, max: u64) -> Result<Progress, StorageError> {
+        let len = self.len()?;
+        let removed = self.truncate(len.saturating_sub(max))?;
+        Ok(Progress {
+            removed,
+            done: removed == len,
+        })
     }
 
     /// Keep the first `len` elements and remove the rest, last first; returns how many were
@@ -367,21 +399,22 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
     where
         T: PartialEq,
     {
-        for item in self.iter() {
+        for item in self.iter_with(FindOpts::default()) {
             if item? == *v {
                 return Ok(true);
             }
         }
         Ok(false)
     }
+}
 
-    /// Remove every element, a batch at a time; returns how many there were.
-    pub fn clear(&mut self) -> Result<u64, StorageError> {
-        let base = self.base()?;
-        let count = self.len_key()?;
-        let removed = clear_prefix(&mut self.store, &base);
-        self.store.delete(&count);
-        Ok(removed)
+impl<T, S: Store> crate::collections::Nestable<S> for Vector<T, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _type: PhantomData,
+        }
     }
 }
 

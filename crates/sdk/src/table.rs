@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::{bounds, iter_entries, read_page};
+use crate::commons::{bounds, iter_entries, read_page, KeyPath};
 use crate::encoding::key::{self, KeyPart, ToKey};
 use crate::encoding::value;
 use crate::error::{StorageError, TableError};
@@ -160,6 +160,17 @@ impl<T> Iterator for Iter<'_, T> {
 
 impl<T> core::iter::FusedIterator for Iter<'_, T> {}
 
+/// How far a bounded removal got (`clear_some`, [`Table::remove_by`]): how many it removed,
+/// and whether nothing is left. A run makes at most 10,000 writes, so a large clear is done a
+/// slice per run, from a timer, until `done`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Progress {
+    /// How many were removed this time.
+    pub removed: u64,
+    /// Whether nothing is left to remove.
+    pub done: bool,
+}
+
 /// Options of [`Table::find`] and [`Table::scan`].
 #[derive(Clone, Debug, Default)]
 pub struct FindOpts {
@@ -217,7 +228,7 @@ struct Entries {
 
 /// A table of `T` records over a store.
 pub struct Table<T: Record, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _record: PhantomData<fn() -> T>,
 }
@@ -238,14 +249,15 @@ impl<T: Record, S: Store> Table<T, S> {
     /// A table on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _record: PhantomData,
         }
     }
 
     fn prefix(&self, kind: &str, rest: &[&str], parts: &[KeyPart]) -> Vec<KeyPart> {
-        let mut all = vec![KeyPart::Str(self.name.clone()), KeyPart::Str(kind.into())];
+        let mut all = self.name.parts().to_vec();
+        all.push(KeyPart::Str(kind.into()));
         all.extend(rest.iter().map(|r| KeyPart::Str((*r).into())));
         all.extend_from_slice(parts);
         all
@@ -292,8 +304,13 @@ impl<T: Record, S: Store> Table<T, S> {
     }
 
     /// Refuse a unique clash with a record other than the one at `record_key`.
-    fn check_unique(&self, new: &Entries) -> Result<(), TableError> {
+    /// Refuse a unique entry another record holds. An entry the record already had (`old`)
+    /// is its own, so it is neither read nor written again.
+    fn check_unique(&self, new: &Entries, old: Option<&Entries>) -> Result<(), TableError> {
         for (name, key) in &new.uniques {
+            if old.is_some_and(|o| o.uniques.iter().any(|(_, ok)| ok == key)) {
+                continue;
+            }
             if let Some(owner) = self.store.get(key) {
                 if owner != new.record {
                     return Err(TableError::Duplicate {
@@ -333,7 +350,9 @@ impl<T: Record, S: Store> Table<T, S> {
                 }
             }
             for (_, k) in &new.uniques {
-                self.store.put(k, &new.record);
+                if !old.is_some_and(|o| o.uniques.iter().any(|(_, ok)| ok == k)) {
+                    self.store.put(k, &new.record);
+                }
             }
             for k in &new.counts {
                 if !old.is_some_and(|o| o.counts.contains(k)) {
@@ -359,7 +378,7 @@ impl<T: Record, S: Store> Table<T, S> {
                 index: "key".into(),
             });
         }
-        self.check_unique(&new)?;
+        self.check_unique(&new, None)?;
         self.store.put(&new.record, &bytes);
         self.reindex(None, Some(&new));
         Ok(())
@@ -369,11 +388,11 @@ impl<T: Record, S: Store> Table<T, S> {
     pub fn upsert(&mut self, record: T) -> Result<(), TableError> {
         let new = self.entries(&record)?;
         let bytes = value::to_vec(&record)?;
-        self.check_unique(&new)?;
         let old = self
             .read(&new.record)?
             .map(|o| self.entries(&o))
             .transpose()?;
+        self.check_unique(&new, old.as_ref())?;
         self.store.put(&new.record, &bytes);
         self.reindex(old.as_ref(), Some(&new));
         Ok(())
@@ -398,10 +417,21 @@ impl<T: Record, S: Store> Table<T, S> {
         text: &str,
         opts: crate::SearchOpts,
     ) -> Result<crate::SearchResults<T>, StorageError> {
+        if self.name.is_nested() {
+            // The host indexes the tables the state declares, by name; a nested one is not.
+            return Err(StorageError::Search(
+                "search covers the state's own tables, not a nested one".into(),
+            ));
+        }
         let limit = opts.limit.unwrap_or(crate::search::DEFAULT_SEARCH_LIMIT);
-        let page =
-            crate::env::search_query(&self.name, text, opts.mode, opts.cursor.unwrap_or(0), limit)
-                .map_err(StorageError::Search)?;
+        let page = crate::env::search_query(
+            self.name.label(),
+            text,
+            opts.mode,
+            opts.cursor.unwrap_or(0),
+            limit,
+        )
+        .map_err(StorageError::Search)?;
         let mut items = Vec::with_capacity(page.hits.len());
         for hit in page.hits {
             if let Some(record) = self.read(&hit.key)? {
@@ -441,7 +471,7 @@ impl<T: Record, S: Store> Table<T, S> {
             return Err(StorageError::KeyChanged.into());
         }
         let bytes = value::to_vec(&record)?;
-        self.check_unique(&new)?;
+        self.check_unique(&new, Some(&old))?;
         self.store.put(&new.record, &bytes);
         self.reindex(Some(&old), Some(&new));
         Ok(true)
@@ -453,10 +483,119 @@ impl<T: Record, S: Store> Table<T, S> {
         let Some(record) = self.read(&record_key)? else {
             return Ok(false);
         };
-        let old = self.entries(&record)?;
+        self.remove_record(&record)?;
+        Ok(true)
+    }
+
+    /// Remove a record already read, with its index, unique and count entries: no read.
+    fn remove_record(&mut self, record: &T) -> Result<(), StorageError> {
+        let old = self.entries(record)?;
         self.store.delete(&old.record);
         self.reindex(Some(&old), None);
-        Ok(true)
+        Ok(())
+    }
+
+    /// Whether any key is left under the encoded `base`: one cursor read of one entry.
+    fn any_under(&self, base: &[u8]) -> bool {
+        let (start, end) = bounds(base);
+        !self.store.range(&start, &end, false).next(1).is_empty()
+    }
+
+    /// Keep only the records `keep` accepts; returns how many were removed. Every record is
+    /// read once, through one cursor, and a rejected one is removed from what was read (a
+    /// delete for it and each of its index and unique entries, an `add` per count), with no
+    /// second read. Each removal costs `1 + indexes + uniques + counts` writes against the
+    /// run's 10,000: past that, use [`Table::remove_by`] or [`Table::clear_some`] a slice per run.
+    pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) -> Result<u64, StorageError> {
+        let base = self.encode(&self.prefix("r", &[], &[]))?;
+        let (start, end) = bounds(&base);
+        let mut all = self.store.range(&start, &end, false);
+        let mut removed = 0;
+        loop {
+            let batch = all.next(MAX_RANGE_BATCH);
+            if batch.is_empty() {
+                return Ok(removed);
+            }
+            for (_, bytes) in batch {
+                let record: T = value::from_slice(&bytes)?;
+                if !keep(&record) {
+                    self.remove_record(&record)?;
+                    removed += 1;
+                }
+            }
+        }
+    }
+
+    /// Remove the records whose index fields start with `prefix` (as [`Table::find`] finds
+    /// them), at most `max` of them: a read of each record and its writes, nothing else.
+    /// `done` says whether none is left under the prefix; pass `u64::MAX` for all.
+    pub fn remove_by(
+        &mut self,
+        index: &str,
+        prefix: &[KeyPart],
+        max: u64,
+    ) -> Result<Progress, StorageError> {
+        let Some((_, fields)) = T::INDEXES.iter().find(|(name, _)| *name == index) else {
+            return Err(StorageError::UnknownName(index.into()));
+        };
+        if prefix.len() > fields.len() {
+            return Err(StorageError::PrefixTooLong {
+                given: prefix.len(),
+                max: fields.len(),
+            });
+        }
+        let base = self.encode(&self.prefix("i", &[index], prefix))?;
+        let (start, end) = bounds(&base);
+        let mut found = self.store.range(&start, &end, false);
+        let mut removed = 0;
+        while removed < max {
+            let want = (max - removed).min(u64::from(MAX_RANGE_BATCH)) as u32;
+            let batch = found.next(want);
+            if batch.is_empty() {
+                return Ok(Progress {
+                    removed,
+                    done: true,
+                });
+            }
+            for (_, record_key) in batch {
+                let record = self.read(&record_key)?.ok_or(StorageError::Dangling)?;
+                self.remove_record(&record)?;
+                removed += 1;
+            }
+        }
+        Ok(Progress {
+            removed,
+            done: !self.any_under(&base),
+        })
+    }
+
+    /// Remove at most `max` records, in key order, with their index, unique and count
+    /// entries; `done` says whether the table is empty. Call it from a timer until `done` to
+    /// clear a table too large for one run's writes.
+    pub fn clear_some(&mut self, max: u64) -> Result<Progress, StorageError> {
+        let base = self.encode(&self.prefix("r", &[], &[]))?;
+        let (start, end) = bounds(&base);
+        let mut all = self.store.range(&start, &end, false);
+        let mut removed = 0;
+        while removed < max {
+            let want = (max - removed).min(u64::from(MAX_RANGE_BATCH)) as u32;
+            let batch = all.next(want);
+            if batch.is_empty() {
+                return Ok(Progress {
+                    removed,
+                    done: true,
+                });
+            }
+            for (_, bytes) in batch {
+                let record: T = value::from_slice(&bytes)?;
+                self.remove_record(&record)?;
+                removed += 1;
+            }
+        }
+        Ok(Progress {
+            removed,
+            done: !self.any_under(&base),
+        })
     }
 
     /// Records whose index fields start with `prefix`, in index order, one page at a time.
@@ -501,7 +640,7 @@ impl<T: Record, S: Store> Table<T, S> {
     pub fn clear(&mut self) -> Result<u64, StorageError> {
         let records = self.encode(&self.prefix("r", &[], &[]))?;
         let removed = crate::commons::clear_prefix(&mut self.store, &records);
-        let all = self.encode(&[KeyPart::Str(self.name.clone())])?;
+        let all = self.encode(self.name.parts())?;
         let _ = crate::commons::clear_prefix(&mut self.store, &all);
         Ok(removed)
     }
@@ -574,5 +713,15 @@ impl<T: Record, S: Store> Table<T, S> {
             sum
         };
         u64::try_from(sum).map_err(|_| StorageError::BadCounter(name.into()))
+    }
+}
+
+impl<T: Record, S: Store> crate::collections::Nestable<S> for Table<T, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _record: PhantomData,
+        }
     }
 }
