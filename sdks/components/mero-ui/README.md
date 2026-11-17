@@ -106,7 +106,7 @@ export default App;
 - **FileUpload** - File upload component
 - **SearchInput** - Search input with suggestions
 - **TagInput** - Tag input with autocomplete
-- **RichTextEditor** - Rich text editing with Tiptap
+- **RichTextEditor** - Rich text editing with Tiptap. Render HTML from another member through `sanitizeRichTextHtml(html)`, never raw: it keeps only what the editor can produce.
 - **Form** - Form wrapper with validation
 - **BuildWizard** - Multi-step form wizard
 

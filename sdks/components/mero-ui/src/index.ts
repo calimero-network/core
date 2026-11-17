@@ -105,7 +105,7 @@ export { TimePicker } from "./TimePicker";
 export { FileUpload } from "./FileUpload";
 export { SearchInput } from "./SearchInput";
 export { TagInput } from "./TagInput";
-export { RichTextEditor } from "./RichTextEditor";
+export { RichTextEditor, sanitizeRichTextHtml } from "./RichTextEditor";
 export type { RichTextEditorProps } from "./RichTextEditor";
 export {
   BuildWizard,

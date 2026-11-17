@@ -1,5 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { RichTextEditor } from "@calimero-network/mero-ui";
+import {
+  RichTextEditor,
+  sanitizeRichTextHtml,
+} from "@calimero-network/mero-ui";
 import { useState, useRef } from "react";
 
 const meta: Meta<typeof RichTextEditor> = {
@@ -278,7 +281,7 @@ export const Controlled: Story = {
               borderRadius: "8px",
               border: "1px solid #404040",
             }}
-            dangerouslySetInnerHTML={{ __html: value }}
+            dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(value) }}
           />
         </div>
       </div>
@@ -510,7 +513,7 @@ export const WithEmojiInsertion: Story = {
               borderRadius: "8px",
               border: "1px solid #404040",
             }}
-            dangerouslySetInnerHTML={{ __html: value }}
+            dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(value) }}
           />
         </div>
       </div>
@@ -681,7 +684,7 @@ export const SendOnEnter: Story = {
                   )}
                   <div
                     className="msg-content"
-                    dangerouslySetInnerHTML={{ __html: m.html }}
+                    dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(m.html) }}
                   />
                 </div>
               </div>

@@ -23,6 +23,27 @@ export interface CopyToClipboardProps {
   feedbackDuration?: number;
 }
 
+// Fallback for older browsers and insecure contexts. The text is often a
+// secret, so the hidden textarea leaves the DOM whether or not the copy works.
+function copyWithTextarea(text: string): void {
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.setAttribute("readonly", "");
+  textArea.style.position = "fixed";
+  textArea.style.left = "-999999px";
+  textArea.style.top = "-999999px";
+  document.body.appendChild(textArea);
+  try {
+    textArea.focus();
+    textArea.select();
+    if (!document.execCommand("copy")) {
+      throw new Error("Copy command was rejected");
+    }
+  } finally {
+    textArea.remove();
+  }
+}
+
 export function CopyToClipboard({
   text,
   children,
@@ -75,17 +96,7 @@ export function CopyToClipboard({
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text);
       } else {
-        // Fallback for older browsers
-        const textArea = document.createElement("textarea");
-        textArea.value = text;
-        textArea.style.position = "fixed";
-        textArea.style.left = "-999999px";
-        textArea.style.top = "-999999px";
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        document.execCommand("copy");
-        textArea.remove();
+        copyWithTextarea(text);
       }
 
       setStatus("success");
@@ -349,17 +360,7 @@ export function useCopyToClipboard() {
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(text);
       } else {
-        // Fallback for older browsers
-        const textArea = document.createElement("textarea");
-        textArea.value = text;
-        textArea.style.position = "fixed";
-        textArea.style.left = "-999999px";
-        textArea.style.top = "-999999px";
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        document.execCommand("copy");
-        textArea.remove();
+        copyWithTextarea(text);
       }
 
       setStatus("success");

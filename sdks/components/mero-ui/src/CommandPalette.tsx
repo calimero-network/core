@@ -65,7 +65,8 @@ export function CommandPalette({
           acc[category].push(item);
           return acc;
         },
-        {} as Record<string, CommandItem[]>,
+        // No prototype: a category named "__proto__" or "constructor" is a key.
+        Object.create(null) as Record<string, CommandItem[]>,
       );
       return { filtered: items, grouped };
     }
@@ -92,7 +93,7 @@ export function CommandPalette({
         acc[category].push(item);
         return acc;
       },
-      {} as Record<string, CommandItem[]>,
+      Object.create(null) as Record<string, CommandItem[]>,
     );
 
     return { filtered, grouped };
