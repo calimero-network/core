@@ -535,6 +535,10 @@ impl Machine for AppMachine {
         } else {
             Self::unsupported(index)
         };
+        if tx.failed() {
+            // The group stops on this entry (`StateTx::fail`): it never applied.
+            return out;
+        }
         self.state.last_index = index;
         match serde_json::to_vec(&self.state.head()) {
             Ok(h) => tx.put(rows::HEAD.to_vec(), h),

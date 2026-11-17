@@ -47,6 +47,16 @@ which reads and writes are cheap.
 `wiki` (author-owned pages, a person's own draft) and `forum` (the author is the caller, moderators) carry rules of their own too.
 See [Access control](/build/guides/access-control/) for the patterns.
 
+## Building on other apps
+
+| App | Shows |
+| --- | --- |
+| `calendar` | The app the other two use: each caller's own events, and `env::via()` keeping a person's private events out of a call another app makes for them. |
+| `planner` | `uses` with `mode = "create"`: each instance comes with its own calendar, read with `env::linked`, called as the planner; `upgrade-unit` moves both together. |
+| `booking` | `uses` with `mode = "attach"` and `methods`: a calendar the owner already runs, called as the person once they grant the delegation. |
+
+See [Build on other apps](/build/guides/other-apps/) for the guide.
+
 ## Compute
 
 | App | Shows |

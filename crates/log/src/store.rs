@@ -1130,11 +1130,18 @@ impl<'a> StateTx<'a> {
         self.delete(row);
     }
 
-    /// Record a fault: the batch then fails to commit.
+    /// Record a fault: the batch then fails to commit, which stops the
+    /// group's Raft core where it is (the entries after it are not applied).
     pub fn fail(&mut self, why: impl std::fmt::Display) {
         if self.error.is_none() {
             self.error = Some(why.to_string());
         }
+    }
+
+    /// Whether a fault was recorded ([`StateTx::fail`]).
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        self.error.is_some()
     }
 
     /// Write the batch now, outside any group's apply: for tools and tests

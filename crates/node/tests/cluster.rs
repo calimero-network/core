@@ -3751,6 +3751,23 @@ async fn a_replica_move_sent_to_a_node_without_the_app_writes_nothing() {
 /// (`/health`), the system leader logs it once all of them do (`/ops/placement`,
 /// and every replica's system state), and a node that joins later on the same
 /// build is admitted at it (`system::cluster_version`).
+/// B4: a gated command is admitted only once the version that brings it is in
+/// the log, the version that keeps older nodes out of the system group, so no
+/// node joins below an entry it cannot decode. Asked right after the cluster
+/// starts, before the leader's own raise, the gate logs it itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_feature_is_admitted_only_once_its_version_is_logged() {
+    let c = Cluster::start(3).await;
+    let node = &c.nodes[0].as_ref().unwrap().node;
+    let feature = calimero_node::system::cluster_version::Feature::RenameOrg;
+    node.require_features(&[feature]).await.unwrap();
+    let logged = node.sys(|s| s.cluster_version.clone());
+    assert!(
+        calimero_node::system::cluster_version::check(logged.as_deref(), &[feature]).is_ok(),
+        "admitted with {logged:?} logged"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_cluster_version_rises_to_what_every_node_supports() {
     let mut c = Cluster::start(3).await;

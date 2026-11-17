@@ -492,6 +492,12 @@ impl<M: Machine> StateMachine<M> {
                     out.push(Bytes::default());
                 }
             }
+            // A machine that could not apply an entry (one it cannot decode,
+            // a row it cannot read) stops the group there: applying what
+            // follows would build on a state the other nodes do not have.
+            if tx.failed() {
+                break;
+            }
             // Each entry's digest, wherever the batches split: replicas meet
             // at the same indexes.
             if !M::IN_MEMORY && last.is_multiple_of(DIGEST_EVERY) {

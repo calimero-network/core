@@ -34,11 +34,13 @@ is its command line.
   `a_wasmer_entry_never_applies_to_a_component_app`.
 - **Entry format** (`component::ENTRY_FORMAT`, `entry_format`): a component entry that
   starts `{"v":N,` is format `N`; no marker (every entry so far) is format 1. One newer than
-  this release reads applies as a no-op naming its format (`Trap`/`Fault`, `conflict`), so a
-  replica never applies part of it; a release that raises it writes the new format only once
-  every replica of the group reads it. The store and snapshot formats are `calimero-log`'s
+  this release reads, or a component app's entry that does not decode, stops the group on
+  that replica (`StateTx::fail`: the batch fails, nothing after it applies), so a replica
+  never applies part of it nor goes on without it; a release that raises it writes the new
+  format only once every replica of the group reads it. The store and snapshot formats are `calimero-log`'s
   (`STORE_FORMAT`, `SNAPSHOT_FORMAT`; docs: protocol/storage "Format versions"). Test:
-  `an_entry_in_a_later_format_is_refused_and_an_unmarked_one_applies`.
+  `an_entry_in_a_later_format_stops_the_group_and_an_unmarked_one_applies`,
+  `an_entry_this_replica_cannot_decode_stops_the_group`.
 - **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
   passkeys, API keys, refresh tokens, organizations, teams, invites, used proofs.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
@@ -205,11 +207,20 @@ is its command line.
   nodes }`, only forward, naming every registered node; `reconcile` ->
   `raise_cluster_version`, at most every 10 s) once every node supports it,
   and admits no node below it to the system group (`joins_at_cluster_version`).
-  Apply never reads it, so a log replays unchanged. A skipped undecodable
-  entry logs an error and counts in `calimero_log_undecodable_entries_total`.
+  Apply never reads it, so a log replays unchanged. The gate judges on the
+  logged version; when every node supports a feature above it, the proposing
+  node logs that version first (`cv::admit` -> `Admission::LogFirst`,
+  `raise_cluster_version_once` through `Node::sys_propose`, the ungated write),
+  so no gated entry precedes the version that keeps older nodes out (only
+  `SetClusterVersion` itself, and floors below rc.16, go on the floor alone).
+  An entry a node cannot decode stops its group there (`StateTx::fail`, B4),
+  logs an error and counts in `calimero_log_undecodable_entries_total`.
   Regressions: `system::cluster_version::tests`
   (`a_feature_is_never_proposed_while_an_older_node_holds_the_log`,
-  `an_entry_an_older_node_cannot_decode_splits_the_state`),
+  `an_entry_an_older_node_cannot_decode_splits_the_state`,
+  `a_feature_is_proposed_only_once_the_version_that_keeps_older_nodes_out_is_logged`,
+  `only_the_cluster_version_itself_is_admitted_before_it_is_logged`,
+  `an_entry_this_node_cannot_decode_stops_the_system_group`),
   `the_cluster_version_rises_to_what_every_node_supports`.
 - **Delegation** (`SystemCmd::SetDelegation`, `SystemState::delegations`,
   `Node::caller_for` and `forwarded` in `node/component.rs`; docs: protocol xcall
