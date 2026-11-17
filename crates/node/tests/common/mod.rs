@@ -503,6 +503,7 @@ fn mpk_build(
         frontend_aliases: Vec::new(),
         upgrades: None,
         outbound: Vec::new(),
+        secrets: None,
         services: None,
         pipelines: pipelines
             .iter()

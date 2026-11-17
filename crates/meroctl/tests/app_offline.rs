@@ -884,3 +884,46 @@ fn pack_refuses_services_it_cannot_pack() {
     std::fs::write(d.join("bad.wasm"), "not wasm").unwrap();
     assert!(refused(&["--service", "a=bad.wasm"]).contains("not a WASM component"));
 }
+
+/// `[package.metadata.calimero.secrets]` is signed into the manifest as `secrets`, so
+/// whoever deploys the app sees what to supply; a secret naming a host no outbound prefix
+/// covers is refused as a node would refuse it.
+#[test]
+fn pack_declares_the_secrets_the_crate_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    let crate_with = |secret_host: &str| {
+        format!(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[package.metadata.calimero]\n\
+             package = \"com.example.x\"\noutbound = [\"https://cloud-api.near.ai/v1/\"]\n\n\
+             [package.metadata.calimero.secrets.NEAR_AI_API_KEY]\nhosts = [\"{secret_host}\"]\n\
+             description = \"NEAR AI Cloud API key\"\nrequired = true\n"
+        )
+    };
+    std::fs::write(d.join("Cargo.toml"), crate_with("cloud-api.near.ai")).unwrap();
+    std::fs::write(d.join("app.wasm"), [COMPONENT, b"app"].concat()).unwrap();
+    let _ = ok(&meroctl(
+        d,
+        &["app", "pack", ".", "--wasm", "app.wasm", "--out", "x.mpk"],
+    ));
+    assert_eq!(
+        manifest(&untar(&d.join("x.mpk")))["secrets"],
+        serde_json::json!({ "NEAR_AI_API_KEY": {
+            "hosts": ["cloud-api.near.ai"],
+            "description": "NEAR AI Cloud API key",
+            "required": true,
+        } })
+    );
+
+    std::fs::write(d.join("Cargo.toml"), crate_with("evil.example")).unwrap();
+    let out = meroctl(
+        d,
+        &["app", "pack", ".", "--wasm", "app.wasm", "--out", "y.mpk"],
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("evil.example") && err.contains("outbound"),
+        "{err}"
+    );
+}
