@@ -207,7 +207,7 @@ impl Apps<'_> {
 
     /// Let an app call another as you.
     ///
-    /// `PUT /apps/{app}/delegations/{target}` (`app_delegate`). Who: signed in (a session or an API key).
+    /// `PUT /apps/{app}/delegations/{target}` (`app_delegate`). Who: an account holder (a passkey session not bound to an app's frontend).
     ///
     /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
     pub async fn delegate(

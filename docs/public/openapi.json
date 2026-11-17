@@ -1728,16 +1728,13 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Let an app call another as you",
-        "description": "The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none.\n\n**Who:** signed in (a session or an API key). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "description": "The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none. A session opened on an app's frontend is refused (`403`): the app asks on the consent page instead (`POST /consent/requests { kind: \"delegate\" }`).\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
         "security": [
           {
             "session": []
-          },
-          {
-            "apiKey": []
           }
         ],
-        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
         "x-calimero-sealed": true,
         "x-calimero-step-up": true,
         "x-calimero-user-verification": "required",
@@ -1830,6 +1827,19 @@
             },
             "x-calimero-codes": [
               "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
             ]
           },
           "404": {
@@ -11675,6 +11685,41 @@
                       "kind": {
                         "type": "string",
                         "enum": [
+                          "delegate"
+                        ]
+                      },
+                      "subject": {
+                        "type": "object",
+                        "properties": {
+                          "app": {
+                            "type": "string"
+                          },
+                          "target": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "app",
+                          "target"
+                        ]
+                      },
+                      "returnTo": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "subject",
+                      "returnTo"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
                           "outbound"
                         ]
                       },
@@ -12427,6 +12472,7 @@
                         "release",
                         "upgrade",
                         "upgradeUnit",
+                        "delegate",
                         "outbound",
                         "createOrg",
                         "createInvite",
