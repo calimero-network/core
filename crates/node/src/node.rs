@@ -946,6 +946,13 @@ impl Node {
     /// Everything the cluster shares or keeps across releases is keyed by
     /// `cluster_key` (K_c, `cluster_key::resolve`), not by this release's K_r.
     pub async fn start(config: Config, cluster_key: [u8; 32]) -> eyre::Result<Arc<Self>> {
+        // Search indexes go to disk only on a data disk the TD encrypts: mero-tee's,
+        // whose key's record merod was started with (`--kms-disk-evidence`).
+        let search_root = config
+            .kms_keys
+            .disk
+            .is_some()
+            .then(|| config.data_dir.join("search"));
         std::fs::create_dir_all(&config.data_dir)?;
         let receipt_key =
             crate::signing_key::load_or_create(&config.data_dir, &config.storage_key)?;
@@ -1069,7 +1076,7 @@ impl Node {
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
             starting: tokio::sync::Mutex::new(()),
-            component_search: crate::component::search::ComponentSearch::default(),
+            component_search: crate::component::search::ComponentSearch::new(search_root),
             this: Mutex::new(Weak::new()),
             checkpoints,
         });
