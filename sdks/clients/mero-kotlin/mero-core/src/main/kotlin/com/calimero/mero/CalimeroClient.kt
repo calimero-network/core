@@ -28,6 +28,7 @@ import com.calimero.mero.tee.SealedTransport
 import com.calimero.mero.tee.SealedTransportException
 import com.calimero.mero.tee.StaleTransportKeyException
 import com.calimero.mero.tee.TeeTrustException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -315,8 +316,13 @@ class CalimeroClient(
                     at = 0
                 }
                 src.due = src.options.now() + (listing.refreshAfterSeconds * 1000).toLong()
-            } catch (_: DirectoryError) {
-                // Keep the list the client has.
+            } catch (e: CancellationException) {
+                throw e
+            } catch (
+                @Suppress("TooGenericExceptionCaught") _: Exception,
+            ) {
+                // Keep the list the client has. Nothing may escape: this runs on the client's own
+                // scope, where an uncaught exception would take the app down.
             } finally {
                 src.reading = false
             }

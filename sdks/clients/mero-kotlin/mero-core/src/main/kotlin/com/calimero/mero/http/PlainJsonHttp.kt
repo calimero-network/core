@@ -50,10 +50,20 @@ internal class PlainJsonHttp(
                     throw NetworkException(e.message ?: "Network error", e)
                 }
             response.use { resp ->
+                // A body cut short (a dropped connection, a timeout mid-read) is a transport
+                // failure like any other, never a bare IOException escaping to the caller.
+                val text =
+                    try {
+                        resp.body?.let { readBounded(it.source()) }.orEmpty()
+                    } catch (e: NetworkException) {
+                        throw e
+                    } catch (e: IOException) {
+                        throw NetworkException(e.message ?: "Network error", e)
+                    }
                 HttpResponse(
                     status = resp.code,
                     headers = resp.headers.names().associateWith { resp.header(it).orEmpty() },
-                    body = resp.body?.let { readBounded(it.source()) }.orEmpty(),
+                    body = text,
                     url = url,
                 )
             }
