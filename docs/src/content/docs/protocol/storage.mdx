@@ -35,13 +35,17 @@ one another.
 
 ## Sealing
 
-Every value is sealed with AES-256-GCM under the cluster key K_c
-([Encryption](/protocol/encryption/)), with a random 96-bit nonce stored in
-front, and bound as associated data to its column tag,
-its group and its key: `"cl" ‖ tag ‖ group ‖ key`. A state row's associated
-data names its machine key but not its generation, so installing a snapshot can
-move sealed rows to the next generation without opening them. A value copied
-to another row, group or column fails to open.
+Rows are stored as they are (store format 2): the data directory is on the data
+disk the TD encrypts itself ([Encryption](/protocol/encryption/)). What is sealed
+with AES-256-GCM under the cluster key K_c, with a random 96-bit nonce stored in
+front and bound as associated data to its column tag, its group and its key
+(`"cl" ‖ tag ‖ group ‖ key`), is the node's own rows (`NODE_ROWS`: the store's
+format, the rollback counter) and every row of a snapshot file, sealed as the
+snapshot is built and opened as it is installed. A snapshot row's associated data
+names its machine key but not its generation, the shape every release writes, so
+nodes of either store format exchange snapshots. Format 1 sealed every value this
+way; the step to format 2 opens each row and writes it back, a batch at a time
+with its progress in a node row, so a node stopped part way resumes.
 
 Two further keys are derived from K_c (`HMAC-SHA256(K_c, label)`):
 
@@ -168,7 +172,7 @@ refuses what a later release wrote instead of misreading it:
 
 | Container | Where the version is | This release | Unmarked (written before markers) |
 | --- | --- | --- | --- |
-| The store (every row of every column) | node row `format` in `meta` (sealed, `calimero_log::STORE_FORMAT`) | 1 | format 0: every release up to 1.0.0-rc.15, the same rows as format 1 |
+| The store (every row of every column) | node row `format` in `meta` (sealed, `calimero_log::STORE_FORMAT`) | 2 (rows as they are; format 1 sealed every value under K_c) | format 0: every release up to 1.0.0-rc.15, the same rows as format 1 |
 | Snapshot and backup files | the first line, `CALIMERO-SNAPSHOT-<n>` (`calimero_log::SNAPSHOT_FORMAT`) | 1 | none: every file so far says 1 |
 | A component app's log entries (with the outcomes and file marks they carry) | `{"v":<n>,` as the start of the entry (`component::ENTRY_FORMAT`) | 1 | format 1: no entry so far carries a marker |
 | Sealed files and their segments | the domain strings the chunk AAD and the file id are bound to (`calimero.file.v1`, `calimero.file.segments.v1`) | v1 | none |

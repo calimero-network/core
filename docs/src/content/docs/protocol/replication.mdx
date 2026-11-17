@@ -298,7 +298,7 @@ sequence.
 
 ## Upgrading the on-disk format
 
-The store names its format (`calimero_log::STORE_FORMAT`, 1) in a sealed node
+The store names its format (`calimero_log::STORE_FORMAT`, 2) in a sealed node
 row, settled when the engine opens it: a store a later release wrote is
 refused, an older one is brought forward one registered step at a time
 ([Format versions](/protocol/storage/#format-versions)). A data directory that

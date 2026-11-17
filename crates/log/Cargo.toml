@@ -17,6 +17,7 @@ ring.workspace = true
 rocksdb.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+hex.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "rt", "fs", "io-util"] }
 tracing.workspace = true
@@ -25,7 +26,6 @@ tracing.workspace = true
 # Itself with `testing`, for the tests that slow a store's close.
 calimero-log = { workspace = true, features = ["testing"] }
 criterion.workspace = true
-hex.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

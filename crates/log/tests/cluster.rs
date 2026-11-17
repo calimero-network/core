@@ -514,8 +514,10 @@ async fn new_node_catches_up_and_becomes_voter() {
     c.dirs.push(dir);
 }
 
+/// The store keeps rows as they are, on the TD's encrypted data disk (store format 2); what
+/// leaves that disk, a snapshot file, is sealed: no row's key or value is in it in the clear.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn disk_holds_no_plaintext() {
+async fn snapshot_files_hold_no_plaintext() {
     let c = cluster(3).await;
     let index = put(&c, "needle", "plaintext-secret-value").await;
     for g in c.groups.values() {
@@ -526,14 +528,19 @@ async fn disk_holds_no_plaintext() {
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
     for dir in &c.dirs {
-        let hay = all_bytes(dir.path());
+        let snapshots = dir.path().join("snapshots");
+        assert!(
+            std::fs::read_dir(&snapshots).unwrap().next().is_some(),
+            "a snapshot file was written"
+        );
+        let hay = all_bytes(&snapshots);
         assert!(!hay.contains("plaintext-secret-value"));
         assert!(!hay.contains("needle"));
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn oversized_entries_are_refused_and_blobs_stay_sealed() {
+async fn oversized_entries_are_refused_and_blobs_round_trip() {
     let c = cluster(3).await;
     let id = leader(&c).await;
     let big = vec![b'x'; calimero_log::MAX_ENTRY_BYTES + 1];
@@ -562,8 +569,6 @@ async fn oversized_entries_are_refused_and_blobs_stay_sealed() {
         Some(&b"blob-plaintext-marker"[..])
     );
     assert!(engine.get_blob("b2").unwrap().is_none());
-    drop(engine);
-    assert!(!all_bytes(dir.path()).contains("blob-plaintext-marker"));
 }
 
 /// Every file under `dir`, as one lossy string.

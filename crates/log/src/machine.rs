@@ -503,7 +503,9 @@ impl<M: Machine> StateMachine<M> {
             let Some(key) = k.strip_prefix(prefix.as_slice()) else {
                 return Ok(false);
             };
-            w.row(key, v)?;
+            // Stored as it is; sealed in the file, which may leave this disk.
+            let sealed = self.db.seal_state(self.group, key, v)?;
+            w.row(key, &sealed)?;
             Ok(true)
         })?;
         drop(guard);
@@ -569,9 +571,9 @@ impl<M: Machine> StateMachine<M> {
             &meta.snapshot_id,
             file,
             |key, sealed| {
-                db.verify_state(group, key, sealed)?;
-                Db::stage_sealed_state(&mut batch, group, next, key, sealed.to_vec());
-                pending += key.len() + sealed.len();
+                let plain = db.open_state(group, key, sealed)?;
+                db.stage_state(&mut batch, group, next, key, Some(&plain))?;
+                pending += key.len() + plain.len();
                 if pending >= INSTALL_BATCH_BYTES {
                     db.commit(&batch, false)?;
                     batch = Transaction::default();
