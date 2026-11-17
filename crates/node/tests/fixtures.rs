@@ -6,7 +6,7 @@ use std::time::Instant;
 
 #[test]
 fn fixtures_build_into_components_and_are_cached_by_source_hash() {
-    for name in ["fixture-kv", "org-gated"] {
+    for name in ["fixture-kv", "team-space"] {
         let first = common::component(name);
         assert_eq!(&first[..4], b"\0asm", "{name}");
         let started = Instant::now();

@@ -1041,15 +1041,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "kv-store-writer-sets"
-version = "0.1.0"
-dependencies = [
- "calimero-app-build",
- "calimero-sdk",
- "serde_json",
-]
-
-[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1613,6 +1604,16 @@ name = "target-lexicon"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
+
+[[package]]
+name = "team-space"
+version = "0.1.0"
+dependencies = [
+ "calimero-app-build",
+ "calimero-sdk",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "tempfile"

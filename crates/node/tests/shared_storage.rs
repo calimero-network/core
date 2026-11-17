@@ -2,7 +2,7 @@
 //! is refused inside the app, so it is never committed: the node runs a call
 //! once, on the leader, with no peer to re-check it at merge.
 //!
-//! Builds the component `apps/kv-store-writer-sets` from this checkout
+//! Builds the component `apps/team-space` from this checkout
 //! (cached under `$CARGO_TARGET_DIR/app-components`).
 
 use calimero_client::types::ViewsRequestConsistency;
@@ -18,8 +18,8 @@ mod harness;
 
 use harness::{signed_up, typed, wire, Cluster};
 
-fn shared_kv_wasm() -> Vec<u8> {
-    harness::fixture("apps/kv-store-writer-sets")
+fn team_space_wasm() -> Vec<u8> {
+    harness::fixture("apps/team-space")
 }
 
 async fn map_get(cl: &Client, app: &str, key: &str) -> Value {
@@ -48,13 +48,13 @@ async fn a_non_writers_map_write_is_refused_and_a_writers_lands() {
         .to_owned();
     let bundle = alice
         .packages()
-        .bundle_put(shared_kv_wasm())
+        .bundle_put(team_space_wasm())
         .await
         .map(|b| b.hash)
         .unwrap();
     let created = alice
         .apps()
-        .create(typed(json!({ "name": "shared-kv", "bundle": bundle })))
+        .create(typed(json!({ "name": "team-space", "bundle": bundle })))
         .await
         .map(wire)
         .unwrap();

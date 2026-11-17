@@ -22,8 +22,8 @@ const GUESTS: &[&str] = &[
     "apps/fixture-kv",
     "apps/fixture-notes-v1",
     "apps/fixture-notes-v2",
-    "apps/org-gated",
     "apps/rooms",
+    "apps/team-space",
 ];
 
 fn main() -> eyre::Result<()> {

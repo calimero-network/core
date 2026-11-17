@@ -1,12 +1,10 @@
 [package]
-name = "org-gated"
+name = "team-space"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Org-gated notes on the component SDK: members read, admins write, a team writes its own note"
+description = "A team's shared space on the component SDK: org-gated notes, an owned config, roles and writer sets"
 
-# Not `org-gated`: the SDK 0.12 fixture once had that package (org_gated.wasm), and the
-# cluster scenarios find a fixture by its wasm's name.
 [lib]
 crate-type = ["cdylib"]
 

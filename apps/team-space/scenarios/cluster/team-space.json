@@ -1,10 +1,10 @@
 {
-  "name": "Org-gated notes",
+  "name": "Team space: organization standing",
   "description": "env::org_role and env::in_team gate an app's methods, as owner, admin, member and guest",
   "comment": [
-    "Converted from apps/org-gated/workflows/org-gated.yml (merobox) for the component port:",
+    "Converted from the former apps/org-gated/workflows/org-gated.yml (merobox) for the component port:",
     "methods are camelCase, whoami names the teams it asks about (`candidates`), refusals are the app's error codes.",
-    "The roles and the pinned note are also in ../org-gated.json, which the harness runs; this file is for the team",
+    "The roles and the pinned note are also in ../team-space.json, which the harness runs; this file is for the team",
     "created, joined and left mid-run, which only a cluster can do."
   ],
   "cluster": {
@@ -43,11 +43,11 @@
       "token": "{{token}}"
     },
     {
-      "name": "Alice deploys org-gated in the organization",
+      "name": "Alice deploys team-space in the organization",
       "type": "deploy",
       "account": "alice",
-      "wasm": "{{env.CORE_WASM_DIR}}/org_gated.wasm",
-      "app_name": "org-gated",
+      "wasm": "{{env.CORE_WASM_DIR}}/team_space.wasm",
+      "app_name": "team-space",
       "org": "{{org}}",
       "outputs": {
         "app": "appId"

@@ -1,5 +1,6 @@
 //! The component this crate builds, and the org a scenario names in its `.org.json`.
 
+// Each test crate (`harness.rs`, `scenarios.rs`) uses a part of this module.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};

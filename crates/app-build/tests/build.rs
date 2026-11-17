@@ -40,7 +40,7 @@ fn echo_guest_builds_into_a_component_with_only_world_imports() {
     assert_eq!(abi_of(&built.component).unwrap(), Some(expected));
 }
 
-/// The cluster fixtures (`apps/fixture-kv`, `apps/org-gated`) build into components that import only the
+/// The cluster fixtures (`apps/fixture-kv`, `apps/team-space`) build into components that import only the
 /// world's interfaces (allowed or stubbed), and carry an ABI.
 #[test]
 fn fixtures_build_with_world_imports_only() {
@@ -50,7 +50,7 @@ fn fixtures_build_with_world_imports_only() {
         .map(|s| (*s).to_owned())
         .collect();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps");
-    for name in ["fixture-kv", "org-gated"] {
+    for name in ["fixture-kv", "team-space"] {
         let built = build_component(&root.join(name), &target())
             .unwrap_or_else(|e| panic!("build {name}: {e}"));
         assert!(!built.imports.is_empty(), "{name}");

@@ -1,4 +1,5 @@
-//! Every `scenarios/*.json` on the real engine, each in the org its `.org.json` names.
+//! Every `scenarios/*.json` on the real engine, each with the org its `.org.json` names
+//! (no file: the owner only). The cluster runs the same files (`docs/.../contribute/testing.mdx`).
 
 #![cfg(not(target_arch = "wasm32"))]
 

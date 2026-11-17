@@ -1,5 +1,5 @@
 //! A three-node cluster in one process, driven only through the client, over
-//! sealed channels, with the real app components (`apps/fixture-*`, `apps/org-gated`,
+//! sealed channels, with the real app components (`apps/fixture-*`, `apps/team-space`,
 //! built on first use by `common::component`).
 
 mod common;
@@ -935,7 +935,7 @@ async fn apps_see_the_callers_organization_role_and_teams() {
 
     let bundle = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -2495,7 +2495,7 @@ async fn removed_member_stops_receiving_org_events() {
     let bob_id = s(bob.auth().me().await.map(wire).unwrap(), "accountId");
     let bundle = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -3726,14 +3726,14 @@ async fn upgrades_through_intents_are_refused_for_everyone() {
 
 /// I2 (Ruling 40): the ABI checks read the bundle the app group runs, not the directory's
 /// record of it. Here the two disagree (the directory's second write of an upgrade has
-/// not happened): the directory says org-gated, the group runs kv.
+/// not happened): the directory says team-space, the group runs kv.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_abi_gate_reads_the_bundle_the_app_runs() {
     let c = Cluster::start(3).await;
     let (alice, _a) = signed_up(&c, 0, "alice").await;
     let gated = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -3870,7 +3870,7 @@ async fn a_read_only_members_emit_only_call_is_refused() {
         .unwrap();
     let bundle = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -6716,7 +6716,7 @@ async fn a_retry_replays_even_after_an_upgrade_removed_its_method() {
         .unwrap();
     let gated = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
@@ -6777,7 +6777,7 @@ async fn a_retry_replays_even_after_an_upgrade_removed_its_method() {
 }
 
 /// Review nit, codes: a confirm method a stale front node did not know is confirm
-/// (here: a node that hosts no replica reads the directory's bundle, org-gated,
+/// (here: a node that hosts no replica reads the directory's bundle, team-space,
 /// while the group runs kv, whose `wipe` is a confirm method) still answers the
 /// spec's step-up, `412 CONFIRM_REQUIRED` with a challenge,
 /// not the leader's `422 ConfirmRequired`.
@@ -6787,7 +6787,7 @@ async fn a_confirm_method_a_stale_front_missed_still_asks_for_a_passkey() {
     let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let gated = alice
         .packages()
-        .bundle_put(wasm("org-gated"))
+        .bundle_put(wasm("team-space"))
         .await
         .map(|b| b.hash)
         .unwrap();
