@@ -41,7 +41,7 @@ one build) and no `rooms-fault`.
 ```bash
 cargo build --release -p merod -p meroctl
 export PATH=$PWD/target/release:$PATH
-meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
+meroctl app build apps/fixture-kv --out target/app-components/kv.wasm
 for v in 1.0.0 1.1.0; do
   meroctl app pack --wasm target/app-components/kv.wasm \
     --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"

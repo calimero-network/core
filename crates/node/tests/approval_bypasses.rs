@@ -9,7 +9,7 @@
 //! - F1: sessions are signed by the node that issued them, not by a key
 //!   every node holds.
 //!
-//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
 
 use std::sync::Arc;

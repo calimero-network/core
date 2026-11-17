@@ -680,7 +680,7 @@ is its command line.
   The bytes are read with the files export.
   The result method takes one argument shaped like the SDK's `ComputeOutcome`: camelCase `run, method, attempt, status, reason, result, outputs: [{ id, size, sha256 }], usage`, where an output `id` is the 64-hex blob id (a `BlobRef`) and 64-bit integers are decimal strings.
   The compute fixture's `onDone` takes that shape (`compute_fixture.rs` in `calimero-app-engine-wasmtime`).
-  The cluster tests' fixture (`apps/v2-fixtures/compute`) takes it as the SDK's `ComputeOutcome` and stores each output's `BlobRef` when the run is done.
+  The cluster tests' fixture (`apps/fixture-compute`) takes it as the SDK's `ComputeOutcome` and stores each output's `BlobRef` when the run is done.
   Every permanent refusal changes nothing and answers `AppError` with the reason as `error`; only a stale `baseIndex` answers `conflict` (retry on the current state) and leaves the run active.
   `init` starts runs on its own bundle.
   The result method runs with `runs_provider(Some(run))`, which leaves out the run that is ending, so its own start of the same job is a new run.
@@ -1329,7 +1329,7 @@ is its command line.
   sheet is `consent_page::diff`, its methods, events, timers and state version from the
   `calimero:abi` each component embeds, `component::embedded_abi`; regression:
   `an_upgrades_page_names_what_the_components_abis_change` with
-  `apps/v2-fixtures/notes-v1` and `notes-v2`; the plain-language `title`, `points` and
+  `apps/fixture-notes-v1` and `notes-v2`; the plain-language `title`, `points` and
   `attention` the page leads with are the node's too, and the rest sits under
   a collapsed *Details*). `GET /consent/{id}` (static HTML in the
   binary, hash-only CSP, `frame-ancestors 'none'`), `/model`, `/approve`,
@@ -1927,7 +1927,7 @@ API and system group:
   view through `Node::view` (strong). The run's thread waits at most `SYNC_XCALL_WAIT`
   (3 s) while the runtime runs it; two apps calling each other at once both time out.
   Test: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
-  (`apps/v2-fixtures/captcha`).
+  (`apps/fixture-captcha`).
 - **Files** (`node/component/files.rs`; tests `component_files.rs`): a file is a sealed blob.
   It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
   A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key (`backup::file_key`, not the TEE key) and the app's blob records.
@@ -2021,7 +2021,7 @@ rollback epoch in the attested KMS evidence, search indexes that survive a resta
 
 ```bash
 cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
-# component fixtures (apps/v2-fixtures/{kv,org-gated}, apps/kv-store-with-shared-storage,
+# component fixtures (apps/fixture-kv, apps/team-space,
 # apps/rooms, any app a scenario installs) are built on first use (harness/cluster.rs::fixture,
 # tests/common/mod.rs) into $CARGO_TARGET_DIR/app-components (needs the wasm32-wasip2 target)
 cargo test --release -p calimero-node --test rooms   # Rooms A1 (shared scenario), A3, A5

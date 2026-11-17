@@ -6,7 +6,7 @@
 //! (`--bootstrap --recover-from`, `POST /ops/recover`), and each app comes back
 //! from its own file (`POST /ops/apps/{app}/restore { recovery }`).
 //!
-//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
 
 #![allow(
