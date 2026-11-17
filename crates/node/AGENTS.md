@@ -211,21 +211,30 @@ is its command line.
   (`a_feature_is_never_proposed_while_an_older_node_holds_the_log`,
   `an_entry_an_older_node_cannot_decode_splits_the_state`),
   `the_cluster_version_rises_to_what_every_node_supports`.
-  A feature may also gate a shape on an app's path (`Feature::system` is
-  `false`): no system command names it, and the node reads it from the logged
-  version alone. `Feature::OnBehalfOf` is one (below).
-- **On whose behalf** (`Node::delegates`, `forwarded` in `node/component.rs`;
-  docs: protocol xcall "On whose behalf"): a run passes the person it serves
-  (its own `Account`/`ApiKey` caller, or the person it was called for) to the
-  apps it calls, as `CallRequest::on_behalf_of` / `ViewRequest::on_behalf_of`
-  for a synchronous xcall and `XcallOut::on_behalf_of` -> `Outgoing::on_behalf_of`
-  (the outbox row) for a message; the target's host core gets it with
-  `HostCore::with_origin` (`env::on_behalf_of()`), beside `Caller::App(source)`.
-  Timers, actions, `init` and public callers pass none. Only from the logged
-  cluster version that brings `Feature::OnBehalfOf` (rc.31): before it no run
-  names anyone, so an older node dropping the field changes nothing. A row an
-  earlier release wrote has none and is delivered as before. Regression:
-  `an_xcall_names_the_person_its_run_served` (`tests/component_cluster.rs`).
+- **Delegation** (`SystemCmd::SetDelegation`, `SystemState::delegations`,
+  `Node::caller_for` and `forwarded` in `node/component.rs`; docs: protocol xcall
+  "As the person"): a person lets an app call another as them. The release the
+  source runs lists, per reference in its signed `uses`, the methods it calls as
+  the person (`BundleUse::methods`); `PUT /apps/{app}/delegations/{target}`
+  (`api::apps::app_delegate`) grants exactly those for the target's package, with
+  the person's passkey over `<source> / __delegate / { target, methods }`
+  (`system::delegation_args`), both apps reachable by them and in one organization
+  (`Feature::Delegation`, rc.31); `DELETE` takes it back without a passkey;
+  `GET /apps/{app}/delegations` lists the caller's own. Deleting either app drops
+  the grant (`remove_app`). A run whose caller is a person offers that person to
+  the apps it calls (`forwarded`): a synchronous call or view (`NodeXcall::person`)
+  and a message (`XcallOut::on_behalf_of` -> `Outgoing::on_behalf_of`, written only
+  from the logged cluster version that brings `Feature::Delegation`,
+  `Node::carries_person`, as the row is replicated state). `caller_for` decides at
+  the source, for a delivery when it is delivered: as the person, with
+  `CallRequest::via` / `ViewRequest::via` = the source, where they granted the
+  source that method of the target and still reach it; else as `Caller::App(source)`
+  with no person named. The target's host core gets `via` with `HostCore::with_via`
+  (`env::via()`); the usual ABI checks apply to the person, so a `confirm` method is
+  refused (`ConfirmRequired`). A run another app called offers no one onward.
+  Regressions: `an_app_calls_another_as_the_person_only_with_their_grant`
+  (`tests/component_cluster.rs`),
+  `system::tests::a_person_lets_an_app_act_as_them_with_their_passkey_and_takes_it_back`.
 - **API** (`api.rs`, handlers by area in `api/<area>.rs`, each with its `routes()` that `router` merges; helpers more than one area uses stay in `api.rs`), all inside the sealed channel except `/attestation`, `/health` and the consent page:
   `/auth/*` (passkeys, refresh, API keys), `/bundles`, `/apps`, `/apps/{app}/{intents,views,events,upgrade,access}`,
   `/orgs/*`, `/invites/{token}/redeem`, `/consent/*`, `/internal/*` (peers), `/ops/*` (mdma: counts, placement and version reports by id only, no read path into apps).

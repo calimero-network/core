@@ -1380,6 +1380,19 @@ fn operations() -> Vec<Op> {
             .json::<super::TransferBody>("{ to: string, confirm?: #Confirm }")
             .ok("null")
             .step_up(),
+        get("/apps/{app}/delegations", "app_delegations", SignedIn, "What you let an app do as you")
+            .about("The apps you let this app call as you, each with the methods (`SetDelegation`). A session bound to an app's frontend reads its own app's only.")
+            .ok("{ source: string, delegations: { [string]: string[] } }"),
+        put("/apps/{app}/delegations/{target}", "app_delegate", SignedIn, "Let an app call another as you")
+            .about("The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none.")
+            .json::<super::apps::DelegateBody>("{ confirm?: #Confirm }")
+            .ok("{ source: string, target: string, methods: string[] }")
+            .step_up()
+            .errors(&[(404, "NOT_FOUND"), (409, "NOTHING_TO_DELEGATE"), (409, "FEATURE_NOT_ACTIVE")]),
+        delete("/apps/{app}/delegations/{target}", "app_undelegate", SignedIn, "Take back what an app may do on another as you")
+            .about("No passkey: it only narrows. `404 NOT_DELEGATED` when you granted nothing there.")
+            .ok("{}")
+            .errors(&[(404, "NOT_DELEGATED"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/move", "app_move", AccountHolder, "Move an app to another organization")
             .about("Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.")
             .json::<super::MoveBody>("{ toOrg: string, bringMembers?: bool, confirm?: #Confirm }")

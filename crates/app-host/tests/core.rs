@@ -1592,11 +1592,11 @@ fn synchronous_xcalls_are_keyed_bounded_and_one_hop_deep() {
     );
 }
 
-/// `context.on-behalf-of`: only a run another app called (a delivery or a view with
-/// `Caller::App`) carries an origin, and only an account or an API key; anything else is the
+/// `context.via`: only a person's call another app delivered (a delivery or a view whose
+/// caller is an account or an API key) names the app it came through; anything else is the
 /// node's mistake and refused before the run.
 #[test]
-fn only_a_run_another_app_called_carries_a_person_it_serves() {
+fn only_a_persons_delivered_call_names_the_app_it_came_through() {
     let person = Caller::Account("bob".into());
     let key = Caller::ApiKey {
         key_id: "k1".into(),
@@ -1604,28 +1604,30 @@ fn only_a_run_another_app_called_carries_a_person_it_serves() {
     };
     let state = BTreeMap::new();
     for kind in [InvocationKind::XcallDeliver, InvocationKind::View] {
-        let mut i = inv(kind);
-        i.caller = Caller::App("source".into());
-        for origin in [person.clone(), key.clone()] {
+        for caller in [person.clone(), key.clone()] {
+            let mut i = inv(kind);
+            i.caller = caller;
             let core = core_for(&state, &i)
-                .with_origin(Some(origin.clone()))
+                .with_via(Some("source".into()))
                 .unwrap();
-            assert_eq!(core.on_behalf_of(), Some(&origin));
+            assert_eq!(core.via(), Some("source"));
+            assert_eq!(core_for(&state, &i).via(), None);
+            let refused = core_for(&state, &i).with_via(Some(String::new()));
+            assert_eq!(refused.err(), Some(InvalidInvocation::ViaOutsideXcall));
         }
-        assert_eq!(core_for(&state, &i).on_behalf_of(), None);
         for not_a_person in [Caller::App("other".into()), Caller::System, Caller::Public] {
-            let refused = core_for(&state, &i).with_origin(Some(not_a_person));
-            assert_eq!(refused.err(), Some(InvalidInvocation::OriginOutsideXcall));
+            let mut i = inv(kind);
+            i.caller = not_a_person;
+            let refused = core_for(&state, &i).with_via(Some("source".into()));
+            assert_eq!(refused.err(), Some(InvalidInvocation::ViaOutsideXcall));
         }
     }
-    // A person's own call, a timer and an action serve no one but their caller.
+    // A person's own call, a timer and an action came through no app.
     let mut call = inv(InvocationKind::Call);
     call.caller = Caller::Account("alice".into());
-    let mut call_from_app = inv(InvocationKind::Call);
-    call_from_app.caller = Caller::App("source".into());
-    for i in [call, call_from_app, inv(InvocationKind::Action)] {
-        let refused = core_for(&state, &i).with_origin(Some(person.clone()));
-        assert_eq!(refused.err(), Some(InvalidInvocation::OriginOutsideXcall));
-        assert!(core_for(&state, &i).with_origin(None).is_ok());
+    for i in [call, inv(InvocationKind::Action)] {
+        let refused = core_for(&state, &i).with_via(Some("source".into()));
+        assert_eq!(refused.err(), Some(InvalidInvocation::ViaOutsideXcall));
+        assert!(core_for(&state, &i).with_via(None).is_ok());
     }
 }

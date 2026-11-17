@@ -196,8 +196,8 @@ impl context::Host for StoreData {
         Ok(caller(self.host.caller()))
     }
 
-    fn on_behalf_of(&mut self) -> Result<Option<types::Caller>> {
-        Ok(self.host.on_behalf_of().map(caller))
+    fn via(&mut self) -> Result<Option<String>> {
+        Ok(self.host.via().map(str::to_owned))
     }
 
     fn app_id(&mut self) -> Result<String> {

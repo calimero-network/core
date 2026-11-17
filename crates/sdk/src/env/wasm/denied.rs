@@ -12,7 +12,7 @@ pub fn caller() -> Caller {
     denied()
 }
 
-pub fn on_behalf_of() -> Option<Caller> {
+pub fn via() -> Option<String> {
     denied()
 }
 

@@ -65,11 +65,11 @@ NOT_COVERED = [
      "deep fixtures are packed by the old release's meroctl, which writes no `uses`. "
      "`a_release_names_the_apps_it_uses_on_its_card` (`component_cluster.rs`) covers install and the card "
      "on one build. A case once units create and link referenced apps"),
-    ("Apps", "The person a run serves, carried to the apps it calls (`env::on_behalf_of`, `Feature::OnBehalfOf`)",
-     "it stores nothing of its own (an outbox row only gains the person while the message waits), and the deep "
-     "fixtures are built from the old release's source, whose kv fixture has no method that reads it; "
-     "`an_xcall_names_the_person_its_run_served` (`component_cluster.rs`) covers message, call and view on one "
-     "build, and the `xcall` case still relays across the roll. A case once the upgrade-from release has it"),
+    ("Apps", "A person's grant letting an app call another as them (`SetDelegation`, `env::via`)",
+     "the deep fixtures are packed by the old release's meroctl, which writes no `uses` with `methods`, and a "
+     "grant is written only once every node runs this release (`Feature::Delegation`); "
+     "`an_app_calls_another_as_the_person_only_with_their_grant` (`component_cluster.rs`) covers message, call "
+     "and view on one build, and state without grants reads as before (`serde(default)`)"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "

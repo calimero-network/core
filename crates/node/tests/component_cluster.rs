@@ -4978,43 +4978,106 @@ async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 }
 
-/// A run started by a person passes that person to the apps it calls (`env::on_behalf_of`
-/// in the target, beside `Caller::App(source)`): by message, by a synchronous call and by a
-/// synchronous view, once the cluster runs the release that carries it (the system leader
-/// logs that version shortly after start). A person calling the target directly is its
-/// caller, not someone it serves.
+/// An app calls another as the person its run serves only with that person's grant
+/// (`PUT /apps/{app}/delegations/{target}`, their passkey over the methods the source's
+/// release lists for the target's package): then the target sees the person as its caller
+/// and `env::via()` names the source, by message, by a synchronous call and by a
+/// synchronous view. Without a grant, or once it is taken back, the target sees only the
+/// source app and never learns whom it served.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn an_xcall_names_the_person_its_run_served() {
+async fn an_app_calls_another_as_the_person_only_with_their_grant() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
     let c = Cluster::start(3).await;
-    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
     let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
         .as_str()
         .unwrap()
         .to_owned();
-    let bundle = alice
-        .packages()
-        .bundle_put(kv_wasm())
-        .await
-        .map(|b| b.hash)
-        .unwrap();
-    let mut apps = Vec::new();
-    for name in ["source", "target"] {
-        apps.push(
-            alice
-                .apps()
-                .create(typed(json!({ "name": name, "bundle": &bundle })))
-                .await
-                .map(|a| a.app_id)
-                .unwrap(),
-        );
+    let uses = json!({
+        "cal": { "package": "com.test.d-cal", "range": "^1", "mode": "attach",
+                 "methods": ["recordWho", "whoView"] },
+    });
+    for (package, u) in [("com.test.d-cal", Value::Null), ("com.test.d-plugin", uses)] {
+        let _ = alice
+            .packages()
+            .upload(mpk_using(package, "1.0.0", &kv_wasm(), &publisher, &[], u))
+            .await
+            .unwrap();
     }
-    let (source, target) = (apps[0].clone(), apps[1].clone());
-    let me = format!("account:{alice_id}");
+    let create = |name: &str, package: &str| {
+        typed(json!({ "name": name, "package": package, "version": "1.0.0" }))
+    };
+    let target = alice
+        .apps()
+        .create(create("calendar", "com.test.d-cal"))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let source = alice
+        .apps()
+        .create(create("plugin", "com.test.d-plugin"))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let as_app = format!("app:{source}");
+    let as_alice = format!("account:{alice_id} via:{source}");
+    let delivered = |key: String| {
+        let (alice, target) = (&alice, &target);
+        async move {
+            for _ in 0..100 {
+                let seen = strong_view(alice, target, "get", json!({ "key": key })).await;
+                if !seen.is_null() {
+                    return seen;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Value::Null
+        }
+    };
 
-    // By message: wait for the cluster version, then for the delivery.
+    // No grant: the calendar sees the plugin, never Alice.
+    let _r = who_call(
+        &alice,
+        &source,
+        "relayWho",
+        json!({ "app": target, "key": "before" }),
+    )
+    .await;
+    assert_eq!(delivered("before".into()).await, json!(as_app));
+    assert_eq!(
+        who_call(&alice, &source, "askWho", json!({ "app": target })).await,
+        json!(as_app)
+    );
+
+    // Alice grants it with her passkey, over exactly the methods the release lists.
+    let e = alice
+        .apps()
+        .delegate(&source, &target, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    let granted = alice
+        .apps()
+        .delegate(&source, &target, Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        granted["methods"],
+        json!(["recordWho", "whoView"]),
+        "{granted}"
+    );
+    let listed = alice.apps().delegations(&source).await.map(wire).unwrap();
+    assert_eq!(
+        listed["delegations"],
+        json!({ target.clone(): ["recordWho", "whoView"] })
+    );
+
+    // Now the calendar sees Alice through the plugin: by message (once the logged cluster
+    // version lets an outbox row name her, shortly after start), call and view.
     let mut seen = Value::Null;
-    for i in 0..300 {
-        let key = format!("m{i}");
+    for i in 0..100 {
+        let key = format!("after{i}");
         let _r = who_call(
             &alice,
             &source,
@@ -5022,22 +5085,14 @@ async fn an_xcall_names_the_person_its_run_served() {
             json!({ "app": target, "key": key }),
         )
         .await;
-        for _ in 0..20 {
-            seen = strong_view(&alice, &target, "get", json!({ "key": key })).await;
-            if !seen.is_null() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        if seen == json!(me) {
+        seen = delivered(key).await;
+        if seen == json!(as_alice) {
             break;
         }
-        assert_eq!(seen, json!("none"), "only a person or none is ever named");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(seen, json!(as_app), "only the plugin or Alice through it");
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert_eq!(seen, json!(me));
-
-    // Synchronously, a call and a view.
+    assert_eq!(seen, json!(as_alice));
     let _r = who_call(
         &alice,
         &source,
@@ -5047,16 +5102,38 @@ async fn an_xcall_names_the_person_its_run_served() {
     .await;
     assert_eq!(
         strong_view(&alice, &target, "get", json!({ "key": "sync" })).await,
-        json!(me)
+        json!(as_alice)
     );
-    let asked = who_call(&alice, &source, "askWho", json!({ "app": target })).await;
-    assert_eq!(asked, json!(me));
-
-    // Calling the target directly: Alice is the caller; the target serves no one else.
+    assert_eq!(
+        who_call(&alice, &source, "askWho", json!({ "app": target })).await,
+        json!(as_alice)
+    );
+    // Alice calling the calendar herself came through no app.
     assert_eq!(
         strong_view(&alice, &target, "whoView", json!({})).await,
-        json!("none")
+        json!(format!("account:{alice_id}"))
     );
+
+    // Taken back (no passkey needed): the plugin is itself again.
+    let _ok = alice.apps().undelegate(&source, &target).await.unwrap();
+    let _r = who_call(
+        &alice,
+        &source,
+        "relayWho",
+        json!({ "app": target, "key": "revoked" }),
+    )
+    .await;
+    assert_eq!(delivered("revoked".into()).await, json!(as_app));
+    let e = alice.apps().undelegate(&source, &target).await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_DELEGATED"), "{e}");
+
+    // A release that lists nothing for the target's package has nothing to grant.
+    let e = alice
+        .apps()
+        .delegate(&target, &source, Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOTHING_TO_DELEGATE"), "{e}");
 }
 
 async fn who_call(client: &Client, app: &str, method: &str, args: Value) -> Value {

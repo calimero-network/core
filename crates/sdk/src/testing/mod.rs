@@ -197,22 +197,22 @@ pub struct OtherAppCall {
     pub args: Value,
     /// The key a node would log the call under (`xc:..`); empty for a view.
     pub key: String,
-    /// The person the calling run serves, as the node passes it to the target
-    /// (`env::on_behalf_of` there): the run's own account or API key, or, for a run another
-    /// app called, the one it was called for.
+    /// The person the calling run serves (its own account or API key): a node runs the call
+    /// as them, `env::via()` naming the calling app, when they granted the calling app this
+    /// method of the target; else as the calling app.
     pub on_behalf_of: Option<crate::env::Caller>,
 }
 
 /// `mock_app`'s handlers, by app, and the person the run that calls them serves.
 struct HarnessApps(BTreeMap<String, AppHandler>, Option<HostCaller>);
 
-/// The person a run passes on to the apps it calls: its own caller when that is an account
-/// or an API key, the origin it was called for when another app called it, else none.
-fn forwarded(caller: &HostCaller, origin: Option<&HostCaller>) -> Option<HostCaller> {
+/// The person a run's calls to other apps may run as (with their grant): its own caller
+/// when that is an account or an API key, else none. A run another app called serves no one
+/// it can pass on: only the person's own grant to that app lets it act as them.
+fn forwarded(caller: &HostCaller) -> Option<HostCaller> {
     match caller {
         HostCaller::Account(_) | HostCaller::ApiKey { .. } => Some(caller.clone()),
-        HostCaller::App(_) => origin.cloned(),
-        HostCaller::Public | HostCaller::System => None,
+        HostCaller::App(_) | HostCaller::Public | HostCaller::System => None,
     }
 }
 
@@ -361,8 +361,8 @@ pub struct SentXcall {
     pub method: String,
     /// The JSON arguments.
     pub args: Value,
-    /// The person the sending run served; the node delivers the message with it
-    /// (`t.deliver_for`).
+    /// The person the sending run served: a node delivers the message as them when they
+    /// granted the sending app the method (`t.deliver_for`).
     pub on_behalf_of: Option<crate::env::Caller>,
 }
 
@@ -624,9 +624,9 @@ impl TestApp {
         self.deliver_with(from, None, method, args)
     }
 
-    /// Delivers an xcall from app `from` sent by a run that served `account`, as a node does
-    /// once every replica runs a release that carries it: `Caller::App(from)`, and
-    /// `env::on_behalf_of()` = `Caller::Account(account)`.
+    /// Delivers an xcall from app `from` as `account`, who granted `from` this method of the
+    /// app, as a node delivers it: the caller is `Caller::Account(account)` and `env::via()`
+    /// is `from`. The node's access gate for the account comes first, as for a direct call.
     ///
     /// # Errors
     ///
@@ -638,12 +638,12 @@ impl TestApp {
         method: &str,
         args: Value,
     ) -> Result<Value, Failure> {
-        let origin = HostCaller::Account(account.to_owned());
-        self.deliver_with(from, Some(origin), method, args)
+        let person = HostCaller::Account(account.to_owned());
+        self.deliver_with(from, Some(person), method, args)
     }
 
-    /// [`TestApp::deliver_for`] for a run an API key started: `env::on_behalf_of()` =
-    /// `Caller::ApiKey { key_id, account }`.
+    /// [`TestApp::deliver_for`] as an API key: the caller is `Caller::ApiKey { key_id,
+    /// account }`.
     ///
     /// # Errors
     ///
@@ -656,21 +656,22 @@ impl TestApp {
         method: &str,
         args: Value,
     ) -> Result<Value, Failure> {
-        let origin = HostCaller::ApiKey {
+        let person = HostCaller::ApiKey {
             key_id: key_id.to_owned(),
             account: account.to_owned(),
         };
-        self.deliver_with(from, Some(origin), method, args)
+        self.deliver_with(from, Some(person), method, args)
     }
 
     fn deliver_with(
         &mut self,
         from: &str,
-        origin: Option<HostCaller>,
+        person: Option<HostCaller>,
         method: &str,
         args: Value,
     ) -> Result<Value, Failure> {
-        let caller = HostCaller::App(from.to_owned());
+        let via = person.as_ref().map(|_| from.to_owned());
+        let caller = person.unwrap_or_else(|| HostCaller::App(from.to_owned()));
         let args = args_bytes(&args);
         if let Some(f) = self.gate(method, &caller, false, Some(&args)) {
             return Err(f);
@@ -678,7 +679,7 @@ impl TestApp {
         self.run_with(
             InvocationKind::XcallDeliver,
             caller,
-            origin,
+            via,
             method,
             args,
             None,
@@ -917,12 +918,12 @@ impl TestApp {
         &mut self,
         kind: InvocationKind,
         caller: HostCaller,
-        origin: Option<HostCaller>,
+        via: Option<String>,
         method: &str,
         args: Vec<u8>,
         timer: Option<TimerCtx>,
     ) -> Result<Value, Failure> {
-        let forward = forwarded(&caller, origin.as_ref());
+        let forward = forwarded(&caller);
         let is_view = kind == InvocationKind::View;
         let (seq_before, entry_before) = (self.seq, self.last_entry_ms);
         if !is_view {
@@ -961,9 +962,9 @@ impl TestApp {
             inv,
             Arc::new(HarnessDir(self.org.clone())),
         )
-        .and_then(|h| h.with_origin(origin))
-        // SAFETY: the harness builds timer slots exactly for timer invocations, and an
-        // origin only for a delivery.
+        .and_then(|h| h.with_via(via))
+        // SAFETY: the harness builds timer slots exactly for timer invocations, and a
+        // via only for a person's delivery.
         .expect("harness builds valid invocations")
         .with_blobs(Arc::new(HarnessBlobs(self.blobs.clone())))
         .with_search(search)

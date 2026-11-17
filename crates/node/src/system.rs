@@ -559,6 +559,11 @@ pub struct SystemState {
     /// reads and writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub recovery_keys: BTreeMap<String, AccountId>,
+    /// What each person lets an app do as them (`SetDelegation`): account -> source app ->
+    /// target app -> the target's methods the source's runs for that person call as them.
+    /// Left out when empty, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub delegations: BTreeMap<AccountId, BTreeMap<AppId, BTreeMap<AppId, Vec<String>>>>,
     /// Account recoveries under way, by account: the passkey the start
     /// logged and when it may finish (`docs/specs/account-recovery.md`). At
     /// most one per account. Left out when empty, as `recovery_keys`.
@@ -1392,6 +1397,15 @@ impl SystemState {
     fn remove_app(&mut self, app_id: &str) {
         self.set_app_file_bytes(app_id, 0);
         let _gone = self.apps.remove(app_id);
+        // A grant from or to the app goes with it.
+        for sources in self.delegations.values_mut() {
+            let _from = sources.remove(app_id);
+            for targets in sources.values_mut() {
+                let _to = targets.remove(app_id);
+            }
+            sources.retain(|_, t| !t.is_empty());
+        }
+        self.delegations.retain(|_, s| !s.is_empty());
         let _ring = self.released_runs.remove(app_id);
         if self.compute.remove(app_id).is_some() {
             self.grant_runs();
@@ -3741,6 +3755,16 @@ impl SystemState {
         self.may_reach_as_logged(app, account, true, true)
     }
 
+    /// Whether `account` lets `source`'s runs for them call `method` of `target` as them.
+    #[must_use]
+    pub fn delegates(&self, account: &str, source: &str, target: &str, method: &str) -> bool {
+        self.delegations
+            .get(account)
+            .and_then(|s| s.get(source))
+            .and_then(|t| t.get(target))
+            .is_some_and(|m| m.iter().any(|x| x == method))
+    }
+
     /// [`Self::may_reach`], or, for a command an earlier release logged
     /// with an app on a team reached by its owner whatever the team holds
     /// (`owner_in_team: false`), or an `Accounts` instance reached by its
@@ -4040,6 +4064,7 @@ impl SystemCmd {
             Self::UpgradeApp { .. } => Area::Apps,
             Self::TransferApp { .. } => Area::Apps,
             Self::MoveApp { .. } => Area::Apps,
+            Self::SetDelegation { .. } => Area::Apps,
             Self::DeleteApp { .. } => Area::Apps,
             Self::ChargeFileBytes { .. } => Area::Compute,
             Self::AcquireRun { .. } => Area::Compute,
@@ -4453,6 +4478,13 @@ pub fn scope_apps_args(apps: Option<&[ScopeApp]>, shared: Option<bool>) -> Value
 #[must_use]
 pub fn move_app_args(to_org: &str, bring_members: bool) -> Value {
     json!({ "toOrg": to_org, "bringMembers": bring_members })
+}
+
+/// What a delegation's consent states (`<source> / __delegate`): the app it reaches and the
+/// methods called there as the person.
+#[must_use]
+pub fn delegation_args(target: &str, methods: &[String]) -> Value {
+    json!({ "target": target, "methods": methods })
 }
 
 /// The id a `ScopeApps` (or a `MoveApp`) with `nonce` gives a new app team of `package`: the
@@ -5293,6 +5325,18 @@ pub enum SystemCmd {
         account: AccountId,
         metadata: Value,
         actor: AccountId,
+    },
+    /// `account` lets `source`'s runs for them call `methods` of `target` as them (the
+    /// target sees the person as its caller), with their passkey (`<source> / __delegate /
+    /// { target, methods }`, [`delegation_args`]); `methods: None` takes it back, which
+    /// needs no consent.
+    SetDelegation {
+        account: AccountId,
+        source: AppId,
+        target: AppId,
+        methods: Option<Vec<String>>,
+        #[serde(default)]
+        consent: Value,
     },
     SetAppMetadata {
         app_id: AppId,

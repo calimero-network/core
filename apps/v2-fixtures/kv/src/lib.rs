@@ -70,14 +70,19 @@ struct KeyArg<'a> {
 #[derive(serde::Serialize)]
 struct NoArgs {}
 
-/// `env::on_behalf_of()` as the cluster tests compare it: `account:<id>`, `key:<id>` or
-/// `none`.
+/// Who called and through which app, as the cluster tests compare it: `account:<id>`,
+/// `key:<id>` or `app:<id>`, then ` via:<app>` when another app called as the person
+/// (`env::via`).
 fn who() -> String {
-    match env::on_behalf_of() {
-        Some(env::Caller::Account(a)) => format!("account:{a}"),
-        Some(env::Caller::ApiKey { key_id, .. }) => format!("key:{key_id}"),
-        Some(other) => format!("other:{other:?}"),
-        None => "none".to_owned(),
+    let caller = match env::caller() {
+        env::Caller::Account(a) => format!("account:{a}"),
+        env::Caller::ApiKey { key_id, .. } => format!("key:{key_id}"),
+        env::Caller::App(a) => format!("app:{a}"),
+        other => format!("other:{other:?}"),
+    };
+    match env::via() {
+        Some(via) => format!("{caller} via:{via}"),
+        None => caller,
     }
 }
 
@@ -385,14 +390,14 @@ impl Kv {
         env::xcall_view(&app, "whoView", &NoArgs {})
     }
 
-    /// Stores under `key` the person the calling app's run served (`env::on_behalf_of`).
+    /// Stores under `key` who called and through which app (`env::caller`, `env::via`).
     #[app::allow(app = "*")]
     pub fn record_who(&mut self, key: String) -> app::Result<()> {
         let _event = self.upsert(&key, &who())?;
         Ok(())
     }
 
-    /// The person the calling app's run served, as `recordWho` stores it.
+    /// Who called and through which app, as `recordWho` stores it.
     #[app::view]
     #[app::allow(app = "*")]
     pub fn who_view(&self) -> app::Result<String> {
