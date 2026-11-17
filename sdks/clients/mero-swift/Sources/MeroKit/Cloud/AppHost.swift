@@ -46,7 +46,21 @@ public enum AppHost {
         guard let latest = try JSONDecoder().decode(Info.self, from: data).versions.last else {
             throw AccountError.protocolViolation("the app host serves no release")
         }
+        guard isVersion(latest) else {
+            throw AccountError.protocolViolation("the app host names a release that is not a version")
+        }
         return latest
+    }
+
+    /// Whether `value` is a release version a page path may carry: one segment
+    /// of letters, digits, `.`, `-` and `+`, starting with a letter or digit.
+    static func isVersion(_ value: String) -> Bool {
+        guard let first = value.utf8.first, value.utf8.count <= 128, isAlphanumeric(first) else { return false }
+        return value.utf8.allSatisfy { isAlphanumeric($0) || $0 == 0x2E || $0 == 0x2D || $0 == 0x2B }
+    }
+
+    private static func isAlphanumeric(_ c: UInt8) -> Bool {
+        (0x30...0x39).contains(c) || (0x41...0x5A).contains(c) || (0x61...0x7A).contains(c)
     }
 
     private static let alphabet = Array("abcdefghijklmnopqrstuvwxyz234567")

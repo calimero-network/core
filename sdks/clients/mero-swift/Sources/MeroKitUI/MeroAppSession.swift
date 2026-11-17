@@ -278,13 +278,18 @@ public final class MeroAppSession: ObservableObject {
     @discardableResult
     public func handle(_ url: URL) async -> Bool {
         if let restoreTask { await restoreTask.value }
-        if let back = consentReturn(url) {
+        if consentReturn(url) != nil {
             if let cloud = client.cloud {
                 // The request this session started, from the sealed result: a
                 // return naming another request, or one that left it pending,
-                // is refused (nil).
-                consentResult = try? await cloud.confirmConsentReturn(
-                    requestId: consentRequestId ?? back.requestId, returned: url)
+                // is refused (nil). With none started here, only the one the
+                // client stored (`openConsentPage`) is read, never one the
+                // URL alone names: a forged link must not pick the result.
+                if let own = consentRequestId {
+                    consentResult = try? await cloud.confirmConsentReturn(requestId: own, returned: url)
+                } else {
+                    consentResult = try? await cloud.resumeConsent(url)
+                }
                 if consentResult?.changesOrganizations == true { revision += 1 }
             }
             return true

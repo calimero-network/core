@@ -632,3 +632,59 @@ public struct AccountRecovery: Codable, Sendable, Equatable {
         self.readyAt = readyAt
     }
 }
+
+// MARK: - Redacted descriptions
+
+// A session's tokens, a recovery seed and an owner key are credentials:
+// `print`, string interpolation, `dump` and a debugger's summary show
+// everything but them.
+
+extension CalimeroSession: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String {
+        "CalimeroSession(accountId: \(accountId), expiresAt: \(expiresAt), tokens: <redacted>)"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: ["accountId": accountId, "expiresAt": expiresAt, "tokens": "<redacted>"])
+    }
+}
+
+extension StoredCloudSession: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String {
+        "StoredCloudSession(nodeURL: \(nodeURL), nodes: \(nodes), allowMock: \(allowMock), session: \(session))"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(
+            self,
+            children: ["nodeURL": nodeURL, "nodes": nodes, "allowMock": allowMock, "session": session.description])
+    }
+}
+
+extension ServedPageSession: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String {
+        "ServedPageSession(accountId: \(accountId), nodeUrl: \(nodeUrl), nodes: \(nodes), tokens: <redacted>)"
+    }
+
+    public var debugDescription: String { description }
+
+    public var customMirror: Mirror {
+        Mirror(self, children: ["accountId": accountId, "nodeUrl": nodeUrl, "nodes": nodes, "tokens": "<redacted>"])
+    }
+}
+
+extension RecoverySeed: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String { "RecoverySeed(publicKey: \(publicKey), seed: <redacted>)" }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror { Mirror(self, children: ["publicKey": publicKey, "seed": "<redacted>"]) }
+}
+
+extension OwnerKey: CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    public var description: String { "OwnerKey(publicKey: \(publicKey), secret: <redacted>)" }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror { Mirror(self, children: ["publicKey": publicKey, "secret": "<redacted>"]) }
+}

@@ -74,6 +74,27 @@ final class TeeDcapTests: XCTestCase {
             "CRL signature is invalid")
     }
 
+    /// Collateral is parsed before its signatures are checked, from a mirror
+    /// that is not trusted: a number no `Int` holds is a refusal, not a crash.
+    func testRefusesUnsignedCollateralWithANumberNoIntHolds() throws {
+        let quote = try TeeFixture.quote
+        var collateral = try TeeFixture.collateral
+        collateral.tcbInfo = collateral.tcbInfo.replacingOccurrences(of: "\"version\":3", with: "\"version\":1e300")
+        assertTeeRefusal(
+            teeThrownMessage { _ = try Dcap.verify(quote, collateral: collateral, nowSecs: self.nowSecs) },
+            "Failed to decode TcbInfo")
+        collateral = try TeeFixture.collateral
+        collateral.qeIdentity = collateral.qeIdentity.replacingOccurrences(
+            of: "\"version\":2", with: "\"version\":-1e300")
+        assertTeeRefusal(
+            teeThrownMessage { _ = try Dcap.verify(quote, collateral: collateral, nowSecs: self.nowSecs) },
+            "Failed to decode QeIdentity")
+        XCTAssertNil(JSONValue.number(1e300).intValue)
+        XCTAssertNil(JSONValue.number(9_223_372_036_854_775_808).intValue)
+        XCTAssertEqual(JSONValue.number(3.9).intValue, 3)
+        XCTAssertEqual(JSONValue.number(-2).intValue, -2)
+    }
+
     func testReadsTheCollateralAsANodeReturnsItAndWritesItBack() throws {
         let collateral = try TeeFixture.collateral
         XCTAssertTrue(collateral.pckCrlIssuerChain.contains("BEGIN CERTIFICATE"))

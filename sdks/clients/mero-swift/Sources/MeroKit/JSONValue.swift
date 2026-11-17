@@ -83,7 +83,12 @@ extension JSONValue: ExpressibleByDictionaryLiteral {
 extension JSONValue {
     public var stringValue: String? { if case .string(let v) = self { return v }; return nil }
     public var doubleValue: Double? { if case .number(let v) = self { return v }; return nil }
-    public var intValue: Int? { if case .number(let v) = self { return Int(v) }; return nil }
+    /// The number, truncated toward zero; `nil` when it is not a number an
+    /// `Int` holds (`1e300`), so a value from the wire never traps.
+    public var intValue: Int? {
+        if case .number(let v) = self { return Int(exactly: v.rounded(.towardZero)) }
+        return nil
+    }
     public var boolValue: Bool? { if case .bool(let v) = self { return v }; return nil }
     public var arrayValue: [JSONValue]? { if case .array(let v) = self { return v }; return nil }
     public var objectValue: [String: JSONValue]? { if case .object(let v) = self { return v }; return nil }

@@ -383,6 +383,50 @@ final class CoreRc10ParityTests: XCTestCase {
         }
         XCTAssertEqual(node.requests.last.map { "\($0.method) \($0.path)" }, "DELETE /apps/app1/files/uploads/u1")
     }
+
+    /// What the node says about a session's parts is checked before it slices the file
+    /// (mero-js `nextPart`): a part before the first, past the last, or a size no
+    /// `Int` holds is a refusal and the session is aborted, never a crash.
+    func testRefusesAnUploadPositionOutsideTheFile() async throws {
+        let part = CalimeroClient.filePartBytes
+        let begin: JSONValue = ["uploadId": "u1", "partBytes": .number(Double(part)), "parts": 2, "expiresAt": 9]
+        let answers: [(String, FakeCloudAnswer)] = [
+            (
+                "POST /apps/app1/files/uploads",
+                FakeCloudAnswer(
+                    status: 200, headers: [("content-type", "application/json")],
+                    chunks: [
+                        Data(#"{"uploadId":"u1","partBytes":9223372036854775807,"parts":2,"expiresAt":9}"#.utf8)
+                    ])
+            ),
+            ("PUT /apps/app1/files/uploads/u1/parts/0", .json(["next": -1])),
+            ("PUT /apps/app1/files/uploads/u1/parts/0", .json(["next": 3])),
+            (
+                "PUT /apps/app1/files/uploads/u1/parts/0",
+                .error(409, "PART_OUT_OF_ORDER", details: ["next": 1e300])
+            ),
+            ("PUT /apps/app1/files/uploads/u1/parts/0", .error(409, "PART_OUT_OF_ORDER", details: ["next": -5])),
+        ]
+        for (route, answer) in answers {
+            MockURLProtocol.reset()
+            let node = FakeCloudNode { request in
+                let key = "\(request.method) \(request.path)"
+                if key == route { return answer }
+                if key == "POST /apps/app1/files/uploads" { return .json(begin) }
+                if key == "DELETE /apps/app1/files/uploads/u1" { return .json([:]) }
+                return .error(404, "NOT_FOUND")
+            }
+            node.install()
+            do {
+                _ = try await client().uploadFile("app1", Data(count: part + 10))
+                XCTFail("expected a refusal for \(route)")
+            } catch let error as AccountError {
+                guard case .protocolViolation = error else { return XCTFail("\(route): \(error)") }
+            } catch {
+                XCTFail("\(route): \(error)")
+            }
+        }
+    }
 }
 
 /// `GET /package-origins/{package}`'s answer, read as ``PackageOrigin``s.

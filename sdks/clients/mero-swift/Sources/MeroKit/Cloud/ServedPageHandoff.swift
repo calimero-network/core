@@ -94,13 +94,22 @@ public final class ServedPageHandoff: @unchecked Sendable {
         url(origin: origin, version: version, fragment: Self.fragment)
     }
 
-    /// `{origin}/{version}/#{fragment}&state=…&key=…`, then `extra` (base64url or
-    /// rp-id values, so nothing in them needs escaping).
+    /// `{origin}/{version}/#{fragment}&state=…&key=…`, then `extra`. The version
+    /// and every value are percent-encoded, so none can end the path or add a
+    /// parameter (base64url and rp-id values pass unchanged).
     public func url(origin: URL, version: String, fragment: String, extra: [(String, String)] = []) -> URL {
         let base =
             origin.absoluteString.hasSuffix("/") ? String(origin.absoluteString.dropLast()) : origin.absoluteString
-        let more = extra.map { "&\($0.0)=\($0.1)" }.joined()
-        return URL(string: "\(base)/\(version)/#\(fragment)&state=\(state)&key=\(publicKey)\(more)")!
+        let more = extra.map { "&\(Self.escape($0.0))=\(Self.escape($0.1))" }.joined()
+        let text = "\(base)/\(Self.escape(version))/#\(Self.escape(fragment))&state=\(state)&key=\(publicKey)\(more)"
+        return URL(string: text) ?? origin
+    }
+
+    /// Letters, digits and `-._~,` as they are; everything else percent-encoded.
+    private static func escape(_ value: String) -> String {
+        var allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        allowed.insert(charactersIn: "-._~,")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
     }
 
     /// The session in the page's answer (`callback#state=…&box=…`). Throws on

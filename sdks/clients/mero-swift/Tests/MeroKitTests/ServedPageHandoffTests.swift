@@ -1,4 +1,5 @@
 import CryptoKit
+import MeroKitTestSupport
 import XCTest
 
 @testable import MeroKit
@@ -20,6 +21,53 @@ final class AppHostTests: XCTestCase {
         XCTAssertEqual(
             AppHost.origin(package: "com.calimero.chat", cluster: "eu-shared-1").absoluteString,
             "https://5eolix2xlsehjkbd2l5262oevb65zvq4dkgo66zlxpfc4os34una.apps.calimero.network")
+    }
+}
+
+final class ServedPageVersionTests: XCTestCase {
+    override func tearDown() {
+        MockURLProtocol.reset()
+        super.tearDown()
+    }
+
+    private func serve(_ versions: String) {
+        MockURLProtocol.setHandler { _ in
+            .init(
+                status: 200, headers: ["Content-Type": "application/json"],
+                body: Data(#"{"versions":\#(versions)}"#.utf8))
+        }
+    }
+
+    /// The release the app host names becomes a path segment of the page the
+    /// sheet opens: one that is not a version is refused, not spliced in.
+    func testRefusesAServedReleaseThatIsNotAVersion() async throws {
+        let origin = AppHost.origin(package: "com.calimero.chat")
+        for bad in [#"["1.0.0","1 0"]"#, #"["../evil"]"#, #"["1.0/#x"]"#, #"["1.0?x=1"]"#, #"[""]"#] {
+            serve(bad)
+            do {
+                _ = try await AppHost.latestVersion(origin: origin, session: MockURLProtocol.makeSession())
+                XCTFail("expected \(bad) to be refused")
+            } catch let error as AccountError {
+                guard case .protocolViolation = error else { return XCTFail("\(error)") }
+            }
+        }
+        serve(#"["1.0.0","1.2.0-rc.1+b7"]"#)
+        let latest = try await AppHost.latestVersion(origin: origin, session: MockURLProtocol.makeSession())
+        XCTAssertEqual(latest, "1.2.0-rc.1+b7")
+    }
+
+    /// A version or value that is not URL-safe is escaped, never a crash or an extra parameter.
+    func testEscapesTheVersionAndValuesOfTheHandoffPage() {
+        let handoff = ServedPageHandoff()
+        let origin = URL(string: "https://x.apps.calimero.network")!
+        let url = handoff.url(
+            origin: origin, version: "1 0", fragment: ServedPageHandoff.approveFragment,
+            extra: [("rpId", "a b&state=evil"), ("allow", "c1,c2")])
+        XCTAssertEqual(url.host, "x.apps.calimero.network")
+        XCTAssertTrue(url.absoluteString.hasPrefix("https://x.apps.calimero.network/1%200/#"), url.absoluteString)
+        let fragment = url.fragment ?? ""
+        XCTAssertTrue(fragment.contains("&rpId=a%20b%26state%3Devil&allow=c1,c2"), fragment)
+        XCTAssertEqual(fragment.components(separatedBy: "&state=").count, 2)
     }
 }
 

@@ -93,25 +93,26 @@ extension CalimeroClient {
     private func uploadSession(_ app: String, _ data: Data) async throws -> BlobInfo {
         let begin = try await apps.uploadBegin(app: app, size: Int64(data.count))
         let upload = begin.uploadId
-        let partBytes = Int(begin.partBytes)
-        guard !upload.isEmpty, partBytes > 0, Int(begin.parts) == (data.count + partBytes - 1) / partBytes else {
+        guard !upload.isEmpty, begin.partBytes > 0, begin.partBytes <= Int64(Int.max),
+            Int64(Self.partCount(data.count, Int(begin.partBytes))) == begin.parts
+        else {
             throw AccountError.protocolViolation("the node began an upload it cannot take")
         }
+        let partBytes = Int(begin.partBytes)
         let parts = Int(begin.parts)
         do {
             var next = 0
             var jumps = 0
             while next < parts {
                 let lower = data.startIndex + next * partBytes
-                let body = Data(data[lower..<min(lower + partBytes, data.endIndex)])
+                let body = Data(data[lower..<(lower + min(partBytes, data.endIndex - lower))])
                 do {
-                    next = Int(try await apps.uploadPart(app: app, upload: upload, k: String(next), body: body).next)
+                    let answer = try await apps.uploadPart(app: app, upload: upload, k: String(next), body: body)
+                    next = try Self.nextPart(.number(Double(answer.next)), parts)
                 } catch let error as CalimeroError where error.code == "PART_OUT_OF_ORDER" {
                     jumps += 1
-                    guard jumps <= 3, case .number(let at)? = error.details["next"], at >= 0, Int(at) <= parts else {
-                        throw error
-                    }
-                    next = Int(at)
+                    guard jumps <= 3 else { throw error }
+                    next = try Self.nextPart(error.details["next"], parts)
                 }
             }
             return try decode(
@@ -122,6 +123,20 @@ extension CalimeroClient {
             }
             throw error
         }
+    }
+
+    /// How many parts of `partBytes` hold `size` bytes, without overflowing.
+    static func partCount(_ size: Int, _ partBytes: Int) -> Int {
+        size / partBytes + (size % partBytes == 0 ? 0 : 1)
+    }
+
+    /// The part the node says comes next: an integer from 0 to `parts`, or a protocol violation.
+    /// (== mero-js `nextPart`.)
+    static func nextPart(_ value: JSONValue?, _ parts: Int) throws -> Int {
+        guard case .number(let n)? = value, let next = Int(exactly: n), next >= 0, next <= parts else {
+            throw AccountError.protocolViolation("the node answered a bad next part")
+        }
+        return next
     }
 
     /// Write the plaintext of sealed file `id` (64 hex) of component app
