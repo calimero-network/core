@@ -63,13 +63,6 @@ pub trait Machine: Send + Sync + 'static {
     /// `data` is empty and the machine re-reads what it caches from its
     /// [`GroupState`] (after a restart or a snapshot install).
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()>;
-
-    /// Bring in a state written by the previous storage format (one JSON
-    /// document, what [`Machine::snapshot`] used to answer for every machine),
-    /// writing it through `state`. In-memory machines restore it as it is.
-    fn import(&mut self, data: &[u8], _state: &mut StateTx<'_>) -> eyre::Result<()> {
-        self.restore(data)
-    }
 }
 
 /// The applied state of a group, shared between the Raft core and readers.
@@ -100,13 +93,6 @@ struct AppliedMeta {
 struct SnapshotRecord {
     meta: SnapshotMeta,
     file: String,
-}
-
-/// A snapshot in the previous storage format, carried over by the migration.
-#[derive(Serialize, Deserialize)]
-pub(crate) struct LegacySnapshot {
-    pub(crate) meta: SnapshotMeta,
-    pub(crate) data: Bytes,
 }
 
 /// The state row an in-memory machine's checkpoint lives in (and so where a
@@ -330,31 +316,7 @@ impl<M: Machine> StateMachine<M> {
         db.drop_other_generations(group, generation)?;
         let state = GroupState::new(Arc::clone(&db), group, generation);
         machine.attach(state.clone());
-        let mut applied: AppliedMeta = db.get_meta(group, "applied")?.unwrap_or_default();
-        if applied.last_applied.is_none() {
-            if let Some(legacy) = db.get_meta::<LegacySnapshot>(group, "legacy-snapshot")? {
-                let mut tx = StateTx::new(&state);
-                machine.import(&legacy.data.0, &mut tx)?;
-                applied = AppliedMeta {
-                    last_applied: legacy.meta.last_log_id,
-                    membership: legacy.meta.last_membership.clone(),
-                };
-                let mut batch = Transaction::default();
-                tx.into_batch(&mut batch)?;
-                if M::IN_MEMORY {
-                    db.stage_state(
-                        &mut batch,
-                        group,
-                        generation,
-                        CHECKPOINT_KEY,
-                        Some(&machine.snapshot()?),
-                    )?;
-                }
-                db.stage_meta(&mut batch, group, "applied", &applied)?;
-                db.commit(&batch, true)?;
-                db.drop_meta(group, "legacy-snapshot")?;
-            }
-        }
+        let applied: AppliedMeta = db.get_meta(group, "applied")?.unwrap_or_default();
         if M::IN_MEMORY {
             if let Some(data) = state.get(CHECKPOINT_KEY) {
                 machine.restore(&data)?;
@@ -503,7 +465,9 @@ impl<M: Machine> StateMachine<M> {
             let Some(key) = k.strip_prefix(prefix.as_slice()) else {
                 return Ok(false);
             };
-            w.row(key, v)?;
+            // Stored as it is; sealed in the file, which may leave this disk.
+            let sealed = self.db.seal_state(self.group, key, v)?;
+            w.row(key, &sealed)?;
             Ok(true)
         })?;
         drop(guard);
@@ -569,9 +533,9 @@ impl<M: Machine> StateMachine<M> {
             &meta.snapshot_id,
             file,
             |key, sealed| {
-                db.verify_state(group, key, sealed)?;
-                Db::stage_sealed_state(&mut batch, group, next, key, sealed.to_vec());
-                pending += key.len() + sealed.len();
+                let plain = db.open_state(group, key, sealed)?;
+                db.stage_state(&mut batch, group, next, key, Some(&plain))?;
+                pending += key.len() + plain.len();
                 if pending >= INSTALL_BATCH_BYTES {
                     db.commit(&batch, false)?;
                     batch = Transaction::default();
