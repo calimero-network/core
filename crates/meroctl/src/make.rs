@@ -978,6 +978,30 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     if !outbound.is_empty() {
         let _ = manifest.insert("outbound".into(), json!(outbound));
     }
+    // `[package.metadata.calimero.secrets.NAME] hosts, description, required`: what the
+    // app's outbound requests name, so whoever deploys it knows what to supply. Checked
+    // as a node checks it at install (`BundleManifest::check_secrets`), against the
+    // outbound prefixes above.
+    if let Some(secrets) = meta.table.get("secrets") {
+        let secrets: std::collections::BTreeMap<String, calimero_bundle::BundleSecret> =
+            serde_json::to_value(secrets)
+                .and_then(serde_json::from_value)
+                .wrap_err("[package.metadata.calimero.secrets]: each NAME takes hosts, description and required")?;
+        let probe = calimero_bundle::BundleManifest {
+            outbound: outbound.clone(),
+            secrets: Some(secrets.clone()),
+            ..serde_json::from_value(json!({
+                "version": "1.0", "package": package, "appVersion": "0.0.0",
+                "minRuntimeVersion": "0.0.0",
+            }))?
+        };
+        probe
+            .check_secrets()
+            .map_err(|e| eyre!("[package.metadata.calimero.secrets]: {e}"))?;
+        if !secrets.is_empty() {
+            let _ = manifest.insert("secrets".into(), serde_json::to_value(&secrets)?);
+        }
+    }
     if let Some(uses) = uses_of(&meta, &package)? {
         let _ = manifest.insert("uses".into(), serde_json::to_value(&uses)?);
     }

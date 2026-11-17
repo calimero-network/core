@@ -100,6 +100,11 @@ pub struct AppIdentity {
     pub package: String,
     /// The bundle signer's `did:key`.
     pub signer: String,
+    /// The secrets the release declares (its signed manifest's `secrets`), by name, with
+    /// the hosts each may go to. `Some`: only these names are filled, each only into a
+    /// request to one of its hosts (and to a host the operator bound it to). `None`: a
+    /// release that declares none, filled from the operator's bindings alone, as before.
+    pub secrets: Option<BTreeMap<String, Vec<String>>>,
 }
 
 /// What the approver (the app's organization, or the operator where it holds
@@ -605,6 +610,14 @@ impl OutboundService {
                 .map_err(|_| eyre!("a malformed secret name"))?;
             if !is_secret_name(name) {
                 bail!("secret name {name:?} must be A-Z, 0-9 and _");
+            }
+            if let Some(declared) = &app.secrets {
+                let hosts = declared.get(name).ok_or_else(|| {
+                    eyre!("the release declares no secret {name} (its manifest's `secrets`)")
+                })?;
+                if !hosts.iter().any(|h| h == host) {
+                    bail!("the release declares secret {name} for other hosts than {host}");
+                }
             }
             let provider = self
                 .secrets

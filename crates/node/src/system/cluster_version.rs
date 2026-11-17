@@ -101,13 +101,16 @@ pub enum Feature {
     /// `CreateInvite` with `capabilities`: an earlier release drops the field,
     /// so a member redeeming it would get the organization's default.
     InviteCapabilities,
+    /// `InstallPackage` of a release that declares `secrets`: an earlier release drops
+    /// them and fills any secret its operator bound to the package.
+    DeclaredSecrets,
     /// `CreateApp` naming the apps its release created with it (`AppRecord::links`): an
     /// earlier release drops them, so its replicas would list the instance without its unit.
     AppLinks,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 26] = [
+pub const FEATURES: [Feature; 27] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -133,6 +136,7 @@ pub const FEATURES: [Feature; 26] = [
     Feature::PublishedRunByRelease,
     Feature::OrgCapabilities,
     Feature::InviteCapabilities,
+    Feature::DeclaredSecrets,
     Feature::AppLinks,
 ];
 
@@ -166,6 +170,7 @@ impl Feature {
             Self::PublishedRunByRelease => "publishedRunByRelease",
             Self::OrgCapabilities => "orgCapabilities",
             Self::InviteCapabilities => "inviteCapabilities",
+            Self::DeclaredSecrets => "declaredSecrets",
             Self::AppLinks => "appLinks",
         }
     }
@@ -197,7 +202,7 @@ impl Feature {
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
             Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
-            Self::AppLinks => "1.0.0-rc.31",
+            Self::DeclaredSecrets | Self::AppLinks => "1.0.0-rc.31",
         }
     }
 }
@@ -446,6 +451,9 @@ impl SystemCmd {
                 }
                 if !release.pipelines.is_empty() {
                     f.push(Feature::Pipelines);
+                }
+                if !release.secrets.is_empty() {
+                    f.push(Feature::DeclaredSecrets);
                 }
                 f
             }
@@ -823,6 +831,10 @@ mod tests {
             } })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
+            })),
+            Feature::DeclaredSecrets => install(json!({
+                "outbound": ["https://api.example.com/"],
+                "secrets": { "API_KEY": { "hosts": ["api.example.com"] } },
             })),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,

@@ -72,6 +72,7 @@ fn release(package: &str) -> Vec<u8> {
         frontend_aliases: Vec::new(),
         upgrades: None,
         outbound: Vec::new(),
+        secrets: None,
         uses: None,
         services: None,
         pipelines: Vec::new(),
