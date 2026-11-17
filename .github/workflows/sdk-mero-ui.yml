@@ -144,12 +144,10 @@ jobs:
           set -euo pipefail
           name=$(node -p "require('./package.json').name")
           version=$(node -p "require('./package.json').version")
-          # A prerelease (1.0.0-rc.30) goes to `next`, so `latest` never steps
-          # back to an rc; a final to `latest`.
-          case "$version" in
-            *-*) tag=next ;;
-            *) tag=latest ;;
-          esac
+          # The SDKs are on core's release line: core's newest release, an rc
+          # included, is `latest` (the pre-1.0 numbers, 36.x and the like, are
+          # retired; npm installs `latest`, not the highest version).
+          tag=latest
           if [ "$DRY_RUN" != "true" ] \
             && [ "$(npm view "$name@$version" version 2>/dev/null || true)" = "$version" ]; then
             echo "::notice::$name@$version is already on npm; nothing to publish"
