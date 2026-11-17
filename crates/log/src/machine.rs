@@ -59,9 +59,12 @@ pub trait Machine: Send + Sync + 'static {
         Ok(Vec::new())
     }
 
-    /// An in-memory machine: replace the whole state with `data`. Otherwise
-    /// `data` is empty and the machine re-reads what it caches from its
-    /// [`GroupState`] (after a restart or a snapshot install).
+    /// An in-memory machine: replace the whole state with `data`, or with the
+    /// state it starts with when `data` is empty (its group stopped before its
+    /// first checkpoint). Otherwise `data` is empty and the machine re-reads
+    /// everything it holds from its [`GroupState`] (after a restart, a snapshot
+    /// install, or its group's Raft core stopping, when what it applied in
+    /// memory may be ahead of the disk).
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()>;
 }
 
@@ -289,6 +292,51 @@ fn read_frames(
     }
 }
 
+/// Read a group's applied state from the disk into `st`: the index and
+/// membership its last committed batch (or checkpoint) recorded, and the
+/// machine's state as of then.
+fn load<M: Machine>(db: &Db, state: &GroupState, st: &mut Applied<M>) -> eyre::Result<()> {
+    let applied: AppliedMeta = db.get_meta(state.group(), "applied")?.unwrap_or_default();
+    if M::IN_MEMORY {
+        st.machine
+            .restore(&state.get(CHECKPOINT_KEY).unwrap_or_default())?;
+    } else {
+        st.machine.restore(&[])?;
+    }
+    st.last_applied = applied.last_applied;
+    st.membership = applied.membership;
+    Ok(())
+}
+
+/// Drop what a group applied in memory and read its state from the disk
+/// again: after its Raft core stopped, memory may hold a batch that never
+/// committed, or half an entry a panicking machine left. The group then
+/// serves (and its next core builds on) only what the disk holds, as a
+/// replica that lags would, and its applied index says so: a read that waits
+/// for an index ([`crate::Group::wait_applied`]) waits for the new core to
+/// apply it again.
+pub(crate) fn reload<M: Machine>(
+    db: &Db,
+    state: &GroupState,
+    st: &mut Applied<M>,
+    applied_tx: &watch::Sender<u64>,
+) -> eyre::Result<()> {
+    let generation = load_generation(db, state.group())?;
+    state.generation.store(generation, Ordering::Release);
+    load(db, state, st)?;
+    let _previous = applied_tx.send_replace(st.applied_index());
+    Ok(())
+}
+
+/// What a panic in a machine's apply carried, for the log.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic".to_owned())
+}
+
 /// openraft state machine over a [`Machine`].
 pub struct StateMachine<M: Machine> {
     group: GroupId,
@@ -316,22 +364,33 @@ impl<M: Machine> StateMachine<M> {
         db.drop_other_generations(group, generation)?;
         let state = GroupState::new(Arc::clone(&db), group, generation);
         machine.attach(state.clone());
-        let applied: AppliedMeta = db.get_meta(group, "applied")?.unwrap_or_default();
-        if M::IN_MEMORY {
-            if let Some(data) = state.get(CHECKPOINT_KEY) {
-                machine.restore(&data)?;
-            }
-        } else {
-            machine.restore(&[])?;
-        }
-        let last_applied = applied.last_applied;
-        let shared = Arc::new(RwLock::new(Applied {
+        let mut applied = Applied {
             machine,
-            last_applied,
-            membership: applied.membership,
-        }));
-        let _ = applied_tx.send(last_applied.map_or(0, |l| l.index));
-        Ok(Self {
+            last_applied: None,
+            membership: StoredMembership::default(),
+        };
+        load(&db, &state, &mut applied)?;
+        let _ = applied_tx.send(applied.applied_index());
+        Ok(Self::reopened(
+            group,
+            db,
+            state,
+            Arc::new(RwLock::new(applied)),
+            applied_tx,
+        ))
+    }
+
+    /// The state machine of a group whose applied state `shared` already holds
+    /// what the disk does ([`reload`]): what a stopped group's new Raft core
+    /// runs on.
+    pub(crate) fn reopened(
+        group: GroupId,
+        db: Arc<Db>,
+        state: GroupState,
+        shared: Shared<M>,
+        applied_tx: Arc<watch::Sender<u64>>,
+    ) -> Self {
+        Self {
             group,
             db,
             state,
@@ -339,7 +398,71 @@ impl<M: Machine> StateMachine<M> {
             applied_tx,
             snapshots_built: 0,
             receiving: None,
-        })
+        }
+    }
+
+    /// Apply `entries` and commit their writes with the index they bring the
+    /// state to: the outputs, and that index (0: none). A machine that panics
+    /// fails the batch, as a write the disk refused does.
+    fn apply_batch(
+        &self,
+        st: &mut Applied<M>,
+        entries: impl IntoIterator<Item = Entry>,
+    ) -> Result<(Vec<Bytes>, u64), StorageError> {
+        let mut out = Vec::new();
+        let mut last = 0;
+        let mut tx = StateTx::new(&self.state);
+        for entry in entries {
+            st.last_applied = Some(entry.log_id);
+            last = entry.log_id.index;
+            match entry.payload {
+                EntryPayload::Blank => out.push(Bytes::default()),
+                EntryPayload::Normal(cmd) => {
+                    let machine = &mut st.machine;
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        machine.apply(entry.log_id.index, &cmd.0, &mut tx)
+                    }))
+                    .map_err(|p| {
+                        io(format!(
+                            "the machine panicked applying entry {last}: {}",
+                            panic_message(p.as_ref())
+                        ))
+                    })?;
+                    out.push(Bytes(r));
+                }
+                EntryPayload::Membership(m) => {
+                    st.membership = StoredMembership::new(Some(entry.log_id), m);
+                    out.push(Bytes::default());
+                }
+            }
+        }
+        // The batch's writes and the index they bring the state to land
+        // together; readers, held off by the lock, see neither until then.
+        let mut batch = Transaction::default();
+        tx.into_batch(&mut batch).map_err(io)?;
+        if !M::IN_MEMORY && last > 0 {
+            self.db
+                .stage_meta(
+                    &mut batch,
+                    self.group,
+                    "applied",
+                    &AppliedMeta {
+                        last_applied: st.last_applied,
+                        membership: st.membership.clone(),
+                    },
+                )
+                .map_err(io)?;
+        }
+        #[cfg(feature = "testing")]
+        if self.db.apply_fails(self.group) {
+            return Err(io("an injected write error (testing::fail_applies)"));
+        }
+        // Not synced: the entries are in the synced log, so a lost batch is
+        // re-applied from there.
+        if !self.db.losing_unsynced(self.group) {
+            self.db.commit(&batch, false).map_err(io)?;
+        }
+        Ok((out, last))
     }
 
     #[must_use]
@@ -624,49 +747,23 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
         while self.db.apply_held(self.group) {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        let mut out = Vec::new();
-        let mut last = 0;
-        {
+        let (out, last) = {
             let mut st = self.shared.write().map_err(io)?;
-            let mut tx = StateTx::new(&self.state);
-            for entry in entries {
-                st.last_applied = Some(entry.log_id);
-                last = entry.log_id.index;
-                match entry.payload {
-                    EntryPayload::Blank => out.push(Bytes::default()),
-                    EntryPayload::Normal(cmd) => {
-                        let r = st.machine.apply(entry.log_id.index, &cmd.0, &mut tx);
-                        out.push(Bytes(r));
+            match self.apply_batch(&mut st, entries) {
+                Ok(applied) => applied,
+                Err(e) => {
+                    // The core stops on this error ([`crate::Group`] restarts
+                    // it); until then nothing may read what never committed.
+                    tracing::error!(group = self.group, error = %e,
+                        "a batch did not apply: this group's Raft core stops, and restarts from the disk");
+                    if let Err(r) = reload(&self.db, &self.state, &mut st, &self.applied_tx) {
+                        tracing::error!(group = self.group, error = %r,
+                            "the group's state could not be read again from the disk");
                     }
-                    EntryPayload::Membership(m) => {
-                        st.membership = StoredMembership::new(Some(entry.log_id), m);
-                        out.push(Bytes::default());
-                    }
+                    return Err(e);
                 }
             }
-            // The batch's writes and the index they bring the state to land
-            // together; readers, held off by the lock, see neither until then.
-            let mut batch = Transaction::default();
-            tx.into_batch(&mut batch).map_err(io)?;
-            if !M::IN_MEMORY && last > 0 {
-                self.db
-                    .stage_meta(
-                        &mut batch,
-                        self.group,
-                        "applied",
-                        &AppliedMeta {
-                            last_applied: st.last_applied,
-                            membership: st.membership.clone(),
-                        },
-                    )
-                    .map_err(io)?;
-            }
-            // Not synced: the entries are in the synced log, so a lost batch is
-            // re-applied from there.
-            if !self.db.losing_unsynced(self.group) {
-                self.db.commit(&batch, false).map_err(io)?;
-            }
-        }
+        };
         if last > 0 {
             let _ = self.applied_tx.send(last);
         }
@@ -1076,7 +1173,11 @@ mod snapshot_errors {
         }
 
         fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
-            self.n = std::str::from_utf8(data)?.parse()?;
+            self.n = if data.is_empty() {
+                0
+            } else {
+                std::str::from_utf8(data)?.parse()?
+            };
             Ok(())
         }
     }
