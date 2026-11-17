@@ -91,6 +91,7 @@ fn release_of(
         frontend: None,
         frontend_aliases: d.aliases.iter().map(|a| (*a).to_owned()).collect(),
         outbound: d.outbound.iter().map(|u| (*u).to_owned()).collect(),
+        secrets: None,
         uses: d.uses.clone().map(|u| serde_json::from_value(u).unwrap()),
         upgrades: d
             .publisher_upgrades
@@ -484,6 +485,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
                 "removed": [],
                 "kept": ["https://api.example/v1/"],
             },
+            "secrets": { "added": [], "removed": [], "kept": [], "hostsChanged": [] },
             "uses": { "added": [], "removed": [], "kept": [], "changed": [], "createdAdded": [] },
             "frontend": {
                 "from": "https://notes.example",
@@ -2359,6 +2361,7 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
             "name": "Notes",
             "author": "Example",
             "outbound": ["https://api.example/v1/", "https://metrics.example/"],
+            "secrets": {},
             "uses": {},
             "abi": abi,
         })

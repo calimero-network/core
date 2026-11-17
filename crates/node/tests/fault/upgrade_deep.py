@@ -54,6 +54,12 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
+    ("Packages", "A release that declares its secrets (`secrets` in the signed manifest, `PackageVersion::secrets`)",
+     "the deep fixtures are packed by the old release's meroctl, which writes no `secrets`, and a release that "
+     "declares them installs only once every node runs this release (`Feature::DeclaredSecrets`); "
+     "`a_release_fills_only_the_secrets_it_declares` (`component_cluster.rs`) covers install and enforcement "
+     "on one build, and a release without them reads as before (`serde(default)`). A case once the "
+     "upgrade-from release packs them"),
     ("Apps", "A unit upgraded in one consent (`upgrade-unit`, `UpgradeRun::targets`)",
      "needs a unit, which the old release cannot create (its meroctl packs no `uses`); a run with targets is "
      "written only once every node runs this release (`Feature::UnitUpgrade`). "
