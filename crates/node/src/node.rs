@@ -543,6 +543,9 @@ pub struct Node {
     /// carry, made once, and what was last written of each subject
     /// (`node::recovery_disk`).
     pub(crate) recovery: recovery_disk::RecoveryWriter,
+    /// Makes this node's quotes (`/attestation`, the recovery disk's), off the
+    /// async workers and one at a time.
+    pub(crate) quoter: crate::attest::Quoter,
     peers: Mutex<HashMap<String, Arc<calimero_sealed::client::SealedTransport>>>,
     pub(crate) http: reqwest::Client,
     cluster_secret: String,
@@ -982,6 +985,9 @@ impl Node {
         )?);
         let compute_wasm = calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?;
         let clock = Clock::new(config.clock_offset_ms);
+        let quoter = crate::attest::Quoter::new(config.attestation);
+        #[cfg(feature = "testing")]
+        let quoter = quoter.for_node(&config.public_url);
         let node = Arc::new(Self {
             cluster_secret: cluster_secret(&cluster_key, &config.cluster),
             cluster_key,
@@ -1021,6 +1027,7 @@ impl Node {
             transport: sealed,
             receipt_key,
             recovery: recovery_disk::RecoveryWriter::default(),
+            quoter,
             peers: Mutex::new(HashMap::new()),
             http: reqwest::Client::builder()
                 .timeout(shared_http_timeout())

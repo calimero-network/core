@@ -112,7 +112,7 @@ pub struct RecoveryPass {
 impl Node {
     /// The attestation of this node's receipt key that its recovery files
     /// carry (`purpose=receipts` over [`disk::attestation_nonce`]).
-    fn recovery_attestation(&self) -> EyreResult<Value> {
+    async fn recovery_attestation(&self) -> EyreResult<Value> {
         if let Some(v) = self.recovery.attestation.get() {
             return Ok(v.clone());
         }
@@ -126,7 +126,7 @@ impl Node {
             &self.config.cluster,
             self.config.node_id,
         ));
-        let quote = crate::attest::quote(self.config.attestation, report)?;
+        let quote = self.quoter.quote(report).await?;
         let doc = crate::attest::AttestationDoc {
             quote: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, quote),
             transport_key: hex::encode(self.transport.public_key()),
@@ -178,7 +178,7 @@ impl Node {
             pass.without_key = self.apps.read().map(|a| a.len()).unwrap_or_default();
             return Ok(pass);
         }
-        let attestation = self.recovery_attestation()?;
+        let attestation = self.recovery_attestation().await?;
         let signer = NodeSigner {
             key: &self.receipt_key,
             attestation: &attestation,

@@ -150,7 +150,9 @@ jobs:
             echo "Release $VERSION already exists — nothing to create."
             exit 0
           fi
-          args=(--repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "$VERSION" --notes "")
+          # The notes are the changelog: every pull request merged since the previous release, by
+          # title (core keeps no CHANGELOG.md; a breaking change has `!` in its title).
+          args=(--repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "$VERSION" --generate-notes)
           if [ "$PRERELEASE" = "true" ]; then
             args+=(--prerelease)
           fi

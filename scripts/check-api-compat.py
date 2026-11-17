@@ -354,7 +354,7 @@ def compare(base: Tree, head: Tree) -> list[str]:
     how = (
         f"deprecate it first (a `[[deprecated]]` entry in {DEPRECATIONS}, removable "
         f"{MIN_DEPRECATION_RELEASES} releases later) or declare a hard cutover (`[[cutover]]`, "
-        "CHANGELOG, mdma CUTOVERS); docs: operate/compatibility"
+        "`!` in the PR title, mdma CUTOVERS); docs: operate/compatibility"
     )
 
     for r in sorted(routes(base) - routes(head)):
@@ -381,7 +381,7 @@ def compare(base: Tree, head: Tree) -> list[str]:
             if removed and nv[:2] != ov[:2] and not allowed("wit", label.split("@")[1], current, [], cutovers):
                 problems.append(
                     f"{WIT}: {label} drops what components built on {'.'.join(map(str, ov))} import; "
-                    f"declare it as a `[[cutover]] wit = \"{label.split('@')[1]}\"` with the CHANGELOG entry"
+                    f"declare it as a `[[cutover]] wit = \"{label.split('@')[1]}\"` and `!` in the PR title"
                 )
     old_supported, _ = abi_versions(base)
     supported, sdk_abi = abi_versions(head)

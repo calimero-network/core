@@ -542,7 +542,18 @@ is its command line.
 - **Release attestations** (`attest.rs`, `release_attestation`, `serve_release`): a
   quote over a manager's nonce and `ReleaseClaim`, for `merod attest` before the node
   has any key. Not a route of a running node: `serve_release` is its own tiny server
-  (that one route, `MAX_CONCURRENT_RELEASE_QUOTES`), run only by `merod attest --serve`.
+  (that one route, through its own `Quoter`), run only by `merod attest --serve`.
+- **Quotes** (`attest::Quoter`): every quote a serving process makes goes through its one
+  `Quoter` (`Node::quoter` for `/attestation` and the recovery disk's attestation, a job
+  node's, a waiting node's, `serve_release`'s). A TDX quote blocks its thread in the kernel
+  for about a second and anyone may ask for one, so it runs on the blocking pool
+  (`spawn_blocking`), `MAX_CONCURRENT_QUOTES` (1) at a time; `MAX_QUEUED_QUOTES` (8) more
+  wait, each at most `QUOTE_WAIT` (3 s), and anything past that answers `503 BUSY` with
+  `Retry-After: 1` at once (`ApiError::busy`). The slot is released only when the quote
+  returns, even if its caller went away. `/attestation` takes it after `?app=`'s lookup.
+  Mock quotes take the same path. Regressions: `attest::tests`,
+  `a_flood_of_attestations_does_not_stall_the_node` (`testing::slow_quotes` makes each
+  quote block its thread).
 - **Access is judged fresh**: every request carrying a credential, every gated request, an anonymous
   `GET /apps/{app}` (#4723) and every client call's leader read the system state through `sys_fresh`
   (a read index), so a removal committed elsewhere holds before the next request. Regression:

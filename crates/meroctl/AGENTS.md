@@ -26,7 +26,7 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | `team ...` | teams: members, metadata, reparent, subteams, settings; `team upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
 | `account ...` | the account: devices (passkeys), API keys, usage, approvals | `/auth/*` |
 | `dev start/watch` | install, create, keep pushing a build (`dev new` is a hidden alias of `app new`) | |
-| (new) `app new/build/codegen/abi show\|diff/signer new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone), `calimero-app-build`'s builder and `abi_tools`, `mero-sign`'s library, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), `pack --service NAME=PATH` (or the crate's `services`) writes a multi-service manifest, and `pack` opens what it wrote with `VerifiedBundle` before writing it; the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
+| (new) `app new/build/codegen/abi show\|diff/signer new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone, plus an `AGENTS.md` for coding agents (`agents_md`) and a `CLAUDE.md` importing it; test `dev_new_starts_a_project_from_an_app_of_the_apps_repo`), `calimero-app-build`'s builder and `abi_tools`, `mero-sign`'s library, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), `pack --service NAME=PATH` (or the crate's `services`) writes a multi-service manifest, and `pack` opens what it wrote with `VerifiedBundle` before writing it; the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
 | (new) `local up/down/status/dev/test/compute run` | `merod local` (the release's image by default, `docker_ready` checking Docker first; `--local` or `MEROD`: the binary; `--registry-url`, default the public registry) in the background, state in `--dir`/`meroctl-local.json`, saved as node `local`; `dev` builds, uploads a raw bundle as a fresh deployer, writes `app/.env.development.local`, runs `pnpm dev` on :5173 and rebuilds on save; `compute run` is `mero-compute` (feature `compute`, default on) | `/bundles` |
 | (new) `cloud login/logout/orgs/clusters list\|create/use`, `cloud compute pipeline\|logs` | the Cloud manager (mdma) with a console session in `{home}/meroctl/cloud.json` (refreshed from `X-MDMA-Session-Refresh`); `use` saves a cluster's node as the default; `cloud compute` is the old top-level `pipeline` and `run logs` (hidden aliases) | `/api/orgs`, `/api/clusters` |
 | `network status` | `/health` | |
@@ -39,11 +39,10 @@ Dropped, with no meaning here: `context sync`, `group sync` (Raft replicates),
 `context identity`, `account pair-*`/`seal-to`/`device-init` (a passkey is the
 device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
 
-- The registry and the Cloud's manager are called at `/api/...`, and once more
-  at `/api/v2/...` when the service answers `404` (one from before its
-  unversioned routes): `commons::send_api`. Tests:
-  `publish_pushes_the_bundle_to_the_registry`,
-  `cloud_falls_back_to_an_older_managers_v2_routes`.
+- The registry and the Cloud's manager are called at `/api/...` only, never
+  `/api/v2/...`. Tests: `publish_pushes_the_bundle_to_the_registry` (a
+  service serving only `/api/v2` is refused with its `404`),
+  `cloud_signs_in_lists_and_uses_a_cluster`.
 - Sessions are kept per node URL in `{home}/meroctl/sessions.json` (0600) and
   refreshed when they expire. An instance argument is an alias of the account or
   an id (`Env::app`).
@@ -94,7 +93,9 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   nodes never reaches a majority. The volume is named after the state
   directory (`volume_of`), never the port alone, so two directories on one port
   never share data. A cluster an earlier meroctl made (no `cluster.json`, a
-  `merod.log`) keeps 3 nodes and the port's volume (`made`, `plan`). Tests:
+  `merod.log`) keeps 3 nodes and the port's volume (`made`, `plan`); `up` writes
+  `cluster.json` before it creates `merod.log`, so an `up` that failed to start is
+  never read as such a cluster (`an_up_that_never_started_leaves_no_cluster_behind`). Tests:
   `each_state_directory_gets_a_volume_of_its_own`,
   `a_kept_cluster_starts_with_its_own_node_count`,
   `a_cluster_from_before_keeps_its_nodes_and_volume`.
