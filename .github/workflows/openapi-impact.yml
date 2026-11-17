@@ -7,7 +7,7 @@ name: OpenAPI impact
 # the `impact` job never fails a pull request.
 #
 # The `test` job runs the classifier's tests whenever it, its pinned oasdiff or
-# sdk-openapi-sync.yml (the reusable workflow the SDKs call, which runs it) change.
+# sdk-regenerate.yml (which titles the SDKs' regenerate pull request with it) change.
 
 on:
   pull_request:
@@ -18,7 +18,7 @@ on:
       - scripts/tests/openapi-classify-test.py
       - scripts/tests/fixtures/openapi-classify-base.json
       - .github/workflows/openapi-impact.yml
-      - .github/workflows/sdk-openapi-sync.yml
+      - .github/workflows/sdk-regenerate.yml
 
 permissions:
   contents: read

@@ -1,4 +1,4 @@
-"""scripts/facade_changes.py: what openapi-sync.yml reports in its pull request."""
+"""scripts/facade_changes.py: what a regeneration changes in the facade."""
 
 import importlib.util
 from pathlib import Path
