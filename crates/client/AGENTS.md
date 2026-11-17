@@ -140,7 +140,7 @@ through `Transport::send`. mero-js (`src/runtime/`) and calimero-client-py
 (`calimero_client_py/sealed.py`, an httpx `SealedTransport`) have the same split.
 
 The route layer is generated from the node's OpenAPI document
-(`docs/public/openapi.json`) by `calimero-client-gen` (`tools/client-gen`), as
+(`docs/public/openapi.json`) by `calimero-client-gen` (`crates/client/gen`), as
 mero-js (`scripts/gen-methods.mjs`), calimero-client-py
 (`scripts/generate_openapi_client.py`) and the Kotlin SDK (`codegen/facade.py`)
 generate theirs, and checked in under `src/generated/` (never edited by hand):
@@ -198,7 +198,7 @@ UPDATE_OPENAPI=1 cargo test -p calimero-node --lib openapi
 cargo run -p calimero-client-gen
 ```
 
-`the_checked_in_client_is_what_the_document_generates` (in `tools/client-gen`,
+`the_checked_in_client_is_what_the_document_generates` (in `crates/client/gen`,
 run by CI's workspace tests) regenerates into a temporary directory and fails
 while the checked-in code differs. Tests of the generated layer against a node:
 `crates/node/tests/generated_routes.rs` (a step-up route, an operator route, raw

@@ -8,16 +8,15 @@ The sealed transport (wire format v2) between clients and the node.
 - `client`: `SealedTransport` that seals `reqwest::Request`s; the key comes from
   `with_key` or an `Attest` implementation that verifies the node's quote.
 - The wire format is byte-compatible with mero-js `src/sealed/`; change both or neither.
-- **Paths**: `/sealed/handshake` and `/sealed`. The server also serves the
-  paths of 1.0.0-rc.24 and earlier, `/sealed/v2/handshake` and `/sealed/v2`
-  (`LEGACY_*`), the same, with a `Deprecation` header (`LEGACY_PATHS_DEPRECATED_AT`,
-  held to `crates/node/api-deprecations.toml` by `api::deprecation`'s tests).
-  The client opens its session at the new path and, on `404`, `405` or
-  `403 sealed_required`, once at the legacy one, whose session then posts to
-  `/sealed/v2` (`Paths`; learnt again after the node restarts). Tests:
+- **Paths**: `/sealed/handshake` and `/sealed`, and nothing else. The paths
+  of 1.0.0-rc.24 and earlier, `/sealed/v2/handshake` and `/sealed/v2`
+  (served deprecated from rc.25 to rc.29), are gone from both halves: the
+  server passes them by like any other path, and the client never tries them,
+  so it reaches nodes of rc.25 and later only (a hard cutover for clients that
+  still post to `/sealed/v2`; `crates/node/api-deprecations.toml`). Tests:
   `a_session_opens_at_the_current_paths`,
-  `a_client_falls_back_to_the_legacy_paths_of_an_older_node`,
-  `the_legacy_paths_answer_deprecated`.
+  `a_client_does_not_fall_back_to_the_v2_paths`,
+  `the_v2_paths_are_not_the_envelopes`.
 - **Identified sessions** (handshake version 3, `Noise_IK_25519_AESGCM_SHA256`,
   `identity.rs`): a node calling a peer proves its own transport key
   (`client::SealedTransport::identified_as`, `server::SealedTransport::static_key`);

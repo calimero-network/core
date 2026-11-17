@@ -114,6 +114,21 @@ fn dev_new_starts_a_project_from_an_app_of_the_apps_repo() {
     assert!(!p.join("docs").exists());
     let readme = std::fs::read_to_string(p.join("README.md")).unwrap();
     assert!(readme.starts_with("# kv-store"), "{readme}");
+    // A coding agent's first read: the loop for this app, and CLAUDE.md
+    // importing it so Claude Code reads the same file.
+    let agents = std::fs::read_to_string(p.join("AGENTS.md")).unwrap();
+    for line in [
+        "meroctl local test apps/kv-store/logic",
+        "meroctl app build apps/kv-store/logic",
+        "meroctl local dev apps/kv-store",
+        "pnpm -F kv-store codegen",
+    ] {
+        assert!(agents.contains(line), "AGENTS.md lacks `{line}`:\n{agents}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(p.join("CLAUDE.md")).unwrap(),
+        "@AGENTS.md\n"
+    );
     // One commit holds what the template gave, so the project's own changes
     // show as changes, and it names where it came from.
     let log = Command::new("git")

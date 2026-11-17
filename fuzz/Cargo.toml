@@ -17,7 +17,7 @@ calimero-tee-attestation = { path = "../crates/tee-attestation" }
 flate2 = "*"
 hex = "*"
 libfuzzer-sys = "0.4"
-mero-sign = { path = "../tools/mero-sign" }
+meroctl-sign = { path = "../crates/meroctl/sign" }
 semver = "*"
 serde_json = "*"
 sha2 = "*"

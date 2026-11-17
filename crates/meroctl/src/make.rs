@@ -2,7 +2,7 @@
 //! clients, compare its ABI, make a signing key (`signer`), pack and sign an `.mpk`,
 //! inspect one, and publish it to a registry. Each calls the library the
 //! tool it replaced was built on (`calimero-app-build`, `calimero-app-abi`,
-//! `mero-sign`, `calimero-bundle`), so the formats are the node's own.
+//! `meroctl-sign`, `calimero-bundle`), so the formats are the node's own.
 
 use std::collections::BTreeSet;
 use std::io::Write as _;
@@ -18,8 +18,6 @@ use clap::{Args, Subcommand, ValueEnum};
 use eyre::{bail, eyre, WrapErr};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-
-use crate::commons::send_api;
 
 /// The default component file names, as `mero-app-build` wrote them.
 pub const APP_FILE: &str = "app.component.wasm";
@@ -93,7 +91,7 @@ pub enum AbiCmd {
 
 #[derive(Debug, Subcommand)]
 pub enum SignerCmd {
-    /// A new Ed25519 signing key, written owner-only (`mero-sign generate-key`).
+    /// A new Ed25519 signing key, written owner-only (`meroctl-sign`'s `generate_key`).
     New {
         /// The key file to write.
         output: PathBuf,
@@ -296,11 +294,11 @@ pub fn abi(cmd: &AbiCmd) -> eyre::Result<Value> {
 pub fn signer(cmd: &SignerCmd) -> eyre::Result<Value> {
     match cmd {
         SignerCmd::New { output, force } => {
-            mero_sign::generate_key(output, *force)?;
+            meroctl_sign::generate_key(output, *force)?;
             Ok(Value::Null)
         }
         SignerCmd::Id { key } => {
-            mero_sign::derive_signer_id(key)?;
+            meroctl_sign::derive_signer_id(key)?;
             Ok(Value::Null)
         }
     }
@@ -308,13 +306,13 @@ pub fn signer(cmd: &SignerCmd) -> eyre::Result<Value> {
 
 fn signing_key(key: Option<&Path>) -> eyre::Result<ed25519_dalek::SigningKey> {
     match key {
-        Some(k) => mero_sign::load_signing_key(k),
-        None => Ok(mero_sign::dev_signing_key()),
+        Some(k) => meroctl_sign::load_signing_key(k),
+        None => Ok(meroctl_sign::dev_signing_key()),
     }
 }
 
 fn report_abi(manifest: &Path, previous: &Path) -> eyre::Result<()> {
-    let check = mero_sign::check_abi(manifest, previous)?;
+    let check = meroctl_sign::check_abi(manifest, previous)?;
     eprintln!("ABI changes since {}:", previous.display());
     eprint!("{}", check.report);
     if check.breaking {
@@ -332,7 +330,7 @@ pub fn sign(a: &SignArgs) -> eyre::Result<Value> {
     if let Some(previous) = &a.previous {
         report_abi(&a.manifest, previous)?;
     }
-    mero_sign::sign_manifest(&a.manifest, &signing_key(a.key.as_deref())?)?;
+    meroctl_sign::sign_manifest(&a.manifest, &signing_key(a.key.as_deref())?)?;
     Ok(json!({ "signed": a.manifest }))
 }
 
@@ -461,6 +459,97 @@ fn icon_uri(path: &Path) -> eyre::Result<String> {
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
+}
+
+/// The apps the crate references, as its `[package.metadata.calimero.uses]` declares them
+/// (`name = { package, range, mode }`), each with the release and ABI digest its
+/// `calimero.lock` pins (`[[uses]] name, package, version, range, mode, abi`) and, when the
+/// vendored ABI (`calimero/abi/<name>.json`) is there, checked against it. Without a lock
+/// the references are packed unpinned, with a note. Checked as a node checks them at
+/// install (`BundleManifest::check_uses`).
+fn uses_of(
+    meta: &CrateMeta,
+    package: &str,
+) -> eyre::Result<Option<std::collections::BTreeMap<String, calimero_bundle::BundleUse>>> {
+    use std::collections::BTreeMap;
+    let Some(table) = meta.table.get("uses") else {
+        return Ok(None);
+    };
+    let declared: BTreeMap<String, calimero_bundle::BundleUse> = serde_json::to_value(table)
+        .and_then(serde_json::from_value)
+        .wrap_err("[package.metadata.calimero.uses]: each NAME takes { package, range, mode }")?;
+    let lock_path = meta.dir.join("calimero.lock");
+    let mut uses = declared.clone();
+    if lock_path.exists() {
+        #[derive(serde::Deserialize)]
+        struct Lock {
+            #[serde(default)]
+            uses: Vec<Locked>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Locked {
+            name: String,
+            package: String,
+            version: String,
+            #[serde(default)]
+            range: String,
+            mode: calimero_bundle::UseMode,
+            abi: String,
+        }
+        let lock: Lock = toml::from_str(&std::fs::read_to_string(&lock_path)?)
+            .wrap_err_with(|| format!("reading {}", lock_path.display()))?;
+        for l in lock.uses {
+            let Some(u) = uses.get_mut(&l.name) else {
+                bail!(
+                    "calimero.lock pins {} but [package.metadata.calimero.uses] does not declare it: update the lock",
+                    l.name
+                );
+            };
+            if l.package != u.package || l.range != u.range || l.mode != u.mode {
+                bail!(
+                    "calimero.lock pins {} as {} {} ({:?}) but Cargo.toml declares {} {} ({:?}): update the lock",
+                    l.name, l.package, l.range, l.mode, u.package, u.range, u.mode
+                );
+            }
+            let vendored = meta
+                .dir
+                .join("calimero/abi")
+                .join(format!("{}.json", l.name));
+            if vendored.exists() {
+                use sha2::Digest as _;
+                let digest = format!(
+                    "sha256:{}",
+                    hex::encode(sha2::Sha256::digest(std::fs::read(&vendored)?))
+                );
+                if digest != l.abi {
+                    bail!(
+                        "{} is not the ABI calimero.lock pins for {} ({}): update the lock",
+                        vendored.display(),
+                        l.name,
+                        l.abi
+                    );
+                }
+            }
+            u.version = Some(l.version);
+            u.abi = Some(l.abi);
+        }
+        if let Some(missing) = uses.iter().find(|(_, u)| u.version.is_none()) {
+            bail!("calimero.lock does not pin {}: update the lock", missing.0);
+        }
+    } else if !uses.is_empty() {
+        eprintln!("note: no calimero.lock: references packed without a pinned release or ABI");
+    }
+    let probe = calimero_bundle::BundleManifest {
+        uses: Some(uses.clone()),
+        ..serde_json::from_value(json!({
+            "version": "1.0", "package": package, "appVersion": "0.0.0",
+            "minRuntimeVersion": "0.0.0",
+        }))?
+    };
+    probe
+        .check_uses()
+        .map_err(|e| eyre!("[package.metadata.calimero.uses]: {e}"))?;
+    Ok((!uses.is_empty()).then_some(uses))
 }
 
 /// What the manifest carries besides the artifacts, from the crate's
@@ -889,6 +978,33 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     if !outbound.is_empty() {
         let _ = manifest.insert("outbound".into(), json!(outbound));
     }
+    // `[package.metadata.calimero.secrets.NAME] hosts, description, required`: what the
+    // app's outbound requests name, so whoever deploys it knows what to supply. Checked
+    // as a node checks it at install (`BundleManifest::check_secrets`), against the
+    // outbound prefixes above.
+    if let Some(secrets) = meta.table.get("secrets") {
+        let secrets: std::collections::BTreeMap<String, calimero_bundle::BundleSecret> =
+            serde_json::to_value(secrets)
+                .and_then(serde_json::from_value)
+                .wrap_err("[package.metadata.calimero.secrets]: each NAME takes hosts, description and required")?;
+        let probe = calimero_bundle::BundleManifest {
+            outbound: outbound.clone(),
+            secrets: Some(secrets.clone()),
+            ..serde_json::from_value(json!({
+                "version": "1.0", "package": package, "appVersion": "0.0.0",
+                "minRuntimeVersion": "0.0.0",
+            }))?
+        };
+        probe
+            .check_secrets()
+            .map_err(|e| eyre!("[package.metadata.calimero.secrets]: {e}"))?;
+        if !secrets.is_empty() {
+            let _ = manifest.insert("secrets".into(), serde_json::to_value(&secrets)?);
+        }
+    }
+    if let Some(uses) = uses_of(&meta, &package)? {
+        let _ = manifest.insert("uses".into(), serde_json::to_value(&uses)?);
+    }
     let upgrades = match a.upgrades {
         Some(Upgrades::Owner) => Some("owner".to_owned()),
         Some(Upgrades::Publisher) => Some("publisher".to_owned()),
@@ -929,7 +1045,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     if let Some(previous) = &a.previous {
         report_abi(&path, &std::path::absolute(previous)?)?;
     }
-    mero_sign::sign_manifest(&path, &key)?;
+    meroctl_sign::sign_manifest(&path, &key)?;
     let signed = std::fs::read(&path)?;
 
     let out = a.out.clone().unwrap_or_else(|| {
@@ -968,8 +1084,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     Ok(answer)
 }
 
-/// `app publish`: the registry's `POST /api/bundles/push` (`/api/v2/...` on an
-/// older registry, [`send_api`]), the signed
+/// `app publish`: the registry's `POST /api/bundles/push`, the signed
 /// manifest's own fields (all of them: the signature covers every key) with
 /// the whole `.mpk` as hex in `_binary`.
 pub async fn publish(a: &PublishArgs) -> eyre::Result<Value> {
@@ -997,10 +1112,12 @@ pub async fn publish(a: &PublishArgs) -> eyre::Result<Value> {
         Some(org) => registry_token(&http, &a.cloud, &key, org).await?,
         None => key,
     };
-    let res = send_api(registry, "bundles/push", |url| {
-        http.post(url).bearer_auth(&token).json(&body)
-    })
-    .await?;
+    let res = http
+        .post(format!("{registry}/api/bundles/push"))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await?;
     let status = res.status();
     let answer: Value = res.json().await.unwrap_or(Value::Null);
     if !status.is_success() {
@@ -1026,7 +1143,7 @@ fn write_file(out: &Path, bytes: &[u8]) -> eyre::Result<()> {
 
 /// Trade a Cloud organization's API key (`ck_live_…`, scope `registry:publish`)
 /// for the short-lived token the registry takes from that organization:
-/// `POST /api/registry/token` (`/api/v2/...` on an older manager).
+/// `POST /api/registry/token`.
 async fn registry_token(
     http: &reqwest::Client,
     cloud: &str,
@@ -1034,11 +1151,12 @@ async fn registry_token(
     org: &str,
 ) -> eyre::Result<String> {
     let cloud = cloud.trim_end_matches('/');
-    let body = json!({ "org": org, "scope": "publish" });
-    let res = send_api(cloud, "registry/token", |url| {
-        http.post(url).bearer_auth(org_key).json(&body)
-    })
-    .await?;
+    let res = http
+        .post(format!("{cloud}/api/registry/token"))
+        .bearer_auth(org_key)
+        .json(&json!({ "org": org, "scope": "publish" }))
+        .send()
+        .await?;
     let status = res.status();
     let answer: Value = res.json().await.unwrap_or(Value::Null);
     if !status.is_success() {

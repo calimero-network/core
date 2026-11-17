@@ -116,7 +116,7 @@ pub enum ComputeCmd {
     /// Run one compute method of a compute component alone, with the engine,
     /// caps and determinism of a job node and plain files in place of sealed ones.
     #[cfg(feature = "compute")]
-    Run(mero_compute::RunArgs),
+    Run(meroctl_compute::RunArgs),
     /// Not built in: this meroctl was built without the `compute` feature.
     #[cfg(not(feature = "compute"))]
     Run,
@@ -327,13 +327,23 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
     let token = hex::encode(calimero_identity::random::<16>());
     let log = dir.join("merod.log");
     let mut local = merod_local_args(a, nodes, &token);
-    let out = std::fs::File::create(&log)?;
     // The release's image unless `--local` (or MEROD) asks for a `merod` binary:
     // only Docker is needed, on Linux and macOS alike.
     let docker = !a.local && std::env::var_os("MEROD").is_none();
     if docker {
         docker_ready()?;
     }
+    // What this cluster is made with, written before anything that can leave a
+    // `merod.log` behind: without it, the log of an `up` that failed to start
+    // reads as a cluster an earlier meroctl made (3 nodes), and the next `up`
+    // starts that instead. Kept across `down`, so the next `up` starts the same
+    // cluster.
+    let kept = Made {
+        nodes,
+        volume: docker.then_some(volume.clone()),
+    };
+    std::fs::write(dir.join(CLUSTER_FILE), serde_json::to_string_pretty(&kept)?)?;
+    let out = std::fs::File::create(&log)?;
     let (pid, container, child) = if docker {
         // The image's merod writes as uid 10001 under /data, a named volume; it
         // listens on 0.0.0.0 inside the container and the ports are published on
@@ -430,12 +440,6 @@ pub fn up(a: &ClusterArgs, home: &Home, own: bool) -> eyre::Result<(Value, Optio
         }
         std::thread::sleep(Duration::from_millis(500));
     }
-    // Kept across `down`, so the next `up` starts the same cluster.
-    let kept = Made {
-        nodes,
-        volume: docker.then_some(volume),
-    };
-    std::fs::write(dir.join(CLUSTER_FILE), serde_json::to_string_pretty(&kept)?)?;
     if new_cluster {
         for url in &urls {
             home.save_session(url, None)?;
@@ -540,7 +544,7 @@ pub async fn run(cmd: LocalCmd, home: Home) -> eyre::Result<Value> {
         }
         #[cfg(feature = "compute")]
         LocalCmd::Compute(ComputeCmd::Run(args)) => {
-            let code = mero_compute::main_run(args);
+            let code = meroctl_compute::main_run(args);
             if code != std::process::ExitCode::SUCCESS {
                 std::process::exit(1);
             }

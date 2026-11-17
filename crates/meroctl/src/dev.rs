@@ -184,6 +184,10 @@ fn scaffold(
         dir.join("README.md"),
         readme(template, repo, git_ref, &commit),
     )?;
+    // What a coding agent reads first: the loop and the rules, in the project
+    // itself. CLAUDE.md imports AGENTS.md, so one file serves every agent.
+    std::fs::write(dir.join("AGENTS.md"), agents_md(template))?;
+    std::fs::write(dir.join("CLAUDE.md"), "@AGENTS.md\n")?;
     if git_init {
         git(Some(dir), &["init", "--quiet"])?;
         // One commit of what the template gave, so the project's own changes
@@ -216,6 +220,79 @@ fn scaffold(
         "app": app,
         "from": { "repo": repo, "ref": git_ref, "commit": commit },
     }))
+}
+
+/// The project's `AGENTS.md`: what a coding agent needs to build on it, from
+/// the commands this meroctl has. The Calimero skills
+/// (`@calimero-network/agent-skills`) and the docs carry the rest.
+fn agents_md(t: &str) -> String {
+    format!(
+        r#"# Agent guide
+
+A Calimero app, started from `apps/{t}` with `meroctl app new`. Calimero runs each app
+instance on its own replicated log on attested nodes; clients reach it through a sealed,
+attested channel. Read this before changing anything.
+
+## Layout
+
+- `apps/{t}/logic/`: the app, a Rust crate on `calimero-sdk`, built into a `calimero:app`
+  WebAssembly component (`wasm32-wasip2`). `src/lib.rs` holds the state (`#[app::state]`),
+  methods (`#[app::logic]`), events and errors. `res/abi.json` is its ABI, committed.
+- `apps/{t}/logic/scenarios/*.json`: end-to-end tests as scenario files (with `*.org.json`
+  for the organization they need); `tests/` runs them on the real engine.
+- `apps/{t}/app/`: the frontend, Vite + React on mero-js `CalimeroClient`.
+  `src/generated/` is the typed client made from the ABI: regenerate it, never edit it.
+- `packages/`, `scripts/` and the root `Cargo.toml`, `package.json`, `pnpm-*` pin shared
+  versions; leave them unless a change needs them.
+
+## The loop
+
+```bash
+meroctl local test apps/{t}/logic            # the app's tests and scenarios, no node needed
+meroctl app build apps/{t}/logic             # writes apps/{t}/logic/app.component.wasm
+meroctl local dev apps/{t}                   # local cluster, build, deploy, frontend on :5173, rebuild on save
+pnpm -F {t} test                             # the frontend's tests
+```
+
+After changing a method's name, arguments, result, events or errors, refresh the ABI and the
+typed client, and commit both:
+
+```bash
+meroctl app build apps/{t}/logic
+meroctl app abi show apps/{t}/logic/app.component.wasm > apps/{t}/logic/res/abi.json
+pnpm -F {t} codegen
+```
+
+`meroctl local up` / `status` / `down` drive the local cluster by hand (Docker, one node);
+`meroctl call --instance NAME METHOD --args JSON [--view]` calls a deployed instance.
+
+## Rules
+
+- State is plain collections (`Table`, `UnorderedMap`, `Set`, `Vector`, `Cell`, `Counter`,
+  `PerUser`, `Frozen`), not CRDTs: the instance's leader runs each call once, in log order,
+  and the other nodes apply its changes. There is no sync to write.
+- Who may do what is an explicit check in the method, against `env::caller()` and the
+  caller's organization role and teams (`env::org_role()`, `env::in_team()`). Return a typed
+  error (`#[app::error]`) for a refusal; the caller sees its code.
+- Every behaviour a user relies on gets a scenario in `logic/scenarios/`; run
+  `meroctl local test` before calling a change done.
+- The SDK 0.x APIs (`calimero-storage`, `cargo mero`, merobox, JSON-RPC, the JS app SDK) are
+  gone: do not use them, or examples written for them.
+
+## What stays with the person
+
+Signing in with a real passkey in the browser, creating and keeping the signing key
+(`meroctl app signer new`), publishing to a registry (`meroctl app publish` with their
+registry key), and deploying on Calimero Cloud. Stop and ask before any of these.
+
+## More
+
+- Skills for coding agents: `npx @calimero-network/agent-skills --list`.
+- Docs: https://docs.calimero.network/ (the guide) and
+  https://calimero-network.github.io/core/ (the reference).
+- `apps/{t}/README.md`: this app's own notes.
+"#
+    )
 }
 
 fn readme(template: &str, repo: &str, git_ref: &str, commit: &str) -> String {

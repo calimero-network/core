@@ -443,8 +443,8 @@ async fn publish_pushes_the_bundle_to_the_registry() {
         std::fs::read(d.join("out.mpk")).unwrap()
     );
 
-    // A registry and a Cloud manager from before their unversioned routes
-    // serve only `/api/v2/...`: each request falls back to it on the `404`.
+    // Only `/api/...` is called: a registry and a Cloud manager that serve
+    // nothing but `/api/v2/...` are refused with their `404`, not tried there.
     async fn token(Json(body): Json<Value>) -> Json<Value> {
         assert_eq!(body["org"], "o");
         Json(serde_json::json!({"token": "publish-token"}))
@@ -472,9 +472,13 @@ async fn publish_pushes_the_bundle_to_the_registry() {
     ])
     .await
     .unwrap();
-    assert_eq!(ok(&out)["version"], "1.0.0");
-    let (auth, _) = older.lock().unwrap().clone().unwrap();
-    assert_eq!(auth, "Bearer publish-token");
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("404"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(older.lock().unwrap().is_none(), "nothing reached /api/v2");
 
     // A refusal comes back with the registry's code.
     let out = run(vec![
@@ -879,4 +883,104 @@ fn pack_refuses_services_it_cannot_pack() {
     // Not a component.
     std::fs::write(d.join("bad.wasm"), "not wasm").unwrap();
     assert!(refused(&["--service", "a=bad.wasm"]).contains("not a WASM component"));
+}
+
+/// `[package.metadata.calimero.secrets]` is signed into the manifest as `secrets`, so
+/// whoever deploys the app sees what to supply; a secret naming a host no outbound prefix
+/// covers is refused as a node would refuse it.
+#[test]
+fn pack_declares_the_secrets_the_crate_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    let crate_with = |secret_host: &str| {
+        format!(
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n\n[package.metadata.calimero]\n\
+             package = \"com.example.x\"\noutbound = [\"https://cloud-api.near.ai/v1/\"]\n\n\
+             [package.metadata.calimero.secrets.NEAR_AI_API_KEY]\nhosts = [\"{secret_host}\"]\n\
+             description = \"NEAR AI Cloud API key\"\nrequired = true\n"
+        )
+    };
+    std::fs::write(d.join("Cargo.toml"), crate_with("cloud-api.near.ai")).unwrap();
+    std::fs::write(d.join("app.wasm"), [COMPONENT, b"app"].concat()).unwrap();
+    let _ = ok(&meroctl(
+        d,
+        &["app", "pack", ".", "--wasm", "app.wasm", "--out", "x.mpk"],
+    ));
+    assert_eq!(
+        manifest(&untar(&d.join("x.mpk")))["secrets"],
+        serde_json::json!({ "NEAR_AI_API_KEY": {
+            "hosts": ["cloud-api.near.ai"],
+            "description": "NEAR AI Cloud API key",
+            "required": true,
+        } })
+    );
+
+    std::fs::write(d.join("Cargo.toml"), crate_with("evil.example")).unwrap();
+    let out = meroctl(
+        d,
+        &["app", "pack", ".", "--wasm", "app.wasm", "--out", "y.mpk"],
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("evil.example") && err.contains("outbound"),
+        "{err}"
+    );
+}
+
+/// `[package.metadata.calimero.uses]` is signed into the manifest as `uses`, each pinned to
+/// the release and ABI digest `calimero.lock` records, the vendored ABI checked against
+/// it; a lock that disagrees with Cargo.toml, or a vendored ABI that is not the pinned
+/// one, is refused. Without a lock the references are packed unpinned, with a note.
+#[test]
+fn pack_declares_the_apps_the_crate_uses() {
+    use sha2::Digest;
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    std::fs::write(
+        d.join("Cargo.toml"),
+        "[package]\nname = \"notes\"\nversion = \"0.1.0\"\n\n[package.metadata.calimero]\n\
+         package = \"com.example.notes\"\n\n[package.metadata.calimero.uses]\n\
+         kv = { package = \"com.calimero.confidential-kv\", range = \"^0.1\", mode = \"create\" }\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("app.wasm"), [COMPONENT, b"app"].concat()).unwrap();
+    let pack_to = |out: &str| meroctl(d, &["app", "pack", ".", "--wasm", "app.wasm", "--out", out]);
+
+    // No lock: unpinned, with a note.
+    let out = pack_to("a.mpk");
+    let _ = ok(&out);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no calimero.lock"));
+    assert_eq!(
+        manifest(&untar(&d.join("a.mpk")))["uses"],
+        serde_json::json!({ "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "mode": "create" } })
+    );
+
+    // Locked, with the vendored ABI it names.
+    std::fs::create_dir_all(d.join("calimero/abi")).unwrap();
+    let abi = br#"{"abiVersion":1}"#;
+    std::fs::write(d.join("calimero/abi/kv.json"), abi).unwrap();
+    let digest = format!("sha256:{}", hex::encode(sha2::Sha256::digest(abi)));
+    let lock = |range: &str, abi: &str| {
+        format!(
+            "[[uses]]\nname = \"kv\"\npackage = \"com.calimero.confidential-kv\"\nversion = \"0.1.2\"\n\
+             range = \"{range}\"\nmode = \"create\"\nabi = \"{abi}\"\n"
+        )
+    };
+    std::fs::write(d.join("calimero.lock"), lock("^0.1", &digest)).unwrap();
+    let _ = ok(&pack_to("b.mpk"));
+    let uses = &manifest(&untar(&d.join("b.mpk")))["uses"]["kv"];
+    assert_eq!(uses["version"], "0.1.2");
+    assert_eq!(uses["abi"], serde_json::json!(digest));
+
+    // The lock disagrees with Cargo.toml, or the vendored ABI is not the pinned one.
+    std::fs::write(d.join("calimero.lock"), lock("^0.2", &digest)).unwrap();
+    let out = pack_to("c.mpk");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("update the lock"));
+    let other = format!("sha256:{}", "0".repeat(64));
+    std::fs::write(d.join("calimero.lock"), lock("^0.1", &other)).unwrap();
+    let out = pack_to("d.mpk");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("is not the ABI"));
 }

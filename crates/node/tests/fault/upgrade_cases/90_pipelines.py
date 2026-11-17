@@ -6,13 +6,16 @@ import hashlib
 import random
 
 from rv2 import CliError
-from upgrade_deep import DeepCase, Failed, check, eq, person, refused, scratch, until
+from upgrade_deep import DeepCase, Failed, check, eq, person, refused, release_key, scratch, until
 from upgrade_path import OLD_JOB, case
 
 PIPELINE = "fanout"
 SIZES = (300_000, 120_000, 70_000)
 LIVE_SIZES = (50_000, 40_000, 30_000)  # new content, so the step cache cannot answer the in-flight run
 REFUSED = ("FORBIDDEN", "NOT_FOUND")
+# The first release that logs each job's evidence (its report) with a run (#5077): a run seeded on an older
+# release has none, and this tree's meroctl will not call its receipt verified.
+JOB_EVIDENCE_SINCE = "1.0.0-rc.26"
 
 
 def _data(seed, size):
@@ -40,7 +43,8 @@ class Pipelines(DeepCase):
              "three sealed input files; a run to completion and a re-run of the same inputs; the cluster's job "
              "node stopped, then a run over three new files that waits unplaced across the roll")
     verifies = ("the finished run's state, step states, runs and outputs; its receipt verifies against its outputs "
-                "on the old release, and on the new one is refused for its jobs (no attestation was logged); "
+                "on the old release, and on the new one still verifies when the old release logged job evidence (1.0.0-rc.26 on) "
+                "and is otherwise refused for its jobs; "
                 "its outputs download byte for byte; the re-run's steps came from the step cache; a stranger is "
                 "refused starting a run, the receipt and the events; the run left in flight is still running "
                 "mid-roll, then ends succeeded on the new release with each item run once, its outputs byte for "
@@ -126,6 +130,11 @@ class Pipelines(DeepCase):
             got = pat.cli("cloud", "compute", "pipeline", "receipt", s["app"], first["id"], "--verify")
             check(got["verified"] is True and len(got["outputs"]) == 3 and all(o["matches"] for o in got["outputs"]),
                   f"the receipt of {first['id']}: {got}")
+        elif release_key(w.fixtures["from_version"]) >= release_key(JOB_EVIDENCE_SINCE):
+            # The old release logged each job's evidence with the run, so its receipt still verifies after the roll.
+            got = pat.cli("pipeline", "receipt", s["app"], first["id"], "--verify")
+            check(got["verified"] is True and len(got["outputs"]) == 3 and all(o["matches"] for o in got["outputs"]),
+                  f"the receipt of {first['id']}, seeded on {w.fixtures['from_version']}: {got}")
         else:
             # The old release logged no job attestation, so this tree's meroctl will not call it verified. A replica
             # that replayed the log rebuilt the job evidence (the final carries the report); one from a snapshot did not.

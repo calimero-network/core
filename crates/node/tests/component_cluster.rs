@@ -1047,7 +1047,7 @@ async fn browsers_on_allowed_origins_may_call_the_node() {
     let c = Cluster::start(3).await;
     let http = reqwest::Client::new();
     let preflight = |origin: &'static str| {
-        http.request(reqwest::Method::OPTIONS, format!("{}sealed/v2", c.urls[0]))
+        http.request(reqwest::Method::OPTIONS, format!("{}sealed", c.urls[0]))
             .header("origin", origin)
             .header("access-control-request-method", "POST")
             .header("access-control-request-headers", "content-type")
@@ -5084,6 +5084,45 @@ fn mpk_declaring(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
 ) -> Vec<u8> {
+    mpk_full(package, version, wasm, key, outbound, None, Value::Null)
+}
+
+/// [`mpk_declaring`], also declaring `uses` (the manifest's JSON for it) in the signed
+/// manifest.
+fn mpk_using(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    uses: Value,
+) -> Vec<u8> {
+    mpk_full(package, version, wasm, key, outbound, None, uses)
+}
+
+/// [`mpk_declaring`], also declaring `secrets` (name -> hosts) in the signed manifest.
+fn mpk_with_secrets(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    secrets: Option<&[(&str, &str)]>,
+) -> Vec<u8> {
+    mpk_full(package, version, wasm, key, outbound, secrets, Value::Null)
+}
+
+/// [`mpk_declaring`], also declaring `secrets` (name -> hosts) and `uses` (the manifest's
+/// JSON for it) in the signed manifest.
+fn mpk_full(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    secrets: Option<&[(&str, &str)]>,
+    uses: Value,
+) -> Vec<u8> {
     use sha2::Digest;
     let manifest = calimero_bundle::BundleManifest {
         version: "1.0".to_owned(),
@@ -5109,6 +5148,21 @@ fn mpk_declaring(
         frontend_aliases: Vec::new(),
         upgrades: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
+        secrets: secrets.map(|s| {
+            s.iter()
+                .map(|(name, host)| {
+                    (
+                        (*name).to_owned(),
+                        calimero_bundle::BundleSecret {
+                            hosts: vec![(*host).to_owned()],
+                            description: String::new(),
+                            required: true,
+                        },
+                    )
+                })
+                .collect()
+        }),
+        uses: serde_json::from_value(uses).unwrap(),
         services: None,
         pipelines: Vec::new(),
         signature: None,
@@ -5296,6 +5350,316 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
         failures["explode"].as_str().unwrap().contains("BeatFailed"),
         "{failures}"
     );
+}
+
+/// A release that declares its secrets gets only those, and only to their hosts: the same
+/// action that reached the echo host with `ECHO_KEY` fails once the running release
+/// declares another name, though the operator bound `ECHO_KEY` to the package; a release
+/// whose secret names a host no outbound prefix covers is refused at install.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_fills_only_the_secrets_it_declares() {
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const HOST: &str = "echo.outbound.test";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let packages = ["com.calimero.declares-echo", "com.calimero.declares-other"];
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            turnstile: false,
+            secrets: [(
+                "ECHO_KEY".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    value: "s3cret-value".to_owned(),
+                    packages: packages.iter().map(|p| (*p).to_owned()).collect(),
+                    signers: vec![signer],
+                    hosts: vec![HOST.to_owned()],
+                },
+            )]
+            .into(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+
+    // Naming a host the release does not send to: refused before anything is recorded.
+    let e = alice
+        .packages()
+        .upload(mpk_with_secrets(
+            "com.calimero.declares-bad",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[PREFIX],
+            Some(&[("ECHO_KEY", "elsewhere.test")]),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_SECRETS"), "{e}");
+
+    let mut apps = Vec::new();
+    for (package, name) in packages.iter().zip(["ECHO_KEY", "OTHER_KEY"]) {
+        let _ = alice
+            .packages()
+            .upload(mpk_with_secrets(
+                package,
+                "0.1.0",
+                &kv_wasm(),
+                &publisher,
+                &[PREFIX],
+                Some(&[(name, HOST)]),
+            ))
+            .await
+            .unwrap();
+        let _ = alice
+            .orgs()
+            .outbound_approval(
+                &alice.personal_org().await.unwrap(),
+                package,
+                Some(typed(json!("manifest"))),
+                Some(false),
+                Some(&mut pk),
+            )
+            .await
+            .map(wire)
+            .unwrap();
+        let app = alice
+            .apps()
+            .create(typed(json!({ "name": package, "package": package })))
+            .await
+            .map(wire)
+            .unwrap()["appId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "acme", "value": "acme.com" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "startEnrich",
+                Some(json!({ "key": "acme" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        apps.push(app);
+    }
+
+    // Declares ECHO_KEY for the echo host: filled and redacted.
+    let got = eventually(
+        &alice,
+        &apps[0],
+        "enrichment",
+        json!({ "key": "acme" }),
+        |v| v.is_string(),
+    )
+    .await;
+    assert!(got.as_str().unwrap().starts_with("200 "), "{got}");
+    assert!(got.as_str().unwrap().contains("[redacted]"), "{got}");
+    // Declares only OTHER_KEY: the request naming ECHO_KEY never leaves.
+    let failures = eventually(&alice, &apps[1], "actionFailures", json!({}), |f| {
+        f["enrich"].is_string()
+    })
+    .await;
+    let failure = failures["enrich"].as_str().unwrap();
+    assert!(failure.contains("declares no secret ECHO_KEY"), "{failure}");
+    assert_eq!(
+        strong_view(&alice, &apps[1], "enrichment", json!({ "key": "acme" })).await,
+        Value::Null
+    );
+}
+
+/// A release names the apps it calls in its signed manifest (`uses`): a node refuses one
+/// that breaks the rules before anything is recorded (`400 BAD_USES`), and the release's
+/// capability card lists the references of one it took, before any instance exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_names_the_apps_it_uses_on_its_card() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let abi = format!("sha256:{}", "b".repeat(64));
+
+    let e = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.uses-bad",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            json!({ "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.2.0" } }),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_USES"), "{e}");
+
+    let _ = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.notes",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            json!({
+                "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.1.0", "abi": abi },
+                "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+            }),
+        ))
+        .await
+        .unwrap();
+    let card: Value = alice
+        .transport()
+        .json(calimero_client::Request::new(
+            reqwest::Method::GET,
+            "packages/com.calimero.notes/0.1.0/capabilities".to_owned(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        card["uses"],
+        json!({
+            "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+            "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "mode": "create",
+                    "version": "0.1.0", "abi": abi },
+        })
+    );
+}
+
+/// A release that creates the apps it uses (`uses`, `mode: create`): creating an instance
+/// first creates each in the same organization, by the same owner, from the release its lock
+/// pinned; the instance's record names them (`links`) and its `init` is told their ids. A
+/// release whose referenced package is not installed creates nothing (`409
+/// USES_NOT_INSTALLED`), and a client may not pass `links` itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn creating_an_instance_creates_the_apps_its_release_uses() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[13; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let uses = json!({
+        "kv": { "package": "com.calimero.unit-kv", "range": "^0.1", "version": "0.1.0" },
+        "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+    });
+    let _ = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.unit-notes",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            uses,
+        ))
+        .await
+        .unwrap();
+    let create = |name: &'static str, init: Value| {
+        typed(json!({ "name": name, "package": "com.calimero.unit-notes", "initArgs": init }))
+    };
+
+    // The referenced package is not installed yet: nothing is created.
+    let e = alice
+        .apps()
+        .create(create("notes", Value::Null))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
+    let mine = |apps: Value| -> Vec<String> {
+        apps["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert!(mine(alice.apps().list(None, None).await.map(wire).unwrap()).is_empty());
+
+    let _ = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.unit-kv",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    let e = alice
+        .apps()
+        .create(create(
+            "forged",
+            json!({ "links": { "kv": "someone-elses" } }),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_REQUEST"), "{e}");
+
+    let made = alice
+        .apps()
+        .create(create("notes", Value::Null))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+    assert!(
+        made["links"].get("calendar").is_none(),
+        "an attached app is never created"
+    );
+
+    let notes_record = alice.apps().get(&notes).await.map(wire).unwrap();
+    let kv_record = alice.apps().get(&kv).await.map(wire).unwrap();
+    assert_eq!(notes_record["links"], json!({ "kv": kv }));
+    assert_eq!(kv_record["name"], json!("notes.kv"));
+    assert_eq!(kv_record["org"], notes_record["org"]);
+    assert_eq!(kv_record["owner"], notes_record["owner"]);
+    assert_eq!(
+        kv_record["release"]["package"],
+        json!("com.calimero.unit-kv")
+    );
+    // The instance's init was told the ids; the member's was told nothing.
+    assert_eq!(
+        strong_view(&alice, &notes, "links", json!({})).await,
+        json!({ "kv": kv })
+    );
+    assert_eq!(
+        strong_view(&alice, &kv, "links", json!({})).await,
+        json!({})
+    );
+    // One organization's apps: the instance's messages reach its member.
+    let _r = alice
+        .apps()
+        .call(
+            &notes,
+            "relay",
+            Some(json!({ "app": kv, "key": "from-notes", "value": "hi" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let got = eventually(&alice, &kv, "get", json!({ "key": "from-notes" }), |v| {
+        v.is_string()
+    })
+    .await;
+    assert_eq!(got, json!("hi"));
 }
 
 /// A synchronous xcall: the forms app (kv) verifies a captcha answer with the captcha

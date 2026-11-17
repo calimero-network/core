@@ -113,6 +113,45 @@ detail.
 
    `pack` checks each against the node's own rules before signing.
 
+   One more comes only from the crate's `[package.metadata.calimero]`:
+
+   - `uses`: the other apps the release calls, by the name its code knows each by.
+     Each names the package, the semver range it works with, and `mode`:
+     `create` (the default) is created with the app and upgraded with it,
+     `attach` is an app the deployer already runs. A `calimero.lock` beside
+     `Cargo.toml` pins each to a release inside its range and to that release's
+     ABI digest; `pack` writes both into the manifest and checks the vendored
+     ABI (`calimero/abi/<name>.json`) against the digest. Without a lock the
+     references are packed unpinned, with a note.
+
+     ```toml
+     [package.metadata.calimero.uses]
+     kv = { package = "com.calimero.confidential-kv", range = "^0.1", mode = "create" }
+     calendar = { package = "com.example.calendar", range = "^2", mode = "attach" }
+     ```
+
+     A node refuses a release whose references break the rules (`400 BAD_USES`:
+     names `a-z0-9_`, at most 16, not its own package, a semver range, a locked
+     version inside it, an ABI digest `sha256:<hex>`). It lists them on the
+     release's capability card, and an upgrade's consent page names the apps the
+     new release starts using or uses differently.
+
+     Creating an instance of a release with `create` references first creates
+     each of them: in the same organization, by the same owner, from the release
+     its lock pinned (else the newest installed one inside its range; a package
+     with none answers `409 USES_NOT_INSTALLED`), named `<instance>.<name>`. The
+     instance's record names them (`links`), the create answers them, and an
+     `init` that takes a `links` parameter is told their ids:
+
+     ```rust
+     #[app::init]
+     pub fn init(links: Option<BTreeMap<String, String>>) -> app::Result<Self> { .. }
+     ```
+
+     `links` in `initArgs` is the node's; a client that sends it is refused.
+     `attach` references are never created. Upgrading a unit in one consent is
+     not done yet: each app upgrades on its own.
+
    A package of several services (each app instance runs one of them, named by
    `meroctl instance create --service NAME`) gives each with `--service
    NAME=PATH`, where PATH is the service's crate directory (built) or its

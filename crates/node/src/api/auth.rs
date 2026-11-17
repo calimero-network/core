@@ -200,7 +200,7 @@ async fn register_finish(
         ));
     };
     // Signing up on a package's frontend opens a session bound to it.
-    let app = claimed_app(&node, &body.registration.client_data_json);
+    let app = claimed_app(&node, &body.registration.client_data_json).await;
     let cred = verify_registration(
         &rp_with(rp(&node), app.as_ref()),
         &challenge,
@@ -285,6 +285,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
     // From the origin the sign-up came from: the package's (the registered
     // origin itself, for one), or the cluster's.
     let from = claimed_app(node, &confirm.assertion.client_data_json)
+        .await
         .filter(|a| app.as_deref() == Some(a.package.as_str()) && a.registered() == origin);
     if origin.is_some() && from.is_none() {
         return Err(ApiError::unauthenticated(

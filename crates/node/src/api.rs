@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use tracing::{info, warn};
 
 use crate::app::{AppMachine, Status};
-use crate::attest::{kms_report_data, quote, report_data, AttestationDoc};
+use crate::attest::{kms_report_data, report_data, AttestationDoc};
 use crate::error::ApiError;
 use crate::node::blob_guards::MAX_LEASE_IDS;
 use crate::node::{CallRequest, JobAttestError, Node, ViewRequest};
@@ -389,9 +389,28 @@ pub(crate) fn app_origin(node: &Node, origin: &str) -> Option<AppOrigin> {
 }
 
 /// The package frontend a ceremony claims to come from (unverified: the
-/// ceremony is then checked against that origin).
-fn claimed_app(node: &Node, client_data_json: &str) -> Option<AppOrigin> {
-    app_origin(node, &calimero_identity::claimed_origin(client_data_json)?)
+/// ceremony is then checked against that origin). An origin this node does not
+/// know is looked up again on fresh state: a package installed or an origin
+/// registered through another node a moment ago is not in this node's copy of
+/// the directory until it applies that entry.
+async fn claimed_app(node: &Node, client_data_json: &str) -> Option<AppOrigin> {
+    let origin = calimero_identity::claimed_origin(client_data_json)?;
+    if let Some(app) = app_origin(node, &origin) {
+        return Some(app);
+    }
+    // The cluster's own origins are no app's: nothing to look up again.
+    if node
+        .config
+        .origins
+        .iter()
+        .any(|o| o.trim_end_matches('/') == origin)
+        || node.api_origins().contains(&origin)
+    {
+        return None;
+    }
+    // As `begin_rp_id` does for the begin.
+    let _fresh = node.sys_fresh().await;
+    app_origin(node, &origin)
 }
 
 /// The relying party for a ceremony that may come from `app`'s frontend
@@ -993,8 +1012,9 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     } else {
         report_data(&nonce, &app_hash, &transport_key)
     };
-    let q =
-        quote(node.config.attestation, report).map_err(|e| ApiError::internal(&e.to_string()))?;
+    // Off the async workers, one at a time, and only now: after the `app`
+    // lookup, which may wait, so a request that waits there holds no slot.
+    let q = node.quoter.quote(report).await?;
     let doc = AttestationDoc {
         quote: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, q),
         transport_key: hex::encode(transport_key),
@@ -1027,6 +1047,7 @@ async fn check_assertion_for(
     any_app: bool,
 ) -> Result<(String, Option<AppOrigin>), ApiError> {
     let app = claimed_app(node, &assertion.client_data_json)
+        .await
         .filter(|a| any_app || bound == Some(a.package.as_str()));
     let (owner, cred) = node
         .sys_until(|s| {
@@ -1108,7 +1129,10 @@ fn last_active(s: &SystemState, account: &str, used: &BTreeMap<&str, (usize, u64
 /// A Unix time's UTC day, `YYYY-MM-DD`.
 fn utc_day(secs: u64) -> Option<String> {
     let secs = i64::try_from(secs).ok()?;
-    chrono::DateTime::from_timestamp(secs, 0).map(|t| t.format("%Y-%m-%d").to_string())
+    time::OffsetDateTime::from_unix_timestamp(secs)
+        .ok()?
+        .format(time::macros::format_description!("[year]-[month]-[day]"))
+        .ok()
 }
 
 // ---------------------------------------------------------------- account recovery
@@ -2092,9 +2116,9 @@ fn ops_proof_body(body: &[u8]) -> Result<OpsProofBody, ApiError> {
 /// An RFC 3339 time in the API as Unix seconds, as the log keeps it.
 fn unix_secs(t: Option<&str>, field: &str) -> Result<Option<u64>, ApiError> {
     t.map(|t| {
-        chrono::DateTime::parse_from_rfc3339(t)
+        time::OffsetDateTime::parse(t, &time::format_description::well_known::Rfc3339)
             .ok()
-            .and_then(|t| u64::try_from(t.timestamp()).ok())
+            .and_then(|t| u64::try_from(t.unix_timestamp()).ok())
             .ok_or_else(|| {
                 ApiError::bad_request(
                     "BAD_REQUEST",

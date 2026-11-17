@@ -652,6 +652,28 @@ async fn release_facts(
     }
     let mpk = node.release_mpk(package, v).await?;
     let (bundle, wasm) = crate::packages::verify(mpk)?;
+    Ok(remember(node, &v.mpk, &bundle, &wasm))
+}
+
+/// Keeps what a verified release's manifest and components say under its `.mpk` hash, so
+/// the consent page, the capability card and an instance's create read them without
+/// fetching the `.mpk` again. The node that installs a release calls it with the copy it
+/// just verified.
+pub(crate) fn remember_release_facts(
+    node: &Node,
+    mpk_hash: &str,
+    bundle: &calimero_bundle::VerifiedBundle,
+    wasm: &[crate::packages::Service],
+) {
+    let _facts = remember(node, mpk_hash, bundle, wasm);
+}
+
+fn remember(
+    node: &Node,
+    mpk_hash: &str,
+    bundle: &calimero_bundle::VerifiedBundle,
+    wasm: &[crate::packages::Service],
+) -> Arc<ReleaseFacts> {
     let facts = Arc::new(ReleaseFacts {
         manifest: bundle.manifest().clone(),
         manifest_hash: hex::encode(bundle.manifest_hash()),
@@ -668,8 +690,8 @@ async fn release_facts(
             })
             .collect(),
     });
-    node.consent.cache(&v.mpk, Arc::clone(&facts));
-    Ok(facts)
+    node.consent.cache(mpk_hash, Arc::clone(&facts));
+    facts
 }
 
 /// The `minRuntimeVersion` release `v` of `package` declares, from its
@@ -1146,11 +1168,24 @@ fn scope_words(scope: &Value) -> String {
 fn plain_date(secs: u64) -> String {
     i64::try_from(secs)
         .ok()
-        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-        .map_or_else(
-            || crate::system::rfc3339(secs),
-            |t| t.format("%b %-d, %Y (UTC)").to_string(),
-        )
+        .and_then(|s| time::OffsetDateTime::from_unix_timestamp(s).ok())
+        .and_then(|t| {
+            t.format(time::macros::format_description!(
+                "[month repr:short] [day padding:none], [year] (UTC)"
+            ))
+            .ok()
+        })
+        .unwrap_or_else(|| crate::system::rfc3339(secs))
+}
+
+#[cfg(test)]
+mod plain_date_tests {
+    /// As chrono wrote it (`%b %-d, %Y (UTC)`): an unpadded day.
+    #[test]
+    fn a_date_reads_as_it_did() {
+        assert_eq!(super::plain_date(1_763_164_800), "Nov 15, 2025 (UTC)");
+        assert_eq!(super::plain_date(1_762_300_800), "Nov 5, 2025 (UTC)");
+    }
 }
 
 /// Whose data, as a person reads it: "Acme's", "your".
@@ -1238,6 +1273,29 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
             "sendsData",
             "Can send data to new addresses (each still needs your separate approval):".to_owned(),
             hosts(added.iter().map(String::as_str)),
+        ));
+    }
+    let mut secrets = strings(&sheet["secrets"]["added"]);
+    secrets.extend(strings(&sheet["secrets"]["hostsChanged"]));
+    if !secrets.is_empty() {
+        out.push(attention(
+            "secrets",
+            "Asks for a new secret, or sends one to other addresses:".to_owned(),
+            secrets,
+        ));
+    }
+    let added: Vec<String> = strings(&sheet["uses"]["added"]);
+    let changed: Vec<String> = sheet["uses"]["changed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["name"].as_str().map(str::to_owned))
+        .collect();
+    if !added.is_empty() || !changed.is_empty() {
+        out.push(attention(
+            "usesApps",
+            "Calls other apps it did not call before, or calls them differently:".to_owned(),
+            added.into_iter().chain(changed).collect(),
         ));
     }
     let origins = strings(&sheet["frontend"]["newLoginOrigins"]);
@@ -2946,6 +3004,26 @@ mod tests {
         assert!(csp.contains("default-src 'none'"), "{csp}");
         assert!(!csp.contains("unsafe-inline"), "{csp}");
         assert!(csp.contains("connect-src 'self'"), "{csp}");
+    }
+
+    #[test]
+    fn the_page_keeps_its_security_cues_in_the_main_view() {
+        let main = PAGE_HTML
+            .split("<details")
+            .next()
+            .expect("the page has a main view");
+        for cue in [
+            "Check your address bar shows <strong class=\"host\">",
+            "id=\"code\"",
+            "id=\"approve\"",
+            "id=\"decline\"",
+            "id=\"attention\"",
+            "id=\"expires\"",
+        ] {
+            assert!(main.contains(cue), "{cue} is in the main view");
+        }
+        assert!(PAGE_HTML.contains("<summary>Details</summary>"));
+        assert!(!PAGE_HTML.contains("https://"), "no external resource");
     }
 
     #[test]

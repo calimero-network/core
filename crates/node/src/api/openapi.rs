@@ -583,8 +583,9 @@ code, one schema, so a client reads `details` by `error`.\n\n\
 `503` or a lost answer (`x-calimero-retry-requires` names the body field that makes it so, \
 an idempotency key). The sealed channel's own `503` (`{ error: { code: \"busy\", message } }`, \
 outside the envelope: too many sealed requests or sessions at once; the schema \
-`x-calimero-sealed-refusal` names) carries `Retry-After: 1` on any sealed route; the node's \
-`503 UNAVAILABLE` answers carry none. \
+`x-calimero-sealed-refusal` names) carries `Retry-After: 1` on any sealed route, and so does \
+`GET /attestation`'s `503 BUSY` (too many quotes at once); the node's `503 UNAVAILABLE` \
+answers carry none. \
 `x-calimero-step-up` (with `x-calimero-user-verification`, and `x-calimero-step-up-when` \
 where it applies only sometimes) and `x-calimero-operator` mark \
 the two-round operations below.\n\n\
@@ -898,7 +899,7 @@ fn components() -> Vec<Component> {
         component(
             "App",
             "An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.",
-            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, access: #Access, confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } } }"#,
+            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, access: #Access, confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string } }"#,
         )
         .of::<crate::types::AppRecord>(),
         component(
@@ -1087,10 +1088,10 @@ fn operations() -> Vec<Op> {
             .about("In the clear. The node's id, the system group's leader (`null`: none known), its `merod` release, the newest cluster version it supports (`clusterVersion`) and the cluster's rollback epoch (`null` on a node without a rollback counter).")
             .ok("{ ok: bool, node: uint, systemLeader: uint | null, release: string, clusterVersion: string, rollbackEpoch: uint | null }"),
         get("/attestation", "attestation", Anyone, "The node's attestation")
-            .about("In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash. A client checks it before it seals anything to the key.")
+            .about("In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.")
             .query::<super::AttestQuery>(r#"{ nonce: string, app?: string, appHash?: string, purpose?: "receipts" | "kms" | "orchestrator" }"#)
             .ok("#AttestationDoc")
-            .errors(&[(400, "BAD_NONCE"), (400, "BAD_HASH"), (404, "NOT_FOUND")]),
+            .errors(&[(400, "BAD_NONCE"), (400, "BAD_HASH"), (404, "NOT_FOUND"), (503, "BUSY")]),
         get("/releases", "releases_public", Anyone, "The cluster's releases")
             .about("The cluster's governance and the deadlines set on mero-tee releases, oldest release first: after `after` (RFC 3339; `afterSecs` Unix seconds) a scope that has not approved that release (or a newer one) starts no new work.")
             .ok("{ governance: #Governance, deadlines: { version: string, after: string, afterSecs: uint }[] }"),

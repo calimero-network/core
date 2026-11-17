@@ -1,4 +1,4 @@
-## Engine benchmark (tools/search-bench)
+## Engine benchmark (crates/search/bench)
 
 Release build, one thread per query unless stated, on this machine (4 cores). Per-message times are wall-clock time of the single indexing thread (tantivy's merge thread runs beside it).
 

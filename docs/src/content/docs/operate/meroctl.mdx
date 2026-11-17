@@ -114,7 +114,7 @@ one needs no node:
 
 | Command | Meaning |
 | --- | --- |
-| `app new DIR [--template T] [--ref R] [--no-git]` | Start a project from `apps/<T>` of [calimero-network/apps](https://github.com/calimero-network/apps) at branch or tag `R` (default `kv-store` at `main`): a sparse, shallow clone of the app, the shared `packages/` and `tools/` it builds with, and the root files that pin its versions, with the history dropped and a fresh `git init`. `DIR` must not exist or be empty. Needs `git`. The app's README says how to run it (`meroctl local dev apps/<T>`). |
+| `app new DIR [--template T] [--ref R] [--no-git]` | Start a project from `apps/<T>` of [calimero-network/apps](https://github.com/calimero-network/apps) at branch or tag `R` (default `kv-store` at `main`): a sparse, shallow clone of the app, the shared `packages/` and `tools/` it builds with, and the root files that pin its versions, with the history dropped and a fresh `git init`. It also writes `AGENTS.md`, the guide a coding agent reads first (the layout, the build, test and codegen loop for `apps/<T>`, the rules, and what stays with the person), and a `CLAUDE.md` that imports it. `DIR` must not exist or be empty. Needs `git`. The app's README says how to run it (`meroctl local dev apps/<T>`). |
 | `app build [DIR] [--out FILE] [--compute-out FILE] [--target-dir DIR]` | Build the crate (default `.`) into a `calimero:app` component (`wasm32-wasip2`, the ABI lifted where the node reads it), default `DIR/app.component.wasm`, and its compute component when it has compute methods (default `compute.component.wasm` beside it). Cargo's target dir is `--target-dir`, else `CARGO_TARGET_DIR`, else `DIR/target`. |
 | `app codegen --abi FILE --lang ts\|python\|swift\|kotlin\|openapi [-o DIR] [--name N] [--package P] [--service S] [--kotlin-serialization-plugin] [--no-openapi]` | The app's OpenAPI document and a typed client ([Typed clients](/build/guides/typed-clients/)). `FILE` is a component, an `.mpk`, a `manifest.json` or ABI JSON. |
 | `app abi show FILE [--service S]` | The ABI as JSON. |
@@ -161,9 +161,9 @@ Calimero Cloud's manager API (mdma). Its organizations and clusters take a
 console session (Google sign-in): `cloud login` checks and keeps the session
 token a signed-in console sends, in `{home}/meroctl/cloud.json` (mode `0600`),
 and saves the fresh one the manager sends back on each answer
-(`X-MDMA-Session-Refresh`). No node. A manager (or, for `app publish`, a
-registry) that answers `404` at `/api/...` predates its unversioned routes, and
-the request is sent once more at `/api/v2/...`.
+(`X-MDMA-Session-Refresh`). No node. The manager (and, for `app publish`, the
+registry) is called at `/api/...` only; one that serves nothing but
+`/api/v2/...` answers `404`.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
@@ -378,12 +378,12 @@ cluster an older `meroctl` started in `./.merod-local`.
 
 | Command | Meaning |
 | --- | --- |
-| `local up [--nodes N] [--base-port P] [--dir DIR] [--fresh] [--local] [--image IMG] [--registry-url URL]` | Start the cluster (node `i` on `127.0.0.1:P+i`, default `2501`-`2503`) and wait until it serves, then save it as the node `local` (mock quotes trusted), the default when there is none. It runs in the release's image (`ghcr.io/calimero-network/merod:<release>`, `merod local --bind 0.0.0.0` with its ports published on `127.0.0.1` and its state in a Docker volume named after `DIR`; macOS and Linux), so Docker must be installed and running; `--local` (or `MEROD`) runs the `merod` on `PATH` (or in `MEROD`) instead. Its log is `DIR/merod.log`; it prints the URLs and the ops token. A cluster already running from `DIR` is answered as is. The cluster installs packages from `--registry-url` (`MEROD_REGISTRY_URL`; default the public registry, `https://apps.calimero.network`; empty for none), so `app install PACKAGE@VERSION` works on it. |
+| `local up [--nodes N] [--base-port P] [--dir DIR] [--fresh] [--local] [--image IMG] [--registry-url URL]` | Start the cluster (one node unless `--nodes`; node `i` on `127.0.0.1:P+i`, from `2501`) and wait until it serves, then save it as the node `local` (mock quotes trusted), the default when there is none. It runs in the release's image (`ghcr.io/calimero-network/merod:<release>`, `merod local --bind 0.0.0.0` with its ports published on `127.0.0.1` and its state in a Docker volume named after `DIR`; macOS and Linux), so Docker must be installed and running; `--local` (or `MEROD`) runs the `merod` on `PATH` (or in `MEROD`) instead. Its log is `DIR/merod.log`; it prints the URLs and the ops token. A cluster already running from `DIR` is answered as is. The cluster installs packages from `--registry-url` (`MEROD_REGISTRY_URL`; default the public registry, `https://apps.calimero.network`; empty for none), so `app install PACKAGE@VERSION` works on it. |
 | `local down [--dir DIR]` | Stop it; its state stays for the next `up`. |
 | `local status [--dir DIR]` | Whether it runs, its URLs and ops token. |
 | `local dev [DIR] [--no-frontend] [cluster flags]` | Develop an app (`DIR` holds `logic/` and `app/`, as `app new` lays it out, or is the crate): start the cluster unless it runs, sign up a deployer, build the crate and upload it as a raw bundle, write `DIR/app/.env.development.local` (`VITE_CALIMERO_TARGET`, `VITE_CALIMERO_NODES`, `VITE_CALIMERO_BUNDLE`), run the frontend's dev server on `http://localhost:5173` (`pnpm dev`, the origin the cluster trusts), then rebuild and upload on every save. Ctrl-C stops the frontend, and the cluster when `dev` started it. |
 | `local test [DIR] [-- CARGO_ARGS]` | `cargo test` of the app's crate, which runs every `scenarios/*.json` on core's engine (the apps template's harness). |
-| `local compute run COMPONENT --method M [--args JSON\|@FILE] [--input FILE]... --out DIR [--seed HEX] [--twice]` | Run one compute method of a compute component alone, with the engine, caps and determinism of a job node and plain files in place of sealed ones; `--twice` fails if two runs differ (`tools/mero-compute/README.md`). |
+| `local compute run COMPONENT --method M [--args JSON\|@FILE] [--input FILE]... --out DIR [--seed HEX] [--twice]` | Run one compute method of a compute component alone, with the engine, caps and determinism of a job node and plain files in place of sealed ones; `--twice` fails if two runs differ (`crates/meroctl/compute/README.md`). |
 
 ## dev
 

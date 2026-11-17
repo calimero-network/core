@@ -899,7 +899,6 @@ dependencies = [
  "calimero-tee-attestation",
  "calimero-tee-release",
  "camino",
- "chrono",
  "ciborium",
  "curve25519-dalek 5.0.0",
  "ed25519-dalek 3.0.0",
@@ -922,6 +921,7 @@ dependencies = [
  "tar",
  "tempfile",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -1060,6 +1060,17 @@ dependencies = [
  "tantivy",
  "unicode-normalization",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "calimero-search-bench"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "calimero-primitives",
+ "calimero-search",
+ "eyre",
+ "tantivy",
 ]
 
 [[package]]
@@ -3687,36 +3698,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mero-compute"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "calimero-app-engine-wasmtime",
- "calimero-app-host",
- "clap",
- "eyre",
- "hex",
- "serde_json",
- "sha2 0.11.1",
-]
-
-[[package]]
-name = "mero-sign"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "calimero-app-abi",
- "calimero-bundle",
- "calimero-utils-fs",
- "ed25519-dalek 3.0.0",
- "eyre",
- "rand 0.10.3",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "meroctl"
 version = "0.0.0"
 dependencies = [
@@ -3737,8 +3718,8 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
- "mero-compute",
- "mero-sign",
+ "meroctl-compute",
+ "meroctl-sign",
  "rand_chacha 0.10.0",
  "reqwest 0.12.28",
  "semver",
@@ -3751,6 +3732,36 @@ dependencies = [
  "toml",
  "url",
  "zeroize",
+]
+
+[[package]]
+name = "meroctl-compute"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "calimero-app-engine-wasmtime",
+ "calimero-app-host",
+ "clap",
+ "eyre",
+ "hex",
+ "serde_json",
+ "sha2 0.11.1",
+]
+
+[[package]]
+name = "meroctl-sign"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "calimero-app-abi",
+ "calimero-bundle",
+ "calimero-utils-fs",
+ "ed25519-dalek 3.0.0",
+ "eyre",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -5646,17 +5657,6 @@ name = "seahash"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
-
-[[package]]
-name = "search-bench"
-version = "0.1.0"
-dependencies = [
- "borsh",
- "calimero-primitives",
- "calimero-search",
- "eyre",
- "tantivy",
-]
 
 [[package]]
 name = "sec1"

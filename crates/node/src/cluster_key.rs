@@ -50,7 +50,8 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tracing::{info, warn};
 
-use crate::attest::{quote, report_data, AttestationDoc, HttpAttestor};
+use crate::attest::{report_data, AttestationDoc, HttpAttestor, Quoter};
+use crate::error::ApiError;
 use crate::system::SystemState;
 use crate::types::NodeRole;
 use crate::Config;
@@ -250,6 +251,8 @@ struct Waiting {
     mode: crate::attest::Mode,
     cluster: String,
     transport: Arc<calimero_sealed::SealedTransport>,
+    /// Makes this node's quotes, off the async workers and one at a time.
+    quoter: Quoter,
     token: [u8; 32],
     key: Mutex<Option<oneshot::Sender<[u8; 32]>>>,
 }
@@ -284,14 +287,16 @@ struct NonceQuery {
 async fn waiting_attestation(
     State(w): State<Arc<Waiting>>,
     Query(q): Query<NonceQuery>,
-) -> Result<Json<AttestationDoc>, StatusCode> {
+) -> Result<Json<AttestationDoc>, ApiError> {
     let nonce: [u8; 32] = hex::decode(&q.nonce)
         .ok()
         .and_then(|v| v.try_into().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+        .ok_or_else(|| ApiError::bad_request("BAD_NONCE", "nonce must be 32 bytes hex"))?;
     let transport_key = w.transport.public_key();
-    let q = quote(w.mode, report_data(&nonce, &[0; 32], &transport_key))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let q = w
+        .quoter
+        .quote(report_data(&nonce, &[0; 32], &transport_key))
+        .await?;
     Ok(Json(AttestationDoc {
         quote: base64::engine::general_purpose::STANDARD.encode(q),
         transport_key: hex::encode(transport_key),
@@ -362,6 +367,7 @@ async fn receive(config: &Config, listener: TcpListener) -> eyre::Result<([u8; 3
                 unsealed_paths: vec!["/attestation".into(), "/health".into()],
             },
         )),
+        quoter: Quoter::new(config.attestation),
         token,
         key: Mutex::new(Some(tx)),
     });

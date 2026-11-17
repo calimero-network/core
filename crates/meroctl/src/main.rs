@@ -21,7 +21,6 @@ mod account;
 mod app;
 mod blob;
 mod cloud;
-mod commons;
 mod context;
 mod dev;
 mod env;

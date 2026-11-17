@@ -33,7 +33,10 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   restarted leader catches up. Used by the node's
   `unique_ids_survive_a_crash_before_the_commit_index_reaches_the_disk`;
   `testing::slow_close(dir, delay)` makes closing that node's store wait first,
-  as a stalled last holder would (`tests/store_close.rs`).
+  as a stalled last holder would (`tests/store_close.rs`);
+  `testing::hold_build(dir, group, BuildPoint)` / `build_waiting` /
+  `release_build` hold a snapshot build before it reads the applied state or
+  before it records its file (`machine::build_races`).
 - `Engine::store_watch` reports the store open until RocksDB has closed and
   released its lock (`Db::closed`, the last field), not merely until the last
   `Arc<Db>` starts dropping.
@@ -56,7 +59,14 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   RocksDB snapshot (never the whole state in memory), sent in `SNAPSHOT_CHUNK_BYTES`
   chunks. Every node of a cluster shares K_r, so a follower opens a leader's file.
   Installing writes the next state generation (`group ‖ generation ‖ key`) and
-  switches in one batch: a crash mid-install keeps the old state.
+  switches in one batch: a crash mid-install keeps the old state. openraft runs
+  a build beside installs: a build reads its generation, index and view under
+  the `shared` read lock, and records its file under `GroupState`'s
+  snapshot-record lock only if the generation is unchanged (an install or
+  `replace_state*` switches and records under that lock); otherwise it builds
+  again, never failing (a failed build is fatal to openraft's core), and a
+  record no newer than the served one is never kept. Lock order: the
+  snapshot-record lock, then `shared`. Regressions: `machine::build_races`.
 - Node rows: `Engine::put_node_meta`/`get_node_meta` keep rows of the node's own in
   `meta` under group id `NODE_ROWS` (`u64::MAX`, which no group takes), sealed and
   synced like a vote: the node's rollback counter lives in the same store as the
