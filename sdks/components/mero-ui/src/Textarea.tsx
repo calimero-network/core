@@ -21,6 +21,11 @@ export interface TextareaProps {
   onChange?: (event: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onFocus?: (event: React.FocusEvent<HTMLTextAreaElement>) => void;
   onBlur?: (event: React.FocusEvent<HTMLTextAreaElement>) => void;
+  name?: string;
+  id?: string;
+  autoComplete?: string;
+  /** Turn off for secrets (recovery phrases, keys): the browser may send spellchecked text to a cloud service. */
+  spellCheck?: boolean;
 }
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
@@ -45,6 +50,10 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
       onChange,
       onFocus,
       onBlur,
+      name,
+      id,
+      autoComplete,
+      spellCheck,
     },
     ref,
   ) => {
@@ -155,6 +164,10 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
         )}
         <textarea
           ref={ref}
+          id={id}
+          name={name}
+          autoComplete={autoComplete}
+          spellCheck={spellCheck}
           value={value}
           defaultValue={defaultValue}
           placeholder={placeholder}

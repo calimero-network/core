@@ -12,6 +12,8 @@ type InputProps = {
   name?: string;
   id?: string;
   autoComplete?: string;
+  /** Turn off for secrets (recovery phrases, keys): the browser may send spellchecked text to a cloud service. */
+  spellCheck?: boolean;
   autoFocus?: boolean;
   maxLength?: number;
   min?: number | string;
@@ -31,6 +33,7 @@ export function Input({
   name,
   id,
   autoComplete,
+  spellCheck,
   autoFocus,
   maxLength,
   min,
@@ -80,6 +83,7 @@ export function Input({
       placeholder={placeholder}
       disabled={disabled}
       autoComplete={autoComplete}
+      spellCheck={spellCheck}
       autoFocus={autoFocus}
       maxLength={maxLength}
       min={min as any}
