@@ -29,8 +29,8 @@ impl Machine for Kv {
             .into_bytes()
     }
 
-    fn snapshot(&self) -> Vec<u8> {
-        serde_json::to_vec(&self.map).unwrap()
+    fn snapshot(&self) -> eyre::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(&self.map)?)
     }
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
@@ -304,8 +304,8 @@ impl Machine for Ledger {
         out.to_vec()
     }
 
-    fn snapshot(&self) -> Vec<u8> {
-        serde_json::to_vec(self).unwrap()
+    fn snapshot(&self) -> eyre::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(self)?)
     }
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
