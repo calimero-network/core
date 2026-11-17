@@ -2885,6 +2885,112 @@ async fn a_unit_upgrades_on_the_page_in_one_approval() {
     }
 }
 
+/// An app's frontend asks the person to let it call another app as them: the page names both
+/// apps and every method the app's release lists for the other's package, the person's passkey
+/// covers exactly those (`__delegate`), and the grant is recorded. The same frontend may not
+/// grant it through the API by itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_apps_frontend_asks_to_act_as_the_person_in_another_app_on_the_page() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    let cal = "com.test.delegated-cal";
+    let plugin = Declares {
+        uses: Some(
+            json!({ "cal": { "package": cal, "range": "^1", "mode": "attach",
+                                    "methods": ["recordWho", "whoView"] } }),
+        ),
+        ..Declares::default()
+    };
+    for (package, version, d) in [
+        (cal, "1.0.0", Declares::default()),
+        (PACKAGE, "1.0.0", plugin),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let create = |name: &str, package: &str| {
+        typed(json!({ "name": name, "package": package, "version": "1.0.0" }))
+    };
+    let app_of = |v: Value| v["appId"].as_str().unwrap().to_owned();
+    let source = app_of(
+        alice
+            .apps()
+            .create(create("booking", PACKAGE))
+            .await
+            .map(wire)
+            .unwrap(),
+    );
+    let target = app_of(
+        alice
+            .apps()
+            .create(create("calendar", cal))
+            .await
+            .map(wire)
+            .unwrap(),
+    );
+
+    // Alice signs in on the plugin's own frontend.
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+
+    // The frontend cannot grant itself the power: it asks on the page.
+    let refused = in_app
+        .apps()
+        .delegate(&source, &target, Some(&mut alice_in_app))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, calimero_client::Error::Api { status: 403, .. }),
+        "{refused}"
+    );
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "delegate", "subject": { "app": source, "target": target },
+                "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["kind"], "delegate", "{model}");
+    assert_eq!(
+        model["title"], "Allow booking to act as you in calendar",
+        "{model}"
+    );
+    assert_eq!(
+        model["delegate"]["methods"],
+        json!(["recordWho", "whoView"]),
+        "{model}"
+    );
+    assert_eq!(model["delegate"]["target"]["app"], json!(target), "{model}");
+
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["__method"], "__delegate", "{args}");
+    assert_eq!(args["target"], json!(target), "{args}");
+    assert_eq!(args["methods"], json!(["recordWho", "whoView"]), "{args}");
+
+    let listed = get_until(&alice, &format!("apps/{source}/delegations"), |v| {
+        v["delegations"][&target].is_array()
+    })
+    .await;
+    assert_eq!(
+        listed["delegations"][&target],
+        json!(["recordWho", "whoView"]),
+        "{listed}"
+    );
+}
+
 /// An upgrade whose new release takes an attached app in another range warns on the page: an
 /// attached app lives on its own, so the approval does not move it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]

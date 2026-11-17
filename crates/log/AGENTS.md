@@ -25,7 +25,24 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   restored into its old term (a restart, no election) can hold entries it
   appended past the commit index it saved, which is not synced. The node's
   component apps take their unique ids (D52, `term.seq.n`) from it.
+- A stopped Raft core restarts (`supervise`, one task per group, ended with it):
+  openraft stops a group's core for good on a storage error, a failed apply or a
+  panic, so as it stops `StateMachine::apply` drops what it applied in memory and
+  reads the state and applied index back from the disk (`machine::reload`; the
+  machine's `restore` rereads everything, an in-memory one from its checkpoint, or
+  from nothing when `data` is empty), and a panic in `Machine::apply` is caught and
+  fails the batch like a refused write. After `RESTART_FIRST` (1 s, doubled per stop
+  within `RESTART_MAX`, 5 min, ±25 % jitter) `Group::restart` starts a new core on
+  the same `Shared`, `GroupState` and applied watch, so readers and subscribers keep
+  their handles; `Group::raft()` answers the current core. `Group::stopped`,
+  `Status::stopped`/`restarts` (not serialized). The engine's `shutdown` and
+  `remove_group` close a group first, so it is never restarted after. Regressions
+  (`tests/cluster.rs`): `a_batch_that_fails_to_commit_stops_the_group_which_reloads_and_restarts`,
+  `a_machine_that_panics_stops_the_group_which_reloads_and_restarts`,
+  `a_fault_that_outlasts_a_restart_backs_off_and_shows_in_the_status`.
 - Test hooks (feature `testing`, never in a release build):
+  `testing::fail_applies(dir, group, n)` makes the next `n` applied batches of a
+  group fail to commit, as a disk answering EIO would;
   `Engine::lose_unsynced_writes(group)` drops a group's commit index and applied
   batches from then on, as a crash before they reach the disk would;
   `testing::hold_apply(dir, group)` / `release_apply` hold every apply of a group
@@ -62,7 +79,7 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   restart resumes instead of replaying. A machine that cannot apply an entry (one
   it cannot decode) calls `StateTx::fail`: no later entry of the batch is applied,
   the applied index stays where it was, and the batch's error stops the group's
-  Raft core there until the node restarts (stop rather than diverge). Regression:
+  Raft core there (stop rather than diverge); restarted, it stops there again, with backoff. Regression:
   `a_failed_batch_stops_that_nodes_group_on_the_entry`. `Machine::IN_MEMORY` machines (the system
   group) keep state in memory and are checkpointed with each snapshot instead.
   `Machine::snapshot` answers a `Result`: a state that does not serialize fails the

@@ -209,6 +209,19 @@ Plain `#[test]`s may also call the app's state directly on the host target:
 `env::mock` stands in for the host there. Actions, cross-app calls and outbound
 HTTP answer an error outside a component; use `TestApp` for those.
 
+A collection or table built on a `MemStore` counts what a node would charge for
+it, so a test can pin an operation's cost: `calls()` (every host call: a read,
+a write, opening a cursor, each cursor batch), `writes()` (against the run's
+10,000), and `pulled()` (entries cursors returned).
+
+```rust
+let store = MemStore::new();
+let mut log: Vector<String, MemStore> = Vector::with_store("log", store.clone());
+let lines: Vec<String> = (0..5_000).map(|i| format!("line {i}")).collect();
+log.extend(&lines)?;
+assert_eq!(store.writes(), 5_001); // a write per line and one for the length
+```
+
 <Aside type="note">
   The node's own tests run the same scenarios on a three-node cluster
   (`crates/node/tests/scenarios.rs`); see

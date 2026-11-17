@@ -169,7 +169,7 @@ detail.
      `inRange`. The app's code reads a link at any time, not only in `init`:
 
      ```rust
-     let kv = env::linked("kv").ok_or(app::err!("no kv linked"))?;
+     let kv = env::linked("kv").ok_or_else(|| Error::NoKv.into())?;
      ```
 
      A unit upgrades in one consent: an app's frontend asks the node's consent

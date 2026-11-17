@@ -18,6 +18,9 @@ struct Kv {
     /// Commands starting with this are ones this node cannot apply (as the
     /// node's machines meet an entry a later release wrote): it fails the batch.
     refuses: Option<&'static str>,
+    /// Panic in the next apply, after it changed the map (as a machine with a
+    /// bug would, halfway through an entry).
+    panic_next: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Machine for Kv {
@@ -33,10 +36,14 @@ impl Machine for Kv {
         }
         let s = String::from_utf8_lossy(command);
         let (k, v) = s.split_once('=').unwrap_or((&s, ""));
-        self.map
-            .insert(k.to_owned(), v.to_owned())
-            .unwrap_or_default()
-            .into_bytes()
+        let prev = self.map.insert(k.to_owned(), v.to_owned());
+        assert!(
+            !self
+                .panic_next
+                .swap(false, std::sync::atomic::Ordering::SeqCst),
+            "a machine with a bug"
+        );
+        prev.unwrap_or_default().into_bytes()
     }
 
     fn snapshot(&self) -> eyre::Result<Vec<u8>> {
@@ -44,7 +51,11 @@ impl Machine for Kv {
     }
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
-        self.map = serde_json::from_slice(data)?;
+        self.map = if data.is_empty() {
+            BTreeMap::new()
+        } else {
+            serde_json::from_slice(data)?
+        };
         Ok(())
     }
 }
@@ -244,7 +255,15 @@ async fn a_failed_batch_stops_that_nodes_group_on_the_entry() {
     );
     assert_eq!(get(stopped, "new:x"), None);
     assert_eq!(get(stopped, "b"), None, "an entry after it applied");
-    assert_eq!(get(stopped, "a").as_deref(), Some("1"));
+    // The group stops there and, restarted, stops there again: it never
+    // moves past the entry, and says so in its status.
+    let reason = stopped.stopped();
+    assert!(
+        reason.is_some() || stopped.status().restarts > 0,
+        "node 3's group neither stopped nor restarted"
+    );
+    assert!(!stopped.wait_applied(refused, Duration::from_secs(2)).await);
+    assert_eq!(get(stopped, "b"), None, "an entry after it applied");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -378,7 +397,11 @@ impl Machine for Ledger {
     }
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
-        *self = serde_json::from_slice(data)?;
+        *self = if data.is_empty() {
+            Self::default()
+        } else {
+            serde_json::from_slice(data)?
+        };
         Ok(())
     }
 }
@@ -1223,4 +1246,119 @@ async fn a_backup_seeds_another_group_that_replicas_then_join() {
         c.groups[&lid].read_local(|m, _| m.get("k0")).as_deref(),
         Some("changed")
     );
+}
+
+/// Whether `g`'s Raft core has stopped, within `timeout`.
+async fn core_stops<M: Machine>(g: &Group<M>, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        let m = g.raft().metrics();
+        if m.borrow().running_state.is_err() || m.has_changed().is_err() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// A follower whose node failed to write an applied batch (`fail`), or whose
+/// machine panicked in one (`!fail`), on entry `b`.
+async fn a_replica_stops_on_a_batch(fail: bool) {
+    let c = cluster(3).await;
+    let first = put(&c, "a", "1").await;
+    for g in c.groups.values() {
+        assert!(g.wait_applied(first, Duration::from_secs(5)).await);
+    }
+    let lead = leader(&c).await;
+    let id = *c.groups.keys().find(|k| **k != lead).unwrap();
+    let g = &c.groups[&id];
+    if fail {
+        calimero_log::testing::fail_applies(c.dirs[usize::try_from(id - 1).unwrap()].path(), 1, 1);
+    } else {
+        g.read_local(|m, _| {
+            m.panic_next
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    let second = put(&c, "b", "2").await;
+    assert!(
+        core_stops(g, Duration::from_secs(5)).await,
+        "the replica's Raft core goes on"
+    );
+    assert_eq!(
+        get(g, "b"),
+        None,
+        "the stopped replica serves an entry it never committed"
+    );
+    assert!(
+        g.applied() < second,
+        "the stopped replica says it applied {} (the entry is {second}), so a read waiting for it goes ahead",
+        g.applied()
+    );
+    // It comes back on its own, from its disk, and catches up.
+    let third = put(&c, "c", "3").await;
+    assert!(
+        g.wait_applied(third, Duration::from_secs(20)).await,
+        "the stopped group stays stopped until the node restarts"
+    );
+    assert_eq!(get(g, "a").as_deref(), Some("1"));
+    assert_eq!(get(g, "b").as_deref(), Some("2"));
+    assert_eq!(get(g, "c").as_deref(), Some("3"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_that_fails_to_commit_stops_the_group_which_reloads_and_restarts() {
+    a_replica_stops_on_a_batch(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_machine_that_panics_stops_the_group_which_reloads_and_restarts() {
+    a_replica_stops_on_a_batch(false).await;
+}
+
+/// A fault that outlasts a restart (a disk that keeps refusing, an entry this
+/// release cannot apply) keeps the group stopped, with a longer wait before
+/// each next restart, and says so in its status; once it clears, the group
+/// comes back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fault_that_outlasts_a_restart_backs_off_and_shows_in_the_status() {
+    let c = cluster(3).await;
+    let first = put(&c, "a", "1").await;
+    for g in c.groups.values() {
+        assert!(g.wait_applied(first, Duration::from_secs(5)).await);
+    }
+    let lead = leader(&c).await;
+    let id = *c.groups.keys().find(|k| **k != lead).unwrap();
+    let g = &c.groups[&id];
+    // The batch fails, and fails again when the restarted core re-applies it.
+    calimero_log::testing::fail_applies(c.dirs[usize::try_from(id - 1).unwrap()].path(), 1, 2);
+    let started = tokio::time::Instant::now();
+    let second = put(&c, "b", "2").await;
+    assert!(core_stops(g, Duration::from_secs(5)).await);
+    let status = g.status();
+    assert!(status.stopped.is_some(), "{status:?}");
+    assert!(
+        g.wait_applied(second, Duration::from_secs(20)).await,
+        "the group never came back once the fault cleared"
+    );
+    // The first restart waits RESTART_FIRST, the second twice that, each give
+    // or take a quarter.
+    let waited = started.elapsed();
+    assert!(
+        waited >= calimero_log::RESTART_FIRST.mul_f64(0.75 * 3.0),
+        "restarted after {waited:?}: the waits do not grow"
+    );
+    // The new core applies what it holds while it starts, before it takes
+    // the old one's place.
+    let mut status = g.status();
+    for _ in 0..100 {
+        if status.stopped.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        status = g.status();
+    }
+    assert_eq!(status.stopped, None, "{status:?}");
+    assert_eq!(status.restarts, 2, "{status:?}");
+    assert_eq!(get(g, "b").as_deref(), Some("2"));
 }

@@ -58,6 +58,42 @@ impl<T: Serialize + DeserializeOwned, S: Store> Cell<T, S> {
         Ok(())
     }
 
+    /// Whether a value is set.
+    pub fn is_set(&self) -> Result<bool, StorageError> {
+        Ok(self.store.get(&self.storage_key()?).is_some())
+    }
+
+    /// The value, or `T::default()` when none is set (nothing is written).
+    pub fn get_or_default(&self) -> Result<T, StorageError>
+    where
+        T: Default,
+    {
+        Ok(self.get()?.unwrap_or_default())
+    }
+
+    /// Set the value, returning the one it replaces.
+    pub fn replace(&mut self, v: &T) -> Result<Option<T>, StorageError> {
+        let old = self.get()?;
+        self.set(v)?;
+        Ok(old)
+    }
+
+    /// Remove the value, returning it.
+    pub fn take(&mut self) -> Result<Option<T>, StorageError> {
+        let old = self.get()?;
+        if old.is_some() {
+            self.clear()?;
+        }
+        Ok(old)
+    }
+
+    /// Set the value to `f` of the current one (`None` when unset), returning the new value.
+    pub fn update(&mut self, f: impl FnOnce(Option<T>) -> T) -> Result<T, StorageError> {
+        let v = f(self.get()?);
+        self.set(&v)?;
+        Ok(v)
+    }
+
     /// Remove the value.
     pub fn clear(&mut self) -> Result<(), StorageError> {
         let key = self.storage_key()?;

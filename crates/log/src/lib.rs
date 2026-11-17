@@ -15,7 +15,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
 use openraft::error::{CheckIsLeaderError, ClientWriteError, InitializeError, RaftError};
@@ -133,6 +134,38 @@ pub struct Status {
     pub applied: u64,
     pub voters: Vec<NodeId>,
     pub learners: Vec<NodeId>,
+    /// Why this node's Raft core of the group stopped, while it is stopped:
+    /// the group restarts it from the disk ([`RESTART_FIRST`]). Not
+    /// serialized, nor `restarts`: the node's API answers a status in the
+    /// shape clients know, and reports these as metrics.
+    #[serde(skip_serializing)]
+    pub stopped: Option<String>,
+    /// How many times this node tried to restart the group's core since the
+    /// group started here (a try that re-applies the failing batch fails too).
+    #[serde(skip_serializing)]
+    pub restarts: u64,
+}
+
+/// How long a group whose Raft core stopped (a write the disk refused, a
+/// machine that panicked, an entry it could not apply) waits before it
+/// restarts the core from the disk; each restart that stops again within
+/// [`RESTART_MAX`] doubles the wait, up to that.
+pub const RESTART_FIRST: Duration = Duration::from_secs(1);
+
+/// The longest a stopped group waits before it restarts its core again, and
+/// how long a restarted core must run before the wait starts over from
+/// [`RESTART_FIRST`].
+pub const RESTART_MAX: Duration = Duration::from_secs(300);
+
+/// What a group needs to start its Raft core again ([`Group::restart`]).
+struct Reopen {
+    db: Arc<Db>,
+    transport: Arc<dyn Transport>,
+    config: Arc<openraft::Config>,
+    applied_tx: Arc<watch::Sender<u64>>,
+    /// Set once the engine stops or removes the group: no restart after that.
+    closed: AtomicBool,
+    restarts: AtomicU64,
 }
 
 trait RpcTarget: Send + Sync {
@@ -144,7 +177,9 @@ trait RpcTarget: Send + Sync {
 pub struct Group<M: Machine> {
     id: GroupId,
     node: NodeId,
-    raft: Raft,
+    /// The group's Raft core here; replaced when a stopped one is restarted.
+    raft: RwLock<Raft>,
+    reopen: Reopen,
     shared: Shared<M>,
     state: GroupState,
     applied_rx: watch::Receiver<u64>,
@@ -173,9 +208,84 @@ impl<M: Machine> Group<M> {
         self.id
     }
 
+    /// The group's Raft core on this node (a new one after a restart).
     #[must_use]
-    pub fn raft(&self) -> &Raft {
-        &self.raft
+    pub fn raft(&self) -> Raft {
+        self.raft
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Why this node's Raft core of the group stopped, while it is stopped.
+    #[must_use]
+    pub fn stopped(&self) -> Option<String> {
+        let m = self.raft().metrics();
+        let reason = match &m.borrow().running_state {
+            Ok(()) => None,
+            Err(e) => Some(e.to_string()),
+        };
+        reason.or_else(|| {
+            m.has_changed()
+                .is_err()
+                .then(|| "the Raft core ended".to_owned())
+        })
+    }
+
+    /// Start the group's Raft core again, on what the disk holds: the stopped
+    /// core's applied state was read again from the disk when it stopped
+    /// ([`machine::reload`]), and the new core takes the log from there.
+    async fn restart(&self) -> eyre::Result<()> {
+        let _n = self.reopen.restarts.fetch_add(1, Ordering::AcqRel);
+        let old = self.raft();
+        let _stopped = old.shutdown().await;
+        {
+            let mut st = self
+                .shared
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.shared.clear_poison();
+            machine::reload(
+                &self.reopen.db,
+                &self.state,
+                &mut st,
+                &self.reopen.applied_tx,
+            )?;
+        }
+        let sm = machine::StateMachine::reopened(
+            self.id,
+            Arc::clone(&self.reopen.db),
+            self.state.clone(),
+            Arc::clone(&self.shared),
+            Arc::clone(&self.reopen.applied_tx),
+        );
+        let log = LogStore::new(self.id, Arc::clone(&self.reopen.db));
+        let network = network::Network {
+            group: self.id,
+            transport: Arc::clone(&self.reopen.transport),
+        };
+        let raft = Raft::new(self.node, Arc::clone(&self.reopen.config), network, log, sm).await?;
+        // Checked and swapped under the lock `shutdown` closes the group
+        // under, so a group stopped meanwhile never gets a live core back.
+        let unused = {
+            let mut slot = self
+                .raft
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.reopen.closed.load(Ordering::Acquire) {
+                Some(raft)
+            } else {
+                *slot = raft;
+                None
+            }
+        };
+        if let Some(raft) = unused {
+            let _stopped = raft.shutdown().await;
+            return Ok(());
+        }
+        // A new core is a new leadership: catch up again before proposing.
+        self.caught_up.store(0, Ordering::Release);
+        Ok(())
     }
 
     /// The group's durable state on this node.
@@ -190,7 +300,7 @@ impl<M: Machine> Group<M> {
             .into_iter()
             .map(|(id, addr)| (id, BasicNode { addr }))
             .collect();
-        match self.raft.initialize(members).await {
+        match self.raft().initialize(members).await {
             Ok(()) | Err(RaftError::APIError(InitializeError::NotAllowed(_))) => Ok(()),
             Err(e) => Err(eyre::eyre!("initialize group {}: {e}", self.id)),
         }
@@ -201,13 +311,13 @@ impl<M: Machine> Group<M> {
     /// read index. A round that misses a majority (a follower slow to answer one heartbeat)
     /// is tried again once per heartbeat, until the longest election timeout has passed.
     async fn confirm_leader(&self) -> Result<u64, WriteError> {
-        let config = self.raft.config();
+        let config = Arc::clone(self.raft().config());
         let heartbeat = Duration::from_millis(config.heartbeat_interval);
         let deadline =
             tokio::time::Instant::now() + Duration::from_millis(config.election_timeout_max);
         loop {
             let round = tokio::time::Instant::now();
-            match self.raft.ensure_linearizable().await {
+            match self.raft().ensure_linearizable().await {
                 Ok(read) => return Ok(read.map_or(0, |l| l.index)),
                 Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(f))) => {
                     return forward(f.leader_id, f.leader_node)
@@ -227,7 +337,7 @@ impl<M: Machine> Group<M> {
     /// at once (no round trip), so it is not handed a build (a WASM run) it
     /// could not append, and a leader the metrics do not show yet confirms.
     async fn leads_here(&self) -> Result<(), WriteError> {
-        if self.raft.metrics().borrow().state == ServerState::Leader {
+        if self.raft().metrics().borrow().state == ServerState::Leader {
             return Ok(());
         }
         self.confirm_leader().await.map(|_read| ())
@@ -243,7 +353,7 @@ impl<M: Machine> Group<M> {
     /// leader's (D52).
     async fn led_term(&self) -> Result<Leadership, WriteError> {
         {
-            let m = self.raft.metrics();
+            let m = self.raft().metrics();
             let m = m.borrow();
             if m.state == ServerState::Leader {
                 return Ok(Leadership {
@@ -253,7 +363,7 @@ impl<M: Machine> Group<M> {
         }
         let _read = self.confirm_leader().await?;
         let (leads, term) = self
-            .raft
+            .raft()
             .with_raft_state(|st| {
                 (
                     st.server_state == ServerState::Leader,
@@ -265,7 +375,7 @@ impl<M: Machine> Group<M> {
         if leads {
             return Ok(Leadership { term });
         }
-        let m = self.raft.metrics().borrow().clone();
+        let m = self.raft().metrics().borrow().clone();
         forward(
             m.current_leader,
             m.current_leader
@@ -285,7 +395,7 @@ impl<M: Machine> Group<M> {
         if self.caught_up.load(Ordering::Acquire) == leadership.term {
             return Ok(());
         }
-        let last = self.raft.metrics().borrow().last_log_index.unwrap_or(0);
+        let last = self.raft().metrics().borrow().last_log_index.unwrap_or(0);
         if !self.wait_applied(last, CATCH_UP).await {
             return Err(WriteError::Unavailable(
                 "the leader has not applied its own log yet".into(),
@@ -400,7 +510,7 @@ impl<M: Machine> Group<M> {
                 max: MAX_ENTRY_BYTES,
             });
         }
-        match self.raft.client_write(Bytes(cmd)).await {
+        match self.raft().client_write(Bytes(cmd)).await {
             Ok(r) => Ok((r.log_id.index, r.data.0)),
             Err(RaftError::APIError(ClientWriteError::ForwardToLeader(f))) => {
                 forward(f.leader_id, f.leader_node)
@@ -416,7 +526,7 @@ impl<M: Machine> Group<M> {
         let _read = match self.confirm_leader().await {
             Err(WriteError::NotLeader { .. }) if self.electing() => {
                 let node = self.node;
-                let _led = (self.raft.wait(Some(ELECTION_WAIT)))
+                let _led = (self.raft().wait(Some(ELECTION_WAIT)))
                     .metrics(move |m| !electing(node, m), "a voter leads")
                     .await;
                 self.confirm_leader().await?
@@ -428,7 +538,7 @@ impl<M: Machine> Group<M> {
 
     /// Whether this node is a voter and knows no voter that leads.
     fn electing(&self) -> bool {
-        electing(self.node, &self.raft.metrics().borrow())
+        electing(self.node, &self.raft().metrics().borrow())
     }
 
     /// Read this node's applied state.
@@ -471,8 +581,8 @@ impl<M: Machine> Group<M> {
 
     /// The current leader and its address, if known.
     pub async fn leader(&self) -> Option<(NodeId, String)> {
-        let id = self.raft.current_leader().await?;
-        let metrics = self.raft.metrics().borrow().clone();
+        let id = self.raft().current_leader().await?;
+        let metrics = self.raft().metrics().borrow().clone();
         let addr = metrics
             .membership_config
             .membership()
@@ -486,7 +596,7 @@ impl<M: Machine> Group<M> {
     /// for a node outside its membership.
     #[must_use]
     pub fn member_addr(&self, id: NodeId) -> Option<String> {
-        let m = self.raft.metrics().borrow().clone();
+        let m = self.raft().metrics().borrow().clone();
         m.membership_config
             .membership()
             .get_node(&id)
@@ -495,7 +605,7 @@ impl<M: Machine> Group<M> {
 
     #[must_use]
     pub fn status(&self) -> Status {
-        let m = self.raft.metrics().borrow().clone();
+        let m = self.raft().metrics().borrow().clone();
         let membership = m.membership_config.membership();
         let voters: Vec<NodeId> = membership.voter_ids().collect();
         let learners: Vec<NodeId> = membership.learner_ids().collect();
@@ -508,12 +618,14 @@ impl<M: Machine> Group<M> {
             applied: self.applied(),
             voters,
             learners,
+            stopped: self.stopped(),
+            restarts: self.reopen.restarts.load(Ordering::Acquire),
         }
     }
 
     /// Add `id` as a learner and wait until it has caught up.
     pub async fn add_learner(&self, id: NodeId, addr: String) -> Result<(), WriteError> {
-        match self.raft.add_learner(id, BasicNode { addr }, true).await {
+        match self.raft().add_learner(id, BasicNode { addr }, true).await {
             Ok(_) => Ok(()),
             Err(RaftError::APIError(ClientWriteError::ForwardToLeader(f))) => {
                 forward(f.leader_id, f.leader_node)
@@ -524,7 +636,7 @@ impl<M: Machine> Group<M> {
 
     /// Replace the voter set (joint consensus under the hood).
     pub async fn change_voters(&self, voters: BTreeSet<NodeId>) -> Result<(), WriteError> {
-        match self.raft.change_membership(voters, false).await {
+        match self.raft().change_membership(voters, false).await {
             Ok(_) => Ok(()),
             Err(RaftError::APIError(ClientWriteError::ForwardToLeader(f))) => {
                 forward(f.leader_id, f.leader_node)
@@ -552,7 +664,7 @@ impl<M: Machine> Group<M> {
 
     /// Force a snapshot now.
     pub async fn snapshot_now(&self) -> eyre::Result<()> {
-        self.raft
+        self.raft()
             .trigger()
             .snapshot()
             .await
@@ -641,7 +753,7 @@ impl<M: Machine> Group<M> {
     pub async fn purge_log_through(&self, index: u64, timeout: Duration) -> eyre::Result<()> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let purged = self.raft.metrics().borrow().purged.map_or(0, |l| l.index);
+            let purged = self.raft().metrics().borrow().purged.map_or(0, |l| l.index);
             if purged >= index {
                 return Ok(());
             }
@@ -651,7 +763,7 @@ impl<M: Machine> Group<M> {
                     self.id
                 );
             }
-            self.raft
+            self.raft()
                 .trigger()
                 .purge_log(index)
                 .await
@@ -663,7 +775,7 @@ impl<M: Machine> Group<M> {
 
 impl<M: Machine> RpcTarget for Group<M> {
     fn handle(&self, request: RpcRequest) -> BoxFuture<RpcResponse> {
-        let raft = self.raft.clone();
+        let raft = self.raft();
         Box::pin(async move {
             match request {
                 RpcRequest::Append(r) => match raft.append_entries(r).await {
@@ -683,11 +795,85 @@ impl<M: Machine> RpcTarget for Group<M> {
     }
 
     fn shutdown(&self) -> BoxFuture<()> {
-        let raft = self.raft.clone();
+        let raft = {
+            let slot = self
+                .raft
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.reopen.closed.store(true, Ordering::Release);
+            slot.clone()
+        };
         Box::pin(async move {
             let _ = raft.shutdown().await;
         })
     }
+}
+
+/// Watch a group's Raft core and start it again from the disk whenever it
+/// stops (a write the disk refused, a machine that panicked, an entry it
+/// could not apply): openraft treats each as fatal to the core, and without
+/// this the replica stays out of its group until the node restarts. Waits
+/// [`RESTART_FIRST`], doubled (with jitter) each time a restarted core stops
+/// again within [`RESTART_MAX`]: a fault that persists (an entry this release
+/// cannot decode, a full disk) keeps the group stopped and logged, without a
+/// hot loop. Ends with the group.
+async fn supervise<M: Machine>(group: Weak<Group<M>>) {
+    let mut wait = RESTART_FIRST;
+    let mut started = tokio::time::Instant::now();
+    loop {
+        let Some(mut metrics) = group.upgrade().map(|g| g.raft().metrics()) else {
+            return;
+        };
+        loop {
+            if metrics.borrow_and_update().running_state.is_err()
+                || metrics.changed().await.is_err()
+            {
+                break;
+            }
+        }
+        let Some(g) = group.upgrade() else {
+            return;
+        };
+        if g.reopen.closed.load(Ordering::Acquire) {
+            return;
+        }
+        if started.elapsed() >= RESTART_MAX {
+            wait = RESTART_FIRST;
+        }
+        let pause = jitter(wait);
+        tracing::error!(
+            group = g.id,
+            reason = g.stopped().unwrap_or_default(),
+            restarts = g.reopen.restarts.load(Ordering::Acquire),
+            retry_in_ms = u64::try_from(pause.as_millis()).unwrap_or(u64::MAX),
+            "this node's Raft core of the group stopped: it restarts from the disk"
+        );
+        drop(g);
+        tokio::time::sleep(pause).await;
+        wait = (wait * 2).min(RESTART_MAX);
+        let Some(g) = group.upgrade() else {
+            return;
+        };
+        if g.reopen.closed.load(Ordering::Acquire) {
+            return;
+        }
+        started = tokio::time::Instant::now();
+        match g.restart().await {
+            Ok(()) => tracing::warn!(group = g.id, "the group's Raft core restarted"),
+            Err(e) => tracing::error!(group = g.id, error = %e,
+                "the group's Raft core could not restart; it tries again"),
+        }
+    }
+}
+
+/// `wait`, give or take a quarter, so the replicas of a group that stopped
+/// together do not restart in step.
+fn jitter(wait: Duration) -> Duration {
+    use ring::rand::SecureRandom as _;
+    let mut b = [0_u8; 2];
+    let _filled = ring::rand::SystemRandom::new().fill(&mut b);
+    let spread = f64::from(u16::from_le_bytes(b)) / f64::from(u16::MAX); // 0..=1
+    wait.mul_f64(0.75 + spread / 2.0)
 }
 
 type GroupFactory = Arc<dyn Fn(GroupId) -> BoxFuture<bool> + Send + Sync>;
@@ -862,9 +1048,15 @@ impl Engine {
             ..Default::default()
         }
         .validate()?;
+        let config = Arc::new(config);
         let (applied_tx, applied_rx) = watch::channel(0);
-        let sm =
-            machine::StateMachine::open(id, Arc::clone(&self.db), machine, Arc::new(applied_tx))?;
+        let applied_tx = Arc::new(applied_tx);
+        let sm = machine::StateMachine::open(
+            id,
+            Arc::clone(&self.db),
+            machine,
+            Arc::clone(&applied_tx),
+        )?;
         let shared = sm.shared();
         let state = sm.state();
         let log = LogStore::new(id, Arc::clone(&self.db));
@@ -872,11 +1064,19 @@ impl Engine {
             group: id,
             transport: Arc::clone(&self.transport),
         };
-        let raft = Raft::new(self.node, Arc::new(config), network, log, sm).await?;
+        let raft = Raft::new(self.node, Arc::clone(&config), network, log, sm).await?;
         let group = Arc::new(Group {
             id,
             node: self.node,
-            raft,
+            raft: RwLock::new(raft),
+            reopen: Reopen {
+                db: Arc::clone(&self.db),
+                transport: Arc::clone(&self.transport),
+                config,
+                applied_tx,
+                closed: AtomicBool::new(false),
+                restarts: AtomicU64::new(0),
+            },
             shared,
             state,
             applied_rx,
@@ -888,6 +1088,7 @@ impl Engine {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, Arc::clone(&group) as Arc<dyn RpcTarget>);
+        drop(tokio::spawn(supervise(Arc::downgrade(&group))));
         Ok(group)
     }
 
