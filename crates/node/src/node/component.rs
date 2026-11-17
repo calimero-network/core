@@ -600,10 +600,21 @@ impl Node {
     }
 
     /// Leaves only `leave` places for control requests to job nodes, node-wide. Tests only.
+    ///
+    /// Waits for the requests in flight to give their places back and takes
+    /// those too: forgetting only the places free at the moment let one a poll
+    /// held come back a moment later, and a request meant to wait went through.
     #[cfg(feature = "testing")]
-    pub fn limit_job_control(&self, leave: usize) {
-        let held = self.job_control.available_permits().saturating_sub(leave);
-        let _forgotten = self.job_control.forget_permits(held);
+    pub async fn limit_job_control(&self, leave: usize) {
+        let take = super::job::MAX_INFLIGHT_JOB_CONTROL.saturating_sub(leave);
+        let Ok(take) = u32::try_from(take) else {
+            return;
+        };
+        if take > 0 {
+            if let Ok(permits) = self.job_control.acquire_many(take).await {
+                permits.forget();
+            }
+        }
     }
 
     /// Makes every run final this node logs conflict while `on`. Tests only.

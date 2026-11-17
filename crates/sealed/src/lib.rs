@@ -17,10 +17,9 @@
 //!   inner     u32 BE head length || head (JSON) || body
 //! ```
 //!
-//! The node still serves both endpoints at their earlier, deprecated paths
-//! (`/sealed/v2/handshake`, `/sealed/v2`), and the client falls back to them
-//! against a node that predates the new ones; the `v2` there never named the
-//! wire format, which the version byte does.
+//! Nodes up to 1.0.0-rc.24 served the two at `/sealed/v2/handshake` and
+//! `/sealed/v2`; those paths are gone. The `v2` there never named the wire
+//! format, which the version byte does.
 
 pub mod client;
 pub mod file;
@@ -32,5 +31,5 @@ pub mod wrap;
 pub use identity::{PeerKey, StaticKey, IDENTIFIED_VERSION};
 pub use server::{
     derive_shared, expire_sessions, intercept, LowOrder, SealedOptions, SealedTransport,
-    HANDSHAKE_PATH, LEGACY_HANDSHAKE_PATH, LEGACY_SEALED_PATH, SEALED_PATH,
+    HANDSHAKE_PATH, SEALED_PATH,
 };

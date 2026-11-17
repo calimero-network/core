@@ -187,7 +187,7 @@ entry format writes it only once every replica of the group reads it).
 Changing a row, a snapshot's framing or an entry's meaning raises the matching
 number in the same change and keeps a reader (a migration step, or the old
 shape's decoder) for what is already written; a change with no reader is a
-hard cutover, declared in `CHANGELOG.md` and in mdma's release compatibility
+hard cutover, declared by `!` in its PR title and in mdma's release compatibility
 table before it ships. The
 `format` row shows under the node's own rows (group `18446744073709551615`) in
 `merod inspect` with the key.
@@ -202,7 +202,7 @@ file is kept, renamed `log.redb.migrated`.
 
 1.0.0-rc.20 is a hard cutover on top of this: a data directory or log that
 holds an app outside an organization is not read, so clusters are recreated
-on that release and nothing written before it is replayed (`CHANGELOG.md`).
+on that release and nothing written before it is replayed ([changelog](https://github.com/calimero-network/core/blob/5757c837baf65fc1b58c79b111c489acfb05a300/CHANGELOG.md)).
 
 ## Inspecting a stopped node
 
