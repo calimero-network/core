@@ -11,6 +11,10 @@
 //!
 //! The one thing it does differently for a call through another app is read `env::via()`: a
 //! plugin acting for a person may not add a private event, and never sees one.
+//!
+//! Storage: one row per event, keyed `(owner, at, id)`. Adding an event writes that one row
+//! (a list per owner would be read and rewritten whole on every add), and a caller's events
+//! are the rows under their owner prefix, already in time order.
 
 use calimero_sdk::prelude::*;
 
@@ -26,8 +30,9 @@ pub struct Event {
 
 #[app::state(version = 1)]
 pub struct Calendar {
-    /// Each caller's events, by `account:<id>` or `app:<id>`.
-    events: UnorderedMap<String, Vec<Event>>,
+    /// Every event, keyed `(owner, at, id)`: the owner is `account:<id>` or `app:<id>`, and
+    /// `id` (`env::unique_id()`) keeps two events at the same time apart.
+    events: UnorderedMap<(String, String, String), Event>,
 }
 
 #[app::error]
@@ -75,26 +80,34 @@ impl Calendar {
             app::bail!(Error::PrivateThroughApp);
         }
         let owner = owner()?;
-        let mut list = self.events.get(&owner)?.unwrap_or_default();
-        list.push(Event {
+        let event = Event {
             title,
             at: at.clone(),
             private,
-        });
-        self.events.insert(&owner, &list)?;
+        };
+        let _new = self
+            .events
+            .insert(&(owner.clone(), at.clone(), env::unique_id()), &event)?;
         env::emit(CalendarEvent::Added { owner, at }, Audience::All)?;
         Ok(())
     }
 
-    /// The caller's own events. Through another app (`env::via()`), the private ones are left out.
+    /// The caller's own events in time order. Through another app (`env::via()`), the private
+    /// ones are left out.
     #[app::view]
     #[app::allow(app = "*")]
     pub fn my_events(&self) -> app::Result<Vec<Event>> {
         let through_app = env::via().is_some();
-        let list = self.events.get(&owner()?)?.unwrap_or_default();
-        Ok(list
-            .into_iter()
-            .filter(|e| !(through_app && e.private))
-            .collect())
+        let mut events = Vec::new();
+        for entry in self
+            .events
+            .prefix_iter(&[owner()?.to_key_part()], FindOpts::default())
+        {
+            let (_, event) = entry?;
+            if !(through_app && event.private) {
+                events.push(event);
+            }
+        }
+        Ok(events)
     }
 }

@@ -95,3 +95,22 @@ fn an_app_acting_for_a_person_writes_their_calendar_but_never_private_events() {
         .unwrap();
     assert_eq!(titles(seen), ["call with Bo"]);
 }
+
+#[test]
+fn events_come_back_in_time_order_and_two_at_one_time_both_stay() {
+    let mut t = app();
+    for (title, at) in [
+        ("late", "2026-11-22T18:00"),
+        ("early", "2026-11-20T08:00"),
+        ("lunch", "2026-11-21T12:00"),
+        ("also lunch", "2026-11-21T12:00"),
+    ] {
+        t.as_("ann")
+            .call("addEvent", json!({ "title": title, "at": at }))
+            .unwrap();
+    }
+    let got = titles(t.as_("ann").view("myEvents", json!({})).unwrap());
+    assert_eq!(got.len(), 4);
+    assert_eq!(got[0], "early");
+    assert_eq!(got[3], "late");
+}
