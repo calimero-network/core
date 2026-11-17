@@ -20,7 +20,7 @@ npm run check    # astro build + internal link check (what CI runs)
 
 Pages live in `src/content/docs/`, grouped into four tracks:
 
-- **Get Started** — install (SPM/CocoaPods), authenticate, and make your first call.
+- **Get Started** — install (SwiftPM), authenticate, and make your first call.
 - **Understand** — the layered architecture, the actor/token model, and the glossary.
 - **Guides** — contexts & apps, executing methods, groups & governance, blobs, and
   the SwiftUI frontend (`MeroKitUI`).
