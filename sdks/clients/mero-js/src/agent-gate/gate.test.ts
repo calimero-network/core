@@ -189,6 +189,14 @@ describe('an agent gate client', () => {
     );
   });
 
+  it('refuses a quote its verifier answers false for', async () => {
+    const gate = new FakeGate();
+    const rejecting = Object.assign(async () => false, {});
+    await expect(attestAgent({ gateUrl, agentId: 'a-1', verifier: rejecting, fetch: gate.fetch })).rejects.toThrow(
+      'did not verify',
+    );
+  });
+
   it('catches keys the quote does not commit to', async () => {
     const gate = new FakeGate();
     const swapped: typeof fetch = async (input, init) => {

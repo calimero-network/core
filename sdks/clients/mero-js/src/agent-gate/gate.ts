@@ -208,7 +208,10 @@ export async function attestAgent(options: AttestAgentOptions): Promise<Verified
   }
   // The id asked about, not the one answered: a quote for another agent fails here.
   const binding = await agentKeyBinding(provisioning, agentId, signing, owner);
-  await options.verifier({ quoteB64: body.quoteB64, nonce: hex(nonce), reportDataSuffix: hex(binding) });
+  // A verifier resolves `false` for a quote it does not accept: that refuses too, as a throw does.
+  if (!(await options.verifier({ quoteB64: body.quoteB64, nonce: hex(nonce), reportDataSuffix: hex(binding) }))) {
+    throw new Error("The gate's quote did not verify, so its keys are not trusted");
+  }
   return {
     agentId,
     provisioningPublicKey: toBase64(provisioning),
