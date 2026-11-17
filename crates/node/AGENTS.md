@@ -1775,11 +1775,16 @@ API and system group:
   search needs (`ComponentSearch::for_view`, inside `read_local`: the state's `Arc` and the
   record keys the entries since the indexes' mark touched, `AppMachine::note_touched` at
   apply, the same `TOUCHED_RING`) and indexes nothing; its first query brings the app's
-  indexes up to that state on the view's own thread (`RunSearch::ready`): from those keys,
-  else (a new bundle, keys the ring lost, a mark another view moved meanwhile) a full scan
-  of its state. A view that never searches indexes nothing. Regressions:
+  indexes up to that state on the view's own thread (`RunSearch::ready`): from those keys
+  for every table whose declared fields are what it was built with, across an upgrade
+  too; a table that is new or whose fields changed is scanned and one no longer declared
+  is dropped; everything is scanned only when the keys since are unknown (the first search
+  after a start, keys the ring lost, a mark another view moved meanwhile). A view that
+  never searches indexes nothing. Indexes stay in memory: persisting them would put
+  tantivy's plaintext segments on disk outside the sealed store. Regressions:
   `preparing_a_views_search_indexes_nothing_until_it_queries`,
-  `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`. The run
+  `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`,
+  `an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps`. The run
   gets it through `HostCore::with_search` (`RunSearch`): hits are the guest's record keys.
   Derived, in memory, dropped with the app group. Test:
   `views_search_a_components_tables_as_they_change`.

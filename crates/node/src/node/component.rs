@@ -2097,7 +2097,7 @@ impl Node {
                 applied,
                 m.state.component.head.last_ts_ms,
                 self.component_search
-                    .for_view(&bundle, &prepared.abi.search, m, applied),
+                    .for_view(&prepared.abi.search, m, applied),
             )
         });
         if bundle_now.as_deref() != Some(bundle.as_str()) {
