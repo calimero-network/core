@@ -11,9 +11,7 @@
 `@calimero-network/mero-ui` is the Calimero design system's React component
 library (React 19): layout, forms, data display, feedback, navigation, the
 Tiptap `RichTextEditor`, and `styles.css` with the design tokens as CSS
-variables. See [README.md](README.md); [DS_AUDIT.md](DS_AUDIT.md) is the audit
-of the components and [docs/design-system-prompt.md](docs/design-system-prompt.md)
-the original brief of the design system.
+variables. See [README.md](README.md).
 
 ## Layout
 
