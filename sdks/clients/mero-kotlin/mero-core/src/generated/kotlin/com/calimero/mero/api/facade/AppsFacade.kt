@@ -93,6 +93,42 @@ class AppsFacade internal constructor(
         api(null, null, emptySet()).apps.appCreate(appCreateRequest = AppCreateRequest(name = name, bundle = bundle, `package` = `package`, version = version, service = service, org = org, access = access, initArgs = initArgs, metadata = metadata, deployment = deployment))
 
     /**
+     * Let an app call another as you
+     *
+     * The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none. A session opened on an app's frontend is refused (`403`): the app asks on the consent page instead (`POST /consent/requests { kind: "delegate" }`).
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `PUT /apps/{app}/delegations/{target}` (`app_delegate`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun delegate(
+        app: kotlin.String,
+        target: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): AppDelegate200Response =
+        api(passkey, null, emptySet()).apps.appDelegate(app = app, target = target, appDelegateRequest = AppDelegateRequest())
+
+    /**
+     * What you let an app do as you
+     *
+     * The apps you let this app call as you, each with the methods (`SetDelegation`). A session bound to an app's frontend reads its own app's only.
+     *
+     * **Who:** signed in (a session or an API key).
+     *
+     * `GET /apps/{app}/delegations` (`app_delegations`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun delegations(
+        app: kotlin.String,
+    ): AppDelegations200Response =
+        api(null, null, emptySet()).apps.appDelegations(app = app)
+
+    /**
      * Delete an app
      *
      * The owner or an organization admin.
@@ -123,6 +159,43 @@ class AppsFacade internal constructor(
         app: kotlin.String,
     ): App =
         api(null, null, emptySet()).apps.appGet(app = app)
+
+    /**
+     * Attach an app to one of an app's references
+     *
+     * `name` is an `attach` reference of the release the app runs, and `app` an app of the same organization that runs its package; the caller manages both. One outside the reference's range is attached anyway and answered `inRange: false`, and the consent page warns about it on later upgrades: an attached app is never upgraded with the instance. `env::linked(name)` answers it from the next run on. Answers the link as `GET /apps/{app}/links` lists it.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `PUT /apps/{app}/links/{name}` (`app_link`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun link(
+        app: kotlin.String,
+        name: kotlin.String,
+        bodyApp: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): AppLink200Response =
+        api(passkey, null, emptySet()).apps.appLink(app = app, name = name, appLinkRequest = AppLinkRequest(app = bodyApp))
+
+    /**
+     * List an app's links to the apps its release uses
+     *
+     * One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.
+     *
+     * **Who:** whoever the app's access admits (a public app: anyone).
+     *
+     * `GET /apps/{app}/links` (`app_links`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun links(
+        app: kotlin.String,
+    ): AppLinks200Response =
+        api(null, null, emptySet()).apps.appLinks(app = app)
 
     /**
      * Apps the caller reaches
@@ -272,6 +345,63 @@ class AppsFacade internal constructor(
         api(null, null, emptySet()).apps.appRuns(app = app, limit = limit, before = before)
 
     /**
+     * Remove an app's own value of a secret
+     *
+     * The operator's value applies again. Same rules as setting one; a step-up over `{ name }`.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `DELETE /apps/{app}/secrets/{name}` (`app_secret_clear`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun secretClear(
+        app: kotlin.String,
+        name: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): AppSecretClear200Response =
+        api(passkey, null, emptySet()).apps.appSecretClear(app = app, name = name)
+
+    /**
+     * Set an app's own value of a declared secret
+     *
+     * Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `PUT /apps/{app}/secrets/{name}` (`app_secret_set`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun secretSet(
+        app: kotlin.String,
+        name: kotlin.String,
+        value: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): AppSecretSet200Response =
+        api(passkey, null, emptySet()).apps.appSecretSet(app = app, name = name, appSecretSetRequest = AppSecretSetRequest(value = value))
+
+    /**
+     * The secrets an app's release declares
+     *
+     * For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+     *
+     * **Who:** signed in (a session or an API key).
+     *
+     * `GET /apps/{app}/secrets` (`app_secrets`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun secrets(
+        app: kotlin.String,
+    ): AppSecrets200Response =
+        api(null, null, emptySet()).apps.appSecrets(app = app)
+
+    /**
      * What an app stores
      *
      * Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).
@@ -308,6 +438,43 @@ class AppsFacade internal constructor(
         api(passkey, null, emptySet()).apps.appTransfer(app = app, appTransferRequest = AppTransferRequest(to = to))
 
     /**
+     * Take back what an app may do on another as you
+     *
+     * No passkey: it only narrows. `404 NOT_DELEGATED` when you granted nothing there.
+     *
+     * **Who:** signed in (a session or an API key).
+     *
+     * `DELETE /apps/{app}/delegations/{target}` (`app_undelegate`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun undelegate(
+        app: kotlin.String,
+        target: kotlin.String,
+    ): kotlinx.serialization.json.JsonObject =
+        api(null, null, emptySet()).apps.appUndelegate(app = app, target = target)
+
+    /**
+     * Detach an app attached to an app
+     *
+     * Whoever manages the app. A member made with the instance is never detached.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `DELETE /apps/{app}/links/{name}` (`app_unlink`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun unlink(
+        app: kotlin.String,
+        name: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): kotlinx.serialization.json.JsonObject =
+        api(passkey, null, emptySet()).apps.appUnlink(app = app, name = name, appUnlinkRequest = AppUnlinkRequest())
+
+    /**
      * Upgrade an app instance
      *
      * To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. Whoever the package's manifest names (`upgrades`: the owner, or its publisher's `MANAGE_APPLICATION` holders), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own.
@@ -330,6 +497,26 @@ class AppsFacade internal constructor(
         passkey: PasskeyProvider? = null,
     ): AppUpgrade200Response =
         api(passkey, null, emptySet()).apps.appUpgrade(app = app, appUpgradeRequest = AppUpgradeRequest(bundle = bundle, `package` = `package`, version = version, service = service, migrate = migrate))
+
+    /**
+     * Upgrade an app and the apps it created, in one consent
+     *
+     * An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /apps/{app}/upgrade-unit` (`app_upgrade_unit`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun upgradeUnit(
+        app: kotlin.String,
+        version: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): UpgradeRun =
+        api(passkey, null, emptySet()).apps.appUpgradeUnit(app = app, appUpgradeUnitRequest = AppUpgradeUnitRequest(version = version))
 
     /**
      * An app's runs per day

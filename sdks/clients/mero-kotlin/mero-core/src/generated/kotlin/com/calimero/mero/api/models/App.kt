@@ -53,6 +53,8 @@ import kotlinx.serialization.Contextual
  * @param deployment 
  * @param release 
  * @param restore 
+ * @param links 
+ * @param attached 
  */
 @Serializable
 
@@ -115,7 +117,13 @@ data class App (
     val release: PackageRef? = null,
 
     @SerialName(value = "restore")
-    val restore: AppRestore? = null
+    val restore: AppRestore? = null,
+
+    @SerialName(value = "links")
+    val links: kotlin.collections.Map<kotlin.String, kotlin.String>? = null,
+
+    @SerialName(value = "attached")
+    val attached: kotlin.collections.Map<kotlin.String, kotlin.String>? = null
 
 ) {
 

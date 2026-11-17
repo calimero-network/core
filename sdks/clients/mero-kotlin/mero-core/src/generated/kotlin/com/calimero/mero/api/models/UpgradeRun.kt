@@ -23,6 +23,7 @@
 
 package com.calimero.mero.api.models
 
+import com.calimero.mero.api.models.UpgradeRunTargetsValue
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
@@ -42,6 +43,7 @@ import kotlinx.serialization.Contextual
  * @param failed 
  * @param finished 
  * @param team 
+ * @param targets 
  */
 @Serializable
 
@@ -78,7 +80,10 @@ data class UpgradeRun (
     val finished: kotlin.Boolean,
 
     @SerialName(value = "team")
-    val team: kotlin.String? = null
+    val team: kotlin.String? = null,
+
+    @Contextual @SerialName(value = "targets")
+    val targets: kotlin.collections.Map<kotlin.String, UpgradeRunTargetsValue>? = null
 
 ) {
 
