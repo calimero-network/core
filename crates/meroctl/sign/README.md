@@ -1,4 +1,4 @@
-# mero-sign
+# meroctl-sign
 
 The signing library for bundle manifests: Ed25519 over the manifest's RFC 8785
 (JCS) canonical form, the `did:key` signer id, key files written owner-only, and
@@ -22,8 +22,8 @@ without `--allow-unsigned-bundles` refuse what it signed
 The format itself (the canonical bytes, the signing domain, the hash) is
 `calimero-bundle`'s (`crates/bundle/AGENTS.md`); this crate only adds keys and the
 command-line workflow's checks. The guide is
-[Packaging & signing](../../docs/src/content/docs/build/packaging-signing.mdx).
+[Packaging & signing](../../../docs/src/content/docs/build/packaging-signing.mdx).
 
 ```bash
-cargo test -p mero-sign
+cargo test -p meroctl-sign
 ```

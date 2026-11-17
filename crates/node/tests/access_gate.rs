@@ -429,6 +429,68 @@ async fn an_app_made_private_is_hidden_from_anonymous_callers_on_a_follower_behi
     );
 }
 
+/// Review finding A3: `GET /attestation?app=` is in the clear and takes no
+/// credential, yet it bound any app's bundle hash, so anyone could learn that a
+/// private app exists and which release it runs (`404` against `200`). It now
+/// answers as an anonymous `GET /apps/{app}` does: a private app reads exactly
+/// as an id nobody holds, and a public one binds its bundle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn attestation_names_no_app_an_anonymous_caller_cannot_reach() {
+    let c = ProxiedCluster::start().await;
+    let leader = c.system_leader();
+    let (alice, _a) = signed_up(&c, leader, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let created = alice
+        .apps()
+        .create(typed(json!({ "name": "kv", "bundle": bundle })))
+        .await
+        .map(wire)
+        .unwrap();
+    let app = created["appId"].as_str().unwrap().to_owned();
+    let _ok = alice
+        .apps()
+        .access(&app, typed(json!({ "kind": "owner" })))
+        .await
+        .unwrap();
+    let plain = reqwest::Client::new();
+    let attest = |i: usize, app: String| {
+        let url = format!(
+            "{}attestation?nonce={}&app={app}",
+            c.direct[i],
+            hex::encode([7_u8; 32])
+        );
+        let plain = plain.clone();
+        async move {
+            let r = plain.get(url).send().await.unwrap();
+            let status = r.status().as_u16();
+            let body: serde_json::Value = r.json().await.unwrap();
+            (status, body)
+        }
+    };
+    for i in 0..3 {
+        let private = attest(i, app.clone()).await;
+        let unknown = attest(i, "no-such-app".to_owned()).await;
+        assert_eq!(private.0, 404, "node {i}: {private:?}");
+        assert_eq!(private, unknown, "node {i}: a private app reads as no app");
+    }
+
+    let _ok = alice
+        .apps()
+        .access(&app, typed(json!({ "kind": "public" })))
+        .await
+        .unwrap();
+    for i in 0..3 {
+        let (status, doc) = attest(i, app.clone()).await;
+        assert_eq!(status, 200, "node {i}: {doc}");
+        assert_eq!(doc["appHash"], json!(bundle), "node {i}: binds the bundle");
+    }
+}
+
 /// A blob deleted through the app's leader is gone for a follower that has not
 /// applied the delete yet: a download there must not serve the bytes it still
 /// holds (the intermittent `release-v2-parity` CI failure in

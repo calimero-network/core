@@ -17,14 +17,13 @@ on:
       - Cargo.toml
       - Cargo.lock
       - "crates/**"
-      - "tools/**"
       - ".github/workflows/release.yml"
       - ".github/workflows/deps/**"
       - ".github/actions/**"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
-      - "tools/mero-sign/README.md"
+      - "crates/meroctl/sign/README.md"
   workflow_dispatch:
 
 permissions:

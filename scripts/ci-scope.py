@@ -67,7 +67,6 @@ WORKFLOWS = {
             *EVERY_JOB,
             "crates/*",
             "apps/*",
-            "tools/*",
             # Every script ci-checks.yml runs (ci-scope-test.py keeps this complete),
             # and what those scripts read.
             "scripts/check-like-ci.py",
@@ -128,7 +127,7 @@ JOBS: dict = {
     # release's fixtures come from its tag, so this tree's copies of them do not count.
     "upgrade_path": (
         # apps/v2-fixtures/kv: this tree's kv, the release the app upgrades to.
-        lambda: ["crates/merod", "crates/meroctl", "tools/mero-sign", "crates/app-build", "apps/v2-fixtures/kv"],
+        lambda: ["crates/merod", "crates/meroctl", "crates/meroctl/sign", "crates/app-build", "apps/v2-fixtures/kv"],
         False,
         (
             ".github/upgrade-from",
