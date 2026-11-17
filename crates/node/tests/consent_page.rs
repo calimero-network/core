@@ -482,6 +482,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
                 "removed": [],
                 "kept": ["https://api.example/v1/"],
             },
+            "uses": { "added": [], "removed": [], "kept": [], "changed": [], "createdAdded": [] },
             "frontend": {
                 "from": "https://notes.example",
                 "to": "https://notes.example",
@@ -2356,6 +2357,7 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
             "name": "Notes",
             "author": "Example",
             "outbound": ["https://api.example/v1/", "https://metrics.example/"],
+            "uses": {},
             "abi": abi,
         })
     );
