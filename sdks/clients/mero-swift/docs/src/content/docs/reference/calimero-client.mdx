@@ -18,9 +18,10 @@ Methods marked with a passkey (`passkey:`) are step-ups: the node answers
 | Credentials | `useApiKey`, `useSession`, `session`, `onSessionChange`, `useStepUp`, `useOperatorSigner`, `nodeUrl`, `nodes`, `connect` |
 | Identity | `signUp(_:name:invite:origin:)`, `signIn(_:origin:)`, `refresh`, `signOut`, `signOutEverywhere`, `forget`, `addPasskey(_:approver:)` |
 | Calls | `call`, `callJSON`, `callConfirmed`, `view`, `viewJSON`, `events`, `presenceStream` |
-| Blobs | `uploadFile(_:_:)`, `blobContent`, `listBlobs`, `blobInfo` |
+| Blobs and files | `blobContent`, `listBlobs`, `blobInfo`; sealed files: `uploadFile(_:_:)`, `exportFile(_:_:)`, `exportFile(_:_:to:)` |
+| Receipts | `verifyAppCluster(_:)`, `pipelineReceipt(_:_:)`, `verifyPipelineReceipt(_:_:_:)` |
 | Organizations | `setRecoveryKey(_:publicKey:passkey:)`, `startRecovery(_:seed:)`, `updateTeam` |
-| Approvals | `appsReportAll`, `pendingApprovals`, `requestConsent`, `consentResult`, `confirmConsentReturn`, `openConsentPage`, `waitForConsent`, `checkConsentCode` ([the consent page](/guides/consent/)); `pageDeployment(_:)`, `frontendManifest(_:)` |
+| Approvals | `appsReportAll`, `pendingApprovals`, `requestConsent`, `consentResult`, `confirmConsentReturn`, `openConsentPage`, `resumeConsent`, `waitForConsent`, `checkConsentCode` ([the consent page](/guides/consent/)); `pageDeployment(_:)`, `frontendManifest(_:)` |
 | Raw routes | `get`, `post`, `put`, `delete`, `postConfirmed`, `deleteConfirmed`; `JSONValue(encoding:)` (a facade answer as JSON, to read as MeroKit's types) |
 
 Every other route is a method of the generated facade, one per operation of

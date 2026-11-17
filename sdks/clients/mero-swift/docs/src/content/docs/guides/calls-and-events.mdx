@@ -71,10 +71,7 @@ sent as `application/octet-stream`), `apps.blobDownload(app:id:grant:)`
 (`grant`: no session, a grant one of the app's runs handed out),
 `blobContent(app, id, grant:)` (bytes and content type), `listBlobs`,
 `blobInfo`, `apps.blobDelete(app:id:)` on
-`/apps/{app}/blobs`; `uploadFile(app, data)` for a component app's sealed file
-(core rc.9+: only the app's code reads it; its owner and organization members
-upload it, and see `sealed` and the plaintext's `sha256` in `listBlobs` and
-`blobInfo`); `appXcalls(app)` for a component app's outbox and dead
+`/apps/{app}/blobs`; `appXcalls(app)` for a component app's outbox and dead
 letters; `publishPresence`, `presence`,
 `presenceStream` on `/apps/{app}/presence`.
 
@@ -83,3 +80,31 @@ let png = try Data(contentsOf: imageURL)
 let blob = try await client.apps.blobUpload(app: app, body: png, contentType: "image/png")
 let content = try await client.blobContent(app, blob.blobId)   // content.contentType == "image/png"
 ```
+
+## Sealed files
+
+A component app's sealed file is stored under a key of its own that only the
+app's code and an export read; its owner and its organization's members upload
+and export it. `uploadFile(app, data)` sends it to `/apps/{app}/files` (a file
+past 16 MiB as an upload session of parts) and answers its `id`, the
+plaintext's `size` and `sha256`. `exportFile(app, id)` downloads it: the node
+answers only ciphertext and the file's data key wrapped to a key the client
+made for this export, and every segment, the size and the plaintext's SHA-256
+are checked before it is believed (`ExportError` when they are not).
+`exportFile(app, id, to:)` hands the plaintext to a closure in chunks of at
+most 64 KiB instead; when it throws, discard what the closure received.
+
+```swift
+let file = try await client.uploadFile(app, report)
+let back = try await client.exportFile(app, file.id)            // == report
+try await client.exportFile(app, file.id, to: { handle.write($0) })
+```
+
+## Pipeline receipts
+
+`pipelineReceipt(app, run)` reads an ended pipeline run's signed receipt, and
+`verifyPipelineReceipt(app, run, answer)` checks it as core's client does,
+under the client's policy: every replica of the app attests its receipt key
+(`verifyAppCluster(app)`), the answering replica signed the receipt, it is for
+that app and run, every job report is signed by its job key, and each job key
+is attested by a job node of the cluster. A failed check is a `ReceiptError`.

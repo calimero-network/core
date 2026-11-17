@@ -326,16 +326,62 @@ final class CoreRc10ParityTests: XCTestCase {
 
     func testUploadsASealedFileForAComponentApp() async throws {
         let node = FakeCloudNode { _ in
-            .json([
-                "blobId": "2Ab", "id": "ab", "size": 5, "sha256": "e3b0", "sealed": true, "index": 7,
-            ])
+            .json(["blobId": "2Ab", "id": "ab", "size": 5, "sha256": "e3b0", "index": 7])
         }
         node.install()
         let file = try await client().uploadFile("app1", Data("hello".utf8))
-        XCTAssertEqual(file, BlobInfo(blobId: "2Ab", id: "ab", size: 5, sha256: "e3b0", sealed: true, index: 7))
+        XCTAssertEqual(file, BlobInfo(blobId: "2Ab", id: "ab", size: 5, sha256: "e3b0", index: 7))
         XCTAssertEqual(node.requests[0].method, "POST")
-        XCTAssertEqual(node.requests[0].path, "/apps/app1/blobs?sealed=true")
+        XCTAssertEqual(node.requests[0].path, "/apps/app1/files")
         XCTAssertEqual(node.requests[0].body, Data("hello".utf8))
+    }
+
+    func testUploadsAFileLargerThanOnePartAsASessionResumingWhereTheNodeSays() async throws {
+        let part = CalimeroClient.filePartBytes
+        let size = part + 10
+        let node = FakeCloudNode { request in
+            switch (request.method, request.path) {
+            case ("POST", "/apps/app1/files/uploads"):
+                return .json(["uploadId": "u1", "partBytes": .number(Double(part)), "parts": 2, "expiresAt": 9])
+            case ("PUT", "/apps/app1/files/uploads/u1/parts/0"): return .json(["next": 1])
+            case ("PUT", "/apps/app1/files/uploads/u1/parts/1"): return .json(["next": 2])
+            case ("POST", "/apps/app1/files/uploads/u1/complete"):
+                return .json(["blobId": "2Ab", "id": "ab", "size": .number(Double(size)), "sha256": "e3", "index": 8])
+            default: return .error(404, "NOT_FOUND")
+            }
+        }
+        node.install()
+        let file = try await client().uploadFile("app1", Data(count: size))
+        XCTAssertEqual(file.index, 8)
+        XCTAssertEqual(
+            node.requests.map { "\($0.method) \($0.path)" },
+            [
+                "POST /apps/app1/files/uploads", "PUT /apps/app1/files/uploads/u1/parts/0",
+                "PUT /apps/app1/files/uploads/u1/parts/1", "POST /apps/app1/files/uploads/u1/complete",
+            ])
+        XCTAssertEqual(node.requests[2].body.count, 10)
+    }
+
+    func testAbortsAnUploadSessionThatFails() async throws {
+        let node = FakeCloudNode { request in
+            switch (request.method, request.path) {
+            case ("POST", "/apps/app1/files/uploads"):
+                return .json([
+                    "uploadId": "u1", "partBytes": .number(Double(CalimeroClient.filePartBytes)), "parts": 2,
+                    "expiresAt": 9,
+                ])
+            case ("DELETE", "/apps/app1/files/uploads/u1"): return .json([:])
+            default: return .error(403, "FORBIDDEN")
+            }
+        }
+        node.install()
+        do {
+            _ = try await client().uploadFile("app1", Data(count: CalimeroClient.filePartBytes + 1))
+            XCTFail("expected a refusal")
+        } catch let error as CalimeroError {
+            XCTAssertEqual(error.code, "FORBIDDEN")
+        }
+        XCTAssertEqual(node.requests.last.map { "\($0.method) \($0.path)" }, "DELETE /apps/app1/files/uploads/u1")
     }
 }
 

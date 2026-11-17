@@ -12,8 +12,8 @@
     {"path": "docs/src/content/docs/get-started/quickstart.mdx", "format": "regex", "pattern": "calimero-network/swift-sdk\", exact: \"([^\"]+)\""}
   ],
   "depends_on": [],
-  "inputs": ["docs/public/openapi.json"],
-  "generate": "scripts/generate-openapi.sh",
-  "generated": ["Sources/MeroAPI/Generated", "Sources/MeroKit/Api/Generated"],
+  "inputs": ["docs/public/openapi.json", "crates/client/tests/fixtures/receipt-vectors.json"],
+  "generate": "scripts/generate-openapi.sh && scripts/refresh-receipt-vectors.sh",
+  "generated": ["Sources/MeroAPI/Generated", "Sources/MeroKit/Api/Generated", "Tests/MeroKitTests/Fixtures/receipts/receipt-vectors.json"],
   "workflow": ".github/workflows/sdk-mero-swift.yml"
 }

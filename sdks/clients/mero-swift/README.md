@@ -125,6 +125,11 @@ sign-in ceremonies, the event streams and the escape hatches (`post`,
 - **Sign-up policy.** `signUpPolicy()` says whether the cluster is `open`,
   `invite` or `closed` before any prompt; `signUp(_:name:invite:)` takes an
   organization or sign-up invite.
+- **Sealed files.** `uploadFile` and `exportFile` (checked against the file's
+  id, size and plaintext hash, byte for byte with core's `calimero-sealed`).
+- **Receipts.** `verifyPipelineReceipt` checks a pipeline run's receipt as
+  core's client does: attested receipt keys, the signature, each job report
+  and its job node's attestation.
 - **Retries.** A call or view that meets `503` or no answer is sent again with
   the same idempotency key (6 retries, 200 ms → 2 s), then the next node with
   the same key, then `UnavailableError`.
@@ -139,8 +144,9 @@ sign-in ceremonies, the event streams and the escape hatches (`post`,
   outbound hosts, the page creates organizations (`.createOrg`), mints invites
   (`.createInvite`) and accepts them (`.acceptInvite`), and
   `ConsentResult.outcome` says what it made (`orgId`, `inviteToken`,
-  `joinedOrg`). `confirmConsentReturn` refuses a return from the page that
-  did not decide the request the app started. See
+  `joinedOrg`). `confirmConsentReturn` (or `resumeConsent`, from the request
+  id `openConsentPage` kept) refuses a return from the page that did not
+  decide the request the app started. See
   [the consent page guide](docs/src/content/docs/guides/consent.mdx).
 
 ## The app layer (SwiftUI)

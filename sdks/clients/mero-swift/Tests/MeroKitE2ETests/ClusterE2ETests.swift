@@ -458,6 +458,34 @@ final class ClusterE2ETests: XCTestCase {
         XCTAssertEqual(result.kind, "renameOrg")
     }
 
+    /// openConsentPage keeps the request it started; a return while it is
+    /// still pending is refused, and a newer request replaces it on the node.
+    func testResumesAConsentRequestFromThePagesReturn() async throws {
+        let urls = try urls
+        let store = MemoryConsentRequestStore()
+        let alice = CalimeroClient(
+            CalimeroClientOptions(baseUrl: urls[0], policy: CloudPolicy(allowMock: true), consentStore: store))
+        try await alice.signUp(SoftPasskey(), name: "alice-resume")
+        let org = try await alice.orgs.create(name: "Resume Co").orgId
+        let started = try await alice.openConsentPage(
+            .renameOrg(org: org, name: "Resumed Co", returnTo: "http://localhost:3000/done"), navigate: { _ in })
+        XCTAssertEqual(store.load(), started.requestId)
+        let back = try XCTUnwrap(
+            URL(string: "http://localhost:3000/done?request_id=\(started.requestId)&result=approved"))
+        let pending = await refusal { _ = try await alice.resumeConsent(back) }
+        XCTAssertEqual((pending as? CalimeroError)?.code, "CONSENT_NOT_DECIDED", "\(String(describing: pending))")
+        XCTAssertEqual(store.load(), started.requestId)
+        let none = try await alice.resumeConsent(try XCTUnwrap(URL(string: "http://localhost:3000/done")))
+        XCTAssertNil(none)
+
+        // One undecided request per account per node: a newer one replaces it.
+        _ = try await alice.requestConsent(
+            .renameOrg(org: org, name: "Newer Co", returnTo: "http://localhost:3000/done"))
+        let replaced = await refusal { _ = try await alice.resumeConsent(back) }
+        XCTAssertEqual((replaced as? CalimeroError)?.code, "CONSENT_REPLACED", "\(String(describing: replaced))")
+        XCTAssertNil(store.load())
+    }
+
     // MARK: - Packages and origins
 
     /// Installs the signed fixture package, runs an app from it, then
@@ -510,6 +538,54 @@ final class ClusterE2ETests: XCTestCase {
         XCTAssertTrue(ended is LoginRequired, "\(String(describing: ended))")
     }
 
+    // MARK: - Sealed files and receipts
+
+    func testUploadsAMultiPartSealedFileAndExportsItBackByteForByte() async throws {
+        let (alice, _) = try await person(0, "alice-files")
+        let app = try await kvApp(alice, "sealed")
+        var generator = SystemRandomNumberGenerator()
+        let data = Data(
+            (0..<(CalimeroClient.filePartBytes + 3_000_000)).map { _ in UInt8.random(in: 0...255, using: &generator) })
+        let up = try await alice.uploadFile(app, data)
+        XCTAssertEqual(up.size, data.count)
+        XCTAssertEqual(up.sha256, Hex.encode(sha256(data)))
+
+        let info = try JSONValue(encoding: try await alice.apps.fileInfo(app: app, id: up.id))
+        XCTAssertEqual(info["id"]?.stringValue, up.id)
+        XCTAssertEqual(info["sha256"]?.stringValue, up.sha256)
+
+        let back = try await alice.exportFile(app, up.id)
+        XCTAssertEqual(back.count, data.count)
+        XCTAssertTrue(back == data)
+
+        let chunks = ChunkCount()
+        let exported = try await alice.exportFile(app, up.id, to: { chunks.add($0.count) })
+        XCTAssertEqual(exported, ExportedFile(size: data.count, sha256: up.sha256 ?? ""))
+        XCTAssertEqual(chunks.total, data.count)
+    }
+
+    func testRefusesAnExportToAStranger() async throws {
+        let (alice, _) = try await person(0, "alice-owner")
+        let (mallory, _) = try await person(1, "mallory")
+        let app = try await kvApp(alice, "private-files")
+        let up = try await alice.uploadFile(app, Data(repeating: 7, count: 50_000))
+        let refused = await refusal { _ = try await mallory.exportFile(app, up.id) }
+        XCTAssertEqual((refused as? CalimeroError)?.code, "NOT_FOUND", "\(String(describing: refused))")
+    }
+
+    func testAttestsEveryReplicasReceiptKey() async throws {
+        let (alice, _) = try await person(0, "alice-receipts")
+        let app = try await kvApp(alice, "receipts")
+        let attested = try await alice.verifyAppCluster(app)
+        XCTAssertFalse(attested.keys.isEmpty)
+        XCTAssertFalse(attested.cluster.isEmpty)
+        XCTAssertNotNil(attested.governance["releases"])
+        for key in attested.keys.values { XCTAssertEqual(key.count, 32) }
+        // No run of this app: the receipt route refuses.
+        let none = await refusal { _ = try await alice.pipelineReceipt(app, "no-such-run") }
+        XCTAssertNotNil(none as? CalimeroError, "\(String(describing: none))")
+    }
+
     func testTheNodesAttestationIsAMockOnADevelopmentCluster() async throws {
         let (alice, _) = try await person(0, "alice-attest")
         let doc = try JSONValue(
@@ -517,5 +593,23 @@ final class ClusterE2ETests: XCTestCase {
         XCTAssertEqual(doc["mock"]?.boolValue, true)
         let usage = try JSONValue(encoding: try await alice.auth.usage())
         XCTAssertNotNil(usage.objectValue)
+    }
+}
+
+/// How many plaintext bytes an export handed its sink.
+private final class ChunkCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func add(_ n: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        count += n
+    }
+
+    var total: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
     }
 }
