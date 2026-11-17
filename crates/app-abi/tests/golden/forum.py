@@ -145,10 +145,10 @@ class ForumClient:
         args: Dict[str, Any] = {"key": key}
         return cast(None, self._call("deleteComment", args, idempotency_key))
 
-    def delete_post(self, id: str, *, idempotency_key: Optional[str] = None) -> None:
+    def delete_post(self, id: str, *, idempotency_key: Optional[str] = None) -> bool:
         """call `deletePost`."""
         args: Dict[str, Any] = {"id": id}
-        return cast(None, self._call("deletePost", args, idempotency_key))
+        return cast(bool, self._call("deletePost", args, idempotency_key))
 
     def edit_comment(self, key: str, body: str, *, idempotency_key: Optional[str] = None) -> None:
         """call `editComment`."""
@@ -175,10 +175,10 @@ class ForumClient:
         args: Dict[str, Any] = {"board": board}
         return cast(List[MessageView], self._view("messages", args, consistency, min_index))
 
-    def moderate_post(self, id: str, *, idempotency_key: Optional[str] = None) -> None:
+    def moderate_post(self, id: str, *, idempotency_key: Optional[str] = None) -> bool:
         """call `moderatePost`."""
         args: Dict[str, Any] = {"id": id}
-        return cast(None, self._call("moderatePost", args, idempotency_key))
+        return cast(bool, self._call("moderatePost", args, idempotency_key))
 
     def moderators(self, *, consistency: Optional[Literal["strong", "stale"]] = None, min_index: Optional[int] = None) -> List[str]:
         """view `moderators`."""

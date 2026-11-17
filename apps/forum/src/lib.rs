@@ -235,6 +235,10 @@ const NAME: &str = "calimero forum";
 const RULES: &str = "be kind and stay on topic";
 /// The most rows one query reads, offset included.
 const MAX_ROWS: u32 = 1000;
+/// The most tag, vote and comment rows one `deletePost` or `moderatePost` removes. Each
+/// costs three writes (the row and two index or count entries) of keys up to 1 KiB, so 250
+/// stay within a run's 10,000 writes and 1 MiB of written bytes whatever the ids are.
+const REMOVE_SLICE: u64 = 250;
 
 fn caller() -> app::Result<String> {
     match env::caller() {
@@ -318,18 +322,17 @@ impl Forum {
         Ok(())
     }
 
-    /// Removes the post at `id`, whoever wrote it, with its votes and comments. Moderators
-    /// only.
-    pub fn moderate_post(&mut self, id: String) -> app::Result<()> {
+    /// Removes the post at `id`, whoever wrote it, with its tags, votes and comments, and
+    /// answers whether it is gone. One call removes at most 250 of those rows and the post
+    /// only once none is left: `false` means rows remain, so call again. Moderators only.
+    pub fn moderate_post(&mut self, id: String) -> app::Result<bool> {
         if !self.posts.contains(&id)? {
             return Err(Error::NoPost { id }.into());
         }
         if !self.moderators.contains(&writer()?)? {
             return Err(Error::NotModerator { id }.into());
         }
-        self.remove_post(&id)?;
-        env::emit(Event::PostDeleted { id }, Audience::All)?;
-        Ok(())
+        self.remove_post(id)
     }
 
     // ── announcements ──────────────────────────────────────────────────────
@@ -493,13 +496,13 @@ impl Forum {
         })
     }
 
-    /// Deletes the caller's post with its votes and comments, so a post later filed at the
-    /// same id starts with none.
-    pub fn delete_post(&mut self, id: String) -> app::Result<()> {
+    /// Deletes the caller's post with its tags, votes and comments, so a post later filed at
+    /// the same id starts with none, and answers whether it is gone. One call removes at most
+    /// 250 of those rows and the post only once none is left: `false` means rows remain, so
+    /// call again.
+    pub fn delete_post(&mut self, id: String) -> app::Result<bool> {
         let _post = self.own_post(&id)?;
-        self.remove_post(&id)?;
-        env::emit(Event::PostDeleted { id }, Audience::All)?;
-        Ok(())
+        self.remove_post(id)
     }
 
     /// The post at `id`, or `null`.
@@ -784,37 +787,32 @@ impl Forum {
     }
 
     /// Removes the post with its tags, votes and comments, so a post later filed at the same
-    /// id starts with none of them.
-    fn remove_post(&mut self, id: &str) -> app::Result<()> {
-        self.drop_tags(id)?;
-        loop {
-            let page = self.votes.find(
-                "byPost",
-                &[id.to_key_part()],
-                FindOpts::default().limit(MAX_ROWS),
-            )?;
-            if page.items.is_empty() {
-                break;
-            }
-            for v in page.items {
-                self.votes.remove(&(v.post.as_str(), v.voter.as_str()))?;
-            }
+    /// id starts with none of them, and answers whether the post is gone.
+    ///
+    /// The forum caps neither votes (one per member) nor comments, so a post can hold more
+    /// rows than one run may remove (10,000 writes, 1 MiB). One call removes at most
+    /// `REMOVE_SLICE` of them, tags first, then votes, then comments, and the post only once
+    /// none is left: a post is never gone while rows of it remain. Short of that the post
+    /// stays, with fewer votes or comments, the call answers `false` and emits
+    /// `PostChanged`, and the next `deletePost` or `moderatePost` goes on from there.
+    fn remove_post(&mut self, id: String) -> app::Result<bool> {
+        let post = [id.to_key_part()];
+        let tags = self.post_tags.remove_by("byPost", &post, REMOVE_SLICE)?;
+        let votes = self
+            .votes
+            .remove_by("byPost", &post, REMOVE_SLICE - tags.removed)?;
+        let comments = self.comments.remove_by(
+            "thread",
+            &post,
+            REMOVE_SLICE - tags.removed - votes.removed,
+        )?;
+        if !(tags.done && votes.done && comments.done) {
+            env::emit(Event::PostChanged { id }, Audience::All)?;
+            return Ok(false);
         }
-        loop {
-            let page = self.comments.find(
-                "thread",
-                &[id.to_key_part()],
-                FindOpts::default().limit(MAX_ROWS),
-            )?;
-            if page.items.is_empty() {
-                break;
-            }
-            for c in page.items {
-                self.comments.remove(&c.key)?;
-            }
-        }
-        self.posts.remove(id)?;
-        Ok(())
+        self.posts.remove(&id)?;
+        env::emit(Event::PostDeleted { id }, Audience::All)?;
+        Ok(true)
     }
 
     /// A post's tags, sorted: its `postTags` rows, not a list field of the post, so that
@@ -828,16 +826,14 @@ impl Forum {
         Ok(rows.items.into_iter().map(|r| r.tag).collect())
     }
 
+    /// Removes every tag row of the post, in one call: `retag` writes the new tags in the
+    /// same run. A post's tags were all written by one run (`createPost` or `retag`), and
+    /// removing a row costs the writes that inserting it did with fewer bytes (keys, no
+    /// values), so whatever one run wrote one run removes. A `retag` whose old and new tags
+    /// together pass a run's limits is refused whole by the host, leaving the old tags.
     fn drop_tags(&mut self, id: &str) -> app::Result<()> {
-        let rows = self.post_tags.find(
-            "byPost",
-            &[id.to_key_part()],
-            FindOpts::default().limit(MAX_ROWS),
-        )?;
-        for row in rows.items {
-            self.post_tags
-                .remove(&(row.post.as_str(), row.tag.as_str()))?;
-        }
+        self.post_tags
+            .remove_by("byPost", &[id.to_key_part()], u64::MAX)?;
         Ok(())
     }
 

@@ -237,13 +237,15 @@ public struct ForumClient: Sendable {
     }
 
     /// call `deletePost`.
+    @discardableResult
     public func deletePost(
         id: String,
         idempotencyKey: String? = nil
-    ) async throws {
+    ) async throws -> Bool {
         var args = Args()
         args.add("id", id)
-        _ = try await invokeCall("deletePost", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
+        let result = try await invokeCall("deletePost", args, idempotencyKey: idempotencyKey, as: Bool.self)
+        return result
     }
 
     /// call `editComment`.
@@ -307,13 +309,15 @@ public struct ForumClient: Sendable {
     }
 
     /// call `moderatePost`.
+    @discardableResult
     public func moderatePost(
         id: String,
         idempotencyKey: String? = nil
-    ) async throws {
+    ) async throws -> Bool {
         var args = Args()
         args.add("id", id)
-        _ = try await invokeCall("moderatePost", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
+        let result = try await invokeCall("moderatePost", args, idempotencyKey: idempotencyKey, as: Bool.self)
+        return result
     }
 
     /// view `moderators`.
