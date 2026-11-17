@@ -22,7 +22,7 @@ The example is a watchlist of company domains: `watch` adds one and looks it
 up at once, an hourly timer looks every domain up again, and the `enrich`
 action asks an outside service for the industry and stores it. It builds and
 its harness test below passes against the SDK in this repository; the patterns
-come from `apps/v2-fixtures/kv` (`beat`, `startEnrich`, `enrich`) and
+come from `apps/fixture-kv` (`beat`, `startEnrich`, `enrich`) and
 `apps/rooms` (`releaseNoShows`).
 
 ## The app
@@ -374,7 +374,7 @@ fn a_tick_queues_lookups_that_fill_the_watchlist() {
 ```
 
 `component()` builds the crate with `calimero_app_build::build_component`, as
-`apps/v2-fixtures/kv/tests/harness.rs` does. On a cluster,
+`apps/fixture-kv/tests/harness.rs` does. On a cluster,
 `actions_run_on_the_leader_and_reach_only_declared_approved_hosts`
 (`crates/node/tests`) covers the outbound gate, secrets and redaction.
 

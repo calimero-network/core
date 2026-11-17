@@ -242,7 +242,7 @@ async fn create(owner: &Client, version: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_release_with_both_components_records_both_and_its_app_runs_calls() {
     let (c, owner, _pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let job = both.compute.clone().expect("a compute component");
     install(&owner, "1.0.0", &both.app, Some(&job)).await;
 
@@ -279,7 +279,7 @@ async fn a_release_with_both_components_records_both_and_its_app_runs_calls() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_release_without_a_compute_artifact_installs_and_its_app_runs_calls() {
     let (c, owner, _pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     install(&owner, "1.0.0", &both.app, None).await;
     let node = &c.nodes[0].as_ref().unwrap().node;
     assert!(
@@ -307,7 +307,7 @@ async fn a_release_without_a_compute_artifact_installs_and_its_app_runs_calls() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_compute_abi_that_disagrees_with_the_main_abi_is_refused() {
     let (_c, owner, _pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let job = both.compute.clone().unwrap();
     let cheaper = patched(&job, |a| {
         a["methods"]["digest"]["compute"]["fuel"] = json!(1)
@@ -325,7 +325,7 @@ async fn a_compute_abi_that_disagrees_with_the_main_abi_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_compute_component_that_imports_state_is_refused() {
     let (_c, owner, _pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     // The app component imports `calimero:app/storage`, which no compute world has.
     let e = refused(&owner, &both.app, &both.app).await;
     assert_eq!(e.code(), Some("BAD_BUNDLE"), "{e}");
@@ -335,7 +335,7 @@ async fn a_compute_component_that_imports_state_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_compute_component_must_carry_a_compute_world_abi() {
     let (_c, owner, _pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let job = both.compute.clone().unwrap();
     let app_abi = abi(&both.app);
     let wrong_world = calimero_app_build::with_abi(&job, &app_abi).unwrap();
@@ -346,7 +346,7 @@ async fn a_compute_component_must_carry_a_compute_world_abi() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_compute_component_cannot_be_a_services_main_component() {
     let (_c, owner, _pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let job = both.compute.clone().unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let e = owner
@@ -360,7 +360,7 @@ async fn a_compute_component_cannot_be_a_services_main_component() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn the_running_releases_compute_hash_follows_an_upgrade() {
     let (c, owner, mut pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let job = both.compute.clone().unwrap();
     install(&owner, "1.0.0", &both.app, Some(&job)).await;
     let main2 = patched(&both.app, |a| a["build"] = json!(2));
@@ -402,7 +402,7 @@ async fn the_running_releases_compute_hash_follows_an_upgrade() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_app_created_or_upgraded_by_bundle_hash_takes_that_releases_compute_component() {
     let (c, owner, mut pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let job = both.compute.clone().unwrap();
     let main2 = patched(&both.app, |a| a["build"] = json!(2));
     let job2 = patched(&job, |a| a["build"] = json!(2));
@@ -461,7 +461,7 @@ async fn an_app_created_or_upgraded_by_bundle_hash_takes_that_releases_compute_c
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_bundle_hash_shared_by_releases_with_different_compute_is_ambiguous() {
     let (_c, owner, _pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let job = both.compute.clone().unwrap();
     let job2 = patched(&job, |a| a["build"] = json!(2));
     install(&owner, "1.0.0", &both.app, Some(&job)).await;
@@ -479,7 +479,7 @@ async fn a_bundle_hash_shared_by_releases_with_different_compute_is_ambiguous() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_release_that_changes_only_compute_code_gives_its_app_its_own_compute_hash() {
     let (c, owner, mut pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let job = both.compute.clone().unwrap();
     let job2 = patched(&job, |a| a["build"] = json!(2));
     install(&owner, "1.0.0", &both.app, Some(&job)).await;
@@ -558,7 +558,10 @@ async fn create_compute_only(owner: &Client, version: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_compute_only_package_installs() {
     let (c, owner, _pk) = compute_cluster().await;
-    let job = common::components("compute").compute.clone().unwrap();
+    let job = common::components("fixture-compute")
+        .compute
+        .clone()
+        .unwrap();
     install_compute_only(&owner, "1.0.0", &job).await.unwrap();
 
     let job_hash = sha256_hex(&job);
@@ -599,7 +602,10 @@ async fn capabilities(
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_compute_only_releases_card_reports_its_compute_abi() {
     let (_c, owner, _pk) = compute_cluster().await;
-    let job = common::components("compute").compute.clone().unwrap();
+    let job = common::components("fixture-compute")
+        .compute
+        .clone()
+        .unwrap();
     install_compute_only(&owner, "1.0.0", &job).await.unwrap();
 
     let card = capabilities(&owner, "com.test.job", "").await.unwrap();
@@ -612,7 +618,7 @@ async fn a_compute_only_releases_card_reports_its_compute_abi() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_cards_service_is_the_sole_one_or_the_one_named() {
     let (_c, owner, _pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let job = both.compute.clone().unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let _ = owner
@@ -661,7 +667,10 @@ async fn a_compute_only_package_waits_until_every_node_runs_this_release() {
     })
     .await;
     let (owner, _pk) = signed_up(&c, 0, "owner").await;
-    let job = common::components("compute").compute.clone().unwrap();
+    let job = common::components("fixture-compute")
+        .compute
+        .clone()
+        .unwrap();
     let e = install_compute_only(&owner, "1.0.0", &job)
         .await
         .unwrap_err();
@@ -673,7 +682,10 @@ async fn a_compute_only_package_waits_until_every_node_runs_this_release() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_compute_only_package_with_no_compute_methods_is_refused() {
     let (_c, owner, _pk) = compute_cluster().await;
-    let job = common::components("compute").compute.clone().unwrap();
+    let job = common::components("fixture-compute")
+        .compute
+        .clone()
+        .unwrap();
     let none = patched(&job, |a| a["methods"] = json!({}));
     let e = install_compute_only(&owner, "1.0.0", &none)
         .await
@@ -684,7 +696,10 @@ async fn a_compute_only_package_with_no_compute_methods_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_compute_only_app_answers_no_app_component_to_calls_and_views() {
     let (c, owner, _pk) = compute_cluster().await;
-    let job = common::components("compute").compute.clone().unwrap();
+    let job = common::components("fixture-compute")
+        .compute
+        .clone()
+        .unwrap();
     install_compute_only(&owner, "1.0.0", &job).await.unwrap();
     let app = create_compute_only(&owner, "1.0.0").await;
     // Creating answers once the group's empty init committed, so a pipeline can start at once.
@@ -727,7 +742,7 @@ async fn a_compute_only_app_answers_no_app_component_to_calls_and_views() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn an_app_package_installs_exactly_as_before() {
     let (c, owner, _pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     install(&owner, "1.0.0", &both.app, both.compute.as_deref()).await;
     let node = &c.nodes[0].as_ref().unwrap().node;
     node.sys(|s| {
@@ -763,7 +778,7 @@ async fn an_app_package_installs_exactly_as_before() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn switching_components_on_upgrade_is_refused() {
     let (c, owner, mut pk) = compute_cluster().await;
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let job = both.compute.clone().unwrap();
     let job2 = patched(&job, |a| a["build"] = json!(2));
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
@@ -843,7 +858,10 @@ async fn install_with_pipelines(
     pipelines: &[(&str, &str)],
 ) -> Result<Value, Box<calimero_client::Error>> {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
-    let job = common::components("compute").compute.clone().unwrap();
+    let job = common::components("fixture-compute")
+        .compute
+        .clone()
+        .unwrap();
     owner
         .packages()
         .upload(mpk_with_pipelines(
@@ -962,7 +980,7 @@ async fn pipelines_are_refused_when_malformed_duplicated_or_without_one_compute_
     assert_eq!(bad_pipeline(&e)[0]["code"], "DUPLICATE_NAME");
 
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let e = owner
         .packages()
         .upload(mpk_with_pipelines(
@@ -999,7 +1017,7 @@ async fn a_package_with_pipelines_waits_until_every_node_runs_this_release() {
     .await;
     let (owner, _pk) = signed_up(&c, 0, "owner").await;
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let with_app = |pipelines: &[(&str, &str)]| {
         mpk_with_pipelines(
             "com.test.compute",
@@ -1030,7 +1048,10 @@ const MODULE_PACKAGE: &str = "com.test.module";
 /// The fixture's compute component with its own build and a lower fuel cap on `digest` and
 /// `check`, so it is another release with other caps.
 fn module_component(build: u64) -> Vec<u8> {
-    let job = common::components("compute").compute.clone().unwrap();
+    let job = common::components("fixture-compute")
+        .compute
+        .clone()
+        .unwrap();
     patched(&job, |a| {
         a["build"] = json!(build);
         for method in ["digest", "check"] {
@@ -1070,7 +1091,10 @@ async fn install_user(
     source: &str,
 ) -> Result<Value, Box<calimero_client::Error>> {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
-    let job = common::components("compute").compute.clone().unwrap();
+    let job = common::components("fixture-compute")
+        .compute
+        .clone()
+        .unwrap();
     owner
         .packages()
         .upload(mpk_with_pipelines(
@@ -1149,7 +1173,7 @@ async fn a_module_the_installer_cannot_see_is_unknown() {
 
     // A package with no compute component is no module.
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
-    let app = common::components("compute");
+    let app = common::components("fixture-compute");
     let _installed = owner
         .packages()
         .upload(mpk_with(
@@ -1269,7 +1293,7 @@ async fn mixed_runtimes() -> (Cluster, Client, SoftAuthenticator, String, String
     .await;
     let (owner, pk) = signed_up(&c, 0, "owner").await;
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
-    let kv = common::component("kv");
+    let kv = common::component("fixture-kv");
     for (version, wasm, needs) in [
         ("1.0.0", kv.clone(), "0.1.0"),
         (

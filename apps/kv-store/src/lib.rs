@@ -2,12 +2,17 @@
 //! component SDK's basic example. State is one ordered map of entries, which keeps its own
 //! count; every change emits an event to everyone the app reaches.
 //!
+//! The map is ordered by key, so its reads come back in ascending key order, and `range` /
+//! `prefix` / `page` / `first` / `last` read a slice of the keyspace without loading the
+//! whole store: each reads through the map's cursor, one page at a time.
+//!
 //! Method names and arguments are the ABI's camelCase ones (`updateIfExists`,
 //! `getOrInsert`, `getResult`, ..).
 
 use std::collections::BTreeMap;
 
 use calimero_sdk::prelude::*;
+use calimero_sdk::StorageError;
 
 /// The store.
 #[app::state(version = 1)]
@@ -37,11 +42,17 @@ pub enum Event {
     Cleared,
 }
 
-/// The most entries one `entries` call lists.
+/// One key and its value: what `first` and `last` return.
+#[derive(serde::Serialize)]
+pub struct Entry {
+    pub key: String,
+    pub value: String,
+}
+
+/// The most entries one `entries` call lists, and the page size the multi-page reads fetch with.
 const PAGE: u32 = 1000;
 
 #[app::logic]
-#[allow(clippy::len_without_is_empty)]
 impl KvStore {
     /// Creates the empty store. The node runs it once, when the app is created.
     #[app::init]
@@ -103,6 +114,77 @@ impl KvStore {
         Ok(self.entries.len()?)
     }
 
+    /// Whether the store holds no keys.
+    #[app::view]
+    pub fn is_empty(&self) -> app::Result<bool> {
+        Ok(self.entries.is_empty()?)
+    }
+
+    /// Entries whose keys fall within `[start, end)`, ascending: the map's own bounds, no
+    /// full scan. `{}` when `start` is not below `end`.
+    #[app::view]
+    pub fn range(&self, start: String, end: String) -> app::Result<BTreeMap<String, String>> {
+        if start >= end {
+            return Ok(BTreeMap::new());
+        }
+        collect(|opts| self.entries.range(&start, &end, opts))
+    }
+
+    /// Entries whose keys start with `prefix`, ascending, e.g. `prefix("user:")`: the read
+    /// covers only the keys under it.
+    #[app::view]
+    pub fn prefix(&self, prefix: String) -> app::Result<BTreeMap<String, String>> {
+        let prefix = [prefix.to_key_part()];
+        collect(|opts| self.entries.starts_with(&prefix, opts))
+    }
+
+    /// `limit` entries after the first `offset`, ascending. The skipped entries are still
+    /// read; a client paging a large store should prefer `range` from the last key it holds.
+    #[app::view]
+    pub fn page(&self, offset: u32, limit: u32) -> app::Result<BTreeMap<String, String>> {
+        let mut out = BTreeMap::new();
+        if limit == 0 {
+            return Ok(out);
+        }
+        let mut skipped = 0;
+        let mut opts = FindOpts::default().limit(PAGE);
+        loop {
+            let page = self.entries.page(opts.clone())?;
+            for (key, value) in page.items {
+                if skipped < offset {
+                    skipped += 1;
+                    continue;
+                }
+                let _ = out.insert(key, value);
+                if out.len() == limit as usize {
+                    return Ok(out);
+                }
+            }
+            match page.next {
+                Some(next) => opts = opts.cursor(next),
+                None => return Ok(out),
+            }
+        }
+    }
+
+    /// The entry with the smallest key, or `null` when the store is empty.
+    #[app::view]
+    pub fn first(&self) -> app::Result<Option<Entry>> {
+        Ok(self
+            .entries
+            .first()?
+            .map(|(key, value)| Entry { key, value }))
+    }
+
+    /// The entry with the largest key, or `null` when the store is empty.
+    #[app::view]
+    pub fn last(&self) -> app::Result<Option<Entry>> {
+        Ok(self
+            .entries
+            .last()?
+            .map(|(key, value)| Entry { key, value }))
+    }
+
     /// The value under `key`, or `null` when it is absent.
     #[app::view]
     pub fn get(&self, key: String) -> app::Result<Option<String>> {
@@ -144,5 +226,21 @@ impl KvStore {
             env::emit(Event::Cleared, Audience::All)?;
         }
         Ok(())
+    }
+}
+
+/// Every page `read` returns, from the first on, in one map.
+fn collect(
+    read: impl Fn(FindOpts) -> Result<Page<(String, String)>, StorageError>,
+) -> app::Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    let mut opts = FindOpts::default().limit(PAGE);
+    loop {
+        let page = read(opts.clone())?;
+        out.extend(page.items);
+        match page.next {
+            Some(next) => opts = opts.cursor(next),
+            None => return Ok(out),
+        }
     }
 }

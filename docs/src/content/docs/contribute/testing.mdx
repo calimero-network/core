@@ -34,8 +34,8 @@ frozen leader behaves, and a green scenario does not localize a logic bug.
 The cluster and CLI tests build the components they load on first use
 (`calimero_app_build::build_component_cached`, cached under
 `$CARGO_TARGET_DIR/app-components`; the `wasm32-wasip2` target, which
-`rust-toolchain.toml` lists): the kv fixture `apps/v2-fixtures/kv`, the other
-`apps/v2-fixtures/*`, `apps/kv-store-with-shared-storage` and `apps/rooms`. No
+`rust-toolchain.toml` lists): the kv fixture `apps/fixture-kv`, the other
+`apps/fixture-*`, `apps/team-space` and `apps/rooms`. No
 build step comes first. `KV_STORE_WASM` points `meroctl`'s tests at another
 component.
 
@@ -207,7 +207,7 @@ It is merobox's cloud-v2 workflow format as JSON ([where the format comes
 from](#where-the-format-comes-from)); `scripts/workflow-to-scenario.py FILE.yml
 [--delete]` converts a YAML workflow, dropping `base_port` and `binary` and
 refusing what it cannot carry over, naming why. Today
-`apps/org-gated/scenarios/cluster/` and `workflows/fuzzy-tests/` hold them.
+`apps/team-space/scenarios/cluster/` and `workflows/fuzzy-tests/` hold them.
 `cluster.settings` is the TOML every node starts with (its `[outbound]` table;
 the test build has `outbound-testing`). Every account in `accounts` is signed
 up with its own soft passkey on node 1 and talks to node `index % nodes` (an
@@ -304,7 +304,7 @@ confirmations (`orgs-and-keys`); signed packages from a registry on loopback
 ```bash
 cargo build --release -p merod -p meroctl
 export PATH=$PWD/target/release:$PATH
-meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
+meroctl app build apps/fixture-kv --out target/app-components/kv.wasm
 for v in 1.0.0 1.1.0; do
   meroctl app pack --wasm target/app-components/kv.wasm \
     --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
@@ -315,7 +315,7 @@ python3 -I crates/node/tests/fault/suite.py --only kv-failover,frozen-leader
 python3 -I crates/node/tests/fault/suite.py --smoke --merod /tmp/merod
 ```
 
-The kv fixture is the component `apps/v2-fixtures/kv`; the two signed
+The kv fixture is the component `apps/fixture-kv`; the two signed
 releases (package `com.calimero.kv-store`, dev key) are for `packages` and land
 in `dist/`. A node behaviour that only shows across processes (the bounded forward
 to a frozen leader is the example) gets its regression test here.
