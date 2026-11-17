@@ -9,28 +9,19 @@
 //! sees its own user, and reads `env::via()` to keep their private events to themselves.
 //! Without a grant the same calls run as booking itself, on booking's own events there.
 //!
+//! The calendar is called through `uses::calendar`, the client `build.rs` generates from its
+//! vendored ABI: typed methods, and the calendar's own errors as an enum
+//! (`uses::calendar::Error::PrivateThroughApp`).
+//!
 //! The grant covers a person's own calls of `book` and `busy`: a timer or another app's call
 //! offers no one onward, so it would run as booking.
 
 use calimero_sdk::prelude::*;
 
-/// An event, as the calendar's `myEvents` answers it.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct Event {
-    pub title: String,
-    pub at: String,
-    pub private: bool,
-}
-
-/// The calendar's `addEvent` arguments.
-#[derive(serde::Serialize)]
-struct AddEvent<'a> {
-    title: &'a str,
-    at: &'a str,
-}
-
-#[derive(serde::Serialize)]
-struct NoArgs {}
+// `uses::calendar`: the typed client for the calendar, from its ABI vendored in
+// `calimero/abi/calendar.json` (`build.rs`). The reference lists `methods`, so the client has
+// those two: `add_event` and `my_events`.
+include!(concat!(env!("OUT_DIR"), "/uses.rs"));
 
 #[app::state(version = 1)]
 pub struct Booking {
@@ -47,17 +38,24 @@ pub enum Error {
     OwnerOnly,
     /// That slot is not offered, or the person is already busy then.
     SlotTaken { at: String },
+    /// A private booking made through booking: the calendar keeps private events to the
+    /// person's own calls (`PrivateThroughApp`).
+    PrivateNotAllowed,
 }
 
 /// The calendar the owner attached, read on every call: they may attach another one later.
-fn calendar() -> app::Result<String> {
-    env::linked("calendar").ok_or_else(|| Error::NoCalendar.into())
+fn calendar() -> Result<uses::calendar::Client, Error> {
+    uses::calendar::Client::linked().ok_or(Error::NoCalendar)
 }
 
-/// When the person (or, without a grant, booking itself) already has something.
-fn busy_times(calendar: &str) -> app::Result<Vec<String>> {
-    let events: Vec<Event> = env::xcall_view(calendar, "myEvents", &NoArgs {})?;
-    Ok(events.into_iter().map(|e| e.at).collect())
+/// When the person (or, without a grant, booking itself) already has something. The
+/// calendar's ABI does not describe `Event`'s shape, so each is its JSON.
+fn busy_times(calendar: &uses::calendar::Client) -> app::Result<Vec<String>> {
+    Ok(calendar
+        .my_events()?
+        .iter()
+        .filter_map(|e| e["at"].as_str().map(str::to_owned))
+        .collect())
 }
 
 #[app::logic]
@@ -77,22 +75,22 @@ impl Booking {
         Ok(())
     }
 
-    /// Books `at` for the caller: an event in their own calendar (with their grant).
-    pub fn book(&mut self, at: String, title: String) -> app::Result<()> {
+    /// Books `at` for the caller: an event in their own calendar (with their grant), private
+    /// when `private` says so. The calendar commits it in its own log first: if this run
+    /// failed after that, the event would stay.
+    pub fn book(&mut self, at: String, title: String, private: Option<bool>) -> app::Result<()> {
         let calendar = calendar()?;
         let offered = self.slots.contains(&at)?;
         if !offered || busy_times(&calendar)?.contains(&at) {
             app::bail!(Error::SlotTaken { at });
         }
-        let _done: Option<()> = env::xcall_call(
-            &calendar,
-            "addEvent",
-            &AddEvent {
-                title: &title,
-                at: &at,
-            },
-        )?;
-        Ok(())
+        match calendar.add_event(&title, &at, private) {
+            Ok(()) => Ok(()),
+            // The calendar's own error, typed: answered as booking's.
+            Err(uses::calendar::Error::PrivateThroughApp) => app::bail!(Error::PrivateNotAllowed),
+            // Anything else passes on as the calendar answered it (`XcallFailed`).
+            Err(other) => Err(other.into()),
+        }
     }
 
     /// The offered slots the caller is still free at.

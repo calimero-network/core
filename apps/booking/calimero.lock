@@ -1,0 +1,9 @@
+# Written by `meroctl app uses update`; do not edit by hand.
+
+[[uses]]
+name = "calendar"
+package = "com.calimero.example.calendar"
+version = "0.1.0"
+range = "^0.1"
+mode = "attach"
+abi = "sha256:40bc6a96d95f4f5d4af6e508d3b7c17fee5b972ae5e3791daa227b67eff0ddf0"

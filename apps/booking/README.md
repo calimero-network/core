@@ -15,6 +15,16 @@ calendar = { package = "com.calimero.example.calendar", range = "^0.1", mode = "
 
 Without a grant the same calls run as booking itself.
 
+The calendar is called through `uses::calendar`, a typed client `build.rs` generates from
+the calendar's ABI vendored in `calimero/abi/calendar.json` and pinned in `calimero.lock`.
+A private booking (`book { at, title, private: true }`) is refused by the calendar with its
+own `PrivateThroughApp`, which booking matches as `uses::calendar::Error::PrivateThroughApp`
+and answers as `PrivateNotAllowed`. After the calendar's ABI changes:
+
+```bash
+meroctl app uses update calendar --from ../calendar
+```
+
 ```bash
 cargo test --manifest-path apps/booking/Cargo.toml
 ```
