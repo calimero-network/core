@@ -286,6 +286,12 @@ impl Node {
                 )));
             }
         }
+        manifest
+            .check_secrets()
+            .map_err(|e| ApiError::bad_request(e.code(), &e.to_string()))?;
+        manifest
+            .check_uses()
+            .map_err(|e| ApiError::bad_request(e.code(), &e.to_string()))?;
         let upgrades = manifest.upgrades.unwrap_or_default();
         let in_order = self.sys(|s| {
             s.packages
@@ -441,6 +447,7 @@ impl Node {
                 part_sizes,
                 metadata,
                 outbound: manifest.outbound.clone(),
+                secrets: manifest.secrets.clone().unwrap_or_default(),
                 installed_by: actor.to_owned(),
                 installed_at: now_secs(),
                 installers: BTreeSet::new(),
@@ -466,7 +473,11 @@ impl Node {
         self.refuse_stalled_install(&v.release.installed_by, &v.signer_id)?;
         // An older node drops `components` and would apply the release as an app's, and drops
         // `pipelines` and would hold none.
-        if !v.release.components.is_app() || !v.release.pipelines.is_empty() {
+        // And drops `secrets`, filling any secret its operator bound to the package.
+        if !v.release.components.is_app()
+            || !v.release.pipelines.is_empty()
+            || !v.release.secrets.is_empty()
+        {
             self.require_upgraded_nodes().await?;
         }
         for (hash, bytes) in &v.wasm {
