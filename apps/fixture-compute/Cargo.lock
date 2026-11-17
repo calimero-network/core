@@ -153,6 +153,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
+name = "fixture-compute"
+version = "0.1.0"
+dependencies = [
+ "calimero-sdk",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -473,15 +482,6 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
-
-[[package]]
-name = "fixture-compute"
-version = "0.1.0"
-dependencies = [
- "calimero-sdk",
- "serde_json",
- "sha2",
-]
 
 [[package]]
 name = "wasm-encoder"
