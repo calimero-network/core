@@ -83,6 +83,30 @@ length in one read.
 
 ## Costs
 
-Reads and edits load every node of the text, 1,000 per host read; `len` is one
-read. Keep one `Text` per document rather than one large text for everything,
-and use a table for document metadata.
+`Text` stores runs of characters (what was typed or pasted in one go), each
+with the ids of its characters, in a tree that finds a run by id or by
+position. What one call costs:
+
+| Call | Cost |
+| --- | --- |
+| Typing or deleting a character | About 10 to 15 host calls and a few hundred bytes, at any length. |
+| Pasting 10,000 characters | About 15 writes (runs of up to 2,048 characters). |
+| Deleting a range or a selection by ids | A write per run it touches. |
+| `id_at`, `index_of` | One path down the tree: about 5 reads. |
+| `read`, `chars`, `spans` | The whole text once: about the live text plus some 45 bytes per run. |
+| `len` | One read. |
+
+A run allows 10,000 writes and 1 MiB, so an edit that would need more (a paste
+of more than about a million bytes) is refused with `EditTooLarge` before
+anything is written; send it in parts. Keep one `Text` per document rather
+than one large text for everything, and use a table for document metadata.
+
+### Texts stored by an earlier SDK
+
+Earlier SDKs stored one row per character ever typed, and every edit read all
+of them. Such a text still reads as it is. Its first edit rewrites it as runs,
+in the same call and with the same ids, so clients and marks keep working; the
+old rows are deleted then, or over the next few edits when they are many. A
+text too fragmented to rewrite within one call (on the order of 5,000 separate
+runs) keeps the old layout and its old costs, including the old limit: an edit
+that would write more than 10,000 characters' rows is refused.

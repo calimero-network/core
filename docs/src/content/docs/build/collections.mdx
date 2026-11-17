@@ -256,8 +256,12 @@ pub struct Store {
 - A key over 1 KiB is refused (`KeyTooLong`) before any store call.
 - Values are deterministic CBOR; keys are order-preserving tuples, the
   contract the TypeScript SDK produces the same bytes for.
-- `Text` reads and edits load every node (1,000 per host read); its `len` is
-  one read.
+- `Text` stores runs of characters in a tree, so an edit, `id_at` and
+  `index_of` cost about the same at any length (some 10 to 15 host calls and a
+  few hundred bytes), a 10,000-character paste is about 15 writes, and a
+  delete is a write per run it touches. `read` and `chars` read the whole text
+  once; `len` is one read. An edit too large for one run (10,000 writes or
+  1 MiB) is refused with `EditTooLarge` before anything is written.
 
 <Aside type="tip">
   Prefer `env::unique_id()` to a `Counter` for ids: it needs no read and no
