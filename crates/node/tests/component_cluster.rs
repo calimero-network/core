@@ -5174,7 +5174,20 @@ fn mpk_declaring(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
 ) -> Vec<u8> {
-    mpk_with_secrets(package, version, wasm, key, outbound, None)
+    mpk_full(package, version, wasm, key, outbound, None, Value::Null)
+}
+
+/// [`mpk_declaring`], also declaring `uses` (the manifest's JSON for it) in the signed
+/// manifest.
+fn mpk_using(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    uses: Value,
+) -> Vec<u8> {
+    mpk_full(package, version, wasm, key, outbound, None, uses)
 }
 
 /// [`mpk_declaring`], also declaring `secrets` (name -> hosts) in the signed manifest.
@@ -5185,6 +5198,20 @@ fn mpk_with_secrets(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
     secrets: Option<&[(&str, &str)]>,
+) -> Vec<u8> {
+    mpk_full(package, version, wasm, key, outbound, secrets, Value::Null)
+}
+
+/// [`mpk_declaring`], also declaring `secrets` (name -> hosts) and `uses` (the manifest's
+/// JSON for it) in the signed manifest.
+fn mpk_full(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    secrets: Option<&[(&str, &str)]>,
+    uses: Value,
 ) -> Vec<u8> {
     use sha2::Digest;
     let manifest = calimero_bundle::BundleManifest {
@@ -5225,6 +5252,7 @@ fn mpk_with_secrets(
                 })
                 .collect()
         }),
+        uses: serde_json::from_value(uses).unwrap(),
         services: None,
         pipelines: Vec::new(),
         signature: None,
@@ -5544,6 +5572,63 @@ async fn a_release_fills_only_the_secrets_it_declares() {
     assert_eq!(
         strong_view(&alice, &apps[1], "enrichment", json!({ "key": "acme" })).await,
         Value::Null
+    );
+}
+
+/// A release names the apps it calls in its signed manifest (`uses`): a node refuses one
+/// that breaks the rules before anything is recorded (`400 BAD_USES`), and the release's
+/// capability card lists the references of one it took, before any instance exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_names_the_apps_it_uses_on_its_card() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let abi = format!("sha256:{}", "b".repeat(64));
+
+    let e = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.uses-bad",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            json!({ "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.2.0" } }),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_USES"), "{e}");
+
+    let _ = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.notes",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            json!({
+                "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.1.0", "abi": abi },
+                "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+            }),
+        ))
+        .await
+        .unwrap();
+    let card: Value = alice
+        .transport()
+        .json(calimero_client::Request::new(
+            reqwest::Method::GET,
+            "packages/com.calimero.notes/0.1.0/capabilities".to_owned(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        card["uses"],
+        json!({
+            "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+            "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "mode": "create",
+                    "version": "0.1.0", "abi": abi },
+        })
     );
 }
 

@@ -1262,6 +1262,20 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
             secrets,
         ));
     }
+    let added: Vec<String> = strings(&sheet["uses"]["added"]);
+    let changed: Vec<String> = sheet["uses"]["changed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["name"].as_str().map(str::to_owned))
+        .collect();
+    if !added.is_empty() || !changed.is_empty() {
+        out.push(attention(
+            "usesApps",
+            "Calls other apps it did not call before, or calls them differently:".to_owned(),
+            added.into_iter().chain(changed).collect(),
+        ));
+    }
     let origins = strings(&sheet["frontend"]["newLoginOrigins"]);
     if !origins.is_empty() {
         out.push(attention(

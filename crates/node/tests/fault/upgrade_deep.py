@@ -60,6 +60,11 @@ NOT_COVERED = [
      "`a_release_fills_only_the_secrets_it_declares` (`component_cluster.rs`) covers install and enforcement "
      "on one build, and a release without them reads as before (`serde(default)`). A case once the "
      "upgrade-from release packs them"),
+    ("Packages", "The apps a release references (`uses` in the signed manifest, on its capability card)",
+     "nothing is stored: the node checks them at install and reads them from the release's manifest; the "
+     "deep fixtures are packed by the old release's meroctl, which writes no `uses`. "
+     "`a_release_names_the_apps_it_uses_on_its_card` (`component_cluster.rs`) covers install and the card "
+     "on one build. A case once units create and link referenced apps"),
     ("Apps", "The person a run serves, carried to the apps it calls (`env::on_behalf_of`, `Feature::OnBehalfOf`)",
      "it stores nothing of its own (an outbox row only gains the person while the message waits), and the deep "
      "fixtures are built from the old release's source, whose kv fixture has no method that reads it; "
