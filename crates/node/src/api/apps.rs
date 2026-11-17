@@ -464,7 +464,7 @@ pub(crate) struct Unit {
 }
 
 impl Unit {
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.members.is_empty()
     }
 }
@@ -473,7 +473,10 @@ impl Unit {
 /// member's release is the one its lock pinned (`uses.version`), else the newest installed
 /// release of the package inside its range; a package with none is `409
 /// USES_NOT_INSTALLED`, naming what to install.
-async fn unit_members(node: &Node, release: &crate::system::PackageRef) -> Result<Unit, ApiError> {
+pub(crate) async fn unit_members(
+    node: &Node,
+    release: &crate::system::PackageRef,
+) -> Result<Unit, ApiError> {
     let Some(version) = node.sys(|s| {
         s.packages
             .get(&release.package)

@@ -1934,6 +1934,28 @@ impl SystemState {
     ) -> Vec<AppId> {
         let st = serde_json::from_value::<crate::proof::Statement>(consent.clone()).ok();
         match st.as_ref().map(|st| st.method.as_str()) {
+            Some("__upgrade_unit") => st
+                .and_then(|st| {
+                    // The instance the consent names, if it runs the run's package, and
+                    // those of its linked members the run gives a target.
+                    let root = st.args()["app"].as_str()?.to_owned();
+                    let a = self.apps.get(&root).filter(|a| a.org == org)?;
+                    if !self
+                        .app_release(a)
+                        .is_some_and(|r| r.package == run.package)
+                    {
+                        return None;
+                    }
+                    let mut apps = vec![root];
+                    apps.extend(
+                        a.links
+                            .values()
+                            .filter(|m| run.targets.contains_key(*m) && self.apps.contains_key(*m))
+                            .cloned(),
+                    );
+                    Some(apps)
+                })
+                .unwrap_or_default(),
             Some("__upgrade_published") => {
                 self.published_run_apps(&run.package, &run.by, by_release)
             }
@@ -1972,10 +1994,11 @@ impl SystemState {
         if r.done.contains(&app.app_id) || r.failed.contains_key(&app.app_id) {
             return Err(RUN_MOVED_APP);
         }
-        let Some(at) = self.app_release(app).filter(|at| at.package == r.package) else {
+        let (package, version) = r.target_of(&app.app_id);
+        let Some(at) = self.app_release(app).filter(|at| at.package == package) else {
             return Err(RUN_OTHER_PACKAGE);
         };
-        if compare_versions(&r.version, &at.version) == std::cmp::Ordering::Less {
+        if compare_versions(version, &at.version) == std::cmp::Ordering::Less {
             return Err(RUN_OLDER_RELEASE);
         }
         Ok(())

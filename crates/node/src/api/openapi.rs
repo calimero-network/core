@@ -893,7 +893,7 @@ fn components() -> Vec<Component> {
         component(
             "UpgradeRun",
             "An organization-wide upgrade run: the apps it targets, those done, and why each failed one failed.",
-            "{ runId: string, package: string, version: string, team?: string, cascade: bool, by: string, startedAt: uint, apps: string[], done: string[], failed: { [string]: any }, finished: bool }",
+            "{ runId: string, package: string, version: string, team?: string, cascade: bool, by: string, startedAt: uint, apps: string[], done: string[], failed: { [string]: any }, finished: bool, targets?: { [string]: { package: string, version: string } } }",
         )
         .of::<crate::types::UpgradeRun>(),
         component(
@@ -1370,7 +1370,13 @@ fn operations() -> Vec<Op> {
             .json::<super::UpgradeBody>("{ bundle?: string, package?: string, version?: string, service?: string, confirm?: #Confirm, migrate?: string }")
             .ok("{ index: uint, status: string, error: any, compute: bool }")
             .step_up()
-            .errors(&[(400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
+            .errors(&[(400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "OUTSIDE_UNIT_RANGE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
+        post("/apps/{app}/upgrade-unit", "app_upgrade_unit", AccountHolder, "Upgrade an app and the apps it created, in one consent")
+            .about("An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.")
+            .json::<super::upgrades::UnitUpgradeBody>("{ version: string, confirm?: #Confirm }")
+            .ok("#UpgradeRun")
+            .step_up()
+            .errors(&[(400, "NOT_A_UNIT"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "FEATURE_NOT_ACTIVE"), (409, "USES_NOT_INSTALLED")]),
         get("/apps/{app}/secrets", "app_secrets", SignedIn, "The secrets an app's release declares")
             .about("For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.")
             .ok("{ secrets: { [string]: { hosts: string[], description: string, required: bool, source: \"app\" | \"cluster\", fingerprint?: string, setBy?: string, setAt?: uint } } }")

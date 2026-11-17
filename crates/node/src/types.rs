@@ -341,6 +341,33 @@ pub struct UpgradeRun {
     /// App -> why its upgrade failed.
     pub failed: std::collections::BTreeMap<AppId, serde_json::Value>,
     pub finished: bool,
+    /// A unit's run (`__upgrade_unit`): each member's own target, a release of its own
+    /// package (`package` and `version` above are the instance's). An app without one is
+    /// moved to `package`@`version`, as every other run does. Left out when empty, so a run
+    /// writes as it did.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub targets: std::collections::BTreeMap<AppId, RunTarget>,
+}
+
+/// A unit member's release in a unit's run (`UpgradeRun::targets`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunTarget {
+    pub package: String,
+    pub version: String,
+}
+
+impl UpgradeRun {
+    /// The package and version run `self` moves `app` to: its own target in a unit's run,
+    /// else the run's.
+    #[must_use]
+    pub fn target_of(&self, app: &str) -> (&str, &str) {
+        self.targets
+            .get(app)
+            .map_or((self.package.as_str(), self.version.as_str()), |t| {
+                (t.package.as_str(), t.version.as_str())
+            })
+    }
 }
 
 /// How many upgrade runs an organization remembers.

@@ -104,13 +104,17 @@ pub enum Feature {
     /// `InstallPackage` of a release that declares `secrets`: an earlier release drops
     /// them and fills any secret its operator bound to the package.
     DeclaredSecrets,
+    /// `StartUpgradeRun` of a unit, whose members each have their own target
+    /// (`UpgradeRun::targets`): an earlier release drops the targets and would refuse each
+    /// member's `UpgradeApp` as not in the run.
+    UnitUpgrade,
     /// `CreateApp` naming the apps its release created with it (`AppRecord::links`): an
     /// earlier release drops them, so its replicas would list the instance without its unit.
     AppLinks,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 27] = [
+pub const FEATURES: [Feature; 28] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -138,6 +142,7 @@ pub const FEATURES: [Feature; 27] = [
     Feature::InviteCapabilities,
     Feature::DeclaredSecrets,
     Feature::AppLinks,
+    Feature::UnitUpgrade,
 ];
 
 impl Feature {
@@ -172,6 +177,7 @@ impl Feature {
             Self::InviteCapabilities => "inviteCapabilities",
             Self::DeclaredSecrets => "declaredSecrets",
             Self::AppLinks => "appLinks",
+            Self::UnitUpgrade => "unitUpgrade",
         }
     }
 
@@ -202,7 +208,7 @@ impl Feature {
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
             Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
-            Self::DeclaredSecrets | Self::AppLinks => "1.0.0-rc.31",
+            Self::DeclaredSecrets | Self::AppLinks | Self::UnitUpgrade => "1.0.0-rc.31",
         }
     }
 }
@@ -386,8 +392,17 @@ impl SystemCmd {
         match self {
             Self::SetClusterVersion { .. } => vec![Feature::ClusterVersion],
             Self::StartUpgradeRun {
-                by_release: true, ..
-            } => vec![Feature::PublishedRunByRelease],
+                by_release, run, ..
+            } if *by_release || !run.targets.is_empty() => {
+                let mut f = Vec::new();
+                if *by_release {
+                    f.push(Feature::PublishedRunByRelease);
+                }
+                if !run.targets.is_empty() {
+                    f.push(Feature::UnitUpgrade);
+                }
+                f
+            }
             Self::MoveApp {
                 accounts_in_app_team,
                 org_quotas,
@@ -535,9 +550,7 @@ impl SystemCmd {
             | Self::SetAppMetadata { .. }
             | Self::SetPasskeyLabel { .. }
             | Self::UpgradeFailed { .. }
-            | Self::StartUpgradeRun {
-                by_release: false, ..
-            }
+            | Self::StartUpgradeRun { .. }
             | Self::FinishUpgradeRun { .. }
             | Self::SetAlias { .. }
             | Self::SetOrgRole { .. }
@@ -823,6 +836,10 @@ mod tests {
                 "connectorGib": 1, "storageGibMonth": 1, "egressGib": 1,
             } })),
             Feature::ComputeOnly => install(json!({ "components": "computeOnly" })),
+            Feature::UnitUpgrade => entry(json!({ "op": "startUpgradeRun", "org": "org",
+                "run": { "runId": "r", "package": "p", "version": "2.0.0", "by": "a",
+                    "startedAt": 1, "apps": [], "done": [], "failed": {}, "finished": false,
+                    "targets": { "kv-app": { "package": "kv", "version": "0.2.0" } } } })),
             Feature::AppLinks => entry(json!({ "op": "createApp", "app": {
                 "appId": "app", "name": "notes", "group": 0, "bundle": "b", "owner": "a",
                 "org": "org", "access": { "kind": "org" }, "confirmMethods": [], "replicas": [1],

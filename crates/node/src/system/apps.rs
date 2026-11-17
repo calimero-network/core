@@ -72,17 +72,18 @@ pub(super) fn authorize(
             } else {
                 actor.as_str()
             };
+            let (package, version) = r.target_of(app_id);
             let release = s
                 .packages
-                .get(&r.package)
-                .and_then(|p| p.versions.get(&r.version));
+                .get(package)
+                .and_then(|p| p.versions.get(version));
             if r.by != by
                 || r.finished
                 || !r.apps.contains(app_id)
                 || !release.is_some_and(|v| v.app_parts().values().any(|h| h == bundle))
                 || target
                     .as_ref()
-                    .is_some_and(|t| t.package != r.package || t.version != r.version)
+                    .is_some_and(|t| t.package != package || t.version != version)
             {
                 return Err(NOT_IN_RUN);
             }
@@ -103,7 +104,18 @@ pub(super) fn authorize(
                     && a["team"] == json!(run.team)
                     && a["cascade"].as_bool().unwrap_or(false) == run.cascade
             };
-            if st.method == "__upgrade_published" {
+            if st.method == "__upgrade_unit" {
+                // A unit's run: the instance, its version and each member's target, as
+                // the consent states them; which members it covers is the state's.
+                proofs.states(&st, &subject, "__upgrade_unit", &|a| {
+                    a["package"] == json!(run.package)
+                        && a["version"] == json!(run.version)
+                        && a["targets"] == json!(run.targets)
+                })?;
+                if run.team.is_some() || run.cascade {
+                    return Err("the consent is for another change");
+                }
+            } else if st.method == "__upgrade_published" {
                 // A publisher's run over every instance of its package: no
                 // team; each app is still judged at apply (`may_upgrade`).
                 proofs.states(&st, &subject, "__upgrade_published", &|a| {
