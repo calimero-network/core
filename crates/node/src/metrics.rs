@@ -148,7 +148,7 @@ struct Registry {
     response_bytes: BTreeMap<&'static str, u64>,
     /// Raft messages whose addressee did not check out, by [`RaftAddressee`].
     raft_misaddressed: BTreeMap<&'static str, u64>,
-    /// Log entries this node could not decode and skipped, by [`LogKind`].
+    /// Log entries this node could not decode (its group stopped on each), by [`LogKind`].
     undecodable: [u64; LogKind::ALL.len()],
 }
 
@@ -240,8 +240,8 @@ impl LogKind {
     }
 }
 
-/// Count one log entry this node could not decode and skipped (its state now
-/// differs from the nodes that applied it); returns the count so far for `log`.
+/// Count one log entry this node could not decode, on which its group stopped
+/// rather than skip it; returns the count so far for `log`.
 pub fn undecodable_entry(log: LogKind) -> u64 {
     let mut r = registry();
     let n = &mut r.undecodable[log as usize];
@@ -464,7 +464,7 @@ pub fn render(out: &mut String) {
     }
     let _w = writeln!(
         out,
-        "# HELP calimero_log_undecodable_entries_total Log entries this node could not decode and skipped, by log (system, app): its state differs from the nodes that applied them. Feature gates keep it at zero; anything else is a bug.\n# TYPE calimero_log_undecodable_entries_total counter"
+        "# HELP calimero_log_undecodable_entries_total Log entries this node could not decode, by log (system, app): the group stopped on each rather than skip it. Feature gates keep it at zero; anything else is a node on an older release than the log.\n# TYPE calimero_log_undecodable_entries_total counter"
     );
     for log in LogKind::ALL {
         let n = r.undecodable[log as usize];
