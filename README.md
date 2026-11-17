@@ -385,15 +385,15 @@ run the client against them:
 MEROD_BINARY=/path/to/merod KV_STORE_WASM=/path/to/kv_store.wasm pnpm test:cluster
 ```
 
-`KV_STORE_WASM` is core's kv component (`apps/v2-fixtures/kv`, a `calimero:app`
-component for `wasm32-wasip2`). Without the variables they use
+`KV_STORE_WASM` is core's kv component (`apps/fixture-kv`, `apps/v2-fixtures/kv`
+in older checkouts: a `calimero:app` component for `wasm32-wasip2`). Without the variables they use
 `../core/target/debug/merod` and `../core/target/app-components/kv.wasm` from a
 sibling core checkout (1.0.0-rc.25 or later), built there with core's
 `meroctl`:
 
 ```bash
 cargo build -p merod -p meroctl
-target/debug/meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
+target/debug/meroctl app build apps/fixture-kv --out target/app-components/kv.wasm
 ```
 
 `scripts/download-released-merod.sh` fetches the newest released 1.0 `merod`
