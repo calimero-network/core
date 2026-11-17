@@ -63,15 +63,17 @@ repository; new entries go in core's release notes.
 ## When the server's API changes
 
 1. A PR changes the server; CI regenerates `docs/public/openapi.json`
-   (calimero-node's openapi test) and `SDK codegen drift` reports, without
-   failing, which SDKs' generated code no longer matches.
-2. On merge to master, `.github/workflows/sdk-regenerate.yml` regenerates every
-   SDK and opens (or refreshes) one pull request, `chore/sdk-regenerate`,
-   titled by what the change does to callers (`scripts/openapi-classify.py`)
-   and labelled `api-breaking` when it breaks them. Its CI builds and tests the
-   regenerated SDKs; a breaking change usually needs the hand-written layer
-   fixed on that branch before it merges.
-3. A PR may regenerate in place instead (`python3 scripts/sdks.py generate`).
+   (calimero-node's openapi test).
+2. The same PR regenerates the SDKs (`python3 scripts/sdks.py generate`),
+   fixes any hand-written layer the change breaks, and commits both.
+   `SDK codegen drift` regenerates every SDK the change reaches and fails while
+   any generated file differs; it is part of the required `SDKs` check, so a PR
+   with stale clients cannot merge.
+3. Should master drift anyway, `.github/workflows/sdk-regenerate.yml`
+   regenerates every SDK and opens (or refreshes) one pull request,
+   `chore/sdk-regenerate`, titled by what the change does to callers
+   (`scripts/openapi-classify.py`) and labelled `api-breaking` when it breaks
+   them.
 
 ## Release
 
