@@ -447,3 +447,25 @@ fn a_delivery_runs_as_the_app_or_as_the_person_through_it() {
         ]
     );
 }
+
+/// `env::linked`: the app linked under a name, from `init` on, and an attach or detach seen by
+/// the next run.
+#[test]
+fn linked_reads_the_apps_linked_now() {
+    let mut t = TestApp::new(
+        component(),
+        Org::new().link("kv", "kv-app"),
+        1_700_000_000_000,
+    );
+    let linked = |t: &mut TestApp, name: &str| {
+        t.as_("owner")
+            .view("linked", json!({ "name": name }))
+            .unwrap()
+    };
+    assert_eq!(linked(&mut t, "kv"), json!("kv-app"));
+    assert_eq!(linked(&mut t, "calendar"), json!(null));
+    t.link("calendar", Some("cal-app"));
+    assert_eq!(linked(&mut t, "calendar"), json!("cal-app"));
+    t.link("calendar", None);
+    assert_eq!(linked(&mut t, "calendar"), json!(null));
+}

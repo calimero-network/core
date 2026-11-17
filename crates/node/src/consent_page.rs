@@ -1305,6 +1305,33 @@ fn strings(v: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The apps attached to `app` (`AppRecord::attached`) that the release `to` takes in another
+/// range: `{ name, app, package, version, range }` each. An attached app lives on its own, so
+/// an upgrade never moves it; the page warns instead.
+fn attached_outside(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    to: &calimero_bundle::BundleManifest,
+) -> Vec<Value> {
+    let Some(uses) = to.uses.as_ref() else {
+        return Vec::new();
+    };
+    app.attached
+        .iter()
+        .filter_map(|(name, id)| {
+            let u = uses.get(name)?;
+            let linked = node.sys(|s| s.apps.get(id).cloned())?;
+            let runs = node.release_of_app(&linked)?.at;
+            (!crate::api::apps::in_range(u, &runs)).then(|| {
+                json!({
+                    "name": name, "app": id, "package": runs.package,
+                    "version": runs.version, "range": u.range,
+                })
+            })
+        })
+        .collect()
+}
+
 /// What an upgrade's capability `sheet` lets in that the person should see
 /// before anything else, in plain words: new outbound hosts, new sign-in
 /// origins, methods that newly delete data, a migration, removed methods, a
@@ -1340,6 +1367,28 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
             "usesApps",
             "Calls other apps it did not call before, or calls them differently:".to_owned(),
             added.into_iter().chain(changed).collect(),
+        ));
+    }
+    let outside: Vec<String> = sheet["attachedOutOfRange"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|o| {
+            Some(format!(
+                "{} runs {} {}, outside {}",
+                o["name"].as_str()?,
+                o["package"].as_str()?,
+                o["version"].as_str()?,
+                o["range"].as_str()?
+            ))
+        })
+        .collect();
+    if !outside.is_empty() {
+        out.push(attention(
+            "attachedOutOfRange",
+            "Expects other versions of apps you attached to it, which this approval does not upgrade:"
+                .to_owned(),
+            outside,
         ));
     }
     let origins = strings(&sheet["frontend"]["newLoginOrigins"]);
@@ -1770,6 +1819,11 @@ async fn upgrade_request(
             abi: to_abi.as_ref(),
         },
     );
+    let mut sheet = sheet;
+    let outside = attached_outside(node, &app, &to.manifest);
+    if !outside.is_empty() {
+        sheet["attachedOutOfRange"] = json!(outside);
+    }
     let name = to
         .manifest
         .metadata

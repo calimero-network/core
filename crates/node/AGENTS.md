@@ -839,6 +839,24 @@ is its command line.
   (members skip the package-bound session's `within`: the instance created them),
   `Action::UpgradeUnit` is stale when a bundle or the targets moved, and `act`
   runs `api::upgrade_unit`. Regression: `a_unit_upgrades_on_the_page_in_one_approval`.
+  An `attach` reference holds an app its owner already runs (`AppRecord::attached`, apart
+  from `links`, so a unit's upgrade, `upgrade_run_apps` and `refuse_off_unit_range` never
+  touch it): `SystemCmd::LinkApp { app_id, name, target }` (`Feature::AttachApp`, rc.31;
+  consent `<app> / __link / { name, target }`, `system::link_app_args`; `target: null`
+  detaches), judged at apply: whoever manages both apps, another app of the same
+  organization, a reference name (`calimero_bundle::is_use_name`) that is not a unit
+  member's, at most `MAX_ATTACHED`. `PUT|DELETE /apps/{app}/links/{name}` (`api::apps`:
+  `app_link`, `app_unlink`) also check the name is an `attach` reference of the release the
+  app runs (`release_uses`; `409 NOT_AN_ATTACH_REFERENCE`) and the app runs its package
+  (`409 WRONG_PACKAGE`); one outside the range is attached and answered `inRange: false`.
+  `GET /apps/{app}/links` lists each reference with what is linked, its release and
+  `inRange` (`link_row`). Deleting an app detaches it everywhere (`remove_app`). The consent
+  page's upgrade sheet adds `attachedOutOfRange` and the `attachedOutOfRange` attention when
+  the target release takes an attached app in another range (`attached_outside`). Runs read
+  links with `env::linked` (`SysDirectory::linked`: `links`, then `attached`). Regressions:
+  `an_owner_attaches_an_app_and_the_instance_reads_it_with_linked`,
+  `an_upgrade_warns_when_an_attached_app_falls_outside_its_range`,
+  `system::tests::an_app_is_attached_with_its_managers_consent_and_detached_with_it`.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas (`payer_quotas`: its override, else the cluster's, with `MoveApp { org_quotas }`, which the API always sets; `Feature::MoveOrgQuotas`, rc.24; an entry without it replays judging the cluster's limits). `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`) and a target that approves none of the releases holding the app (`MOVE_RELEASES_DISJOINT`); clients see each as `400 REJECTED` with the reason as the message. `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs` (`a_move_is_judged_by_the_targets_own_quota`), `tests/move_app.rs`.
 - **Every app is in an organization** (`AppRecord::org`, required; hard

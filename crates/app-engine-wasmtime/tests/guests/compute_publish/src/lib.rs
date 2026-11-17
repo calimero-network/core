@@ -5,8 +5,8 @@ wit_bindgen::generate!({
     inline: r#"
         package test:compute-publish;
         world publisher {
-            include calimero:app/compute@0.5.2;
-            import calimero:app/runs@0.5.2;
+            include calimero:app/compute@0.5.3;
+            import calimero:app/runs@0.5.3;
         }
     "#,
     path: "../../../../app-wit/wit",
@@ -15,7 +15,7 @@ wit_bindgen::generate!({
 
 use calimero::app::runs;
 
-const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app/compute@0.5.2","methods":{"publish":{"kind":"compute","compute":{"fuel":1,"result":"r"}}}}"#;
+const ABI_JSON: &[u8] = br#"{"abiVersion":1,"world":"calimero:app/compute@0.5.3","methods":{"publish":{"kind":"compute","compute":{"fuel":1,"result":"r"}}}}"#;
 
 #[link_section = "calimero:abi"]
 #[used]

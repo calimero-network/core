@@ -899,7 +899,7 @@ fn components() -> Vec<Component> {
         component(
             "App",
             "An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.",
-            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, access: #Access, confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string } }"#,
+            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, access: #Access, confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string } }"#,
         )
         .of::<crate::types::AppRecord>(),
         component(
@@ -1421,6 +1421,21 @@ fn operations() -> Vec<Op> {
             .ok("{ appId: string, from: string | null, org: string, access: #Access, created: bool, added: string[], revokedInvites: uint }")
             .step_up()
             .errors(&[(409, "FEATURE_NOT_ACTIVE")]),
+        get("/apps/{app}/links", "app_links", AppAccess, "List an app's links to the apps its release uses")
+            .about("One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.")
+            .ok("{ app: string, links: { name: string, package: string | null, range: string | null, mode: string | null, app: string | null, version: string | null, inRange: bool | null }[] }"),
+        put("/apps/{app}/links/{name}", "app_link", AccountHolder, "Attach an app to one of an app's references")
+            .about("`name` is an `attach` reference of the release the app runs, and `app` an app of the same organization that runs its package; the caller manages both. One outside the reference's range is attached anyway and answered `inRange: false`, and the consent page warns about it on later upgrades: an attached app is never upgraded with the instance. `env::linked(name)` answers it from the next run on. Answers the link as `GET /apps/{app}/links` lists it.")
+            .json::<super::apps::LinkBody>("{ app: string, confirm?: #Confirm }")
+            .ok("{ name: string, package: string | null, range: string | null, mode: string | null, app: string | null, version: string | null, inRange: bool | null }")
+            .step_up()
+            .errors(&[(400, "NOT_ATTACHABLE"), (403, "FORBIDDEN"), (409, "NOT_AN_ATTACH_REFERENCE"), (409, "WRONG_PACKAGE"), (409, "FEATURE_NOT_ACTIVE")]),
+        delete("/apps/{app}/links/{name}", "app_unlink", AccountHolder, "Detach an app attached to an app")
+            .about("Whoever manages the app. A member made with the instance is never detached.")
+            .json::<super::apps::UnlinkBody>("{ confirm?: #Confirm }")
+            .ok("{}")
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_ATTACHED"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/blobs", "blob_upload", AppAccess, "Upload a blob")
             .about("A plain blob, stored with the request's `Content-Type`, which a component app's download answers with: any media type (printable ASCII, 127 bytes at most; another is `400 BAD_REQUEST`), `application/octet-stream` when the request names none. Send the blob's own type, not `*/*`, which would be stored as its type. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.")
             .query::<super::BlobUploadQuery>("{ sealed?: bool }")

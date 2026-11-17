@@ -494,6 +494,15 @@ impl HostCore {
         }
     }
 
+    /// The app linked under `name` (`context.linked`); none in a compute run.
+    #[must_use]
+    pub fn linked(&self, name: &str) -> Option<String> {
+        if self.is_compute() {
+            return None;
+        }
+        self.dir.linked(name)
+    }
+
     #[must_use]
     pub fn org(&self) -> Option<String> {
         if self.is_compute() {
