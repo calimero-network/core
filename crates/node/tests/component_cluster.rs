@@ -1047,7 +1047,7 @@ async fn browsers_on_allowed_origins_may_call_the_node() {
     let c = Cluster::start(3).await;
     let http = reqwest::Client::new();
     let preflight = |origin: &'static str| {
-        http.request(reqwest::Method::OPTIONS, format!("{}sealed/v2", c.urls[0]))
+        http.request(reqwest::Method::OPTIONS, format!("{}sealed", c.urls[0]))
             .header("origin", origin)
             .header("access-control-request-method", "POST")
             .header("access-control-request-headers", "content-type")
