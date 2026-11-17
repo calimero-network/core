@@ -20,7 +20,7 @@ import HTTPTypes
 ///
 /// **Errors** answer `{ status, error, message, details? }`: `error` is the code, `details` says more (the challenge of a `412 CONFIRM_REQUIRED`, the statement of a `428 OPERATOR_SIGNATURE_REQUIRED`, `leaderUrl` of a `421 NOT_LEADER`). Each operation lists the codes it raises itself and those its credential implies, per status in `x-calimero-codes` (every error answer is the one `Error` schema); any operation may also answer `400 BAD_REQUEST`, `400 REJECTED`, `421 NOT_LEADER` and `503 UNAVAILABLE`. A route that takes a session may answer `421 WRONG_NODE` (no `details`): try another node. `x-calimero-details` on an error response maps each of its codes that carries `details` to that value's schema, and `x-calimero-error-details` at the root maps every such code: one code, one schema, so a client reads `details` by `error`.
 ///
-/// **Retries.** `x-calimero-retry-safe` marks the operations a client may send again after a `503` or a lost answer (`x-calimero-retry-requires` names the body field that makes it so, an idempotency key). The sealed channel's own `503` (`{ error: { code: "busy", message } }`, outside the envelope: too many sealed requests or sessions at once; the schema `x-calimero-sealed-refusal` names) carries `Retry-After: 1` on any sealed route; the node's `503 UNAVAILABLE` answers carry none. `x-calimero-step-up` (with `x-calimero-user-verification`, and `x-calimero-step-up-when` where it applies only sometimes) and `x-calimero-operator` mark the two-round operations below.
+/// **Retries.** `x-calimero-retry-safe` marks the operations a client may send again after a `503` or a lost answer (`x-calimero-retry-requires` names the body field that makes it so, an idempotency key). The sealed channel's own `503` (`{ error: { code: "busy", message } }`, outside the envelope: too many sealed requests or sessions at once; the schema `x-calimero-sealed-refusal` names) carries `Retry-After: 1` on any sealed route, and so does `GET /attestation`'s `503 BUSY` (too many quotes at once); the node's `503 UNAVAILABLE` answers carry none. `x-calimero-step-up` (with `x-calimero-user-verification`, and `x-calimero-step-up-when` where it applies only sometimes) and `x-calimero-operator` mark the two-round operations below.
 ///
 /// **Numbers** that may exceed 2^53 (fuel, bytes) travel as decimal strings (D20); every other integer is `format: int64` (read it into a 64-bit integer), and stays below 2^53.
 public struct Client: APIProtocol {
@@ -3509,7 +3509,7 @@ public struct Client: APIProtocol {
     }
     /// The node's attestation
     ///
-    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash. A client checks it before it seals anything to the key.
+    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
     ///
     /// **Who:** anyone.
     ///
