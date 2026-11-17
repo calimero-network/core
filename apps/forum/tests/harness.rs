@@ -1,5 +1,6 @@
-//! The forum on the real engine: v1's `TestHost` tests, with the storage policies they
-//! exercised now the app's own checks.
+//! The forum on the real engine: v1's `TestHost` tests (the forum's, and the noticeboard's
+//! and team space's it absorbed), with the storage policies they exercised now the app's
+//! own checks.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -24,9 +25,14 @@ fn code(r: Result<Value, Failure>) -> String {
     }
 }
 
-/// Alice files four posts in `dev` and one in `ops`; the owner founded the forum.
+/// Alice files four posts in `dev` and one in `ops`; the owner founded the forum, and
+/// `gus` is a guest.
 fn forum() -> TestApp {
-    let mut t = common::app(Org::new().members(["alice", "bob", "mallory"]));
+    let mut t = common::app(
+        Org::new()
+            .members(["alice", "bob", "mallory"])
+            .guests(["gus"]),
+    );
     for (id, board, tags, at) in [
         ("p1", "dev", json!(["rust", "wasm"]), 10),
         ("p2", "dev", json!(["rust"]), 20),
@@ -130,11 +136,109 @@ fn the_charter_is_written_at_init_and_the_owner_moderates() {
     let mut t = forum();
     assert_eq!(
         ok(t.as_("bob").view("charter", json!({}))),
-        json!("be kind and stay on topic")
+        json!({ "name": "calimero forum", "rules": "be kind and stay on topic" })
     );
     assert_eq!(
         ok(t.as_("bob").view("moderators", json!({}))),
-        json!(["owner"])
+        json!(["owner"]),
+        "whoever ran init founded the forum and is the first moderator"
+    );
+}
+
+#[test]
+fn only_a_moderator_appoints_one_and_the_appointee_moderates() {
+    let mut t = forum();
+    assert_eq!(
+        t.as_("bob")
+            .call("addModerator", json!({ "account": "bob" })),
+        Err(Failure::App {
+            code: "NotModerator".to_owned(),
+            fields: json!({ "id": "bob" })
+        })
+    );
+    ok(t.as_("owner")
+        .call("addModerator", json!({ "account": "bob" })));
+    assert_eq!(
+        ok(t.as_("alice").view("moderators", json!({}))),
+        json!(["bob", "owner"])
+    );
+    ok(t.as_("bob")
+        .call("moderatePost", json!({ "id": pid("alice", "p1") })));
+    ok(t.as_("alice").call(
+        "announce",
+        json!({ "id": "a1", "text": "x", "sentAt": "1" }),
+    ));
+    assert_eq!(
+        ok(t.as_("bob")
+            .call("removeAnnouncement", json!({ "id": "a1" }))),
+        json!(true),
+        "an appointed moderator takes announcements down too"
+    );
+}
+
+#[test]
+fn guests_read_but_may_not_write() {
+    let mut t = forum();
+    let p1 = pid("alice", "p1");
+    for (method, args) in [
+        (
+            "createPost",
+            json!({ "id": "g1", "board": "dev", "title": "", "body": "", "tags": [],
+                    "createdAt": "1" }),
+        ),
+        ("vote", json!({ "post": p1 })),
+        (
+            "comment",
+            json!({ "post": p1, "id": "c1", "body": "", "createdAt": "1" }),
+        ),
+        (
+            "postMessage",
+            json!({ "board": "dev", "id": "m1", "text": "", "sentAt": "1" }),
+        ),
+        ("announce", json!({ "id": "a1", "text": "", "sentAt": "1" })),
+    ] {
+        assert_eq!(
+            code(t.as_("gus").call(method, args)),
+            "Forbidden",
+            "{method}"
+        );
+    }
+    assert_eq!(
+        ok(t.as_("gus").view("getPost", json!({ "id": p1 })))["author"],
+        json!("alice")
+    );
+}
+
+/// A member may fill a board, and nobody else may empty it; another board's read is one
+/// range of the index all the same, so the flood costs its readers nothing.
+#[test]
+fn a_board_read_is_unmoved_by_a_flood_in_another_board() {
+    let mut t = forum();
+    for i in 0..300 {
+        ok(t.as_("mallory").call(
+            "createPost",
+            json!({ "id": format!("s{i}"), "board": "spam", "title": "", "body": "",
+                    "tags": [], "createdAt": i.to_string() }),
+        ));
+    }
+    assert_eq!(
+        ok(t.as_("bob").view("boardStats", json!({ "board": "spam" })))["posts"],
+        json!("300")
+    );
+    assert_eq!(
+        ids(ok(t.as_("bob").view(
+            "boardFeed",
+            json!({ "board": "ops", "offset": 0, "limit": 10 })
+        ))),
+        ["o1"]
+    );
+    assert_eq!(
+        code(
+            t.as_("bob")
+                .call("deletePost", json!({ "id": pid("mallory", "s0") }))
+        ),
+        "NotAuthor",
+        "only its author or a moderator removes it"
     );
 }
 
@@ -350,5 +454,96 @@ fn a_thread_is_one_post_s_comments_in_time_order() {
         .as_array()
         .map(Vec::len),
         Some(1)
+    );
+}
+
+#[test]
+fn a_chat_message_is_per_author_and_final() {
+    let mut t = forum();
+    let say = |t: &mut TestApp, who: &str, text: &str, at: &str| {
+        t.as_(who).call(
+            "postMessage",
+            json!({ "board": "dev", "id": "m1", "text": text, "sentAt": at }),
+        )
+    };
+    assert_eq!(ok(say(&mut t, "alice", "hello", "1")), json!("dev/m1"));
+    assert_eq!(
+        ok(say(&mut t, "bob", "bob's own", "2")),
+        json!("dev/m1"),
+        "the same key is a separate row for another account"
+    );
+    assert_eq!(
+        say(&mut t, "alice", "edited", "3"),
+        Err(Failure::App {
+            code: "Exists".to_owned(),
+            fields: json!({ "id": "dev/m1" })
+        }),
+        "its author cannot rewrite it: it was written once"
+    );
+    ok(t.as_("owner").call(
+        "postMessage",
+        json!({ "board": "ops", "id": "m2", "text": "elsewhere", "sentAt": "0" }),
+    ));
+    assert_eq!(
+        code(t.as_("owner").call(
+            "postMessage",
+            json!({ "board": "d/ev", "id": "x", "text": "", "sentAt": "0" }),
+        )),
+        "HasSeparator"
+    );
+    assert_eq!(
+        ok(t.as_("bob").view("messages", json!({ "board": "dev" }))),
+        json!([
+            { "key": "dev/m1", "author": "alice", "text": "hello", "sentAt": "1" },
+            { "key": "dev/m1", "author": "bob", "text": "bob's own", "sentAt": "2" },
+        ]),
+        "one board's range, in time order, neither row touched"
+    );
+}
+
+#[test]
+fn only_a_moderator_removes_an_announcement_not_its_author() {
+    let mut t = forum();
+    for (who, text) in [("alice", "offsite friday"), ("bob", "from bob")] {
+        ok(t.as_(who).call(
+            "announce",
+            json!({ "id": "a1", "text": text, "sentAt": "1" }),
+        ));
+    }
+    assert_eq!(
+        code(t.as_("alice").call(
+            "announce",
+            json!({ "id": "a1", "text": "moved", "sentAt": "2" }),
+        )),
+        "Exists",
+        "an announcement is never edited"
+    );
+    assert_eq!(
+        code(
+            t.as_("alice")
+                .call("removeAnnouncement", json!({ "id": "a1" }))
+        ),
+        "NotModerator",
+        "its author is not a moderator"
+    );
+    assert_eq!(
+        ok(t.as_("bob").view("announcements", json!({}))),
+        json!([
+            { "key": "a1", "author": "alice", "text": "offsite friday", "sentAt": "1" },
+            { "key": "a1", "author": "bob", "text": "from bob", "sentAt": "1" },
+        ])
+    );
+    assert_eq!(
+        ok(t.as_("owner")
+            .call("removeAnnouncement", json!({ "id": "a1" }))),
+        json!(true),
+        "every author's announcement at the id goes"
+    );
+    assert_eq!(ok(t.as_("bob").view("announcements", json!({}))), json!([]));
+    assert_eq!(
+        ok(t.as_("owner")
+            .call("removeAnnouncement", json!({ "id": "a1" }))),
+        json!(false),
+        "nothing left"
     );
 }

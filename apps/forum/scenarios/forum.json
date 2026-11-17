@@ -363,7 +363,10 @@
   "method": "charter",
   "args": {},
   "expect": {
-   "ok": "be kind and stay on topic"
+   "ok": {
+    "name": "calimero forum",
+    "rules": "be kind and stay on topic"
+   }
   }
  },
  {
@@ -515,6 +518,276 @@
   },
   "expect": {
    "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "postMessage",
+  "args": {
+   "board": "dev",
+   "id": "m1",
+   "text": "welcome to dev",
+   "sentAt": "100"
+  },
+  "expect": {
+   "ok": "dev/m1"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "postMessage",
+  "args": {
+   "board": "dev",
+   "id": "m1",
+   "text": "hi from node two",
+   "sentAt": "101"
+  },
+  "expect": {
+   "ok": "dev/m1"
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "postMessage",
+  "args": {
+   "board": "dev",
+   "id": "m1",
+   "text": "rewritten by node one",
+   "sentAt": "102"
+  },
+  "expect": {
+   "error": "Exists",
+   "fields": {
+    "id": "dev/m1"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "postMessage",
+  "args": {
+   "board": "ops",
+   "id": "m2",
+   "text": "pager is quiet",
+   "sentAt": "103"
+  },
+  "expect": {
+   "ok": "ops/m2"
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "postMessage",
+  "args": {
+   "board": "d/ev",
+   "id": "x",
+   "text": "",
+   "sentAt": "0"
+  },
+  "expect": {
+   "error": "HasSeparator",
+   "fields": {
+    "value": "d/ev"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "messages",
+  "args": {
+   "board": "dev"
+  },
+  "expect": {
+   "ok": [
+    {
+     "key": "dev/m1",
+     "author": "@owner",
+     "text": "welcome to dev",
+     "sentAt": "100"
+    },
+    {
+     "key": "dev/m1",
+     "author": "@bob",
+     "text": "hi from node two",
+     "sentAt": "101"
+    }
+   ]
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "announce",
+  "args": {
+   "id": "a1",
+   "text": "meetup thursday",
+   "sentAt": "110"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "announce",
+  "args": {
+   "id": "a1",
+   "text": "meetup friday",
+   "sentAt": "111"
+  },
+  "expect": {
+   "error": "Exists",
+   "fields": {
+    "id": "a1"
+   }
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "removeAnnouncement",
+  "args": {
+   "id": "a1"
+  },
+  "expect": {
+   "error": "NotModerator",
+   "fields": {
+    "id": "a1"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "announcements",
+  "args": {},
+  "expect": {
+   "ok": [
+    {
+     "key": "a1",
+     "author": "@bob",
+     "text": "meetup thursday",
+     "sentAt": "110"
+    }
+   ]
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "removeAnnouncement",
+  "args": {
+   "id": "a1"
+  },
+  "expect": {
+   "ok": true
+  }
+ },
+ {
+  "as": "bob",
+  "op": "view",
+  "method": "announcements",
+  "args": {},
+  "expect": {
+   "ok": []
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "removeAnnouncement",
+  "args": {
+   "id": "a1"
+  },
+  "expect": {
+   "ok": false
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "addModerator",
+  "args": {
+   "account": "@bob"
+  },
+  "expect": {
+   "error": "NotModerator",
+   "fields": {
+    "id": "@bob"
+   }
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "addModerator",
+  "args": {
+   "account": "@bob"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "call",
+  "method": "announce",
+  "args": {
+   "id": "a2",
+   "text": "all hands at noon",
+   "sentAt": "120"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "removeAnnouncement",
+  "args": {
+   "id": "a2"
+  },
+  "expect": {
+   "ok": true
+  }
+ },
+ {
+  "as": "bob",
+  "op": "call",
+  "method": "moderatePost",
+  "args": {
+   "id": "$p6"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "getPost",
+  "args": {
+   "id": "$p6"
+  },
+  "expect": {
+   "ok": null
+  }
+ },
+ {
+  "as": "owner",
+  "op": "view",
+  "method": "announcements",
+  "args": {},
+  "expect": {
+   "ok": []
   }
  }
 ]

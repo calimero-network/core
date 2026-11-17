@@ -1,9 +1,9 @@
 [package]
-name = "indexed-forum"
+name = "forum"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "A forum on tables with indexes and counts, on the component SDK"
+description = "A forum on tables with indexes, counts and explicit write rules, on the component SDK"
 
 [lib]
 crate-type = ["cdylib"]

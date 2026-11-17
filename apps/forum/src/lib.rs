@@ -1,27 +1,42 @@
 //! A forum on the component SDK: posts found by board, tag, pin and author through table
 //! indexes, comments as one post's slice of an index, votes counted by a maintained count,
-//! and a charter no method writes. Read `apps/indexed-issue-tracker` first for tables on
-//! their own.
+//! a board's chat whose messages are final, announcements only moderators take down, and
+//! a charter no method writes. Read `apps/issue-tracker` first for tables on their
+//! own.
 //!
 //! v1 built this from storage write policies (`Moderated<IndexedMap>`, `Frozen<String>`,
-//! `AuthoredSortedMap`, `AuthoredMap`), checked by every node applying a peer's write. A
-//! component app runs on the app's leader and its writes are the log's, so each policy is
-//! a check in the method, against `env::caller()`, before anything is written:
+//! `AuthoredSortedMap`, `AuthoredMap`, `WriteOnce`, `ModeratedOnce`), checked by every node
+//! applying a peer's write. A component app runs on the app's leader and its writes are the
+//! log's, so each policy is a check in the method, against `env::caller()`, before anything
+//! is written:
 //!
 //! | v1 policy | here |
 //! |---|---|
-//! | `Frozen<String>` charter | written in `init`; no method writes it |
-//! | `Moderated<..>` posts | `post.author == caller` to change or delete; a row of `moderators` (the app owner, from `init`) to remove anyone's |
+//! | `Frozen<String>` charter | the forum's name and rules, written in `init`; no method writes them |
+//! | `Moderated<..>` posts | `post.author == caller` to change or delete; a row of `moderators` to remove anyone's |
 //! | `AuthoredSortedMap` comments | `comment.author == caller` to edit or delete; anyone else gets `NoComment` |
 //! | `AuthoredMap` votes | a vote is the row `(post, caller)`: one per account, written and removed only as the caller |
+//! | `WriteOnce<SortedMap>` messages | keyed `(board, id, caller)`: writing there again is `Exists`; nothing edits or removes a message, not even a moderator |
+//! | `ModeratedOnce<UnorderedMap>` announcements | keyed `(id, caller)`, never edited; a moderator removes one, its author cannot |
+//! | moderators | the app owner, from `init`; a moderator appoints another (`addModerator`) |
 //! | `#[index(board_tag_feed(board, tags, created_at))]` over a list | one `postTags` row per tag, indexed `(board, tag, createdAt)` |
 //! | `pinned_at: Option<u64>` leaving no row | the `(board, pinnedAt)` rows of unpinned posts sort first (none before any integer); `pinned` starts its range at 0 |
 //! | counts of index rows | maintained counts: `boardPins (board, pinned)`, `comments (post)`, `score (post)` |
 //!
-//! A post id names its author: `createPost` mints `"<caller>-<id>"`, so two accounts'
-//! `p1` are two posts. The author is also a field of the post, and the checks read it.
+//! Every write needs an org member (or above): a guest reads the forum and gets
+//! `Forbidden` for anything else.
+//!
+//! The author of whatever a call writes is the caller, never an argument. A post id names
+//! it: `createPost` mints `"<caller>-<id>"`, so two accounts' `p1` are two posts. The author
+//! is also a field of the post, and the checks read it.
+//!
+//! A board is one range of the `boardFeed` index. Writing is open to every member and only
+//! an author (or a moderator) removes a post, so a member acting in bad faith can fill a
+//! board; the board's range is all a reader of another board reads, so the flood does not
+//! slow them.
 
 use calimero_sdk::env::Caller;
+use calimero_sdk::guards;
 use calimero_sdk::prelude::*;
 
 /// One post.
@@ -75,11 +90,39 @@ pub struct Vote {
     pub voter: String,
 }
 
-/// One account that may remove any post.
+/// One message of a board's chat: written once by its author, then final.
+#[derive(Record)]
+#[table(key = ["board", "id", "author"], index(chat = ["board", "sent_at"]))]
+pub struct Message {
+    pub board: String,
+    pub id: String,
+    pub author: String,
+    pub text: String,
+    pub sent_at: u64,
+}
+
+/// An announcement: written once by its author, removed only by a moderator.
+#[derive(Record)]
+#[table(key = ["id", "author"])]
+pub struct Announcement {
+    pub id: String,
+    pub author: String,
+    pub text: String,
+    pub sent_at: u64,
+}
+
+/// One account that may remove any post or announcement and appoint moderators.
 #[derive(Record)]
 #[table(key = "account")]
 pub struct Moderator {
     pub account: String,
+}
+
+/// What the forum was founded with.
+#[derive(serde::Serialize)]
+pub struct Charter {
+    pub name: String,
+    pub rules: String,
 }
 
 /// A post as a client sees it.
@@ -113,6 +156,18 @@ pub struct CommentView {
     pub created_at: u64,
 }
 
+/// A chat message or an announcement as a client sees it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageView {
+    /// `"<board>/<id>"` for a message, the id for an announcement.
+    pub key: String,
+    pub author: String,
+    pub text: String,
+    #[serde(with = "calimero_sdk::json::u64_str")]
+    pub sent_at: u64,
+}
+
 /// A board's size, read from maintained counts; no post is loaded.
 #[derive(serde::Serialize)]
 pub struct BoardStats {
@@ -124,18 +179,21 @@ pub struct BoardStats {
 
 #[app::state(version = 1)]
 pub struct Forum {
-    /// `"charter"` -> the charter; written in `init` only.
+    /// `"name"` and `"rules"`; written in `init` only.
     charter: UnorderedMap<String, String>,
     posts: Table<Post>,
     post_tags: Table<PostTag>,
     comments: Table<Comment>,
     votes: Table<Vote>,
+    messages: Table<Message>,
+    announcements: Table<Announcement>,
     moderators: Table<Moderator>,
 }
 
 #[app::error]
 pub enum Error {
-    /// The caller already has a post with this id.
+    /// The caller already wrote a post, message or announcement at `id`; a message or
+    /// an announcement is never rewritten.
     Exists {
         id: String,
     },
@@ -149,11 +207,12 @@ pub enum Error {
     NotAuthor {
         id: String,
     },
-    /// Only a moderator may remove post `id`.
+    /// Only a moderator may remove post or announcement `id`, or appoint account `id`.
     NotModerator {
         id: String,
     },
-    /// A `/` in `value` would move a comment into another post's thread.
+    /// A `/` in `value` would move a comment into another post's thread, or a message
+    /// into another board's chat.
     HasSeparator {
         value: String,
     },
@@ -166,10 +225,14 @@ pub enum Event {
     PostDeleted { id: String },
     Commented { post: String, key: String },
     Voted { post: String },
+    MessagePosted { key: String },
+    Announced { id: String },
+    AnnouncementRemoved { id: String },
 }
 
-/// Written in `init`; no method changes it.
-const CHARTER: &str = "be kind and stay on topic";
+/// Written in `init`; no method changes them.
+const NAME: &str = "calimero forum";
+const RULES: &str = "be kind and stay on topic";
 /// The most rows one query reads, offset included.
 const MAX_ROWS: u32 = 1000;
 
@@ -178,6 +241,11 @@ fn caller() -> app::Result<String> {
         Caller::Account(a) | Caller::ApiKey { account: a, .. } => Ok(a),
         _ => Err(AppError::login_required()),
     }
+}
+
+/// The caller, if they may write: an org member or above (a guest gets `Forbidden`).
+fn writer() -> app::Result<String> {
+    guards::require_member()
 }
 
 /// A page of `limit` after `offset` rows, both capped so the read stays within 1000 rows.
@@ -205,8 +273,9 @@ impl Forum {
     #[app::init]
     pub fn init() -> app::Result<Self> {
         let mut s = Self::load();
-        s.charter
-            .insert(&"charter".to_owned(), &CHARTER.to_owned())?;
+        for (k, v) in [("name", NAME), ("rules", RULES)] {
+            s.charter.insert(&k.to_owned(), &v.to_owned())?;
+        }
         s.moderators.insert(Moderator {
             account: env::app_owner(),
         })?;
@@ -219,17 +288,34 @@ impl Forum {
         caller()
     }
 
-    /// The charter the forum was founded with.
+    /// What the forum was founded with. There is no setter.
     #[app::view]
-    pub fn charter(&self) -> app::Result<String> {
-        Ok(self.charter.get(&"charter".to_owned())?.unwrap_or_default())
+    pub fn charter(&self) -> app::Result<Charter> {
+        let fixed = |k: &str| -> app::Result<String> {
+            Ok(self.charter.get(&k.to_owned())?.unwrap_or_default())
+        };
+        Ok(Charter {
+            name: fixed("name")?,
+            rules: fixed("rules")?,
+        })
     }
 
-    /// Who may remove any post.
+    // ── moderation ─────────────────────────────────────────────────────────
+
+    /// Who may remove any post or announcement.
     #[app::view]
     pub fn moderators(&self) -> app::Result<Vec<String>> {
         let page = self.moderators.scan(FindOpts::default().limit(MAX_ROWS))?;
         Ok(page.items.into_iter().map(|m| m.account).collect())
+    }
+
+    /// Appoints `account` a moderator. Moderators only.
+    pub fn add_moderator(&mut self, account: String) -> app::Result<()> {
+        if !self.moderators.contains(&writer()?)? {
+            return Err(Error::NotModerator { id: account }.into());
+        }
+        self.moderators.upsert(Moderator { account })?;
+        Ok(())
     }
 
     /// Removes the post at `id`, whoever wrote it, with its votes and comments. Moderators
@@ -238,12 +324,79 @@ impl Forum {
         if !self.posts.contains(&id)? {
             return Err(Error::NoPost { id }.into());
         }
-        if !self.moderators.contains(&caller()?)? {
+        if !self.moderators.contains(&writer()?)? {
             return Err(Error::NotModerator { id }.into());
         }
         self.remove_post(&id)?;
         env::emit(Event::PostDeleted { id }, Audience::All)?;
         Ok(())
+    }
+
+    // ── announcements ──────────────────────────────────────────────────────
+
+    /// Announces `text` under `id`. The caller's announcement at `id` is never edited:
+    /// announcing there again is `Exists`. Another account's announcement at `id` is a row
+    /// of its own.
+    pub fn announce(&mut self, id: String, text: String, sent_at: u64) -> app::Result<()> {
+        let author = writer()?;
+        if self
+            .announcements
+            .contains(&(id.as_str(), author.as_str()))?
+        {
+            return Err(Error::Exists { id }.into());
+        }
+        self.announcements.insert(Announcement {
+            id: id.clone(),
+            author,
+            text,
+            sent_at,
+        })?;
+        env::emit(Event::Announced { id }, Audience::All)?;
+        Ok(())
+    }
+
+    /// Takes down every account's announcement at `id`. Moderators only, not even the
+    /// announcement's author. `false` if nobody holds `id`.
+    pub fn remove_announcement(&mut self, id: String) -> app::Result<bool> {
+        if !self.moderators.contains(&writer()?)? {
+            return Err(Error::NotModerator { id }.into());
+        }
+        // The key is `(id, author)`, so `id`'s rows are the range from `(id)` to
+        // `(id, <every author>)`.
+        let held = self.announcements.scan(
+            FindOpts::default()
+                .from(vec![id.to_key_part()])
+                .to(vec![id.to_key_part(), KeyPart::Bytes(vec![0xFF])])
+                .limit(MAX_ROWS),
+        )?;
+        let mut removed = false;
+        for a in held.items.into_iter().filter(|a| a.id == id) {
+            removed |= self
+                .announcements
+                .remove(&(a.id.as_str(), a.author.as_str()))?;
+        }
+        if removed {
+            env::emit(Event::AnnouncementRemoved { id }, Audience::All)?;
+        }
+        Ok(removed)
+    }
+
+    /// Every announcement by id, one row per author holding the id.
+    #[app::view]
+    pub fn announcements(&self) -> app::Result<Vec<MessageView>> {
+        let page = self
+            .announcements
+            .scan(FindOpts::default().limit(MAX_ROWS))?;
+        Ok(page
+            .items
+            .into_iter()
+            .map(|a| MessageView {
+                key: a.id,
+                author: a.author,
+                text: a.text,
+                sent_at: a.sent_at,
+            })
+            .collect())
     }
 
     // ── posts ──────────────────────────────────────────────────────────────
@@ -260,7 +413,7 @@ impl Forum {
         created_at: u64,
     ) -> app::Result<String> {
         no_separator(&id)?;
-        let author = caller()?;
+        let author = writer()?;
         let id = format!("{author}-{id}");
         if self.posts.contains(&id)? {
             return Err(Error::Exists { id }.into());
@@ -450,7 +603,7 @@ impl Forum {
     /// Upvotes a post and returns its score. Voting twice is one vote: the vote is the
     /// row `(post, caller)`.
     pub fn vote(&mut self, post: String) -> app::Result<u64> {
-        let voter = caller()?;
+        let voter = writer()?;
         if !self.posts.contains(&post)? {
             return Err(Error::NoPost { id: post }.into());
         }
@@ -467,7 +620,7 @@ impl Forum {
 
     /// Takes the caller's vote back (nobody else's) and returns the post's score.
     pub fn unvote(&mut self, post: String) -> app::Result<u64> {
-        let voter = caller()?;
+        let voter = writer()?;
         self.votes.remove(&(post.as_str(), voter.as_str()))?;
         self.score(&post)
     }
@@ -484,7 +637,7 @@ impl Forum {
         created_at: u64,
     ) -> app::Result<String> {
         no_separator(&id)?;
-        let author = caller()?;
+        let author = writer()?;
         if !self.posts.contains(&post)? {
             return Err(Error::NoPost { id: post }.into());
         }
@@ -546,11 +699,63 @@ impl Forum {
             .collect())
     }
 
+    // ── chat ───────────────────────────────────────────────────────────────
+
+    /// Posts a message to a board's chat and returns its key, `"<board>/<id>"`. A message
+    /// is final: posting again where the caller wrote is `Exists`, and no method edits or
+    /// removes one. Another account's message at the key is a row of its own.
+    pub fn post_message(
+        &mut self,
+        board: String,
+        id: String,
+        text: String,
+        sent_at: u64,
+    ) -> app::Result<String> {
+        no_separator(&board)?;
+        let author = writer()?;
+        let key = format!("{board}/{id}");
+        if self
+            .messages
+            .contains(&(board.as_str(), id.as_str(), author.as_str()))?
+        {
+            return Err(Error::Exists { id: key }.into());
+        }
+        self.messages.insert(Message {
+            board,
+            id,
+            author,
+            text,
+            sent_at,
+        })?;
+        env::emit(Event::MessagePosted { key: key.clone() }, Audience::All)?;
+        Ok(key)
+    }
+
+    /// A board's chat in `sentAt` order: one range of the `chat` index.
+    #[app::view]
+    pub fn messages(&self, board: String) -> app::Result<Vec<MessageView>> {
+        let page = self.messages.find(
+            "chat",
+            &[board.to_key_part()],
+            FindOpts::default().limit(MAX_ROWS),
+        )?;
+        Ok(page
+            .items
+            .into_iter()
+            .map(|m| MessageView {
+                key: format!("{}/{}", m.board, m.id),
+                author: m.author,
+                text: m.text,
+                sent_at: m.sent_at,
+            })
+            .collect())
+    }
+
     // ── helpers ────────────────────────────────────────────────────────────
 
     /// The post at `id` if the caller wrote it: `NoPost`, else `NotAuthor`.
     fn own_post(&self, id: &str) -> app::Result<Post> {
-        let me = caller()?;
+        let me = writer()?;
         let Some(post) = self.posts.get(id)? else {
             return Err(Error::NoPost { id: id.to_owned() }.into());
         };
@@ -561,7 +766,7 @@ impl Forum {
     }
 
     fn own_comment(&self, key: &str) -> app::Result<Comment> {
-        let me = caller()?;
+        let me = writer()?;
         match self.comments.get(key)? {
             Some(c) if c.author == me => Ok(c),
             _ => Err(Error::NoComment {
