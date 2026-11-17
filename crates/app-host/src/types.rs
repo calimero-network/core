@@ -249,6 +249,11 @@ pub trait Directory: Send + Sync {
     /// The account's membership in the app's own org, with its role: at most that one
     /// org, and nothing for a personal app (D75). R1's admitted partners extend it.
     fn orgs_of(&self, account: &str) -> Vec<(String, OrgRole)>;
+    /// The app linked under `name` (a reference of the app's release: a unit member or an
+    /// attached app). None by default.
+    fn linked(&self, _name: &str) -> Option<String> {
+        None
+    }
 }
 
 /// A host call the policy refuses. The engine turns it into `Trap(HostDenied)`.

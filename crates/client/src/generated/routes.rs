@@ -324,6 +324,39 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Attach an app to one of an app's references.
+    ///
+    /// `PUT /apps/{app}/links/{name}` (`app_link`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn link(
+        self,
+        app: &str,
+        name: &str,
+        body: AppLinkRequest,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<AppLinkResponse> {
+        let body = route::value(&body)?;
+        let req = Request::new(
+            Method::PUT,
+            format!(
+                "apps/{}/links/{}",
+                route::segment(app),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// List an app's links to the apps its release uses.
+    ///
+    /// `GET /apps/{app}/links` (`app_links`). Who: whoever the app's access admits (a public app: anyone).
+    pub async fn links(self, app: &str) -> Result<AppLinksResponse> {
+        let req = Request::new(Method::GET, format!("apps/{}/links", route::segment(app)));
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// Apps the caller reaches.
     ///
     /// `GET /apps` (`app_list`). Who: signed in (a session or an API key).
@@ -749,6 +782,30 @@ impl Apps<'_> {
             ),
         );
         route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Detach an app attached to an app.
+    ///
+    /// `DELETE /apps/{app}/links/{name}` (`app_unlink`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn unlink(
+        self,
+        app: &str,
+        name: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<Map<String, Value>> {
+        let body = Value::Object(Map::new());
+        let req = Request::new(
+            Method::DELETE,
+            format!(
+                "apps/{}/links/{}",
+                route::segment(app),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
     }
 
     /// Upgrade an app instance.

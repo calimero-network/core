@@ -178,6 +178,18 @@ pub(super) fn authorize(
         }
         // Taking a grant back narrows what an app may do as the person: no consent.
         SystemCmd::SetDelegation { methods: None, .. } => Ok(None),
+        SystemCmd::LinkApp {
+            app_id,
+            name,
+            target,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = link_app_args(name, target.as_deref());
+            proofs.states(&st, app_id, "__link", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         SystemCmd::SetReplicas {
             app_id,
             replicas,
@@ -747,6 +759,46 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 .entry(source)
                 .or_default()
                 .insert(target, methods);
+            Ok(Value::Null)
+        }
+        SystemCmd::LinkApp {
+            app_id,
+            name,
+            target,
+            actor,
+            ..
+        } => {
+            let app = s.apps.get(&app_id).ok_or("no such app")?;
+            if !s.manages_app(app, &actor) {
+                return Err(ONLY_MANAGERS_LINK);
+            }
+            if !calimero_bundle::is_use_name(&name) {
+                return Err("not a reference's name");
+            }
+            if app.links.contains_key(&name) {
+                return Err("a unit member is linked at create and stays");
+            }
+            if let Some(t) = &target {
+                let to = s.apps.get(t).ok_or("no such app to attach")?;
+                if *t == app_id || to.org != app.org {
+                    return Err("only another app of the same organization is attached");
+                }
+                if !s.manages_app(to, &actor) {
+                    return Err(ONLY_MANAGERS_LINK);
+                }
+                if !app.attached.contains_key(&name) && app.attached.len() >= MAX_ATTACHED {
+                    return Err("too many attached apps");
+                }
+            }
+            let a = s.apps.get_mut(&app_id).ok_or("no such app")?;
+            match target {
+                Some(t) => {
+                    let _was = a.attached.insert(name, t);
+                }
+                None => {
+                    let _was = a.attached.remove(&name);
+                }
+            }
             Ok(Value::Null)
         }
         SystemCmd::SetAppMetadata {

@@ -560,6 +560,15 @@ impl TestApp {
             .collect()
     }
 
+    /// Links `app` under `name` from now on (an owner attaching an app, or detaching one with
+    /// `None`): `env::linked(name)` answers it on the next run.
+    pub fn link(&mut self, name: &str, app: Option<&str>) {
+        match app {
+            Some(app) => self.org.links.insert(name.to_owned(), app.to_owned()),
+            None => self.org.links.remove(name),
+        };
+    }
+
     /// Removes the account from the org. Org and team events emitted so far stay with the accounts
     /// that were in the audience when it changed; later ones no longer reach `account`.
     pub fn remove_member(&mut self, account: &str) {
