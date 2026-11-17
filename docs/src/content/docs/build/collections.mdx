@@ -17,6 +17,55 @@ structures, not CRDTs: there is nothing to merge. The exception is `Text`,
 which stays a sequence CRDT so that edits typed against a stale view still land
 where they were meant (see [Collaborative text](/build/guides/collaborative-text/)).
 
+## Choosing a type
+
+Pick by how the data is read and how it grows.
+
+| You need | Use | Why |
+| --- | --- | --- |
+| Records found by more than their key: by owner, by date, by status; values that must be unique; counts per group; full-text search | `Table<R>` | Indexes, unique constraints and counts are kept on every write, so a lookup by any declared field is one range read, never a scan. |
+| A value per key, read and written by that key | `UnorderedMap<K, V>` | One read or write per key, a stored count, and reads in key order (it is also the sorted map). Tuple keys give two-level keys. |
+| Whether something is in a group: members, tags, likes, seen ids | `Set<T>` | Membership is one read; elements come back sorted. |
+| Items in the order they arrived: a log, a feed, a history | `Vector<T>` | Append, read by position and the last items are one call each. Insert in the middle rewrites everything after it: keep it append-mostly. |
+| One value: settings, a config record, the current round | `Cell<T>` | One read, one write. Keep the value small: it is written whole. |
+| A number many runs change | `Counter` | `add` never reads the value first. |
+| A value per account that each person writes for themselves | `PerUser<T>` | Writes go to the caller's own value, so no method can write anyone else's. |
+| Content stored once and referred to by hash | `Frozen<T>` | The same content is stored once; nothing changes or removes it. |
+| Text several people edit at once | `Text`, `RichText` | Edits typed against a stale view still land where they were meant. |
+| A list, set or map per key, per position or per account | A collection inside a map, `Vector` or `PerUser` | Each one costs what a state field's does ([Collections inside collections](#collections-inside-collections)). |
+
+A rule of thumb: a `Table` when you query by fields, a map when you look up by
+one key, a `Set` when the element is the whole fact, a `Vector` when the order
+of arrival matters.
+
+### Why not `Vec`, `HashMap` or `BTreeMap`
+
+A state field has to be a table or a collection: `#[app::state]` builds each one
+from its name, so `items: Vec<Item>` as a field does not compile. A standard
+collection still fits in as a value, `Cell<Vec<Item>>` or
+`UnorderedMap<String, Vec<Item>>`, and then it is one stored value:
+
+- **Every change reads and writes all of it.** Adding one item to a
+  `Cell<Vec<Item>>` decodes the whole list, appends, encodes it and writes it
+  back. With 10,000 items that is 10,000 items read and written per call, where
+  `Vector::push` writes one row and a length.
+- **It runs into a run's limits.** A run writes at most 1 MiB, and a stored
+  value is written whole, so a list grows into a ceiling: past it, every call
+  that changes it fails. A `Vec<u8>` is stored as a CBOR list of numbers, about
+  twice its size.
+- **Reads cannot be partial.** There is no page, range, `first` or `contains`
+  without loading everything; a view that shows ten items still reads them all.
+- **`HashMap` has no order.** Its iteration order is not stable between runs, so
+  anything that depends on it (the first match, the page a client sees) can
+  change from one call to the next. Use `BTreeMap` inside a value, or an
+  `UnorderedMap`, which reads in key order.
+
+A standard collection is the right choice when the data is small, bounded and
+always read together: a record's handful of labels, a poll's options, a method's
+arguments and results, an event's payload. If it grows with users or with time,
+make it a collection: a `Vector` per key or a `Set` per key costs a write per
+item however large it gets.
+
 ## Tables
 
 A `Table<R>` holds [records](/build/sdk-macros/#deriverecord-and-table):
