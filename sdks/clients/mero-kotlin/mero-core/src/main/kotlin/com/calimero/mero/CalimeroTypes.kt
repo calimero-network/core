@@ -23,7 +23,10 @@ data class CalimeroSession(
     /** When the session token expires, as the node said (Unix seconds). */
     val expiresAt: Long = 0,
     val refreshToken: String = "",
-)
+) {
+    /** Never the tokens: a session printed to a log or a crash report must not hand it out. */
+    override fun toString(): String = "CalimeroSession(accountId=$accountId, expiresAt=$expiresAt)"
+}
 
 /** One event a call emitted. */
 @Serializable
@@ -326,7 +329,10 @@ data class ApiKeyOptions(
 data class ApiKeyCreated(
     val keyId: String,
     val key: String,
-)
+) {
+    /** Never the key itself. */
+    override fun toString(): String = "ApiKeyCreated(keyId=$keyId, key=<redacted>)"
+}
 
 /** What `createApp` creates from: a bundle hash (a raw upload, development only), or a package release. */
 sealed interface AppSource {
