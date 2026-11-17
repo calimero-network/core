@@ -304,8 +304,13 @@ impl<T: Record, S: Store> Table<T, S> {
     }
 
     /// Refuse a unique clash with a record other than the one at `record_key`.
-    fn check_unique(&self, new: &Entries) -> Result<(), TableError> {
+    /// Refuse a unique entry another record holds. An entry the record already had (`old`)
+    /// is its own, so it is neither read nor written again.
+    fn check_unique(&self, new: &Entries, old: Option<&Entries>) -> Result<(), TableError> {
         for (name, key) in &new.uniques {
+            if old.is_some_and(|o| o.uniques.iter().any(|(_, ok)| ok == key)) {
+                continue;
+            }
             if let Some(owner) = self.store.get(key) {
                 if owner != new.record {
                     return Err(TableError::Duplicate {
@@ -345,7 +350,9 @@ impl<T: Record, S: Store> Table<T, S> {
                 }
             }
             for (_, k) in &new.uniques {
-                self.store.put(k, &new.record);
+                if !old.is_some_and(|o| o.uniques.iter().any(|(_, ok)| ok == k)) {
+                    self.store.put(k, &new.record);
+                }
             }
             for k in &new.counts {
                 if !old.is_some_and(|o| o.counts.contains(k)) {
@@ -371,7 +378,7 @@ impl<T: Record, S: Store> Table<T, S> {
                 index: "key".into(),
             });
         }
-        self.check_unique(&new)?;
+        self.check_unique(&new, None)?;
         self.store.put(&new.record, &bytes);
         self.reindex(None, Some(&new));
         Ok(())
@@ -381,11 +388,11 @@ impl<T: Record, S: Store> Table<T, S> {
     pub fn upsert(&mut self, record: T) -> Result<(), TableError> {
         let new = self.entries(&record)?;
         let bytes = value::to_vec(&record)?;
-        self.check_unique(&new)?;
         let old = self
             .read(&new.record)?
             .map(|o| self.entries(&o))
             .transpose()?;
+        self.check_unique(&new, old.as_ref())?;
         self.store.put(&new.record, &bytes);
         self.reindex(old.as_ref(), Some(&new));
         Ok(())
@@ -464,7 +471,7 @@ impl<T: Record, S: Store> Table<T, S> {
             return Err(StorageError::KeyChanged.into());
         }
         let bytes = value::to_vec(&record)?;
-        self.check_unique(&new)?;
+        self.check_unique(&new, Some(&old))?;
         self.store.put(&new.record, &bytes);
         self.reindex(Some(&old), Some(&new));
         Ok(true)

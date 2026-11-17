@@ -83,6 +83,7 @@ pub use collections::{
 pub use encoding::key::{FromKey, FromKeyPart, KeyPart, ToKey, ToKeyPart};
 pub use env::{Audience, Caller, OrgRole};
 pub use error::{AppError, Result, StorageError, TableError};
+pub use json::Bytes;
 pub use search::{Found, SearchMode, SearchOpts, SearchResults};
 pub use store::{MemStore, RangeCursor, Store};
 pub use table::{FindOpts, Iter, Page, Progress, Record, Table};

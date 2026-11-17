@@ -116,18 +116,6 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
             .transpose()
     }
 
-    /// Remove the plain value at `k` and return it.
-    fn take(&mut self, k: &K) -> Result<Option<V>, StorageError> {
-        let key = self.storage_key(k)?;
-        let Some(bytes) = self.store.get(&key) else {
-            return Ok(None);
-        };
-        let old = value::from_slice(&bytes)?;
-        self.store.delete(&key);
-        self.store.add(&self.count_key()?, -1);
-        Ok(Some(old))
-    }
-
     /// Set the value at `k`, returning the value it replaces.
     pub fn insert(&mut self, k: &K, v: &V) -> Result<Option<V>, StorageError> {
         let key = self.storage_key(k)?;
@@ -153,8 +141,10 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
         if let Some(v) = self.read(k)? {
             return Ok(v);
         }
+        // Absent, as just read: write it and count it, without reading it again.
         let v = make();
-        let _ = self.insert(k, &v)?;
+        self.store.put(&self.storage_key(k)?, &value::to_vec(&v)?);
+        self.store.add(&self.count_key()?, 1);
         Ok(v)
     }
 
@@ -205,13 +195,27 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
         k: &K,
         f: impl FnOnce(Option<V>) -> Option<V>,
     ) -> Result<Option<V>, StorageError> {
-        match f(self.read(k)?) {
+        // One read; the write and the count follow from what it found.
+        let key = self.storage_key(k)?;
+        let old: Option<V> = self
+            .store
+            .get(&key)
+            .map(|b| value::from_slice(&b))
+            .transpose()?;
+        let existed = old.is_some();
+        match f(old) {
             Some(v) => {
-                let _ = self.insert(k, &v)?;
+                self.store.put(&key, &value::to_vec(&v)?);
+                if !existed {
+                    self.store.add(&self.count_key()?, 1);
+                }
                 Ok(Some(v))
             }
             None => {
-                let _ = self.take(k)?;
+                if existed {
+                    self.store.delete(&key);
+                    self.store.add(&self.count_key()?, -1);
+                }
                 Ok(None)
             }
         }
@@ -359,15 +363,17 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
 
     /// The entry with the smallest key.
     pub fn first(&self) -> Result<Option<(K, V)>, StorageError> {
-        Ok(self.page(FindOpts::default().limit(1))?.items.pop())
+        // One entry through a cursor; a page would read one more to know of a next.
+        self.iter_with(FindOpts::default().limit(1))
+            .next()
+            .transpose()
     }
 
     /// The entry with the largest key.
     pub fn last(&self) -> Result<Option<(K, V)>, StorageError> {
-        Ok(self
-            .page(FindOpts::default().limit(1).reverse())?
-            .items
-            .pop())
+        self.iter_with(FindOpts::default().limit(1).reverse())
+            .next()
+            .transpose()
     }
 }
 

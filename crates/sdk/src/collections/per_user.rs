@@ -17,8 +17,9 @@ use crate::table::{FindOpts, Iter, Page};
 use super::slots::{decode_account, UserValue};
 
 /// A value per account. Writes always go to the caller's own value (`env::caller()`'s
-/// account, or the account an API key acts for), so no method can name anyone else's; any
-/// account's value can be read with [`PerUser::get_for`]. Callers that are not an account
+/// account, or the account an API key acts for); any account's value can be read with
+/// [`PerUser::get_for`], and removed with [`PerUser::remove_for`] when the app's own rules
+/// allow it (an admin removing a member who left). Callers that are not an account
 /// (system, public, another app) get `LoginRequired`.
 pub struct PerUser<T, S: Store = DefaultStore> {
     name: KeyPath,
@@ -83,6 +84,14 @@ impl<T: UserValue<S>, S: Store> PerUser<T, S> {
     pub fn remove(&mut self) -> Result<T::Removed, AppError> {
         let account = caller_account()?;
         Ok(T::remove(&mut self.store, &self.name, &account)?)
+    }
+
+    /// Remove `account`'s value and return it (for collections, its whole collection and how
+    /// many stored entries it had). Every other write goes to the caller's own value; this one
+    /// is for the app's own rules, an admin removing a member who left, so check who may call
+    /// it before you do.
+    pub fn remove_for(&mut self, account: &str) -> Result<T::Removed, StorageError> {
+        T::remove(&mut self.store, &self.name, account)
     }
 
     /// Every account's value (or collection), in account order, through one cursor; for

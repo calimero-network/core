@@ -13,7 +13,7 @@ use core::str::FromStr;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::de::{Error, Visitor};
-use serde::{Deserialize, Deserializer, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 fn ser<T: Display, S: Serializer>(v: &T, s: S) -> Result<S::Ok, S::Error> {
     s.collect_str(v)
@@ -256,5 +256,56 @@ pub mod opt_bytes_auto {
         #[serde(transparent)]
         struct Inner(#[serde(with = "bytes_auto")] Vec<u8>);
         Ok(Option::<Inner>::deserialize(d)?.map(|i| i.0))
+    }
+}
+
+/// Bytes as a value in state or in a plain serde type: a CBOR byte string when stored (one
+/// byte per byte), base64url in JSON. A bare `Vec<u8>` in a `Cell`, a map value or a plain
+/// struct is stored as a CBOR list of numbers, about twice its size; records and method
+/// parameters already convert `Vec<u8>` (D20), collections and plain structs need this.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Bytes(pub Vec<u8>);
+
+impl Serialize for Bytes {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        bytes_auto::serialize(&self.0, s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Bytes {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        bytes_auto::deserialize(d).map(Bytes)
+    }
+}
+
+impl core::ops::Deref for Bytes {
+    type Target = Vec<u8>;
+
+    fn deref(&self) -> &Vec<u8> {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for Bytes {
+    fn deref_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.0
+    }
+}
+
+impl AsRef<[u8]> for Bytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl From<Vec<u8>> for Bytes {
+    fn from(v: Vec<u8>) -> Self {
+        Self(v)
+    }
+}
+
+impl From<Bytes> for Vec<u8> {
+    fn from(b: Bytes) -> Self {
+        b.0
     }
 }

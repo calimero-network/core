@@ -261,15 +261,17 @@ impl<T: ToKey + FromKey, S: Store> Set<T, S> {
 
     /// The smallest element.
     pub fn first(&self) -> Result<Option<T>, StorageError> {
-        Ok(self.page(FindOpts::default().limit(1))?.items.pop())
+        // One entry through a cursor; a page would read one more to know of a next.
+        self.iter_with(FindOpts::default().limit(1))
+            .next()
+            .transpose()
     }
 
     /// The largest element.
     pub fn last(&self) -> Result<Option<T>, StorageError> {
-        Ok(self
-            .page(FindOpts::default().limit(1).reverse())?
-            .items
-            .pop())
+        self.iter_with(FindOpts::default().limit(1).reverse())
+            .next()
+            .transpose()
     }
 }
 

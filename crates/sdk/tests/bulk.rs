@@ -149,3 +149,41 @@ fn maps_sets_and_vectors_clear_a_slice_at_a_time() {
     assert_eq!(left, (0..6).collect::<Vec<_>>(), "removed from the end");
     assert!(v.clear_some(100).unwrap().done);
 }
+
+#[test]
+fn an_app_can_remove_a_departed_members_value() {
+    use calimero_sdk::collections::PerUser;
+    use calimero_sdk::env::{mock, Caller};
+    mock::reset();
+    let mut prefs: PerUser<String, MemStore> = PerUser::with_store("prefs", MemStore::new());
+    mock::with_mut(|s| s.caller = Caller::Account("bo".into()));
+    let _ = prefs.set(&"dark".into()).unwrap();
+    mock::with_mut(|s| s.caller = Caller::Account("admin".into()));
+    assert_eq!(prefs.remove_for("bo").unwrap().as_deref(), Some("dark"));
+    assert!(!prefs.contains_for("bo").unwrap());
+    mock::reset();
+}
+
+#[test]
+fn an_update_that_keeps_its_unique_values_does_not_touch_them() {
+    let (mut t, store) = members(3);
+    store.reset_calls();
+    // Moving a member to another team: the email stays, so its unique entry is not read or
+    // written again; the index entry and the counts move.
+    assert!(t.update(&0u32, |m| m.team = "blue".into()).unwrap());
+    // Read the record; write it; move the index entry (delete, put); move the count (two adds).
+    assert_eq!(store.calls(), 1 + 1 + 2 + 2);
+    assert_eq!(team(&t, "blue"), 2);
+}
+
+#[test]
+fn first_and_last_read_one_entry() {
+    let store = MemStore::new();
+    let mut m: UnorderedMap<u32, u32, MemStore> = UnorderedMap::with_store("m", store.clone());
+    let keys: Vec<u32> = (0..10).collect();
+    let _ = m.extend(keys.iter().map(|k| (k, k))).unwrap();
+    store.reset_pulled();
+    assert_eq!(m.first().unwrap(), Some((0, 0)));
+    assert_eq!(m.last().unwrap(), Some((9, 9)));
+    assert_eq!(store.pulled(), 2, "one entry each");
+}

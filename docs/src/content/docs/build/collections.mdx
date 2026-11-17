@@ -52,7 +52,7 @@ collection still fits in as a value, `Cell<Vec<Item>>` or
 - **It runs into a run's limits.** A run writes at most 1 MiB, and a stored
   value is written whole, so a list grows into a ceiling: past it, every call
   that changes it fails. A `Vec<u8>` is stored as a CBOR list of numbers, about
-  twice its size.
+  twice its size: store bytes as `calimero_sdk::Bytes`, one byte per byte.
 - **Reads cannot be partial.** There is no page, range, `first` or `contains`
   without loading everything; a view that shows ten items still reads them all.
 - **`HashMap` has no order.** Its iteration order is not stable between runs, so
@@ -163,7 +163,7 @@ every entry it reads. A view that answers a client should still return one
 | `Vector<T>` | A collection per position ([Collections inside collections](#collections-inside-collections)), or values: `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `clear_some(max)` (from the end), `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
 | `Counter` | `get`, `add`, `increment`, `decrement` (stops at zero), `reset` |
 | `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of`, `page` and `iter` as `(hex, value)` in hash order |
-| `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` and `contains_for(account)` read another's; `page`, `iter` and `iter_with` list `(account, value)` in account order |
+| `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` and `contains_for(account)` read another's, `remove_for(account)` removes it (the app checks who may); `page`, `iter` and `iter_with` list `(account, value)` in account order |
 | `Text` | `insert_after(id, str)`, `delete_ids`, `insert(index, str)`, `delete(index, n)`, `read`, `chars`, `id_at`, `index_of`, `len`, `clear` |
 | `RichText` | `text()` / `text_mut()` (a `Text`), `mark(start, end, key, value, expand)`, `mark_ids`, `marks`, `spans`, `clear` |
 
