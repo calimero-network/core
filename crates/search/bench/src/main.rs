@@ -9,7 +9,7 @@
 //! are derived from.
 //!
 //! ```text
-//! cargo run --release -p search-bench -- [--sizes 10000,100000] [--only size|memory|cross|gas] [--docs] [--iters N] [--out FILE]
+//! cargo run --release -p calimero-search-bench -- [--sizes 10000,100000] [--only size|memory|cross|gas] [--docs] [--iters N] [--out FILE]
 //! ```
 
 mod alloc;
@@ -852,7 +852,7 @@ fn main() -> EyreResult<()> {
     let iters = arg("--iters").map_or(Ok(400), |s| s.parse())?;
 
     let mut rep = Report::default();
-    rep.line("## Engine benchmark (tools/search-bench)\n");
+    rep.line("## Engine benchmark (crates/search/bench)\n");
     rep.line(format!(
         "Release build, one thread per query unless stated, on this machine ({} cores). Per-message times are wall-clock time of the single indexing thread (tantivy's merge thread runs beside it).",
         std::thread::available_parallelism().map_or(0, |n| n.get())

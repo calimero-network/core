@@ -1,4 +1,4 @@
-//! `mero-compute run` (`meroctl local compute run`): one compute method on a compute component alone, with the engine, caps
+//! `meroctl local compute run`: one compute method on a compute component alone, with the engine, caps
 //! and determinism of a job node and plain files in place of sealed ones.
 
 mod files;
@@ -25,7 +25,7 @@ const IDENTITY: &str = "local"; // the app, run and owner of a local run
 const SECOND_DIR: &str = ".second"; // where `--twice` writes its second run, removed after
 const BYTES_PER_GIB: f64 = 1_073_741_824.0;
 
-/// `run`'s arguments, shared by `mero-compute run` and `meroctl local compute run`.
+/// `run`'s arguments, what `meroctl local compute run` takes.
 #[derive(Debug, Args)]
 pub struct RunArgs {
     /// The compute component (`compute.component.wasm` from `meroctl app build`)

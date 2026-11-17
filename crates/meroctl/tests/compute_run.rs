@@ -1,5 +1,5 @@
 //! `meroctl local compute run` on the cluster tests' compute fixture, through the real
-//! binary (what `mero-compute`'s tests held).
+//! binary (what the old `mero-compute` binary's tests held).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

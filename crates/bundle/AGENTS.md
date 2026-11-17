@@ -47,7 +47,7 @@ cargo test -p calimero-bundle
 
 ## Mental Model
 
-This crate is the single source of truth for the bundle schema: `mero-sign` re-exports the canonicalization/signing functions for its CLI, and `calimero-node` reads and verifies installed bundles against the same type (the node's tests build a `BundleManifest` directly, with no `..Default::default()`, so a new field must be handled there before the workspace compiles). `meroctl app pack` (`crates/meroctl/src/make.rs`) writes the same manifest as JSON.
+This crate is the single source of truth for the bundle schema: `meroctl-sign` re-exports the canonicalization/signing functions for `meroctl`, and `calimero-node` reads and verifies installed bundles against the same type (the node's tests build a `BundleManifest` directly, with no `..Default::default()`, so a new field must be handled there before the workspace compiles). `meroctl app pack` (`crates/meroctl/src/make.rs`) writes the same manifest as JSON.
 
 `handlers` (the deep-link `slug`) is a sibling of `metadata`, not nested inside it, so it never reaches `to_metadata_json()` and never reaches the display metadata an install stores; only `package` + `signerId` decide a bundle's identity (see `ApplicationId::for_bundle` in `calimero-primitives`).
 

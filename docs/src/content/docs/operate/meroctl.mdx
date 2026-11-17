@@ -383,7 +383,7 @@ cluster an older `meroctl` started in `./.merod-local`.
 | `local status [--dir DIR]` | Whether it runs, its URLs and ops token. |
 | `local dev [DIR] [--no-frontend] [cluster flags]` | Develop an app (`DIR` holds `logic/` and `app/`, as `app new` lays it out, or is the crate): start the cluster unless it runs, sign up a deployer, build the crate and upload it as a raw bundle, write `DIR/app/.env.development.local` (`VITE_CALIMERO_TARGET`, `VITE_CALIMERO_NODES`, `VITE_CALIMERO_BUNDLE`), run the frontend's dev server on `http://localhost:5173` (`pnpm dev`, the origin the cluster trusts), then rebuild and upload on every save. Ctrl-C stops the frontend, and the cluster when `dev` started it. |
 | `local test [DIR] [-- CARGO_ARGS]` | `cargo test` of the app's crate, which runs every `scenarios/*.json` on core's engine (the apps template's harness). |
-| `local compute run COMPONENT --method M [--args JSON\|@FILE] [--input FILE]... --out DIR [--seed HEX] [--twice]` | Run one compute method of a compute component alone, with the engine, caps and determinism of a job node and plain files in place of sealed ones; `--twice` fails if two runs differ (`tools/mero-compute/README.md`). |
+| `local compute run COMPONENT --method M [--args JSON\|@FILE] [--input FILE]... --out DIR [--seed HEX] [--twice]` | Run one compute method of a compute component alone, with the engine, caps and determinism of a job node and plain files in place of sealed ones; `--twice` fails if two runs differ (`crates/meroctl/compute/README.md`). |
 
 ## dev
 
