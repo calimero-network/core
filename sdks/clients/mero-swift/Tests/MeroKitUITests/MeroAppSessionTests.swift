@@ -136,6 +136,18 @@ final class MeroAppSessionTests: XCTestCase {
         XCTAssertTrue(returned)
     }
 
+    /// A consent return this app started no request for is not read: the
+    /// request id a link names alone never picks which result the app shows.
+    func testIgnoresAConsentReturnForARequestThisAppNeverStarted() async throws {
+        UserDefaultsConsentRequestStore().clear()
+        let session = makeSession()
+        await session.signIn()
+        let returned = await session.handle(URL(string: "merochat://consent?request_id=r1&result=approved")!)
+        XCTAssertTrue(returned)
+        XCTAssertNil(session.consentResult)
+        XCTAssertFalse(node.requests.contains { $0.path == "/consent/r1/result" })
+    }
+
     func testRecognisesThisAppsInvitationLinksOnly() {
         let link = "https://links.calimero.network/com.calimero.chat/join?invitation=abc"
         XCTAssertTrue(MeroAppSession.isInvitationLink(link, packageName: "com.calimero.chat"))
