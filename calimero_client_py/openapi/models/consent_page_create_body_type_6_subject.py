@@ -13,20 +13,20 @@ T = TypeVar("T", bound="ConsentPageCreateBodyType6Subject")
 class ConsentPageCreateBodyType6Subject:
     """
     Attributes:
-        org (str):
+        token (str):
     """
 
-    org: str
+    token: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        org = self.org
+        token = self.token
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "org": org,
+                "token": token,
             }
         )
 
@@ -35,10 +35,10 @@ class ConsentPageCreateBodyType6Subject:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        org = d.pop("org")
+        token = d.pop("token")
 
         consent_page_create_body_type_6_subject = cls(
-            org=org,
+            token=token,
         )
 
         consent_page_create_body_type_6_subject.additional_properties = d

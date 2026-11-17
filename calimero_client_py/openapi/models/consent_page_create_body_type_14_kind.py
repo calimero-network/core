@@ -2,7 +2,7 @@ from enum import Enum
 
 
 class ConsentPageCreateBodyType14Kind(str, Enum):
-    SETCAPABILITIES = "setCapabilities"
+    DELETEORG = "deleteOrg"
 
     def __str__(self) -> str:
         return str(self.value)

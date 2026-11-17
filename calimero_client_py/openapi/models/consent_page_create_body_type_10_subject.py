@@ -8,6 +8,12 @@ from ..types import UNSET, Unset
 
 from typing import cast
 
+if TYPE_CHECKING:
+    from ..models.consent_page_create_body_type_10_subject_teams_item import (
+        ConsentPageCreateBodyType10SubjectTeamsItem,
+    )
+
+
 T = TypeVar("T", bound="ConsentPageCreateBodyType10Subject")
 
 
@@ -17,20 +23,27 @@ class ConsentPageCreateBodyType10Subject:
     Attributes:
         org (str):
         account (str):
-        teams (list[str]):
+        teams (list['ConsentPageCreateBodyType10SubjectTeamsItem']):
     """
 
     org: str
     account: str
-    teams: list[str]
+    teams: list["ConsentPageCreateBodyType10SubjectTeamsItem"]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.consent_page_create_body_type_10_subject_teams_item import (
+            ConsentPageCreateBodyType10SubjectTeamsItem,
+        )
+
         org = self.org
 
         account = self.account
 
-        teams = self.teams
+        teams = []
+        for teams_item_data in self.teams:
+            teams_item = teams_item_data.to_dict()
+            teams.append(teams_item)
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -46,12 +59,23 @@ class ConsentPageCreateBodyType10Subject:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.consent_page_create_body_type_10_subject_teams_item import (
+            ConsentPageCreateBodyType10SubjectTeamsItem,
+        )
+
         d = dict(src_dict)
         org = d.pop("org")
 
         account = d.pop("account")
 
-        teams = cast(list[str], d.pop("teams"))
+        teams = []
+        _teams = d.pop("teams")
+        for teams_item_data in _teams:
+            teams_item = ConsentPageCreateBodyType10SubjectTeamsItem.from_dict(
+                teams_item_data
+            )
+
+            teams.append(teams_item)
 
         consent_page_create_body_type_10_subject = cls(
             org=org,

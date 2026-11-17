@@ -6,10 +6,6 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..models.consent_page_create_body_type_8_subject_role import (
-    ConsentPageCreateBodyType8SubjectRole,
-)
-
 T = TypeVar("T", bound="ConsentPageCreateBodyType8Subject")
 
 
@@ -19,12 +15,10 @@ class ConsentPageCreateBodyType8Subject:
     Attributes:
         org (str):
         account (str):
-        role (ConsentPageCreateBodyType8SubjectRole):
     """
 
     org: str
     account: str
-    role: ConsentPageCreateBodyType8SubjectRole
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -32,15 +26,12 @@ class ConsentPageCreateBodyType8Subject:
 
         account = self.account
 
-        role = self.role.value
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "org": org,
                 "account": account,
-                "role": role,
             }
         )
 
@@ -53,12 +44,9 @@ class ConsentPageCreateBodyType8Subject:
 
         account = d.pop("account")
 
-        role = ConsentPageCreateBodyType8SubjectRole(d.pop("role"))
-
         consent_page_create_body_type_8_subject = cls(
             org=org,
             account=account,
-            role=role,
         )
 
         consent_page_create_body_type_8_subject.additional_properties = d

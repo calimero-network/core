@@ -51,6 +51,8 @@ from .openapi.api.apps import app_abi as _app_abi
 from .openapi.api.apps import app_access as _app_access
 from .openapi.api.apps import app_attestation as _app_attestation
 from .openapi.api.apps import app_create as _app_create
+from .openapi.api.apps import app_delegate as _app_delegate
+from .openapi.api.apps import app_delegations as _app_delegations
 from .openapi.api.apps import app_delete as _app_delete
 from .openapi.api.apps import app_get as _app_get
 from .openapi.api.apps import app_list as _app_list
@@ -61,8 +63,12 @@ from .openapi.api.apps import app_openapi as _app_openapi
 from .openapi.api.apps import app_run as _app_run
 from .openapi.api.apps import app_run_logs as _app_run_logs
 from .openapi.api.apps import app_runs as _app_runs
+from .openapi.api.apps import app_secret_clear as _app_secret_clear
+from .openapi.api.apps import app_secret_set as _app_secret_set
+from .openapi.api.apps import app_secrets as _app_secrets
 from .openapi.api.apps import app_storage as _app_storage
 from .openapi.api.apps import app_transfer as _app_transfer
+from .openapi.api.apps import app_undelegate as _app_undelegate
 from .openapi.api.apps import app_upgrade as _app_upgrade
 from .openapi.api.apps import app_upgrade_unit as _app_upgrade_unit
 from .openapi.api.apps import app_usage as _app_usage
@@ -239,9 +245,11 @@ from .openapi.models import AliasSetBody
 from .openapi.models import ApikeyCreateBody
 from .openapi.models import AppAccessBody
 from .openapi.models import AppCreateBody
+from .openapi.models import AppDelegateBody
 from .openapi.models import AppMetadataBody
 from .openapi.models import AppMethodBody
 from .openapi.models import AppMoveBody
+from .openapi.models import AppSecretSetBody
 from .openapi.models import AppTeamsScopeBody
 from .openapi.models import AppTransferBody
 from .openapi.models import AppUpgradeBody
@@ -256,6 +264,7 @@ from .openapi.models import ConsentPageCreateBodyType12
 from .openapi.models import ConsentPageCreateBodyType13
 from .openapi.models import ConsentPageCreateBodyType14
 from .openapi.models import ConsentPageCreateBodyType15
+from .openapi.models import ConsentPageCreateBodyType16
 from .openapi.models import ConsentPageCreateBodyType2
 from .openapi.models import ConsentPageCreateBodyType3
 from .openapi.models import ConsentPageCreateBodyType4
@@ -399,6 +408,15 @@ _APP_CREATE = Operation(
     _app_create,
     "app_create",
     body=AppCreateBody,
+    answer="json",
+)
+_APP_DELEGATE = Operation(
+    _app_delegate, "app_delegate", body=AppDelegateBody, answer="json", confirm=True
+)
+_APP_DELEGATIONS = Operation(
+    _app_delegations,
+    "app_delegations",
+    body="none",
     answer="json",
 )
 _APP_DELETE = Operation(
@@ -550,6 +568,22 @@ _APP_RUNS = Operation(
     body="none",
     answer="json",
 )
+_APP_SECRET_CLEAR = Operation(
+    _app_secret_clear, "app_secret_clear", body=ConfirmOnly, answer="json", confirm=True
+)
+_APP_SECRET_SET = Operation(
+    _app_secret_set,
+    "app_secret_set",
+    body=AppSecretSetBody,
+    answer="json",
+    confirm=True,
+)
+_APP_SECRETS = Operation(
+    _app_secrets,
+    "app_secrets",
+    body="none",
+    answer="json",
+)
 _APP_STORAGE = Operation(
     _app_storage,
     "app_storage",
@@ -558,6 +592,12 @@ _APP_STORAGE = Operation(
 )
 _APP_TRANSFER = Operation(
     _app_transfer, "app_transfer", body=AppTransferBody, answer="json", confirm=True
+)
+_APP_UNDELEGATE = Operation(
+    _app_undelegate,
+    "app_undelegate",
+    body="none",
+    answer="json",
 )
 _APP_UPGRADE = Operation(
     _app_upgrade, "app_upgrade", body=AppUpgradeBody, answer="json", confirm=True
@@ -862,6 +902,45 @@ class Apps(Group):
                 "deployment": deployment,
             },
         )
+
+    def delegate(self, *, app, target, confirm=None):
+        """Let an app call another as you (`PUT /apps/{app}/delegations/{target}`, `app_delegate`).
+
+        The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none.
+
+        **Who:** signed in (a session or an API key). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            target: path
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: AppDelegateResponse200
+        """
+        return self._run(
+            _APP_DELEGATE,
+            (
+                app,
+                target,
+            ),
+            {},
+            {},
+            confirm=confirm,
+        )
+
+    def delegations(self, *, app):
+        """What you let an app do as you (`GET /apps/{app}/delegations`, `app_delegations`).
+
+        The apps you let this app call as you, each with the methods (`SetDelegation`). A session bound to an app's frontend reads its own app's only.
+
+        **Who:** signed in (a session or an API key).
+
+        Args:
+            app: path
+
+        Returns: AppDelegationsResponse200
+        """
+        return self._run(_APP_DELEGATIONS, (app,), {}, None)
 
     def delete(self, *, app):
         """Delete an app (`DELETE /apps/{app}`, `app_delete`).
@@ -1378,6 +1457,71 @@ class Apps(Group):
         """
         return self._run(_APP_RUNS, (app,), {"limit": limit, "before": before}, None)
 
+    def secret_clear(self, *, app, name, confirm=None):
+        """Remove an app's own value of a secret (`DELETE /apps/{app}/secrets/{name}`, `app_secret_clear`).
+
+        The operator's value applies again. Same rules as setting one; a step-up over `{ name }`.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            name: path
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: AppSecretClearResponse200
+        """
+        return self._run(
+            _APP_SECRET_CLEAR,
+            (
+                app,
+                name,
+            ),
+            {},
+            {},
+            confirm=confirm,
+        )
+
+    def secret_set(self, *, app, name, value, confirm=None):
+        """Set an app's own value of a declared secret (`PUT /apps/{app}/secrets/{name}`, `app_secret_set`).
+
+        Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            name: path
+            value: body `value`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: AppSecretSetResponse200
+        """
+        return self._run(
+            _APP_SECRET_SET,
+            (
+                app,
+                name,
+            ),
+            {},
+            {"value": value},
+            confirm=confirm,
+        )
+
+    def secrets(self, *, app):
+        """The secrets an app's release declares (`GET /apps/{app}/secrets`, `app_secrets`).
+
+        For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+
+        **Who:** signed in (a session or an API key).
+
+        Args:
+            app: path
+
+        Returns: AppSecretsResponse200
+        """
+        return self._run(_APP_SECRETS, (app,), {}, None)
+
     def storage(self, *, app):
         """What an app stores (`GET /apps/{app}/storage`, `app_storage`).
 
@@ -1407,6 +1551,29 @@ class Apps(Group):
         Returns: None
         """
         return self._run(_APP_TRANSFER, (app,), {}, {"to": to}, confirm=confirm)
+
+    def undelegate(self, *, app, target):
+        """Take back what an app may do on another as you (`DELETE /apps/{app}/delegations/{target}`, `app_undelegate`).
+
+        No passkey: it only narrows. `404 NOT_DELEGATED` when you granted nothing there.
+
+        **Who:** signed in (a session or an API key).
+
+        Args:
+            app: path
+            target: path
+
+        Returns: AppUndelegateResponse200
+        """
+        return self._run(
+            _APP_UNDELEGATE,
+            (
+                app,
+                target,
+            ),
+            {},
+            None,
+        )
 
     def upgrade(
         self,
@@ -2330,6 +2497,7 @@ _CONSENT_PAGE_CREATE = Operation(
         ConsentPageCreateBodyType13,
         ConsentPageCreateBodyType14,
         ConsentPageCreateBodyType15,
+        ConsentPageCreateBodyType16,
         ConsentPageCreateBodyType2,
         ConsentPageCreateBodyType3,
         ConsentPageCreateBodyType4,
@@ -2360,7 +2528,7 @@ class Consent(Group):
         **Who:** a passkey session (an API key is refused).
 
         Args:
-            body: the body, one of ConsentPageCreateBodyType0, ConsentPageCreateBodyType1, ConsentPageCreateBodyType10, ConsentPageCreateBodyType11, ConsentPageCreateBodyType12, ConsentPageCreateBodyType13, ConsentPageCreateBodyType14, ConsentPageCreateBodyType15, ConsentPageCreateBodyType2, ConsentPageCreateBodyType3, ConsentPageCreateBodyType4, ConsentPageCreateBodyType5, ConsentPageCreateBodyType6, ConsentPageCreateBodyType7, ConsentPageCreateBodyType8, ConsentPageCreateBodyType9
+            body: the body, one of ConsentPageCreateBodyType0, ConsentPageCreateBodyType1, ConsentPageCreateBodyType10, ConsentPageCreateBodyType11, ConsentPageCreateBodyType12, ConsentPageCreateBodyType13, ConsentPageCreateBodyType14, ConsentPageCreateBodyType15, ConsentPageCreateBodyType16, ConsentPageCreateBodyType2, ConsentPageCreateBodyType3, ConsentPageCreateBodyType4, ConsentPageCreateBodyType5, ConsentPageCreateBodyType6, ConsentPageCreateBodyType7, ConsentPageCreateBodyType8, ConsentPageCreateBodyType9
 
         Returns: ConsentPageCreateResponse200
         """

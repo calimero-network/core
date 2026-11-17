@@ -2,7 +2,7 @@ from enum import Enum
 
 
 class ConsentPageCreateBodyType15Kind(str, Enum):
-    SETALLAPPS = "setAllApps"
+    SETCAPABILITIES = "setCapabilities"
 
     def __str__(self) -> str:
         return str(self.value)

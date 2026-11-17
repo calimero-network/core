@@ -1,7 +1,7 @@
 from enum import Enum
 
 
-class ConsentPageCreateBodyType9SubjectTeamsItemRole(str, Enum):
+class ConsentPageCreateBodyType10SubjectTeamsItemRole(str, Enum):
     LEAD = "lead"
     MEMBER = "member"
     READONLY = "readOnly"

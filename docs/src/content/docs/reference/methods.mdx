@@ -22,7 +22,7 @@ codes the document lists for the method beyond the ones every call can get
 (`UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, ...): see
 [errors](/reference/errors/).
 
-Generated from core `afd3a1955`.
+Generated from core `6e68148ca`.
 
 ## `client.apps`
 
@@ -39,6 +39,8 @@ Generated from core `afd3a1955`.
 | `blob_upload(app, sealed=…, body, content_type='application/octet-stream')` | `POST /apps/{app}/blobs` | Upload a blob. *Refusals:* `400 USE_FILES_API`, `429 QUOTA_EXCEEDED` |
 | `call(app, method, args=…, idempotency_key=…, confirm=None)` | `POST /apps/{app}/intents` | Call a method. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 TIMEOUT` |
 | `create(name=…, bundle=…, package=…, version=…, service=…, org=…, access=…, init_args=…, metadata=…, deployment=…)` | `POST /apps` | Create an app instance. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 NOT_OFFERED`, `400 NO_SUCH_SERVICE`, `400 VERSION_REQUIRED`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 INIT_FAILED`, `429 QUOTA_EXCEEDED` |
+| `delegate(app, target, confirm=None)` | `PUT /apps/{app}/delegations/{target}` | Let an app call another as you. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NOTHING_TO_DELEGATE` |
+| `delegations(app)` | `GET /apps/{app}/delegations` | What you let an app do as you |
 | `delete(app)` | `DELETE /apps/{app}` | Delete an app |
 | `exports_export(app, id, recipient)` | `POST /apps/{app}/files/{id}/export` | Export a sealed file's key. *Refusals:* `400 BAD_RECIPIENT`, `429 TOO_MANY_EXPORTS` |
 | `exports_segment(app, id, k)` | `GET /apps/{app}/files/{id}/segments/{k}` | One segment of a sealed file. *Refusals:* `404 NO_SUCH_SEGMENT` |
@@ -64,8 +66,12 @@ Generated from core `afd3a1955`.
 | `run(app, run)` | `GET /apps/{app}/runs/{run}` | One compute run |
 | `run_logs(app, run)` | `GET /apps/{app}/runs/{run}/logs` | A compute run's attempt logs |
 | `runs(app, limit=…, before=…)` | `GET /apps/{app}/runs` | An app's compute runs. *Refusals:* `400 BAD_CURSOR`, `400 BAD_LIMIT` |
+| `secret_clear(app, name, confirm=None)` | `DELETE /apps/{app}/secrets/{name}` | Remove an app's own value of a secret. **passkey**. *Refusals:* `409 CLUSTER_NOT_UPGRADED` |
+| `secret_set(app, name, value, confirm=None)` | `PUT /apps/{app}/secrets/{name}` | Set an app's own value of a declared secret. **passkey**. *Refusals:* `400 BAD_SECRET`, `409 CLUSTER_NOT_UPGRADED`, `409 CONFLICT` |
+| `secrets(app)` | `GET /apps/{app}/secrets` | The secrets an app's release declares |
 | `storage(app)` | `GET /apps/{app}/storage` | What an app stores |
 | `transfer(app, to, confirm=None)` | `POST /apps/{app}/transfer` | Hand an app to another account. **passkey** |
+| `undelegate(app, target)` | `DELETE /apps/{app}/delegations/{target}` | Take back what an app may do on another as you. *Refusals:* `404 NOT_DELEGATED`, `409 FEATURE_NOT_ACTIVE` |
 | `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `409 CONFLICT`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
 | `upgrade_unit(app, version, confirm=None)` | `POST /apps/{app}/upgrade-unit` | Upgrade an app and the apps it created, in one consent. **passkey**. *Refusals:* `400 NOT_A_UNIT`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 USES_NOT_INSTALLED` |
 | `upload_abort(app, upload)` | `DELETE /apps/{app}/files/uploads/{upload}` | Abort an upload |

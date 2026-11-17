@@ -6,6 +6,9 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
+from typing import Union
+
 T = TypeVar("T", bound="ConsentPageCreateBodyType15Subject")
 
 
@@ -14,31 +17,38 @@ class ConsentPageCreateBodyType15Subject:
     """
     Attributes:
         org (str):
-        account (str):
-        all_apps (bool):
+        capabilities (int):
+        account (Union[Unset, str]):
+        team (Union[Unset, str]):
     """
 
     org: str
-    account: str
-    all_apps: bool
+    capabilities: int
+    account: Union[Unset, str] = UNSET
+    team: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         org = self.org
 
+        capabilities = self.capabilities
+
         account = self.account
 
-        all_apps = self.all_apps
+        team = self.team
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "org": org,
-                "account": account,
-                "allApps": all_apps,
+                "capabilities": capabilities,
             }
         )
+        if account is not UNSET:
+            field_dict["account"] = account
+        if team is not UNSET:
+            field_dict["team"] = team
 
         return field_dict
 
@@ -47,14 +57,17 @@ class ConsentPageCreateBodyType15Subject:
         d = dict(src_dict)
         org = d.pop("org")
 
-        account = d.pop("account")
+        capabilities = d.pop("capabilities")
 
-        all_apps = d.pop("allApps")
+        account = d.pop("account", UNSET)
+
+        team = d.pop("team", UNSET)
 
         consent_page_create_body_type_15_subject = cls(
             org=org,
+            capabilities=capabilities,
             account=account,
-            all_apps=all_apps,
+            team=team,
         )
 
         consent_page_create_body_type_15_subject.additional_properties = d

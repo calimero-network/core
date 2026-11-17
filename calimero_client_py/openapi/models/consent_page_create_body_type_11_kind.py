@@ -2,7 +2,7 @@ from enum import Enum
 
 
 class ConsentPageCreateBodyType11Kind(str, Enum):
-    REVOKEINVITE = "revokeInvite"
+    REMOVEMEMBERTEAMS = "removeMemberTeams"
 
     def __str__(self) -> str:
         return str(self.value)

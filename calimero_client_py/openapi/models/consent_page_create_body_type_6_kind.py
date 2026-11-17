@@ -2,7 +2,7 @@ from enum import Enum
 
 
 class ConsentPageCreateBodyType6Kind(str, Enum):
-    LEAVEORG = "leaveOrg"
+    ACCEPTINVITE = "acceptInvite"
 
     def __str__(self) -> str:
         return str(self.value)

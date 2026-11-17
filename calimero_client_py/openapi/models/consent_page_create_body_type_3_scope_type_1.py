@@ -6,11 +6,11 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="ConsentPageCreateBodyType2ScopeType1")
+T = TypeVar("T", bound="ConsentPageCreateBodyType3ScopeType1")
 
 
 @_attrs_define
-class ConsentPageCreateBodyType2ScopeType1:
+class ConsentPageCreateBodyType3ScopeType1:
     """
     Attributes:
         org (str):
@@ -37,12 +37,12 @@ class ConsentPageCreateBodyType2ScopeType1:
         d = dict(src_dict)
         org = d.pop("org")
 
-        consent_page_create_body_type_2_scope_type_1 = cls(
+        consent_page_create_body_type_3_scope_type_1 = cls(
             org=org,
         )
 
-        consent_page_create_body_type_2_scope_type_1.additional_properties = d
-        return consent_page_create_body_type_2_scope_type_1
+        consent_page_create_body_type_3_scope_type_1.additional_properties = d
+        return consent_page_create_body_type_3_scope_type_1
 
     @property
     def additional_keys(self) -> list[str]:

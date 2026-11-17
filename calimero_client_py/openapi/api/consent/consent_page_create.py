@@ -15,6 +15,7 @@ from ...models.consent_page_create_body_type_12 import ConsentPageCreateBodyType
 from ...models.consent_page_create_body_type_13 import ConsentPageCreateBodyType13
 from ...models.consent_page_create_body_type_14 import ConsentPageCreateBodyType14
 from ...models.consent_page_create_body_type_15 import ConsentPageCreateBodyType15
+from ...models.consent_page_create_body_type_16 import ConsentPageCreateBodyType16
 from ...models.consent_page_create_body_type_2 import ConsentPageCreateBodyType2
 from ...models.consent_page_create_body_type_3 import ConsentPageCreateBodyType3
 from ...models.consent_page_create_body_type_4 import ConsentPageCreateBodyType4
@@ -40,6 +41,7 @@ def _get_kwargs(
         "ConsentPageCreateBodyType13",
         "ConsentPageCreateBodyType14",
         "ConsentPageCreateBodyType15",
+        "ConsentPageCreateBodyType16",
         "ConsentPageCreateBodyType2",
         "ConsentPageCreateBodyType3",
         "ConsentPageCreateBodyType4",
@@ -87,6 +89,8 @@ def _get_kwargs(
     elif isinstance(body, ConsentPageCreateBodyType13):
         _kwargs["json"] = body.to_dict()
     elif isinstance(body, ConsentPageCreateBodyType14):
+        _kwargs["json"] = body.to_dict()
+    elif isinstance(body, ConsentPageCreateBodyType15):
         _kwargs["json"] = body.to_dict()
     else:
         _kwargs["json"] = body.to_dict()
@@ -164,6 +168,7 @@ def sync_detailed(
         "ConsentPageCreateBodyType13",
         "ConsentPageCreateBodyType14",
         "ConsentPageCreateBodyType15",
+        "ConsentPageCreateBodyType16",
         "ConsentPageCreateBodyType2",
         "ConsentPageCreateBodyType3",
         "ConsentPageCreateBodyType4",
@@ -190,9 +195,10 @@ def sync_detailed(
             'ConsentPageCreateBodyType10', 'ConsentPageCreateBodyType11',
             'ConsentPageCreateBodyType12', 'ConsentPageCreateBodyType13',
             'ConsentPageCreateBodyType14', 'ConsentPageCreateBodyType15',
-            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3', 'ConsentPageCreateBodyType4',
-            'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6', 'ConsentPageCreateBodyType7',
-            'ConsentPageCreateBodyType8', 'ConsentPageCreateBodyType9']):
+            'ConsentPageCreateBodyType16', 'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3',
+            'ConsentPageCreateBodyType4', 'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6',
+            'ConsentPageCreateBodyType7', 'ConsentPageCreateBodyType8',
+            'ConsentPageCreateBodyType9']):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -225,6 +231,7 @@ def sync(
         "ConsentPageCreateBodyType13",
         "ConsentPageCreateBodyType14",
         "ConsentPageCreateBodyType15",
+        "ConsentPageCreateBodyType16",
         "ConsentPageCreateBodyType2",
         "ConsentPageCreateBodyType3",
         "ConsentPageCreateBodyType4",
@@ -251,9 +258,10 @@ def sync(
             'ConsentPageCreateBodyType10', 'ConsentPageCreateBodyType11',
             'ConsentPageCreateBodyType12', 'ConsentPageCreateBodyType13',
             'ConsentPageCreateBodyType14', 'ConsentPageCreateBodyType15',
-            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3', 'ConsentPageCreateBodyType4',
-            'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6', 'ConsentPageCreateBodyType7',
-            'ConsentPageCreateBodyType8', 'ConsentPageCreateBodyType9']):
+            'ConsentPageCreateBodyType16', 'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3',
+            'ConsentPageCreateBodyType4', 'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6',
+            'ConsentPageCreateBodyType7', 'ConsentPageCreateBodyType8',
+            'ConsentPageCreateBodyType9']):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -281,6 +289,7 @@ async def asyncio_detailed(
         "ConsentPageCreateBodyType13",
         "ConsentPageCreateBodyType14",
         "ConsentPageCreateBodyType15",
+        "ConsentPageCreateBodyType16",
         "ConsentPageCreateBodyType2",
         "ConsentPageCreateBodyType3",
         "ConsentPageCreateBodyType4",
@@ -307,9 +316,10 @@ async def asyncio_detailed(
             'ConsentPageCreateBodyType10', 'ConsentPageCreateBodyType11',
             'ConsentPageCreateBodyType12', 'ConsentPageCreateBodyType13',
             'ConsentPageCreateBodyType14', 'ConsentPageCreateBodyType15',
-            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3', 'ConsentPageCreateBodyType4',
-            'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6', 'ConsentPageCreateBodyType7',
-            'ConsentPageCreateBodyType8', 'ConsentPageCreateBodyType9']):
+            'ConsentPageCreateBodyType16', 'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3',
+            'ConsentPageCreateBodyType4', 'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6',
+            'ConsentPageCreateBodyType7', 'ConsentPageCreateBodyType8',
+            'ConsentPageCreateBodyType9']):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -340,6 +350,7 @@ async def asyncio(
         "ConsentPageCreateBodyType13",
         "ConsentPageCreateBodyType14",
         "ConsentPageCreateBodyType15",
+        "ConsentPageCreateBodyType16",
         "ConsentPageCreateBodyType2",
         "ConsentPageCreateBodyType3",
         "ConsentPageCreateBodyType4",
@@ -366,9 +377,10 @@ async def asyncio(
             'ConsentPageCreateBodyType10', 'ConsentPageCreateBodyType11',
             'ConsentPageCreateBodyType12', 'ConsentPageCreateBodyType13',
             'ConsentPageCreateBodyType14', 'ConsentPageCreateBodyType15',
-            'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3', 'ConsentPageCreateBodyType4',
-            'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6', 'ConsentPageCreateBodyType7',
-            'ConsentPageCreateBodyType8', 'ConsentPageCreateBodyType9']):
+            'ConsentPageCreateBodyType16', 'ConsentPageCreateBodyType2', 'ConsentPageCreateBodyType3',
+            'ConsentPageCreateBodyType4', 'ConsentPageCreateBodyType5', 'ConsentPageCreateBodyType6',
+            'ConsentPageCreateBodyType7', 'ConsentPageCreateBodyType8',
+            'ConsentPageCreateBodyType9']):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

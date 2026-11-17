@@ -6,9 +6,6 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..types import UNSET, Unset
-from typing import Union
-
 T = TypeVar("T", bound="ConsentPageCreateBodyType14Subject")
 
 
@@ -17,38 +14,21 @@ class ConsentPageCreateBodyType14Subject:
     """
     Attributes:
         org (str):
-        capabilities (int):
-        account (Union[Unset, str]):
-        team (Union[Unset, str]):
     """
 
     org: str
-    capabilities: int
-    account: Union[Unset, str] = UNSET
-    team: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         org = self.org
-
-        capabilities = self.capabilities
-
-        account = self.account
-
-        team = self.team
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "org": org,
-                "capabilities": capabilities,
             }
         )
-        if account is not UNSET:
-            field_dict["account"] = account
-        if team is not UNSET:
-            field_dict["team"] = team
 
         return field_dict
 
@@ -57,17 +37,8 @@ class ConsentPageCreateBodyType14Subject:
         d = dict(src_dict)
         org = d.pop("org")
 
-        capabilities = d.pop("capabilities")
-
-        account = d.pop("account", UNSET)
-
-        team = d.pop("team", UNSET)
-
         consent_page_create_body_type_14_subject = cls(
             org=org,
-            capabilities=capabilities,
-            account=account,
-            team=team,
         )
 
         consent_page_create_body_type_14_subject.additional_properties = d
