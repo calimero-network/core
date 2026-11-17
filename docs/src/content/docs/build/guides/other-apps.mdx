@@ -42,6 +42,17 @@ the references on the release's capability card, and an upgrade's consent page
 names the apps a new release starts using or uses differently. The full rules are in
 [Packaging and signing](/build/packaging-signing/).
 
+Three example apps in core's `apps/` show each step, with harness tests:
+
+- [`calendar`](https://github.com/calimero-network/core/tree/master/apps/calendar): the app
+  the other two use. It keeps each caller's events, and `env::via()` keeps a person's
+  private events from an app acting for them.
+- [`planner`](https://github.com/calimero-network/core/tree/master/apps/planner): `create`.
+  Each planner comes with its own calendar and calls it as itself.
+- [`booking`](https://github.com/calimero-network/core/tree/master/apps/booking): `attach`
+  plus delegation. The owner attaches a calendar, and with a person's grant a booking lands
+  in their own calendar.
+
 ## 2. Use an app created with your instance
 
 When someone creates an instance of your release, the node first creates each
@@ -57,7 +68,8 @@ Any method can read a link at any time with `env::linked`:
 
 ```rust
 pub fn put(&mut self, key: String, value: String) -> app::Result<()> {
-    let kv = env::linked("kv").ok_or(app::err!("no kv linked"))?;
+    // `Error::NoKv` is a variant of your `#[app::error]` enum.
+    let kv = env::linked("kv").ok_or_else(|| Error::NoKv.into())?;
     let args = std::collections::BTreeMap::from([("key", key), ("value", value)]);
     env::xcall(&kv, "set", &args)?;
     Ok(())
@@ -84,7 +96,7 @@ Read the link each time you call. The owner may attach another app later, or non
 
 ```rust
 let Some(calendar) = env::linked("calendar") else {
-    return Err(app::err!("attach a calendar first"));
+    app::bail!(Error::NoCalendar); // attach a calendar first
 };
 ```
 
