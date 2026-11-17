@@ -161,9 +161,9 @@ Calimero Cloud's manager API (mdma). Its organizations and clusters take a
 console session (Google sign-in): `cloud login` checks and keeps the session
 token a signed-in console sends, in `{home}/meroctl/cloud.json` (mode `0600`),
 and saves the fresh one the manager sends back on each answer
-(`X-MDMA-Session-Refresh`). No node. A manager (or, for `app publish`, a
-registry) that answers `404` at `/api/...` predates its unversioned routes, and
-the request is sent once more at `/api/v2/...`.
+(`X-MDMA-Session-Refresh`). No node. The manager (and, for `app publish`, the
+registry) is called at `/api/...` only; one that serves nothing but
+`/api/v2/...` answers `404`.
 
 | Command | Route | Meaning |
 | --- | --- | --- |
@@ -378,7 +378,7 @@ cluster an older `meroctl` started in `./.merod-local`.
 
 | Command | Meaning |
 | --- | --- |
-| `local up [--nodes N] [--base-port P] [--dir DIR] [--fresh] [--local] [--image IMG] [--registry-url URL]` | Start the cluster (node `i` on `127.0.0.1:P+i`, default `2501`-`2503`) and wait until it serves, then save it as the node `local` (mock quotes trusted), the default when there is none. It runs in the release's image (`ghcr.io/calimero-network/merod:<release>`, `merod local --bind 0.0.0.0` with its ports published on `127.0.0.1` and its state in the Docker volume `meroctl-local-<base port>`; macOS and Linux), so Docker must be installed and running; `--local` (or `MEROD`) runs the `merod` on `PATH` (or in `MEROD`) instead. `--docker` is still accepted and changes nothing. Its log is `DIR/merod.log`; it prints the URLs and the ops token. A cluster already running from `DIR` is answered as is. The cluster installs packages from `--registry-url` (`MEROD_REGISTRY_URL`; default the public registry, `https://apps.calimero.network`; empty for none), so `app install PACKAGE@VERSION` works on it. |
+| `local up [--nodes N] [--base-port P] [--dir DIR] [--fresh] [--local] [--image IMG] [--registry-url URL]` | Start the cluster (one node unless `--nodes`; node `i` on `127.0.0.1:P+i`, from `2501`) and wait until it serves, then save it as the node `local` (mock quotes trusted), the default when there is none. It runs in the release's image (`ghcr.io/calimero-network/merod:<release>`, `merod local --bind 0.0.0.0` with its ports published on `127.0.0.1` and its state in a Docker volume named after `DIR`; macOS and Linux), so Docker must be installed and running; `--local` (or `MEROD`) runs the `merod` on `PATH` (or in `MEROD`) instead. `--docker` is still accepted and changes nothing. Its log is `DIR/merod.log`; it prints the URLs and the ops token. A cluster already running from `DIR` is answered as is. The cluster installs packages from `--registry-url` (`MEROD_REGISTRY_URL`; default the public registry, `https://apps.calimero.network`; empty for none), so `app install PACKAGE@VERSION` works on it. |
 | `local down [--dir DIR]` | Stop it; its state stays for the next `up`. |
 | `local status [--dir DIR]` | Whether it runs, its URLs and ops token. |
 | `local dev [DIR] [--no-frontend] [cluster flags]` | Develop an app (`DIR` holds `logic/` and `app/`, as `app new` lays it out, or is the crate): start the cluster unless it runs, sign up a deployer, build the crate and upload it as a raw bundle, write `DIR/app/.env.development.local` (`VITE_CALIMERO_TARGET`, `VITE_CALIMERO_NODES`, `VITE_CALIMERO_BUNDLE`), run the frontend's dev server on `http://localhost:5173` (`pnpm dev`, the origin the cluster trusts), then rebuild and upload on every save. Ctrl-C stops the frontend, and the cluster when `dev` started it. |
