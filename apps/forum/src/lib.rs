@@ -817,8 +817,8 @@ impl Forum {
         Ok(())
     }
 
-    /// A post's tags, sorted: its `postTags` rows, not a field of the post (every record
-    /// field must be a key-part type, and a list is not one).
+    /// A post's tags, sorted: its `postTags` rows, not a list field of the post, so that
+    /// posts can be found by one tag through the rows' index.
     fn tags_of(&self, id: &str) -> app::Result<Vec<String>> {
         let rows = self.post_tags.find(
             "byPost",

@@ -103,6 +103,9 @@ pub enum StorageError {
     /// An index entry points at a record that is gone: the index has drifted.
     #[error("index entry without a record")]
     Dangling,
+    /// A list has no item with this id.
+    #[error("list has no item `{0}`")]
+    UnknownItem(String),
     /// A counter's stored value is negative or not an integer.
     #[error("counter `{0}` does not hold a non-negative integer")]
     BadCounter(String),

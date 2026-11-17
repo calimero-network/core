@@ -116,6 +116,26 @@ pub(crate) fn clear_prefix<S: Store>(store: &mut S, prefix: &[u8]) -> u64 {
     }
 }
 
+/// Delete at most `max` keys under `prefix`, in key order, a batch at a time; returns how
+/// many were deleted and whether none is left.
+pub(crate) fn delete_some<S: Store>(store: &mut S, prefix: &[u8], max: u64) -> (u64, bool) {
+    let (start, end) = bounds(prefix);
+    let mut removed = 0;
+    while removed < max {
+        // A fresh cursor per batch: the previous batch is gone, so this one starts after it.
+        let want = (max - removed).min(u64::from(MAX_RANGE_BATCH)) as u32;
+        let batch = store.range(&start, &end, false).next(want);
+        if batch.is_empty() {
+            return (removed, true);
+        }
+        for (k, _) in batch {
+            store.delete(&k);
+            removed += 1;
+        }
+    }
+    (removed, store.range(&start, &end, false).next(1).is_empty())
+}
+
 /// Read up to `limit + 1` entries under the encoded `base` and cut the page at `limit`.
 ///
 /// `from` and `to` are further parts after `base`; the cursor is the base64url of the last
