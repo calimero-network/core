@@ -203,6 +203,87 @@ impl SecretsError {
     }
 }
 
+/// Most apps one release references.
+pub const MAX_USES: usize = 16;
+/// Most bytes of a reference's name.
+pub const MAX_USE_NAME_BYTES: usize = 32;
+/// Most bytes of a reference's package or range.
+pub const MAX_USE_FIELD_BYTES: usize = 128;
+
+/// How a release holds an app it references (`BundleManifest::uses`).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum UseMode {
+    /// Created with the referencing app, in its organization, and upgraded with it in one
+    /// consent: the two are one unit.
+    #[default]
+    Create,
+    /// An app the deployer already runs: linked, never created or upgraded by the
+    /// referencing app; a version outside the range is a warning, not an upgrade.
+    Attach,
+}
+
+/// One app a release references (`BundleManifest::uses`).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BundleUse {
+    /// The referenced package, e.g. `com.calimero.confidential-kv`.
+    pub package: String,
+    /// The semver requirement its releases must meet (`^0.1`).
+    pub range: String,
+    #[serde(default)]
+    pub mode: UseMode,
+    /// The release the app was built against (`calimero.lock`), inside `range`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// That release's ABI, as the app vendored it: `sha256:<64 hex>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abi: Option<String>,
+}
+
+/// Whether `name` may name a reference: `a-z`, `0-9` and `_`, starting with a letter, at
+/// most [`MAX_USE_NAME_BYTES`]; the name the app's code knows it by.
+#[must_use]
+pub fn is_use_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_USE_NAME_BYTES
+        && name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Why a manifest's `uses` are refused.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum UsesError {
+    #[error("a release references at most {MAX_USES} apps")]
+    TooMany,
+    #[error("reference name {0:?} must be a-z, 0-9 and _, starting with a letter, at most {MAX_USE_NAME_BYTES} bytes")]
+    BadName(String),
+    #[error("reference {0} names no package, or one longer than {MAX_USE_FIELD_BYTES} bytes")]
+    BadPackage(String),
+    #[error("reference {0} references the release's own package")]
+    SelfReference(String),
+    #[error("reference {name}'s range {range:?} is not a semver requirement")]
+    BadRange { name: String, range: String },
+    #[error("reference {name}'s version {version:?} is not a version inside {range}")]
+    VersionOutsideRange {
+        name: String,
+        version: String,
+        range: String,
+    },
+    #[error("reference {0}'s abi must be sha256: and 64 lowercase hex digits")]
+    BadAbi(String),
+}
+
+impl UsesError {
+    /// The stable code a node answers with.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        "BAD_USES"
+    }
+}
+
 impl BundleManifest {
     /// Checks `secrets` against the rules a node enforces at install: valid names, at most
     /// [`MAX_SECRETS`], each with 1 to [`MAX_SECRET_HOSTS`] hosts, every host the host of one
@@ -243,6 +324,63 @@ impl BundleManifest {
                         name: name.clone(),
                         host: host.clone(),
                     });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks `uses` against the rules a node enforces at install: valid names, at most
+    /// [`MAX_USES`], a package other than the release's own, a semver range, a locked
+    /// version inside it, and an ABI digest of the right shape.
+    ///
+    /// # Errors
+    ///
+    /// The first rule a reference breaks.
+    pub fn check_uses(&self) -> Result<(), UsesError> {
+        let Some(uses) = &self.uses else {
+            return Ok(());
+        };
+        if uses.len() > MAX_USES {
+            return Err(UsesError::TooMany);
+        }
+        for (name, u) in uses {
+            if !is_use_name(name) {
+                return Err(UsesError::BadName(name.clone()));
+            }
+            if u.package.is_empty()
+                || u.package.len() > MAX_USE_FIELD_BYTES
+                || u.package
+                    .chars()
+                    .any(|c| c.is_control() || c.is_whitespace())
+            {
+                return Err(UsesError::BadPackage(name.clone()));
+            }
+            if u.package == self.package {
+                return Err(UsesError::SelfReference(name.clone()));
+            }
+            let bad_range = || UsesError::BadRange {
+                name: name.clone(),
+                range: u.range.clone(),
+            };
+            if u.range.len() > MAX_USE_FIELD_BYTES {
+                return Err(bad_range());
+            }
+            let range = semver::VersionReq::parse(&u.range).map_err(|_| bad_range())?;
+            if let Some(version) = &u.version {
+                let inside = semver::Version::parse(version).is_ok_and(|v| range.matches(&v));
+                if !inside {
+                    return Err(UsesError::VersionOutsideRange {
+                        name: name.clone(),
+                        version: version.clone(),
+                        range: u.range.clone(),
+                    });
+                }
+            }
+            if let Some(abi) = &u.abi {
+                let hex = abi.strip_prefix("sha256:").unwrap_or_default();
+                if hex.len() != 64 || !hex.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
+                    return Err(UsesError::BadAbi(name.clone()));
                 }
             }
         }
@@ -468,6 +606,14 @@ pub struct BundleManifest {
     /// raw manifest).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<BTreeMap<String, BundleSecret>>,
+    /// The other apps this release calls, by the name its code knows each by
+    /// ([`BundleUse`]): the package, the semver range it works with, the release it was
+    /// built against and that release's ABI, and whether the reference is created with
+    /// the app and upgraded with it (`create`) or an app the deployer already runs
+    /// (`attach`). Signed with the rest, shown before install and on the upgrade consent
+    /// page. An older node ignores the field (the signature is over the raw manifest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uses: Option<BTreeMap<String, BundleUse>>,
 
     /// Who upgrades the package's instances ([`UpgradeAuthority`]); absent
     /// means [`UpgradeAuthority::Owner`]. Signed with the rest; a value other
@@ -554,6 +700,7 @@ impl BundleManifest {
             frontend_aliases: _,
             outbound: _,
             secrets: _,
+            uses: _,
             upgrades: _,
             signature: _,
         } = self;
@@ -691,6 +838,14 @@ mod tests {
         .unwrap()
     }
 
+    fn with_uses(uses: serde_json::Value) -> BundleManifest {
+        serde_json::from_value(serde_json::json!({
+            "version": "1.0", "package": "com.example.notes", "appVersion": "1.0.0",
+            "minRuntimeVersion": "0.1.0", "uses": uses,
+        }))
+        .unwrap()
+    }
+
     /// A secret goes only where the release already says data goes: each host is an
     /// `outbound` prefix's host; names, counts and descriptions are bounded.
     #[test]
@@ -767,6 +922,77 @@ mod tests {
         assert_eq!(outbound_host("http://api.example.com/"), None);
         assert!(is_secret_name("NEAR_AI_API_KEY"));
         assert!(!is_secret_name("1KEY") && !is_secret_name("key") && !is_secret_name(""));
+    }
+
+    /// A release names the apps it calls: the package, a semver range, the locked
+    /// release inside it and its ABI digest; `create` unless it says `attach`.
+    #[test]
+    fn a_release_declares_the_apps_it_uses() {
+        let abi = format!("sha256:{}", "a".repeat(64));
+        let ok = with_uses(serde_json::json!({
+            "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.1.3", "abi": abi },
+            "calendar": { "package": "com.example.calendar", "range": ">=2, <3", "mode": "attach" },
+        }));
+        assert_eq!(ok.check_uses(), Ok(()));
+        let uses = ok.uses.as_ref().unwrap();
+        assert_eq!(uses["kv"].mode, UseMode::Create);
+        assert_eq!(uses["calendar"].mode, UseMode::Attach);
+        let again: BundleManifest =
+            serde_json::from_value(serde_json::to_value(&ok).unwrap()).unwrap();
+        assert_eq!(again.uses, ok.uses);
+
+        let err = |u| with_uses(u).check_uses().unwrap_err();
+        let kv = |extra: serde_json::Value| {
+            let mut u =
+                serde_json::json!({ "package": "com.calimero.confidential-kv", "range": "^0.1" });
+            u.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::json!({ "kv": u })
+        };
+        assert!(matches!(
+            err(kv(serde_json::json!({ "version": "0.2.0" }))),
+            UsesError::VersionOutsideRange { .. }
+        ));
+        assert!(matches!(
+            err(kv(serde_json::json!({ "range": "not a range" }))),
+            UsesError::BadRange { .. }
+        ));
+        assert!(matches!(
+            err(kv(serde_json::json!({ "abi": "sha256:XYZ" }))),
+            UsesError::BadAbi(_)
+        ));
+        assert!(matches!(
+            err(kv(serde_json::json!({ "package": "com.example.notes" }))),
+            UsesError::SelfReference(_)
+        ));
+        assert!(matches!(
+            err(kv(serde_json::json!({ "package": "" }))),
+            UsesError::BadPackage(_)
+        ));
+        assert!(matches!(
+            err(serde_json::json!({ "Kv": { "package": "p", "range": "^1" } })),
+            UsesError::BadName(_)
+        ));
+        let many: serde_json::Map<String, serde_json::Value> = (0..=MAX_USES)
+            .map(|i| {
+                (
+                    format!("a{i}"),
+                    serde_json::json!({ "package": format!("p{i}"), "range": "^1" }),
+                )
+            })
+            .collect();
+        assert_eq!(err(serde_json::Value::Object(many)), UsesError::TooMany);
+        // A mode other than create or attach, or an unknown key, does not read.
+        let bad: Result<BundleManifest, _> = serde_json::from_value(serde_json::json!({
+            "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
+            "uses": { "kv": { "package": "q", "range": "^1", "mode": "borrow" } },
+        }));
+        assert!(bad.is_err());
+        // None: nothing to check, nothing written.
+        let none = with_uses(serde_json::Value::Null);
+        assert_eq!(none.check_uses(), Ok(()));
+        assert!(serde_json::to_value(&none).unwrap().get("uses").is_none());
     }
 
     /// A minimal manifest JSON with the given optional `handlers` block spliced

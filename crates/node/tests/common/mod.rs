@@ -504,6 +504,7 @@ fn mpk_build(
         upgrades: None,
         outbound: Vec::new(),
         secrets: None,
+        uses: None,
         services: None,
         pipelines: pipelines
             .iter()

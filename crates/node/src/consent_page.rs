@@ -1262,6 +1262,20 @@ fn upgrade_attention(sheet: &Value) -> Vec<Value> {
             secrets,
         ));
     }
+    let added: Vec<String> = strings(&sheet["uses"]["added"]);
+    let changed: Vec<String> = sheet["uses"]["changed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["name"].as_str().map(str::to_owned))
+        .collect();
+    if !added.is_empty() || !changed.is_empty() {
+        out.push(attention(
+            "usesApps",
+            "Calls other apps it did not call before, or calls them differently:".to_owned(),
+            added.into_iter().chain(changed).collect(),
+        ));
+    }
     let origins = strings(&sheet["frontend"]["newLoginOrigins"]);
     if !origins.is_empty() {
         out.push(attention(
@@ -2968,6 +2982,26 @@ mod tests {
         assert!(csp.contains("default-src 'none'"), "{csp}");
         assert!(!csp.contains("unsafe-inline"), "{csp}");
         assert!(csp.contains("connect-src 'self'"), "{csp}");
+    }
+
+    #[test]
+    fn the_page_keeps_its_security_cues_in_the_main_view() {
+        let main = PAGE_HTML
+            .split("<details")
+            .next()
+            .expect("the page has a main view");
+        for cue in [
+            "Check your address bar shows <strong class=\"host\">",
+            "id=\"code\"",
+            "id=\"approve\"",
+            "id=\"decline\"",
+            "id=\"attention\"",
+            "id=\"expires\"",
+        ] {
+            assert!(main.contains(cue), "{cue} is in the main view");
+        }
+        assert!(PAGE_HTML.contains("<summary>Details</summary>"));
+        assert!(!PAGE_HTML.contains("https://"), "no external resource");
     }
 
     #[test]
