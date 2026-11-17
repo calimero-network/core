@@ -197,7 +197,7 @@ impl Feature {
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
             Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
-            Self::AppLinks => "1.0.0-rc.30",
+            Self::AppLinks => "1.0.0-rc.31",
         }
     }
 }
@@ -612,7 +612,7 @@ mod tests {
     const RC22: &str = "1.0.0-rc.22";
     const RC24: &str = "1.0.0-rc.24";
     const RC29: &str = "1.0.0-rc.29";
-    const RC30: &str = "1.0.0-rc.30";
+    const RC31: &str = "1.0.0-rc.31";
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1005,7 +1005,7 @@ mod tests {
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
             .iter()
-            .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC30].contains(&f.since()));
+            .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC31].contains(&f.since()));
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
         let (after, last): (Vec<Feature>, Vec<Feature>) =
@@ -1115,7 +1115,7 @@ mod tests {
         for &feature in &rc29 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.30's wait for every node on rc.30.
+        // rc.31's wait for every node on rc.31.
         for &feature in &rc30 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
@@ -1124,11 +1124,11 @@ mod tests {
             );
         }
         for n in &mut nodes {
-            n.release = RC30;
+            n.release = RC31;
         }
         let raise = SystemCmd::SetClusterVersion {
-            version: RC30.into(),
-            nodes: (1..=3).map(|id| (id, RC30.to_owned())).collect(),
+            version: RC31.into(),
+            nodes: (1..=3).map(|id| (id, RC31.to_owned())).collect(),
         };
         propose(&mut nodes, &raise).unwrap();
         for &feature in &rc30 {
