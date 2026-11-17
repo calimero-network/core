@@ -99,6 +99,9 @@ pub struct Booking {
 | `find(index, &prefix, opts)` | Records whose index fields start with `prefix`, in index order, one page at a time. |
 | `scan(opts)` | All records in key order, one page at a time. |
 | `clear()` | Removes every record with its index, unique and count entries; returns how many records there were. |
+| `retain(\|r\| keep)` | Keeps the records `keep` accepts; reads each record once and removes the rest without reading them again. |
+| `remove_by(index, &prefix, max)` | Removes at most `max` of the records `find` would answer; answers a `Progress { removed, done }`. |
+| `clear_some(max)` | Removes at most `max` records; `done` once the table is empty. |
 | `iter()` / `scan_iter(opts)` / `find_iter(index, &prefix, opts)` | The same reads over every page, as an iterator (see [Iterating](#iterating)). |
 | `count(name, &prefix)` | A maintained count: one read when `prefix` names every field of the count. |
 | `search(text, SearchOpts)` | Full-text search over `#[table(search = [..])]` fields, best match first (views only). |
@@ -155,9 +158,9 @@ every entry it reads. A view that answers a client should still return one
 | Type | Operations |
 | --- | --- |
 | `Cell<T>` | `get`, `set`, `clear`, `is_set`, `get_or_default`, `replace` and `take` (return the old value), `update(\|old\| new)` |
-| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values`, `retain`; a value can be a collection ([Collections inside collections](#collections-inside-collections)) |
-| `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `retain` |
-| `Vector<T>` | A collection per position ([Collections inside collections](#collections-inside-collections)), or values: `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
+| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `clear_some(max)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values`, `retain`; a value can be a collection ([Collections inside collections](#collections-inside-collections)) |
+| `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `clear_some(max)`, `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `retain` |
+| `Vector<T>` | A collection per position ([Collections inside collections](#collections-inside-collections)), or values: `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `clear_some(max)` (from the end), `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
 | `Counter` | `get`, `add`, `increment`, `decrement` (stops at zero), `reset` |
 | `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of`, `page` and `iter` as `(hex, value)` in hash order |
 | `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` and `contains_for(account)` read another's; `page`, `iter` and `iter_with` list `(account, value)` in account order |
@@ -242,6 +245,11 @@ pub struct Store {
 - Lengths and counts are stored and kept with an atomic add on every write, so
   `len` and `count` are one read, never a scan.
 - `clear` deletes in batches of at most 1,000 until nothing is left.
+- Removing a table record costs `1 + indexes + uniques + counts` writes, so a
+  run removes a few thousand at most. Past that, remove a slice per run:
+  `clear_some(max)` on a `Table`, `UnorderedMap`, `Set` or `Vector`, and
+  `Table::remove_by(index, &prefix, max)`, answer `Progress { removed, done }`;
+  call them from a timer until `done`.
 - A run makes at most 10,000 writes, and every `put`, `delete` and `add` is
   one. The batch operations keep to a write per element and one `add` for the
   length: `extend` on a vector, map or set (a `push` or `insert` per value

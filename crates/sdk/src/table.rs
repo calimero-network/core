@@ -160,6 +160,17 @@ impl<T> Iterator for Iter<'_, T> {
 
 impl<T> core::iter::FusedIterator for Iter<'_, T> {}
 
+/// How far a bounded removal got (`clear_some`, [`Table::remove_by`]): how many it removed,
+/// and whether nothing is left. A run makes at most 10,000 writes, so a large clear is done a
+/// slice per run, from a timer, until `done`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Progress {
+    /// How many were removed this time.
+    pub removed: u64,
+    /// Whether nothing is left to remove.
+    pub done: bool,
+}
+
 /// Options of [`Table::find`] and [`Table::scan`].
 #[derive(Clone, Debug, Default)]
 pub struct FindOpts {
@@ -465,10 +476,119 @@ impl<T: Record, S: Store> Table<T, S> {
         let Some(record) = self.read(&record_key)? else {
             return Ok(false);
         };
-        let old = self.entries(&record)?;
+        self.remove_record(&record)?;
+        Ok(true)
+    }
+
+    /// Remove a record already read, with its index, unique and count entries: no read.
+    fn remove_record(&mut self, record: &T) -> Result<(), StorageError> {
+        let old = self.entries(record)?;
         self.store.delete(&old.record);
         self.reindex(Some(&old), None);
-        Ok(true)
+        Ok(())
+    }
+
+    /// Whether any key is left under the encoded `base`: one cursor read of one entry.
+    fn any_under(&self, base: &[u8]) -> bool {
+        let (start, end) = bounds(base);
+        !self.store.range(&start, &end, false).next(1).is_empty()
+    }
+
+    /// Keep only the records `keep` accepts; returns how many were removed. Every record is
+    /// read once, through one cursor, and a rejected one is removed from what was read (a
+    /// delete for it and each of its index and unique entries, an `add` per count), with no
+    /// second read. Each removal costs `1 + indexes + uniques + counts` writes against the
+    /// run's 10,000: past that, use [`Table::remove_by`] or [`Table::clear_some`] a slice per run.
+    pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) -> Result<u64, StorageError> {
+        let base = self.encode(&self.prefix("r", &[], &[]))?;
+        let (start, end) = bounds(&base);
+        let mut all = self.store.range(&start, &end, false);
+        let mut removed = 0;
+        loop {
+            let batch = all.next(MAX_RANGE_BATCH);
+            if batch.is_empty() {
+                return Ok(removed);
+            }
+            for (_, bytes) in batch {
+                let record: T = value::from_slice(&bytes)?;
+                if !keep(&record) {
+                    self.remove_record(&record)?;
+                    removed += 1;
+                }
+            }
+        }
+    }
+
+    /// Remove the records whose index fields start with `prefix` (as [`Table::find`] finds
+    /// them), at most `max` of them: a read of each record and its writes, nothing else.
+    /// `done` says whether none is left under the prefix; pass `u64::MAX` for all.
+    pub fn remove_by(
+        &mut self,
+        index: &str,
+        prefix: &[KeyPart],
+        max: u64,
+    ) -> Result<Progress, StorageError> {
+        let Some((_, fields)) = T::INDEXES.iter().find(|(name, _)| *name == index) else {
+            return Err(StorageError::UnknownName(index.into()));
+        };
+        if prefix.len() > fields.len() {
+            return Err(StorageError::PrefixTooLong {
+                given: prefix.len(),
+                max: fields.len(),
+            });
+        }
+        let base = self.encode(&self.prefix("i", &[index], prefix))?;
+        let (start, end) = bounds(&base);
+        let mut found = self.store.range(&start, &end, false);
+        let mut removed = 0;
+        while removed < max {
+            let want = (max - removed).min(u64::from(MAX_RANGE_BATCH)) as u32;
+            let batch = found.next(want);
+            if batch.is_empty() {
+                return Ok(Progress {
+                    removed,
+                    done: true,
+                });
+            }
+            for (_, record_key) in batch {
+                let record = self.read(&record_key)?.ok_or(StorageError::Dangling)?;
+                self.remove_record(&record)?;
+                removed += 1;
+            }
+        }
+        Ok(Progress {
+            removed,
+            done: !self.any_under(&base),
+        })
+    }
+
+    /// Remove at most `max` records, in key order, with their index, unique and count
+    /// entries; `done` says whether the table is empty. Call it from a timer until `done` to
+    /// clear a table too large for one run's writes.
+    pub fn clear_some(&mut self, max: u64) -> Result<Progress, StorageError> {
+        let base = self.encode(&self.prefix("r", &[], &[]))?;
+        let (start, end) = bounds(&base);
+        let mut all = self.store.range(&start, &end, false);
+        let mut removed = 0;
+        while removed < max {
+            let want = (max - removed).min(u64::from(MAX_RANGE_BATCH)) as u32;
+            let batch = all.next(want);
+            if batch.is_empty() {
+                return Ok(Progress {
+                    removed,
+                    done: true,
+                });
+            }
+            for (_, bytes) in batch {
+                let record: T = value::from_slice(&bytes)?;
+                self.remove_record(&record)?;
+                removed += 1;
+            }
+        }
+        Ok(Progress {
+            removed,
+            done: !self.any_under(&base),
+        })
     }
 
     /// Records whose index fields start with `prefix`, in index order, one page at a time.

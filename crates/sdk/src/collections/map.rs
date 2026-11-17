@@ -17,7 +17,7 @@ use crate::encoding::key::{self, FromKey, KeyPart, ToKey};
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
-use crate::table::{FindOpts, Iter, Page};
+use crate::table::{FindOpts, Iter, Page, Progress};
 
 use super::slots::decode_value;
 pub use super::slots::MapValue;
@@ -215,6 +215,18 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
                 Ok(None)
             }
         }
+    }
+
+    /// Remove at most `max` entries, in key order, and the count by one `add`; `done` says
+    /// whether the map is empty. Call it from a timer until `done` to clear a map too large
+    /// for one run's 10,000 writes.
+    pub fn clear_some(&mut self, max: u64) -> Result<Progress, StorageError> {
+        let base = self.base()?;
+        let (removed, done) = crate::commons::delete_some(&mut self.store, &base, max);
+        if removed > 0 {
+            self.store.add(&self.count_key()?, -(removed as i64));
+        }
+        Ok(Progress { removed, done })
     }
 
     /// How many keys hold a value: one read of the stored count, never a scan. (A map of
