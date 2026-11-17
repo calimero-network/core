@@ -107,6 +107,23 @@ export function createRoutes(api: RouteClient) {
       create: (args: operations['app_create']['requestBody']['content']['application/json'] = {}, options?: MethodOptions): Promise<operations['app_create']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/apps","pathParams":[],"query":[],"body":"fields","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_create']['responses'][200]['content']['application/json']>,
       /**
+       * Let an app call another as you.
+       *
+       * `PUT /apps/{app}/delegations/{target}` (`app_delegate`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      delegate: (args: operations['app_delegate']['parameters']['path'] & operations['app_delegate']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_delegate']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"PUT","path":"/apps/{app}/delegations/{target}","pathParams":["app","target"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_delegate']['responses'][200]['content']['application/json']>,
+      /**
+       * What you let an app do as you.
+       *
+       * `GET /apps/{app}/delegations` (`app_delegations`). **Who:** signed in (a session or an API key).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      delegations: (args: operations['app_delegations']['parameters']['path'], options?: MethodOptions): Promise<operations['app_delegations']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/delegations","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_delegations']['responses'][200]['content']['application/json']>,
+      /**
        * Delete an app.
        *
        * `DELETE /apps/{app}` (`app_delete`). **Who:** a passkey session (an API key is refused).
@@ -162,6 +179,23 @@ export function createRoutes(api: RouteClient) {
        */
       get: (args: operations['app_get']['parameters']['path'], options?: MethodOptions): Promise<operations['app_get']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/apps/{app}","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_get']['responses'][200]['content']['application/json']>,
+      /**
+       * Attach an app to one of an app's references.
+       *
+       * `PUT /apps/{app}/links/{name}` (`app_link`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      link: (args: operations['app_link']['parameters']['path'] & { body: operations['app_link']['requestBody']['content']['application/json'] }, options?: MethodOptions): Promise<operations['app_link']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"PUT","path":"/apps/{app}/links/{name}","pathParams":["app","name"],"query":[],"body":"whole","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_link']['responses'][200]['content']['application/json']>,
+      /**
+       * List an app's links to the apps its release uses.
+       *
+       * `GET /apps/{app}/links` (`app_links`). **Who:** whoever the app's access admits (a public app: anyone).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      links: (args: operations['app_links']['parameters']['path'], options?: MethodOptions): Promise<operations['app_links']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/links","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_links']['responses'][200]['content']['application/json']>,
       /**
        * Apps the caller reaches.
        *
@@ -310,6 +344,32 @@ export function createRoutes(api: RouteClient) {
       runs: (args: operations['app_runs']['parameters']['path'] & NonNullable<operations['app_runs']['parameters']['query']>, options?: MethodOptions): Promise<operations['app_runs']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/apps/{app}/runs","pathParams":["app"],"query":["limit","before"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_runs']['responses'][200]['content']['application/json']>,
       /**
+       * Remove an app's own value of a secret.
+       *
+       * `DELETE /apps/{app}/secrets/{name}` (`app_secret_clear`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      secretClear: (args: operations['app_secret_clear']['parameters']['path'] & Partial<NonNullable<operations['app_secret_clear']['requestBody']>['content']['application/json']>, options?: MethodOptions): Promise<operations['app_secret_clear']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/apps/{app}/secrets/{name}","pathParams":["app","name"],"query":[],"body":"fields","optionalBody":true,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_secret_clear']['responses'][200]['content']['application/json']>,
+      /**
+       * The secrets an app's release declares.
+       *
+       * `GET /apps/{app}/secrets` (`app_secrets`). **Who:** signed in (a session or an API key).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      secrets: (args: operations['app_secrets']['parameters']['path'], options?: MethodOptions): Promise<operations['app_secrets']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/secrets","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_secrets']['responses'][200]['content']['application/json']>,
+      /**
+       * Set an app's own value of a declared secret.
+       *
+       * `PUT /apps/{app}/secrets/{name}` (`app_secret_set`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      secretSet: (args: operations['app_secret_set']['parameters']['path'] & operations['app_secret_set']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_secret_set']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"PUT","path":"/apps/{app}/secrets/{name}","pathParams":["app","name"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_secret_set']['responses'][200]['content']['application/json']>,
+      /**
        * What an app stores.
        *
        * `GET /apps/{app}/storage` (`app_storage`). **Who:** whoever the app's access admits (a public app: anyone).
@@ -327,6 +387,23 @@ export function createRoutes(api: RouteClient) {
       transfer: (args: operations['app_transfer']['parameters']['path'] & operations['app_transfer']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_transfer']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/apps/{app}/transfer","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_transfer']['responses'][200]['content']['application/json']>,
       /**
+       * Take back what an app may do on another as you.
+       *
+       * `DELETE /apps/{app}/delegations/{target}` (`app_undelegate`). **Who:** signed in (a session or an API key).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      undelegate: (args: operations['app_undelegate']['parameters']['path'], options?: MethodOptions): Promise<operations['app_undelegate']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/apps/{app}/delegations/{target}","pathParams":["app","target"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_undelegate']['responses'][200]['content']['application/json']>,
+      /**
+       * Detach an app attached to an app.
+       *
+       * `DELETE /apps/{app}/links/{name}` (`app_unlink`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      unlink: (args: operations['app_unlink']['parameters']['path'] & operations['app_unlink']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_unlink']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/apps/{app}/links/{name}","pathParams":["app","name"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_unlink']['responses'][200]['content']['application/json']>,
+      /**
        * Upgrade an app instance.
        *
        * `POST /apps/{app}/upgrade` (`app_upgrade`). **Who:** an account holder (a passkey session not bound to an app's frontend).
@@ -335,6 +412,15 @@ export function createRoutes(api: RouteClient) {
        */
       upgrade: (args: operations['app_upgrade']['parameters']['path'] & operations['app_upgrade']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_upgrade']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/apps/{app}/upgrade","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_upgrade']['responses'][200]['content']['application/json']>,
+      /**
+       * Upgrade an app and the apps it created, in one consent.
+       *
+       * `POST /apps/{app}/upgrade-unit` (`app_upgrade_unit`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      upgradeUnit: (args: operations['app_upgrade_unit']['parameters']['path'] & operations['app_upgrade_unit']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_upgrade_unit']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/upgrade-unit","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_upgrade_unit']['responses'][200]['content']['application/json']>,
       /**
        * Abort an upload.
        *
