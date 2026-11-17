@@ -559,6 +559,14 @@ class CalimeroClientTest {
         }
 
     @Test
+    fun `strips only the consent parameters from a return`() {
+        assertEquals("https://a.example/p?x=1&y=2#h", com.calimero.mero.withoutConsentReturn("https://a.example/p?x=1&request_id=r&result=approved&y=2#h"))
+        assertEquals("mero-chat://consent/?tab=1", com.calimero.mero.withoutConsentReturn("mero-chat://consent/?tab=1&request_id=r&result=declined"))
+        assertEquals("not a url", com.calimero.mero.withoutConsentReturn("not a url"))
+        assertEquals("calimero.consent", com.calimero.mero.CONSENT_STORAGE_KEY)
+    }
+
+    @Test
     fun `returns native consent to the package's served page`() {
         assertEquals("https://x.apps.calimero.network/3.1.72/?native-consent=1", consentReturnTo("https://x.apps.calimero.network/", "3.1.72"))
         assertEquals("https://x.apps.calimero.network/3.1.72/?native-consent=1", consentReturnTo("https://x.apps.calimero.network", "3.1.72"))

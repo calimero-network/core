@@ -885,6 +885,32 @@ fun consentReturn(href: String): ConsentReturn? {
     return ConsentReturn(requestId, result)
 }
 
+/** [href] without the consent page's `request_id` and `result` (mero-js `withoutConsentReturn`); [href] itself when it is not a URL. */
+fun withoutConsentReturn(href: String): String {
+    val url = href.toHttpUrlOrNull()
+    if (url != null) {
+        return url
+            .newBuilder()
+            .removeAllQueryParameters("request_id")
+            .removeAllQueryParameters("result")
+            .build()
+            .toString()
+    }
+    // An app scheme (`mero-chat://consent?...`), which HttpUrl does not read: through `https`, then back.
+    val scheme = href.substringBefore("://", "")
+    if (scheme.isEmpty()) return href
+    val rewritten = withoutConsentReturn("https://" + href.substringAfter("://"))
+    return if (rewritten.startsWith("https://")) "$scheme://" + rewritten.removePrefix("https://") else href
+}
+
+/**
+ * The key an app keeps the consent request it started under (mero-js `CONSENT_STORAGE_KEY`), until
+ * the page sends the person back: only the request id, never the request. mero-compose's
+ * `MeroAppSession` keeps it in its [com.calimero.mero.storage.SessionStore], so a return that
+ * arrives after the process was killed still resumes ([CalimeroClient.resumeConsent]).
+ */
+const val CONSENT_STORAGE_KEY: String = "calimero.consent"
+
 /**
  * A native app's consent `returnTo` on Calimero Cloud: the package's served page
  * (`{origin}/{version}/?native-consent=1`), which passes the answer on to the app
