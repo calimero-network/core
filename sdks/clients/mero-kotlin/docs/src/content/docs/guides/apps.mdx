@@ -50,3 +50,34 @@ val outbox = client.apps.xcalls(app = appId)                 // a component app'
 client.publishPresence(appId, seq = 1, state = "typing".encodeToByteArray())
 client.presence(appId)
 ```
+
+## Sealed files
+
+A component app's sealed files are encrypted on the node; only the app's owner and its
+organization's members may read them, and the node hands out only ciphertext:
+
+```kotlin
+val file = client.uploadFile(appId, bytes)                  // FileInfo(id, blobId, size, sha256, index)
+val large = client.uploadFile(appId, java.io.File(path))    // past 16 MiB: an upload session, read part by part
+val plain = client.exportFile(appId, file.id)               // in memory
+client.exportFileTo(appId, file.id, FileSink.of(output))    // streamed, one 64 KiB chunk at a time
+```
+
+An export asks the node to wrap the file's data key to a key made for that call, checks every
+segment against the file's id before opening it, and the size and plaintext SHA-256 at the end
+(core's `Client::export_file_to`). A check that fails is an `ExportError` (`BAD_ANSWER`,
+`NOT_THE_FILE`, `TAMPERED`, `TOO_LARGE`); discard what the sink got then, since it may be a prefix.
+Cancel the coroutine to stop a download.
+
+## Pipeline receipts
+
+```kotlin
+val cluster = client.verifyAppCluster(appId)                // each replica's attested receipt key, the governance
+val answer = client.pipelineReceipt(appId, runId)           // { receipt, node, signature }, version 2
+val receipt = client.verifyPipelineReceipt(appId, runId, answer)
+```
+
+`verifyPipelineReceipt` checks, under the client's own `CloudPolicy`, that an attested replica's
+receipt key signed the receipt, that it is for that app and run, and that every job's report is
+signed by a job key a job node's quote binds to the cluster; a failure is a
+`ReceiptVerificationException` naming what failed (core's `calimero-client`, mero-js `receipts.ts`).

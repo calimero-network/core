@@ -43,7 +43,11 @@ decision:
 | `CONSENT_REPLACED` | the node no longer knows the app's request (`404`): an account has one undecided request per node, and a newer one replaced it, possibly on a forged page. Do not act on it either |
 
 Keep `started.requestId` across the trip to the browser (`onSaveInstanceState`, or your view
-model's saved state), since the process may be gone when the link comes back.
+model's saved state), since the process may be gone when the link comes back. `MeroAppSession`
+does this itself, as mero-js does with `sessionStorage`: it keeps only the request id in its
+`SessionStore` (under `CONSENT_STORAGE_KEY`), once the page opens, and forgets it on the node's
+decision or `CONSENT_REPLACED`; any other refusal keeps it for the real return.
+`withoutConsentReturn(href)` strips `request_id` and `result` from a link.
 
 The four steps are the same in mero-js and swift-sdk (`request / begin / resume / wait`):
 
