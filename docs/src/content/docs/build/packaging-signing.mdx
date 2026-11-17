@@ -113,6 +113,77 @@ detail.
 
    `pack` checks each against the node's own rules before signing.
 
+   One more comes only from the crate's `[package.metadata.calimero]`:
+
+   - `uses`: the other apps the release calls, by the name its code knows each by.
+     Each names the package, the semver range it works with, and `mode`:
+     `create` (the default) is created with the app and upgraded with it,
+     `attach` is an app the deployer already runs. A `calimero.lock` beside
+     `Cargo.toml` pins each to a release inside its range and to that release's
+     ABI digest; `pack` writes both into the manifest and checks the vendored
+     ABI (`calimero/abi/<name>.json`) against the digest. Without a lock the
+     references are packed unpinned, with a note.
+
+     ```toml
+     [package.metadata.calimero.uses]
+     kv = { package = "com.calimero.confidential-kv", range = "^0.1", mode = "create" }
+     calendar = { package = "com.example.calendar", range = "^2", mode = "attach", methods = ["listEvents", "createEvent"] }
+     ```
+
+     `methods` lists what the release calls on that app as the person its run
+     serves, once that person grants it
+     ([As the person](/protocol/xcall/#as-the-person)); without it the release
+     calls the app as itself. `pack` checks each against the vendored ABI.
+
+     A node refuses a release whose references break the rules (`400 BAD_USES`:
+     names `a-z0-9_`, at most 16, not its own package, a semver range, a locked
+     version inside it, an ABI digest `sha256:<hex>`, at most 64 distinct method
+     names, none of the node's own `__`). It lists them on the
+     release's capability card, and an upgrade's consent page names the apps the
+     new release starts using or uses differently.
+
+     Creating an instance of a release with `create` references first creates
+     each of them: in the same organization, by the same owner, from the release
+     its lock pinned (else the newest installed one inside its range; a package
+     with none answers `409 USES_NOT_INSTALLED`), named `<instance>.<name>`. The
+     instance's record names them (`links`), the create answers them, and an
+     `init` that takes a `links` parameter is told their ids:
+
+     ```rust
+     #[app::init]
+     pub fn init(links: Option<BTreeMap<String, String>>) -> app::Result<Self> { .. }
+     ```
+
+     `links` in `initArgs` is the node's; a client that sends it is refused.
+     `attach` references are never created.
+
+     The owner attaches an app they already run to an `attach` reference with
+     `PUT /apps/{app}/links/{name} { app }` (whoever manages both apps, in one
+     organization, with a passkey; `DELETE` detaches it). The app must run the
+     reference's package (`409 WRONG_PACKAGE`); one outside the range is attached
+     anyway, answered `inRange: false`, and an upgrade's consent page warns when
+     the new release takes an attached app in another range: an attached app lives
+     on its own and is never upgraded with the instance. Deleting the attached app
+     detaches it. `GET /apps/{app}/links` lists every reference of the release the
+     app runs with the app linked under it, the release that app runs and
+     `inRange`. The app's code reads a link at any time, not only in `init`:
+
+     ```rust
+     let kv = env::linked("kv").ok_or_else(|| Error::NoKv.into())?;
+     ```
+
+     A unit upgrades in one consent: an app's frontend asks the node's consent
+     page with `upgradeUnit { app, toVersion }` (every app's sheet on one page),
+     or a client calls `POST /apps/{app}/upgrade-unit { version }`
+     (`meroctl` and the clients: `upgrade_unit`) moves the instance to `version`
+     and each member to the release the new one pins for it (else the newest
+     installed one in range), with one passkey assertion over the instance, its
+     version and every member's target. It answers an upgrade run, followed with
+     `GET /orgs/{org}/upgrades/{run}`. A member is not moved on its own off the
+     range its instance takes it with (`409 OUTSIDE_UNIT_RANGE`), and a new
+     release that creates a member the instance does not have is refused: a unit
+     gains members only when it is created.
+
    A package of several services (each app instance runs one of them, named by
    `meroctl instance create --service NAME`) gives each with `--service
    NAME=PATH`, where PATH is the service's crate directory (built) or its

@@ -32,6 +32,8 @@ struct Declares<'a> {
     aliases: &'a [&'a str],
     /// `upgrades: publisher`.
     publisher_upgrades: bool,
+    /// `uses`, as the manifest's JSON.
+    uses: Option<Value>,
 }
 
 /// A signed single-service `.mpk` of `PACKAGE`, and its manifest's hash.
@@ -90,6 +92,7 @@ fn release_of(
         frontend_aliases: d.aliases.iter().map(|a| (*a).to_owned()).collect(),
         outbound: d.outbound.iter().map(|u| (*u).to_owned()).collect(),
         secrets: None,
+        uses: d.uses.clone().map(|u| serde_json::from_value(u).unwrap()),
         upgrades: d
             .publisher_upgrades
             .then_some(calimero_bundle::UpgradeAuthority::Publisher),
@@ -483,6 +486,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
                 "kept": ["https://api.example/v1/"],
             },
             "secrets": { "added": [], "removed": [], "kept": [], "hostsChanged": [] },
+            "uses": { "added": [], "removed": [], "kept": [], "changed": [], "createdAdded": [] },
             "frontend": {
                 "from": "https://notes.example",
                 "to": "https://notes.example",
@@ -2358,6 +2362,7 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
             "author": "Example",
             "outbound": ["https://api.example/v1/", "https://metrics.example/"],
             "secrets": {},
+            "uses": {},
             "abi": abi,
         })
     );
@@ -2750,4 +2755,326 @@ async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
     })
     .await;
     assert_eq!(o["capabilities"][&carol_id], 0, "clamped to Bob's: {o}");
+}
+
+/// A sign-in from a package's frontend reaches a node that has committed the
+/// package's install but not applied it yet: the node judges the origin on
+/// fresh state rather than refusing it as unknown (`401 origin does not
+/// match`, the intermittent failure of
+/// `a_frontend_creates_an_organization_with_member_capabilities_in_one_approval`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_sign_in_from_a_frontend_installed_a_moment_ago_reaches_a_node_behind() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let leader = (0..3)
+        .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
+        .unwrap();
+    let behind = (0..3).find(|i| *i != leader).unwrap();
+    let (alice, alice_key) = signed_up(&c, leader, "alice").await;
+    let behind_node = &c.nodes[behind].as_ref().unwrap().node;
+    for _ in 0..100 {
+        if behind_node.sys(|s| !s.accounts.is_empty()) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // The node commits the install with the others but applies nothing yet.
+    let dir = c._dirs[behind].path().to_owned();
+    calimero_log::testing::hold_apply(&dir, calimero_node::node::SYSTEM_GROUP);
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[37; 32]);
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(v1).await.unwrap();
+    assert!(
+        behind_node.sys(|s| !s.packages.contains_key(PACKAGE)),
+        "the node must not have applied the install yet"
+    );
+
+    let port = url::Url::parse(&c.urls[behind]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(behind);
+    let sign_in = tokio::spawn(async move {
+        let mut pk = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+        in_app.sign_in(&mut pk).await.map(|_| ())
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    calimero_log::testing::release_apply(&dir, calimero_node::node::SYSTEM_GROUP);
+    let signed_in = sign_in.await.unwrap();
+    assert!(
+        signed_in.is_ok(),
+        "the frontend's origin is judged on fresh state: {:?}",
+        signed_in.err()
+    );
+}
+
+/// A unit upgrades on the page in one approval: an app's frontend asks `upgradeUnit`, the
+/// page shows the instance's capability sheet and each member's that moves, and the one
+/// passkey assertion moves them all (the consent of `__upgrade_unit`, member targets
+/// included).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_upgrades_on_the_page_in_one_approval() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
+    let kv = "com.test.unit-kv";
+    let uses = |version: &str| Declares {
+        uses: Some(json!({ "kv": { "package": kv, "range": "^0.1", "version": version } })),
+        ..Declares::default()
+    };
+    for (package, version, d) in [
+        (kv, "0.1.0", Declares::default()),
+        (kv, "0.1.1", Declares::default()),
+        (PACKAGE, "1.0.0", uses("0.1.0")),
+        (PACKAGE, "2.0.0", uses("0.1.1")),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": PACKAGE, "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let member = made["links"]["kv"].as_str().unwrap().to_owned();
+
+    // The app's frontend asks; the person approves on the node's page.
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let back = format!("{app_origin}/1.0.0/");
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgradeUnit", "subject": { "app": notes, "toVersion": "2.0.0" }, "returnTo": back }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["kind"], "upgradeUnit", "{model}");
+    assert_eq!(
+        model["title"], "Update notes and the apps it uses",
+        "{model}"
+    );
+    let apps = model["apps"].as_array().unwrap();
+    assert_eq!(apps.len(), 2, "{model}");
+    assert_eq!(apps[1]["upgrade"]["to"]["version"], "0.1.1", "{model}");
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["__method"], "__upgrade_unit", "{args}");
+    assert_eq!(args["targets"][&member]["version"], "0.1.1", "{args}");
+
+    for (app, version) in [(&notes, "2.0.0"), (&member, "0.1.1")] {
+        let _moved = get_until(&alice, &format!("apps/{app}"), |a| {
+            a["release"]["version"] == version
+        })
+        .await;
+    }
+}
+
+/// An app's frontend asks the person to let it call another app as them: the page names both
+/// apps and every method the app's release lists for the other's package, the person's passkey
+/// covers exactly those (`__delegate`), and the grant is recorded. The same frontend may not
+/// grant it through the API by itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_apps_frontend_asks_to_act_as_the_person_in_another_app_on_the_page() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+    let cal = "com.test.delegated-cal";
+    let plugin = Declares {
+        uses: Some(
+            json!({ "cal": { "package": cal, "range": "^1", "mode": "attach",
+                                    "methods": ["recordWho", "whoView"] } }),
+        ),
+        ..Declares::default()
+    };
+    for (package, version, d) in [
+        (cal, "1.0.0", Declares::default()),
+        (PACKAGE, "1.0.0", plugin),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let create = |name: &str, package: &str| {
+        typed(json!({ "name": name, "package": package, "version": "1.0.0" }))
+    };
+    let app_of = |v: Value| v["appId"].as_str().unwrap().to_owned();
+    let source = app_of(
+        alice
+            .apps()
+            .create(create("booking", PACKAGE))
+            .await
+            .map(wire)
+            .unwrap(),
+    );
+    let target = app_of(
+        alice
+            .apps()
+            .create(create("calendar", cal))
+            .await
+            .map(wire)
+            .unwrap(),
+    );
+
+    // Alice signs in on the plugin's own frontend.
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+
+    // The frontend cannot grant itself the power: it asks on the page.
+    let refused = in_app
+        .apps()
+        .delegate(&source, &target, Some(&mut alice_in_app))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(refused, calimero_client::Error::Api { status: 403, .. }),
+        "{refused}"
+    );
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "delegate", "subject": { "app": source, "target": target },
+                "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap();
+    let url = made["url"].as_str().unwrap().to_owned();
+    let page = Page::new(&url);
+    let model = page.model().await;
+    assert_eq!(model["kind"], "delegate", "{model}");
+    assert_eq!(
+        model["title"], "Allow booking to act as you in calendar",
+        "{model}"
+    );
+    assert_eq!(
+        model["delegate"]["methods"],
+        json!(["recordWho", "whoView"]),
+        "{model}"
+    );
+    assert_eq!(model["delegate"]["target"]["app"], json!(target), "{model}");
+
+    let mut alice_page = SoftAuthenticator::with_key(&alice_in_app, "localhost", &origin(&url));
+    let ((code, done), args) = page.approve(&c, &mut alice_page).await;
+    assert_eq!(code, 200, "{done}");
+    assert_eq!(args["__method"], "__delegate", "{args}");
+    assert_eq!(args["target"], json!(target), "{args}");
+    assert_eq!(args["methods"], json!(["recordWho", "whoView"]), "{args}");
+
+    let listed = get_until(&alice, &format!("apps/{source}/delegations"), |v| {
+        v["delegations"][&target].is_array()
+    })
+    .await;
+    assert_eq!(
+        listed["delegations"][&target],
+        json!(["recordWho", "whoView"]),
+        "{listed}"
+    );
+}
+
+/// An upgrade whose new release takes an attached app in another range warns on the page: an
+/// attached app lives on its own, so the approval does not move it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_upgrade_warns_when_an_attached_app_falls_outside_its_range() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let (alice, mut alice_key) = signed_up(&c, 0, "alice").await;
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[29; 32]);
+    let cal = "com.test.attached-cal";
+    let uses = |range: &str| Declares {
+        uses: Some(json!({ "calendar": { "package": cal, "range": range, "mode": "attach" } })),
+        ..Declares::default()
+    };
+    for (package, version, d) in [
+        (cal, "2.0.0", Declares::default()),
+        (PACKAGE, "1.0.0", uses("^2")),
+        (PACKAGE, "2.0.0", uses("^3")),
+    ] {
+        let (mpk, _) = release_of(package, version, &kv_wasm(), &publisher, &d);
+        let _ = alice.packages().upload(mpk).await.unwrap();
+    }
+    let create = |name: &str, package: &str, version: &str| {
+        typed(json!({ "name": name, "package": package, "version": version }))
+    };
+    let notes = alice
+        .apps()
+        .create(create("notes", PACKAGE, "1.0.0"))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let calendar = alice
+        .apps()
+        .create(create("calendar", cal, "2.0.0"))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let body: calimero_client::types::AppLinkRequest =
+        serde_json::from_value(json!({ "app": calendar })).unwrap();
+    let got = alice
+        .apps()
+        .link(&notes, "calendar", body, Some(&mut alice_key))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(got["inRange"], json!(true), "{got}");
+
+    let port = url::Url::parse(&c.urls[1]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(1);
+    let mut alice_in_app = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+    let _s = in_app.sign_in(&mut alice_in_app).await.unwrap();
+    let made = post(
+        &in_app,
+        "consent/requests",
+        json!({ "kind": "upgrade", "subject": { "app": notes, "toVersion": "2.0.0" },
+                "returnTo": format!("{app_origin}/1.0.0/") }),
+    )
+    .await
+    .unwrap();
+    let model = Page::new(made["url"].as_str().unwrap()).model().await;
+    assert_eq!(
+        model["upgrade"]["attachedOutOfRange"],
+        json!([{ "name": "calendar", "app": calendar, "package": cal,
+                 "version": "2.0.0", "range": "^3" }]),
+        "{model}"
+    );
+    let flagged = model["attention"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["flag"] == "attachedOutOfRange")
+        .cloned()
+        .unwrap_or_else(|| panic!("no warning: {model}"));
+    assert_eq!(
+        flagged["items"],
+        json!([format!("calendar runs {cal} 2.0.0, outside ^3")]),
+        "{flagged}"
+    );
 }

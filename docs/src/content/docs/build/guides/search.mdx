@@ -10,9 +10,11 @@ titles that start with "roa" — without reading every record in the app.
 
 Each node that holds a replica of the app keeps a full-text index
 ([tantivy](https://github.com/quickwit-oss/tantivy)) of the tables that declare
-search fields, in memory, built from the state it holds. The index is derived
-data: it is never replicated, never written to disk, and never part of the
-app's state. A query reads the page of hits, never the table.
+search fields, built from the state it holds. The index is derived data: it is
+never replicated and never part of the app's state. A node on an encrypted data
+disk (mero-tee's, whose key comes from mero-kms) keeps it on that disk, so it
+survives a restart; any other node keeps it in memory. A query reads the page of
+hits, never the table.
 
 ## Declare and query
 
@@ -59,13 +61,19 @@ pub fn find_notes(&self, text: String) -> app::Result<Vec<Note>> {
 - Scores are per app (each index has its own term statistics).
 - A stale view on a replica that is behind searches the state that replica
   has applied.
-- A new release rebuilds the indexes from state, on the first view after it,
-  about 0.1 ms a document. So does the first view after a restart or after the
-  app moves to a node: indexes that survive a restart are not done yet.
+- A new release keeps the index of every table whose search fields it keeps;
+  a new table, or one whose fields changed, is built from state on the first
+  view after it, about 0.1 ms a document.
+- The first view after a restart compares the index with the state and indexes
+  again only the records that changed (on a node that keeps indexes on disk; a
+  node that keeps them in memory builds them again). So does the first view
+  after the app moves to a node, which has no index of it yet.
 
 ## Operating it
 
 There is nothing to configure: search is on for every app that declares an
-index, and its indexes live in memory on the nodes that serve its views. A
-node keeps the touched entities of the last 4096 entries per app
-(`TOUCHED_RING`); a view after a longer gap rebuilds from a scan.
+index, and its indexes live on the nodes that serve its views (on disk under
+`<data dir>/search` when merod runs with `--kms-disk-evidence`, else in memory).
+A node keeps the touched entities of the last 4096 entries per app
+(`TOUCHED_RING`); a view after a longer gap compares each index with a scan of
+the state and indexes only what differs.

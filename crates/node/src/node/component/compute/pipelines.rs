@@ -587,7 +587,7 @@ fn step_key(
         .iter()
         .map(|i| (view.sha)(i))
         .collect::<Option<_>>()?;
-    Some(cache_key(bundle, &step.method, args, &hashes))
+    cache_key(bundle, &step.method, args, &hashes)
 }
 
 /// A batch's `item`: the value itself for a batch of one, else the list of them.

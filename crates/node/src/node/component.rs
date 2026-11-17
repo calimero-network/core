@@ -178,7 +178,8 @@ pub fn args_bytes(args: &Value) -> Vec<u8> {
     if args.is_null() {
         Vec::new()
     } else {
-        serde_json::to_vec(args).unwrap_or_default()
+        // `Value`'s `Display` is its compact JSON and cannot fail.
+        args.to_string().into_bytes()
     }
 }
 
@@ -286,7 +287,7 @@ pub fn final_too_large() -> ApiError {
 /// The entry as bytes, and whether it was replaced: one over `MAX_ENTRY_BYTES` becomes the same
 /// call trapped `HostDenied` (D50); a final loses only its result method's outcome.
 fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
-    let bytes = serde_json::to_vec(&*cmd).unwrap_or_default();
+    let bytes = crate::component::entry_json(cmd);
     if bytes.len() <= calimero_log::MAX_ENTRY_BYTES {
         return (bytes, false);
     }
@@ -304,6 +305,8 @@ fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
         | ComponentCmd::Blob { .. }
         | ComponentCmd::BlobForget { .. }
         | ComponentCmd::BlobRevoke { .. }
+        | ComponentCmd::SecretSet { .. }
+        | ComponentCmd::SecretClear { .. }
         | ComponentCmd::BlobsCollected { .. }
         | ComponentCmd::File { .. }
         | ComponentCmd::Barrier
@@ -311,7 +314,7 @@ fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
         | ComponentCmd::XcallDone { .. }
         | ComponentCmd::ActionEnd { .. } => {}
     }
-    (serde_json::to_vec(&*cmd).unwrap_or_default(), true)
+    (crate::component::entry_json(cmd), true)
 }
 
 /// Whether an applied entry recorded none of the blobs it stored: it conflicted, or apply
@@ -871,10 +874,15 @@ impl Node {
                     app_id,
                     &prepared.hash,
                     self.usage.outbound(&meter.app, &meter.billed),
+                    &extras.secrets,
                 ))),
                 timeout: CALL_FETCH_TIMEOUT,
             })
         });
+        // Whom this run serves, for the apps it calls (each call runs as them only with
+        // their grant, `Node::caller_for`): its own caller when that is a person.
+        let forward = forwarded(&invocation.caller);
+        let via = extras.via.clone();
         let xcalls = extras.key.and_then(|key| {
             let node = self.this.lock().ok()?.upgrade()?;
             let handle = tokio::runtime::Handle::try_current().ok()?;
@@ -884,6 +892,7 @@ impl Node {
                 key,
                 handle,
                 read_only: extras.read_only,
+                person: forward.clone(),
             }) as Arc<dyn calimero_app_host::XcallHost>)
         });
         let this = self.this.lock().map(|w| w.clone()).unwrap_or_default();
@@ -900,7 +909,9 @@ impl Node {
         let owner = self
             .sys(|s| s.apps.get(app_id).map(|a| a.owner.clone()))
             .unwrap_or_default();
-        match HostCore::new(app_id, state, applied, invocation, directory) {
+        match HostCore::new(app_id, state, applied, invocation, directory)
+            .and_then(|host| host.with_via(via))
+        {
             Ok(host) => {
                 let host = host.with_blobs(blobs).with_files(files.clone());
                 let host = match extras.runs {
@@ -937,6 +948,13 @@ impl Node {
                 let mut outcome = Outcome::from_host(out);
                 if !outcome.compute_starts.is_empty() {
                     outcome.name_owner(&owner);
+                }
+                // An outbox row is replicated state: it names the person only once every
+                // replica keeps the field alike (`Feature::Delegation` logged).
+                if self.carries_person() {
+                    for x in &mut outcome.xcalls {
+                        x.on_behalf_of.clone_from(&forward);
+                    }
                 }
                 Ran {
                     outcome,
@@ -1423,6 +1441,8 @@ impl Node {
                         runs: Some(m.runs_provider(None)),
                         compute_component: m.state.component.head.compute_bundle.is_some(),
                         read_only: false,
+                        via: None,
+                        secrets: m.instance_secrets(),
                     },
                 );
                 let outcome = ran.outcome;
@@ -1555,7 +1575,7 @@ impl Node {
                 // the bundle runs now (D70): the replay comes before the ABI check.
                 if let Some(key) = &req.idempotency_key {
                     if let Some(prev) = m.component_replay(&req.caller, key) {
-                        return Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default());
+                        return Proposal::Reply(crate::app::applied_bytes(prev.index, &prev));
                     }
                 }
                 // A message applied here already answers as delivered (D25).
@@ -1568,7 +1588,7 @@ impl Node {
                                 ..Outcome::default()
                             },
                         );
-                        return Proposal::Reply(serde_json::to_vec(&seen).unwrap_or_default());
+                        return Proposal::Reply(crate::app::applied_bytes(seen.index, &seen));
                     }
                 }
                 if let Some(e) = &over_quota {
@@ -1581,7 +1601,7 @@ impl Node {
                         conflict: true,
                         ..Applied::unlogged(applied, Outcome::default())
                     };
-                    return Proposal::Reply(serde_json::to_vec(&again).unwrap_or_default());
+                    return Proposal::Reply(crate::app::applied_bytes(again.index, &again));
                 }
                 // The ABI checks again, against the bundle this replica runs (Ruling 40).
                 if let Err(e) = abi_check(
@@ -1603,9 +1623,10 @@ impl Node {
                     .get(&req.method)
                     .is_some_and(|m| m.kind == MethodKind::View);
                 if read_only && !view {
-                    return Proposal::Reply(
-                        serde_json::to_vec(&read_only_refusal(applied)).unwrap_or_default(),
-                    );
+                    return Proposal::Reply(crate::app::applied_bytes(
+                        applied,
+                        &read_only_refusal(applied),
+                    ));
                 }
                 let ts_ms = self.stamp(m);
                 let (id_term, id_seq) =
@@ -1657,7 +1678,10 @@ impl Node {
                             // same key are two calls of the target.
                             key: Some(format!(
                                 "call:{}:{}",
-                                serde_json::to_string(&req.caller).unwrap_or_default(),
+                                // SAFETY: guaranteed by `Caller`'s shape (an enum of
+                                // strings); an empty caller would merge two callers' keys.
+                                serde_json::to_string(&req.caller)
+                                    .expect("a caller always serializes"),
                                 req.idempotency_key.as_deref().unwrap_or_default()
                             )),
                             // A read-only member's run reaches no outbound host, and
@@ -1666,6 +1690,8 @@ impl Node {
                             read_only,
                             runs: Some(m.runs_provider(None)),
                             compute_component: m.state.component.head.compute_bundle.is_some(),
+                            via: req.via.clone(),
+                            secrets: m.instance_secrets(),
                         },
                     );
                     ran_for = Some(started.elapsed());
@@ -1676,7 +1702,7 @@ impl Node {
                 // key (D23).
                 if outcome.is_retryable() {
                     let a = Applied::unlogged(applied, outcome);
-                    return Proposal::Reply(serde_json::to_vec(&a).unwrap_or_default());
+                    return Proposal::Reply(crate::app::applied_bytes(a.index, &a));
                 }
                 answered = true;
                 moved_runs = moves_runs(&outcome);
@@ -1685,9 +1711,10 @@ impl Node {
                 // logged side effects too (Ruling 41): an emit-only run is refused like
                 // one that writes keys.
                 if read_only && writes(&outcome) {
-                    return Proposal::Reply(
-                        serde_json::to_vec(&read_only_refusal(applied)).unwrap_or_default(),
-                    );
+                    return Proposal::Reply(crate::app::applied_bytes(
+                        applied,
+                        &read_only_refusal(applied),
+                    ));
                 }
                 let cmd = ComponentCmd::Call(Box::new(CallEntry {
                     method: req.method.clone(),
@@ -2081,6 +2108,25 @@ impl Node {
         if req.method == PIPELINE_VIEW {
             return self.pipeline_view(g, req);
         }
+        if req.method == crate::node::SECRETS_VIEW {
+            let (all, applied) = g.read_local(|m, applied| (m.instance_secrets(), applied));
+            let result: serde_json::Map<String, Value> = all
+                .into_iter()
+                .map(|(name, s)| {
+                    (
+                        name,
+                        json!({ "fingerprint": s.fingerprint, "setBy": s.set_by, "setAt": s.set_at }),
+                    )
+                })
+                .collect();
+            return Ok(ViewAnswer {
+                index: applied,
+                status: Status::Ok,
+                result: Value::Object(result),
+                error: Value::Null,
+                timeout: false,
+            });
+        }
         let bundle = g
             .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
@@ -2095,7 +2141,7 @@ impl Node {
                 applied,
                 m.state.component.head.last_ts_ms,
                 self.component_search
-                    .for_view(&bundle, &prepared.abi.search, m, applied),
+                    .for_view(&prepared.abi.search, m, applied),
             )
         });
         if bundle_now.as_deref() != Some(bundle.as_str()) {
@@ -2123,6 +2169,7 @@ impl Node {
             },
         );
         let meter = self.meter(&req.app_id, &bundle);
+        let via = req.via.clone();
         // A view may run up to its deadline: off the async workers.
         let (out, run) = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
@@ -2138,6 +2185,8 @@ impl Node {
                         runs: None,
                         compute_component: false,
                         read_only: false,
+                        via,
+                        secrets: crate::component::InstanceSecrets::new(),
                     },
                     search,
                 )
@@ -2180,8 +2229,43 @@ impl Node {
                     "__blob_revoke" => ComponentCmd::BlobRevoke { id: id.clone() },
                     _ => ComponentCmd::BlobForget { id: id.clone() },
                 };
-                Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
+                Proposal::Append(crate::component::entry_json(&cmd))
             })
+            .await?;
+        let a: Applied = serde_json::from_slice(&p.output)
+            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+        Ok(to_host_applied(a))
+    }
+
+    /// An instance's own secret on its leader: `__secret_set { name, value, fingerprint, by,
+    /// at }` or `__secret_clear { name }`, built by the API after judging who may and that the
+    /// release declares the name.
+    pub(super) async fn component_secret_cmd(
+        &self,
+        g: &Group<AppMachine>,
+        req: &CallRequest,
+    ) -> Result<crate::app::Applied, WriteError> {
+        let name = req.args["name"].as_str().unwrap_or_default().to_owned();
+        let cmd = if req.method == "__secret_set" {
+            ComponentCmd::SecretSet {
+                name,
+                secret: crate::component::InstanceSecret {
+                    value: crate::component::SecretValue(
+                        req.args["value"].as_str().unwrap_or_default().to_owned(),
+                    ),
+                    fingerprint: req.args["fingerprint"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    set_by: req.args["by"].as_str().unwrap_or_default().to_owned(),
+                    set_at: req.args["at"].as_u64().unwrap_or_default(),
+                },
+            }
+        } else {
+            ComponentCmd::SecretClear { name }
+        };
+        let p = g
+            .propose_led(|_, _, _| Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default()))
             .await?;
         let a: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
@@ -2264,15 +2348,12 @@ impl Node {
                 if m.action_record(&id).is_none() {
                     return Proposal::Reply(Vec::new());
                 }
-                Proposal::Append(
-                    serde_json::to_vec(&ComponentCmd::ActionEnd {
-                        id: id.clone(),
-                        failed: failed.clone(),
-                        retry,
-                        ts_ms: self.stamp(m),
-                    })
-                    .unwrap_or_default(),
-                )
+                Proposal::Append(crate::component::entry_json(&ComponentCmd::ActionEnd {
+                    id: id.clone(),
+                    failed: failed.clone(),
+                    retry,
+                    ts_ms: self.stamp(m),
+                }))
             })
             .await;
         let key = (app_id.clone(), id.clone());
@@ -2315,12 +2396,20 @@ impl Node {
             key: format!("action:{}", record.id),
             handle: tokio::runtime::Handle::current(),
             read_only: false,
+            // An action serves no one when it runs (D12): its calls name no person.
+            person: None,
         });
         let meter = self.meter(app_id, &prepared.hash);
+        // An action runs outside the machine's lock: the instance's own secrets as applied here.
+        let own_secrets = self
+            .hosted(app_id)
+            .map(|g| g.read_local(|m, _| m.instance_secrets()))
+            .unwrap_or_default();
         let http = Arc::new(NodeHttp(self.outbound_for(
             app_id,
             &prepared.hash,
             self.usage.outbound(&meter.app, &meter.billed),
+            &own_secrets,
         )));
         let invocation = Invocation {
             kind: InvocationKind::Action,
@@ -2447,14 +2536,11 @@ impl Node {
             let reason = dead.clone();
             let done = g
                 .propose_led(|m, _, _| {
-                    Proposal::Append(
-                        serde_json::to_vec(&ComponentCmd::XcallDone {
-                            seq,
-                            dead: reason.clone(),
-                            ts_ms: self.stamp(m),
-                        })
-                        .unwrap_or_default(),
-                    )
+                    Proposal::Append(crate::component::entry_json(&ComponentCmd::XcallDone {
+                        seq,
+                        dead: reason.clone(),
+                        ts_ms: self.stamp(m),
+                    }))
                 })
                 .await;
             if let Ok(mut r) = self.xcall_retry.lock() {
@@ -2482,6 +2568,14 @@ impl Node {
         if target.executor != Executor::Component {
             return Ok(Some("the target app is not a component".into()));
         }
+        // As the person the sending run served, where they granted the source this method
+        // of the target, judged now (a grant taken back since stops it); else as the app.
+        let (caller, via) = self.caller_for(
+            source,
+            &target.app_id,
+            &msg.method,
+            msg.on_behalf_of.as_ref(),
+        );
         let req = CallRequest {
             idempotency_key: Some(format!(
                 "{}xcall-{source}-{}",
@@ -2492,13 +2586,12 @@ impl Node {
                 source: source.to_owned(),
                 seq: msg.seq,
             }),
+            via,
             ..CallRequest::new(
                 target.app_id.clone(),
                 msg.method.clone(),
                 msg.args.clone(),
-                Caller::App {
-                    app: source.to_owned(),
-                },
+                caller,
             )
         };
         match self.call_component(&req).await {
@@ -2579,7 +2672,7 @@ impl Node {
         }
         let cmd = ComponentCmd::BlobsCollected { ids };
         let logged = g
-            .propose_led(|_, _, _| Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default()))
+            .propose_led(|_, _, _| Proposal::Append(crate::component::entry_json(&cmd)))
             .await;
         match logged {
             // Released by the entry that really took the files off the queue, so a repeat frees nothing.
@@ -2640,7 +2733,7 @@ impl Node {
                             "an active compute run will call {lost}, which the target release does not declare as a result method"
                         ) },
                     });
-                    return Proposal::Reply(serde_json::to_vec(&refused).unwrap_or_default());
+                    return Proposal::Reply(crate::app::applied_bytes(refused.index, &refused));
                 }
                 let mut cmd = ComponentCmd::Upgrade {
                     bundle: bundle.to_owned(),
@@ -2700,7 +2793,8 @@ impl NodeAction {
 /// error as JSON text.
 fn answer_bytes(status: &Status, result: &Value, error: &Value) -> Result<Vec<u8>, String> {
     if *status == Status::Ok {
-        Ok(serde_json::to_vec(result).unwrap_or_default())
+        // `Value`'s `Display` is its compact JSON and cannot fail.
+        Ok(result.to_string().into_bytes())
     } else {
         Err(error.to_string())
     }
@@ -2720,6 +2814,7 @@ impl calimero_app_host::ActionHost for NodeAction {
             caller: self.caller.clone(),
             strong: true,
             min_index: 0,
+            via: None,
         };
         let node = Arc::clone(&self.node);
         match self.wait(async move { node.view(&req).await }) {
@@ -2752,6 +2847,79 @@ impl calimero_app_host::ActionHost for NodeAction {
     }
 }
 
+/// The person a run's calls to other apps may run as (`Node::as_person`, with their grant):
+/// its own caller when that is an account or an API key, and none for anyone else. A run
+/// another app called passes no one on: only a person's own grant lets an app act as them.
+fn forwarded(caller: &calimero_app_host::Caller) -> Option<Caller> {
+    use calimero_app_host::Caller as H;
+    match caller {
+        H::Account(account) => Some(Caller::Account {
+            account: account.clone(),
+        }),
+        H::ApiKey { key_id, account } => Some(Caller::ApiKey {
+            key: key_id.clone(),
+            account: account.clone(),
+        }),
+        H::App(_) | H::Public | H::System => None,
+    }
+}
+
+impl Node {
+    /// Whether a message's outbox row names the person its run served: from the logged
+    /// cluster version that brings `Feature::Delegation` on, so every replica applies the
+    /// row alike. Judged on the logged version alone (no round to the nodes).
+    fn carries_person(&self) -> bool {
+        self.sys(|s| {
+            crate::system::cluster_version::check(
+                s.cluster_version.as_deref(),
+                &[crate::system::cluster_version::Feature::Delegation],
+            )
+            .is_ok()
+        })
+    }
+
+    /// Whom `source`'s call of `method` on `target` runs as: `person` (and `via` = `source`)
+    /// where they granted `source` that method of `target` (`SystemState::delegates`) and
+    /// still reach `target`; else `source` itself, with no person named. A grant exists only
+    /// once every node runs a release that carries it (`Feature::Delegation`), so no older
+    /// node drops the person on the way. A method that needs the person's passkey confirmation
+    /// is refused at the target (`ConfirmRequired`), as for any call without one.
+    fn caller_for(
+        &self,
+        source: &str,
+        target: &str,
+        method: &str,
+        person: Option<&Caller>,
+    ) -> (Caller, Option<String>) {
+        let as_app = || {
+            (
+                Caller::App {
+                    app: source.to_owned(),
+                },
+                None,
+            )
+        };
+        let Some(person) = person.filter(|p| p.is_person()) else {
+            return as_app();
+        };
+        let account = match person {
+            Caller::Account { account } | Caller::ApiKey { account, .. } => account.clone(),
+            _ => return as_app(),
+        };
+        let granted = self.sys(|s| {
+            s.delegates(&account, source, target, method)
+                && s.apps
+                    .get(target)
+                    .is_some_and(|t| s.may_reach(t, Some(&account)))
+        });
+        if granted {
+            (person.clone(), Some(source.to_owned()))
+        } else {
+            as_app()
+        }
+    }
+}
+
 /// What a component run reaches besides its own state, by the kind of run.
 #[derive(Clone, Default)]
 struct RunExtras {
@@ -2768,6 +2936,12 @@ struct RunExtras {
     /// A read-only member's call: its synchronous xcalls may view, not call, since a
     /// call commits on the target before this run's outcome is judged.
     read_only: bool,
+    /// The app a person's call came through, for a call another app made as them
+    /// (`CallRequest::via`): `env::via()` here.
+    via: Option<String>,
+    /// The instance's own secret values (`AppMachine::instance_secrets`), read with the
+    /// state the run sees, for the outbound gate.
+    secrets: crate::component::InstanceSecrets,
 }
 
 /// How long a call, timer or delivery waits for one outbound response (D76): within the
@@ -2819,6 +2993,9 @@ struct NodeXcall {
     handle: tokio::runtime::Handle,
     /// A read-only member's run: views only.
     read_only: bool,
+    /// The person the run serves: a call or view runs as them where they granted the source
+    /// that method of the target (`Node::as_person`).
+    person: Option<Caller>,
 }
 
 /// The node's refusal of a synchronous xcall, for the guest: the target's ABI refusal as
@@ -2888,17 +3065,14 @@ impl calimero_app_host::XcallHost for NodeXcall {
         }
         let target = self.target(app)?;
         let args = parse_args(args).map_err(|e| xcall_failure(&e))?;
+        let (caller, via) =
+            self.node
+                .caller_for(&self.source, &target, method, self.person.as_ref());
         let req = CallRequest {
             idempotency_key: Some(key.to_owned()),
             sync_from: Some(self.source.clone()),
-            ..CallRequest::new(
-                target,
-                method.to_owned(),
-                args,
-                Caller::App {
-                    app: self.source.clone(),
-                },
-            )
+            via,
+            ..CallRequest::new(target, method.to_owned(), args, caller)
         };
         let node = Arc::clone(&self.node);
         match self.wait(async move { node.call_component(&req).await })? {
@@ -2912,15 +3086,17 @@ impl calimero_app_host::XcallHost for NodeXcall {
     fn view(&self, app: &str, method: &str, args: &[u8]) -> Result<Vec<u8>, String> {
         let target = self.target(app)?;
         let args = parse_args(args).map_err(|e| xcall_failure(&e))?;
+        let (caller, via) =
+            self.node
+                .caller_for(&self.source, &target, method, self.person.as_ref());
         let req = ViewRequest {
             app_id: target,
             method: method.to_owned(),
             args,
-            caller: Caller::App {
-                app: self.source.clone(),
-            },
+            caller,
             strong: true,
             min_index: 0,
+            via,
         };
         let node = Arc::clone(&self.node);
         match self.wait(async move { node.view(&req).await })? {
@@ -3033,6 +3209,7 @@ mod tests {
                 app: "other".into(),
                 method: "set".into(),
                 args: Value::Null,
+                on_behalf_of: None,
             }],
             ..Outcome::default()
         };

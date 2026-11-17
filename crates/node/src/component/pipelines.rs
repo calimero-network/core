@@ -567,11 +567,24 @@ fn failure_of(record: &RunRecord) -> Option<String> {
     }
 }
 
+/// `reason` as its wire name (kebab-case, as serde writes it): stored in replicated pipeline
+/// state and proofs, so an exhaustive match, never a fallback that could be empty.
 pub(super) fn reason_code(reason: FailedReason) -> String {
-    serde_json::to_value(reason)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_default()
+    match reason {
+        FailedReason::Fuel => "fuel",
+        FailedReason::Memory => "memory",
+        FailedReason::Trap => "trap",
+        FailedReason::AppError => "app-error",
+        FailedReason::Integrity => "integrity",
+        FailedReason::Cancelled => "cancelled",
+        FailedReason::Lost => "lost",
+        FailedReason::Refused => "refused",
+        FailedReason::Timeout => "timeout",
+        FailedReason::Quota => "quota",
+        FailedReason::NotGranted => "not-granted",
+        FailedReason::TooLarge => "too-large",
+    }
+    .to_owned()
 }
 
 impl AppMachine {
@@ -1455,6 +1468,33 @@ fn same_start(known: &PipelineRun, entry: &PipelineStartEntry) -> bool {
             .steps
             .keys()
             .eq(entry.steps.iter().collect::<BTreeSet<_>>())
+}
+
+#[cfg(test)]
+mod reason_code_tests {
+    use super::*;
+
+    /// The stored code is what serde writes for every reason, never empty.
+    #[test]
+    fn every_reason_code_is_its_wire_name() {
+        for reason in [
+            FailedReason::Fuel,
+            FailedReason::Memory,
+            FailedReason::Trap,
+            FailedReason::AppError,
+            FailedReason::Integrity,
+            FailedReason::Cancelled,
+            FailedReason::Lost,
+            FailedReason::Refused,
+            FailedReason::Timeout,
+            FailedReason::Quota,
+            FailedReason::NotGranted,
+            FailedReason::TooLarge,
+        ] {
+            let wire = serde_json::to_value(reason).unwrap();
+            assert_eq!(serde_json::Value::String(reason_code(reason)), wire);
+        }
+    }
 }
 
 #[cfg(test)]

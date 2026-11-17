@@ -9,10 +9,11 @@ import ProtoKeyHierarchy from '../../../components/diagrams/ProtoKeyHierarchy.as
 
 There are two encryption boundaries, and between them nothing is in the clear:
 **in transit**, every request and response travels in a sealed session bound
-to an attested key; **at rest**, every value a node writes is sealed under the
+to an attested key; **at rest**, a node's data directory is on a data disk the
+TD encrypts itself (LUKS2 with integrity, its key from mero-kms, opened inside
+the TD), and what leaves that disk (a snapshot or backup file) is sealed under the
 cluster key K_c, which the node keeps wrapped under its release's storage key
-K_r. In between, data exists in plaintext only inside the
-TD's memory.
+K_r. In between, data exists in plaintext only inside the TD's memory.
 
 ## In transit
 
@@ -42,9 +43,20 @@ key, which also signs sessions, is made on the node's first start and kept in
 its data directory wrapped under K_r, so it survives a restart and only the
 release that holds that K_r opens it.
 
-Each node's data — every Raft entry, vote, state row, snapshot frame and blob —
-is sealed under one 32-byte **cluster key**, K_c, which the node keeps on disk
-wrapped under its **storage key**, K_r, from mero-kms.
+Each node's snapshot frames and backups, and the node rows that mark its store,
+are sealed under one 32-byte **cluster key**, K_c, which the node keeps on disk
+wrapped under its **storage key**, K_r, from mero-kms. Its Raft entries, votes,
+state rows and blobs are kept as they are (store format 2) on the data disk the TD
+encrypts with a key from mero-kms: `merod kms disk-key` fetches it for the image's
+boot script under the same signed release policy, and the boot script opens the
+LUKS2 volume (`aes-xts-plain64`, `hmac-sha256` integrity) inside the TD. A node
+that takes its storage key from mero-kms refuses to start without that disk's
+record (`--kms-disk-evidence`) unless its data directory is in memory (tmpfs).
+Store format 1 sealed each of those values under K_c as well, encrypting the same
+bytes twice; format 2 dropped that and reads no earlier store (a rollout's new
+nodes start empty and receive their data by snapshot).
+Search indexes, derived data tantivy writes as it is, are kept the same way: on
+that disk when the node has its record, and in memory otherwise.
 
 ```text
 K_r = HKDF-SHA256(ikm = KMS key, salt = "calimero.cloud.storage.v1", info = cluster name)
@@ -125,13 +137,15 @@ approvals still decide which apps' data reaches the new node
 
 ### How a value is sealed
 
-`calimero-log`'s store seals every value with AES-256-GCM under K_c, with a
-fresh random nonce, and binds it (as associated data) to its column, its group
-and its key. A value moved to another row, group or column fails to open. A
-state machine can also **hide** a key: the row is then keyed by an HMAC of the
-key and the key itself travels inside the sealed value, so the disk does not
-even show which keys an app uses. App state rows and idempotency records are
-hidden this way. See [Storage schema](/protocol/storage/).
+`calimero-log` seals what leaves the data disk, and the node's own rows, with
+AES-256-GCM under K_c, with a fresh random nonce, bound (as associated data) to
+its column, its group and its key: a snapshot file's rows, and the node rows that
+name the store's format and hold its rollback counter, so a store opened under
+another key is refused at once. Every other row is stored as it is, on the
+encrypted data disk. A state machine can also **hide** a key: the row is then
+keyed by an HMAC of the key and the key itself travels inside the value, so even
+a snapshot does not show which keys an app uses. App state rows and idempotency
+records are hidden this way. See [Storage schema](/protocol/storage/).
 
 Snapshots are files of sealed frames, each frame's associated data naming its
 group, snapshot, position and whether it is the last, so frames cannot be

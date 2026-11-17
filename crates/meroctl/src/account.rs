@@ -109,7 +109,7 @@ pub enum ApiKeyCmd {
         #[arg(long, default_value = "meroctl")]
         label: String,
         /// Only these instances.
-        #[arg(long = "instance", alias = "context", value_name = "INSTANCE")]
+        #[arg(long = "instance", value_name = "INSTANCE")]
         contexts: Vec<String>,
         #[arg(long)]
         read_only: bool,

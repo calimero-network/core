@@ -50,21 +50,19 @@ pub trait Machine: Send + Sync + 'static {
     fn apply(&mut self, index: u64, command: &[u8], state: &mut StateTx<'_>) -> Vec<u8>;
 
     /// An in-memory machine's whole state. Unused otherwise.
-    fn snapshot(&self) -> Vec<u8> {
-        Vec::new()
+    ///
+    /// An error fails the snapshot build (or the import that checkpoints it), which
+    /// stops the group where it happened: a checkpoint or snapshot of no bytes would
+    /// otherwise be served to lagging nodes and learners, and fail on them instead,
+    /// far from the cause.
+    fn snapshot(&self) -> eyre::Result<Vec<u8>> {
+        Ok(Vec::new())
     }
 
     /// An in-memory machine: replace the whole state with `data`. Otherwise
     /// `data` is empty and the machine re-reads what it caches from its
     /// [`GroupState`] (after a restart or a snapshot install).
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()>;
-
-    /// Bring in a state written by the previous storage format (one JSON
-    /// document, what [`Machine::snapshot`] used to answer for every machine),
-    /// writing it through `state`. In-memory machines restore it as it is.
-    fn import(&mut self, data: &[u8], _state: &mut StateTx<'_>) -> eyre::Result<()> {
-        self.restore(data)
-    }
 }
 
 /// The applied state of a group, shared between the Raft core and readers.
@@ -95,13 +93,6 @@ struct AppliedMeta {
 struct SnapshotRecord {
     meta: SnapshotMeta,
     file: String,
-}
-
-/// A snapshot in the previous storage format, carried over by the migration.
-#[derive(Serialize, Deserialize)]
-pub(crate) struct LegacySnapshot {
-    pub(crate) meta: SnapshotMeta,
-    pub(crate) data: Bytes,
 }
 
 /// The state row an in-memory machine's checkpoint lives in (and so where a
@@ -325,31 +316,7 @@ impl<M: Machine> StateMachine<M> {
         db.drop_other_generations(group, generation)?;
         let state = GroupState::new(Arc::clone(&db), group, generation);
         machine.attach(state.clone());
-        let mut applied: AppliedMeta = db.get_meta(group, "applied")?.unwrap_or_default();
-        if applied.last_applied.is_none() {
-            if let Some(legacy) = db.get_meta::<LegacySnapshot>(group, "legacy-snapshot")? {
-                let mut tx = StateTx::new(&state);
-                machine.import(&legacy.data.0, &mut tx)?;
-                applied = AppliedMeta {
-                    last_applied: legacy.meta.last_log_id,
-                    membership: legacy.meta.last_membership.clone(),
-                };
-                let mut batch = Transaction::default();
-                tx.into_batch(&mut batch)?;
-                if M::IN_MEMORY {
-                    db.stage_state(
-                        &mut batch,
-                        group,
-                        generation,
-                        CHECKPOINT_KEY,
-                        Some(&machine.snapshot()),
-                    )?;
-                }
-                db.stage_meta(&mut batch, group, "applied", &applied)?;
-                db.commit(&batch, true)?;
-                db.drop_meta(group, "legacy-snapshot")?;
-            }
-        }
+        let applied: AppliedMeta = db.get_meta(group, "applied")?.unwrap_or_default();
         if M::IN_MEMORY {
             if let Some(data) = state.get(CHECKPOINT_KEY) {
                 machine.restore(&data)?;
@@ -456,7 +423,11 @@ impl<M: Machine> StateMachine<M> {
                 self.group,
                 generation,
                 CHECKPOINT_KEY,
-                Some(&st.machine.snapshot()),
+                Some(&st.machine.snapshot().map_err(|e| {
+                    tracing::error!(group = self.group, error = %e,
+                        "the machine could not serialize its state: no snapshot is built");
+                    e
+                })?),
             )?;
             self.db.stage_meta(
                 &mut batch,
@@ -494,7 +465,9 @@ impl<M: Machine> StateMachine<M> {
             let Some(key) = k.strip_prefix(prefix.as_slice()) else {
                 return Ok(false);
             };
-            w.row(key, v)?;
+            // Stored as it is; sealed in the file, which may leave this disk.
+            let sealed = self.db.seal_state(self.group, key, v)?;
+            w.row(key, &sealed)?;
             Ok(true)
         })?;
         drop(guard);
@@ -560,9 +533,9 @@ impl<M: Machine> StateMachine<M> {
             &meta.snapshot_id,
             file,
             |key, sealed| {
-                db.verify_state(group, key, sealed)?;
-                Db::stage_sealed_state(&mut batch, group, next, key, sealed.to_vec());
-                pending += key.len() + sealed.len();
+                let plain = db.open_state(group, key, sealed)?;
+                db.stage_state(&mut batch, group, next, key, Some(&plain))?;
+                pending += key.len() + plain.len();
                 if pending >= INSTALL_BATCH_BYTES {
                     db.commit(&batch, false)?;
                     batch = Transaction::default();
@@ -1069,6 +1042,75 @@ mod snapshot_format {
         assert!(
             e.contains("format 2") && e.contains("snapshot format 1"),
             "{e}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod snapshot_errors {
+    use std::sync::atomic::AtomicBool;
+
+    use openraft::CommittedLeaderId;
+
+    use super::*;
+
+    /// An in-memory machine counting its entries, whose state stops serializing on demand.
+    struct Counter {
+        n: u64,
+        broken: Arc<AtomicBool>,
+    }
+
+    impl Machine for Counter {
+        const IN_MEMORY: bool = true;
+
+        fn apply(&mut self, _index: u64, _command: &[u8], _state: &mut StateTx<'_>) -> Vec<u8> {
+            self.n += 1;
+            Vec::new()
+        }
+
+        fn snapshot(&self) -> eyre::Result<Vec<u8>> {
+            if self.broken.load(Ordering::Acquire) {
+                eyre::bail!("the state does not serialize");
+            }
+            Ok(self.n.to_string().into_bytes())
+        }
+
+        fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
+            self.n = std::str::from_utf8(data)?.parse()?;
+            Ok(())
+        }
+    }
+
+    /// Review finding A6: the system group's snapshot fell back to empty bytes when its
+    /// state did not serialize, so the group checkpointed and served an empty state, which
+    /// failed to restore on the node that received it, far from the cause. The build now
+    /// fails where it happens, and the checkpoint keeps the last good state.
+    #[tokio::test]
+    async fn a_state_that_does_not_serialize_builds_no_snapshot_and_keeps_the_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(dir.path(), &[3; 32]).unwrap();
+        let broken = Arc::new(AtomicBool::new(false));
+        let machine = Counter {
+            n: 0,
+            broken: Arc::clone(&broken),
+        };
+        let mut sm = StateMachine::open(1, db, machine, Arc::new(watch::channel(0).0)).unwrap();
+        let entry = |index| Entry {
+            log_id: LogId::new(CommittedLeaderId::new(1, 1), index),
+            payload: EntryPayload::Normal(Bytes(b"+1".to_vec())),
+        };
+        let _ = sm.apply(vec![entry(1), entry(2)]).await.unwrap();
+        let _good = sm.build().unwrap();
+        assert_eq!(sm.state.get(CHECKPOINT_KEY), Some(b"2".to_vec()));
+
+        let _ = sm.apply(vec![entry(3)]).await.unwrap();
+        broken.store(true, Ordering::Release);
+        let e = sm.build().unwrap_err().to_string();
+        assert!(e.contains("does not serialize"), "{e}");
+        assert_eq!(
+            sm.state.get(CHECKPOINT_KEY),
+            Some(b"2".to_vec()),
+            "the last good checkpoint stays; no empty one replaces it"
         );
     }
 }

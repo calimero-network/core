@@ -46,11 +46,10 @@ members = [
     "./crates/meroctl",
 
     "./crates/utils/fs",
-
-    "./tools/client-gen",
-    "./tools/mero-compute",
-    "./tools/mero-sign",
-    "./tools/search-bench",
+    "./crates/client/gen",
+    "./crates/meroctl/compute",
+    "./crates/meroctl/sign",
+    "./crates/search/bench",
 ]
 
 [workspace.dependencies]
@@ -156,8 +155,8 @@ calimero-search = { path = "./crates/search" }
 calimero-tee-attestation = { path = "./crates/tee-attestation" }
 calimero-tee-release = { path = "./crates/tee-release" }
 calimero-utils-fs = { path = "./crates/utils/fs" }
-mero-compute = { path = "./tools/mero-compute" }
-mero-sign = { path = "./tools/mero-sign" }
+meroctl-compute = { path = "./crates/meroctl/compute" }
+meroctl-sign = { path = "./crates/meroctl/sign" }
 
 [profile.dev]
 panic = "unwind"

@@ -197,7 +197,7 @@ pub enum OpsCmd {
     },
     /// Update an organization's instances (or one team's) to a release, where
     /// the operator holds app upgrades. Follow it with `meroctl team upgrade status`.
-    #[command(name = "upgrade-org", alias = "upgrade-namespace")]
+    #[command(name = "upgrade-org")]
     UpgradeNamespace {
         #[arg(value_name = "ORG")]
         namespace: String,
@@ -205,7 +205,7 @@ pub enum OpsCmd {
         package: String,
         #[arg(long)]
         version: String,
-        #[arg(long = "team", alias = "group", value_name = "TEAM")]
+        #[arg(long = "team", value_name = "TEAM")]
         group: Option<String>,
         #[arg(long, requires = "group")]
         cascade: bool,

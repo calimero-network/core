@@ -487,7 +487,7 @@ fn the_queue_survives_a_snapshot() {
     m.run(acquire("a1", "r1", 1)).unwrap();
     m.run(acquire("b1", "r2", 2)).unwrap();
     let mut restored = SystemMachine::default();
-    restored.restore(&m.snapshot()).unwrap();
+    restored.restore(&m.snapshot().unwrap()).unwrap();
     assert_eq!(restored.state.compute, m.state.compute);
     assert_eq!(restored.state.next_run_seq, 2);
 }
@@ -1048,13 +1048,13 @@ fn a_zero_price_rate_is_refused_and_leaves_the_table_alone() {
 #[test]
 fn a_stored_price_table_survives_a_snapshot_and_an_old_snapshot_reads_none() {
     let mut m = machine();
-    let without = m.snapshot();
+    let without = m.snapshot().unwrap();
     assert!(!String::from_utf8(without.clone())
         .unwrap()
         .contains("priceTable"));
     set_prices(&mut m, price_table(1)).unwrap();
     let mut restored = SystemMachine::default();
-    restored.restore(&m.snapshot()).unwrap();
+    restored.restore(&m.snapshot().unwrap()).unwrap();
     assert_eq!(restored.state.price_table, Some(price_table(1)));
     restored.restore(&without).unwrap();
     assert!(restored.state.price_table.is_none());

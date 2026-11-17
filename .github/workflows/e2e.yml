@@ -170,7 +170,7 @@ jobs:
           fi
           node=false
           if [ "$e2e" = true ] && { [ "$all" = true ] || [ "$node_closure" = true ] \
-               || grep -qE '^(apps/v2-fixtures/compute/|apps/compute-redact/|tools/mero-compute/|crates/meroctl/|crates/node/tests/fault/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
+               || grep -qE '^(apps/v2-fixtures/compute/|apps/compute-redact/|crates/meroctl/|crates/node/tests/fault/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
             node=true
           fi
           clients=$node

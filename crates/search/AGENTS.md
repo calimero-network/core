@@ -19,8 +19,8 @@ The user-facing guide is the docs site's
 cargo test -p calimero-search
 # End to end (3-node cluster, the kv component):
 cargo test -p calimero-node --test component_cluster views_search_a_components_tables_as_they_change
-# Engine numbers (size, latency, memory, the search-gas fit): tools/search-bench
-cargo run --release -p search-bench -- --sizes 10000,100000
+# Engine numbers (size, latency, memory, the search-gas fit): crates/search/bench
+cargo run --release -p calimero-search-bench -- --sizes 10000,100000
 ```
 
 ## Modules
@@ -37,7 +37,12 @@ cargo run --release -p search-bench -- --sizes 10000,100000
   (`AppMachine::touched_after`, kept for the last `TOUCHED_RING` entries), else
   a full scan of the app's records. A document's id is the SHA-256 of the
   record's stored key.
-- Indexes live in memory: a restart rebuilds them from state on first use.
+- Every document carries its digest (`doc_digest`, the `_h` fast field), and
+  `ContextIndex::digests` reads them all back, so an index kept on disk is brought
+  up to a state by indexing again only the documents whose digest differs.
+- Indexes live in memory, or on a node's encrypted data disk
+  (`calimero-node`'s `ComponentSearch::new`); one on disk is compared with the
+  state on first use, never trusted as current.
 - A changed schema, tokenizer, schema option or `FORMAT_VERSION` makes the
   index stale; it is wiped and rebuilt. It never enters the log or a snapshot.
 

@@ -90,13 +90,7 @@ pub enum AppCmd {
         path: PathBuf,
         /// The instances to update (default for a `.mpk`: this account's
         /// instances of its package).
-        #[arg(
-            long = "instance",
-            short = 'i',
-            alias = "context",
-            short_alias = 'c',
-            value_name = "INSTANCE"
-        )]
+        #[arg(long = "instance", short = 'i', value_name = "INSTANCE")]
         contexts: Vec<String>,
         /// The owner's passkey file that approves each update.
         #[arg(long)]

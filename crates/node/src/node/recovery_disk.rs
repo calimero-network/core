@@ -40,22 +40,20 @@ pub fn segment_file(hash: &str) -> String {
 }
 
 /// The segments a portable row of an app's state names: those of the sealed
-/// file its blob record holds.
-#[must_use]
-pub fn segments_of_row(row: &calimero_log::PortableRow) -> Vec<String> {
+/// file its blob record holds. A blob record that does not read is an error,
+/// never "no segments": the restore would go on without that file's bytes.
+pub fn segments_of_row(row: &calimero_log::PortableRow) -> EyreResult<Vec<String>> {
     use crate::app::rows;
     use crate::component::blobs::BlobRecord;
     match row {
         calimero_log::PortableRow::Hidden { tag, key, value }
             if *tag == rows::CBLOB && key.len() == 32 =>
         {
-            serde_json::from_slice::<BlobRecord>(value)
-                .ok()
-                .and_then(|r| r.file)
-                .map(|f| f.segments)
-                .unwrap_or_default()
+            let record = serde_json::from_slice::<BlobRecord>(value)
+                .map_err(|e| eyre::eyre!("blob record {} does not read: {e}", hex::encode(key)))?;
+            Ok(record.file.map(|f| f.segments).unwrap_or_default())
         }
-        _ => Vec::new(),
+        _ => Ok(Vec::new()),
     }
 }
 
@@ -385,4 +383,31 @@ fn prune_segments(at: &Path, keep: &std::collections::HashSet<String>) -> EyreRe
         }
     }
     Ok(gone)
+}
+
+#[cfg(test)]
+mod segment_tests {
+    use super::*;
+    use crate::app::rows;
+
+    /// Review finding A6 audit: a blob record that did not read gave "no segments", so a
+    /// restore went on without that file's bytes and the restored app silently lost them.
+    #[test]
+    fn a_blob_record_that_does_not_read_is_an_error_not_no_segments() {
+        let row = calimero_log::PortableRow::Hidden {
+            tag: rows::CBLOB,
+            key: vec![1; 32],
+            value: b"not a blob record".to_vec(),
+        };
+        let e = segments_of_row(&row).unwrap_err().to_string();
+        assert!(e.contains("does not read"), "{e}");
+
+        let plain = serde_json::json!({ "size": 1, "mime": "", "refs": 0, "idleSinceMs": 0 });
+        let row = calimero_log::PortableRow::Hidden {
+            tag: rows::CBLOB,
+            key: vec![1; 32],
+            value: serde_json::to_vec(&plain).unwrap(),
+        };
+        assert_eq!(segments_of_row(&row).unwrap(), Vec::<String>::new());
+    }
 }
