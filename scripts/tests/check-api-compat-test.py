@@ -178,9 +178,9 @@ case(
     [p.split(" changed")[0] for p in c.compare(tree(), tree(wit=WIT_ADDED))],
     [c.WIT],
 )
-case("an additive WIT change with a patch bump passes", c.compare(tree(), tree(wit=WIT_ADDED.replace("0.5.1", "0.5.3"))), [])
+case("an additive WIT change with a patch bump passes", c.compare(tree(), tree(wit=WIT_ADDED.replace("0.5.1", "0.5.2"))), [])
 case("a WIT comment or blank line needs no bump", c.compare(tree(), tree(wit=WIT_A.replace("// a comment", "// reworded") + "\n")), [])
-WIT_REMOVED = "package calimero:app@0.5.3;\n\ninterface state {\n}\n"
+WIT_REMOVED = "package calimero:app@0.5.2;\n\ninterface state {\n}\n"
 case(
     "a removal in a patch bump fails",
     any("patch is additive only" in p for p in c.compare(tree(), tree(wit=WIT_REMOVED))),
@@ -188,14 +188,14 @@ case(
 )
 case(
     "a removal with a minor bump still needs a declared cutover",
-    any("cutover" in p for p in c.compare(tree(), tree(wit=WIT_REMOVED.replace("0.5.3", "0.6.0")))),
+    any("cutover" in p for p in c.compare(tree(), tree(wit=WIT_REMOVED.replace("0.5.2", "0.6.0")))),
     True,
 )
 case(
     "with the cutover it passes",
     c.compare(
         tree(),
-        tree(wit=WIT_REMOVED.replace("0.5.3", "0.6.0"), deprecations='[[cutover]]\nwit = "0.6.0"\npr = 1\nwhy = "x"\n'),
+        tree(wit=WIT_REMOVED.replace("0.5.2", "0.6.0"), deprecations='[[cutover]]\nwit = "0.6.0"\npr = 1\nwhy = "x"\n'),
     ),
     [],
 )
