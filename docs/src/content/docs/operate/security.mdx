@@ -140,8 +140,10 @@ cluster)`: anyone can compute it. Never put real data on a `--dev` node.
 
 - K_r is derived from the KMS key and `--cluster`, and changes with each
   mero-tee release (each has its own mero-kms). It wraps the cluster key K_c,
-  under which every value on disk and every snapshot is AES-256-GCM sealed,
-  bound to its column, group and key. A new node gets K_c from a peer, which
+  under which every snapshot and backup is AES-256-GCM sealed, bound to its
+  column, group and key. The store itself is kept on the data disk the TD
+  encrypts with a key from mero-kms (LUKS2 with integrity), which merod requires
+  (`--kms-disk-evidence`) when its storage key comes from mero-kms. A new node gets K_c from a peer, which
   delivers it only to the attested TD at the address the operator registered
   for that node
   ([The cluster key](/protocol/encryption/#the-cluster-key-k_c)).
