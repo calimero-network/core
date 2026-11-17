@@ -11,8 +11,8 @@
     {"path": "gradle.properties", "format": "properties", "key": "VERSION_NAME"}
   ],
   "depends_on": [],
-  "inputs": ["docs/public/openapi.json"],
-  "generate": "./gradlew -p codegen --no-daemon --console=plain generateMeroClient",
-  "generated": ["mero-core/src/generated/kotlin"],
+  "inputs": ["docs/public/openapi.json", "crates/client/tests/fixtures/receipt-vectors.json"],
+  "generate": "./gradlew -p codegen --no-daemon --console=plain generateMeroClient && scripts/refresh-receipt-vectors.sh",
+  "generated": ["mero-core/src/generated/kotlin", "mero-core/src/test/resources/fixtures/receipt-vectors.json"],
   "workflow": ".github/workflows/sdk-mero-kotlin.yml"
 }

@@ -11,7 +11,8 @@ mero-kotlin is the Android client for **Calimero 1.0**. It gives an Android app 
 with the same names: `CalimeroClient` verifies a node's TDX attestation, seals every request to it
 (`calimero/sealed-http/v2`, Noise NK), signs people in with **passkeys** (Android Credential
 Manager) and machines with API keys, manages **organizations and teams**, calls apps' **intents**
-and **views**, and streams their **events** as a `Flow`. `mero-compose` adds the signed-in app
+and **views**, streams their **events** as a `Flow`, uploads and exports **sealed files**, and
+verifies **pipeline receipts**. `mero-compose` adds the signed-in app
 session, the consent page in a Custom Tab and a theme; `mero-testkit` an in-memory backend for
 tests. It is the Android twin of [`calimero-network/swift-sdk`](https://github.com/calimero-network/swift-sdk).
 
@@ -149,6 +150,9 @@ val started = ConsentLauncher.request(activity, client, ConsentRequest.CreateOrg
 val result = ConsentLauncher.resume(client, intent, started.requestId)
 (result?.outcome as? ConsentOutcome.OrgCreated)?.let { open(it.orgId) }
 ```
+
+`MeroAppSession` keeps the id of the request it started in its store, so a return that arrives
+after the process was killed still resumes it.
 
 `ConsentOutcome` is typed per kind (`OrgCreated`, `InviteCreated`, `InviteAccepted`, …); an
 invitation's token never appears in `toString`. See the

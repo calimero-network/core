@@ -67,6 +67,11 @@ EXCLUDED=(
   checkConsentCode   # run by openConsentPage / ConsentLauncher
   signUpPolicy       # core rc.9/rc.10 routes, kept out of the sample as in the Swift sample
   uploadFile         # ditto
+  exportFile         # ditto (sealed files of component apps; the sample's chat app has none)
+  exportFileTo       # ditto
+  verifyAppCluster   # ditto (pipeline receipts: compute apps, which the sample does not run)
+  pipelineReceipt    # ditto
+  verifyPipelineReceipt # ditto
   packageOrigins     # ditto (a package manager's, for a web frontend)
   addPackageOrigin   # ditto
   removePackageOrigin # ditto

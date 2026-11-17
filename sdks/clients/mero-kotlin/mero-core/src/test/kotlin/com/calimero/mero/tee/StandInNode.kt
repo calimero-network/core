@@ -26,6 +26,8 @@ internal class Answer(
     /** Body pieces, each sent as its own frame, [delayMs] apart. */
     val chunks: List<String>,
     val delayMs: Long = 0,
+    /** Binary body pieces, sent in place of [chunks] when set. */
+    val bytes: List<ByteArray>? = null,
 )
 
 internal fun ok(body: String = "{}") = Answer(200, listOf("content-type" to "application/json"), listOf(body))
@@ -111,9 +113,9 @@ internal class StandInNode(
         val sink = pipe.sink.buffer()
         sink.write(frame(0, headJson.encodeToByteArray())).flush()
         thread {
-            for (chunk in reply.chunks) {
+            for (chunk in reply.bytes ?: reply.chunks.map { it.encodeToByteArray() }) {
                 if (reply.delayMs > 0) Thread.sleep(reply.delayMs)
-                sink.write(frame(1, chunk.encodeToByteArray())).flush()
+                sink.write(frame(1, chunk)).flush()
             }
             sink.write(frame(2, ByteArray(0))).flush()
             sink.close()

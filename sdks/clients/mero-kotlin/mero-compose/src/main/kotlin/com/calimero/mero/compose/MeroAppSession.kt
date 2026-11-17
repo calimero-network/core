@@ -2,7 +2,9 @@ package com.calimero.mero.compose
 
 import android.content.Context
 import com.calimero.mero.AppHost
+import com.calimero.mero.CONSENT_STORAGE_KEY
 import com.calimero.mero.CalimeroClient
+import com.calimero.mero.CalimeroClient.Companion.CONSENT_REPLACED
 import com.calimero.mero.CalimeroClientOptions
 import com.calimero.mero.CalimeroError
 import com.calimero.mero.CloudPolicy
@@ -144,9 +146,14 @@ class MeroAppSession(
      */
     val consentError: StateFlow<Throwable?> = _consentError.asStateFlow()
 
-    /** The request [requestConsent] started and no return has settled yet. */
-    @Volatile
-    private var consentRequestId: String? = null
+    /**
+     * The request [requestConsent] started and no return has settled yet: only its id, kept in
+     * [store] ([CONSENT_STORAGE_KEY]) so a return that arrives after the process was killed still
+     * resumes it.
+     */
+    private var consentRequestId: String?
+        get() = store.value(CONSENT_STORAGE_KEY)
+        set(value) = store.setValue(CONSENT_STORAGE_KEY, value)
 
     /**
      * The passkey that approves the account's step-ups on 1.0 (`412 CONFIRM_REQUIRED`): inviting,
@@ -401,6 +408,10 @@ class MeroAppSession(
                     consentRequestId = null
                 }.onFailure {
                     if (it is CancellationException) throw it
+                    // The node no longer knows the request: nothing is left to resume. Any other
+                    // refusal (another request's return, still pending, the node unreachable)
+                    // keeps it for the real return.
+                    if (it is CalimeroError && it.code == CONSENT_REPLACED) consentRequestId = null
                     _consentResult.value = null
                     _consentError.value = it
                 }
@@ -452,7 +463,10 @@ class MeroAppSession(
     ): ConsentStarted {
         _consentResult.value = null
         _consentError.value = null
-        return ConsentLauncher.request(context, client, request, confirm).also { consentRequestId = it.requestId }
+        // Kept only once the page is about to open: a request declined in `confirm` never returns.
+        return ConsentLauncher.request(context, client, request) { started ->
+            (confirm?.invoke(started) ?: true).also { if (it) consentRequestId = started.requestId }
+        }
     }
 
     /** Rebuild [backend] from the client's session. A no-op when the account did not change. */

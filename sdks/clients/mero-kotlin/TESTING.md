@@ -22,9 +22,12 @@ The unit tests need no network and no node:
 | Suite | What |
 |---|---|
 | `mero-core` `tee/CalimeroClientTest` | `CalimeroClient` against stand-in cloud nodes, through the real Noise NK sealed channel with a mock attestation: mock quotes refused unless allowed, intents/views, 503 retries with one idempotency key, single-flight refresh on 401, 421 failover, failover of a call whose node stays unavailable (one idempotency key across nodes), `connect` through the node directory, 412 step-ups on invites/members/API keys (and the app layer without a passkey), blob content types and grants, deployments/deployers/xcalls routes, collateral age, sealed SSE, consent, the app backend's mapping, `SoftPasskey` signatures. |
-| `mero-core` `tee/*` | The sealed transport's wire format, DCAP, Sigstore releases, PCCS collateral, against pinned vectors. |
+| `mero-core` `tee/*` | The sealed transport's wire format, DCAP, Sigstore releases, PCCS collateral, sealed files (`SealedFileTest`, core's `calimero-sealed` vectors), against pinned vectors. |
+| `mero-core` `ExportFileTest` | Sealed file export against a node holding the Rust vectors: byte-exact plaintext, tampered segments, wrong ids, sizes and hashes, bounded segment reads, cancellation. |
+| `mero-core` `ReceiptsTest` | Pipeline receipt verification over core's `receipt_vectors` (`fixtures/receipt-vectors.json`, copied by `scripts/refresh-receipt-vectors.sh`): receipt-key bindings, replica attestation, the receipt's signature and schema, each job's report and job node attestation. |
 | `mero-core` `app/*` | `ContextContract`, `InMemoryAppBackend`. |
 | `mero-core` `agentgate/*` | The agent gate client. |
+| `mero-compose` `MeroAppSessionConsentTest` | The consent request id kept in the session's store across restarts. |
 | `sample-app` `ChatServiceTest` | The chat on `InMemoryAppBackend`. |
 
 ## 2. Instrumented UI tests (an emulator; `sdk-mero-kotlin.yml` with `instrumented: true`)
@@ -43,8 +46,11 @@ cluster (three nodes, mock attestation), the Kotlin twin of mero-js's `tests/clu
 sign-in on other nodes, the sealed channel, calls with idempotency keys, views, events (resumed by
 their `<index>:<seq>` ids), `412` step-ups, API keys, sessions, organizations, teams and their
 deletion, invites, blobs, presence, transfer, packages signed here (`Publisher.kt`), upgrade runs,
-moving an app, package origins, the consent page, account recovery, and the app layer
-(`CalimeroAppBackend`). They are skipped unless a cluster is named:
+moving an app, package origins, the consent page, account recovery, the app layer
+(`CalimeroAppBackend`), sealed files (`ClusterFilesTest`: a multi-part upload exported back byte
+for byte, from another node too, refused to a stranger) and replica attestation
+(`verifyAppCluster`). Pipeline receipts need a job node and core's compute fixture, which
+`merod local` does not run, so only their unit tests (`ReceiptsTest`) cover them. They are skipped unless a cluster is named:
 
 ```bash
 MEROD_BIN=path/to/merod MERO_KV_MPK=path/to/kv-store-test-fixture.mpk scripts/cluster-test.sh

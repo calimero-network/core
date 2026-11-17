@@ -22,7 +22,8 @@ Gradle (Kotlin DSL), `rootProject.name = "mero-kotlin"` (`settings.gradle.kts`):
 | `mero-testkit/` | `:mero-testkit` | `mero-kotlin-testkit` |
 | `examples/sample-app/` | `:sample-app` | not published (the Mero Chat sample) |
 
-- `mero-core/`: `CalimeroClient`, attestation, sealed transport, passkeys, the app layer.
+- `mero-core/`: `CalimeroClient`, attestation, sealed transport, passkeys, sealed files
+  (`Files.kt`, `tee/SealedFile.kt`), pipeline receipts (`Receipts.kt`, `crypto/Jcs.kt`), the app layer.
   `mero-core/src/generated/kotlin/` is **generated, do not edit** (see below).
 - `mero-compose/`: Compose session, platform passkeys, consent launcher, theme.
 - `mero-testkit/`: in-memory app backend for tests with no cluster.
@@ -80,8 +81,11 @@ called with `instrumented: true`; see [TESTING.md](TESTING.md).
 and checked in so the Android build needs neither the generator nor the network.
 
 - Regenerate: `python3 scripts/sdks.py generate mero-kotlin` from core's root, which runs
-  `./gradlew -p codegen generateMeroClient` here (`sdk.json` `generate`; it owns exactly
-  `mero-core/src/generated/kotlin`, `sdk.json` `generated`).
+  `./gradlew -p codegen generateMeroClient` here, then `scripts/refresh-receipt-vectors.sh`
+  (`sdk.json` `generate`; it owns exactly `mero-core/src/generated/kotlin` and
+  `mero-core/src/test/resources/fixtures/receipt-vectors.json`, `sdk.json` `generated`).
+- `fixtures/receipt-vectors.json` is a copy of core's `crates/client/tests/fixtures/receipt-vectors.json`
+  (an `inputs` file), which `ReceiptsTest` checks receipt verification against: never edit it by hand.
 - A wrong route or type is fixed in core's document or in `codegen/`
   (`prepare-spec.py`, `facade.py`, `templates/`), never in the output.
 - Core's `SDK codegen drift` job reports a stale client; `sdk-regenerate.yml` opens the
