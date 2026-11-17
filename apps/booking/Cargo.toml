@@ -19,7 +19,6 @@ calendar = { package = "com.calimero.example.calendar", range = "^0.1", mode = "
 
 [dependencies]
 calimero-sdk = { path = "../../crates/sdk" }
-serde = { version = "1", features = ["derive"] }
 
 # `build.rs` generates the typed client for each app in `uses`, from `calimero.lock` and
 # the ABIs vendored under `calimero/abi` (`meroctl app uses update`).
