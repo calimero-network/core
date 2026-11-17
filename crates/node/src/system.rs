@@ -5763,11 +5763,12 @@ impl SystemMachine {
 }
 
 fn ok(v: Value) -> Vec<u8> {
-    serde_json::to_vec(&json!({ "ok": v })).unwrap_or_default()
+    // `Value`'s `Display` is its compact JSON and cannot fail.
+    json!({ "ok": v }).to_string().into_bytes()
 }
 
 fn err(msg: &str) -> Vec<u8> {
-    serde_json::to_vec(&json!({ "err": msg })).unwrap_or_default()
+    json!({ "err": msg }).to_string().into_bytes()
 }
 
 /// Read a system command's output.

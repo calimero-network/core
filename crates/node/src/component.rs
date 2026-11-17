@@ -730,6 +730,18 @@ impl ComponentCmd {
     }
 }
 
+/// A component log entry as the bytes it is logged as.
+///
+/// Every field of a `ComponentCmd` is a string, an integer, a boolean, a JSON value, bytes,
+/// or a list, option or string- or integer-keyed map of those, which serde_json always
+/// writes. The fallback this replaces (`unwrap_or_default`) would have logged an empty
+/// entry that every replica skips as undecodable, losing the command without a trace.
+#[must_use]
+pub fn entry_json(cmd: &ComponentCmd) -> Vec<u8> {
+    // SAFETY: guaranteed by the shape stated above.
+    serde_json::to_vec(cmd).expect("a component log entry always serializes")
+}
+
 /// What `apply` answers for a component's entry.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1392,16 +1404,18 @@ impl AppMachine {
                         )
                     },
                 );
-                return serde_json::to_vec(&Applied {
+                return crate::app::applied_bytes(
                     index,
-                    status: Status::Trap,
-                    result: Value::Null,
-                    error: json!({ "kind": "Fault", "detail": detail }),
-                    events: Vec::new(),
-                    conflict: true,
-                    timeout: false,
-                })
-                .unwrap_or_default();
+                    &Applied {
+                        index,
+                        status: Status::Trap,
+                        result: Value::Null,
+                        error: json!({ "kind": "Fault", "detail": detail }),
+                        events: Vec::new(),
+                        conflict: true,
+                        timeout: false,
+                    },
+                );
             }
         }
         let cmd = serde_json::from_slice::<ComponentCmd>(command);

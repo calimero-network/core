@@ -492,8 +492,13 @@ async fn unit_members(node: &Node, release: &crate::system::PackageRef) -> Resul
         release.service.as_deref(),
     )
     .await?;
-    let uses: BTreeMap<String, calimero_bundle::BundleUse> =
-        serde_json::from_value(card["uses"].clone()).unwrap_or_default();
+    // The card is the node's own (`release_capabilities`); a `uses` it holds
+    // that does not read would create the instance without its unit.
+    let uses: BTreeMap<String, calimero_bundle::BundleUse> = match &card["uses"] {
+        Value::Null => BTreeMap::new(),
+        v => serde_json::from_value(v.clone())
+            .map_err(|e| ApiError::internal(&format!("the release's uses do not read: {e}")))?,
+    };
     let init_takes_links = card["abi"]["methods"]["init"]["params"]
         .as_array()
         .is_some_and(|ps| ps.iter().any(|p| p[0] == "links"));

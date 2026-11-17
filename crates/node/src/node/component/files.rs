@@ -951,7 +951,7 @@ impl Node {
         let Some(g) = self.hosted(app_id) else {
             return;
         };
-        let barrier = serde_json::to_vec(&ComponentCmd::Barrier).unwrap_or_default();
+        let barrier = crate::component::entry_json(&ComponentCmd::Barrier);
         if g.write(barrier).await.is_err() {
             return;
         }
@@ -1177,7 +1177,7 @@ impl Node {
         {
             return None;
         }
-        let barrier = serde_json::to_vec(&ComponentCmd::Barrier).unwrap_or_default();
+        let barrier = crate::component::entry_json(&ComponentCmd::Barrier);
         let _committed = g.write(barrier).await.ok()?;
         g.read_strong(|m, applied| (m.holds_blob(&raw), applied))
             .await
@@ -1235,15 +1235,12 @@ impl Node {
     ) -> Result<calimero_log::Proposed, WriteError> {
         g.propose(|m, _| match m.component_replay(&Caller::System, key) {
             Some(prev) => Proposal::Reply(crate::app::applied_bytes(prev.index, &prev)),
-            None => Proposal::Append(
-                serde_json::to_vec(&ComponentCmd::File {
-                    mark: mark.clone(),
-                    ts_ms: self.stamp(m),
-                    key: Some(key.to_owned()),
-                    uploader: Some(uploader.to_owned()),
-                })
-                .unwrap_or_default(),
-            ),
+            None => Proposal::Append(crate::component::entry_json(&ComponentCmd::File {
+                mark: mark.clone(),
+                ts_ms: self.stamp(m),
+                key: Some(key.to_owned()),
+                uploader: Some(uploader.to_owned()),
+            })),
         })
         .await
     }

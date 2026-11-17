@@ -395,7 +395,11 @@ async fn deployment_create(
         body.confirm,
     )
     .await?;
-    let id = deployment_id(consent["nonce"].as_str().unwrap_or_default());
+    // Never `deployment_id("")`, which every consent without a nonce would share.
+    let nonce = consent["nonce"]
+        .as_str()
+        .ok_or_else(|| ApiError::internal("the consent names no nonce"))?;
+    let id = deployment_id(nonce);
     let host = node.deployment_host(&id);
     let mut out = node
         .sys_write(&SystemCmd::CreateDeployment {
