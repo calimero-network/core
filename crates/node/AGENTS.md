@@ -991,6 +991,16 @@ is its command line.
   `app_versions_and_release_approvals_are_reported_without_names`,
   `an_operator_upgrade_is_reported_as_the_operators`,
   `an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart`.
+- **State digests** (`node/digests.rs`, `calimero_log::digest`): every
+  `DIGEST_COMPARE_EVERY` (60 s, `lib.rs`) the leader of each app group asks each other
+  replica for its digests (`POST /internal/digests { groups }`, `Node::digests_for`: only
+  groups the caller is a voter or learner of, at most `DIGEST_GROUPS_PER_ASK`) and compares
+  them at the latest index both recorded (`Node::compare_digests`). A difference logs an
+  error once per (group, peer) and sets `calimero_group_diverged{group,peer}` (the index)
+  until a comparison agrees (`metrics::digest_compared`); `calimero_group_divergences_total`
+  counts them. A peer that answers `404` (a release before) or another `DIGEST_VERSION` is
+  not compared. The system group is not (in-memory machine). Regression:
+  `a_replica_whose_state_differs_from_its_leaders_is_reported`.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
   `FORWARD_TIMEOUT` (5 s, `peer_forward`), then retries at whoever leads now; a frozen
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a

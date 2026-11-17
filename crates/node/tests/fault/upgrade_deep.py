@@ -139,6 +139,11 @@ NOT_COVERED = [
     ("Ops", "A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`)",
      "a read that stores nothing, so there is no data to carry across a roll; it needs a registered job "
      "node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable"),
+    ("Ops", "Replicas' state digests compared by each app's leader (`calimero_group_diverged`)",
+     "nothing a rollout carries: each replica takes its digest from its own rows (kept with the applied "
+     "index, taken again from the rows when it is missing), and a peer on a release before answers "
+     "`/internal/digests` with `404` and is not compared; "
+     "`a_replica_whose_state_differs_from_its_leaders_is_reported` (`cluster.rs`) covers it on one build"),
 ]
 
 

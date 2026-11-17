@@ -287,6 +287,20 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
+    // The leader of each app group compares its replicas' state digests.
+    let weak = Arc::downgrade(&node);
+    let stop = shutdown.clone();
+    drop(tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = stop.cancelled() => return,
+                () = tokio::time::sleep(node::digests::DIGEST_COMPARE_EVERY) => {}
+            }
+            let Some(node) = weak.upgrade() else { return };
+            let _compared = node.compare_digests().await;
+        }
+    }));
+
     // Presence entries nobody refreshed leave.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();

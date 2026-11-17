@@ -105,6 +105,19 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   again, never failing (a failed build is fatal to openraft's core), and a
   record no newer than the served one is never kept. Lock order: the
   snapshot-record lock, then `shared`. Regressions: `machine::build_races`.
+- State digests (`digest.rs`): a disk machine's state has a digest, the sum mod 2^256 of
+  `SHA-256(label ‖ len(key) ‖ key ‖ value)` over its rows (`StateDigest`), so it depends on
+  the rows alone. `StateTx::put`/`delete` move it by the row written less the row replaced
+  (`StateTx::replaced`, a failed read fails the batch); `apply` records it after every entry
+  at a multiple of `DIGEST_EVERY` (`Applied::recorded`, the last `DIGEST_KEPT`) and commits it
+  with the applied index (meta row `digest`, `DigestAt`). `StateMachine::open` takes it again
+  from the rows when the stored one is not at the applied index (`StateTx::commit` drops it);
+  installs and `replace_state*` sum the rows they write. `Group::digests` answers them (none
+  for an in-memory machine) and `Digests::compare` finds the latest index two replicas share.
+  The node compares them across replicas. Tests: `digest::tests`,
+  `replicas_that_applied_the_same_entries_hold_the_same_digest`,
+  `a_replica_that_applied_differently_is_told_apart`,
+  `a_row_changed_under_a_replica_shows_once_an_entry_rewrites_it`.
 - Node rows: `Engine::put_node_meta`/`get_node_meta` keep rows of the node's own in
   `meta` under group id `NODE_ROWS` (`u64::MAX`, which no group takes), sealed and
   synced like a vote: the node's rollback counter lives in the same store as the
