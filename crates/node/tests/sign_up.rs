@@ -57,11 +57,13 @@ fn refused(r: Result<(Client, SoftAuthenticator), Box<calimero_client::Error>>, 
 
 /// A sign-up invite the operator issues: `uses` accounts, an hour.
 async fn operator_invite(ops: &Client, token: &str, uses: u32) -> Value {
-    let expires = chrono::Utc::now() + chrono::Duration::hours(1);
+    let expires = (time::OffsetDateTime::now_utc() + time::Duration::hours(1))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
     ops_signed(
         ops,
         "ops/sign-up/invites",
-        json!({ "token": token, "uses": uses, "expiresAt": expires.to_rfc3339() }),
+        json!({ "token": token, "uses": uses, "expiresAt": expires }),
     )
     .await
     .unwrap()
