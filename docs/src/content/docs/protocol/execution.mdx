@@ -125,7 +125,7 @@ nodes run outside the log ([Compute actions](/protocol/compute-actions/)).
 A component has one key space: its own keys, which the node keeps as hidden rows of
 the app's group, sealed on disk. Per-caller data is rows keyed by
 `env::caller()`, and writer sets are rows the app checks before it writes
-(`apps/kv-store-writer-sets`); the host keeps no space of its own inside
+(`apps/team-space`); the host keeps no space of its own inside
 an app's keys. (SDK 0.12 apps had a private and a host space beside the shared
 one; they are gone with that SDK.)
 

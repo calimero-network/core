@@ -26,33 +26,25 @@ which reads and writes are cheap.
 
 | App | Shows |
 | --- | --- |
-| `kv-store` | The basic example: a string key-value store on an `UnorderedMap`, events, views, a typed error; harness tests, scenarios, and a migration scenario against its shipped `releases/0.1.0.mpk`. |
-| `kv-store-init` | An `init` that seeds entries. |
-| `sorted-kv-store` | Ordered reads on a map: `range`, `prefix`, `page`, `first`, `last`. |
-| `sorted-set-store` | The same on a `Set`. |
-| `custom-key-store` | A newtype slug as a map key (`ToKey` / `FromKey`). |
-| `team-metrics` | Per-team `Counter`s and a badge bitmask. |
+| `kv-store` | The basic example: a string key-value store on an `UnorderedMap`, events, views, a typed error, ordered reads (`range`, `prefix`, `page`, `first`, `last`); harness tests, scenarios, and a migration scenario against its shipped `releases/0.1.0.mpk`. |
+| `wiki` | A team wiki: an `init` that seeds the home page, a newtype slug as a map key (`ToKeyPart`), author-owned pages with revisions, a sorted tag `Set`, per-person drafts (`PerUser`) and content-addressed attachments (`Frozen`). |
 
 ## Tables
 
 | App | Shows |
 | --- | --- |
-| `indexed-issue-tracker` | List views that are index seeks: `#[table(index(..), count(..))]`, `find`, `count`. |
-| `indexed-forum` | Threads and posts on tables with indexes and counts. |
+| `issue-tracker` | List views that are index seeks: `#[table(index(..), count(..))]`, `find`, `count`. |
+| `forum` | Boards, posts, comments and votes on tables with indexes and counts; write-once chat messages, moderator-removed announcements and a charter written only in `init`. |
 | `rooms` | The reference app: bookings with a unique slot, timers, confirm, public methods. |
 
 ## Access control
 
 | App | Shows |
 | --- | --- |
-| `org-gated` | Members read, admins write, a team writes its own note (`guards`, `env::in_team`). |
-| `permissions-showcase` | One write rule per record kind: write-once, moderated, author-keyed, content-addressed. |
-| `kv-store-per-user-frozen` | `PerUser` values and content-addressed `Frozen` values. |
-| `kv-store-writer-sets` | A key-value store guarded by writer sets. |
-| `noticeboard` | A noticeboard with per-note authors and topic slices. |
+| `team-space` | Access control in layers: members read, admins write and a team writes its own note (`guards`, `env::in_team`); then the app's own rows: an owned config with transfer, writer sets guarding the status line, settings and roles, and their rotation. |
 | `name-registry` | Usernames: one owner per name, decided by the admins. |
-| `access-control` | An owned cell, a writer set and a role registry. |
 
+`wiki` (author-owned pages, a person's own draft) and `forum` (the author is the caller, moderators) carry rules of their own too.
 See [Access control](/build/guides/access-control/) for the patterns.
 
 ## Compute
@@ -64,7 +56,7 @@ See [Access control](/build/guides/access-control/) for the patterns.
 ## Fixtures
 
 The `apps/fixture-*` apps are the small apps the node's own tests run (with
-`org-gated` and `rooms` above); they are ordinary `calimero-sdk` apps, not examples.
+`team-space` and `rooms` above); they are ordinary `calimero-sdk` apps, not examples.
 
 | Fixture | Used for |
 | --- | --- |

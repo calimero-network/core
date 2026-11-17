@@ -35,7 +35,7 @@ The cluster and CLI tests build the components they load on first use
 (`calimero_app_build::build_component_cached`, cached under
 `$CARGO_TARGET_DIR/app-components`; the `wasm32-wasip2` target, which
 `rust-toolchain.toml` lists): the kv fixture `apps/fixture-kv`, the other
-`apps/fixture-*`, `apps/org-gated`, `apps/kv-store-writer-sets` and `apps/rooms`. No
+`apps/fixture-*`, `apps/team-space` and `apps/rooms`. No
 build step comes first. `KV_STORE_WASM` points `meroctl`'s tests at another
 component.
 
@@ -207,7 +207,7 @@ It is merobox's cloud-v2 workflow format as JSON ([where the format comes
 from](#where-the-format-comes-from)); `scripts/workflow-to-scenario.py FILE.yml
 [--delete]` converts a YAML workflow, dropping `base_port` and `binary` and
 refusing what it cannot carry over, naming why. Today
-`apps/org-gated/scenarios/cluster/` and `workflows/fuzzy-tests/` hold them.
+`apps/team-space/scenarios/cluster/` and `workflows/fuzzy-tests/` hold them.
 `cluster.settings` is the TOML every node starts with (its `[outbound]` table;
 the test build has `outbound-testing`). Every account in `accounts` is signed
 up with its own soft passkey on node 1 and talks to node `index % nodes` (an

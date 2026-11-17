@@ -45,21 +45,12 @@ It prints progress as the run reports it, then the result, each output and the u
 
 | App                      | Purpose                | Good Example For       |
 | ------------------------ | ---------------------- | ---------------------- |
-| `kv-store`               | Simple key-value store | `UnorderedMap`, events, a typed error; `TestApp` tests and `scenarios/*.json` |
-| `kv-store-init`          | KV with custom init | `#[app::init]` seeding the first state as the owner |
-| `org-gated`              | Org notes | `env::org_role` / `env::in_team`: gate methods on the caller's organization role and teams; `scenarios/cluster/` changes a team mid-run; also the node's org fixture (`crates/node/tests`) |
-| `sorted-kv-store`        | Ordered KV store | A `Table` read in key order: range / prefix / page / first / last through its cursor |
-| `sorted-set-store`       | Ordered set | A `Table` whose record is the element: range / prefix / page / min / max |
-| `noticeboard`            | Shared noticeboard | Per-note authors checked against `env::caller()`, topic slices through a `Table` index, and why the two go together |
-| `indexed-issue-tracker`  | Issue tracker | `Table` indexes, a label table and maintained counts: filter, count and page by field values without scanning |
-| `indexed-forum`          | Forum  | Tables with compound and optional-field indexes and maintained counts; a tag index as one row per tag; moderation as explicit checks against `env::caller()` and a moderators table |
-| `permissions-showcase`   | Team space | One table per write policy, each an explicit check: values written only in `init`, write-once messages, moderator-removed announcements, author-owned pages and revisions, evidence keyed by its SHA-256 |
+| `kv-store`               | Simple key-value store | `UnorderedMap`, events, a typed error, ordered reads (range / prefix / page / first / last through the map's cursor); `TestApp` tests, `scenarios/*.json` and a migration from its shipped release |
+| `wiki`                   | Team wiki | A seeded first state from `#[app::init]`, a `ToKeyPart` newtype key (`Slug`), author-owned pages with revisions, a sorted tag `Set` read by prefix / range / page, per-person drafts in `PerUser`, content-addressed attachments in `Frozen` (`sha2`) |
+| `forum`                  | Forum | Tables with compound and optional-field indexes and maintained counts, a tag index as one row per tag; the author is the caller, write-once chat messages, moderator-removed announcements, a charter written only in `init`, moderators appointing moderators |
+| `issue-tracker`          | Issue tracker | `Table` indexes, a label table and maintained counts: filter, count and page by field values without scanning |
+| `team-space`             | Team space | Access control in layers: organization standing (`env::org_role` / `env::in_team`) for the pinned and team notes, then the app's own rows: an owned config with transfer, one writer-set mechanism (status line, settings, roles) and its rotation; `scenarios/cluster/` changes a team mid-run; also the node's org and writer-set fixture (`crates/node/tests`) |
 | `name-registry`          | Usernames | Claim, verdict and admin tables: one owner per name, decided by the admins (the first claim applied wins); the app owner is the first admin, `setAdmins` hands the role on, a lost claim is renewed with `rebid` after a release |
-| `access-control`         | Access-control patterns | An owned cell, a writer set and a role registry, each a table plus a check against `env::caller()` |
-| `kv-store-writer-sets`   | Writer-set KV | A writer set as table rows plus an explicit check, and its rotation; `crates/node/tests/shared_storage.rs` runs it on a cluster |
-| `kv-store-per-user-frozen` | Per-user + immutable KV | `PerUser` values keyed by the caller's account, a `Frozen` content-addressed store with its own `ContentHash` (`sha2`) |
-| `custom-key-store`       | Custom key type | A `ToKeyPart` newtype key (`Slug` over a `String`, normalized), and why a struct without it does not compile |
-| `team-metrics`           | Team metrics with badges | Per-team counts and a bitmask as a plain record |
 | `rooms`                  | Room booking | The node's Rooms tests (`crates/node/tests/rooms.rs`) and the fault test |
 | `compute-redact`         | CSV redaction | `#[app::compute]` runs: a preview then one run per part, a queue of at most 4 active runs, the compute component (`meroctl app build --compute-out`) that may import only the compute world; the policy is set by an admin and copied into each job; `share` publishes a done job's outputs (`compute::publish`) and `link` grants a download (`blobs.grant`) |
 | `fixture-kv`             | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls, actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
@@ -111,7 +102,7 @@ app-name/
 | File                                | Purpose         |
 | ----------------------------------- | --------------- |
 | `kv-store/src/lib.rs`               | Basic component app |
-| `access-control/src/lib.rs`         | Auth patterns   |
+| `team-space/src/lib.rs`             | Auth patterns   |
 | `fixture-kv/src/lib.rs`             | Every host feature the node tests |
 | `crates/sdk/AGENTS.md`          | The SDK itself |
 
@@ -140,12 +131,12 @@ its own. Two formats
 
 ```json
 {
-  "name": "Sorted KV store",
+  "name": "KV store",
   "cluster": { "nodes": 3 },
   "accounts": ["alice", "bob"],
   "steps": [
-    { "type": "create_org", "account": "alice", "org_name": "Sorted", "outputs": { "org": "orgId" } },
-    { "type": "deploy", "account": "alice", "wasm": "{{env.CORE_WASM_DIR}}/sorted_kv_store.wasm",
+    { "type": "create_org", "account": "alice", "org_name": "Kv", "outputs": { "org": "orgId" } },
+    { "type": "deploy", "account": "alice", "wasm": "{{env.CORE_WASM_DIR}}/kv_store.wasm",
       "org": "{{org}}", "outputs": { "app": "appId" } },
     { "type": "call", "account": "alice", "app": "{{app}}", "method": "set", "args": { "key": "a", "value": "1" } },
     { "type": "view", "account": "alice", "app": "{{app}}", "method": "get", "args": { "key": "a" }, "expect": "1" }
