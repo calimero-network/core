@@ -203,6 +203,7 @@ mod tests {
         let app = AppIdentity {
             package: "com.calimero.outbound-probe".to_owned(),
             signer: "did:key:zProbe".to_owned(),
+            secrets: None,
         };
         let run = service
             .for_run(
@@ -282,6 +283,7 @@ mod tests {
                 AppIdentity {
                     package: "p".to_owned(),
                     signer: "s".to_owned(),
+                    secrets: None,
                 },
                 vec![url.clone()],
                 Some(Approval {
