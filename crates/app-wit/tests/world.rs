@@ -157,3 +157,15 @@ fn runs_publish_takes_a_blob_id_and_answers_a_blob_id_or_a_string() {
     assert_eq!(publish.params[0].name, "id");
     assert!(publish.result.is_some());
 }
+
+#[test]
+fn an_older_patch_of_the_compute_world_is_still_the_compute_world() {
+    use calimero_app_wit::names_compute_world;
+    assert!(names_compute_world(COMPUTE_WORLD));
+    assert!(names_compute_world("calimero:app/compute@0.5.1"));
+    assert!(names_compute_world("calimero:app/compute@0.5.0"));
+    assert!(!names_compute_world("calimero:app/compute@0.5.99"));
+    assert!(!names_compute_world("calimero:app/compute@0.6.0"));
+    assert!(!names_compute_world("calimero:app/app@0.5.1"));
+    assert!(!names_compute_world("calimero:app/compute"));
+}
