@@ -17,7 +17,6 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::commons::send_api;
 use crate::env::{write_private, Home, SavedNode};
 
 pub const DEFAULT_CLOUD: &str = "https://cloud.calimero.network";
@@ -144,16 +143,16 @@ async fn request(
     if !base.starts_with("https://") && !crate::make::is_loopback(base) {
         bail!("the Cloud URL must be https:// (a session is never sent in the clear)");
     }
-    let http = reqwest::Client::new();
-    let res = send_api(base, path, |url| {
-        let req = http.request(method.clone(), url).bearer_auth(token);
-        match &body {
-            Some(body) => req.json(body),
-            None => req,
-        }
-    })
-    .await
-    .wrap_err_with(|| format!("reaching {base}"))?;
+    let mut req = reqwest::Client::new()
+        .request(method, format!("{base}/api/{path}"))
+        .bearer_auth(token);
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    let res = req
+        .send()
+        .await
+        .wrap_err_with(|| format!("reaching {base}"))?;
     let status = res.status();
     let refreshed = res
         .headers()
