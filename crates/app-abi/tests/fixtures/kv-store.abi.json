@@ -23,6 +23,7 @@
     "clear": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "Removes every key, as any member may (v1's `clear`, no confirmation). Emits\n`Cleared` only when the store was not already empty.",
       "kind": "call",
       "params": [],
       "public": false,
@@ -31,14 +32,25 @@
     "entries": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "Every key with its value, as a JSON object ordered by key (up to 1000 keys);\n`{}` when the store is empty.",
       "kind": "view",
       "params": [],
       "public": false,
       "returns": "BTreeMap<String,String>"
     },
+    "first": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The entry with the smallest key, or `null` when the store is empty.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "option<Entry>"
+    },
     "get": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "The value under `key`, or `null` when it is absent.",
       "kind": "view",
       "params": [
         [
@@ -52,6 +64,7 @@
     "getOrInsert": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "The value under `key`, first storing `value` there if the key is absent (an\nexisting value is returned unchanged). Emits `Inserted` only when it stores.",
       "kind": "call",
       "params": [
         [
@@ -69,6 +82,7 @@
     "getResult": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "The value under `key`; `NotFound { key }` when it is absent.",
       "kind": "view",
       "params": [
         [
@@ -82,6 +96,7 @@
     "getUnchecked": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "The value under `key`; a missing key aborts the run (a trap, not an app error).\nKept to show what a guest panic looks like: use `get` or `getResult`.",
       "kind": "view",
       "params": [
         [
@@ -95,22 +110,93 @@
     "init": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "Creates the empty store. The node runs it once, when the app is created.",
       "kind": "init",
       "params": [],
       "public": false,
       "returns": null
     },
+    "isEmpty": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Whether the store holds no keys.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "bool"
+    },
+    "last": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "The entry with the largest key, or `null` when the store is empty.",
+      "kind": "view",
+      "params": [],
+      "public": false,
+      "returns": "option<Entry>"
+    },
     "len": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "The number of keys; `\"0\"` when the store is empty.",
       "kind": "view",
       "params": [],
       "public": false,
       "returns": "u64"
     },
+    "page": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "`limit` entries after the first `offset`, ascending. The skipped entries are still\nread; a client paging a large store should prefer `range` from the last key it holds.",
+      "kind": "view",
+      "params": [
+        [
+          "offset",
+          "u32"
+        ],
+        [
+          "limit",
+          "u32"
+        ]
+      ],
+      "public": false,
+      "returns": "BTreeMap<String,String>"
+    },
+    "prefix": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Entries whose keys start with `prefix`, ascending, e.g. `prefix(\"user:\")`: the read\ncovers only the keys under it.",
+      "kind": "view",
+      "params": [
+        [
+          "prefix",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "BTreeMap<String,String>"
+    },
+    "range": {
+      "allowSystem": false,
+      "confirm": false,
+      "doc": "Entries whose keys fall within `[start, end)`, ascending: the map's own bounds, no\nfull scan. `{}` when `start` is not below `end`.",
+      "kind": "view",
+      "params": [
+        [
+          "start",
+          "string"
+        ],
+        [
+          "end",
+          "string"
+        ]
+      ],
+      "public": false,
+      "returns": "BTreeMap<String,String>"
+    },
     "remove": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "Removes `key` and returns the value it held, or `null` when it was absent. Emits\n`Removed` only when a value was removed.",
       "kind": "call",
       "params": [
         [
@@ -124,6 +210,7 @@
     "set": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "Stores `value` under `key`, replacing any value already there. Emits `Inserted`\nfor a new key and `Updated` for an existing one.",
       "kind": "call",
       "params": [
         [
@@ -141,6 +228,7 @@
     "updateIfExists": {
       "allowSystem": false,
       "confirm": false,
+      "doc": "Replaces the value under `key` only if the key exists, and says whether it did:\n`false` writes nothing. Emits `Updated` when the value is replaced.",
       "kind": "call",
       "params": [
         [

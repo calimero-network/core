@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds the compute fixture (apps/v2-fixtures/compute, an app component and
+# Builds the compute fixture (apps/fixture-compute, apps/v2-fixtures/compute in older
+# releases; an app component and
 # its compute component) from a release's own source, with that release's own
 # tools (its meroctl; before meroctl built apps, its mero-app-build, mero-sign and
 # scripts/pack-component.py): the package a
@@ -49,7 +50,10 @@ else
 fi
 chmod +x "$TOOLS/bin/release-build" "$TOOLS/bin/release-pack"
 
-(cd "$SRC" && "$TOOLS/bin/release-build" apps/v2-fixtures/compute \
+# An older release keeps its test fixtures under apps/v2-fixtures/.
+COMPUTE=apps/fixture-compute
+[ -d "$SRC/$COMPUTE" ] || COMPUTE=apps/v2-fixtures/compute
+(cd "$SRC" && "$TOOLS/bin/release-build" "$COMPUTE" \
   --out "$OUT/compute-app.wasm" --compute-out "$OUT/compute-compute.wasm")
 "$TOOLS/bin/release-pack" --wasm "$OUT/compute-app.wasm" --compute "$OUT/compute-compute.wasm" \
   --package com.calimero.compute-fixture --app-version "$TAG" --out "$OUT/compute.mpk"

@@ -507,11 +507,10 @@ fn count_keys_are_only_ever_added() {
 }
 
 #[test]
-fn a_table_nests_under_a_key_with_its_indexes_and_counts() {
-    use calimero_sdk::collections::Nested;
+fn a_table_per_key_keeps_its_indexes_and_counts() {
     let store = MemStore::new();
-    let mut by_team: Nested<String, Table<Contact, MemStore>, MemStore> =
-        Nested::with_store("crm", store.clone());
+    let mut by_team: UnorderedMap<String, Table<Contact, MemStore>, MemStore> =
+        UnorderedMap::with_store("crm", store.clone());
     let mut red = by_team.get(&"red".into()).unwrap();
     let mut blue = by_team.get(&"blue".into()).unwrap();
     red.insert(contact("1", "a@x", "ada", "a", "lead")).unwrap();

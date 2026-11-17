@@ -153,7 +153,7 @@ jobs:
         with:
           shared-key: bench
           save-if: false
-          # The bench builds the kv component (apps/v2-fixtures/kv) itself.
+          # The bench builds the kv component (apps/fixture-kv) itself.
           targets: wasm32-wasip2
 
       # Cargo runs a bench in its package's directory, so the report is named

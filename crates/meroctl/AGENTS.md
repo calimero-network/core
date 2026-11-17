@@ -108,7 +108,7 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   `a_cluster_that_started_over_refuses_the_old_passkey_file_and_says_what_to_do`.
 
 ```bash
-cargo test -p meroctl        # every command group against an in-process 3-node cluster (builds apps/v2-fixtures/kv)
+cargo test -p meroctl        # every command group against an in-process 3-node cluster (builds apps/fixture-kv)
 cargo test -p meroctl --test app_offline --test cloud --test dev_new   # no node, no network
 cargo run -p meroctl -- --help
 ```

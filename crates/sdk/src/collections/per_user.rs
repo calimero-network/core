@@ -6,13 +6,15 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::{collection_key, iter_entries, key_after, read_page, Entry, KeyPath};
+use crate::commons::{collection_key, iter_entries, read_page, KeyPath};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::env::{self, Caller};
 use crate::error::{AppError, StorageError};
 use crate::store::{DefaultStore, Store};
 use crate::table::{FindOpts, Iter, Page};
+
+use super::slots::{decode_account, UserValue};
 
 /// A value per account. Writes always go to the caller's own value (`env::caller()`'s
 /// account, or the account an API key acts for), so no method can name anyone else's; any
@@ -36,25 +38,14 @@ fn caller_account() -> Result<String, AppError> {
     }
 }
 
-/// A stored `(account, value)` under `base`.
-fn decode_account<T: DeserializeOwned>(
-    base: &[u8],
-    (k, v): Entry,
-) -> Result<(String, T), StorageError> {
-    match key_after(&k, base)?.as_slice() {
-        [KeyPart::Str(account)] => Ok((account.clone(), value::from_slice(&v)?)),
-        _ => Err(StorageError::Decode("not an account key".into())),
-    }
-}
-
-impl<T: Serialize + DeserializeOwned, S: Store + Default> PerUser<T, S> {
+impl<T, S: Store + Default> PerUser<T, S> {
     /// A per-account store on the default store.
     pub fn new(name: impl Into<String>) -> Self {
         Self::with_store(name, S::default())
     }
 }
 
-impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
+impl<T, S: Store> PerUser<T, S> {
     /// A per-account store on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
@@ -67,20 +58,41 @@ impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
     fn storage_key(&self, account: &str) -> Result<Vec<u8>, StorageError> {
         collection_key(&self.name, "u", &[KeyPart::Str(account.into())])
     }
+}
 
-    /// `account`'s value.
-    pub fn get_for(&self, account: &str) -> Result<Option<T>, StorageError> {
-        self.store
-            .get(&self.storage_key(account)?)
-            .map(|bytes| value::from_slice(&bytes))
-            .transpose()
+impl<T: UserValue<S>, S: Store> PerUser<T, S> {
+    /// `account`'s value (`Option<T>`), or for collections `account`'s collection (a handle
+    /// that reads nothing until used). Reading anyone's is allowed; writing goes through
+    /// [`PerUser::get`], the caller's own.
+    pub fn get_for(&self, account: &str) -> Result<T::Get, StorageError> {
+        T::get(&self.store, &self.name, account)
     }
 
-    /// Whether `account` has a value.
+    /// Whether `account` has a value, or a collection with anything in it.
     pub fn contains_for(&self, account: &str) -> Result<bool, StorageError> {
-        Ok(self.store.get(&self.storage_key(account)?).is_some())
+        T::contains(&self.store, &self.name, account)
     }
 
+    /// The caller's own value, or the caller's own collection to read and write.
+    pub fn get(&self) -> Result<T::Get, AppError> {
+        Ok(T::get(&self.store, &self.name, &caller_account()?)?)
+    }
+
+    /// Remove the caller's own value and return it; for collections, remove the caller's
+    /// collection whole and answer how many stored entries it had.
+    pub fn remove(&mut self) -> Result<T::Removed, AppError> {
+        let account = caller_account()?;
+        Ok(T::remove(&mut self.store, &self.name, &account)?)
+    }
+
+    /// Every account's value (or collection), in account order, through one cursor; for
+    /// collections it skips over each account's rows, two host calls per account.
+    pub fn iter(&self) -> Iter<'_, (String, T::Item)> {
+        T::entries(&self.store, &self.name)
+    }
+}
+
+impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
     /// Every account's value as `(account, value)`, in account order (last first with
     /// `reverse`), one page of at most 1,000; `from` and `to` take accounts as
     /// `KeyPart::Str`.
@@ -92,11 +104,6 @@ impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
             .map(|e| decode_account(&base, e))
             .collect::<Result<_, StorageError>>()?;
         Ok(Page { items, next })
-    }
-
-    /// Every account's value, in account order, a page at a time as the loop reaches it.
-    pub fn iter(&self) -> Iter<'_, (String, T)> {
-        self.iter_with(FindOpts::default())
     }
 
     /// [`PerUser::page`] over every page from `opts` on.
@@ -112,28 +119,12 @@ impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
         }
     }
 
-    /// The caller's own value.
-    pub fn get(&self) -> Result<Option<T>, AppError> {
-        Ok(self.get_for(&caller_account()?)?)
-    }
-
     /// Set the caller's own value; returns the caller's account.
     pub fn set(&mut self, v: &T) -> Result<String, AppError> {
         let account = caller_account()?;
         let key = self.storage_key(&account)?;
         self.store.put(&key, &value::to_vec(v)?);
         Ok(account)
-    }
-
-    /// Remove the caller's own value, returning it.
-    pub fn remove(&mut self) -> Result<Option<T>, AppError> {
-        let account = caller_account()?;
-        let old = self.get_for(&account)?;
-        if old.is_some() {
-            let key = self.storage_key(&account)?;
-            self.store.delete(&key);
-        }
-        Ok(old)
     }
 }
 

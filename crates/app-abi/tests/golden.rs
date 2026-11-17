@@ -14,7 +14,7 @@ use calimero_app_abi::openapi::{document, Info};
 use calimero_app_abi::AppAbi;
 use serde_json::Value;
 
-const APPS: &[&str] = &["kv-store", "rooms", "permissions-showcase", "kitchen-sink"];
+const APPS: &[&str] = &["kv-store", "rooms", "forum", "kitchen-sink"];
 
 fn dir(sub: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

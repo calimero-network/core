@@ -22,9 +22,9 @@ pub(crate) fn encode(parts: &[KeyPart]) -> Result<Vec<u8>, StorageError> {
 /// Where a collection's keys start.
 ///
 /// A state field's collection starts at its name, `(name)`, so its keys are
-/// `(name, kind, rest..)` as they always were. A collection nested under a key of a
-/// [`Nested`](crate::collections::Nested) starts at its parent's path, then `"c"` and that
-/// key encoded as one bytes part: `(name, "c", key)`, and so on for each level.
+/// `(name, kind, rest..)` as they always were. A collection that is the value of a map
+/// (`UnorderedMap<K, Vector<T>>`) starts at the map's path, then `"c"` and its key encoded as
+/// one bytes part: `(name, "c", key)`, and so on for each level.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyPath {
     label: String,
@@ -68,7 +68,7 @@ impl KeyPath {
     }
 }
 
-/// The kind part under which a [`Nested`](crate::collections::Nested) keeps its children.
+/// The kind part under which a map of collections keeps each key's collection.
 pub(crate) const NESTED: &str = "c";
 
 /// The key `(path.., kind, rest..)` of a collection, checked.

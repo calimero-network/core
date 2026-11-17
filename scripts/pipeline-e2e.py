@@ -35,7 +35,7 @@ from compute_e2e import E2E, OPERATOR_SEED  # noqa: E402
 from rv2 import BIN, CLI, ORIGIN, PackageRegistry, stop_all  # noqa: E402
 
 PIPELINE = "fanout"
-FIXTURE = ROOT / "apps" / "v2-fixtures" / "compute"
+FIXTURE = ROOT / "apps" / "fixture-compute"
 SIZES = (300_000, 120_000, 70_000)
 BASE_PORT = 7685  # 7686-7689 locally, inside rv2's 7600-7699 range
 JOB = 4

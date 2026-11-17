@@ -17,6 +17,55 @@ structures, not CRDTs: there is nothing to merge. The exception is `Text`,
 which stays a sequence CRDT so that edits typed against a stale view still land
 where they were meant (see [Collaborative text](/build/guides/collaborative-text/)).
 
+## Choosing a type
+
+Pick by how the data is read and how it grows.
+
+| You need | Use | Why |
+| --- | --- | --- |
+| Records found by more than their key: by owner, by date, by status; values that must be unique; counts per group; full-text search | `Table<R>` | Indexes, unique constraints and counts are kept on every write, so a lookup by any declared field is one range read, never a scan. |
+| A value per key, read and written by that key | `UnorderedMap<K, V>` | One read or write per key, a stored count, and reads in key order (it is also the sorted map). Tuple keys give two-level keys. |
+| Whether something is in a group: members, tags, likes, seen ids | `Set<T>` | Membership is one read; elements come back sorted. |
+| Items in the order they arrived: a log, a feed, a history | `Vector<T>` | Append, read by position and the last items are one call each. Insert in the middle rewrites everything after it: keep it append-mostly. |
+| One value: settings, a config record, the current round | `Cell<T>` | One read, one write. Keep the value small: it is written whole. |
+| A number many runs change | `Counter` | `add` never reads the value first. |
+| A value per account that each person writes for themselves | `PerUser<T>` | Writes go to the caller's own value, so no method can write anyone else's. |
+| Content stored once and referred to by hash | `Frozen<T>` | The same content is stored once; nothing changes or removes it. |
+| Text several people edit at once | `Text`, `RichText` | Edits typed against a stale view still land where they were meant. |
+| A list, set or map per key, per position or per account | A collection inside a map, `Vector` or `PerUser` | Each one costs what a state field's does ([Collections inside collections](#collections-inside-collections)). |
+
+A rule of thumb: a `Table` when you query by fields, a map when you look up by
+one key, a `Set` when the element is the whole fact, a `Vector` when the order
+of arrival matters.
+
+### Why not `Vec`, `HashMap` or `BTreeMap`
+
+A state field has to be a table or a collection: `#[app::state]` builds each one
+from its name, so `items: Vec<Item>` as a field does not compile. A standard
+collection still fits in as a value, `Cell<Vec<Item>>` or
+`UnorderedMap<String, Vec<Item>>`, and then it is one stored value:
+
+- **Every change reads and writes all of it.** Adding one item to a
+  `Cell<Vec<Item>>` decodes the whole list, appends, encodes it and writes it
+  back. With 10,000 items that is 10,000 items read and written per call, where
+  `Vector::push` writes one row and a length.
+- **It runs into a run's limits.** A run writes at most 1 MiB, and a stored
+  value is written whole, so a list grows into a ceiling: past it, every call
+  that changes it fails. A `Vec<u8>` is stored as a CBOR list of numbers, about
+  twice its size.
+- **Reads cannot be partial.** There is no page, range, `first` or `contains`
+  without loading everything; a view that shows ten items still reads them all.
+- **`HashMap` has no order.** Its iteration order is not stable between runs, so
+  anything that depends on it (the first match, the page a client sees) can
+  change from one call to the next. Use `BTreeMap` inside a value, or an
+  `UnorderedMap`, which reads in key order.
+
+A standard collection is the right choice when the data is small, bounded and
+always read together: a record's handful of labels, a poll's options, a method's
+arguments and results, an event's payload. If it grows with users or with time,
+make it a collection: a `Vector` per key or a `Set` per key costs a write per
+item however large it gets.
+
 ## Tables
 
 A `Table<R>` holds [records](/build/sdk-macros/#deriverecord-and-table):
@@ -106,12 +155,11 @@ every entry it reads. A view that answers a client should still return one
 | Type | Operations |
 | --- | --- |
 | `Cell<T>` | `get`, `set`, `clear`, `is_set`, `get_or_default`, `replace` and `take` (return the old value), `update(\|old\| new)` |
-| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values`, `retain` |
+| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values`, `retain`; a value can be a collection ([Collections inside collections](#collections-inside-collections)) |
 | `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `retain` |
-| `Vector<T>` | `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
+| `Vector<T>` | A collection per position ([Collections inside collections](#collections-inside-collections)), or values: `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
 | `Counter` | `get`, `add`, `increment`, `decrement` (stops at zero), `reset` |
 | `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of`, `page` and `iter` as `(hex, value)` in hash order |
-| `Nested<K, C>` | A collection `C` per key: `get(&k)`, `contains`, `is_empty`, `remove`, `clear`, `keys`, `iter` ([Nested collections](#nested-collections)) |
 | `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` and `contains_for(account)` read another's; `page`, `iter` and `iter_with` list `(account, value)` in account order |
 | `Text` | `insert_after(id, str)`, `delete_ids`, `insert(index, str)`, `delete(index, n)`, `read`, `chars`, `id_at`, `index_of`, `len`, `clear` |
 | `RichText` | `text()` / `text_mut()` (a `Text`), `mark(start, end, key, value, expand)`, `mark_ids`, `marks`, `spans`, `clear` |
@@ -119,17 +167,19 @@ every entry it reads. A view that answers a client should still return one
 Despite its name, `UnorderedMap` reads in key order (`page`, `range`, `first`,
 `last`), so it also serves as a sorted map.
 
-### Nested collections
+### Collections inside collections
 
-`Nested<K, C>` keeps a collection `C` under each key `K`: a `Vector` per
-account, a `Set` per tag, a map per board, or another `Nested` for a further
-level. `C` is any collection or a `Table`.
+Any container with a slot per key can hold a whole collection in each slot: a
+map per key, a `Vector` per position, a `PerUser` per account. The collection
+can be any collection or a `Table`, and so on as deep as you like: a `Vector`
+per account, a `Set` per tag, a map of maps, a `Table` per team, a grid as a
+`Vector<Vector<T>>`. Write the type and use it; there is nothing to declare.
 
 ```rust
 #[app::state(version = 1)]
 pub struct Feed {
-    posts: Nested<String, Vector<Post>>,
-    boards: Nested<String, Nested<u64, UnorderedMap<String, String>>>,
+    posts: UnorderedMap<String, Vector<Post>>,
+    boards: UnorderedMap<String, UnorderedMap<u64, UnorderedMap<String, String>>>,
 }
 
 let mut mine = self.posts.get(&account)?; // this account's Vector<Post>
@@ -138,22 +188,44 @@ let n = mine.len()?;                      // one read: this account's length
 for post in mine.iter() { let post = post?; /* .. */ }
 ```
 
-| `Nested<K, C>` | |
+For a collection value, the map's methods answer per key:
+
+| Method | For a collection value |
 | --- | --- |
 | `get(&k)` | `k`'s collection: a handle that reads nothing until used; an absent key's is empty. |
 | `contains(&k)` / `is_empty()` | Whether `k`'s collection, or any, holds anything: one cursor read. |
 | `remove(&k)` / `clear()` | Removes `k`'s whole collection, or every one; returns how many stored entries there were. |
-| `keys()` / `iter()` | Every key that holds anything, in key order (with its collection): two host calls per key, however large its collection. |
+| `iter()` / `keys()` | Every key that holds anything, in key order, with its collection: two host calls per key, however large its collection. |
+
+A `Vector` of collections appends with `push_new()`, which returns the
+position and its empty collection; `get(i)` answers `Option<C>`, `pop()`
+removes the last collection whole, and `iter()` reads only the length. A
+`PerUser` of collections answers the caller's own with `get()` and anyone's
+with `get_for(account)`; `remove()` removes the caller's whole collection.
+
+```rust
+rounds: Vector<Set<String>>,          // a set of players per round
+inbox: PerUser<Vector<Message>>,      // each account's own messages
+
+let (round, mut players) = self.rounds.push_new()?;
+players.insert(&account)?;
+self.inbox.get()?.push(&message)?;    // the caller's own inbox
+```
+
+A `Set`, a `Frozen` and a `Cell` cannot hold collections: a set's elements are
+its keys, with no slot beside them (use a map from the element to its
+collection), a frozen value is addressed by its own content, and a cell is a
+single slot (`Cell<Vector<T>>` is just a `Vector`).
+
+A key whose collection was emptied no longer counts: `contains`, `is_empty`
+and `keys` skip it (its stored length stays at 0 until `remove` clears it).
 
 Each key's collection costs exactly what a state field's does: a write per
-element, its own stored length, reads through its own cursor. Nothing is stored
-for the key itself, so a key exists while its collection holds anything. A
-nested `Table` keeps its indexes, unique constraints and counts, but full-text
-`search` covers only the state's own tables.
-
-Plain tuple keys (`UnorderedMap<(String, u64), V>` and `prefix_iter`) store
-the same rows; `Nested` adds a length and positions per key and a collection
-type per key.
+element, its own stored length, reads through its own cursor. Nothing is
+serialized whole, as a `Vec<T>` value would be on every change. `insert`,
+`len`, `page` and `range` are for plain values; a map of collections keeps no
+count of its keys. A `Table` value keeps its indexes, unique constraints and
+counts, but full-text `search` covers only the state's own tables.
 
 ```rust
 #[app::state(version = 1)]
