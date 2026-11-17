@@ -132,7 +132,7 @@ class Pipelines(DeepCase):
                   f"the receipt of {first['id']}: {got}")
         elif release_key(w.fixtures["from_version"]) >= release_key(JOB_EVIDENCE_SINCE):
             # The old release logged each job's evidence with the run, so its receipt still verifies after the roll.
-            got = pat.cli("pipeline", "receipt", s["app"], first["id"], "--verify")
+            got = pat.cli("cloud", "compute", "pipeline", "receipt", s["app"], first["id"], "--verify")
             check(got["verified"] is True and len(got["outputs"]) == 3 and all(o["matches"] for o in got["outputs"]),
                   f"the receipt of {first['id']}, seeded on {w.fixtures['from_version']}: {got}")
         else:
