@@ -7,7 +7,7 @@ on:
       - "crates/identity/**"
       - "crates/sealed/**"
       - "crates/tee-attestation/**"
-      - "tools/mero-sign/**"
+      - "crates/meroctl/sign/**"
       - "fuzz/**"
       - "scripts/fuzz.sh"
       - "scripts/fuzz-ci.sh"
@@ -15,7 +15,7 @@ on:
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
-      - "tools/mero-sign/README.md"
+      - "crates/meroctl/sign/README.md"
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
@@ -49,7 +49,7 @@ jobs:
             bundle_open:
               - *shared
               - "crates/bundle/**"
-              - "tools/mero-sign/**"
+              - "crates/meroctl/sign/**"
               - "fuzz/fuzz_targets/bundle_open.rs"
               - "fuzz/seeds/bundle_open/**"
             sealed_request:
