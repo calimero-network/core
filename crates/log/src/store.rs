@@ -30,7 +30,7 @@ use std::fmt::Debug;
 use std::ops::{Bound, RangeBounds};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use openraft::storage::{LogFlushed, RaftLogStorage};
 use openraft::{AnyError, LogState, OptionalSend, RaftLogReader, StorageIOError};
@@ -343,6 +343,12 @@ impl Drop for Closed {
 pub(crate) static HELD: std::sync::Mutex<Vec<(PathBuf, GroupId)>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Snapshot builds held at a point, by the directory their node opened
+/// (feature `testing`; see [`crate::testing::hold_build`]).
+#[cfg(feature = "testing")]
+pub(crate) static HELD_BUILDS: std::sync::Mutex<Vec<crate::testing::HeldBuild>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// How long closing a store waits first, by the directory it was opened in
 /// (feature `testing`; see [`crate::testing::slow_close`]).
 #[cfg(feature = "testing")]
@@ -411,6 +417,28 @@ impl Db {
         HELD.lock()
             .map(|h| h.iter().any(|(d, g)| *g == group && *d == self.dir))
             .unwrap_or(false)
+    }
+
+    /// Wait here while a build of `group` is held at `at` on this node
+    /// (feature `testing`; see [`crate::testing::hold_build`]). Blocks the
+    /// calling thread, as the build itself does.
+    #[cfg(feature = "testing")]
+    pub(crate) fn pause_build(&self, group: GroupId, at: crate::testing::BuildPoint) {
+        loop {
+            let held = HELD_BUILDS
+                .lock()
+                .map(|mut h| {
+                    h.iter_mut()
+                        .find(|b| b.group == group && b.at == at && b.dir == self.dir)
+                        .map(|b| b.waiting = true)
+                        .is_some()
+                })
+                .unwrap_or(false);
+            if !held {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     /// Whether `group`'s unsynced writes are being dropped (feature `testing`).
@@ -899,12 +927,36 @@ pub struct GroupState {
     pub(crate) db: Arc<Db>,
     pub(crate) group: GroupId,
     pub(crate) generation: Arc<AtomicU32>,
+    /// Held while the snapshot a group serves is recorded, and while an
+    /// install or a replace switches the generation and records (or drops)
+    /// it: see [`GroupState::lock_snapshot_record`].
+    pub(crate) snapshot_record: Arc<Mutex<()>>,
 }
 
 impl GroupState {
+    pub(crate) fn new(db: Arc<Db>, group: GroupId, generation: u32) -> Self {
+        Self {
+            db,
+            group,
+            generation: Arc::new(AtomicU32::new(generation)),
+            snapshot_record: Arc::default(),
+        }
+    }
+
     #[must_use]
     pub const fn group(&self) -> GroupId {
         self.group
+    }
+
+    /// Hold off every other change to the snapshot this group serves, and
+    /// every generation switch (an install, a replace), while the guard
+    /// lives. Taken before the group's applied-state lock, never while it is
+    /// held, so the two cannot deadlock. It guards no data, so a holder that
+    /// panicked leaves nothing torn: a poisoned lock is taken all the same.
+    pub(crate) fn lock_snapshot_record(&self) -> MutexGuard<'_, ()> {
+        self.snapshot_record
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn generation(&self) -> u32 {

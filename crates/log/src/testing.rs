@@ -1,7 +1,7 @@
-//! Hooks for tests that need a crash or a slow apply at an exact moment
-//! (feature `testing`; never in a release build).
+//! Hooks for tests that need a crash, a slow apply or a held snapshot build at
+//! an exact moment (feature `testing`; never in a release build).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::types::GroupId;
 
@@ -30,5 +30,59 @@ pub fn release_apply(dir: &Path, group: GroupId) {
 pub fn slow_close(dir: &Path, delay: std::time::Duration) {
     if let Ok(mut d) = crate::store::CLOSE_DELAYS.lock() {
         d.push((dir.to_owned(), delay));
+    }
+}
+
+/// Where a snapshot build of a group can be held ([`hold_build`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildPoint {
+    /// Before it reads the applied state the snapshot is of.
+    Read,
+    /// After its file is written, before it records the file as the snapshot
+    /// the group serves.
+    Record,
+}
+
+/// A build held by [`hold_build`].
+pub(crate) struct HeldBuild {
+    pub(crate) dir: PathBuf,
+    pub(crate) group: GroupId,
+    pub(crate) at: BuildPoint,
+    /// A build has reached `at` and waits there.
+    pub(crate) waiting: bool,
+}
+
+/// Hold every snapshot build of `group` on the node at `dir` when it reaches
+/// `at`, until [`release_build`]; [`build_waiting`] says when one has, so a
+/// test decides what an install or a replace does meanwhile. The build waits
+/// on its own thread.
+pub fn hold_build(dir: &Path, group: GroupId, at: BuildPoint) {
+    if let Ok(mut h) = crate::store::HELD_BUILDS.lock() {
+        h.push(HeldBuild {
+            dir: dir.to_owned(),
+            group,
+            at,
+            waiting: false,
+        });
+    }
+}
+
+/// Whether a build of `group` on the node at `dir` waits where
+/// [`hold_build`] holds it.
+#[must_use]
+pub fn build_waiting(dir: &Path, group: GroupId) -> bool {
+    crate::store::HELD_BUILDS
+        .lock()
+        .map(|h| {
+            h.iter()
+                .any(|b| b.waiting && b.group == group && b.dir == dir)
+        })
+        .unwrap_or(false)
+}
+
+/// Let `group`'s builds on the node at `dir` run on.
+pub fn release_build(dir: &Path, group: GroupId) {
+    if let Ok(mut h) = crate::store::HELD_BUILDS.lock() {
+        h.retain(|b| !(b.group == group && b.dir == dir));
     }
 }
