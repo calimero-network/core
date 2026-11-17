@@ -215,7 +215,9 @@ impl Feature {
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
             Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
-            Self::DeclaredSecrets | Self::AppLinks | Self::UnitUpgrade | Self::Delegation => "1.0.0-rc.31",
+            Self::DeclaredSecrets | Self::AppLinks | Self::UnitUpgrade | Self::Delegation => {
+                "1.0.0-rc.31"
+            }
         }
     }
 }
