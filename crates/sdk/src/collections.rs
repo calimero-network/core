@@ -5,6 +5,7 @@
 mod cell;
 mod counter;
 mod frozen;
+mod list;
 mod map;
 mod per_user;
 mod rich_text;
@@ -16,6 +17,7 @@ mod vector;
 pub use cell::Cell;
 pub use counter::Counter;
 pub use frozen::{CborSha256, ContentHash, Frozen};
+pub use list::List;
 pub use map::UnorderedMap;
 pub use per_user::PerUser;
 pub use rich_text::{Mark, RichText, Span};
