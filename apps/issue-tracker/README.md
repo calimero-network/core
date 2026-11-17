@@ -1,4 +1,4 @@
-# indexed-issue-tracker
+# issue-tracker
 
 An issue tracker on the component SDK (`calimero-sdk`) whose list views are
 index seeks instead of scans over every issue. The v1 version was the example
@@ -44,8 +44,8 @@ a sync). Any org member files, moves and assigns issues; guests get `Forbidden`.
 `createdAt` and the counts are decimal strings.
 
 ```bash
-cargo test --manifest-path apps/indexed-issue-tracker/Cargo.toml
+cargo test --manifest-path apps/issue-tracker/Cargo.toml
 ```
 
-`tests/scenarios.rs` runs `scenarios/indexed-issue-tracker.json`, the former
+`tests/scenarios.rs` runs `scenarios/issue-tracker.json`, the former
 merobox workflow, in the harness; the cluster runs the same file.

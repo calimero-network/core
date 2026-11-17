@@ -19,7 +19,7 @@ fn component() -> &'static [u8] {
         // The test's own target dir (`<target>/tmp`'s parent), so the guest shares its deps.
         let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("..");
         build_component(dir, &target)
-            .unwrap_or_else(|e| panic!("build indexed-issue-tracker: {e}"))
+            .unwrap_or_else(|e| panic!("build issue-tracker: {e}"))
             .component
     })
 }
