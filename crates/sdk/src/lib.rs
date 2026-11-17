@@ -77,7 +77,7 @@ pub use abi::AbiType;
 pub use action::{ActionCtx, Request, Response};
 pub use blob::{BlobInfo, BlobRef};
 pub use collections::{
-    CborSha256, Cell, ContentHash, Counter, Frozen, Mark, PerUser, RichText, Set, Span, Text,
+    CborSha256, Cell, ContentHash, Counter, Frozen, List, Mark, PerUser, RichText, Set, Span, Text,
     UnorderedMap, Vector,
 };
 pub use encoding::key::{FromKey, FromKeyPart, KeyPart, ToKey, ToKeyPart};
@@ -98,8 +98,8 @@ pub mod prelude {
     pub use crate::app::{self, AppEvent, AppState};
     pub use crate::{
         env, guards, AbiType, ActionCtx, AppError, Audience, BlobRef, Caller, Cell, ContentHash,
-        Counter, FindOpts, Found, FromKey, FromKeyPart, Frozen, KeyPart, Page, PerUser, Record,
-        RichText, SearchMode, SearchOpts, Set, Span, Table, Text, ToKey, ToKeyPart, UnorderedMap,
-        Vector,
+        Counter, FindOpts, Found, FromKey, FromKeyPart, Frozen, KeyPart, List, Page, PerUser,
+        Record, RichText, SearchMode, SearchOpts, Set, Span, Table, Text, ToKey, ToKeyPart,
+        UnorderedMap, Vector,
     };
 }

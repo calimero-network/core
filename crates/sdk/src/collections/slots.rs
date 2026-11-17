@@ -565,6 +565,7 @@ macro_rules! collection_value {
 
 collection_value! {
     [T, S: Store + Clone] Vector<T, S>,
+    [T, S: Store + Clone] crate::collections::List<T, S>,
     [K2: ToKey, V2, S: Store + Clone] UnorderedMap<K2, V2, S>,
     [T: ToKey, S: Store + Clone] Set<T, S>,
     [T, S: Store + Clone] Cell<T, S>,

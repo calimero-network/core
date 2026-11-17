@@ -27,6 +27,7 @@ Pick by how the data is read and how it grows.
 | A value per key, read and written by that key | `UnorderedMap<K, V>` | One read or write per key, a stored count, and reads in key order (it is also the sorted map). Tuple keys give two-level keys. |
 | Whether something is in a group: members, tags, likes, seen ids | `Set<T>` | Membership is one read; elements come back sorted. |
 | Items in the order they arrived: a log, a feed, a history | `Vector<T>` | Append, read by position and the last items are one call each. Insert in the middle rewrites everything after it: keep it append-mostly. |
+| An order people change: a to-do list, a playlist, a board's cards, ranked items | `List<T>` | Insert anywhere and move an item are a few writes wherever it is, and each item keeps its id through moves. |
 | One value: settings, a config record, the current round | `Cell<T>` | One read, one write. Keep the value small: it is written whole. |
 | A number many runs change | `Counter` | `add` never reads the value first. |
 | A value per account that each person writes for themselves | `PerUser<T>` | Writes go to the caller's own value, so no method can write anyone else's. |
@@ -36,7 +37,7 @@ Pick by how the data is read and how it grows.
 
 A rule of thumb: a `Table` when you query by fields, a map when you look up by
 one key, a `Set` when the element is the whole fact, a `Vector` when the order
-of arrival matters.
+of arrival matters, a `List` when people reorder it.
 
 ### Why not `Vec`, `HashMap` or `BTreeMap`
 
@@ -162,6 +163,7 @@ every entry it reads. A view that answers a client should still return one
 | `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `clear_some(max)`, `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `retain` |
 | `Vector<T>` | A collection per position ([Collections inside collections](#collections-inside-collections)), or values: `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `clear_some(max)` (from the end), `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
 | `Counter` | `get`, `add`, `increment`, `decrement` (stops at zero), `reset` |
+| `List<T>` | An ordered list with stable item ids: `push_back` / `push_front` / `insert_after(id, v)` / `insert_before(id, v)` (return the new id), `get(id)`, `set(id, v)`, `remove(id)`, `move_after(id, other)`, `move_before`, `move_to_front`, `move_to_back`, `len`, `is_empty`, `first`, `last`, `iter` / `iter_with` as `(id, value)` in order, `clear`, `clear_some(max)` |
 | `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of`, `page` and `iter` as `(hex, value)` in hash order |
 | `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` and `contains_for(account)` read another's, `remove_for(account)` removes it (the app checks who may); `page`, `iter` and `iter_with` list `(account, value)` in account order |
 | `Text` | `insert_after(id, str)`, `delete_ids`, `insert(index, str)`, `delete(index, n)`, `read`, `chars`, `id_at`, `index_of`, `len`, `clear` |
@@ -257,7 +259,8 @@ pub struct Store {
 - `Vector::set`, `update` and `swap` are a read and a write per element;
   `swap_remove` at most three of each.
 - `Vector::insert` and `remove` read the tail through one cursor and write each
-  element once: a write per element after the position. `Vector::contains` is
+  element once: a write per element after the position. A `List` inserts and
+  moves anywhere for a few reads and three writes, however long it is. `Vector::contains` is
   a scan; a `Set` answers the same in one read.
 - `retain` reads everything once through one cursor; a map or set deletes
   each rejected entry, and a vector writes only the elements that move down.
