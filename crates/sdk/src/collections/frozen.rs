@@ -8,7 +8,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::app::StateField;
-use crate::commons::{collection_key, key_after, read_page};
+use crate::commons::{collection_key, iter_entries, key_after, read_page, Entry};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
@@ -107,20 +107,36 @@ impl<T: DeserializeOwned, H, S: Store> Frozen<T, H, S> {
         let (entries, next) = read_page(&self.store, &base, &opts)?;
         let items = entries
             .into_iter()
-            .map(|(k, v)| match key_after(&k, &base)?.as_slice() {
-                [KeyPart::Bytes(hash)] if hash.len() == 32 => Ok((
-                    hash.iter().map(|b| format!("{b:02x}")).collect(),
-                    value::from_slice(&v)?,
-                )),
-                _ => Err(StorageError::Decode("not a content hash".into())),
-            })
+            .map(|e| decode_hashed(&base, e))
             .collect::<Result<_, StorageError>>()?;
         Ok(Page { items, next })
     }
 
-    /// Every value, in hash order, a page at a time as the loop reaches it.
+    /// Every value, in hash order, through one cursor as the loop reaches it.
     pub fn iter(&self) -> Iter<'_, (String, T)> {
-        Iter::new(FindOpts::default(), move |o| self.page(o.clone()))
+        match collection_key(&self.name, "f", &[]) {
+            Ok(base) => {
+                let under = base.clone();
+                iter_entries(&self.store, &base, &FindOpts::default(), move |e| {
+                    decode_hashed(&under, e)
+                })
+            }
+            Err(e) => Iter::failed(e),
+        }
+    }
+}
+
+/// A stored `(hex hash, value)` under `base`.
+fn decode_hashed<T: DeserializeOwned>(
+    base: &[u8],
+    (k, v): Entry,
+) -> Result<(String, T), StorageError> {
+    match key_after(&k, base)?.as_slice() {
+        [KeyPart::Bytes(hash)] if hash.len() == 32 => Ok((
+            hash.iter().map(|b| format!("{b:02x}")).collect(),
+            value::from_slice(&v)?,
+        )),
+        _ => Err(StorageError::Decode("not a content hash".into())),
     }
 }
 

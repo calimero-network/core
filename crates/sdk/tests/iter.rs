@@ -317,3 +317,131 @@ fn clearing_a_table_removes_its_indexes_and_leaves_its_neighbours() {
         "the other table's record and index entry remain"
     );
 }
+
+/// What a node charges a guest is host calls and writes (at most 10,000 writes a run).
+/// These pin both for the batch operations, so a change that adds a host call per
+/// element shows here.
+mod costs {
+    use super::*;
+
+    fn filled(n: u32) -> (Vector<u32, MemStore>, MemStore) {
+        let store = MemStore::new();
+        let mut v = Vector::with_store("v", store.clone());
+        let values: Vec<u32> = (0..n).collect();
+        let _ = v.extend(&values).unwrap();
+        store.reset_calls();
+        (v, store)
+    }
+
+    #[test]
+    fn iterating_opens_one_cursor_and_reads_a_batch_per_call() {
+        let (v, store) = filled(2_500);
+        assert_eq!(v.iter().count(), 2_500);
+        // Open, then batches of 1,000, 1,000 and 500, then the empty batch that ends it.
+        assert_eq!(store.calls(), 5);
+        store.reset_calls();
+        let first_ten: Vec<u32> = all(v.iter_with(FindOpts::default().limit(10)).take(10));
+        assert_eq!(first_ten, (0..10).collect::<Vec<_>>());
+        assert_eq!(store.calls(), 2, "open and one batch of 10");
+        store.reset_pulled();
+        assert_eq!(v.iter().next().unwrap().unwrap(), 0);
+        assert_eq!(store.pulled(), 1_000, "one batch, nothing read ahead of it");
+    }
+
+    #[test]
+    fn extend_writes_each_value_once_and_the_length_once() {
+        let store = MemStore::new();
+        let mut v: Vector<u32, MemStore> = Vector::with_store("v", store.clone());
+        let values: Vec<u32> = (0..6_000).collect();
+        assert_eq!(v.extend(&values).unwrap(), 6_000);
+        // A push per value would be 12,000 writes, past the run's 10,000.
+        assert_eq!(store.writes(), 6_001);
+        assert_eq!(
+            store.calls(),
+            6_002,
+            "one length read, the puts and one add"
+        );
+        assert_eq!(v.len().unwrap(), 6_000);
+    }
+
+    #[test]
+    fn single_element_writes_skip_the_length() {
+        let (mut v, store) = filled(10);
+        let _ = v.set(3, &30).unwrap();
+        assert_eq!(store.calls(), 2, "set: a read and a write");
+        store.reset_calls();
+        let _ = v.update(3, |x| x + 1).unwrap();
+        assert_eq!(store.calls(), 2, "update: a read and a write");
+        store.reset_calls();
+        v.swap(0, 9).unwrap();
+        assert_eq!(store.calls(), 4, "swap: two reads and two writes");
+        store.reset_calls();
+        assert_eq!(v.swap_remove(0).unwrap(), 9);
+        assert_eq!(store.calls(), 6, "swap_remove: three reads, three writes");
+        assert_eq!(
+            v.set(9, &0).unwrap_err(),
+            StorageError::OutOfBounds { index: 9, len: 9 }
+        );
+    }
+
+    #[test]
+    fn shifting_reads_the_tail_through_one_cursor() {
+        let (mut v, store) = filled(2_500);
+        v.insert(0, &9_999).unwrap();
+        // Length, open, four batches, 2,500 moves, the new value, the length add.
+        assert_eq!(store.calls(), 1 + 1 + 4 + 2_500 + 1 + 1);
+        store.reset_calls();
+        assert_eq!(v.remove(0).unwrap(), 9_999);
+        // Length, open, four batches (2,501 entries), 2,500 moves, a delete, the add.
+        assert_eq!(store.calls(), 1 + 1 + 4 + 2_500 + 1 + 1);
+        assert_eq!(all(v.iter()), (0..2_500).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn retain_reads_once_and_writes_only_what_moves() {
+        let (mut v, store) = filled(2_000);
+        let writes = store.writes();
+        assert_eq!(v.retain(|x| *x >= 1_000).unwrap(), 1_000);
+        // 1,000 kept elements move down, 1,000 positions are deleted, one add.
+        assert_eq!(store.writes() - writes, 2_001);
+        assert_eq!(
+            store.calls(),
+            1 + 1 + 3 + 2_001,
+            "length, open, three batches, writes"
+        );
+        assert_eq!(v.first().unwrap(), Some(1_000));
+    }
+
+    #[test]
+    fn a_map_counts_its_new_keys_with_one_add() {
+        let store = MemStore::new();
+        let mut m: UnorderedMap<u32, u32, MemStore> = UnorderedMap::with_store("m", store.clone());
+        let keys: Vec<u32> = (0..2_300).collect();
+        assert_eq!(m.extend(keys.iter().map(|k| (k, k))).unwrap(), 2_300);
+        assert_eq!(store.writes(), 2_301, "a put per pair and one add");
+        store.reset_calls();
+        let writes = store.writes();
+        assert_eq!(m.retain(|k, _| k % 10 == 0).unwrap(), 2_070);
+        assert_eq!(
+            store.writes() - writes,
+            2_071,
+            "a delete per removed key and one add"
+        );
+        // Open, batches of 1,000, 1,000 and 300, the empty batch, then the writes.
+        assert_eq!(store.calls(), 5 + 2_071);
+        assert_eq!(m.len().unwrap(), 230);
+    }
+
+    #[test]
+    fn a_set_counts_its_new_elements_with_one_add() {
+        let store = MemStore::new();
+        let mut s: Set<u32, MemStore> = Set::with_store("s", store.clone());
+        let values: Vec<u32> = (0..1_500).collect();
+        assert_eq!(s.extend(&values).unwrap(), 1_500);
+        assert_eq!(store.writes(), 1_501);
+        let writes = store.writes();
+        assert_eq!(s.retain(|v| *v < 500).unwrap(), 1_000);
+        assert_eq!(store.writes() - writes, 1_001);
+        assert_eq!(s.len().unwrap(), 500);
+    }
+}

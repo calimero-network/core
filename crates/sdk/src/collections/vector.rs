@@ -7,11 +7,11 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::{clear_prefix, collection_key, read_count, read_page};
+use crate::commons::{clear_prefix, collection_key, iter_entries, read_count, read_page};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
-use crate::store::{DefaultStore, Store};
+use crate::store::{DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
 use crate::table::{FindOpts, Iter, Page};
 
 /// A list of values by position; it grows and shrinks at the end.
@@ -82,19 +82,31 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
     }
 
     /// Replace the element at `index`, returning the old one; `OutOfBounds` past the end.
+    /// One read and one write: positions are dense, so a missing element is past the end
+    /// (the length is read only to name it in the error).
     pub fn set(&mut self, index: u64, v: &T) -> Result<T, StorageError> {
-        let len = self.len()?;
-        if index >= len {
-            return Err(StorageError::OutOfBounds { index, len });
-        }
         let key = self.storage_key(index)?;
-        let old = self
-            .store
-            .get(&key)
-            .ok_or(StorageError::Dangling)
-            .and_then(|b| value::from_slice(&b))?;
+        let old = self.read_at(&key, index)?;
         self.store.put(&key, &value::to_vec(v)?);
         Ok(old)
+    }
+
+    /// The element stored at `key`, position `index`; `OutOfBounds` when there is none.
+    fn read_at(&self, key: &[u8], index: u64) -> Result<T, StorageError> {
+        match self.store.get(key) {
+            Some(bytes) => value::from_slice(&bytes),
+            None => Err(StorageError::OutOfBounds {
+                index,
+                len: self.len()?,
+            }),
+        }
+    }
+
+    /// One cursor over the stored elements at positions `[from, to)`.
+    fn positions(&self, from: u64, to: u64, reverse: bool) -> Result<S::Range, StorageError> {
+        Ok(self
+            .store
+            .range(&self.storage_key(from)?, &self.storage_key(to)?, reverse))
     }
 
     /// Remove and return the last element.
@@ -133,7 +145,10 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
     /// [`Vector::page`] over every page from `opts` on: `.reverse()` walks from the end,
     /// `.from(vec![KeyPart::Int(i)])` starts at position `i`.
     pub fn iter_with(&self, opts: FindOpts) -> Iter<'_, T> {
-        Iter::new(opts, move |o| self.page(o.clone()))
+        match self.base() {
+            Ok(base) => iter_entries(&self.store, &base, &opts, |(_, v)| value::from_slice(&v)),
+            Err(e) => Iter::failed(e),
+        }
     }
 
     /// The first element.
@@ -149,7 +164,9 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
         }
     }
 
-    /// Append every value in order; returns how many were appended.
+    /// Append every value in order; returns how many were appended. One read of the length
+    /// and one `add` for the whole batch, plus a write per value (`push` in a loop adds
+    /// one more write per value, against the run's write limit).
     pub fn extend<'v>(
         &mut self,
         values: impl IntoIterator<Item = &'v T>,
@@ -157,30 +174,59 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
     where
         T: 'v,
     {
+        let start = self.len()?;
         let mut n = 0;
+        let mut failed = None;
         for v in values {
-            let _ = self.push(v)?;
-            n += 1;
+            let written = self
+                .storage_key(start + n)
+                .and_then(|key| Ok((key, value::to_vec(v)?)));
+            match written {
+                Ok((key, bytes)) => {
+                    self.store.put(&key, &bytes);
+                    n += 1;
+                }
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+            }
         }
-        Ok(n)
+        // The length covers what was written even when a value failed to encode.
+        if n > 0 {
+            self.store.add(&self.len_key()?, n as i64);
+        }
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(n),
+        }
     }
 
-    /// Remove the element at `index` and return it, moving the last element into its place
-    /// (two writes, not a shift); `OutOfBounds` past the end.
+    /// Remove the element at `index` and return it, moving the last element into its place:
+    /// at most three reads and three writes whatever the length; `OutOfBounds` past the end.
     pub fn swap_remove(&mut self, index: u64) -> Result<T, StorageError> {
         let len = self.len()?;
         if index >= len {
             return Err(StorageError::OutOfBounds { index, len });
         }
-        let last = self.pop()?.ok_or(StorageError::Dangling)?;
-        if index == len - 1 {
-            return Ok(last);
+        let key = self.storage_key(index)?;
+        let removed = self.read_at(&key, index)?;
+        let last = len - 1;
+        if index != last {
+            let last_key = self.storage_key(last)?;
+            let bytes = self.store.get(&last_key).ok_or(StorageError::Dangling)?;
+            self.store.put(&key, &bytes);
+            self.store.delete(&last_key);
+        } else {
+            self.store.delete(&key);
         }
-        self.set(index, &last)
+        self.store.add(&self.len_key()?, -1);
+        Ok(removed)
     }
 
     /// Keep the first `len` elements and remove the rest, last first; returns how many were
-    /// removed. Nothing happens when the vector is not longer than `len`.
+    /// removed. A delete per removed element and one `add`; nothing happens when the vector
+    /// is not longer than `len`.
     pub fn truncate(&mut self, len: u64) -> Result<u64, StorageError> {
         let have = self.len()?;
         for index in (len..have).rev() {
@@ -193,95 +239,130 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
         Ok(removed)
     }
 
-    /// Set the element at `index` to `f` of it, returning the new value; `OutOfBounds` past
-    /// the end.
+    /// Set the element at `index` to `f` of it, returning the new value: one read and one
+    /// write; `OutOfBounds` past the end.
     pub fn update(&mut self, index: u64, f: impl FnOnce(T) -> T) -> Result<T, StorageError> {
-        let len = self.len()?;
-        let old = self
-            .get(index)?
-            .ok_or(StorageError::OutOfBounds { index, len })?;
-        let new = f(old);
-        let _ = self.set(index, &new)?;
+        let key = self.storage_key(index)?;
+        let new = f(self.read_at(&key, index)?);
+        self.store.put(&key, &value::to_vec(&new)?);
         Ok(new)
     }
 
-    /// Swap the elements at `a` and `b`; `OutOfBounds` when either is past the end.
+    /// Swap the elements at `a` and `b`: two reads and two writes; `OutOfBounds` when either
+    /// is past the end.
     pub fn swap(&mut self, a: u64, b: u64) -> Result<(), StorageError> {
-        let len = self.len()?;
-        for index in [a, b] {
-            if index >= len {
-                return Err(StorageError::OutOfBounds { index, len });
-            }
-        }
+        let key_a = self.storage_key(a)?;
+        let key_b = self.storage_key(b)?;
+        let (Some(at_a), Some(at_b)) = (self.store.get(&key_a), self.store.get(&key_b)) else {
+            let len = self.len()?;
+            let index = if a >= len { a } else { b };
+            return Err(StorageError::OutOfBounds { index, len });
+        };
         if a != b {
-            let at_a = self.get(a)?.ok_or(StorageError::Dangling)?;
-            let at_b = self.set(b, &at_a)?;
-            let _ = self.set(a, &at_b)?;
+            self.store.put(&key_a, &at_b);
+            self.store.put(&key_b, &at_a);
         }
         Ok(())
     }
 
-    /// Insert `v` at `index`, moving every later element one place up: a read and a write
-    /// for each of them, so it costs the length of the tail. `index == len` pushes;
-    /// `OutOfBounds` past that.
+    /// Insert `v` at `index`, moving every later element one place up: the tail is read
+    /// through one cursor (a host call per 1,000) and each element written once, so it
+    /// costs a write per element after `index`. `index == len` pushes; `OutOfBounds` past
+    /// that.
     pub fn insert(&mut self, index: u64, v: &T) -> Result<(), StorageError> {
         let len = self.len()?;
         if index > len {
             return Err(StorageError::OutOfBounds { index, len });
         }
-        for i in (index..len).rev() {
-            let bytes = self
-                .store
-                .get(&self.storage_key(i)?)
-                .ok_or(StorageError::Dangling)?;
-            self.store.put(&self.storage_key(i + 1)?, &bytes);
+        let bytes = value::to_vec(v)?;
+        // Last first: each write lands above every position not yet read.
+        let mut tail = self.positions(index, len, true)?;
+        let mut position = len;
+        loop {
+            let batch = tail.next(MAX_RANGE_BATCH);
+            if batch.is_empty() {
+                break;
+            }
+            for (_, moved) in batch {
+                self.store.put(&self.storage_key(position)?, &moved);
+                position -= 1;
+            }
         }
-        self.store
-            .put(&self.storage_key(index)?, &value::to_vec(v)?);
+        if position != index {
+            return Err(StorageError::Dangling);
+        }
+        self.store.put(&self.storage_key(index)?, &bytes);
         self.store.add(&self.len_key()?, 1);
         Ok(())
     }
 
     /// Remove and return the element at `index`, moving every later element one place
-    /// down (it costs the length of the tail; [`Vector::swap_remove`] costs two writes);
+    /// down: the tail is read through one cursor and each element written once, so it costs
+    /// a write per element after `index` ([`Vector::swap_remove`] costs three);
     /// `OutOfBounds` past the end.
     pub fn remove(&mut self, index: u64) -> Result<T, StorageError> {
         let len = self.len()?;
         if index >= len {
             return Err(StorageError::OutOfBounds { index, len });
         }
-        let removed = self.get(index)?.ok_or(StorageError::Dangling)?;
-        for i in index + 1..len {
-            let bytes = self
-                .store
-                .get(&self.storage_key(i)?)
-                .ok_or(StorageError::Dangling)?;
-            self.store.put(&self.storage_key(i - 1)?, &bytes);
+        // First first: each write lands below every position not yet read.
+        let mut tail = self.positions(index, len, false)?;
+        let mut removed = None;
+        let mut position = index;
+        loop {
+            let batch = tail.next(MAX_RANGE_BATCH);
+            if batch.is_empty() {
+                break;
+            }
+            for (_, bytes) in batch {
+                if position == index {
+                    removed = Some(value::from_slice(&bytes)?);
+                } else {
+                    self.store.put(&self.storage_key(position - 1)?, &bytes);
+                }
+                position += 1;
+            }
         }
+        let removed = removed.ok_or(StorageError::Dangling)?;
         self.store.delete(&self.storage_key(len - 1)?);
         self.store.add(&self.len_key()?, -1);
         Ok(removed)
     }
 
     /// Keep only the elements `keep` accepts, in order, and return how many were removed.
-    /// It reads every element once and rewrites the ones that move down.
+    /// Every element is read once through one cursor; a kept element is written only when
+    /// it moves down, a removed one costs a delete, and the length one `add`.
     pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) -> Result<u64, StorageError> {
         let len = self.len()?;
+        let mut all = self.positions(0, len, false)?;
+        let mut read = 0;
         let mut kept = 0;
-        for i in 0..len {
-            let key = self.storage_key(i)?;
-            let bytes = self.store.get(&key).ok_or(StorageError::Dangling)?;
-            if keep(&value::from_slice(&bytes)?) {
-                if kept != i {
-                    self.store.put(&self.storage_key(kept)?, &bytes);
+        loop {
+            let batch = all.next(MAX_RANGE_BATCH);
+            if batch.is_empty() {
+                break;
+            }
+            for (_, bytes) in batch {
+                if keep(&value::from_slice(&bytes)?) {
+                    if kept != read {
+                        self.store.put(&self.storage_key(kept)?, &bytes);
+                    }
+                    kept += 1;
                 }
-                kept += 1;
+                read += 1;
             }
         }
-        self.truncate(kept)
+        for index in kept..len {
+            self.store.delete(&self.storage_key(index)?);
+        }
+        let removed = len - kept;
+        if removed > 0 {
+            self.store.add(&self.len_key()?, -(removed as i64));
+        }
+        Ok(removed)
     }
 
-    /// Whether any element equals `v`: a scan, a page at a time, that stops at the first.
+    /// Whether any element equals `v`: a scan through one cursor that stops at the first.
     pub fn contains(&self, v: &T) -> Result<bool, StorageError>
     where
         T: PartialEq,

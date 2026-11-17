@@ -82,9 +82,11 @@ prefix. A page reads at most `limit + 1` entries.
 Every type with pages also iterates: `iter()` from the start, `iter_with(opts)`
 (`reverse`, `from`, `to`, a starting `cursor`), and on maps and sets
 `prefix_iter(&prefix, opts)`. The iterator yields `Result<T, StorageError>` and
-reads the next page only when the loop reaches it, so `take`, `find` or `break`
-stop the reads. A page is `limit` items, 1,000 when unset. A failed read is
-yielded once as `Err` and ends the iteration.
+reads through one host cursor: one call to open it, then one call per batch of
+`limit` entries (1,000 when unset), and only when the loop reaches the batch, so
+`take`, `find` or `break` stop the reads. No entry is read twice. A failed read
+is yielded once as `Err` and ends the iteration. On a node the cursor reads the
+state as of its first batch, so writes the loop makes are not met again.
 
 ```rust
 for entry in self.items.iter() {
@@ -131,10 +133,17 @@ pub struct Store {
 - Lengths and counts are stored and kept with an atomic add on every write, so
   `len` and `count` are one read, never a scan.
 - `clear` deletes in batches of at most 1,000 until nothing is left.
-- `Vector::insert` and `remove` move every later element, a read and a write
-  each; `swap_remove` costs two writes. `Vector::contains` is a scan.
-- `retain` reads every element once; on a map or set it removes after each
-  page, and on a vector it rewrites the elements that move down.
+- A run makes at most 10,000 writes, and every `put`, `delete` and `add` is
+  one. The batch operations keep to a write per element and one `add` for the
+  length: `extend` on a vector, map or set (a `push` or `insert` per value
+  costs twice the writes), `retain`, `truncate` and `clear`.
+- `Vector::set`, `update` and `swap` are a read and a write per element;
+  `swap_remove` at most three of each.
+- `Vector::insert` and `remove` read the tail through one cursor and write each
+  element once: a write per element after the position. `Vector::contains` is
+  a scan; a `Set` answers the same in one read.
+- `retain` reads everything once through one cursor; a map or set deletes
+  each rejected entry, and a vector writes only the elements that move down.
 - A key over 1 KiB is refused (`KeyTooLong`) before any store call.
 - Values are deterministic CBOR; keys are order-preserving tuples, the
   contract the TypeScript SDK produces the same bytes for.

@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::{collection_key, key_after, read_page};
+use crate::commons::{collection_key, iter_entries, key_after, read_page, Entry};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::env::{self, Caller};
@@ -33,6 +33,17 @@ fn caller_account() -> Result<String, AppError> {
     match env::caller() {
         Caller::Account(account) | Caller::ApiKey { account, .. } => Ok(account),
         Caller::Public | Caller::System | Caller::App(_) => Err(AppError::login_required()),
+    }
+}
+
+/// A stored `(account, value)` under `base`.
+fn decode_account<T: DeserializeOwned>(
+    base: &[u8],
+    (k, v): Entry,
+) -> Result<(String, T), StorageError> {
+    match key_after(&k, base)?.as_slice() {
+        [KeyPart::Str(account)] => Ok((account.clone(), value::from_slice(&v)?)),
+        _ => Err(StorageError::Decode("not an account key".into())),
     }
 }
 
@@ -78,10 +89,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
         let (entries, next) = read_page(&self.store, &base, &opts)?;
         let items = entries
             .into_iter()
-            .map(|(k, v)| match key_after(&k, &base)?.as_slice() {
-                [KeyPart::Str(account)] => Ok((account.clone(), value::from_slice(&v)?)),
-                _ => Err(StorageError::Decode("not an account key".into())),
-            })
+            .map(|e| decode_account(&base, e))
             .collect::<Result<_, StorageError>>()?;
         Ok(Page { items, next })
     }
@@ -93,7 +101,15 @@ impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
 
     /// [`PerUser::page`] over every page from `opts` on.
     pub fn iter_with(&self, opts: FindOpts) -> Iter<'_, (String, T)> {
-        Iter::new(opts, move |o| self.page(o.clone()))
+        match collection_key(&self.name, "u", &[]) {
+            Ok(base) => {
+                let under = base.clone();
+                iter_entries(&self.store, &base, &opts, move |e| {
+                    decode_account(&under, e)
+                })
+            }
+            Err(e) => Iter::failed(e),
+        }
     }
 
     /// The caller's own value.

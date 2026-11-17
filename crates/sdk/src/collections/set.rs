@@ -4,10 +4,12 @@
 use core::marker::PhantomData;
 
 use crate::app::StateField;
-use crate::commons::{clear_prefix, collection_key, key_after, read_count, read_page};
+use crate::commons::{
+    bounds, clear_prefix, collection_key, iter_entries, key_after, read_count, read_page, Entry,
+};
 use crate::encoding::key::{self, FromKey, KeyPart, ToKey};
 use crate::error::StorageError;
-use crate::store::{check_key, DefaultStore, Store};
+use crate::store::{check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
 use crate::table::{FindOpts, Iter, Page};
 
 /// CBOR `null`: what every element's key holds.
@@ -98,13 +100,27 @@ impl<T: ToKey, S: Store> Set<T, S> {
     where
         T: 'v,
     {
+        // A read per value, a write per new one, and one `add` for them together.
         let mut new = 0;
         for v in values {
-            if self.insert(v)? {
+            let key = match self.storage_key(v) {
+                Ok(key) => key,
+                Err(e) => {
+                    if new > 0 {
+                        self.store.add(&self.count_key()?, new);
+                    }
+                    return Err(e);
+                }
+            };
+            if self.store.get(&key).is_none() {
+                self.store.put(&key, PRESENT);
                 new += 1;
             }
         }
-        Ok(new)
+        if new > 0 {
+            self.store.add(&self.count_key()?, new);
+        }
+        Ok(new as u64)
     }
 
     /// Remove every element, a batch at a time; returns how many there were.
@@ -118,17 +134,32 @@ impl<T: ToKey, S: Store> Set<T, S> {
 }
 
 impl<T: ToKey + FromKey, S: Store> Set<T, S> {
+    /// A stored element of the set whose keys start after `set_base`.
+    fn decode(set_base: &[u8], (k, _): Entry) -> Result<T, StorageError> {
+        T::from_key(&key_after(&k, set_base)?)
+            .ok_or_else(|| StorageError::Decode("an element of another type".into()))
+    }
+
     fn page_under(&self, base: &[u8], opts: &FindOpts) -> Result<Page<T>, StorageError> {
         let set_base = self.base()?;
         let (entries, next) = read_page(&self.store, base, opts)?;
         let items = entries
             .into_iter()
-            .map(|(k, _)| {
-                T::from_key(&key_after(&k, &set_base)?)
-                    .ok_or_else(|| StorageError::Decode("an element of another type".into()))
-            })
+            .map(|e| Self::decode(&set_base, e))
             .collect::<Result<_, _>>()?;
         Ok(Page { items, next })
+    }
+
+    /// Every element under `under` (the set's base plus whole key parts), through one cursor.
+    fn iter_under(&self, under: &[KeyPart], opts: FindOpts) -> Iter<'_, T> {
+        let set_base = match self.base() {
+            Ok(b) => b,
+            Err(e) => return Iter::failed(e),
+        };
+        let base = [set_base.as_slice(), &key::encode(under)].concat();
+        iter_entries(&self.store, &base, &opts, move |e| {
+            Self::decode(&set_base, e)
+        })
     }
 
     /// Elements in order (largest first with `reverse`), one page of at most 1,000; `from`
@@ -170,31 +201,49 @@ impl<T: ToKey + FromKey, S: Store> Set<T, S> {
 
     /// [`Set::page`] over every page from `opts` on (`from`, `to`, `reverse`).
     pub fn iter_with(&self, opts: FindOpts) -> Iter<'_, T> {
-        Iter::new(opts, move |o| self.page(o.clone()))
+        self.iter_under(&[], opts)
     }
 
     /// [`Set::prefix`] over every page.
-    pub fn prefix_iter<'a>(&'a self, prefix: &'a [KeyPart], opts: FindOpts) -> Iter<'a, T> {
-        Iter::new(opts, move |o| self.prefix(prefix, o.clone()))
+    pub fn prefix_iter(&self, prefix: &[KeyPart], opts: FindOpts) -> Iter<'_, T> {
+        self.iter_under(prefix, opts)
     }
 
     /// Keep only the elements `keep` accepts; returns how many were removed. It reads every
     /// element a page at a time and removes the rejected ones after each page.
     pub fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) -> Result<u64, StorageError> {
-        let mut opts = FindOpts::default().limit(crate::table::MAX_LIMIT);
-        let mut removed = 0;
-        loop {
-            let page = self.page(opts.clone())?;
-            for v in &page.items {
-                if !keep(v) {
-                    let _ = self.remove(v)?;
-                    removed += 1;
+        // One cursor reads every element once; a rejected one is deleted as it is met, and
+        // the count takes one `add` at the end.
+        let set_base = self.base()?;
+        let (start, end) = bounds(&set_base);
+        let mut all = self.store.range(&start, &end, false);
+        let mut removed: i64 = 0;
+        let mut failed = None;
+        'read: loop {
+            let batch = all.next(MAX_RANGE_BATCH);
+            if batch.is_empty() {
+                break;
+            }
+            for (stored, bytes) in batch {
+                match Self::decode(&set_base, (stored.clone(), bytes)) {
+                    Ok(v) if !keep(&v) => {
+                        self.store.delete(&stored);
+                        removed += 1;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        failed = Some(e);
+                        break 'read;
+                    }
                 }
             }
-            match page.next {
-                Some(cursor) => opts.cursor = Some(cursor),
-                None => return Ok(removed),
-            }
+        }
+        if removed > 0 {
+            self.store.add(&self.count_key()?, -removed);
+        }
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(removed as u64),
         }
     }
 
