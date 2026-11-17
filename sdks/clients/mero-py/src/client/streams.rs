@@ -4,6 +4,16 @@
 
 use super::prelude::*;
 
+/// How long a stream is read for, from `timeout` seconds: a negative one is
+/// none, one too large for a `Duration` (`inf`) is no limit but `limit`, and
+/// NaN is a `ValueError` (it is not a number of seconds to wait).
+fn wait_for(timeout: f64) -> PyResult<Duration> {
+    if timeout.is_nan() {
+        return Err(PyValueError::new_err("timeout must be a number of seconds"));
+    }
+    Ok(Duration::try_from_secs_f64(timeout.max(0.0)).unwrap_or(Duration::MAX))
+}
+
 #[pymethods]
 impl PyCloudClient {
     /// Committed events from index `start`: up to `limit` of them, or as many
@@ -18,7 +28,7 @@ impl PyCloudClient {
         timeout: f64,
     ) -> PyResult<Py<PyAny>> {
         let app = app.to_owned();
-        let wait = Duration::from_secs_f64(timeout.max(0.0));
+        let wait = wait_for(timeout)?;
         let out = self.run(py, async |c| {
             let stream = c.events(&app, start).await?;
             let mut stream = Box::pin(stream.take(limit));
@@ -47,7 +57,7 @@ impl PyCloudClient {
         timeout: f64,
     ) -> PyResult<Py<PyAny>> {
         let app = app.to_owned();
-        let wait = Duration::from_secs_f64(timeout.max(0.0));
+        let wait = wait_for(timeout)?;
         let out = self.run(py, async |c| {
             let stream = c.presence_stream(&app).await?;
             let mut stream = Box::pin(stream.take(limit));
@@ -79,5 +89,19 @@ impl PyCloudClient {
         out.set_item("keys", keys)?;
         out.set_item("governance", to_py(py, &cluster.governance)?)?;
         Ok(out.into_any().unbind())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn any_timeout_is_a_wait_or_a_value_error() {
+        assert_eq!(wait_for(-1.0).unwrap(), Duration::ZERO);
+        assert_eq!(wait_for(1.5).unwrap(), Duration::from_millis(1500));
+        assert_eq!(wait_for(f64::INFINITY).unwrap(), Duration::MAX);
+        assert_eq!(wait_for(1e300).unwrap(), Duration::MAX);
+        assert!(wait_for(f64::NAN).is_err());
     }
 }
