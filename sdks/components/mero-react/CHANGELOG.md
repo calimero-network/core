@@ -1,3 +1,9 @@
+## [11.9.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.8.0...mero-react-v11.9.0) (2026-11-17)
+
+### Features
+
+* **dialogs:** apply UI/UX skills to the shared consent dialogs ([#146](https://github.com/calimero-network/mero-react/issues/146)) ([54a48bf](https://github.com/calimero-network/mero-react/commit/54a48bfdc3f940216e575dca7b4c15e2ccbb3610))
+
 ## [11.8.0](https://github.com/calimero-network/mero-react/compare/mero-react-v11.7.0...mero-react-v11.8.0) (2026-11-16)
 
 ### Features

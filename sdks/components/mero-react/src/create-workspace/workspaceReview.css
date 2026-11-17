@@ -18,6 +18,8 @@
   --_warn-bg: var(--cw-warn-bg, light-dark(#fff1d6, #3a2a08));
   --_warn-ink: var(--cw-warn-ink, light-dark(#8a5a00, #f2c36b));
   --_code-bg: var(--cw-code-bg, light-dark(#f4f5f8, #1f2538));
+  --_chip-bg: color-mix(in srgb, var(--_muted) 12%, transparent);
+  --_control: var(--cw-control-line, light-dark(#858b9a, #6a7288));
   font-family: var(--cw-font, inherit);
 }
 
@@ -36,16 +38,16 @@
   box-sizing: border-box;
   width: 100%;
   color: var(--_ink);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 15px;
+  line-height: 1.5;
   text-align: left;
 }
 .mero-cw-review *,
 .mero-cw-review *::before,
 .mero-cw-review *::after { box-sizing: border-box; }
-.mero-cw-review__title { margin: 0; font-size: 18px; font-weight: 700; line-height: 1.3; }
+.mero-cw-review__title { margin: 0; padding-right: 36px; font-size: 20px; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; text-wrap: balance; }
 .mero-cw-review__title:focus { outline: none; }
-.mero-cw-review__lede { margin: 4px 0 6px; color: var(--_muted); }
+.mero-cw-review__lede { margin: 4px 0 16px; color: var(--_muted); font-size: 14px; text-wrap: pretty; }
 .mero-cw-review__muted,
 .mero-cw-review__sub { color: var(--_muted); font-size: 12.5px; }
 .mero-cw-review__muted { margin: 8px 0 0; }
@@ -55,7 +57,7 @@
 .mero-cw-review__nobreak { white-space: nowrap; }
 
 .mero-cw-review__sec { padding: 14px 0; border-top: 1px solid var(--_line); }
-.mero-cw-review__h { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; font-size: 13px; font-weight: 700; letter-spacing: 0.02em; }
+.mero-cw-review__h { display: flex; align-items: center; gap: 7px; margin: 0 0 10px; color: var(--_muted); font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
 .mero-cw-review__h .mero-cw-shield__icon { margin-top: -1px; }
 
 .mero-cw-review__kv { display: flex; flex-direction: column; gap: 6px; margin: 0; }
@@ -98,7 +100,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 32px;
+  min-height: 44px;
   color: var(--_focus);
   font-weight: 600;
   cursor: pointer;
@@ -128,8 +130,8 @@
 
 .mero-cw-review__chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
 .mero-cw-review__chip {
-  min-height: 30px;
-  padding: 0 11px;
+  min-height: 36px;
+  padding: 0 12px;
   border: 1px solid var(--_line);
   border-radius: 999px;
   background: var(--_surface);
@@ -169,14 +171,14 @@
 .mero-cw-review__note { margin: 10px 0 0; color: var(--_muted); font-size: 12px; }
 
 .mero-cw-review__claims { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.mero-cw-review__claims li { display: flex; align-items: flex-start; gap: 7px; }
+.mero-cw-review__claims li { display: flex; align-items: flex-start; gap: 8px; font-weight: 600; }
 .mero-cw-review__claims .mero-cw-shield__tick { margin-top: 3px; color: var(--_good-ink); }
-.mero-cw-review__claims--plain b { font-weight: 500; color: var(--_muted); }
+.mero-cw-review__claims--plain li { font-weight: 500; color: var(--_muted); }
 .mero-cw-review__claims + .mero-cw-review__grey { margin-top: 10px; }
-.mero-cw-review__how { margin-top: 6px; }
-.mero-cw-review__how ul { margin: 0 0 4px; padding-left: 18px; color: var(--_muted); font-size: 12.5px; }
+.mero-cw-review__how { margin: 12px 0 4px; font-size: 13px; }
+.mero-cw-review__how ul { margin: 4px 0 0; padding-left: 18px; color: var(--_muted); }
 .mero-cw-review__except { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
-.mero-cw-review__except li { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--_warn-bg); color: var(--_warn-ink); font-weight: 600; overflow-wrap: anywhere; }
+.mero-cw-review__except li { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--_warn-bg); color: var(--_warn-ink); font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .mero-cw-review__except .mero-cw-review__icon { margin-top: 2px; }
 .mero-cw-review__grey { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--_tone-bg); color: var(--_ink); }
 .mero-cw-review__grey span { color: var(--_muted); font-size: 12.5px; }
@@ -191,9 +193,9 @@
   bottom: calc(0px - var(--cw-review-inset, 0px));
   z-index: 1;
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 10px;
-  margin-top: 6px;
+  margin-top: 8px;
   padding: 14px 0 calc(env(safe-area-inset-bottom, 0px) + 8px);
   border-top: 1px solid var(--_line);
   background: var(--_surface);
@@ -202,8 +204,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 40px;
-  padding: 0 18px;
+  min-height: 44px;
+  padding: 0 20px;
   border: 1px solid var(--_line);
   border-radius: 999px;
   background: var(--_surface);
@@ -218,9 +220,23 @@
 .mero-cw-review__btn--primary { border-color: transparent; background: var(--_primary-bg); color: var(--_primary-ink); }
 .mero-cw-review__btn--primary:hover:not(:disabled) { border-color: transparent; opacity: 0.88; }
 
+/* The app, where it runs, and the collapsed technical details. */
+.mero-cw-review__app { display: flex; align-items: center; gap: 12px; margin: 0 0 6px; padding: 12px; border: 1px solid var(--_line); border-radius: 14px; }
+.mero-cw-review__tile { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: 10px; background: var(--_primary-bg); color: var(--_primary-ink); font-size: 18px; font-weight: 700; }
+.mero-cw-review__app-text { display: flex; flex-direction: column; min-width: 0; }
+.mero-cw-review__app-text b { overflow-wrap: anywhere; }
+.mero-cw-review__app-text span { color: var(--_muted); font-size: 13px; }
+.mero-cw-review__where { display: flex; align-items: center; gap: 8px; margin: 0; }
+.mero-cw-review__where-name { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.mero-cw-review__pill { flex: none; padding: 2px 10px; border-radius: 999px; background: var(--_tone-bg); color: var(--_tone); font-size: 12.5px; font-weight: 600; }
+.mero-cw-review__where[data-kind="unsealed"] .mero-cw-review__pill { color: var(--_ink); }
+.mero-cw-review__app + .mero-cw-review__sec { border-top: 0; padding-top: 10px; }
+.mero-cw-review__tech { border-top: 1px solid var(--_line); padding-top: 4px; }
+.mero-cw-review__tech > details > .mero-cw-review__kv { margin: 4px 0 8px; font-size: 13.5px; }
+
 @media (max-width: 480px) {
   .mero-cw-review__kv > div { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .mero-cw-review__kv dt { font-size: 12px; }
-  .mero-cw-review__buttons .mero-cw-review__btn { flex: 1; padding: 0 12px; }
+  .mero-cw-review__buttons .mero-cw-review__btn { flex: 1; padding: 0 12px; min-height: 48px; }
   .mero-cw-review__buttons .mero-cw-review__btn--primary { flex: 2; }
 }

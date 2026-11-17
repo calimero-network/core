@@ -113,6 +113,18 @@ describe('organization consent requests', () => {
     expect(opened).toEqual([PAGE, PAGE, PAGE]);
   });
 
+  it('never navigates to a consent page URL that is not http(s)', async () => {
+    const c = client();
+    const opened: string[] = [];
+    for (const url of ['javascript:alert(document.cookie)', 'data:text/html,<script>1</script>', 'not a url']) {
+      node.answer = () => ({ status: 200, json: { requestId: ID, url, expiresAt: 9e9 } });
+      await expect(c.openConsentPage(createOrgConsent('Acme', RETURN), (u) => void opened.push(u))).rejects.toMatchObject({
+        code: 'CONSENT_BAD_URL',
+      });
+    }
+    expect(opened).toEqual([]);
+  });
+
   it('carries capability bits on createOrg and createInvite, and leaves them out otherwise', async () => {
     const c = client();
     const started = { requestId: ID, url: PAGE, code: await confirmationCode(ID), expiresAt: 9e9 };

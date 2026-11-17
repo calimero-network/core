@@ -82,6 +82,25 @@ cargo run -p calimero-app-build --example build-test-apps   # target/app-compone
 cd sdks/clients/mero-js && pnpm build && pnpm test:cluster
 ```
 
+Against a released merod instead, build the fixtures with its meroctl, as
+`e2e.yml` does, and point the suite at them:
+
+```bash
+meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
+meroctl app build apps/v2-fixtures/compute --out target/app-components/compute-app.wasm \
+  --compute-out target/app-components/compute.wasm
+meroctl app build apps/rooms --out target/app-components/rooms.wasm
+cd sdks/clients/mero-js
+MEROD_BINARY=<merod> MEROCTL=<meroctl> \
+COMPUTE_WASM=$PWD/../../../target/app-components/compute.wasm \
+COMPUTE_FIXTURE_DIR=$PWD/../../../apps/v2-fixtures/compute MERO_JS_REQUIRE_COMPUTE=1 \
+ROOMS_WASM=$PWD/../../../target/app-components/rooms.wasm \
+  pnpm test:cluster
+```
+
+The nodes take ports the OS picks; `MERO_JS_CLUSTER_PORT_BASE=2900` takes the
+first free ones from 2900 up instead (to keep clear of other local clusters).
+
 Optional: `MEROCTL=<meroctl>` starts a job node, and with
 `COMPUTE_WASM=target/app-components/compute.wasm`
 `COMPUTE_FIXTURE_DIR=apps/v2-fixtures/compute` the pipeline test runs

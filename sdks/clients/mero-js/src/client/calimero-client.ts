@@ -902,6 +902,13 @@ export class CalimeroClient {
         w.location.assign(url);
       });
     const started = await this.consent.pageCreate({ body: request });
+    // The page is opened in this app's window (or a pop-up it owns): a `javascript:` or
+    // `data:` URL would run in the app's origin, so only a web page is ever navigated to.
+    if (!isWebUrl(started.url)) {
+      throw new CalimeroError(200, 'CONSENT_BAD_URL', 'the consent page URL is not an http(s) URL', {
+        requestId: started.requestId,
+      });
+    }
     if (started.code !== undefined) {
       const expected = await confirmationCode(started.requestId);
       if (started.code !== expected) {
@@ -1032,6 +1039,16 @@ export class CalimeroClient {
 }
 
 /** This page's `sessionStorage`, where there is one (a sandboxed frame or a turned-off store throws). */
+/** Whether `url` parses as an absolute `http:` or `https:` URL. */
+function isWebUrl(url: unknown): boolean {
+  try {
+    const { protocol } = new URL(String(url));
+    return protocol === 'https:' || protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
 function consentStorage(): Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | undefined {
   try {
     return (globalThis as { sessionStorage?: Storage }).sessionStorage;
