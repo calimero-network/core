@@ -249,6 +249,47 @@ private suspend fun verifyRelease(
 }
 
 /**
+ * Check that [doc]'s quote binds [nonce] and then [suffix] (mero-js `verifyQuoteBinding`): a mock
+ * quote only under [CloudPolicy.allowMock], a real one under [CloudPolicy.verifyQuote] or
+ * [CloudPolicy.release]. [what] names the key it vouches for, [bound] what the suffix binds, for the errors. Throws
+ * [TeeTrustException] when it does not check out.
+ */
+@Suppress("ThrowsCount")
+internal suspend fun verifyQuoteBinding(
+    doc: AttestationDoc,
+    nonce: ByteArray,
+    suffix: ByteArray,
+    policy: CloudPolicy,
+    what: String,
+    httpClient: OkHttpClient,
+    bound: String = what,
+) {
+    val quote =
+        try {
+            fromBase64(doc.quote)
+        } catch (e: Exception) {
+            throw TeeTrustException("The quote is not base64", e)
+        }
+    val header = MOCK_QUOTE_HEADER.encodeToByteArray()
+    if (quote.size >= header.size && quote.copyOfRange(0, header.size).contentEquals(header)) {
+        if (!policy.allowMock) throw TeeTrustException("mock quote refused: this client only trusts real TEEs")
+        val report = quote.copyOfRange(header.size, minOf(quote.size, header.size + 64))
+        if (report.size != 64 || !report.copyOfRange(0, 32).contentEquals(nonce) || !report.copyOfRange(32, 64).contentEquals(suffix)) {
+            throw TeeTrustException("the quote does not bind this $bound and nonce")
+        }
+        return
+    }
+    val args = TransportQuote(doc.quote, Hex.encode(nonce), Hex.encode(suffix))
+    val ok =
+        when {
+            policy.verifyQuote != null -> policy.verifyQuote.verify(args)
+            policy.release != null -> verifyRelease(doc, args, policy.release, httpClient)
+            else -> throw TeeTrustException("real quote refused: this client trusts no TD image (set policy.release)")
+        }
+    if (!ok) throw TeeTrustException("The attestation did not verify, so its $what is not trusted")
+}
+
+/**
  * Fetch the node's attestation and return its transport key once it checks out (mero-js
  * `fetchAttestedKey`). Throws [TeeTrustException] when it does not.
  */
@@ -277,27 +318,6 @@ suspend fun fetchAttestedKey(
         }
     val transportKey = Hex.decode(doc.transportKey, "transportKey", 32)
     val inner = policy.appHash?.let { Hex.decode(it, "appHash", 32) } ?: ByteArray(32)
-    val suffix = transportKeyBinding(inner, transportKey)
-    val quote = fromBase64(doc.quote)
-    val header = MOCK_QUOTE_HEADER.encodeToByteArray()
-    if (quote.size >= header.size && quote.copyOfRange(0, header.size).contentEquals(header)) {
-        if (!policy.allowMock) throw TeeTrustException("mock quote refused: this client only trusts real TEEs")
-        val report = quote.copyOfRange(header.size, minOf(quote.size, header.size + 64))
-        if (report.size != 64 ||
-            !report.copyOfRange(0, 32).contentEquals(Hex.decode(nonce, "nonce", 32)) ||
-            !report.copyOfRange(32, 64).contentEquals(suffix)
-        ) {
-            throw TeeTrustException("the quote does not bind this transport key, app and nonce")
-        }
-        return transportKey
-    }
-    val args = TransportQuote(doc.quote, nonce, Hex.encode(suffix))
-    val ok =
-        when {
-            policy.verifyQuote != null -> policy.verifyQuote.verify(args)
-            policy.release != null -> verifyRelease(doc, args, policy.release, httpClient)
-            else -> throw TeeTrustException("real quote refused: this client trusts no TD image (set policy.release)")
-        }
-    if (!ok) throw TeeTrustException("The attestation did not verify, so its transport key is not trusted")
+    verifyQuoteBinding(doc, Hex.decode(nonce, "nonce", 32), transportKeyBinding(inner, transportKey), policy, "transport key", httpClient, bound = "transport key, app")
     return transportKey
 }

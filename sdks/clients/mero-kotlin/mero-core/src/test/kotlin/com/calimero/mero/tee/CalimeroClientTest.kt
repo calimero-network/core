@@ -1620,6 +1620,56 @@ class CalimeroClientTest {
         }
 
     @Test
+    fun `verifies an app's replicas and a pipeline receipt under the client's own policy`() =
+        runBlocking {
+            val key = ByteArray(32) { 3 }
+            val receiptKey = Ed25519.publicKey(key)
+            val governance =
+                buildJsonObject {
+                    put("releases", "owner")
+                    put("appUpgrades", "owner")
+                    put("outbound", "owner")
+                }
+            val cluster =
+                Cluster({ head, _ ->
+                    val p = path(head)
+                    if (p.startsWith("/apps/app-1/attestation")) {
+                        val nonce = p.substringAfter("nonce=").substringBefore('&')
+                        val suffix = Hex.decode(com.calimero.mero.receiptKeyBinding(receiptKey, governance, "c-1", 1), "suffix", 32)
+                        val quote = base64(concat(MOCK_QUOTE_HEADER.encodeToByteArray(), Hex.decode(nonce, "nonce", 32), suffix))
+                        json(
+                            200,
+                            """{"appId":"app-1","cluster":"c-1","replicas":[{"node":1,"attestation":{"quote":"$quote","transportKey":"${"00".repeat(32)}","appHash":"${"00".repeat(32)}","nonce":"$nonce","release":{"version":"2.3.109","profile":"dev"},"cluster":"c-1","node":1,"mock":true,"receiptKey":"${Hex.encode(receiptKey)}","governance":$governance}}]}""",
+                        )
+                    } else {
+                        refused(404, "NOT_FOUND")
+                    }
+                })
+            val attested = cluster.client().verifyAppCluster("app-1")
+            assertEquals(listOf(1L), attested.keys.keys.toList())
+            assertEquals("c-1", attested.cluster)
+            assertTrue(
+                cluster.nodes[0]
+                    .requests[0]
+                    .first["path"]!!
+                    .jsonPrimitive.content
+                    .startsWith("/apps/app-1/attestation?nonce="),
+            )
+            // A version 1 receipt, signed by that key: it verifies as signed, and is refused as carrying no job proofs.
+            val receipt = Json.parseToJsonElement("""{"version":1,"cluster":"${"21".repeat(32)}","app":"app-1","run":"run-1","pipeline":"p","release":"1.0.0","pipelineHash":"${"cd".repeat(32)}","modules":{},"inputs":{},"params":{},"state":"succeeded","startTsMs":1,"endTsMs":2,"steps":{}}""")
+            val answer =
+                JsonObject(
+                    mapOf(
+                        "receipt" to receipt,
+                        "node" to JsonPrimitive(1),
+                        "signature" to JsonPrimitive(Hex.encode(Ed25519.sign(key, com.calimero.mero.receiptMessage(receipt)))),
+                    ),
+                )
+            val e = runCatching { cluster.client().verifyPipelineReceipt("app-1", "run-1", answer) }.exceptionOrNull()
+            assertTrue("$e", e is com.calimero.mero.ReceiptVerificationException && "the receipt is version 1" in e.message.orEmpty())
+        }
+
+    @Test
     fun `uploads a blob's bytes as they are`() =
         runBlocking {
             val cluster = Cluster({ _, _ -> json(200, """{"blobId":"B58","id":"ab","size":3,"index":4}""") })

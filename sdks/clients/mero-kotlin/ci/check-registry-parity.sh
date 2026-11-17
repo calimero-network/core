@@ -69,6 +69,9 @@ EXCLUDED=(
   uploadFile         # ditto
   exportFile         # ditto (sealed files of component apps; the sample's chat app has none)
   exportFileTo       # ditto
+  verifyAppCluster   # ditto (pipeline receipts: compute apps, which the sample does not run)
+  pipelineReceipt    # ditto
+  verifyPipelineReceipt # ditto
   packageOrigins     # ditto (a package manager's, for a web frontend)
   addPackageOrigin   # ditto
   removePackageOrigin # ditto

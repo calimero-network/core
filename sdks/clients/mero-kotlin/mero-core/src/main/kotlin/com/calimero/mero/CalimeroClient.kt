@@ -1140,6 +1140,38 @@ class CalimeroClient(
             else -> false
         }
 
+    // ---------------------------------------------------------------- pipeline receipts
+
+    private val replicaAttestation: suspend (String, String) -> JsonElement = { app, nonce -> raw(defaultApi.apps.appAttestationRequestConfig(app, nonce)) }
+
+    /**
+     * Verify every replica of [app] under this client's policy: each one's quote binds its receipt
+     * key, the cluster's governance, and its cluster and node id. Answers the attested receipt key
+     * per node and the governance. Throws [ReceiptVerificationException] when one does not.
+     */
+    suspend fun verifyAppCluster(app: String): AttestedCluster = verifyAppCluster(replicaAttestation, app, options.policy, options.httpClient)
+
+    /**
+     * The signed receipt of an ended pipeline run, version 2 (`apps.pipelineReceiptReceipt`): with
+     * each job's report evidence and job node attestation, as JSON (`{ receipt, node, signature }`)
+     * for [verifyPipelineReceipt]. A version 1 answer does not verify.
+     */
+    suspend fun pipelineReceipt(
+        app: String,
+        run: String,
+    ): JsonObject = raw(defaultApi.apps.pipelineReceiptReceiptRequestConfig(app, run, 2)) as? JsonObject ?: JsonObject(emptyMap())
+
+    /**
+     * Verify the receipt of a pipeline run ([pipelineReceipt]): signed by the key an attested
+     * replica holds, for [app] and [run], with every job's report signed by a job key a job node
+     * attests. Throws [ReceiptVerificationException] when it is not; answers the receipt.
+     */
+    suspend fun verifyPipelineReceipt(
+        app: String,
+        run: String,
+        answer: JsonElement,
+    ): PipelineReceipt = verifyPipelineReceipt(replicaAttestation, app, run, answer, options.policy, options.httpClient)
+
     // ---------------------------------------------------------------- packages
 
     // ---------------------------------------------------------------- app instances

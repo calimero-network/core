@@ -30,6 +30,8 @@ data class Governance(
     val deployments: DeploymentsRule? = null,
     /** Who grants deployers: the operator ([DeployersRule.Operator], or null) or the cluster's owner. */
     val deployers: DeployersRule? = null,
+    /** Who may sign up: `open` (or null), `invite` or `closed`. */
+    val signUp: String? = null,
 )
 
 /** Whose report: the account's own apps outside any organization (`kind = "account"`), or an organization's. */
