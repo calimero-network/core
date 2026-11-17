@@ -32,8 +32,8 @@ the same methods, the same typed errors, the same retry and failover rules.
 .product(name: "MeroKit", package: "swift-sdk"),
 ```
 
-The package is named `mero-swift` and the CocoaPods pod is `mero-swift`
-(`pod 'mero-swift'`); the modules you import keep their names (`import MeroKit`,
+The package is named `mero-swift` (SwiftPM only; there is no CocoaPods pod);
+the modules you import keep their names (`import MeroKit`,
 `MeroAPI`, `MeroKitUI`, `MeroKitTestSupport`), so code that built against
 MeroKit builds unchanged. SwiftPM names a remote package by its URL, so
 `package: "swift-sdk"` stays right. Versions are core's (`1.0.0-rc.N`): the SDK

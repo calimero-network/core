@@ -3,8 +3,8 @@ name: Release
 # A release cut builds and publishes: a push to master whose version (the root
 # Cargo.toml's) has no GitHub release yet. It publishes the binaries (Linux
 # x86_64 and aarch64; the command-line tools for macOS), crates, the App Bundle,
-# the Homebrew tap, the SDKs under sdks/ (npm, PyPI, Maven Central, CocoaPods and
-# the SwiftPM mirror; the cut's commit runs scripts/sdks.py version-sync) and the
+# the Homebrew tap, the SDKs under sdks/ (npm, PyPI, Maven Central and the
+# SwiftPM mirror; the cut's commit runs scripts/sdks.py version-sync) and the
 # downstream bump PRs, and the merod image (amd64 and arm64) under
 # the version and `latest` or `prerelease`, once that image passed its smoke e2e.
 # Any other push builds nothing: `prepare` decides in seconds. PRs and the merge
