@@ -478,7 +478,6 @@ impl SystemCmd {
             | Self::RemoveNode { .. }
             | Self::PutBundle { .. }
             | Self::UninstallPackage { .. }
-            | Self::CreateApp { .. }
             | Self::UpgradeApp { .. }
             | Self::TransferApp { .. }
             | Self::DeleteApp { .. }

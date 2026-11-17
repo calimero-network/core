@@ -266,7 +266,7 @@ async fn create_instance(
                 ApiError::bad_request("BAD_REQUEST", "name the package the deployment offers")
             })?;
             let (bundle, compute, release) = offered_bundle(
-                &node,
+                node,
                 d,
                 package,
                 body.version.as_deref(),
@@ -277,7 +277,7 @@ async fn create_instance(
         }
         None => {
             bundle_named(
-                &node,
+                node,
                 body.bundle,
                 body.package.as_deref(),
                 body.version.as_deref(),
@@ -305,7 +305,7 @@ async fn create_instance(
     // owner's personal organization, made the first time.
     let org = match body.org {
         Some(org) => org,
-        None => personal_org(&node, &owner).await?,
+        None => personal_org(node, &owner).await?,
     };
     // Past a release deadline the app's approver has not met, no new app;
     // `CreateApp` asks again at the same time.
