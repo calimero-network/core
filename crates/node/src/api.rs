@@ -943,7 +943,16 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         .ok_or_else(|| ApiError::bad_request("BAD_NONCE", "nonce must be 32 bytes hex"))?;
     let app_hash: [u8; 32] = match (&q.app, &q.app_hash) {
         (Some(app), _) => {
-            let rec = node.app(app).await?;
+            // In the clear and without a credential, so judged as an anonymous
+            // `GET /apps/{app}` is (#4723): on the cluster's latest system state,
+            // and an app nobody anonymous may reach answers as one that does not
+            // exist, so the bound hash never says that a private app exists or
+            // which release it runs. Read at once after the round: an unknown id
+            // does not wait for the directory to name it.
+            let _fresh = node.sys_fresh().await;
+            let rec = node
+                .sys(|s| s.apps.get(app).filter(|a| s.may_reach(a, None)).cloned())
+                .ok_or_else(|| ApiError::not_found("no such app"))?;
             hex::decode(&rec.bundle)
                 .ok()
                 .and_then(|v| v.try_into().ok())
