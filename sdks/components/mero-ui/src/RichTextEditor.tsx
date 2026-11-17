@@ -6,7 +6,13 @@ import React, {
   useCallback,
 } from "react";
 import { tokens } from "@calimero-network/mero-tokens";
-import { useEditor, EditorContent } from "@tiptap/react";
+import {
+  useEditor,
+  EditorContent,
+  generateHTML,
+  generateJSON,
+  type Extensions,
+} from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { TextStyle } from "@tiptap/extension-text-style";
 import { Color } from "@tiptap/extension-color";
@@ -45,6 +51,58 @@ export interface RichTextEditorRef {
   insertContent: (content: string) => void;
   focus: () => void;
   getHTML: () => string;
+}
+
+/**
+ * The document schema of `RichTextEditor`. `sanitizeRichTextHtml` parses with
+ * the same list, so it keeps exactly what the editor can produce.
+ */
+function richTextExtensions(): Extensions {
+  return [
+    // `link` and `underline` are configured THROUGH StarterKit, not
+    // registered beside it.
+    //
+    // StarterKit already bundles both. Adding `Underline` and `Link` to
+    // this array as well registered a second, different instance of each,
+    // and ProseMirror rejects that outright:
+    //
+    //   [tiptap warn]: Duplicate extension names found: ['link','underline']
+    //   RangeError: Adding different instances of a keyed plugin (plugin$)
+    //
+    // The RangeError is thrown while the editor is being constructed, so
+    // the whole component fails to mount — it surfaces to the app as a
+    // bare React error #520 with no mention of tiptap, which is why this
+    // sat unexplained.
+    StarterKit.configure({
+      link: {
+        openOnClick: false,
+        HTMLAttributes: {
+          class: "rich-text-link",
+        },
+      },
+    }),
+    TextStyle,
+    Color,
+    TextAlign.configure({
+      types: ["heading", "paragraph"],
+    }),
+  ];
+}
+
+/**
+ * Cuts HTML down to what `RichTextEditor` can produce: its nodes and marks,
+ * links with an allowed scheme (no `javascript:`, `data:`, ...), and only a
+ * valid text colour and alignment as style. Scripts, event handlers, images,
+ * frames and every other element or attribute are dropped.
+ *
+ * Rich text from another member is attacker-controlled. Render it with
+ * `dangerouslySetInnerHTML={{ __html: sanitizeRichTextHtml(html) }}`, never the
+ * raw string. Needs a DOM (`window.DOMParser`).
+ */
+export function sanitizeRichTextHtml(html: string): string {
+  if (!html) return "";
+  const extensions = richTextExtensions();
+  return generateHTML(generateJSON(html, extensions), extensions);
 }
 
 export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
@@ -125,39 +183,13 @@ export const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>
 
     const editor = useEditor({
       extensions: [
-        // `link` and `underline` are configured THROUGH StarterKit, not
-        // registered beside it.
-        //
-        // StarterKit already bundles both. Adding `Underline` and `Link` to
-        // this array as well registered a second, different instance of each,
-        // and ProseMirror rejects that outright:
-        //
-        //   [tiptap warn]: Duplicate extension names found: ['link','underline']
-        //   RangeError: Adding different instances of a keyed plugin (plugin$)
-        //
-        // The RangeError is thrown while the editor is being constructed, so
-        // the whole component fails to mount — it surfaces to the app as a
-        // bare React error #520 with no mention of tiptap, which is why this
-        // sat unexplained.
-        StarterKit.configure({
-          link: {
-            openOnClick: false,
-            HTMLAttributes: {
-              class: "rich-text-link",
-            },
-          },
-        }),
+        ...richTextExtensions(),
         // The `p.is-editor-empty:first-child::before` rule below has always
         // been here, but nothing ever emitted `data-placeholder` for it to
         // read — the extension was never registered, so `placeholder` was
         // accepted and silently ignored.
         Placeholder.configure({
           placeholder: () => placeholderRef.current ?? "",
-        }),
-        TextStyle,
-        Color,
-        TextAlign.configure({
-          types: ["heading", "paragraph"],
         }),
       ],
       content: currentValue,
