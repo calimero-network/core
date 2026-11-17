@@ -4,7 +4,7 @@
 // channel with the SDK's retries. u64 and i64 are decimal strings and bytes base64url on the wire;
 // here they are `ULong`, `Long` and `ByteArray`.
 
-package calimero.generated.permissionsshowcase
+package calimero.generated.forum
 
 import com.calimero.mero.AppError
 import com.calimero.mero.CalimeroClient
@@ -51,7 +51,7 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  * own idempotency key, so `confirm` methods, [events] and an `idempotencyKey` throw
  * [UnsupportedOperationException]. A refusal throws [AppError]; [Refusal.from] types it.
  */
-class PermissionsShowcaseClient private constructor(
+class ForumClient private constructor(
     private val contract: ContextContractCalling,
     private val client: CalimeroClient?,
     private val app: String,
@@ -74,25 +74,6 @@ class PermissionsShowcaseClient private constructor(
             "addModerator",
             buildJsonObject {
                 put("account", encode(String.serializer(), account))
-            },
-            idempotencyKey,
-            JsonElement.serializer(),
-        )
-    }
-
-    /** call `addRevision`. */
-    suspend fun addRevision(
-        id: String,
-        revision: String,
-        text: String,
-        idempotencyKey: String? = null,
-    ) {
-        invokeCall(
-            "addRevision",
-            buildJsonObject {
-                put("id", encode(String.serializer(), id))
-                put("revision", encode(String.serializer(), revision))
-                put("text", encode(String.serializer(), text))
             },
             idempotencyKey,
             JsonElement.serializer(),
@@ -122,136 +103,266 @@ class PermissionsShowcaseClient private constructor(
     suspend fun announcements(
         stale: Boolean = false,
         minIndex: Long = 0,
-    ): List<MessageView> =
+    ): List<JsonElement> =
         invokeView(
             "announcements",
             JsonObject(emptyMap()),
             stale,
             minIndex,
-            ListSerializer(MessageView.serializer()),
+            ListSerializer(JsonElement.serializer()),
         )
 
-    /** view `channel`. */
-    suspend fun channel(
-        channel: String,
+    /** view `authorFeed`. */
+    suspend fun authorFeed(
+        author: String,
+        limit: UInt,
         stale: Boolean = false,
         minIndex: Long = 0,
-    ): List<MessageView> =
+    ): List<JsonElement> =
         invokeView(
-            "channel",
+            "authorFeed",
             buildJsonObject {
-                put("channel", encode(String.serializer(), channel))
+                put("author", encode(String.serializer(), author))
+                put("limit", encode(UInt.serializer(), limit))
             },
             stale,
             minIndex,
-            ListSerializer(MessageView.serializer()),
+            ListSerializer(JsonElement.serializer()),
         )
 
-    /** call `createPage`. */
-    suspend fun createPage(
+    /** view `boardFeed`. */
+    suspend fun boardFeed(
+        board: String,
+        offset: UInt,
+        limit: UInt,
+        stale: Boolean = false,
+        minIndex: Long = 0,
+    ): List<JsonElement> =
+        invokeView(
+            "boardFeed",
+            buildJsonObject {
+                put("board", encode(String.serializer(), board))
+                put("offset", encode(UInt.serializer(), offset))
+                put("limit", encode(UInt.serializer(), limit))
+            },
+            stale,
+            minIndex,
+            ListSerializer(JsonElement.serializer()),
+        )
+
+    /** view `boardSince`. */
+    suspend fun boardSince(
+        board: String,
+        after: ULong,
+        stale: Boolean = false,
+        minIndex: Long = 0,
+    ): List<JsonElement> =
+        invokeView(
+            "boardSince",
+            buildJsonObject {
+                put("board", encode(String.serializer(), board))
+                put("after", encode(U64AsString, after))
+            },
+            stale,
+            minIndex,
+            ListSerializer(JsonElement.serializer()),
+        )
+
+    /** view `boardStats`. */
+    suspend fun boardStats(
+        board: String,
+        stale: Boolean = false,
+        minIndex: Long = 0,
+    ): JsonElement =
+        invokeView(
+            "boardStats",
+            buildJsonObject {
+                put("board", encode(String.serializer(), board))
+            },
+            stale,
+            minIndex,
+            JsonElement.serializer(),
+        )
+
+    /** view `boardTagFeed`. */
+    suspend fun boardTagFeed(
+        board: String,
+        tag: String,
+        offset: UInt,
+        limit: UInt,
+        stale: Boolean = false,
+        minIndex: Long = 0,
+    ): List<JsonElement> =
+        invokeView(
+            "boardTagFeed",
+            buildJsonObject {
+                put("board", encode(String.serializer(), board))
+                put("tag", encode(String.serializer(), tag))
+                put("offset", encode(UInt.serializer(), offset))
+                put("limit", encode(UInt.serializer(), limit))
+            },
+            stale,
+            minIndex,
+            ListSerializer(JsonElement.serializer()),
+        )
+
+    /** view `charter`. */
+    suspend fun charter(
+        stale: Boolean = false,
+        minIndex: Long = 0,
+    ): JsonElement =
+        invokeView(
+            "charter",
+            JsonObject(emptyMap()),
+            stale,
+            minIndex,
+            JsonElement.serializer(),
+        )
+
+    /** call `comment`. */
+    suspend fun comment(
+        post: String,
         id: String,
+        body: String,
+        createdAt: ULong,
+        idempotencyKey: String? = null,
+    ): String =
+        invokeCall(
+            "comment",
+            buildJsonObject {
+                put("post", encode(String.serializer(), post))
+                put("id", encode(String.serializer(), id))
+                put("body", encode(String.serializer(), body))
+                put("createdAt", encode(U64AsString, createdAt))
+            },
+            idempotencyKey,
+            String.serializer(),
+        )
+
+    /** view `comments`. */
+    suspend fun comments(
+        post: String,
+        offset: UInt,
+        limit: UInt,
+        stale: Boolean = false,
+        minIndex: Long = 0,
+    ): List<JsonElement> =
+        invokeView(
+            "comments",
+            buildJsonObject {
+                put("post", encode(String.serializer(), post))
+                put("offset", encode(UInt.serializer(), offset))
+                put("limit", encode(UInt.serializer(), limit))
+            },
+            stale,
+            minIndex,
+            ListSerializer(JsonElement.serializer()),
+        )
+
+    /** call `createPost`. */
+    suspend fun createPost(
+        id: String,
+        board: String,
         title: String,
-        text: String,
+        body: String,
+        tags: List<String>,
+        createdAt: ULong,
+        idempotencyKey: String? = null,
+    ): String =
+        invokeCall(
+            "createPost",
+            buildJsonObject {
+                put("id", encode(String.serializer(), id))
+                put("board", encode(String.serializer(), board))
+                put("title", encode(String.serializer(), title))
+                put("body", encode(String.serializer(), body))
+                put("tags", encode(ListSerializer(String.serializer()), tags))
+                put("createdAt", encode(U64AsString, createdAt))
+            },
+            idempotencyKey,
+            String.serializer(),
+        )
+
+    /** call `deleteComment`. */
+    suspend fun deleteComment(
+        key: String,
         idempotencyKey: String? = null,
     ) {
         invokeCall(
-            "createPage",
+            "deleteComment",
             buildJsonObject {
-                put("id", encode(String.serializer(), id))
-                put("title", encode(String.serializer(), title))
-                put("text", encode(String.serializer(), text))
+                put("key", encode(String.serializer(), key))
             },
             idempotencyKey,
             JsonElement.serializer(),
         )
     }
 
-    /** call `deletePage`. */
-    suspend fun deletePage(
+    /** call `deletePost`. */
+    suspend fun deletePost(
         id: String,
         idempotencyKey: String? = null,
-    ): Boolean =
+    ) {
         invokeCall(
-            "deletePage",
+            "deletePost",
             buildJsonObject {
                 put("id", encode(String.serializer(), id))
             },
             idempotencyKey,
-            Boolean.serializer(),
+            JsonElement.serializer(),
         )
+    }
 
-    /** view `evidence`. */
-    suspend fun evidence(
-        hash: String,
-        stale: Boolean = false,
-        minIndex: Long = 0,
-    ): Evidence? =
-        invokeView(
-            "evidence",
-            buildJsonObject {
-                put("hash", encode(String.serializer(), hash))
-            },
-            stale,
-            minIndex,
-            Evidence.serializer().nullable,
-        )
-
-    /** view `evidenceOfKind`. */
-    suspend fun evidenceOfKind(
-        kind: String,
-        stale: Boolean = false,
-        minIndex: Long = 0,
-    ): List<Evidence> =
-        invokeView(
-            "evidenceOfKind",
-            buildJsonObject {
-                put("kind", encode(String.serializer(), kind))
-            },
-            stale,
-            minIndex,
-            ListSerializer(Evidence.serializer()),
-        )
-
-    /** call `fileEvidence`. */
-    suspend fun fileEvidence(
-        kind: String,
+    /** call `editComment`. */
+    suspend fun editComment(
+        key: String,
         body: String,
         idempotencyKey: String? = null,
-    ): String =
+    ) {
         invokeCall(
-            "fileEvidence",
+            "editComment",
             buildJsonObject {
-                put("kind", encode(String.serializer(), kind))
+                put("key", encode(String.serializer(), key))
                 put("body", encode(String.serializer(), body))
             },
             idempotencyKey,
-            String.serializer(),
+            JsonElement.serializer(),
         )
+    }
 
-    /** view `founder`. */
-    suspend fun founder(
+    /** call `editPost`. */
+    suspend fun editPost(
+        id: String,
+        title: String,
+        body: String,
+        idempotencyKey: String? = null,
+    ) {
+        invokeCall(
+            "editPost",
+            buildJsonObject {
+                put("id", encode(String.serializer(), id))
+                put("title", encode(String.serializer(), title))
+                put("body", encode(String.serializer(), body))
+            },
+            idempotencyKey,
+            JsonElement.serializer(),
+        )
+    }
+
+    /** view `getPost`. */
+    suspend fun getPost(
+        id: String,
         stale: Boolean = false,
         minIndex: Long = 0,
-    ): String? =
+    ): JsonElement? =
         invokeView(
-            "founder",
-            JsonObject(emptyMap()),
+            "getPost",
+            buildJsonObject {
+                put("id", encode(String.serializer(), id))
+            },
             stale,
             minIndex,
-            String.serializer().nullable,
-        )
-
-    /** view `founding`. */
-    suspend fun founding(
-        stale: Boolean = false,
-        minIndex: Long = 0,
-    ): Founding =
-        invokeView(
-            "founding",
-            JsonObject(emptyMap()),
-            stale,
-            minIndex,
-            Founding.serializer(),
+            JsonElement.serializer().nullable,
         )
 
     /** view `me`. */
@@ -267,6 +378,37 @@ class PermissionsShowcaseClient private constructor(
             String.serializer(),
         )
 
+    /** view `messages`. */
+    suspend fun messages(
+        board: String,
+        stale: Boolean = false,
+        minIndex: Long = 0,
+    ): List<JsonElement> =
+        invokeView(
+            "messages",
+            buildJsonObject {
+                put("board", encode(String.serializer(), board))
+            },
+            stale,
+            minIndex,
+            ListSerializer(JsonElement.serializer()),
+        )
+
+    /** call `moderatePost`. */
+    suspend fun moderatePost(
+        id: String,
+        idempotencyKey: String? = null,
+    ) {
+        invokeCall(
+            "moderatePost",
+            buildJsonObject {
+                put("id", encode(String.serializer(), id))
+            },
+            idempotencyKey,
+            JsonElement.serializer(),
+        )
+    }
+
     /** view `moderators`. */
     suspend fun moderators(
         stale: Boolean = false,
@@ -280,27 +422,42 @@ class PermissionsShowcaseClient private constructor(
             ListSerializer(String.serializer()),
         )
 
-    /** view `page`. */
-    suspend fun page(
-        author: String,
+    /** call `pin`. */
+    suspend fun pin(
         id: String,
+        at: ULong,
+        idempotencyKey: String? = null,
+    ) {
+        invokeCall(
+            "pin",
+            buildJsonObject {
+                put("id", encode(String.serializer(), id))
+                put("at", encode(U64AsString, at))
+            },
+            idempotencyKey,
+            JsonElement.serializer(),
+        )
+    }
+
+    /** view `pinned`. */
+    suspend fun pinned(
+        board: String,
         stale: Boolean = false,
         minIndex: Long = 0,
-    ): PageView? =
+    ): List<JsonElement> =
         invokeView(
-            "page",
+            "pinned",
             buildJsonObject {
-                put("author", encode(String.serializer(), author))
-                put("id", encode(String.serializer(), id))
+                put("board", encode(String.serializer(), board))
             },
             stale,
             minIndex,
-            PageView.serializer().nullable,
+            ListSerializer(JsonElement.serializer()),
         )
 
     /** call `postMessage`. */
     suspend fun postMessage(
-        channel: String,
+        board: String,
         id: String,
         text: String,
         sentAt: ULong,
@@ -309,26 +466,13 @@ class PermissionsShowcaseClient private constructor(
         invokeCall(
             "postMessage",
             buildJsonObject {
-                put("channel", encode(String.serializer(), channel))
+                put("board", encode(String.serializer(), board))
                 put("id", encode(String.serializer(), id))
                 put("text", encode(String.serializer(), text))
                 put("sentAt", encode(U64AsString, sentAt))
             },
             idempotencyKey,
             String.serializer(),
-        )
-
-    /** view `quorum`. */
-    suspend fun quorum(
-        stale: Boolean = false,
-        minIndex: Long = 0,
-    ): ULong =
-        invokeView(
-            "quorum",
-            JsonObject(emptyMap()),
-            stale,
-            minIndex,
-            U64AsString,
         )
 
     /** call `removeAnnouncement`. */
@@ -345,22 +489,65 @@ class PermissionsShowcaseClient private constructor(
             Boolean.serializer(),
         )
 
-    /** call `renamePage`. */
-    suspend fun renamePage(
+    /** call `retag`. */
+    suspend fun retag(
         id: String,
-        title: String,
+        tags: List<String>,
         idempotencyKey: String? = null,
     ) {
         invokeCall(
-            "renamePage",
+            "retag",
             buildJsonObject {
                 put("id", encode(String.serializer(), id))
-                put("title", encode(String.serializer(), title))
+                put("tags", encode(ListSerializer(String.serializer()), tags))
             },
             idempotencyKey,
             JsonElement.serializer(),
         )
     }
+
+    /** call `unpin`. */
+    suspend fun unpin(
+        id: String,
+        idempotencyKey: String? = null,
+    ) {
+        invokeCall(
+            "unpin",
+            buildJsonObject {
+                put("id", encode(String.serializer(), id))
+            },
+            idempotencyKey,
+            JsonElement.serializer(),
+        )
+    }
+
+    /** call `unvote`. */
+    suspend fun unvote(
+        post: String,
+        idempotencyKey: String? = null,
+    ): ULong =
+        invokeCall(
+            "unvote",
+            buildJsonObject {
+                put("post", encode(String.serializer(), post))
+            },
+            idempotencyKey,
+            U64AsString,
+        )
+
+    /** call `vote`. */
+    suspend fun vote(
+        post: String,
+        idempotencyKey: String? = null,
+    ): ULong =
+        invokeCall(
+            "vote",
+            buildJsonObject {
+                put("post", encode(String.serializer(), post))
+            },
+            idempotencyKey,
+            U64AsString,
+        )
 
     /** The app's events from log index [from], then live, until the collector stops. */
     fun events(from: Long = 0): Flow<EventFrame> {
@@ -425,9 +612,10 @@ class PermissionsShowcaseClient private constructor(
             val id: String,
         ) : Event
 
-        /** The event `EvidenceFiled`. */
-        data class EvidenceFiled(
-            val hash: String,
+        /** The event `Commented`. */
+        data class Commented(
+            val key: String,
+            val post: String,
         ) : Event
 
         /** The event `MessagePosted`. */
@@ -435,9 +623,25 @@ class PermissionsShowcaseClient private constructor(
             val key: String,
         ) : Event
 
-        /** The event `PageChanged`. */
-        data class PageChanged(
+        /** The event `PostChanged`. */
+        data class PostChanged(
             val id: String,
+        ) : Event
+
+        /** The event `PostDeleted`. */
+        data class PostDeleted(
+            val id: String,
+        ) : Event
+
+        /** The event `Posted`. */
+        data class Posted(
+            val board: String,
+            val id: String,
+        ) : Event
+
+        /** The event `Voted`. */
+        data class Voted(
+            val post: String,
         ) : Event
 
         /** An event this client does not know: one a newer release of the app added. */
@@ -455,9 +659,12 @@ class PermissionsShowcaseClient private constructor(
                 when (kind) {
                     "Announced" -> Announced(id = field(data, "id", String.serializer()))
                     "AnnouncementRemoved" -> AnnouncementRemoved(id = field(data, "id", String.serializer()))
-                    "EvidenceFiled" -> EvidenceFiled(hash = field(data, "hash", String.serializer()))
+                    "Commented" -> Commented(key = field(data, "key", String.serializer()), post = field(data, "post", String.serializer()))
                     "MessagePosted" -> MessagePosted(key = field(data, "key", String.serializer()))
-                    "PageChanged" -> PageChanged(id = field(data, "id", String.serializer()))
+                    "PostChanged" -> PostChanged(id = field(data, "id", String.serializer()))
+                    "PostDeleted" -> PostDeleted(id = field(data, "id", String.serializer()))
+                    "Posted" -> Posted(board = field(data, "board", String.serializer()), id = field(data, "id", String.serializer()))
+                    "Voted" -> Voted(post = field(data, "post", String.serializer()))
                     else -> Unknown(kind, data)
                 }
         }
@@ -471,14 +678,9 @@ class PermissionsShowcaseClient private constructor(
 
     /** The app's refusal: a `422 APP_ERROR`'s code and fields ([AppError.appCode], [AppError.fields]), typed. */
     sealed interface Refusal {
-        /** The error `AlreadyWritten`. */
-        data class AlreadyWritten(
-            val key: String,
-        ) : Refusal
-
-        /** The error `BadHash`. */
-        data class BadHash(
-            val hash: String,
+        /** The error `Exists`. */
+        data class Exists(
+            val id: String,
         ) : Refusal
 
         /** The error `HasSeparator`. */
@@ -486,13 +688,25 @@ class PermissionsShowcaseClient private constructor(
             val value: String,
         ) : Refusal
 
-        /** The error `NoPage`. */
-        data class NoPage(
+        /** The error `NoComment`. */
+        data class NoComment(
+            val key: String,
+        ) : Refusal
+
+        /** The error `NoPost`. */
+        data class NoPost(
+            val id: String,
+        ) : Refusal
+
+        /** The error `NotAuthor`. */
+        data class NotAuthor(
             val id: String,
         ) : Refusal
 
         /** The error `NotModerator`. */
-        data object NotModerator : Refusal
+        data class NotModerator(
+            val id: String,
+        ) : Refusal
 
         /** A code this client does not know, or fields that do not fit it. */
         data class Unknown(
@@ -505,179 +719,17 @@ class PermissionsShowcaseClient private constructor(
             fun from(error: AppError): Refusal =
                 try {
                     when (error.appCode) {
-                        "AlreadyWritten" -> AlreadyWritten(key = field(error.fields, "key", String.serializer()))
-                        "BadHash" -> BadHash(hash = field(error.fields, "hash", String.serializer()))
+                        "Exists" -> Exists(id = field(error.fields, "id", String.serializer()))
                         "HasSeparator" -> HasSeparator(value = field(error.fields, "value", String.serializer()))
-                        "NoPage" -> NoPage(id = field(error.fields, "id", String.serializer()))
-                        "NotModerator" -> NotModerator
+                        "NoComment" -> NoComment(key = field(error.fields, "key", String.serializer()))
+                        "NoPost" -> NoPost(id = field(error.fields, "id", String.serializer()))
+                        "NotAuthor" -> NotAuthor(id = field(error.fields, "id", String.serializer()))
+                        "NotModerator" -> NotModerator(id = field(error.fields, "id", String.serializer()))
                         else -> Unknown(error.appCode, error.fields)
                     }
                 } catch (e: IllegalArgumentException) {
                     Unknown(error.appCode, error.fields)
                 }
-        }
-    }
-
-    /** The app type `Evidence`. */
-    @Serializable(with = Evidence.Companion.Wire::class)
-    data class Evidence(
-        val hash: String,
-        val kind: String,
-        val body: String,
-    ) {
-        companion object {
-            /** `Evidence`'s JSON form. */
-            fun serializer(): KSerializer<Evidence> = Wire
-
-            internal object Wire : KSerializer<Evidence> {
-                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
-
-                override fun serialize(
-                    encoder: Encoder,
-                    value: Evidence,
-                ) {
-                    (encoder as JsonEncoder).encodeJsonElement(
-                        buildJsonObject {
-                            put("hash", encode(String.serializer(), value.hash))
-                            put("kind", encode(String.serializer(), value.kind))
-                            put("body", encode(String.serializer(), value.body))
-                        },
-                    )
-                }
-
-                override fun deserialize(decoder: Decoder): Evidence {
-                    val data = (decoder as JsonDecoder).decodeJsonElement()
-                    val fields = obj(data, "Evidence")
-                    return Evidence(
-                        hash = field(fields, "hash", String.serializer()),
-                        kind = field(fields, "kind", String.serializer()),
-                        body = field(fields, "body", String.serializer()),
-                    )
-                }
-            }
-        }
-    }
-
-    /** The app type `Founding`. */
-    @Serializable(with = Founding.Companion.Wire::class)
-    data class Founding(
-        val name: String,
-        val motto: String,
-    ) {
-        companion object {
-            /** `Founding`'s JSON form. */
-            fun serializer(): KSerializer<Founding> = Wire
-
-            internal object Wire : KSerializer<Founding> {
-                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
-
-                override fun serialize(
-                    encoder: Encoder,
-                    value: Founding,
-                ) {
-                    (encoder as JsonEncoder).encodeJsonElement(
-                        buildJsonObject {
-                            put("name", encode(String.serializer(), value.name))
-                            put("motto", encode(String.serializer(), value.motto))
-                        },
-                    )
-                }
-
-                override fun deserialize(decoder: Decoder): Founding {
-                    val data = (decoder as JsonDecoder).decodeJsonElement()
-                    val fields = obj(data, "Founding")
-                    return Founding(
-                        name = field(fields, "name", String.serializer()),
-                        motto = field(fields, "motto", String.serializer()),
-                    )
-                }
-            }
-        }
-    }
-
-    /** The app type `MessageView`. */
-    @Serializable(with = MessageView.Companion.Wire::class)
-    data class MessageView(
-        val key: String,
-        val author: String,
-        val text: String,
-        val sentAt: ULong,
-    ) {
-        companion object {
-            /** `MessageView`'s JSON form. */
-            fun serializer(): KSerializer<MessageView> = Wire
-
-            internal object Wire : KSerializer<MessageView> {
-                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
-
-                override fun serialize(
-                    encoder: Encoder,
-                    value: MessageView,
-                ) {
-                    (encoder as JsonEncoder).encodeJsonElement(
-                        buildJsonObject {
-                            put("key", encode(String.serializer(), value.key))
-                            put("author", encode(String.serializer(), value.author))
-                            put("text", encode(String.serializer(), value.text))
-                            put("sentAt", encode(U64AsString, value.sentAt))
-                        },
-                    )
-                }
-
-                override fun deserialize(decoder: Decoder): MessageView {
-                    val data = (decoder as JsonDecoder).decodeJsonElement()
-                    val fields = obj(data, "MessageView")
-                    return MessageView(
-                        key = field(fields, "key", String.serializer()),
-                        author = field(fields, "author", String.serializer()),
-                        text = field(fields, "text", String.serializer()),
-                        sentAt = field(fields, "sentAt", U64AsString),
-                    )
-                }
-            }
-        }
-    }
-
-    /** The app type `PageView`. */
-    @Serializable(with = PageView.Companion.Wire::class)
-    data class PageView(
-        val id: String,
-        val author: String,
-        val title: String,
-        val revisions: List<Tuple2<String, String>>,
-    ) {
-        companion object {
-            /** `PageView`'s JSON form. */
-            fun serializer(): KSerializer<PageView> = Wire
-
-            internal object Wire : KSerializer<PageView> {
-                override val descriptor: SerialDescriptor = JsonElement.serializer().descriptor
-
-                override fun serialize(
-                    encoder: Encoder,
-                    value: PageView,
-                ) {
-                    (encoder as JsonEncoder).encodeJsonElement(
-                        buildJsonObject {
-                            put("id", encode(String.serializer(), value.id))
-                            put("author", encode(String.serializer(), value.author))
-                            put("title", encode(String.serializer(), value.title))
-                            put("revisions", encode(ListSerializer(Tuple2Serializer(String.serializer(), String.serializer())), value.revisions))
-                        },
-                    )
-                }
-
-                override fun deserialize(decoder: Decoder): PageView {
-                    val data = (decoder as JsonDecoder).decodeJsonElement()
-                    val fields = obj(data, "PageView")
-                    return PageView(
-                        id = field(fields, "id", String.serializer()),
-                        author = field(fields, "author", String.serializer()),
-                        title = field(fields, "title", String.serializer()),
-                        revisions = field(fields, "revisions", ListSerializer(Tuple2Serializer(String.serializer(), String.serializer()))),
-                    )
-                }
-            }
         }
     }
 
@@ -731,30 +783,6 @@ class PermissionsShowcaseClient private constructor(
         }
     }
 
-    /** `tuple<..>` of 2: a JSON array `[v0, ..]`. */
-    data class Tuple2<T0, T1>(
-        val v0: T0,
-        val v1: T1,
-    )
-
-    private class Tuple2Serializer<T0, T1>(
-        private val s0: KSerializer<T0>,
-        private val s1: KSerializer<T1>,
-    ) : KSerializer<Tuple2<T0, T1>> {
-        override val descriptor: SerialDescriptor = JsonArray.serializer().descriptor
-
-        override fun serialize(
-            encoder: Encoder,
-            value: Tuple2<T0, T1>,
-        ) = (encoder as JsonEncoder).encodeJsonElement(JsonArray(listOf(json.encodeToJsonElement(s0, value.v0), json.encodeToJsonElement(s1, value.v1))))
-
-        override fun deserialize(decoder: Decoder): Tuple2<T0, T1> {
-            val items = (decoder as JsonDecoder).decodeJsonElement().jsonArray
-            if (items.size != 2) throw SerializationException("expected 2 items, got ${items.size}")
-            return Tuple2(json.decodeFromJsonElement(s0, items[0]), json.decodeFromJsonElement(s1, items[1]))
-        }
-    }
-
     companion object {
         private val json = Json { ignoreUnknownKeys = true }
 
@@ -771,11 +799,5 @@ class PermissionsShowcaseClient private constructor(
             name: String,
             serializer: KSerializer<T>,
         ): T = json.decodeFromJsonElement(serializer, (data as? JsonObject)?.get(name) ?: JsonNull)
-
-        /** [data] as an object. */
-        private fun obj(
-            data: JsonElement,
-            what: String,
-        ): JsonObject = data as? JsonObject ?: throw SerializationException("$what: expected an object")
     }
 }

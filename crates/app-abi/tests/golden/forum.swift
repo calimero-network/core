@@ -14,149 +14,21 @@ import MeroKit
 /// a double in a test) a view is `query` and a call `execute`: the contract reads strongly and makes
 /// its own idempotency key, so `confirm` methods, `events` and an `idempotencyKey` throw
 /// `MeroAppBackendUnsupported`. A refusal throws `AppError`; `Refusal(_:)` types it.
-public struct PermissionsShowcaseClient: Sendable {
+public struct ForumClient: Sendable {
+    /// The app type `BoardStats`: the ABI names it without its shape, so it is its JSON.
+    public typealias BoardStats = JSONValue
 
-    /// The app type `Evidence`.
-    public struct Evidence: Codable, Sendable, Equatable {
-        public var hash: String
-        public var kind: String
-        public var body: String
+    /// The app type `Charter`: the ABI names it without its shape, so it is its JSON.
+    public typealias Charter = JSONValue
 
-        public init(
-            hash: String,
-            kind: String,
-            body: String
-        ) {
-            self.hash = hash
-            self.kind = kind
-            self.body = body
-        }
+    /// The app type `CommentView`: the ABI names it without its shape, so it is its JSON.
+    public typealias CommentView = JSONValue
 
-        public init(from decoder: Decoder) throws {
-            let fields = try decoder.container(keyedBy: Key.self)
-            let v0 = try fields.decode(String.self, forKey: Key("hash"))
-            let v1 = try fields.decode(String.self, forKey: Key("kind"))
-            let v2 = try fields.decode(String.self, forKey: Key("body"))
-            self.hash = v0
-            self.kind = v1
-            self.body = v2
-        }
+    /// The app type `MessageView`: the ABI names it without its shape, so it is its JSON.
+    public typealias MessageView = JSONValue
 
-        public func encode(to encoder: Encoder) throws {
-            var fields = encoder.container(keyedBy: Key.self)
-            try fields.encode(self.hash, forKey: Key("hash"))
-            try fields.encode(self.kind, forKey: Key("kind"))
-            try fields.encode(self.body, forKey: Key("body"))
-        }
-    }
-
-    /// The app type `Founding`.
-    public struct Founding: Codable, Sendable, Equatable {
-        public var name: String
-        public var motto: String
-
-        public init(
-            name: String,
-            motto: String
-        ) {
-            self.name = name
-            self.motto = motto
-        }
-
-        public init(from decoder: Decoder) throws {
-            let fields = try decoder.container(keyedBy: Key.self)
-            let v0 = try fields.decode(String.self, forKey: Key("name"))
-            let v1 = try fields.decode(String.self, forKey: Key("motto"))
-            self.name = v0
-            self.motto = v1
-        }
-
-        public func encode(to encoder: Encoder) throws {
-            var fields = encoder.container(keyedBy: Key.self)
-            try fields.encode(self.name, forKey: Key("name"))
-            try fields.encode(self.motto, forKey: Key("motto"))
-        }
-    }
-
-    /// The app type `MessageView`.
-    public struct MessageView: Codable, Sendable, Equatable {
-        public var key: String
-        public var author: String
-        public var text: String
-        public var sentAt: UInt64
-
-        public init(
-            key: String,
-            author: String,
-            text: String,
-            sentAt: UInt64
-        ) {
-            self.key = key
-            self.author = author
-            self.text = text
-            self.sentAt = sentAt
-        }
-
-        public init(from decoder: Decoder) throws {
-            let fields = try decoder.container(keyedBy: Key.self)
-            let v0 = try fields.decode(String.self, forKey: Key("key"))
-            let v1 = try fields.decode(String.self, forKey: Key("author"))
-            let v2 = try fields.decode(String.self, forKey: Key("text"))
-            let v3 = try fields.decode(DecimalString<UInt64>.self, forKey: Key("sentAt")).value
-            self.key = v0
-            self.author = v1
-            self.text = v2
-            self.sentAt = v3
-        }
-
-        public func encode(to encoder: Encoder) throws {
-            var fields = encoder.container(keyedBy: Key.self)
-            try fields.encode(self.key, forKey: Key("key"))
-            try fields.encode(self.author, forKey: Key("author"))
-            try fields.encode(self.text, forKey: Key("text"))
-            try fields.encode(DecimalString(self.sentAt), forKey: Key("sentAt"))
-        }
-    }
-
-    /// The app type `PageView`.
-    public struct PageView: Codable, Sendable, Equatable {
-        public var id: String
-        public var author: String
-        public var title: String
-        public var revisions: [Tuple2<String, String>]
-
-        public init(
-            id: String,
-            author: String,
-            title: String,
-            revisions: [Tuple2<String, String>]
-        ) {
-            self.id = id
-            self.author = author
-            self.title = title
-            self.revisions = revisions
-        }
-
-        public init(from decoder: Decoder) throws {
-            let fields = try decoder.container(keyedBy: Key.self)
-            let v0 = try fields.decode(String.self, forKey: Key("id"))
-            let v1 = try fields.decode(String.self, forKey: Key("author"))
-            let v2 = try fields.decode(String.self, forKey: Key("title"))
-            let v3 = try fields.decode([Tuple2<String, String>].self, forKey: Key("revisions"))
-            self.id = v0
-            self.author = v1
-            self.title = v2
-            self.revisions = v3
-        }
-
-        public func encode(to encoder: Encoder) throws {
-            var fields = encoder.container(keyedBy: Key.self)
-            try fields.encode(self.id, forKey: Key("id"))
-            try fields.encode(self.author, forKey: Key("author"))
-            try fields.encode(self.title, forKey: Key("title"))
-            try fields.encode(self.revisions, forKey: Key("revisions"))
-        }
-    }
+    /// The app type `PostView`: the ABI names it without its shape, so it is its JSON.
+    public typealias PostView = JSONValue
 
     private enum Transport: Sendable {
         case client(CalimeroClient, String)
@@ -190,20 +62,6 @@ public struct PermissionsShowcaseClient: Sendable {
         _ = try await invokeCall("addModerator", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
     }
 
-    /// call `addRevision`.
-    public func addRevision(
-        id: String,
-        revision: String,
-        text: String,
-        idempotencyKey: String? = nil
-    ) async throws {
-        var args = Args()
-        args.add("id", id)
-        args.add("revision", revision)
-        args.add("text", text)
-        _ = try await invokeCall("addRevision", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
-    }
-
     /// call `announce`.
     public func announce(
         id: String,
@@ -228,99 +86,201 @@ public struct PermissionsShowcaseClient: Sendable {
         return result
     }
 
-    /// view `channel`.
-    public func channel(
-        channel: String,
+    /// view `authorFeed`.
+    public func authorFeed(
+        author: String,
+        limit: UInt32,
         stale: Bool = false,
         minIndex: Int = 0
-    ) async throws -> [MessageView] {
+    ) async throws -> [PostView] {
         var args = Args()
-        args.add("channel", channel)
-        let result = try await invokeView("channel", args, stale: stale, minIndex: minIndex, as: [MessageView].self)
+        args.add("author", author)
+        args.add("limit", limit)
+        let result = try await invokeView("authorFeed", args, stale: stale, minIndex: minIndex, as: [PostView].self)
         return result
     }
 
-    /// call `createPage`.
-    public func createPage(
+    /// view `boardFeed`.
+    public func boardFeed(
+        board: String,
+        offset: UInt32,
+        limit: UInt32,
+        stale: Bool = false,
+        minIndex: Int = 0
+    ) async throws -> [PostView] {
+        var args = Args()
+        args.add("board", board)
+        args.add("offset", offset)
+        args.add("limit", limit)
+        let result = try await invokeView("boardFeed", args, stale: stale, minIndex: minIndex, as: [PostView].self)
+        return result
+    }
+
+    /// view `boardSince`.
+    public func boardSince(
+        board: String,
+        after: UInt64,
+        stale: Bool = false,
+        minIndex: Int = 0
+    ) async throws -> [PostView] {
+        var args = Args()
+        args.add("board", board)
+        args.add("after", DecimalString(after))
+        let result = try await invokeView("boardSince", args, stale: stale, minIndex: minIndex, as: [PostView].self)
+        return result
+    }
+
+    /// view `boardStats`.
+    public func boardStats(
+        board: String,
+        stale: Bool = false,
+        minIndex: Int = 0
+    ) async throws -> BoardStats {
+        var args = Args()
+        args.add("board", board)
+        let result = try await invokeView("boardStats", args, stale: stale, minIndex: minIndex, as: BoardStats.self)
+        return result
+    }
+
+    /// view `boardTagFeed`.
+    public func boardTagFeed(
+        board: String,
+        tag: String,
+        offset: UInt32,
+        limit: UInt32,
+        stale: Bool = false,
+        minIndex: Int = 0
+    ) async throws -> [PostView] {
+        var args = Args()
+        args.add("board", board)
+        args.add("tag", tag)
+        args.add("offset", offset)
+        args.add("limit", limit)
+        let result = try await invokeView("boardTagFeed", args, stale: stale, minIndex: minIndex, as: [PostView].self)
+        return result
+    }
+
+    /// view `charter`.
+    public func charter(
+        stale: Bool = false,
+        minIndex: Int = 0
+    ) async throws -> Charter {
+        let args = Args()
+        let result = try await invokeView("charter", args, stale: stale, minIndex: minIndex, as: Charter.self)
+        return result
+    }
+
+    /// call `comment`.
+    @discardableResult
+    public func comment(
+        post: String,
+        id: String,
+        body: String,
+        createdAt: UInt64,
+        idempotencyKey: String? = nil
+    ) async throws -> String {
+        var args = Args()
+        args.add("post", post)
+        args.add("id", id)
+        args.add("body", body)
+        args.add("createdAt", DecimalString(createdAt))
+        let result = try await invokeCall("comment", args, idempotencyKey: idempotencyKey, as: String.self)
+        return result
+    }
+
+    /// view `comments`.
+    public func comments(
+        post: String,
+        offset: UInt32,
+        limit: UInt32,
+        stale: Bool = false,
+        minIndex: Int = 0
+    ) async throws -> [CommentView] {
+        var args = Args()
+        args.add("post", post)
+        args.add("offset", offset)
+        args.add("limit", limit)
+        let result = try await invokeView("comments", args, stale: stale, minIndex: minIndex, as: [CommentView].self)
+        return result
+    }
+
+    /// call `createPost`.
+    @discardableResult
+    public func createPost(
+        id: String,
+        board: String,
+        title: String,
+        body: String,
+        tags: [String],
+        createdAt: UInt64,
+        idempotencyKey: String? = nil
+    ) async throws -> String {
+        var args = Args()
+        args.add("id", id)
+        args.add("board", board)
+        args.add("title", title)
+        args.add("body", body)
+        args.add("tags", tags)
+        args.add("createdAt", DecimalString(createdAt))
+        let result = try await invokeCall("createPost", args, idempotencyKey: idempotencyKey, as: String.self)
+        return result
+    }
+
+    /// call `deleteComment`.
+    public func deleteComment(
+        key: String,
+        idempotencyKey: String? = nil
+    ) async throws {
+        var args = Args()
+        args.add("key", key)
+        _ = try await invokeCall("deleteComment", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
+    }
+
+    /// call `deletePost`.
+    public func deletePost(
+        id: String,
+        idempotencyKey: String? = nil
+    ) async throws {
+        var args = Args()
+        args.add("id", id)
+        _ = try await invokeCall("deletePost", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
+    }
+
+    /// call `editComment`.
+    public func editComment(
+        key: String,
+        body: String,
+        idempotencyKey: String? = nil
+    ) async throws {
+        var args = Args()
+        args.add("key", key)
+        args.add("body", body)
+        _ = try await invokeCall("editComment", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
+    }
+
+    /// call `editPost`.
+    public func editPost(
         id: String,
         title: String,
-        text: String,
+        body: String,
         idempotencyKey: String? = nil
     ) async throws {
         var args = Args()
         args.add("id", id)
         args.add("title", title)
-        args.add("text", text)
-        _ = try await invokeCall("createPage", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
+        args.add("body", body)
+        _ = try await invokeCall("editPost", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
     }
 
-    /// call `deletePage`.
-    @discardableResult
-    public func deletePage(
+    /// view `getPost`.
+    public func getPost(
         id: String,
-        idempotencyKey: String? = nil
-    ) async throws -> Bool {
+        stale: Bool = false,
+        minIndex: Int = 0
+    ) async throws -> PostView? {
         var args = Args()
         args.add("id", id)
-        let result = try await invokeCall("deletePage", args, idempotencyKey: idempotencyKey, as: Bool.self)
-        return result
-    }
-
-    /// view `evidence`.
-    public func evidence(
-        hash: String,
-        stale: Bool = false,
-        minIndex: Int = 0
-    ) async throws -> Evidence? {
-        var args = Args()
-        args.add("hash", hash)
-        let result = try await invokeView("evidence", args, stale: stale, minIndex: minIndex, as: Evidence?.self)
-        return result
-    }
-
-    /// view `evidenceOfKind`.
-    public func evidenceOfKind(
-        kind: String,
-        stale: Bool = false,
-        minIndex: Int = 0
-    ) async throws -> [Evidence] {
-        var args = Args()
-        args.add("kind", kind)
-        let result = try await invokeView("evidenceOfKind", args, stale: stale, minIndex: minIndex, as: [Evidence].self)
-        return result
-    }
-
-    /// call `fileEvidence`.
-    @discardableResult
-    public func fileEvidence(
-        kind: String,
-        body: String,
-        idempotencyKey: String? = nil
-    ) async throws -> String {
-        var args = Args()
-        args.add("kind", kind)
-        args.add("body", body)
-        let result = try await invokeCall("fileEvidence", args, idempotencyKey: idempotencyKey, as: String.self)
-        return result
-    }
-
-    /// view `founder`.
-    public func founder(
-        stale: Bool = false,
-        minIndex: Int = 0
-    ) async throws -> String? {
-        let args = Args()
-        let result = try await invokeView("founder", args, stale: stale, minIndex: minIndex, as: String?.self)
-        return result
-    }
-
-    /// view `founding`.
-    public func founding(
-        stale: Bool = false,
-        minIndex: Int = 0
-    ) async throws -> Founding {
-        let args = Args()
-        let result = try await invokeView("founding", args, stale: stale, minIndex: minIndex, as: Founding.self)
+        let result = try await invokeView("getPost", args, stale: stale, minIndex: minIndex, as: PostView?.self)
         return result
     }
 
@@ -334,6 +294,28 @@ public struct PermissionsShowcaseClient: Sendable {
         return result
     }
 
+    /// view `messages`.
+    public func messages(
+        board: String,
+        stale: Bool = false,
+        minIndex: Int = 0
+    ) async throws -> [MessageView] {
+        var args = Args()
+        args.add("board", board)
+        let result = try await invokeView("messages", args, stale: stale, minIndex: minIndex, as: [MessageView].self)
+        return result
+    }
+
+    /// call `moderatePost`.
+    public func moderatePost(
+        id: String,
+        idempotencyKey: String? = nil
+    ) async throws {
+        var args = Args()
+        args.add("id", id)
+        _ = try await invokeCall("moderatePost", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
+    }
+
     /// view `moderators`.
     public func moderators(
         stale: Bool = false,
@@ -344,46 +326,46 @@ public struct PermissionsShowcaseClient: Sendable {
         return result
     }
 
-    /// view `page`.
-    public func page(
-        author: String,
+    /// call `pin`.
+    public func pin(
         id: String,
+        at: UInt64,
+        idempotencyKey: String? = nil
+    ) async throws {
+        var args = Args()
+        args.add("id", id)
+        args.add("at", DecimalString(at))
+        _ = try await invokeCall("pin", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
+    }
+
+    /// view `pinned`.
+    public func pinned(
+        board: String,
         stale: Bool = false,
         minIndex: Int = 0
-    ) async throws -> PageView? {
+    ) async throws -> [PostView] {
         var args = Args()
-        args.add("author", author)
-        args.add("id", id)
-        let result = try await invokeView("page", args, stale: stale, minIndex: minIndex, as: PageView?.self)
+        args.add("board", board)
+        let result = try await invokeView("pinned", args, stale: stale, minIndex: minIndex, as: [PostView].self)
         return result
     }
 
     /// call `postMessage`.
     @discardableResult
     public func postMessage(
-        channel: String,
+        board: String,
         id: String,
         text: String,
         sentAt: UInt64,
         idempotencyKey: String? = nil
     ) async throws -> String {
         var args = Args()
-        args.add("channel", channel)
+        args.add("board", board)
         args.add("id", id)
         args.add("text", text)
         args.add("sentAt", DecimalString(sentAt))
         let result = try await invokeCall("postMessage", args, idempotencyKey: idempotencyKey, as: String.self)
         return result
-    }
-
-    /// view `quorum`.
-    public func quorum(
-        stale: Bool = false,
-        minIndex: Int = 0
-    ) async throws -> UInt64 {
-        let args = Args()
-        let result = try await invokeView("quorum", args, stale: stale, minIndex: minIndex, as: DecimalString<UInt64>.self)
-        return result.value
     }
 
     /// call `removeAnnouncement`.
@@ -398,16 +380,50 @@ public struct PermissionsShowcaseClient: Sendable {
         return result
     }
 
-    /// call `renamePage`.
-    public func renamePage(
+    /// call `retag`.
+    public func retag(
         id: String,
-        title: String,
+        tags: [String],
         idempotencyKey: String? = nil
     ) async throws {
         var args = Args()
         args.add("id", id)
-        args.add("title", title)
-        _ = try await invokeCall("renamePage", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
+        args.add("tags", tags)
+        _ = try await invokeCall("retag", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
+    }
+
+    /// call `unpin`.
+    public func unpin(
+        id: String,
+        idempotencyKey: String? = nil
+    ) async throws {
+        var args = Args()
+        args.add("id", id)
+        _ = try await invokeCall("unpin", args, idempotencyKey: idempotencyKey, as: JSONValue.self)
+    }
+
+    /// call `unvote`.
+    @discardableResult
+    public func unvote(
+        post: String,
+        idempotencyKey: String? = nil
+    ) async throws -> UInt64 {
+        var args = Args()
+        args.add("post", post)
+        let result = try await invokeCall("unvote", args, idempotencyKey: idempotencyKey, as: DecimalString<UInt64>.self)
+        return result.value
+    }
+
+    /// call `vote`.
+    @discardableResult
+    public func vote(
+        post: String,
+        idempotencyKey: String? = nil
+    ) async throws -> UInt64 {
+        var args = Args()
+        args.add("post", post)
+        let result = try await invokeCall("vote", args, idempotencyKey: idempotencyKey, as: DecimalString<UInt64>.self)
+        return result.value
     }
 
     /// The app's events from log index `from`, then live, until the stream is cancelled.
@@ -475,12 +491,18 @@ public struct PermissionsShowcaseClient: Sendable {
         case announced(id: String)
         /// The event `AnnouncementRemoved`.
         case announcementRemoved(id: String)
-        /// The event `EvidenceFiled`.
-        case evidenceFiled(hash: String)
+        /// The event `Commented`.
+        case commented(key: String, post: String)
         /// The event `MessagePosted`.
         case messagePosted(key: String)
-        /// The event `PageChanged`.
-        case pageChanged(id: String)
+        /// The event `PostChanged`.
+        case postChanged(id: String)
+        /// The event `PostDeleted`.
+        case postDeleted(id: String)
+        /// The event `Posted`.
+        case posted(board: String, id: String)
+        /// The event `Voted`.
+        case voted(post: String)
         /// An event this client does not know: one a newer release of the app added.
         case unknown(kind: String, data: JSONValue?)
 
@@ -490,9 +512,12 @@ public struct PermissionsShowcaseClient: Sendable {
             switch kind {
             case "Announced": self = try .announced(id: fields.decode("id", String.self))
             case "AnnouncementRemoved": self = try .announcementRemoved(id: fields.decode("id", String.self))
-            case "EvidenceFiled": self = try .evidenceFiled(hash: fields.decode("hash", String.self))
+            case "Commented": self = try .commented(key: fields.decode("key", String.self), post: fields.decode("post", String.self))
             case "MessagePosted": self = try .messagePosted(key: fields.decode("key", String.self))
-            case "PageChanged": self = try .pageChanged(id: fields.decode("id", String.self))
+            case "PostChanged": self = try .postChanged(id: fields.decode("id", String.self))
+            case "PostDeleted": self = try .postDeleted(id: fields.decode("id", String.self))
+            case "Posted": self = try .posted(board: fields.decode("board", String.self), id: fields.decode("id", String.self))
+            case "Voted": self = try .voted(post: fields.decode("post", String.self))
             default: self = .unknown(kind: kind, data: data)
             }
         }
@@ -506,16 +531,18 @@ public struct PermissionsShowcaseClient: Sendable {
 
     /// The app's refusal: a `422 APP_ERROR`'s code and fields (`AppError.appCode`, `fields`), typed.
     public enum Refusal: Sendable {
-        /// The error `AlreadyWritten`.
-        case alreadyWritten(key: String)
-        /// The error `BadHash`.
-        case badHash(hash: String)
+        /// The error `Exists`.
+        case exists(id: String)
         /// The error `HasSeparator`.
         case hasSeparator(value: String)
-        /// The error `NoPage`.
-        case noPage(id: String)
+        /// The error `NoComment`.
+        case noComment(key: String)
+        /// The error `NoPost`.
+        case noPost(id: String)
+        /// The error `NotAuthor`.
+        case notAuthor(id: String)
         /// The error `NotModerator`.
-        case notModerator
+        case notModerator(id: String)
         /// A code this client does not know, or fields that do not fit it.
         case unknown(code: String, fields: [String: JSONValue])
 
@@ -527,11 +554,12 @@ public struct PermissionsShowcaseClient: Sendable {
         private static func decode(_ error: MeroKit.AppError) throws -> Self {
             let fields = Fields(.object(error.fields))
             switch error.appCode {
-            case "AlreadyWritten": return try .alreadyWritten(key: fields.decode("key", String.self))
-            case "BadHash": return try .badHash(hash: fields.decode("hash", String.self))
+            case "Exists": return try .exists(id: fields.decode("id", String.self))
             case "HasSeparator": return try .hasSeparator(value: fields.decode("value", String.self))
-            case "NoPage": return try .noPage(id: fields.decode("id", String.self))
-            case "NotModerator": return .notModerator
+            case "NoComment": return try .noComment(key: fields.decode("key", String.self))
+            case "NoPost": return try .noPost(id: fields.decode("id", String.self))
+            case "NotAuthor": return try .notAuthor(id: fields.decode("id", String.self))
+            case "NotModerator": return try .notModerator(id: fields.decode("id", String.self))
             default: return .unknown(code: error.appCode, fields: error.fields)
             }
         }
@@ -669,28 +697,5 @@ public struct PermissionsShowcaseClient: Sendable {
 
     private static func result<Wire: Decodable>(_ type: Wire.Type, of answer: Data) throws -> Wire {
         try JSONDecoder().decode(Answer<Wire>.self, from: answer).result
-    }
-
-    /// `tuple<..>` of 2: a JSON array `[v0, ..]`.
-    public struct Tuple2<T0: Codable & Sendable & Equatable, T1: Codable & Sendable & Equatable>: Codable, Sendable, Equatable {
-        public var v0: T0
-        public var v1: T1
-
-        public init(_ v0: T0, _ v1: T1) {
-            self.v0 = v0
-            self.v1 = v1
-        }
-
-        public init(from decoder: Decoder) throws {
-            var container = try decoder.unkeyedContainer()
-            v0 = try container.decode(T0.self)
-            v1 = try container.decode(T1.self)
-        }
-
-        public func encode(to encoder: Encoder) throws {
-            var container = encoder.unkeyedContainer()
-            try container.encode(v0)
-            try container.encode(v1)
-        }
     }
 }
