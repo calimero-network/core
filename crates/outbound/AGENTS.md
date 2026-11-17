@@ -21,7 +21,10 @@ A request is made only when every gate holds:
    `calimero_app_host::MAX_HTTP_REQUESTS` (8) per run, counted by the host.
 
 Secrets (`{{secret:NAME}}`) come from `EnvSecrets` or a loopback `SidecarSecrets`,
-scoped by package, signer and host, and are redacted from the response.
+scoped by package, signer and host, and are redacted from the response. A release
+that declares its secrets (`AppIdentity::secrets`, from its signed manifest's
+`secrets`) gets only those names, each only into a request to one of its declared
+hosts; `None` keeps the operator's bindings alone.
 
 - `OutboundService::from_settings` → `for_run(app, declared, approval, context)`;
   `for_run_counted(.., sent)` also counts each request handed to the transport
