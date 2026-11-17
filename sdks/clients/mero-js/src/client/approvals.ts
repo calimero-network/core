@@ -275,6 +275,8 @@ export async function confirmationCode(requestId: string): Promise<string> {
 export interface ConsentOutcomes {
   release: never;
   upgrade: never;
+  upgradeUnit: never;
+  delegate: never;
   outbound: never;
   createOrg: Required<Pick<GeneratedOutcome, 'orgId'>>;
   createInvite: Required<Pick<GeneratedOutcome, 'token'>>;
