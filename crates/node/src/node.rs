@@ -1435,14 +1435,17 @@ impl Node {
         self.apps.read().ok()?.get(&group).cloned()
     }
 
-    /// The app's group, if this node is one of its replicas. A node the app
-    /// moved off may still hold the group until reconcile drops it; it must
-    /// forward instead of answering from a group it no longer belongs to.
+    /// The app's group, if this node is one of its replicas and its Raft core
+    /// runs. A node the app moved off may still hold the group until reconcile
+    /// drops it; it must forward instead of answering from a group it no longer
+    /// belongs to. So must a replica whose core stopped (a disk error, an entry
+    /// it could not apply): its state stays where the disk left it until the
+    /// group restarts (`calimero_log::RESTART_FIRST`), while the others go on.
     pub(crate) fn replica_group(&self, app: &AppRecord) -> Option<Arc<Group<AppMachine>>> {
         if !app.replicas.contains(&self.config.node_id) {
             return None;
         }
-        self.app_group(app.group)
+        self.app_group(app.group).filter(|g| g.stopped().is_none())
     }
 
     /// The address of a replica of `app` other than this node.

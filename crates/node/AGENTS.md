@@ -232,7 +232,12 @@ is its command line.
   (`system::delegation_args`), both apps reachable by them and in one organization
   (`Feature::Delegation`, rc.31); `DELETE` takes it back without a passkey;
   `GET /apps/{app}/delegations` lists the caller's own. Deleting either app drops
-  the grant (`remove_app`). A run whose caller is a person offers that person to
+  the grant (`remove_app`). The grant route is `holder` (never a package-bound
+  session); an app's frontend asks on the consent page (`delegate { app, target }`,
+  `consent_page::delegate_request`: both apps and the methods from
+  `api::apps::delegation_plan`, the page stale when the source's release moved, and
+  `act` runs `api::apps::delegate` after checking the methods are still those shown).
+  Regression: `an_apps_frontend_asks_to_act_as_the_person_in_another_app_on_the_page`. A run whose caller is a person offers that person to
   the apps it calls (`forwarded`): a synchronous call or view (`NodeXcall::person`)
   and a message (`XcallOut::on_behalf_of` -> `Outgoing::on_behalf_of`, written only
   from the logged cluster version that brings `Feature::Delegation`,
@@ -887,6 +892,15 @@ is its command line.
   `move_app::an_instance_naming_no_organization_goes_to_its_owners_personal_one`.
 - **An org app's owner, while a member** (`SystemState::owner_acts`): an organization's app gives its owner the owner's powers (access, metadata, transfer, delete, upgrade, upgrade keys, files, blob deletes, usage) only while they are a member (`member` or above) of its organization; its admins keep transfer and delete (`manages_app`). Judged at apply; `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` carry `owner_in_org`, which the API always sets; absent in an entry an earlier release logged, which replays judging ownership alone. Regressions: `an_owner_removed_from_the_organization_no_longer_manages_its_app`, `a_member_owner_and_a_personal_owner_still_manage_their_apps`, `system::tests` (`an_org_apps_owner_manages_it_only_while_a_member`, `an_org_admin_transfers_or_deletes_an_app_whose_owner_left`, `app_commands_logged_before_the_membership_rule_replay_as_they_did`).
 - **An app on a team, its owner while in the team** (`SystemState::owner_acts`, `may_reach`): an app with `team` access is reached and managed by its owner only while they are in that team (`Org::in_team`), so an owner kicked from, leaving, or closed out of an app's team (or a private channel) loses the channels they created there; admins transfer them. The six owner commands above and `ScopeApps` (which finds who reaches an instance) carry `owner_in_team`, which the API always sets; absent, an entry replays judging the owner without the team (`OwnerRule`). Regressions: `an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it`, `system::tests::an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it`.
+- **A stopped group** (`calimero-log` restarts it): a group whose Raft core stopped
+  (a disk error, a machine that panicked, an entry it could not apply) reads its
+  state back from the disk and restarts on its own, after 1 s, up to 5 min as it
+  stops again. Meanwhile `Node::replica_group` answers `None` for it, so the node
+  forwards that app's calls and views to the other replicas as a non-replica does;
+  a stopped system group serves the state of its last checkpoint, and fresh reads
+  wait for it to apply again. `SystemMachine::restore(&[])` is its starting state.
+  Metrics: `calimero_group_stopped`, `calimero_group_restarts_total`. Regression:
+  `a_node_whose_system_group_stopped_on_a_disk_error_rejoins_on_its_own`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
   stop the groups, then wait (up to `STOP_WAIT`, 10 s) until the store is
   closed (`Engine::store_watch`): a task still running holds the RocksDB lock
@@ -1301,7 +1315,7 @@ is its command line.
   `a_custom_domains_host_names_one_origin`.
 - **Consent page** (`consent_page.rs`; docs: protocol "The consent page"): an
   app (any session of the account, package-bound included) asks
-  `POST /consent/requests { kind: release|upgrade|outbound|createOrg|createInvite|acceptInvite|leaveOrg|removeMember|setMemberRole|setMemberTeams|removeMemberTeams|revokeInvite|renameOrg|deleteOrg|setCapabilities|setAllApps,
+  `POST /consent/requests { kind: release|upgrade|upgradeUnit|delegate|outbound|createOrg|createInvite|acceptInvite|leaveOrg|removeMember|setMemberRole|setMemberTeams|removeMemberTeams|revokeInvite|renameOrg|deleteOrg|setCapabilities|setAllApps,
   scope?, subject, returnTo }` (sealed; a release subject is `{ version, withdraw? }`,
   `withdraw: true` withdrawing its approval) and gets `{ requestId, url,
   expiresAt, code }` (`consent_page::confirmation_code`, shown on the page

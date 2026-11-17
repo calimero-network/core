@@ -340,6 +340,12 @@ impl Drop for Closed {
 pub(crate) static HELD: std::sync::Mutex<Vec<(PathBuf, GroupId)>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Applied batches that fail to commit, as a disk error would: `(dir, group,
+/// how many more)` (feature `testing`; see [`crate::testing::fail_applies`]).
+#[cfg(feature = "testing")]
+pub(crate) static FAILING: std::sync::Mutex<Vec<(PathBuf, GroupId, u32)>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// Snapshot builds held at a point, by the directory their node opened
 /// (feature `testing`; see [`crate::testing::hold_build`]).
 #[cfg(feature = "testing")]
@@ -420,6 +426,23 @@ impl Db {
         HELD.lock()
             .map(|h| h.iter().any(|(d, g)| *g == group && *d == self.dir))
             .unwrap_or(false)
+    }
+
+    /// Whether `group`'s next applied batch on this node fails to commit
+    /// (feature `testing`): counts one failure down.
+    #[cfg(feature = "testing")]
+    pub(crate) fn apply_fails(&self, group: GroupId) -> bool {
+        let Ok(mut f) = FAILING.lock() else {
+            return false;
+        };
+        let Some(i) = f.iter().position(|(d, g, _)| *g == group && *d == self.dir) else {
+            return false;
+        };
+        f[i].2 -= 1;
+        if f[i].2 == 0 {
+            let _done = f.remove(i);
+        }
+        true
     }
 
     /// Wait here while a build of `group` is held at `at` on this node

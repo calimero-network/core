@@ -676,6 +676,29 @@ clients refresh. Removing a node ends the sessions it signed the same way.
 - **Restarting** a node with the same data directory and configuration resumes
   it: it catches up from the leaders.
 
+## A group stays stopped
+
+A node whose Raft core of a group stops (`calimero_group_stopped{group}` is `1`,
+and its log says `this node's Raft core of the group stopped: it restarts from
+the disk` with the `reason`) restarts it on its own, from what its disk holds,
+after 1 s, then after twice as long each time it stops again, up to 5 min. The
+group's other replicas keep serving meanwhile, and this node forwards the app's
+requests to them; for `group="system"` the node takes no new sessions or writes
+until it is back.
+
+- A **passing** fault (the disk answered EIO once) needs nothing: the gauge goes
+  back to `0` and `calimero_group_restarts_total` shows it happened.
+- A **full disk** (`No space left on device` in the reason) keeps it stopped:
+  free space on the data disk (or grow it); the next try picks it up.
+- **An entry it could not apply** (the reason names the entry; with
+  `calimero_log_undecodable_entries_total` above zero, an entry this node's
+  release cannot decode) keeps it stopped at that entry on every try: the node
+  runs a release older than the log. Roll it onto the cluster's release; until
+  then its replicas are short one, so move its apps if that matters
+  ([Move an app's replicas](#move-an-apps-replicas)).
+- Anything else that repeats: collect the log lines and file an issue; restarting
+  the node (same data directory) is the same as the restart it tries itself.
+
 ## Inspect a stopped node
 
 ```bash
