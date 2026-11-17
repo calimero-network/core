@@ -755,6 +755,45 @@ public actor CalimeroClient {
         try decode(BlobInfo.self, try await answerBytes { try await self.apps.blobInfo(app: app, id: id) })
     }
 
+    // MARK: - Receipts
+
+    /// Verify every replica of `app` under this client's policy: each one's
+    /// quote, over a fresh nonce, binds its receipt key, the cluster's
+    /// governance, and its cluster and node id. Answers the attested receipt
+    /// key per node and the governance. Throws ``ReceiptError`` (or the
+    /// node's refusal) when any replica does not check out.
+    /// (== mero-js `verifyAppCluster`.)
+    public func verifyAppCluster(_ app: String) async throws -> AttestedCluster {
+        try await attestAppCluster(app, policy: policy, session: urlSession) { nonce in
+            try await self.value(try await self.json("GET", "apps/\(Self.seg(app))/attestation?nonce=\(nonce)"))
+        }
+    }
+
+    /// The signed receipt of an ended pipeline run, version 2
+    /// (`GET /apps/{app}/pipeline-runs/{run}/receipt?version=2`): the receipt,
+    /// the answering node and its signature, with each job's report evidence
+    /// and job node attestation, as the node answered it. Check it with
+    /// ``verifyPipelineReceipt(_:_:_:)``. (== mero-js `pipelineReceipt`.)
+    public func pipelineReceipt(_ app: String, _ run: String) async throws -> JSONValue {
+        try value(try await json("GET", "apps/\(Self.seg(app))/pipeline-runs/\(Self.seg(run))/receipt?version=2"))
+    }
+
+    /// Verify the receipt of a pipeline run (``pipelineReceipt(_:_:)``):
+    /// signed by the key an attested replica holds, for `app` and `run`, with
+    /// every job's report signed by a job key a job node attests, under this
+    /// client's policy. Throws ``ReceiptError`` when it is not (a version 1
+    /// receipt included); answers the receipt as signed.
+    /// (== mero-js `verifyPipelineReceipt`.)
+    public func verifyPipelineReceipt(
+        _ app: String, _ run: String, _ answer: JSONValue
+    ) async throws
+        -> PipelineReceipt
+    {
+        let attested = try await verifyAppCluster(app)
+        return try await checkPipelineReceipt(
+            attested, app: app, run: run, answer: answer, policy: policy, session: urlSession)
+    }
+
     // MARK: - Packages
 
     // MARK: - App instances

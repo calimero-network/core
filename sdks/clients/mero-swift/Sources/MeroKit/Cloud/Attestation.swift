@@ -196,17 +196,31 @@ func checkAttestation(
     let transportKey = try Hex.decode(doc.transportKey, label: "transportKey", bytes: 32)
     let inner = try policy.appHash.map { try Hex.decode($0, label: "appHash", bytes: 32) } ?? Data(count: 32)
     let suffix = transportKeyBinding(inner, transportKey)
+    try await verifyQuoteBinding(
+        doc, nonce: try Hex.decode(nonce, label: "nonce", bytes: 32), suffix: suffix, policy: policy,
+        what: "transport key", session: session)
+    return transportKey
+}
+
+/// Check that `doc`'s quote binds `nonce` and then `suffix` in its report
+/// data, under `policy`: a mock quote only with `allowMock`, a real one by
+/// ``CloudPolicy/verifyQuote`` or the signed release the document names.
+/// `what` names the bound thing in the refusal. (== mero-js `verifyQuoteBinding`.)
+public func verifyQuoteBinding(
+    _ doc: AttestationDoc, nonce: Data, suffix: Data, policy: CloudPolicy, what: String,
+    session: URLSession = .shared
+) async throws {
     guard let quote = Data(base64Encoded: doc.quote) else { throw TeeTrustError("The quote is not base64") }
     let header = Data(mockQuoteHeader.utf8)
     if quote.prefix(header.count) == header {
         guard policy.allowMock else { throw TeeTrustError("mock quote refused: this client only trusts real TEEs") }
         let report = quote.dropFirst(header.count).prefix(64)
-        guard report.count == 64, Data(report.prefix(32)) == (try Hex.decode(nonce, label: "nonce", bytes: 32)),
-            Data(report.suffix(32)) == suffix
-        else { throw TeeTrustError("the quote does not bind this transport key, app and nonce") }
-        return transportKey
+        guard report.count == 64, Data(report.prefix(32)) == nonce, Data(report.suffix(32)) == suffix else {
+            throw TeeTrustError("the quote does not bind this \(what) and nonce")
+        }
+        return
     }
-    let args = TransportQuoteArgs(quoteB64: doc.quote, nonce: nonce, reportDataSuffix: Hex.encode(suffix))
+    let args = TransportQuoteArgs(quoteB64: doc.quote, nonce: Hex.encode(nonce), reportDataSuffix: Hex.encode(suffix))
     let ok: Bool
     if let verifier = policy.verifyQuote {
         ok = try await verifier.verify(args)
@@ -215,8 +229,7 @@ func checkAttestation(
     } else {
         throw TeeTrustError("real quote refused: this client trusts no TD image (set policy.release)")
     }
-    guard ok else { throw TeeTrustError("The attestation did not verify, so its transport key is not trusted") }
-    return transportKey
+    guard ok else { throw TeeTrustError("The attestation did not verify, so its \(what) is not trusted") }
 }
 
 /// Judge a real quote as core's `Measurements::Release` does.
