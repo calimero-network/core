@@ -85,6 +85,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.Request
 import okhttp3.Response
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -1506,6 +1507,116 @@ class CalimeroClientTest {
             val me = client.auth.me()
             assertEquals("com.x", me.app)
             assertEquals("https://x.example", me.origin)
+        }
+
+    @Test
+    fun `exports a sealed file through the sealed channel, segment bytes streamed`() =
+        runBlocking {
+            val v = SealedFileTest.three
+            val answer =
+                buildJsonObject {
+                    put("app", v.app)
+                    put("id", v.id)
+                    put("size", v.size)
+                    put("sha256", v.plaintextSha256)
+                    put("segments", JsonArray(v.segments.map(::JsonPrimitive)))
+                    put("ephemeral", Hex.encode(v.ephemeral))
+                    put("wrapped", Hex.encode(v.wrapped))
+                }.toString()
+            val pieces = (v.segment0.indices step 60_000).map { v.segment0.copyOfRange(it, minOf(v.segment0.size, it + 60_000)) }
+            val cluster =
+                Cluster({ head, _ ->
+                    if (path(head).endsWith("/export")) {
+                        json(200, answer)
+                    } else {
+                        Answer(200, listOf("content-type" to "application/octet-stream"), emptyList(), bytes = pieces)
+                    }
+                })
+            val out = java.io.ByteArrayOutputStream()
+            val done = cluster.client().exportFileTo(v.app, v.id, { out.write(it) }, v.recipientSecret)
+            assertEquals(com.calimero.mero.ExportedFile(v.size, v.plaintextSha256), done)
+            assertArrayEquals(SealedFileTest.plain(v.plaintextLen), out.toByteArray())
+            val requests = cluster.nodes[0].requests
+            assertEquals(listOf("/apps/${v.app}/files/${v.id}/export", "/apps/${v.app}/files/${v.id}/segments/0"), requests.map { path(it.first) })
+            assertEquals(
+                64,
+                Json
+                    .parseToJsonElement(requests[0].second)
+                    .jsonObject["recipient"]!!
+                    .jsonPrimitive.content.length,
+            )
+            // A fresh export key cannot open the vector's wrap: the check runs on the client's own key.
+            val refused = runCatching { cluster.client().exportFile(v.app, v.id) }.exceptionOrNull()
+            assertTrue("$refused", refused is com.calimero.mero.ExportError && "does not open" in refused.message.orEmpty())
+        }
+
+    @Test
+    fun `uploads a small sealed file in one request`() =
+        runBlocking {
+            val cluster = Cluster({ _, _ -> json(200, """{"id":"${"ab".repeat(32)}","blobId":"B58","size":3,"sha256":"${"cd".repeat(32)}","index":4}""") })
+            val info = cluster.client().uploadFile("app-1", byteArrayOf(1, 2, 3))
+            assertEquals(com.calimero.mero.FileInfo("ab".repeat(32), "B58", 3, "cd".repeat(32), 4), info)
+            assertEquals(
+                "/apps/app-1/files",
+                path(
+                    cluster.nodes[0]
+                        .requests
+                        .single()
+                        .first,
+                ),
+            )
+            assertEquals("application/octet-stream", header(cluster.nodes[0].requests[0].first, "content-type"))
+        }
+
+    @Test
+    fun `uploads a large sealed file as a session of parts, resending after a 503 and following the node`() =
+        runBlocking {
+            val part = 8L * 1024 * 1024
+            val size = com.calimero.mero.FILE_PART_BYTES + 1L
+            val failedOnce = AtomicInteger()
+            val cluster =
+                Cluster({ head, text ->
+                    val p = path(head)
+                    when {
+                        p == "/apps/app-1/files/uploads" -> json(200, """{"uploadId":"u1","partBytes":$part,"parts":3,"expiresAt":0}""")
+                        p == "/apps/app-1/files/uploads/u1/parts/0" -> {
+                            assertEquals(part.toInt(), text.length)
+                            json(200, """{"next":1}""")
+                        }
+                        // The first send of part 1 is lost to a 503; the second says part 2 is next already.
+                        p == "/apps/app-1/files/uploads/u1/parts/1" && failedOnce.getAndIncrement() == 0 -> refused(503, "UNAVAILABLE")
+                        p == "/apps/app-1/files/uploads/u1/parts/1" -> refused(409, "PART_OUT_OF_ORDER", """{"next":2}""")
+                        p == "/apps/app-1/files/uploads/u1/parts/2" -> {
+                            assertEquals(1, text.length)
+                            json(200, """{"next":3}""")
+                        }
+                        p == "/apps/app-1/files/uploads/u1/complete" ->
+                            json(200, """{"id":"${"ab".repeat(32)}","blobId":"B58","size":$size,"sha256":"${"cd".repeat(32)}","index":9}""")
+                        else -> refused(404, "NOT_FOUND")
+                    }
+                })
+            val info = cluster.client().uploadFile("app-1", ByteArray(size.toInt()))
+            assertEquals(size, info.size)
+            assertEquals(
+                listOf("uploads", "uploads/u1/parts/0", "uploads/u1/parts/1", "uploads/u1/parts/1", "uploads/u1/parts/2", "uploads/u1/complete"),
+                cluster.nodes[0].requests.map { path(it.first).removePrefix("/apps/app-1/files/") },
+            )
+        }
+
+    @Test
+    fun `aborts an upload session that fails for good`() =
+        runBlocking {
+            val cluster =
+                Cluster({ head, _ ->
+                    when (path(head)) {
+                        "/apps/app-1/files/uploads" -> json(200, """{"uploadId":"u1","partBytes":${16 * 1024 * 1024},"parts":2,"expiresAt":0}""")
+                        "/apps/app-1/files/uploads/u1" -> json(200, "{}")
+                        else -> refused(429, "QUOTA_EXCEEDED")
+                    }
+                })
+            val e = runCatching { cluster.client().uploadFile("app-1", ByteArray(com.calimero.mero.FILE_PART_BYTES + 5)) }.exceptionOrNull()
+            assertTrue("$e", e is QuotaExceeded)
+            assertEquals(listOf("POST /apps/app-1/files/uploads", "PUT /apps/app-1/files/uploads/u1/parts/0", "DELETE /apps/app-1/files/uploads/u1"), cluster.nodes[0].requests.map { "${it.first["method"]!!.jsonPrimitive.content} ${path(it.first)}" })
         }
 
     @Test

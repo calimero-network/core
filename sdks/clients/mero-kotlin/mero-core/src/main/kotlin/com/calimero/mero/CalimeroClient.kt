@@ -12,6 +12,7 @@ import com.calimero.mero.api.facade.Routes
 import com.calimero.mero.api.infrastructure.RequestConfig
 import com.calimero.mero.api.infrastructure.Serializer
 import com.calimero.mero.api.models.AppCreateRequest
+import com.calimero.mero.api.models.ExportsExportRequest
 import com.calimero.mero.api.models.IntentsRequest
 import com.calimero.mero.api.models.RecoveryStartRequest
 import com.calimero.mero.api.models.ViewsRequest
@@ -30,6 +31,7 @@ import com.calimero.mero.tee.TeeTrustException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.awaitClose
@@ -948,6 +950,196 @@ class CalimeroClient(
         }
     }
 
+    // ---------------------------------------------------------------- sealed files
+
+    /** The export routes through this client's transport: the export answer, and each segment streamed. */
+    private val exportTransport =
+        object : ExportTransport {
+            override suspend fun export(
+                app: String,
+                id: String,
+                recipient: String,
+            ): JsonElement = raw(defaultApi.apps.exportsExportRequestConfig(app, id, ExportsExportRequest(recipient = recipient)))
+
+            // The generated segment method buffers the whole body, so this stays on the streaming response.
+            override suspend fun segment(
+                app: String,
+                id: String,
+                k: Int,
+            ): Response = dispatch("GET", configPath(defaultApi.apps.exportsSegmentRequestConfig(app, id, k.toString())), null, stepUp(StepUp()))
+        }
+
+    /**
+     * Write the plaintext of sealed file [id] (64 hex) of component app [app] to [sink], one segment
+     * at a time, checked against the file's id, size and plaintext hash (core's
+     * `Client::export_file_to`): the node answers only ciphertext and the file's data key wrapped to
+     * a key made here for this call. On failure, discard what [sink] received: it is authentic but
+     * may be a prefix of the file. A failed check is an [ExportError]; the node's refusal its
+     * [CalimeroError] (`NOT_FOUND` to anyone who may not handle the app's files). Cancel the
+     * coroutine to stop the download.
+     */
+    suspend fun exportFileTo(
+        app: String,
+        id: String,
+        sink: FileSink,
+    ): ExportedFile = exportFileTo(exportTransport, app, id, sink)
+
+    /** The plaintext of sealed file [id] of component app [app], in memory; use [exportFileTo] for a large one. */
+    suspend fun exportFile(
+        app: String,
+        id: String,
+    ): ByteArray = exportFile(exportTransport, app, id)
+
+    /** [exportFileTo] with the export key pinned to [recipientSecret]: the published vectors only. */
+    internal suspend fun exportFileTo(
+        app: String,
+        id: String,
+        sink: FileSink,
+        recipientSecret: ByteArray,
+    ): ExportedFile = exportFileTo(exportTransport, app, id, sink, recipientSecret)
+
+    /**
+     * Upload a sealed file for component app [app]; answers its [FileInfo]. Up to [FILE_PART_BYTES]
+     * it is one request, sent once (the node mints a new file for each, so one that may have
+     * reached it is never repeated); a larger file is a session of parts, each sent again after a
+     * dropped connection or a `503`. A session the node lost is begun again once; any other failure
+     * aborts it. `413 TOO_LARGE` and `429 QUOTA_EXCEEDED` are the node's refusals.
+     */
+    suspend fun uploadFile(
+        app: String,
+        data: ByteArray,
+    ): FileInfo = uploadFile(app, data.size.toLong()) { start, end -> data.copyOfRange(start.toInt(), end.toInt()) }
+
+    /** [uploadFile] from [file], read one part at a time, never whole. */
+    suspend fun uploadFile(
+        app: String,
+        file: java.io.File,
+    ): FileInfo =
+        withContext(Dispatchers.IO) {
+            java.io.RandomAccessFile(file, "r").use { raf ->
+                uploadFile(app, raf.length()) { start, end ->
+                    ByteArray((end - start).toInt()).also {
+                        raf.seek(start)
+                        raf.readFully(it)
+                    }
+                }
+            }
+        }
+
+    private suspend fun uploadFile(
+        app: String,
+        size: Long,
+        slice: (Long, Long) -> ByteArray,
+    ): FileInfo {
+        if (size <= FILE_PART_BYTES) {
+            return wire.decodeFromJsonElement(FileInfo.serializer(), binary("POST", defaultApi.apps.filesUploadRequestConfig(app, NO_BYTES), Body(slice(0, size), OCTET_STREAM)))
+        }
+        return try {
+            uploadSession(app, size, slice)
+        } catch (e: CalimeroError) {
+            if (e.code != "UPLOAD_UNKNOWN") throw e
+            uploadSession(app, size, slice)
+        }
+    }
+
+    /** Begin a session, send its parts and complete it, aborting it if that fails for good. */
+    private suspend fun uploadSession(
+        app: String,
+        size: Long,
+        slice: (Long, Long) -> ByteArray,
+    ): FileInfo {
+        val begin = untilAvailable { apps.uploadBegin(app = app, propertySize = size) }
+        val upload = begin.uploadId
+        val partBytes = begin.partBytes
+        check(upload.isNotEmpty() && partBytes > 0 && begin.parts == (size + partBytes - 1) / partBytes) {
+            "the node began an upload it cannot take: $begin"
+        }
+        val abort = suspend { withContext(NonCancellable) { runCatching { apps.uploadAbort(app = app, upload = upload) } } }
+        try {
+            sendParts(app, upload, size, partBytes, begin.parts, slice)
+            val done = untilAvailable { raw(defaultApi.apps.uploadCompleteRequestConfig(app, upload)) }
+            return wire.decodeFromJsonElement(FileInfo.serializer(), done)
+        } catch (e: CalimeroError) {
+            // A session the node lost has nothing to abort.
+            if (e.code != "UPLOAD_UNKNOWN") abort()
+            throw e
+        } catch (e: Exception) {
+            abort()
+            throw e
+        }
+    }
+
+    /** Send every part, in order, from wherever the node says the session is. */
+    @Suppress("LongParameterList", "NestedBlockDepth", "LoopWithTooManyJumpStatements", "CyclomaticComplexMethod", "ThrowsCount")
+    private suspend fun sendParts(
+        app: String,
+        upload: String,
+        size: Long,
+        partBytes: Long,
+        parts: Long,
+        slice: (Long, Long) -> ByteArray,
+    ) {
+        var next = 0L
+        var failures = 0
+        var jumps = 0
+        while (next < parts) {
+            val error: Exception =
+                try {
+                    val body = withContext(Dispatchers.IO) { slice(next * partBytes, minOf((next + 1) * partBytes, size)) }
+                    next = nextPart(apps.uploadPart(app = app, upload = upload, k = next.toString(), body = body).next, parts)
+                    failures = 0
+                    continue
+                } catch (e: CalimeroError) {
+                    if (e.code != "PART_OUT_OF_ORDER") {
+                        e
+                    } else {
+                        jumps += 1
+                        if (jumps > MAX_JUMPS) throw e
+                        next = nextPart((e.details["next"] as? JsonPrimitive)?.content?.toLongOrNull(), parts)
+                        continue
+                    }
+                } catch (e: Exception) {
+                    e
+                }
+            failures += 1
+            if (!isTransient(error) || failures > MAX_FAILURES) throw error
+            delay(retryDelayMs(failures - 1, options.retry))
+            if (failures > PART_RESENDS) {
+                try {
+                    val at = nextPart(apps.uploadStatus(app = app, upload = upload).next, parts)
+                    if (at > next) failures = 0
+                    next = at
+                } catch (asked: Exception) {
+                    if (!isTransient(asked)) throw asked
+                }
+            }
+        }
+    }
+
+    /** [send] again, after a backoff, while the node is unavailable or cannot be reached. */
+    private suspend fun <T> untilAvailable(send: suspend () -> T): T {
+        var retry = 0
+        while (true) {
+            try {
+                return send()
+            } catch (e: Exception) {
+                if (!isTransient(e) || retry >= CALL_RETRIES) throw e
+                delay(retryDelayMs(retry, options.retry))
+                retry += 1
+            }
+        }
+    }
+
+    /** Whether the same request may succeed if sent again: the node answered `503`, or gave no answer. */
+    private fun isTransient(error: Throwable): Boolean =
+        when (error) {
+            is UnavailableError -> true
+            is SealedTransportException -> error.status == null && error.cause is NetworkException
+            is CalimeroError, is kotlinx.coroutines.CancellationException -> false
+            is IOException -> true
+            else -> false
+        }
+
     // ---------------------------------------------------------------- packages
 
     // ---------------------------------------------------------------- app instances
@@ -1374,6 +1566,27 @@ class CalimeroClient(
         const val CONSENT_REPLACED: String = "CONSENT_REPLACED"
 
         internal const val OCTET_STREAM = "application/octet-stream"
+
+        /** Times a part is sent again before the node is asked where the session is. */
+        private const val PART_RESENDS = 1
+
+        /** Failed sends in a row, with no part accepted between them, before giving up. */
+        private const val MAX_FAILURES = 8
+
+        /** `PART_OUT_OF_ORDER` answers followed in one session before giving up. */
+        private const val MAX_JUMPS = 16
+
+        /** Times beginning and completing a session are sent again while the node is unavailable. */
+        private const val CALL_RETRIES = 8
+
+        /** The `next` an answer names, which cannot be past the last part. */
+        private fun nextPart(
+            next: Long?,
+            parts: Long,
+        ): Long {
+            check(next != null && next in 0..parts) { "the node answered a bad next: $next" }
+            return next
+        }
 
         private const val JSON = "application/json"
 
