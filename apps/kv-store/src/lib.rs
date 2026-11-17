@@ -12,7 +12,6 @@
 use std::collections::BTreeMap;
 
 use calimero_sdk::prelude::*;
-use calimero_sdk::StorageError;
 
 /// The store.
 #[app::state(version = 1)]
@@ -49,7 +48,7 @@ pub struct Entry {
     pub value: String,
 }
 
-/// The most entries one `entries` call lists, and the page size the multi-page reads fetch with.
+/// The most entries one `entries` call lists, and the page size `prefix` reads with.
 const PAGE: u32 = 1000;
 
 #[app::logic]
@@ -127,44 +126,50 @@ impl KvStore {
         if start >= end {
             return Ok(BTreeMap::new());
         }
-        collect(|opts| self.entries.range(&start, &end, opts))
+        let bounds = FindOpts::default().from(start.to_key()).to(end.to_key());
+        self.entries
+            .iter_with(bounds)
+            .collect::<Result<_, _>>()
+            .map_err(Into::into)
     }
 
     /// Entries whose keys start with `prefix`, ascending, e.g. `prefix("user:")`: the read
     /// covers only the keys under it.
     #[app::view]
     pub fn prefix(&self, prefix: String) -> app::Result<BTreeMap<String, String>> {
+        // `starts_with` matches a prefix of the key's string, which no iterator offers
+        // (`prefix_iter` matches whole key parts), so this walks its pages by cursor.
         let prefix = [prefix.to_key_part()];
-        collect(|opts| self.entries.starts_with(&prefix, opts))
+        let mut out = BTreeMap::new();
+        let mut opts = FindOpts::default().limit(PAGE);
+        loop {
+            let page = self.entries.starts_with(&prefix, opts.clone())?;
+            out.extend(page.items);
+            match page.next {
+                Some(next) => opts = opts.cursor(next),
+                None => return Ok(out),
+            }
+        }
     }
 
     /// `limit` entries after the first `offset`, ascending. The skipped entries are still
     /// read; a client paging a large store should prefer `range` from the last key it holds.
     #[app::view]
     pub fn page(&self, offset: u32, limit: u32) -> app::Result<BTreeMap<String, String>> {
+        // `?` on every entry, the skipped ones too: a failed read is never skipped over.
         let mut out = BTreeMap::new();
-        if limit == 0 {
-            return Ok(out);
-        }
-        let mut skipped = 0;
-        let mut opts = FindOpts::default().limit(PAGE);
-        loop {
-            let page = self.entries.page(opts.clone())?;
-            for (key, value) in page.items {
-                if skipped < offset {
-                    skipped += 1;
-                    continue;
-                }
+        for (i, entry) in self
+            .entries
+            .iter()
+            .enumerate()
+            .take(offset as usize + limit as usize)
+        {
+            let (key, value) = entry?;
+            if i >= offset as usize {
                 let _ = out.insert(key, value);
-                if out.len() == limit as usize {
-                    return Ok(out);
-                }
-            }
-            match page.next {
-                Some(next) => opts = opts.cursor(next),
-                None => return Ok(out),
             }
         }
+        Ok(out)
     }
 
     /// The entry with the smallest key, or `null` when the store is empty.
@@ -226,21 +231,5 @@ impl KvStore {
             env::emit(Event::Cleared, Audience::All)?;
         }
         Ok(())
-    }
-}
-
-/// Every page `read` returns, from the first on, in one map.
-fn collect(
-    read: impl Fn(FindOpts) -> Result<Page<(String, String)>, StorageError>,
-) -> app::Result<BTreeMap<String, String>> {
-    let mut out = BTreeMap::new();
-    let mut opts = FindOpts::default().limit(PAGE);
-    loop {
-        let page = read(opts.clone())?;
-        out.extend(page.items);
-        match page.next {
-            Some(next) => opts = opts.cursor(next),
-            None => return Ok(out),
-        }
     }
 }
