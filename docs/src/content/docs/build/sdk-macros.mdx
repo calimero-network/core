@@ -242,6 +242,12 @@ A table row. The derive writes the serde impls itself, so do not also derive
 | `search = ["f", ..]` | Fields indexed for [full-text search](/build/guides/search/). |
 
 Index, count and unique names are used in camelCase (`by_room` → `"byRoom"`).
+The fields a key, unique constraint, index or count names must be key types
+(strings, integers, bools, bytes, `Option` of these, or a `ToKeyPart` type of
+your own); every other field is only stored, so it can be any serde value: a
+`Vec`, an `f64`, a nested struct, a map, a `BlobRef`. To find records by one
+element of a list, keep the list's elements as rows of their own table, with an
+index on them.
 `u64`/`i64` fields are CBOR integers when stored and decimal strings in JSON.
 A record's fields are listed in the ABI's `types` too, so a
 [typed client](/build/guides/typed-clients/) types it as an interface.

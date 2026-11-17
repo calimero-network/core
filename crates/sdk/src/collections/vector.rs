@@ -12,7 +12,7 @@ use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
-use crate::table::{FindOpts, Iter, Page};
+use crate::table::{FindOpts, Iter, Page, Progress};
 
 use super::slots::VecElement;
 
@@ -242,6 +242,18 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
         }
         self.store.add(&self.len_key()?, -1);
         Ok(removed)
+    }
+
+    /// Remove at most `max` elements from the end (a delete each and one `add`); `done` says
+    /// whether the vector is empty. Call it from a timer until `done` to clear a vector too
+    /// large for one run's 10,000 writes.
+    pub fn clear_some(&mut self, max: u64) -> Result<Progress, StorageError> {
+        let len = self.len()?;
+        let removed = self.truncate(len.saturating_sub(max))?;
+        Ok(Progress {
+            removed,
+            done: removed == len,
+        })
     }
 
     /// Keep the first `len` elements and remove the rest, last first; returns how many were

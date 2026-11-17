@@ -17,7 +17,7 @@ use crate::encoding::key::{self, FromKey, KeyPart, ToKey};
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
-use crate::table::{FindOpts, Iter, Page};
+use crate::table::{FindOpts, Iter, Page, Progress};
 
 use super::slots::decode_value;
 pub use super::slots::MapValue;
@@ -116,18 +116,6 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
             .transpose()
     }
 
-    /// Remove the plain value at `k` and return it.
-    fn take(&mut self, k: &K) -> Result<Option<V>, StorageError> {
-        let key = self.storage_key(k)?;
-        let Some(bytes) = self.store.get(&key) else {
-            return Ok(None);
-        };
-        let old = value::from_slice(&bytes)?;
-        self.store.delete(&key);
-        self.store.add(&self.count_key()?, -1);
-        Ok(Some(old))
-    }
-
     /// Set the value at `k`, returning the value it replaces.
     pub fn insert(&mut self, k: &K, v: &V) -> Result<Option<V>, StorageError> {
         let key = self.storage_key(k)?;
@@ -153,8 +141,10 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
         if let Some(v) = self.read(k)? {
             return Ok(v);
         }
+        // Absent, as just read: write it and count it, without reading it again.
         let v = make();
-        let _ = self.insert(k, &v)?;
+        self.store.put(&self.storage_key(k)?, &value::to_vec(&v)?);
+        self.store.add(&self.count_key()?, 1);
         Ok(v)
     }
 
@@ -205,16 +195,42 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
         k: &K,
         f: impl FnOnce(Option<V>) -> Option<V>,
     ) -> Result<Option<V>, StorageError> {
-        match f(self.read(k)?) {
+        // One read; the write and the count follow from what it found.
+        let key = self.storage_key(k)?;
+        let old: Option<V> = self
+            .store
+            .get(&key)
+            .map(|b| value::from_slice(&b))
+            .transpose()?;
+        let existed = old.is_some();
+        match f(old) {
             Some(v) => {
-                let _ = self.insert(k, &v)?;
+                self.store.put(&key, &value::to_vec(&v)?);
+                if !existed {
+                    self.store.add(&self.count_key()?, 1);
+                }
                 Ok(Some(v))
             }
             None => {
-                let _ = self.take(k)?;
+                if existed {
+                    self.store.delete(&key);
+                    self.store.add(&self.count_key()?, -1);
+                }
                 Ok(None)
             }
         }
+    }
+
+    /// Remove at most `max` entries, in key order, and the count by one `add`; `done` says
+    /// whether the map is empty. Call it from a timer until `done` to clear a map too large
+    /// for one run's 10,000 writes.
+    pub fn clear_some(&mut self, max: u64) -> Result<Progress, StorageError> {
+        let base = self.base()?;
+        let (removed, done) = crate::commons::delete_some(&mut self.store, &base, max);
+        if removed > 0 {
+            self.store.add(&self.count_key()?, -(removed as i64));
+        }
+        Ok(Progress { removed, done })
     }
 
     /// How many keys hold a value: one read of the stored count, never a scan. (A map of
@@ -347,15 +363,17 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
 
     /// The entry with the smallest key.
     pub fn first(&self) -> Result<Option<(K, V)>, StorageError> {
-        Ok(self.page(FindOpts::default().limit(1))?.items.pop())
+        // One entry through a cursor; a page would read one more to know of a next.
+        self.iter_with(FindOpts::default().limit(1))
+            .next()
+            .transpose()
     }
 
     /// The entry with the largest key.
     pub fn last(&self) -> Result<Option<(K, V)>, StorageError> {
-        Ok(self
-            .page(FindOpts::default().limit(1).reverse())?
-            .items
-            .pop())
+        self.iter_with(FindOpts::default().limit(1).reverse())
+            .next()
+            .transpose()
     }
 }
 

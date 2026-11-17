@@ -60,3 +60,29 @@ fn decimal_strings_are_canonical() {
     let ok: Booked = serde_json::from_str(r#"{"start":"0","delta":"-5"}"#).unwrap();
     assert_eq!((ok.start, ok.delta, ok.end), (0, -5, None));
 }
+
+#[test]
+fn bytes_are_stored_as_a_byte_string_and_sent_as_base64url() {
+    use calimero_sdk::collections::Cell;
+    use calimero_sdk::{Bytes, MemStore};
+    let store = MemStore::new();
+    let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let mut plain: Cell<Vec<u8>, MemStore> = Cell::with_store("plain", store.clone());
+    plain.set(&data).unwrap();
+    let mut bytes: Cell<Bytes, MemStore> = Cell::with_store("bytes", store.clone());
+    bytes.set(&Bytes(data.clone())).unwrap();
+    let size = |name: &str| -> usize {
+        let key = calimero_sdk::encoding::key::encode(&[
+            calimero_sdk::KeyPart::Str(name.into()),
+            calimero_sdk::KeyPart::Str("v".into()),
+        ]);
+        calimero_sdk::Store::get(&store, &key).unwrap().len()
+    };
+    assert!(size("plain") > 180_000, "a Vec<u8> is a list of numbers");
+    assert!(size("bytes") < 100_010, "Bytes is one byte per byte");
+    assert_eq!(bytes.get().unwrap().unwrap().0, data);
+    let json = serde_json::to_string(&Bytes(vec![0xfb, 0xff])).unwrap();
+    assert_eq!(json, "\"-_8\"");
+    let back: Bytes = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.0, [0xfb, 0xff]);
+}
