@@ -143,6 +143,7 @@ pub(crate) async fn upgrade_app(
     if !node.sys(|s| s.bundles.contains_key(&bundle)) {
         return Err(crate::node::rejected("unknown bundle"));
     }
+    refuse_off_unit_range(node, &app, release.as_ref()).await?;
     let now = now_secs();
     if !node.sys(|s| {
         let to = s.governing(release.as_ref(), &bundle, now);
@@ -532,6 +533,19 @@ async fn start_run(
     who: Upgrader,
     by_release: bool,
 ) -> ApiResult {
+    start_run_with(node, org, body, apps, who, by_release, BTreeMap::new()).await
+}
+
+/// [`start_run`], with a unit's member targets (`UpgradeRun::targets`).
+async fn start_run_with(
+    node: Arc<Node>,
+    org: String,
+    body: OrgUpgradeBody,
+    apps: Vec<crate::types::AppRecord>,
+    who: Upgrader,
+    by_release: bool,
+    targets: BTreeMap<String, crate::types::RunTarget>,
+) -> ApiResult {
     let run_id = typed_id::<12>();
     let run = crate::types::UpgradeRun {
         run_id: run_id.clone(),
@@ -545,6 +559,7 @@ async fn start_run(
         done: Vec::new(),
         failed: std::collections::BTreeMap::new(),
         finished: false,
+        targets,
     };
     let stored = node
         .sys_write(&SystemCmd::StartUpgradeRun {
@@ -564,8 +579,8 @@ async fn start_run(
         run: Some(run_id.clone()),
         ..who
     };
-    let version = body.version.clone();
     let migrate = body.migrate.clone();
+    let targets = run.targets.clone();
     let _task = tokio::spawn(async move {
         for app in apps {
             // Judged as `UpgradeApp { run }` judges it, before anything runs
@@ -580,7 +595,10 @@ async fn start_run(
                 note_failed_upgrade(&node, &app.app_id, "", None, &who, error).await;
                 continue;
             }
-            match target_bundle(&node, &app, &version, &who) {
+            let version = targets
+                .get(&app.app_id)
+                .map_or(body.version.as_str(), |t| t.version.as_str());
+            match target_bundle(&node, &app, version, &who) {
                 Some(t) if t.bundle == app.bundle => {
                     // Same app component: nothing to run on the app's group,
                     // though its compute component and its release (a
@@ -1034,9 +1052,211 @@ async fn ops_upgrade(
 }
 
 /// This area's routes, merged into [`super::router`].
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UnitUpgradeBody {
+    version: String,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Upgrade an instance and the apps its release created with it (`AppRecord::links`) in
+/// one consent: the instance to `version` of its package, and each member the target
+/// release's `uses` gives a release other than the one it runs to that release (the one
+/// its lock pinned, else the newest installed one inside its range). One passkey
+/// assertion over the instance, its version and every member's target; then each app is
+/// upgraded on its own, as an organization's run does (`UpgradeApp { run }`).
+async fn app_upgrade_unit(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+    Json(mut body): Json<UnitUpgradeBody>,
+) -> ApiResult {
+    let app_id = node.canonical_app_id(&app_id);
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
+    let app = node.app(&app_id).await?;
+    if app.links.is_empty() {
+        return Err(ApiError::bad_request(
+            "NOT_A_UNIT",
+            "this app was created with no apps of its own: upgrade it with /apps/{app}/upgrade",
+        ));
+    }
+    if !node.sys(|s| s.may_upgrade(&app, &account)) {
+        return Err(ApiError::forbidden(
+            "upgrading this app needs its owner, or MANAGE_APPLICATION in its organization",
+        ));
+    }
+    let current = node
+        .release_of_app(&app)
+        .ok_or_else(|| ApiError::bad_request("NOT_A_UNIT", "this app runs no package release"))?;
+    // Installed from the registry first if the cluster lacks the release.
+    let _bundle = node
+        .resolve_release(
+            &current.at.package,
+            Some(&body.version),
+            None,
+            &account,
+            false,
+        )
+        .await;
+    let target = crate::system::PackageRef {
+        package: current.at.package.clone(),
+        version: body.version.clone(),
+        service: current.at.service.clone(),
+        compute: false,
+    };
+    let unit = super::apps::unit_members(&node, &target).await?;
+    if let Some(added) = unit.members.keys().find(|n| !app.links.contains_key(*n)) {
+        return Err(ApiError::conflict(&format!(
+            "{}@{} creates {added}, which this instance does not have: a unit gains members only when it is created",
+            target.package, target.version
+        )));
+    }
+    let mut targets = BTreeMap::new();
+    let mut members = Vec::new();
+    for (name, member_id) in &app.links {
+        let Some((package, version)) = unit.members.get(name) else {
+            continue;
+        };
+        let Some(member) = node.sys(|s| s.apps.get(member_id).cloned()) else {
+            continue;
+        };
+        let runs = node.release_of_app(&member).map(|r| r.at);
+        if runs
+            .as_ref()
+            .is_some_and(|r| &r.version == version && &r.package == package)
+        {
+            continue;
+        }
+        if runs.as_ref().is_some_and(|r| &r.package != package) {
+            return Err(ApiError::conflict(&format!(
+                "{name} runs another package than {package}: upgrade it on its own"
+            )));
+        }
+        let _prev = targets.insert(
+            member_id.clone(),
+            crate::types::RunTarget {
+                package: package.clone(),
+                version: version.clone(),
+            },
+        );
+        members.push(member);
+    }
+    // Before the passkey step-up: a node that could not apply the run's targets would
+    // refuse each member's upgrade.
+    if !targets.is_empty() {
+        node.require_features(&[crate::system::cluster_version::Feature::UnitUpgrade])
+            .await?;
+    }
+    let consent = consent(
+        &node,
+        &p,
+        &format!("org:{}", app.org),
+        "__upgrade_unit",
+        &json!({
+            "app": app_id, "package": target.package, "version": target.version,
+            "targets": targets,
+        }),
+        body.confirm.take(),
+    )
+    .await?;
+    let who = Upgrader {
+        caller: Caller::Account {
+            account: account.clone(),
+        },
+        actor: account,
+        by_operator: false,
+        consent,
+        run: None,
+    };
+    let run = OrgUpgradeBody {
+        package: target.package,
+        version: target.version,
+        team: None,
+        cascade: false,
+        migrate: None,
+        confirm: None,
+        operator_proof: None,
+    };
+    let mut apps = vec![app.clone()];
+    apps.extend(members);
+    start_run_with(
+        node,
+        app.org.clone(),
+        run,
+        apps,
+        Upgrader { ..who },
+        false,
+        targets,
+    )
+    .await
+}
+
+/// A unit member is not moved on its own off the range the instance that created it
+/// references it with (`uses` in the release the instance runs): `409
+/// OUTSIDE_UNIT_RANGE`. Moving the whole unit is [`app_upgrade_unit`]'s.
+async fn refuse_off_unit_range(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    to: Option<&crate::system::PackageRef>,
+) -> Result<(), ApiError> {
+    let Some(to) = to else {
+        return Ok(());
+    };
+    let owner = node.sys(|s| {
+        s.apps.values().find_map(|root| {
+            root.links
+                .iter()
+                .find(|(_, m)| **m == app.app_id)
+                .map(|(name, _)| (root.clone(), name.clone()))
+        })
+    });
+    let Some((root, name)) = owner else {
+        return Ok(());
+    };
+    let Some(release) = node.release_of_app(&root) else {
+        return Ok(());
+    };
+    let Some(version) = node.sys(|s| {
+        s.packages
+            .get(&release.at.package)
+            .and_then(|p| p.versions.get(&release.at.version))
+            .cloned()
+    }) else {
+        return Ok(());
+    };
+    let card = crate::consent_page::release_capabilities(
+        node,
+        &release.at.package,
+        &version,
+        release.at.service.as_deref(),
+    )
+    .await?;
+    let Ok(u) = serde_json::from_value::<calimero_bundle::BundleUse>(card["uses"][&name].clone())
+    else {
+        return Ok(());
+    };
+    let inside = semver::VersionReq::parse(&u.range)
+        .is_ok_and(|range| semver::Version::parse(&to.version).is_ok_and(|v| range.matches(&v)));
+    if u.package != to.package || !inside {
+        return Err(ApiError::new(
+            409,
+            "OUTSIDE_UNIT_RANGE",
+            &format!(
+                "{} is {}'s {name}, which takes {} {}: upgrade the unit with /apps/{}/upgrade-unit",
+                app.app_id, root.app_id, u.package, u.range, root.app_id
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/apps/{app}/upgrade", post(app_upgrade))
+        .route("/apps/{app}/upgrade-unit", post(app_upgrade_unit))
         .route("/orgs/{org}/upgrade", post(org_upgrade))
         .route("/orgs/{org}/upgrades/{run}", get(org_upgrade_status))
         .route("/orgs/{org}/upgrades/{run}/retry", post(org_upgrade_retry))

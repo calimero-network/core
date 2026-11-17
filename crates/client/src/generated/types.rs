@@ -1277,6 +1277,15 @@ pub struct InviteKey {
     pub extra: Map<String, Value>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpgradeRunTargetsValue {
+    pub package: String,
+    pub version: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// An organization-wide upgrade run: the apps it targets, those done, and why each failed one failed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UpgradeRun {
@@ -1294,6 +1303,8 @@ pub struct UpgradeRun {
     pub done: Vec<String>,
     pub failed: Map<String, Value>,
     pub finished: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<BTreeMap<String, UpgradeRunTargetsValue>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

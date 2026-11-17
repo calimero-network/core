@@ -155,8 +155,17 @@ detail.
      ```
 
      `links` in `initArgs` is the node's; a client that sends it is refused.
-     `attach` references are never created. Upgrading a unit in one consent is
-     not done yet: each app upgrades on its own.
+     `attach` references are never created.
+
+     A unit upgrades in one consent: `POST /apps/{app}/upgrade-unit { version }`
+     (`meroctl` and the clients: `upgrade_unit`) moves the instance to `version`
+     and each member to the release the new one pins for it (else the newest
+     installed one in range), with one passkey assertion over the instance, its
+     version and every member's target. It answers an upgrade run, followed with
+     `GET /orgs/{org}/upgrades/{run}`. A member is not moved on its own off the
+     range its instance takes it with (`409 OUTSIDE_UNIT_RANGE`), and a new
+     release that creates a member the instance does not have is refused: a unit
+     gains members only when it is created.
 
    A package of several services (each app instance runs one of them, named by
    `meroctl instance create --service NAME`) gives each with `--service

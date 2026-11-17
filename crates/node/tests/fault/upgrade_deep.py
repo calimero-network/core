@@ -60,6 +60,11 @@ NOT_COVERED = [
      "`a_release_fills_only_the_secrets_it_declares` (`component_cluster.rs`) covers install and enforcement "
      "on one build, and a release without them reads as before (`serde(default)`). A case once the "
      "upgrade-from release packs them"),
+    ("Apps", "A unit upgraded in one consent (`upgrade-unit`, `UpgradeRun::targets`)",
+     "needs a unit, which the old release cannot create (its meroctl packs no `uses`); a run with targets is "
+     "written only once every node runs this release (`Feature::UnitUpgrade`). "
+     "`a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range` (`component_cluster.rs`) covers it on "
+     "one build; a run without targets reads and writes as before"),
     ("Packages", "The apps a release references (`uses` in the signed manifest, on its capability card)",
      "nothing is stored: the node checks them at install and reads them from the release's manifest; the "
      "deep fixtures are packed by the old release's meroctl, which writes no `uses`. "
