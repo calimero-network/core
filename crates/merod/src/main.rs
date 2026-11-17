@@ -542,6 +542,11 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     let cluster = args.cluster.clone().unwrap_or_else(|| "dev".to_owned());
     let peers = parse_peers(&args)?;
     let peer_measurements = peer_measurements(&args, dev)?;
+    // Read before the KMS is asked, so a bad file stops the node at once.
+    let tls_extra_roots = match &args.tls_extra_roots {
+        Some(path) => calimero_node::peer_tls::load_extra_roots(path)?,
+        None => Vec::new(),
+    };
     let attestation_verifier_url = attestation_verifier_url(&args)?;
     let (storage_key, (kms_keys, rollback)) = storage_key(&args, dev, &cluster, node_id).await?;
     // The store keeps its rows as they are (store format 2), relying on the TD to keep
@@ -580,6 +585,7 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
         storage_key,
         attestation: if dev { Mode::Mock } else { Mode::Tdx },
         allow_mock_peers: dev,
+        tls_extra_roots,
         sealed_required: !dev,
         rp_id,
         origins,

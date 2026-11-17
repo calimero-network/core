@@ -36,6 +36,7 @@ fn config(dir: &Path, node_id: u64, counter: Option<Arc<MemoryCounter>>) -> Conf
         storage_key: [42; 32],
         attestation: Mode::Mock,
         allow_mock_peers: true,
+        tls_extra_roots: Vec::new(),
         sealed_required: true,
         rp_id: "localhost".into(),
         origins: vec!["http://localhost:3000".into()],
