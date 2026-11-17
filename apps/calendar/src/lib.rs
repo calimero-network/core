@@ -12,8 +12,8 @@
 //! The one thing it does differently for a call through another app is read `env::via()`: a
 //! plugin acting for a person may not add a private event, and never sees one.
 //!
-//! Storage: a map of events per owner (`Nested<String, UnorderedMap<..>>`), one row per event
-//! keyed `(at, id)`. Adding an event writes that one row and the owner's count (a `Vec` per
+//! Storage: a map of events per owner (`UnorderedMap<String, UnorderedMap<..>>`), one row per
+//! event keyed `(at, id)`. Adding an event writes that one row and the owner's count (a `Vec` per
 //! owner would be read and rewritten whole on every add), a caller's events are read through
 //! one cursor in time order, and how many they have is one read.
 
@@ -33,7 +33,7 @@ pub struct Event {
 pub struct Calendar {
     /// Each owner's events (`account:<id>` or `app:<id>`), keyed `(at, id)`: `id`
     /// (`env::unique_id()`) keeps two events at the same time apart.
-    events: Nested<String, UnorderedMap<(String, String), Event>>,
+    events: UnorderedMap<String, UnorderedMap<(String, String), Event>>,
 }
 
 #[app::error]

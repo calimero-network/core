@@ -106,12 +106,11 @@ every entry it reads. A view that answers a client should still return one
 | Type | Operations |
 | --- | --- |
 | `Cell<T>` | `get`, `set`, `clear`, `is_set`, `get_or_default`, `replace` and `take` (return the old value), `update(\|old\| new)` |
-| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values`, `retain` |
+| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `keys`, `values`, `retain`; a value can be a collection ([Collections as map values](#collections-as-map-values)) |
 | `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `retain` |
 | `Vector<T>` | `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
 | `Counter` | `get`, `add`, `increment`, `decrement` (stops at zero), `reset` |
 | `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of`, `page` and `iter` as `(hex, value)` in hash order |
-| `Nested<K, C>` | A collection `C` per key: `get(&k)`, `contains`, `is_empty`, `remove`, `clear`, `keys`, `iter` ([Nested collections](#nested-collections)) |
 | `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` and `contains_for(account)` read another's; `page`, `iter` and `iter_with` list `(account, value)` in account order |
 | `Text` | `insert_after(id, str)`, `delete_ids`, `insert(index, str)`, `delete(index, n)`, `read`, `chars`, `id_at`, `index_of`, `len`, `clear` |
 | `RichText` | `text()` / `text_mut()` (a `Text`), `mark(start, end, key, value, expand)`, `mark_ids`, `marks`, `spans`, `clear` |
@@ -119,17 +118,17 @@ every entry it reads. A view that answers a client should still return one
 Despite its name, `UnorderedMap` reads in key order (`page`, `range`, `first`,
 `last`), so it also serves as a sorted map.
 
-### Nested collections
+### Collections as map values
 
-`Nested<K, C>` keeps a collection `C` under each key `K`: a `Vector` per
-account, a `Set` per tag, a map per board, or another `Nested` for a further
-level. `C` is any collection or a `Table`.
+A map's value can be a collection: a `Vector` per account, a `Set` per tag, a
+map of maps, a `Table` per team. Write the type and use it; there is nothing to
+declare.
 
 ```rust
 #[app::state(version = 1)]
 pub struct Feed {
-    posts: Nested<String, Vector<Post>>,
-    boards: Nested<String, Nested<u64, UnorderedMap<String, String>>>,
+    posts: UnorderedMap<String, Vector<Post>>,
+    boards: UnorderedMap<String, UnorderedMap<u64, UnorderedMap<String, String>>>,
 }
 
 let mut mine = self.posts.get(&account)?; // this account's Vector<Post>
@@ -138,22 +137,21 @@ let n = mine.len()?;                      // one read: this account's length
 for post in mine.iter() { let post = post?; /* .. */ }
 ```
 
-| `Nested<K, C>` | |
+For a collection value, the map's methods answer per key:
+
+| Method | For a collection value |
 | --- | --- |
 | `get(&k)` | `k`'s collection: a handle that reads nothing until used; an absent key's is empty. |
 | `contains(&k)` / `is_empty()` | Whether `k`'s collection, or any, holds anything: one cursor read. |
 | `remove(&k)` / `clear()` | Removes `k`'s whole collection, or every one; returns how many stored entries there were. |
-| `keys()` / `iter()` | Every key that holds anything, in key order (with its collection): two host calls per key, however large its collection. |
+| `iter()` / `keys()` | Every key that holds anything, in key order, with its collection: two host calls per key, however large its collection. |
 
 Each key's collection costs exactly what a state field's does: a write per
-element, its own stored length, reads through its own cursor. Nothing is stored
-for the key itself, so a key exists while its collection holds anything. A
-nested `Table` keeps its indexes, unique constraints and counts, but full-text
-`search` covers only the state's own tables.
-
-Plain tuple keys (`UnorderedMap<(String, u64), V>` and `prefix_iter`) store
-the same rows; `Nested` adds a length and positions per key and a collection
-type per key.
+element, its own stored length, reads through its own cursor. Nothing is
+serialized whole, as a `Vec<T>` value would be on every change. `insert`,
+`len`, `page` and `range` are for plain values; a map of collections keeps no
+count of its keys. A `Table` value keeps its indexes, unique constraints and
+counts, but full-text `search` covers only the state's own tables.
 
 ```rust
 #[app::state(version = 1)]

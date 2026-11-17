@@ -2,6 +2,9 @@
 //!
 //! The store is ordered by key encoding, so besides point reads the map reads ranges,
 //! prefixes, the first and last entries and pages in key order (v1's `SortedMap`).
+//!
+//! A value can also be a collection (`UnorderedMap<String, Vector<T>>`): `get` then answers
+//! that key's collection, stored under its own keys (see [`MapValue`]).
 
 use core::marker::PhantomData;
 
@@ -9,15 +12,15 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::{
-    bounds, clear_prefix, collection_key, iter_entries, key_after, read_count, read_page, Entry,
-    KeyPath,
-};
+use crate::commons::{bounds, collection_key, iter_entries, read_count, read_page, Entry, KeyPath};
 use crate::encoding::key::{self, FromKey, KeyPart, ToKey};
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{check_key, DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
 use crate::table::{FindOpts, Iter, Page};
+
+use super::map_value::decode_value;
+pub use super::map_value::MapValue;
 
 /// A map from tuple keys to CBOR values, ordered by key.
 pub struct UnorderedMap<K: ToKey, V, S: Store = DefaultStore> {
@@ -30,14 +33,14 @@ impl<K: ToKey, V, S: Store> StateField for UnorderedMap<K, V, S> {
     const KIND: &'static str = "unorderedMap";
 }
 
-impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store + Default> UnorderedMap<K, V, S> {
+impl<K: ToKey, V, S: Store + Default> UnorderedMap<K, V, S> {
     /// A map on the default store; the name is part of every key.
     pub fn new(name: impl Into<String>) -> Self {
         Self::with_store(name, S::default())
     }
 }
 
-impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> {
+impl<K: ToKey, V, S: Store> UnorderedMap<K, V, S> {
     /// A map on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
@@ -58,18 +61,71 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
     fn count_key(&self) -> Result<Vec<u8>, StorageError> {
         collection_key(&self.name, "n", &[])
     }
+}
 
-    /// The value at `k`.
-    pub fn get(&self, k: &K) -> Result<Option<V>, StorageError> {
+impl<K: ToKey, V: MapValue<S>, S: Store> UnorderedMap<K, V, S> {
+    /// What `k` holds: `Option<V>` for a plain value; for a collection value, `k`'s
+    /// collection (a handle that reads nothing until used; an absent key's is empty).
+    pub fn get(&self, k: &K) -> Result<V::Get, StorageError> {
+        V::get(&self.store, &self.name, &k.to_key())
+    }
+
+    /// Whether `k` holds a value, or a collection with anything in it (one cursor read).
+    pub fn contains(&self, k: &K) -> Result<bool, StorageError> {
+        V::contains(&self.store, &self.name, &k.to_key())
+    }
+
+    /// Remove `k`: a plain value is returned; a collection is removed whole, a batch at a
+    /// time, and the answer is how many stored entries it had.
+    pub fn remove(&mut self, k: &K) -> Result<V::Removed, StorageError> {
+        V::remove(&mut self.store, &self.name, &k.to_key())
+    }
+
+    /// Whether no key holds anything: one read either way.
+    pub fn is_empty(&self) -> Result<bool, StorageError> {
+        V::is_empty(&self.store, &self.name)
+    }
+
+    /// Remove every entry (or every key's collection), a batch at a time; returns how many
+    /// stored entries there were.
+    pub fn clear(&mut self) -> Result<u64, StorageError> {
+        V::clear(&mut self.store, &self.name)
+    }
+}
+
+impl<K: ToKey + FromKey, V: MapValue<S>, S: Store> UnorderedMap<K, V, S> {
+    /// Every key with its value (or its collection), in key order, through one cursor as the
+    /// loop reaches it. For collection values it skips over each key's rows: two host calls
+    /// per key, however large its collection.
+    pub fn iter(&self) -> Iter<'_, (K, V::Item)> {
+        V::entries(&self.store, &self.name)
+    }
+
+    /// Every key, in order.
+    pub fn keys(&self) -> impl Iterator<Item = Result<K, StorageError>> + '_ {
+        self.iter().map(|e| e.map(|(k, _)| k))
+    }
+}
+
+impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> {
+    /// The plain value at `k`.
+    fn read(&self, k: &K) -> Result<Option<V>, StorageError> {
         self.store
             .get(&self.storage_key(k)?)
             .map(|bytes| value::from_slice(&bytes))
             .transpose()
     }
 
-    /// Whether `k` has a value.
-    pub fn contains(&self, k: &K) -> Result<bool, StorageError> {
-        Ok(self.store.get(&self.storage_key(k)?).is_some())
+    /// Remove the plain value at `k` and return it.
+    fn take(&mut self, k: &K) -> Result<Option<V>, StorageError> {
+        let key = self.storage_key(k)?;
+        let Some(bytes) = self.store.get(&key) else {
+            return Ok(None);
+        };
+        let old = value::from_slice(&bytes)?;
+        self.store.delete(&key);
+        self.store.add(&self.count_key()?, -1);
+        Ok(Some(old))
     }
 
     /// Set the value at `k`, returning the value it replaces.
@@ -94,7 +150,7 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
         k: &K,
         make: impl FnOnce() -> V,
     ) -> Result<V, StorageError> {
-        if let Some(v) = self.get(k)? {
+        if let Some(v) = self.read(k)? {
             return Ok(v);
         }
         let v = make();
@@ -149,57 +205,29 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
         k: &K,
         f: impl FnOnce(Option<V>) -> Option<V>,
     ) -> Result<Option<V>, StorageError> {
-        match f(self.get(k)?) {
+        match f(self.read(k)?) {
             Some(v) => {
                 let _ = self.insert(k, &v)?;
                 Ok(Some(v))
             }
             None => {
-                let _ = self.remove(k)?;
+                let _ = self.take(k)?;
                 Ok(None)
             }
         }
     }
 
-    /// Remove `k`, returning the value it held.
-    pub fn remove(&mut self, k: &K) -> Result<Option<V>, StorageError> {
-        let key = self.storage_key(k)?;
-        let Some(bytes) = self.store.get(&key) else {
-            return Ok(None);
-        };
-        let old = value::from_slice(&bytes)?;
-        self.store.delete(&key);
-        self.store.add(&self.count_key()?, -1);
-        Ok(Some(old))
-    }
-
-    /// How many keys hold a value: one read of the stored count, never a scan.
+    /// How many keys hold a value: one read of the stored count, never a scan. (A map of
+    /// collections keeps no count: count its `keys()`.)
     pub fn len(&self) -> Result<u64, StorageError> {
         read_count(&self.store, &self.count_key()?, self.name.label())
-    }
-
-    /// Whether the map is empty.
-    pub fn is_empty(&self) -> Result<bool, StorageError> {
-        Ok(self.len()? == 0)
-    }
-
-    /// Remove every entry, a batch at a time; returns how many there were.
-    pub fn clear(&mut self) -> Result<u64, StorageError> {
-        let base = self.base()?;
-        let count = self.count_key()?;
-        let removed = clear_prefix(&mut self.store, &base);
-        self.store.delete(&count);
-        Ok(removed)
     }
 }
 
 impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> {
     /// A stored entry of the map whose keys start after `map_base`.
-    fn decode(map_base: &[u8], (k, v): Entry) -> Result<(K, V), StorageError> {
-        let parts = key_after(&k, map_base)?;
-        let key = K::from_key(&parts)
-            .ok_or_else(|| StorageError::Decode("a key of another type".into()))?;
-        Ok((key, value::from_slice(&v)?))
+    fn decode(map_base: &[u8], entry: Entry) -> Result<(K, V), StorageError> {
+        decode_value(map_base, entry)
     }
 
     fn page_under(&self, base: &[u8], opts: &FindOpts) -> Result<Page<(K, V)>, StorageError> {
@@ -263,11 +291,6 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
         self.page_under(&base, &opts)
     }
 
-    /// Every entry in key order, a page at a time as the loop reaches it.
-    pub fn iter(&self) -> Iter<'_, (K, V)> {
-        self.iter_with(FindOpts::default())
-    }
-
     /// [`UnorderedMap::page`] over every page from `opts` on (`from`, `to`, `reverse`).
     pub fn iter_with(&self, opts: FindOpts) -> Iter<'_, (K, V)> {
         self.iter_under(&[], opts)
@@ -316,14 +339,10 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
         }
     }
 
-    /// Every key in order.
-    pub fn keys(&self) -> impl Iterator<Item = Result<K, StorageError>> + '_ {
-        self.iter().map(|e| e.map(|(k, _)| k))
-    }
-
     /// Every value, in key order.
     pub fn values(&self) -> impl Iterator<Item = Result<V, StorageError>> + '_ {
-        self.iter().map(|e| e.map(|(_, v)| v))
+        self.iter_with(FindOpts::default())
+            .map(|e| e.map(|(_, v)| v))
     }
 
     /// The entry with the smallest key.
