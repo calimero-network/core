@@ -7,10 +7,10 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "pnpm -r --filter ./clients/** --filter ./components/** run build",
-    "test": "pnpm -r --filter ./clients/** --filter ./components/** run test",
-    "lint": "pnpm -r --filter ./clients/** --filter ./components/** run lint",
-    "typecheck": "pnpm -r --filter ./clients/** --filter ./components/** run typecheck"
+    "build": "pnpm -r --filter './clients/**' --filter './components/**' run build",
+    "test": "pnpm -r --filter './clients/**' --filter './components/**' run test",
+    "lint": "pnpm -r --filter './clients/**' --filter './components/**' run lint",
+    "typecheck": "pnpm -r --filter './clients/**' --filter './components/**' run typecheck"
   },
   "pnpm": {
     "overrides": {
