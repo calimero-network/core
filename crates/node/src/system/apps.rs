@@ -72,17 +72,18 @@ pub(super) fn authorize(
             } else {
                 actor.as_str()
             };
+            let (package, version) = r.target_of(app_id);
             let release = s
                 .packages
-                .get(&r.package)
-                .and_then(|p| p.versions.get(&r.version));
+                .get(package)
+                .and_then(|p| p.versions.get(version));
             if r.by != by
                 || r.finished
                 || !r.apps.contains(app_id)
                 || !release.is_some_and(|v| v.app_parts().values().any(|h| h == bundle))
                 || target
                     .as_ref()
-                    .is_some_and(|t| t.package != r.package || t.version != r.version)
+                    .is_some_and(|t| t.package != package || t.version != version)
             {
                 return Err(NOT_IN_RUN);
             }
@@ -103,7 +104,18 @@ pub(super) fn authorize(
                     && a["team"] == json!(run.team)
                     && a["cascade"].as_bool().unwrap_or(false) == run.cascade
             };
-            if st.method == "__upgrade_published" {
+            if st.method == "__upgrade_unit" {
+                // A unit's run: the instance, its version and each member's target, as
+                // the consent states them; which members it covers is the state's.
+                proofs.states(&st, &subject, "__upgrade_unit", &|a| {
+                    a["package"] == json!(run.package)
+                        && a["version"] == json!(run.version)
+                        && a["targets"] == json!(run.targets)
+                })?;
+                if run.team.is_some() || run.cascade {
+                    return Err("the consent is for another change");
+                }
+            } else if st.method == "__upgrade_published" {
                 // A publisher's run over every instance of its package: no
                 // team; each app is still judged at apply (`may_upgrade`).
                 proofs.states(&st, &subject, "__upgrade_published", &|a| {
@@ -150,6 +162,32 @@ pub(super) fn authorize(
             let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
             let args = move_app_args(to_org, *bring_members);
             proofs.states(&st, app_id, "__move", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::SetDelegation {
+            account,
+            source,
+            target,
+            methods: Some(methods),
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(account, consent)?)?;
+            let args = delegation_args(target, methods);
+            proofs.states(&st, source, "__delegate", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        // Taking a grant back narrows what an app may do as the person: no consent.
+        SystemCmd::SetDelegation { methods: None, .. } => Ok(None),
+        SystemCmd::LinkApp {
+            app_id,
+            name,
+            target,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = link_app_args(name, target.as_deref());
+            proofs.states(&st, app_id, "__link", &|a| *a == args)?;
             Ok(Some(used))
         }
         SystemCmd::SetReplicas {
@@ -675,6 +713,92 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             }
             let app = s.apps.get_mut(&app_id).ok_or("no such app")?;
             app.access = access;
+            Ok(Value::Null)
+        }
+        SystemCmd::SetDelegation {
+            account,
+            source,
+            target,
+            methods,
+            ..
+        } => {
+            let Some(methods) = methods else {
+                if let Some(sources) = s.delegations.get_mut(&account) {
+                    if let Some(targets) = sources.get_mut(&source) {
+                        let _was = targets.remove(&target);
+                        if targets.is_empty() {
+                            let _gone = sources.remove(&source);
+                        }
+                    }
+                    if sources.is_empty() {
+                        let _gone = s.delegations.remove(&account);
+                    }
+                }
+                return Ok(Value::Null);
+            };
+            let from = s.apps.get(&source).ok_or("no such app")?;
+            let to = s.apps.get(&target).ok_or("no such app to delegate to")?;
+            if source == target {
+                return Err("an app is not delegated to itself");
+            }
+            if !s.may_reach(from, Some(&account)) || !s.may_reach(to, Some(&account)) {
+                return Err("only who reaches both apps lets one act on the other as them");
+            }
+            let distinct: BTreeSet<&String> = methods.iter().collect();
+            if methods.is_empty()
+                || methods.len() > calimero_bundle::MAX_USE_METHODS
+                || distinct.len() != methods.len()
+                || !methods.iter().all(|m| calimero_bundle::is_use_method(m))
+            {
+                return Err("not a list of methods to delegate");
+            }
+            let _was = s
+                .delegations
+                .entry(account)
+                .or_default()
+                .entry(source)
+                .or_default()
+                .insert(target, methods);
+            Ok(Value::Null)
+        }
+        SystemCmd::LinkApp {
+            app_id,
+            name,
+            target,
+            actor,
+            ..
+        } => {
+            let app = s.apps.get(&app_id).ok_or("no such app")?;
+            if !s.manages_app(app, &actor) {
+                return Err(ONLY_MANAGERS_LINK);
+            }
+            if !calimero_bundle::is_use_name(&name) {
+                return Err("not a reference's name");
+            }
+            if app.links.contains_key(&name) {
+                return Err("a unit member is linked at create and stays");
+            }
+            if let Some(t) = &target {
+                let to = s.apps.get(t).ok_or("no such app to attach")?;
+                if *t == app_id || to.org != app.org {
+                    return Err("only another app of the same organization is attached");
+                }
+                if !s.manages_app(to, &actor) {
+                    return Err(ONLY_MANAGERS_LINK);
+                }
+                if !app.attached.contains_key(&name) && app.attached.len() >= MAX_ATTACHED {
+                    return Err("too many attached apps");
+                }
+            }
+            let a = s.apps.get_mut(&app_id).ok_or("no such app")?;
+            match target {
+                Some(t) => {
+                    let _was = a.attached.insert(name, t);
+                }
+                None => {
+                    let _was = a.attached.remove(&name);
+                }
+            }
             Ok(Value::Null)
         }
         SystemCmd::SetAppMetadata {

@@ -559,6 +559,11 @@ pub struct SystemState {
     /// reads and writes as it did.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub recovery_keys: BTreeMap<String, AccountId>,
+    /// What each person lets an app do as them (`SetDelegation`): account -> source app ->
+    /// target app -> the target's methods the source's runs for that person call as them.
+    /// Left out when empty, so state from before reads and writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub delegations: BTreeMap<AccountId, BTreeMap<AppId, BTreeMap<AppId, Vec<String>>>>,
     /// Account recoveries under way, by account: the passkey the start
     /// logged and when it may finish (`docs/specs/account-recovery.md`). At
     /// most one per account. Left out when empty, as `recovery_keys`.
@@ -922,6 +927,9 @@ pub const CANNOT_GRANT_UNHELD: &str =
     "an invite grants only capabilities its creator holds; only the owner and admins grant any";
 /// A refusal: the package has an app team in this organization already.
 pub const APP_TEAM_EXISTS: &str = "this package has an app team in this organization already";
+
+/// What `LinkApp` answers to someone who does not manage both apps.
+pub const ONLY_MANAGERS_LINK: &str = "only who manages both apps attaches one to the other";
 
 /// What `MoveApp` answers to someone who does not manage the app where it is
 /// now ([`SystemState::manages_app`]).
@@ -1392,6 +1400,20 @@ impl SystemState {
     fn remove_app(&mut self, app_id: &str) {
         self.set_app_file_bytes(app_id, 0);
         let _gone = self.apps.remove(app_id);
+        // A grant from or to the app goes with it.
+        for sources in self.delegations.values_mut() {
+            let _from = sources.remove(app_id);
+            for targets in sources.values_mut() {
+                let _to = targets.remove(app_id);
+            }
+            sources.retain(|_, t| !t.is_empty());
+        }
+        self.delegations.retain(|_, s| !s.is_empty());
+        // An app attached elsewhere is detached with it; a unit member's link stays, as the
+        // record that it was made with the instance.
+        for a in self.apps.values_mut() {
+            a.attached.retain(|_, t| t != app_id);
+        }
         let _ring = self.released_runs.remove(app_id);
         if self.compute.remove(app_id).is_some() {
             self.grant_runs();
@@ -1934,6 +1956,28 @@ impl SystemState {
     ) -> Vec<AppId> {
         let st = serde_json::from_value::<crate::proof::Statement>(consent.clone()).ok();
         match st.as_ref().map(|st| st.method.as_str()) {
+            Some("__upgrade_unit") => st
+                .and_then(|st| {
+                    // The instance the consent names, if it runs the run's package, and
+                    // those of its linked members the run gives a target.
+                    let root = st.args()["app"].as_str()?.to_owned();
+                    let a = self.apps.get(&root).filter(|a| a.org == org)?;
+                    if !self
+                        .app_release(a)
+                        .is_some_and(|r| r.package == run.package)
+                    {
+                        return None;
+                    }
+                    let mut apps = vec![root];
+                    apps.extend(
+                        a.links
+                            .values()
+                            .filter(|m| run.targets.contains_key(*m) && self.apps.contains_key(*m))
+                            .cloned(),
+                    );
+                    Some(apps)
+                })
+                .unwrap_or_default(),
             Some("__upgrade_published") => {
                 self.published_run_apps(&run.package, &run.by, by_release)
             }
@@ -1972,10 +2016,11 @@ impl SystemState {
         if r.done.contains(&app.app_id) || r.failed.contains_key(&app.app_id) {
             return Err(RUN_MOVED_APP);
         }
-        let Some(at) = self.app_release(app).filter(|at| at.package == r.package) else {
+        let (package, version) = r.target_of(&app.app_id);
+        let Some(at) = self.app_release(app).filter(|at| at.package == package) else {
             return Err(RUN_OTHER_PACKAGE);
         };
-        if compare_versions(&r.version, &at.version) == std::cmp::Ordering::Less {
+        if compare_versions(version, &at.version) == std::cmp::Ordering::Less {
             return Err(RUN_OLDER_RELEASE);
         }
         Ok(())
@@ -3741,6 +3786,16 @@ impl SystemState {
         self.may_reach_as_logged(app, account, true, true)
     }
 
+    /// Whether `account` lets `source`'s runs for them call `method` of `target` as them.
+    #[must_use]
+    pub fn delegates(&self, account: &str, source: &str, target: &str, method: &str) -> bool {
+        self.delegations
+            .get(account)
+            .and_then(|s| s.get(source))
+            .and_then(|t| t.get(target))
+            .is_some_and(|m| m.iter().any(|x| x == method))
+    }
+
     /// [`Self::may_reach`], or, for a command an earlier release logged
     /// with an app on a team reached by its owner whatever the team holds
     /// (`owner_in_team: false`), or an `Accounts` instance reached by its
@@ -4040,6 +4095,8 @@ impl SystemCmd {
             Self::UpgradeApp { .. } => Area::Apps,
             Self::TransferApp { .. } => Area::Apps,
             Self::MoveApp { .. } => Area::Apps,
+            Self::SetDelegation { .. } => Area::Apps,
+            Self::LinkApp { .. } => Area::Apps,
             Self::DeleteApp { .. } => Area::Apps,
             Self::ChargeFileBytes { .. } => Area::Compute,
             Self::AcquireRun { .. } => Area::Compute,
@@ -4454,6 +4511,23 @@ pub fn scope_apps_args(apps: Option<&[ScopeApp]>, shared: Option<bool>) -> Value
 pub fn move_app_args(to_org: &str, bring_members: bool) -> Value {
     json!({ "toOrg": to_org, "bringMembers": bring_members })
 }
+
+/// What a delegation's consent states (`<source> / __delegate`): the app it reaches and the
+/// methods called there as the person.
+#[must_use]
+pub fn delegation_args(target: &str, methods: &[String]) -> Value {
+    json!({ "target": target, "methods": methods })
+}
+
+/// What an attach's consent states (`<app> / __link`): the reference's name and the app
+/// attached under it, `null` to detach.
+#[must_use]
+pub fn link_app_args(name: &str, target: Option<&str>) -> Value {
+    json!({ "name": name, "target": target })
+}
+
+/// The most apps one instance has attached (as a release names at most this many references).
+pub const MAX_ATTACHED: usize = calimero_bundle::MAX_USES;
 
 /// The id a `ScopeApps` (or a `MoveApp`) with `nonce` gives a new app team of `package`: the
 /// first of a short series not taken in `org` and not starting with `-`.
@@ -5294,6 +5368,29 @@ pub enum SystemCmd {
         metadata: Value,
         actor: AccountId,
     },
+    /// `account` lets `source`'s runs for them call `methods` of `target` as them (the
+    /// target sees the person as its caller), with their passkey (`<source> / __delegate /
+    /// { target, methods }`, [`delegation_args`]); `methods: None` takes it back, which
+    /// needs no consent.
+    SetDelegation {
+        account: AccountId,
+        source: AppId,
+        target: AppId,
+        methods: Option<Vec<String>>,
+        #[serde(default)]
+        consent: Value,
+    },
+    /// Attaches `target` under `name`, one of the `attach` references of the release the app
+    /// runs (`AppRecord::attached`), or detaches it (`None`). The manager of both apps, with
+    /// passkey consent (`<app> / __link / { name, target }`, [`link_app_args`]).
+    LinkApp {
+        app_id: AppId,
+        name: String,
+        target: Option<AppId>,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+    },
     SetAppMetadata {
         app_id: AppId,
         metadata: Value,
@@ -5763,11 +5860,12 @@ impl SystemMachine {
 }
 
 fn ok(v: Value) -> Vec<u8> {
-    serde_json::to_vec(&json!({ "ok": v })).unwrap_or_default()
+    // `Value`'s `Display` is its compact JSON and cannot fail.
+    json!({ "ok": v }).to_string().into_bytes()
 }
 
 fn err(msg: &str) -> Vec<u8> {
-    serde_json::to_vec(&json!({ "err": msg })).unwrap_or_default()
+    json!({ "err": msg }).to_string().into_bytes()
 }
 
 /// Read a system command's output.
@@ -5941,8 +6039,11 @@ impl Machine for SystemMachine {
         }
     }
 
-    fn snapshot(&self) -> Vec<u8> {
-        serde_json::to_vec(&self.state).unwrap_or_default()
+    fn snapshot(&self) -> eyre::Result<Vec<u8>> {
+        // Never an empty snapshot: restoring one fails on the node that receives it,
+        // far from here, with nothing logged where it happened.
+        serde_json::to_vec(&self.state)
+            .map_err(|e| eyre::eyre!("the system state does not serialize: {e}"))
     }
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {

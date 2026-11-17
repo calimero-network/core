@@ -205,6 +205,41 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Let an app call another as you.
+    ///
+    /// `PUT /apps/{app}/delegations/{target}` (`app_delegate`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn delegate(
+        self,
+        app: &str,
+        target: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<AppDelegateResponse> {
+        let body = Value::Object(Map::new());
+        let req = Request::new(
+            Method::PUT,
+            format!(
+                "apps/{}/delegations/{}",
+                route::segment(app),
+                route::segment(target)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// What you let an app do as you.
+    ///
+    /// `GET /apps/{app}/delegations` (`app_delegations`). Who: signed in (a session or an API key).
+    pub async fn delegations(self, app: &str) -> Result<AppDelegationsResponse> {
+        let req = Request::new(
+            Method::GET,
+            format!("apps/{}/delegations", route::segment(app)),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// Delete an app.
     ///
     /// `DELETE /apps/{app}` (`app_delete`). Who: a passkey session (an API key is refused).
@@ -286,6 +321,39 @@ impl Apps<'_> {
     /// `GET /apps/{app}` (`app_get`). Who: signed in (a session or an API key).
     pub async fn get(self, app: &str) -> Result<App> {
         let req = Request::new(Method::GET, format!("apps/{}", route::segment(app)));
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Attach an app to one of an app's references.
+    ///
+    /// `PUT /apps/{app}/links/{name}` (`app_link`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn link(
+        self,
+        app: &str,
+        name: &str,
+        body: AppLinkRequest,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<AppLinkResponse> {
+        let body = route::value(&body)?;
+        let req = Request::new(
+            Method::PUT,
+            format!(
+                "apps/{}/links/{}",
+                route::segment(app),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// List an app's links to the apps its release uses.
+    ///
+    /// `GET /apps/{app}/links` (`app_links`). Who: whoever the app's access admits (a public app: anyone).
+    pub async fn links(self, app: &str) -> Result<AppLinksResponse> {
+        let req = Request::new(Method::GET, format!("apps/{}/links", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
 
@@ -612,6 +680,65 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Remove an app's own value of a secret.
+    ///
+    /// `DELETE /apps/{app}/secrets/{name}` (`app_secret_clear`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn secret_clear(
+        self,
+        app: &str,
+        name: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<AppSecretClearResponse> {
+        let body = Value::Object(Map::new());
+        let req = Request::new(
+            Method::DELETE,
+            format!(
+                "apps/{}/secrets/{}",
+                route::segment(app),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Set an app's own value of a declared secret.
+    ///
+    /// `PUT /apps/{app}/secrets/{name}` (`app_secret_set`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn secret_set(
+        self,
+        app: &str,
+        name: &str,
+        value: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<AppSecretSetResponse> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "value", &value)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::PUT,
+            format!(
+                "apps/{}/secrets/{}",
+                route::segment(app),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// The secrets an app's release declares.
+    ///
+    /// `GET /apps/{app}/secrets` (`app_secrets`). Who: signed in (a session or an API key).
+    pub async fn secrets(self, app: &str) -> Result<AppSecretsResponse> {
+        let req = Request::new(Method::GET, format!("apps/{}/secrets", route::segment(app)));
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// What an app stores.
     ///
     /// `GET /apps/{app}/storage` (`app_storage`). Who: whoever the app's access admits (a public app: anyone).
@@ -642,6 +769,45 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 
+    /// Take back what an app may do on another as you.
+    ///
+    /// `DELETE /apps/{app}/delegations/{target}` (`app_undelegate`). Who: signed in (a session or an API key).
+    pub async fn undelegate(self, app: &str, target: &str) -> Result<Map<String, Value>> {
+        let req = Request::new(
+            Method::DELETE,
+            format!(
+                "apps/{}/delegations/{}",
+                route::segment(app),
+                route::segment(target)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Detach an app attached to an app.
+    ///
+    /// `DELETE /apps/{app}/links/{name}` (`app_unlink`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn unlink(
+        self,
+        app: &str,
+        name: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<Map<String, Value>> {
+        let body = Value::Object(Map::new());
+        let req = Request::new(
+            Method::DELETE,
+            format!(
+                "apps/{}/links/{}",
+                route::segment(app),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
     /// Upgrade an app instance.
     ///
     /// `POST /apps/{app}/upgrade` (`app_upgrade`). Who: an account holder (a passkey session not bound to an app's frontend).
@@ -657,6 +823,28 @@ impl Apps<'_> {
         let req = Request::new(
             Method::POST,
             format!("apps/{}/upgrade", route::segment(app)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Upgrade an app and the apps it created, in one consent.
+    ///
+    /// `POST /apps/{app}/upgrade-unit` (`app_upgrade_unit`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn upgrade_unit(
+        self,
+        app: &str,
+        version: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<UpgradeRun> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "version", &version)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("apps/{}/upgrade-unit", route::segment(app)),
         )
         .json(body);
         route::json(self.client.transport(), req, passkey, None, false).await

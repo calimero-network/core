@@ -12,6 +12,7 @@ publish = false
 eyre.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
 tantivy.workspace = true
 unicode-normalization.workspace = true
 unicode-segmentation.workspace = true

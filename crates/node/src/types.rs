@@ -1,5 +1,7 @@
 //! Types shared by the node's state machines and its API.
 
+use std::collections::BTreeMap;
+
 use calimero_identity::Credential;
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +56,13 @@ impl Caller {
             }
         }
         out
+    }
+
+    /// Whether the caller is a person: a signed-in account, or an API key acting for one.
+    /// Only a person is carried to another app as the one a run serves (`on_behalf_of`).
+    #[must_use]
+    pub const fn is_person(&self) -> bool {
+        matches!(self, Self::Account { .. } | Self::ApiKey { .. })
     }
 
     /// The caller as the component host core sees it (the WIT `caller`, D13).
@@ -199,6 +208,18 @@ pub struct AppRecord {
     /// so a record writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore: Option<PendingRestore>,
+    /// The apps this instance's release creates with it (`uses` with `mode: create` in its
+    /// signed manifest), by the name its code knows each by: made in the same
+    /// organization, by the same owner, just before it. Set once, at create. Left out when
+    /// empty, so a record writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub links: BTreeMap<String, AppId>,
+    /// The apps its owner attached for the release's `attach` references (`uses` with
+    /// `mode: attach`), by name: apps of the same organization that live on their own
+    /// (`SystemCmd::LinkApp`). Never a unit member, so a unit's upgrade and range leave them
+    /// alone. Left out when empty, so a record writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attached: BTreeMap<String, AppId>,
 }
 
 /// The backup a restore takes an app's state from (`crate::backup`): the
@@ -333,6 +354,33 @@ pub struct UpgradeRun {
     /// App -> why its upgrade failed.
     pub failed: std::collections::BTreeMap<AppId, serde_json::Value>,
     pub finished: bool,
+    /// A unit's run (`__upgrade_unit`): each member's own target, a release of its own
+    /// package (`package` and `version` above are the instance's). An app without one is
+    /// moved to `package`@`version`, as every other run does. Left out when empty, so a run
+    /// writes as it did.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub targets: std::collections::BTreeMap<AppId, RunTarget>,
+}
+
+/// A unit member's release in a unit's run (`UpgradeRun::targets`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunTarget {
+    pub package: String,
+    pub version: String,
+}
+
+impl UpgradeRun {
+    /// The package and version run `self` moves `app` to: its own target in a unit's run,
+    /// else the run's.
+    #[must_use]
+    pub fn target_of(&self, app: &str) -> (&str, &str) {
+        self.targets
+            .get(app)
+            .map_or((self.package.as_str(), self.version.as_str()), |t| {
+                (t.package.as_str(), t.version.as_str())
+            })
+    }
 }
 
 /// How many upgrade runs an organization remembers.

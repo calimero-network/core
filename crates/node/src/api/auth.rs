@@ -200,7 +200,7 @@ async fn register_finish(
         ));
     };
     // Signing up on a package's frontend opens a session bound to it.
-    let app = claimed_app(&node, &body.registration.client_data_json);
+    let app = claimed_app(&node, &body.registration.client_data_json).await;
     let cred = verify_registration(
         &rp_with(rp(&node), app.as_ref()),
         &challenge,
@@ -285,6 +285,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
     // From the origin the sign-up came from: the package's (the registered
     // origin itself, for one), or the cluster's.
     let from = claimed_app(node, &confirm.assertion.client_data_json)
+        .await
         .filter(|a| app.as_deref() == Some(a.package.as_str()) && a.registered() == origin);
     if origin.is_some() && from.is_none() {
         return Err(ApiError::unauthenticated(
@@ -335,7 +336,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
                 hash: session.hash(),
                 record: session.record(&account_id, &passkey, app, origin),
             }),
-            consent: serde_json::to_value(&consent).unwrap_or_default(),
+            consent: super::consent_value(&consent)?,
             at: now,
             // Every account has its personal organization from the start,
             // approving the release it signed up through.
@@ -433,7 +434,7 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
         &body.assertion.credential_id,
         app,
         session,
-        serde_json::to_value(&consent).unwrap_or_default(),
+        super::consent_value(&consent)?,
     )
     .await
 }

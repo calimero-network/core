@@ -104,10 +104,26 @@ pub enum Feature {
     /// `InstallPackage` of a release that declares `secrets`: an earlier release drops
     /// them and fills any secret its operator bound to the package.
     DeclaredSecrets,
+    /// `StartUpgradeRun` of a unit, whose members each have their own target
+    /// (`UpgradeRun::targets`): an earlier release drops the targets and would refuse each
+    /// member's `UpgradeApp` as not in the run.
+    UnitUpgrade,
+    /// `CreateApp` naming the apps its release created with it (`AppRecord::links`): an
+    /// earlier release drops them, so its replicas would list the instance without its unit.
+    AppLinks,
+    /// `SetDelegation`, a person letting an app call another as them
+    /// (`SystemState::delegations`): an earlier release cannot decode it, so its replicas
+    /// would hold no grant and deliver the same call as the app on one leader and as the
+    /// person on another.
+    Delegation,
+    /// `LinkApp`, an app attached to an instance's `attach` reference
+    /// (`AppRecord::attached`): an earlier release cannot decode it, so its replicas would
+    /// list the instance without the app and its runs would read no link.
+    AttachApp,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 26] = [
+pub const FEATURES: [Feature; 30] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -134,6 +150,10 @@ pub const FEATURES: [Feature; 26] = [
     Feature::OrgCapabilities,
     Feature::InviteCapabilities,
     Feature::DeclaredSecrets,
+    Feature::AppLinks,
+    Feature::UnitUpgrade,
+    Feature::Delegation,
+    Feature::AttachApp,
 ];
 
 impl Feature {
@@ -167,6 +187,10 @@ impl Feature {
             Self::OrgCapabilities => "orgCapabilities",
             Self::InviteCapabilities => "inviteCapabilities",
             Self::DeclaredSecrets => "declaredSecrets",
+            Self::AppLinks => "appLinks",
+            Self::UnitUpgrade => "unitUpgrade",
+            Self::Delegation => "delegation",
+            Self::AttachApp => "attachApp",
         }
     }
 
@@ -197,7 +221,11 @@ impl Feature {
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
             Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
-            Self::DeclaredSecrets => "1.0.0-rc.31",
+            Self::DeclaredSecrets
+            | Self::AppLinks
+            | Self::UnitUpgrade
+            | Self::Delegation
+            | Self::AttachApp => "1.0.0-rc.31",
         }
     }
 }
@@ -381,8 +409,17 @@ impl SystemCmd {
         match self {
             Self::SetClusterVersion { .. } => vec![Feature::ClusterVersion],
             Self::StartUpgradeRun {
-                by_release: true, ..
-            } => vec![Feature::PublishedRunByRelease],
+                by_release, run, ..
+            } if *by_release || !run.targets.is_empty() => {
+                let mut f = Vec::new();
+                if *by_release {
+                    f.push(Feature::PublishedRunByRelease);
+                }
+                if !run.targets.is_empty() {
+                    f.push(Feature::UnitUpgrade);
+                }
+                f
+            }
             Self::MoveApp {
                 accounts_in_app_team,
                 org_quotas,
@@ -398,6 +435,8 @@ impl SystemCmd {
                 f
             }
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
+            Self::SetDelegation { .. } => vec![Feature::Delegation],
+            Self::LinkApp { .. } => vec![Feature::AttachApp],
             Self::SetPools { .. } => vec![Feature::ComputePools],
             Self::ScopeApps {
                 apps, by_release, ..
@@ -452,7 +491,16 @@ impl SystemCmd {
                 }
                 f
             }
-            Self::CreateApp { app } if !app.components.is_app() => vec![Feature::ComputeOnly],
+            Self::CreateApp { app } => {
+                let mut f = Vec::new();
+                if !app.components.is_app() {
+                    f.push(Feature::ComputeOnly);
+                }
+                if !app.links.is_empty() {
+                    f.push(Feature::AppLinks);
+                }
+                f
+            }
             Self::AcquireRun { pool: Some(_), .. } => vec![Feature::NamedPool],
             Self::CreateOrg {
                 app_team,
@@ -472,7 +520,6 @@ impl SystemCmd {
             | Self::RemoveNode { .. }
             | Self::PutBundle { .. }
             | Self::UninstallPackage { .. }
-            | Self::CreateApp { .. }
             | Self::UpgradeApp { .. }
             | Self::TransferApp { .. }
             | Self::DeleteApp { .. }
@@ -522,9 +569,7 @@ impl SystemCmd {
             | Self::SetAppMetadata { .. }
             | Self::SetPasskeyLabel { .. }
             | Self::UpgradeFailed { .. }
-            | Self::StartUpgradeRun {
-                by_release: false, ..
-            }
+            | Self::StartUpgradeRun { .. }
             | Self::FinishUpgradeRun { .. }
             | Self::SetAlias { .. }
             | Self::SetOrgRole { .. }
@@ -612,6 +657,8 @@ mod tests {
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
         match feature {
+            Feature::Delegation => entry(json!({ "op": "setDelegation", "account": "a",
+                "source": "app", "target": "kv-app", "methods": ["get"] })),
             Feature::InviteCapabilities => SystemCmd::CreateInvite {
                 invite_key: "k".into(),
                 invite: serde_json::from_value(json!({
@@ -810,6 +857,18 @@ mod tests {
                 "connectorGib": 1, "storageGibMonth": 1, "egressGib": 1,
             } })),
             Feature::ComputeOnly => install(json!({ "components": "computeOnly" })),
+            Feature::UnitUpgrade => entry(json!({ "op": "startUpgradeRun", "org": "org",
+                "run": { "runId": "r", "package": "p", "version": "2.0.0", "by": "a",
+                    "startedAt": 1, "apps": [], "done": [], "failed": {}, "finished": false,
+                    "targets": { "kv-app": { "package": "kv", "version": "0.2.0" } } } })),
+            Feature::AppLinks => entry(json!({ "op": "createApp", "app": {
+                "appId": "app", "name": "notes", "group": 0, "bundle": "b", "owner": "a",
+                "org": "org", "access": { "kind": "org" }, "confirmMethods": [], "replicas": [1],
+                "createdAt": 1, "initArgs": null, "metadata": null,
+                "links": { "kv": "kv-app" },
+            } })),
+            Feature::AttachApp => entry(json!({ "op": "linkApp", "app_id": "app", "name": "kv",
+                "target": "kv-app", "actor": "a" })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),

@@ -204,6 +204,7 @@ mod tests {
             package: "com.calimero.outbound-probe".to_owned(),
             signer: "did:key:zProbe".to_owned(),
             secrets: None,
+            own: crate::OwnSecrets::default(),
         };
         let run = service
             .for_run(
@@ -284,6 +285,7 @@ mod tests {
                     package: "p".to_owned(),
                     signer: "s".to_owned(),
                     secrets: None,
+                    own: crate::OwnSecrets::default(),
                 },
                 vec![url.clone()],
                 Some(Approval {

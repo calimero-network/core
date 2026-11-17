@@ -54,12 +54,43 @@ MATRIX_END = "{/* upgrade-matrix:end */}"
 # What no case seeds, and why: (area, functionality, reason). A functionality
 # that cannot be tested yet is listed here, never skipped silently.
 NOT_COVERED = [
+    ("Apps", "An instance's own value of a declared secret (`/apps/{app}/secrets`, `rows::CSECRET`)",
+     "needs a release that declares secrets, which the old release's meroctl cannot pack, and the value is "
+     "set only once every node runs this release; "
+     "`an_owner_sets_its_instances_own_secret_and_it_goes_only_where_declared` (`component_cluster.rs`) "
+     "covers it on one build. An app without one reads as before"),
     ("Packages", "A release that declares its secrets (`secrets` in the signed manifest, `PackageVersion::secrets`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `secrets`, and a release that "
      "declares them installs only once every node runs this release (`Feature::DeclaredSecrets`); "
      "`a_release_fills_only_the_secrets_it_declares` (`component_cluster.rs`) covers install and enforcement "
      "on one build, and a release without them reads as before (`serde(default)`). A case once the "
      "upgrade-from release packs them"),
+    ("Apps", "A unit upgraded in one consent (`upgrade-unit`, `UpgradeRun::targets`)",
+     "needs a unit, which the old release cannot create (its meroctl packs no `uses`); a run with targets is "
+     "written only once every node runs this release (`Feature::UnitUpgrade`). "
+     "`a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range` (`component_cluster.rs`) covers it on "
+     "one build; a run without targets reads and writes as before"),
+    ("Packages", "The apps a release references (`uses` in the signed manifest, on its capability card)",
+     "nothing is stored: the node checks them at install and reads them from the release's manifest; the "
+     "deep fixtures are packed by the old release's meroctl, which writes no `uses`. "
+     "`a_release_names_the_apps_it_uses_on_its_card` (`component_cluster.rs`) covers install and the card "
+     "on one build. A case once the upgrade-from release packs them"),
+    ("Apps", "An instance created with the apps its release creates (`AppRecord::links`, `init`'s `links`)",
+     "the deep fixtures are packed by the old release's meroctl, which writes no `uses`, and a record with "
+     "`links` is written only once every node runs this release (`Feature::AppLinks`); "
+     "`creating_an_instance_creates_the_apps_its_release_uses` (`component_cluster.rs`) covers it on one "
+     "build, and a record without it reads as before (`serde(default)`)"),
+    ("Apps", "A person's grant letting an app call another as them (`SetDelegation`, `env::via`)",
+     "the deep fixtures are packed by the old release's meroctl, which writes no `uses` with `methods`, and a "
+     "grant is written only once every node runs this release (`Feature::Delegation`); "
+     "`an_app_calls_another_as_the_person_only_with_their_grant` (`component_cluster.rs`) covers message, call "
+     "and view on one build, and state without grants reads as before (`serde(default)`)"),
+    ("Apps", "An app attached to an instance's `attach` reference (`AppRecord::attached`, `env::linked`)",
+     "the deep fixtures are packed by the old release's meroctl, which writes no `uses`, so no instance has "
+     "a reference to attach to, and a `LinkApp` is written only once every node runs this release "
+     "(`Feature::AttachApp`); `an_owner_attaches_an_app_and_the_instance_reads_it_with_linked` "
+     "(`component_cluster.rs`) covers it on one build, and a record without it reads as before "
+     "(`serde(default)`)"),
     ("Accounts", "Account recovery started and finished with a new passkey",
      "the start takes a WebAuthn registration made outside a session, which neither meroctl nor the "
      "suite's standard-library Python can make (P-256); the cluster tests cover it on one build. The "

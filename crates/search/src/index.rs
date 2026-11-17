@@ -47,7 +47,35 @@ pub const WRITER_MEMORY: usize = 15_000_000;
 /// whose payload does not decode) opens as [`OpenState::Stale`] and is rebuilt
 /// from state, which is the whole migration story for the index: it is
 /// derived data.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
+
+/// A document's digest: SHA-256 over its id and fields, length-prefixed, in the order given.
+/// Equal documents have equal digests, so a caller re-indexes a document only when it differs.
+#[must_use]
+pub fn doc_digest(doc: &SearchDoc) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"calimero.search.doc.v1\0");
+    h.update(doc.id);
+    let mut part = |bytes: &[u8]| {
+        h.update((bytes.len() as u64).to_be_bytes());
+        h.update(bytes);
+    };
+    for (name, value) in &doc.fields {
+        part(name.as_bytes());
+        match value {
+            SearchValue::Str(s) => {
+                part(b"s");
+                part(s.as_bytes());
+            }
+            SearchValue::U64(v) => {
+                part(b"u");
+                part(&v.to_be_bytes());
+            }
+        }
+    }
+    h.finalize().into()
+}
 
 /// Knobs that change what an index stores (the benchmark flips them).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -102,13 +130,17 @@ struct TextField {
 
 struct Fields {
     id: Field,
+    digest: Field,
     text: Vec<TextField>,
     by_name: HashMap<String, (SearchFieldKind, Field, Option<Field>)>,
 }
 
 fn build_schema(def: &SearchIndexSchema, opts: SchemaOptions) -> Schema {
     let mut b = Schema::builder();
-    let _ = b.add_bytes_field("_id", INDEXED | STORED);
+    let _ = b.add_bytes_field("_id", INDEXED | STORED | FAST);
+    // The document's digest (`doc_digest`), so an index kept on disk is brought up to
+    // a state by re-indexing only the documents whose digest differs (`digests`).
+    let _ = b.add_bytes_field("_h", FAST);
     for field in &def.fields {
         match &field.kind {
             SearchFieldKind::Text { infix, .. } => {
@@ -143,6 +175,7 @@ fn build_schema(def: &SearchIndexSchema, opts: SchemaOptions) -> Schema {
 
 fn resolve_fields(schema: &Schema, def: &SearchIndexSchema) -> EyreResult<Fields> {
     let id = schema.get_field("_id")?;
+    let digest = schema.get_field("_h")?;
     let mut text = Vec::new();
     let mut by_name = HashMap::new();
     for field in &def.fields {
@@ -160,7 +193,12 @@ fn resolve_fields(schema: &Schema, def: &SearchIndexSchema) -> EyreResult<Fields
         }
         let _ = by_name.insert(field.name.clone(), (field.kind.clone(), main, tri));
     }
-    Ok(Fields { id, text, by_name })
+    Ok(Fields {
+        id,
+        digest,
+        text,
+        by_name,
+    })
 }
 
 /// One `(context, index)` pair's tantivy index.
@@ -344,6 +382,7 @@ impl ContextIndex {
     fn to_document(&self, doc: &SearchDoc) -> TantivyDocument {
         let mut out = TantivyDocument::default();
         out.add_bytes(self.fields.id, &doc.id[..]);
+        out.add_bytes(self.fields.digest, &doc_digest(doc)[..]);
         for (name, value) in &doc.fields {
             let Some((kind, main, tri)) = self.fields.by_name.get(name) else {
                 continue;
@@ -422,6 +461,40 @@ impl ContextIndex {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = (seq, root);
         Ok(())
+    }
+
+    /// Every document's id and digest (`doc_digest`) as of the last commit: what a caller
+    /// compares a state against to re-index only what differs from it.
+    ///
+    /// # Errors
+    /// A tantivy failure, or a document without both.
+    pub fn digests(&self) -> EyreResult<HashMap<[u8; 32], [u8; 32]>> {
+        let searcher = self.reader.searcher();
+        let mut out = HashMap::new();
+        let (mut id, mut digest) = (Vec::new(), Vec::new());
+        for segment in searcher.segment_readers() {
+            let fast = segment.fast_fields();
+            let ids = fast.bytes("_id")?.ok_or_else(|| eyre!("no _id column"))?;
+            let digests = fast.bytes("_h")?.ok_or_else(|| eyre!("no _h column"))?;
+            for doc in segment.doc_ids_alive() {
+                let (Some(i), Some(h)) = (ids.term_ords(doc).next(), digests.term_ords(doc).next())
+                else {
+                    bail!("a document without its id or digest");
+                };
+                id.clear();
+                digest.clear();
+                let _ = ids.ord_to_bytes(i, &mut id)?;
+                let _ = digests.ord_to_bytes(h, &mut digest)?;
+                let (Ok(id), Ok(digest)) = (
+                    <[u8; 32]>::try_from(&id[..]),
+                    <[u8; 32]>::try_from(&digest[..]),
+                ) else {
+                    bail!("an id or digest that is not 32 bytes");
+                };
+                let _prev = out.insert(id, digest);
+            }
+        }
+        Ok(out)
     }
 
     /// Documents in the index as of the last commit.

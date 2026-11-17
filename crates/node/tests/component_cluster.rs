@@ -4978,6 +4978,173 @@ async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 }
 
+/// An app calls another as the person its run serves only with that person's grant
+/// (`PUT /apps/{app}/delegations/{target}`, their passkey over the methods the source's
+/// release lists for the target's package): then the target sees the person as its caller
+/// and `env::via()` names the source, by message, by a synchronous call and by a
+/// synchronous view. Without a grant, or once it is taken back, the target sees only the
+/// source app and never learns whom it served.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_app_calls_another_as_the_person_only_with_their_grant() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let uses = json!({
+        "cal": { "package": "com.test.d-cal", "range": "^1", "mode": "attach",
+                 "methods": ["recordWho", "whoView"] },
+    });
+    for (package, u) in [("com.test.d-cal", Value::Null), ("com.test.d-plugin", uses)] {
+        let _ = alice
+            .packages()
+            .upload(mpk_using(package, "1.0.0", &kv_wasm(), &publisher, &[], u))
+            .await
+            .unwrap();
+    }
+    let create = |name: &str, package: &str| {
+        typed(json!({ "name": name, "package": package, "version": "1.0.0" }))
+    };
+    let target = alice
+        .apps()
+        .create(create("calendar", "com.test.d-cal"))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let source = alice
+        .apps()
+        .create(create("plugin", "com.test.d-plugin"))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let as_app = format!("app:{source}");
+    let as_alice = format!("account:{alice_id} via:{source}");
+    let delivered = |key: String| {
+        let (alice, target) = (&alice, &target);
+        async move {
+            for _ in 0..100 {
+                let seen = strong_view(alice, target, "get", json!({ "key": key })).await;
+                if !seen.is_null() {
+                    return seen;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Value::Null
+        }
+    };
+
+    // No grant: the calendar sees the plugin, never Alice.
+    let _r = who_call(
+        &alice,
+        &source,
+        "relayWho",
+        json!({ "app": target, "key": "before" }),
+    )
+    .await;
+    assert_eq!(delivered("before".into()).await, json!(as_app));
+    assert_eq!(
+        who_call(&alice, &source, "askWho", json!({ "app": target })).await,
+        json!(as_app)
+    );
+
+    // Alice grants it with her passkey, over exactly the methods the release lists.
+    let e = alice
+        .apps()
+        .delegate(&source, &target, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+    let granted = alice
+        .apps()
+        .delegate(&source, &target, Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        granted["methods"],
+        json!(["recordWho", "whoView"]),
+        "{granted}"
+    );
+    let listed = alice.apps().delegations(&source).await.map(wire).unwrap();
+    assert_eq!(
+        listed["delegations"],
+        json!({ target.clone(): ["recordWho", "whoView"] })
+    );
+
+    // Now the calendar sees Alice through the plugin: by message (once the logged cluster
+    // version lets an outbox row name her, shortly after start), call and view.
+    let mut seen = Value::Null;
+    for i in 0..100 {
+        let key = format!("after{i}");
+        let _r = who_call(
+            &alice,
+            &source,
+            "relayWho",
+            json!({ "app": target, "key": key }),
+        )
+        .await;
+        seen = delivered(key).await;
+        if seen == json!(as_alice) {
+            break;
+        }
+        assert_eq!(seen, json!(as_app), "only the plugin or Alice through it");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(seen, json!(as_alice));
+    let _r = who_call(
+        &alice,
+        &source,
+        "callWho",
+        json!({ "app": target, "key": "sync" }),
+    )
+    .await;
+    assert_eq!(
+        strong_view(&alice, &target, "get", json!({ "key": "sync" })).await,
+        json!(as_alice)
+    );
+    assert_eq!(
+        who_call(&alice, &source, "askWho", json!({ "app": target })).await,
+        json!(as_alice)
+    );
+    // Alice calling the calendar herself came through no app.
+    assert_eq!(
+        strong_view(&alice, &target, "whoView", json!({})).await,
+        json!(format!("account:{alice_id}"))
+    );
+
+    // Taken back (no passkey needed): the plugin is itself again.
+    let _ok = alice.apps().undelegate(&source, &target).await.unwrap();
+    let _r = who_call(
+        &alice,
+        &source,
+        "relayWho",
+        json!({ "app": target, "key": "revoked" }),
+    )
+    .await;
+    assert_eq!(delivered("revoked".into()).await, json!(as_app));
+    let e = alice.apps().undelegate(&source, &target).await.unwrap_err();
+    assert_eq!(e.code(), Some("NOT_DELEGATED"), "{e}");
+
+    // A release that lists nothing for the target's package has nothing to grant.
+    let e = alice
+        .apps()
+        .delegate(&target, &source, Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOTHING_TO_DELEGATE"), "{e}");
+}
+
+async fn who_call(client: &Client, app: &str, method: &str, args: Value) -> Value {
+    client
+        .apps()
+        .call(app, method, Some(args), None, None)
+        .await
+        .unwrap()
+        .result
+}
+
 /// The upgrade suite's case: an app's dead letters move with it. A new replica catches
 /// up from the log, the send and its dead-lettering applied in one batch, and lists the
 /// dead letter its leader wrote; a node that no longer holds a replica answers
@@ -5084,7 +5251,20 @@ fn mpk_declaring(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
 ) -> Vec<u8> {
-    mpk_with_secrets(package, version, wasm, key, outbound, None)
+    mpk_full(package, version, wasm, key, outbound, None, Value::Null)
+}
+
+/// [`mpk_declaring`], also declaring `uses` (the manifest's JSON for it) in the signed
+/// manifest.
+fn mpk_using(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    uses: Value,
+) -> Vec<u8> {
+    mpk_full(package, version, wasm, key, outbound, None, uses)
 }
 
 /// [`mpk_declaring`], also declaring `secrets` (name -> hosts) in the signed manifest.
@@ -5095,6 +5275,20 @@ fn mpk_with_secrets(
     key: &ed25519_dalek::SigningKey,
     outbound: &[&str],
     secrets: Option<&[(&str, &str)]>,
+) -> Vec<u8> {
+    mpk_full(package, version, wasm, key, outbound, secrets, Value::Null)
+}
+
+/// [`mpk_declaring`], also declaring `secrets` (name -> hosts) and `uses` (the manifest's
+/// JSON for it) in the signed manifest.
+fn mpk_full(
+    package: &str,
+    version: &str,
+    wasm: &[u8],
+    key: &ed25519_dalek::SigningKey,
+    outbound: &[&str],
+    secrets: Option<&[(&str, &str)]>,
+    uses: Value,
 ) -> Vec<u8> {
     use sha2::Digest;
     let manifest = calimero_bundle::BundleManifest {
@@ -5135,6 +5329,7 @@ fn mpk_with_secrets(
                 })
                 .collect()
         }),
+        uses: serde_json::from_value(uses).unwrap(),
         services: None,
         pipelines: Vec::new(),
         signature: None,
@@ -5455,6 +5650,430 @@ async fn a_release_fills_only_the_secrets_it_declares() {
         strong_view(&alice, &apps[1], "enrichment", json!({ "key": "acme" })).await,
         Value::Null
     );
+}
+
+/// A release names the apps it calls in its signed manifest (`uses`): a node refuses one
+/// that breaks the rules before anything is recorded (`400 BAD_USES`), and the release's
+/// capability card lists the references of one it took, before any instance exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_names_the_apps_it_uses_on_its_card() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let abi = format!("sha256:{}", "b".repeat(64));
+
+    let e = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.uses-bad",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            json!({ "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.2.0" } }),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_USES"), "{e}");
+
+    let _ = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.notes",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            json!({
+                "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "version": "0.1.0", "abi": abi },
+                "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+            }),
+        ))
+        .await
+        .unwrap();
+    let card: Value = alice
+        .transport()
+        .json(calimero_client::Request::new(
+            reqwest::Method::GET,
+            "packages/com.calimero.notes/0.1.0/capabilities".to_owned(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        card["uses"],
+        json!({
+            "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+            "kv": { "package": "com.calimero.confidential-kv", "range": "^0.1", "mode": "create",
+                    "version": "0.1.0", "abi": abi },
+        })
+    );
+}
+
+/// An instance's owner sets its own value of a secret its release declares: no operator
+/// bound one here, so the action that names it fails until the owner sets it, then reaches
+/// the echo host with it (redacted in what comes back). The value is never answered, only
+/// its fingerprint; a name the release does not declare, an empty value and a stranger are
+/// refused; clearing it goes back to the operator's (none).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_owner_sets_its_instances_own_secret_and_it_goes_only_where_declared() {
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const HOST: &str = "echo.outbound.test";
+    const PACKAGE: &str = "com.calimero.owns-echo";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            turnstile: false,
+            secrets: std::collections::BTreeMap::new(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let _ = alice
+        .packages()
+        .upload(mpk_with_secrets(
+            PACKAGE,
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[PREFIX],
+            Some(&[("ECHO_KEY", HOST)]),
+        ))
+        .await
+        .unwrap();
+    let _ = alice
+        .orgs()
+        .outbound_approval(
+            &alice.personal_org().await.unwrap(),
+            PACKAGE,
+            Some(typed(json!("manifest"))),
+            Some(false),
+            Some(&mut pk),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "owned", "package": PACKAGE })))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let enrich = || async {
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "acme", "value": "acme.com" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "startEnrich",
+                Some(json!({ "key": "acme" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    };
+
+    // Nothing set, nothing bound by the operator: the request never leaves.
+    let listed = alice.apps().secrets(&app).await.map(wire).unwrap();
+    assert_eq!(
+        listed["secrets"]["ECHO_KEY"]["source"],
+        json!("cluster"),
+        "{listed}"
+    );
+    enrich().await;
+    let failures = eventually(&alice, &app, "actionFailures", json!({}), |f| {
+        f["enrich"].is_string()
+    })
+    .await;
+    assert!(
+        failures["enrich"].as_str().unwrap().contains("ECHO_KEY"),
+        "{failures}"
+    );
+
+    // Refused: an undeclared name, an empty value, a stranger.
+    let e = alice
+        .apps()
+        .secret_set(&app, "OTHER", "x", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    let e = alice
+        .apps()
+        .secret_set(&app, "ECHO_KEY", "", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_SECRET"), "{e}");
+    assert!(bob
+        .apps()
+        .secret_set(&app, "ECHO_KEY", "bobs", Some(&mut bob_pk))
+        .await
+        .is_err());
+
+    // Set with the owner's passkey: answered by fingerprint only, and used.
+    let set = alice
+        .apps()
+        .secret_set(&app, "ECHO_KEY", "owners-own-key", Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    let listed = alice.apps().secrets(&app).await.map(wire).unwrap();
+    let row = &listed["secrets"]["ECHO_KEY"];
+    assert_eq!(row["source"], json!("app"), "{listed}");
+    assert_eq!(row["fingerprint"], set["fingerprint"]);
+    assert!(!listed.to_string().contains("owners-own-key"), "{listed}");
+    enrich().await;
+    let got = eventually(&alice, &app, "enrichment", json!({ "key": "acme" }), |v| {
+        v.is_string()
+    })
+    .await;
+    let got = got.as_str().unwrap();
+    assert!(got.starts_with("200 "), "{got}");
+    assert!(
+        got.contains("[redacted]") && !got.contains("owners-own-key"),
+        "{got}"
+    );
+
+    // Cleared: the operator's again.
+    let _ = alice
+        .apps()
+        .secret_clear(&app, "ECHO_KEY", Some(&mut pk))
+        .await
+        .unwrap();
+    let listed = alice.apps().secrets(&app).await.map(wire).unwrap();
+    assert_eq!(
+        listed["secrets"]["ECHO_KEY"]["source"],
+        json!("cluster"),
+        "{listed}"
+    );
+}
+
+/// A release that creates the apps it uses (`uses`, `mode: create`): creating an instance
+/// first creates each in the same organization, by the same owner, from the release its lock
+/// pinned; the instance's record names them (`links`) and its `init` is told their ids. A
+/// release whose referenced package is not installed creates nothing (`409
+/// USES_NOT_INSTALLED`), and a client may not pass `links` itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn creating_an_instance_creates_the_apps_its_release_uses() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[13; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let uses = json!({
+        "kv": { "package": "com.calimero.unit-kv", "range": "^0.1", "version": "0.1.0" },
+        "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+    });
+    let _ = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.unit-notes",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            uses,
+        ))
+        .await
+        .unwrap();
+    let create = |name: &'static str, init: Value| {
+        typed(json!({ "name": name, "package": "com.calimero.unit-notes", "initArgs": init }))
+    };
+
+    // The referenced package is not installed yet: nothing is created.
+    let e = alice
+        .apps()
+        .create(create("notes", Value::Null))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
+    let mine = |apps: Value| -> Vec<String> {
+        apps["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert!(mine(alice.apps().list(None, None).await.map(wire).unwrap()).is_empty());
+
+    let _ = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.unit-kv",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    let e = alice
+        .apps()
+        .create(create(
+            "forged",
+            json!({ "links": { "kv": "someone-elses" } }),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_REQUEST"), "{e}");
+
+    let made = alice
+        .apps()
+        .create(create("notes", Value::Null))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+    assert!(
+        made["links"].get("calendar").is_none(),
+        "an attached app is never created"
+    );
+
+    let notes_record = alice.apps().get(&notes).await.map(wire).unwrap();
+    let kv_record = alice.apps().get(&kv).await.map(wire).unwrap();
+    assert_eq!(notes_record["links"], json!({ "kv": kv }));
+    assert_eq!(kv_record["name"], json!("notes.kv"));
+    assert_eq!(kv_record["org"], notes_record["org"]);
+    assert_eq!(kv_record["owner"], notes_record["owner"]);
+    assert_eq!(
+        kv_record["release"]["package"],
+        json!("com.calimero.unit-kv")
+    );
+    // The instance's init was told the ids; the member's was told nothing.
+    assert_eq!(
+        strong_view(&alice, &notes, "links", json!({})).await,
+        json!({ "kv": kv })
+    );
+    assert_eq!(
+        strong_view(&alice, &kv, "links", json!({})).await,
+        json!({})
+    );
+    // One organization's apps: the instance's messages reach its member.
+    let _r = alice
+        .apps()
+        .call(
+            &notes,
+            "relay",
+            Some(json!({ "app": kv, "key": "from-notes", "value": "hi" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let got = eventually(&alice, &kv, "get", json!({ "key": "from-notes" }), |v| {
+        v.is_string()
+    })
+    .await;
+    assert_eq!(got, json!("hi"));
+}
+
+/// A unit upgrades in one consent: `POST /apps/{app}/upgrade-unit` moves the instance to the
+/// new release of its package and each member to the release the new one pins for it, with
+/// one passkey assertion over all of them. A member is not moved on its own off the range
+/// its instance takes it with (`409 OUTSIDE_UNIT_RANGE`, before any step-up); an app with
+/// no members is not a unit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let upload = |package: &'static str, version: &'static str, uses: Value| {
+        mpk_using(package, version, &kv_wasm(), &publisher, &[], uses)
+    };
+    let uses = |kv: &str| json!({ "kv": { "package": "com.calimero.u-kv", "range": "^0.1", "version": kv } });
+    for (package, version, u) in [
+        ("com.calimero.u-kv", "0.1.0", Value::Null),
+        ("com.calimero.u-kv", "0.1.1", Value::Null),
+        ("com.calimero.u-kv", "0.2.0", Value::Null),
+        ("com.calimero.u-notes", "0.1.0", uses("0.1.0")),
+        ("com.calimero.u-notes", "0.2.0", uses("0.1.1")),
+    ] {
+        let _ = alice
+            .packages()
+            .upload(upload(package, version, u))
+            .await
+            .unwrap();
+    }
+    let made = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "notes", "package": "com.calimero.u-notes", "version": "0.1.0" }),
+        ))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+
+    // The member alone, off its range: refused before any passkey is asked for.
+    let e = alice
+        .apps()
+        .upgrade(&kv, typed(json!({ "version": "0.2.0" })), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("OUTSIDE_UNIT_RANGE"), "{e}");
+    // The member is not a unit of its own.
+    let e = alice
+        .apps()
+        .upgrade_unit(&kv, "0.1.1", None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_A_UNIT"), "{e}");
+
+    // The unit, in one consent: the instance to 0.2.0, its kv to the 0.1.1 that pins.
+    let run = alice
+        .apps()
+        .upgrade_unit(&notes, "0.2.0", Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        run["targets"],
+        json!({ kv.clone(): { "package": "com.calimero.u-kv", "version": "0.1.1" } })
+    );
+    let org = alice.apps().get(&notes).await.map(wire).unwrap()["org"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let run_id = run["runId"].as_str().unwrap().to_owned();
+    let mut status = Value::Null;
+    for _ in 0..100 {
+        status = alice
+            .orgs()
+            .upgrade_status(&org, &run_id)
+            .await
+            .map(wire)
+            .unwrap();
+        if status["finished"] == json!(true) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(status["finished"], json!(true), "{status}");
+    assert_eq!(status["failed"], json!({}), "{status}");
+    for (app, version) in [(&notes, "0.2.0"), (&kv, "0.1.1")] {
+        let record = alice.apps().get(app).await.map(wire).unwrap();
+        assert_eq!(record["release"]["version"], json!(version), "{record}");
+    }
 }
 
 /// A synchronous xcall: the forms app (kv) verifies a captcha answer with the captcha
@@ -7546,4 +8165,183 @@ async fn prices_wait_until_every_node_runs_this_release() {
         ops.ops().prices_get().await.map(wire).unwrap()["version"],
         1
     );
+}
+
+/// An owner attaches an app they run to an instance's `attach` reference, with a passkey: the
+/// app must run the reference's package (`409 WRONG_PACKAGE`) and the name must be an attach
+/// reference (`409 NOT_AN_ATTACH_REFERENCE`); one outside the range is attached and reported
+/// `inRange: false`. The instance's code reads it with `env::linked` from the next run on,
+/// `GET /apps/{app}/links` lists every reference with what is linked, and a detach or the
+/// attached app's deletion unlinks it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_owner_attaches_an_app_and_the_instance_reads_it_with_linked() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let uses = json!({
+        "kv": { "package": "com.calimero.a-kv", "range": "^0.1", "version": "0.1.0" },
+        "calendar": { "package": "com.example.a-cal", "range": "^2", "mode": "attach" },
+    });
+    for (package, version, u) in [
+        ("com.calimero.a-kv", "0.1.0", Value::Null),
+        ("com.example.a-cal", "2.1.0", Value::Null),
+        ("com.example.a-cal", "3.0.0", Value::Null),
+        ("com.calimero.a-notes", "0.1.0", uses),
+    ] {
+        let _ = alice
+            .packages()
+            .upload(mpk_using(package, version, &kv_wasm(), &publisher, &[], u))
+            .await
+            .unwrap();
+    }
+    let create = |name: &str, package: &str, version: &str| {
+        typed(json!({ "name": name, "package": package, "version": version }))
+    };
+    let made = alice
+        .apps()
+        .create(create("notes", "com.calimero.a-notes", "0.1.0"))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+    let cal = |name: &'static str, version: &'static str| {
+        let alice = &alice;
+        async move {
+            alice
+                .apps()
+                .create(create(name, "com.example.a-cal", version))
+                .await
+                .map(wire)
+                .unwrap()["appId"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    let cal2 = cal("calendar", "2.1.0").await;
+    let cal3 = cal("calendar-next", "3.0.0").await;
+    let linked =
+        |name: &'static str| strong_view(&alice, &notes, "linked", json!({ "name": name }));
+    let row = |links: &Value, name: &str| {
+        links["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == json!(name))
+            .cloned()
+            .unwrap()
+    };
+
+    // Before: the member is linked and in range; the attach reference holds nothing.
+    let links = alice.apps().links(&notes).await.map(wire).unwrap();
+    assert_eq!(
+        row(&links, "kv"),
+        json!({ "name": "kv", "package": "com.calimero.a-kv", "range": "^0.1", "mode": "create",
+                "app": kv, "version": "0.1.0", "inRange": true })
+    );
+    assert_eq!(row(&links, "calendar")["app"], Value::Null);
+    assert_eq!(row(&links, "calendar")["inRange"], Value::Null);
+    assert_eq!(linked("kv").await, json!(kv));
+    assert_eq!(linked("calendar").await, Value::Null);
+
+    let attach = |name: &'static str, app: &str| {
+        let body: calimero_client::types::AppLinkRequest =
+            serde_json::from_value(json!({ "app": app })).unwrap();
+        (name, body)
+    };
+    // Refused before any passkey is asked for: another package, a create reference.
+    let (name, body) = attach("calendar", &kv);
+    let e = alice
+        .apps()
+        .link(&notes, name, body, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("WRONG_PACKAGE"), "{e}");
+    let (name, body) = attach("kv", &cal2);
+    let e = alice
+        .apps()
+        .link(&notes, name, body, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_AN_ATTACH_REFERENCE"), "{e}");
+    // A passkey is required.
+    let (name, body) = attach("calendar", &cal2);
+    let e = alice
+        .apps()
+        .link(&notes, name, body, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("CONFIRM_REQUIRED"), "{e}");
+
+    let (name, body) = attach("calendar", &cal2);
+    let got = alice
+        .apps()
+        .link(&notes, name, body, Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        got,
+        json!({ "name": "calendar", "package": "com.example.a-cal", "range": "^2",
+                "mode": "attach", "app": cal2, "version": "2.1.0", "inRange": true })
+    );
+    assert_eq!(linked("calendar").await, json!(cal2));
+    let record = alice.apps().get(&notes).await.map(wire).unwrap();
+    assert_eq!(record["attached"], json!({ "calendar": cal2 }));
+    assert_eq!(
+        record["links"],
+        json!({ "kv": kv }),
+        "a unit's members are apart"
+    );
+
+    // Out of range: attached, with the warning.
+    let (name, body) = attach("calendar", &cal3);
+    let got = alice
+        .apps()
+        .link(&notes, name, body, Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(got["inRange"], json!(false));
+    assert_eq!(got["version"], json!("3.0.0"));
+    let links = alice.apps().links(&notes).await.map(wire).unwrap();
+    assert_eq!(row(&links, "calendar")["inRange"], json!(false));
+    assert_eq!(linked("calendar").await, json!(cal3));
+
+    // Detached with a passkey; detaching again has nothing to detach.
+    let _ok = alice
+        .apps()
+        .unlink(&notes, "calendar", Some(&mut pk))
+        .await
+        .unwrap();
+    assert_eq!(linked("calendar").await, Value::Null);
+    let e = alice
+        .apps()
+        .unlink(&notes, "calendar", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_ATTACHED"), "{e}");
+    let e = alice
+        .apps()
+        .unlink(&notes, "kv", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.code(),
+        Some("NOT_ATTACHED"),
+        "a member is never detached: {e}"
+    );
+
+    // Deleting the attached app unlinks it.
+    let (name, body) = attach("calendar", &cal2);
+    let _ = alice
+        .apps()
+        .link(&notes, name, body, Some(&mut pk))
+        .await
+        .unwrap();
+    let _ = alice.apps().delete(&cal2).await.unwrap();
+    assert_eq!(linked("calendar").await, Value::Null);
+    let record = alice.apps().get(&notes).await.map(wire).unwrap();
+    assert!(record.get("attached").is_none(), "{record}");
 }
