@@ -11,6 +11,11 @@
 //!
 //! The one thing it does differently for a call through another app is read `env::via()`: a
 //! plugin acting for a person may not add a private event, and never sees one.
+//!
+//! Storage: a map of events per owner (`UnorderedMap<String, UnorderedMap<..>>`), one row per
+//! event keyed `(at, id)`. Adding an event writes that one row and the owner's count (a `Vec` per
+//! owner would be read and rewritten whole on every add), a caller's events are read through
+//! one cursor in time order, and how many they have is one read.
 
 use calimero_sdk::prelude::*;
 
@@ -26,8 +31,9 @@ pub struct Event {
 
 #[app::state(version = 1)]
 pub struct Calendar {
-    /// Each caller's events, by `account:<id>` or `app:<id>`.
-    events: UnorderedMap<String, Vec<Event>>,
+    /// Each owner's events (`account:<id>` or `app:<id>`), keyed `(at, id)`: `id`
+    /// (`env::unique_id()`) keeps two events at the same time apart.
+    events: UnorderedMap<String, UnorderedMap<(String, String), Event>>,
 }
 
 #[app::error]
@@ -75,26 +81,39 @@ impl Calendar {
             app::bail!(Error::PrivateThroughApp);
         }
         let owner = owner()?;
-        let mut list = self.events.get(&owner)?.unwrap_or_default();
-        list.push(Event {
+        let event = Event {
             title,
             at: at.clone(),
             private,
-        });
-        self.events.insert(&owner, &list)?;
+        };
+        let _new = self
+            .events
+            .get(&owner)?
+            .insert(&(at.clone(), env::unique_id()), &event)?;
         env::emit(CalendarEvent::Added { owner, at }, Audience::All)?;
         Ok(())
     }
 
-    /// The caller's own events. Through another app (`env::via()`), the private ones are left out.
+    /// The caller's own events in time order. Through another app (`env::via()`), the private
+    /// ones are left out.
     #[app::view]
     #[app::allow(app = "*")]
     pub fn my_events(&self) -> app::Result<Vec<Event>> {
         let through_app = env::via().is_some();
-        let list = self.events.get(&owner()?)?.unwrap_or_default();
-        Ok(list
-            .into_iter()
-            .filter(|e| !(through_app && e.private))
-            .collect())
+        let mut events = Vec::new();
+        for entry in self.events.get(&owner()?)?.iter() {
+            let (_, event) = entry?;
+            if !(through_app && event.private) {
+                events.push(event);
+            }
+        }
+        Ok(events)
+    }
+
+    /// How many events the caller has, private ones included: one read.
+    #[app::view]
+    #[app::allow(app = "*")]
+    pub fn event_count(&self) -> app::Result<u64> {
+        Ok(self.events.get(&owner()?)?.len()?)
     }
 }

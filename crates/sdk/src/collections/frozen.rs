@@ -8,7 +8,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::app::StateField;
-use crate::commons::{collection_key, iter_entries, key_after, read_page, Entry};
+use crate::commons::{collection_key, iter_entries, key_after, read_page, Entry, KeyPath};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
@@ -33,7 +33,7 @@ impl<T: Serialize> ContentHash<T> for CborSha256 {
 /// Immutable values under their content hash: nothing changes or removes one, and inserting
 /// the same content again stores nothing. Hashes travel as 64 lowercase hex digits.
 pub struct Frozen<T, H = CborSha256, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _types: PhantomData<fn() -> (T, H)>,
 }
@@ -53,7 +53,7 @@ impl<T: Serialize + DeserializeOwned, H: ContentHash<T>, S: Store> Frozen<T, H, 
     /// A frozen store on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _types: PhantomData,
         }
@@ -155,6 +155,16 @@ fn from_hex(text: &str) -> Option<[u8; 32]> {
         *byte = u8::from_str_radix(pair, 16).ok()?;
     }
     Some(out)
+}
+
+impl<T, H, S: Store> crate::collections::Nestable<S> for Frozen<T, H, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _types: PhantomData,
+        }
+    }
 }
 
 #[cfg(test)]

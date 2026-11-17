@@ -6,14 +6,14 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::collection_key;
+use crate::commons::{collection_key, KeyPath};
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{DefaultStore, Store};
 
 /// One optional value: a later `set` replaces an earlier one.
 pub struct Cell<T, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _type: PhantomData<fn() -> T>,
 }
@@ -33,7 +33,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> Cell<T, S> {
     /// A cell on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _type: PhantomData,
         }
@@ -99,6 +99,16 @@ impl<T: Serialize + DeserializeOwned, S: Store> Cell<T, S> {
         let key = self.storage_key()?;
         self.store.delete(&key);
         Ok(())
+    }
+}
+
+impl<T, S: Store> crate::collections::Nestable<S> for Cell<T, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _type: PhantomData,
+        }
     }
 }
 

@@ -35,7 +35,7 @@ struct NoArgs {}
 #[app::state(version = 1)]
 pub struct Planner {
     /// How many events members scheduled through this planner.
-    scheduled: Cell<u64>,
+    scheduled: Counter,
 }
 
 #[app::error]
@@ -69,8 +69,7 @@ impl Planner {
                 at: &at,
             },
         )?;
-        self.scheduled
-            .set(&(self.scheduled.get()?.unwrap_or(0) + 1))?;
+        let _total = self.scheduled.increment()?;
         Ok(())
     }
 
