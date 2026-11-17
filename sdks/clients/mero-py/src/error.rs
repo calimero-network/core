@@ -6,8 +6,6 @@
 use calimero_client::Error;
 use pyo3::PyErr;
 
-// pyo3 0.22's macro checks a `gil-refs` feature this crate does not declare.
-#[allow(unexpected_cfgs)]
 mod exception {
     use pyo3::create_exception;
     use pyo3::exceptions::PyException;

@@ -16,7 +16,7 @@ impl PyCloudClient {
         start: u64,
         limit: usize,
         timeout: f64,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let app = app.to_owned();
         let wait = Duration::from_secs_f64(timeout.max(0.0));
         let out = self.run(py, async |c| {
@@ -45,7 +45,7 @@ impl PyCloudClient {
         app: &str,
         limit: usize,
         timeout: f64,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let app = app.to_owned();
         let wait = Duration::from_secs_f64(timeout.max(0.0));
         let out = self.run(py, async |c| {
@@ -68,14 +68,14 @@ impl PyCloudClient {
     /// cluster's governance. Returns `{"keys": {node_id: receipt_key_hex},
     /// "governance": {"releases", "appUpgrades", "outbound"}}`; a call's or
     /// view's `receipt` is to be trusted only from one of those keys.
-    fn verify_app_cluster(&self, py: Python<'_>, app: &str) -> PyResult<PyObject> {
+    fn verify_app_cluster(&self, py: Python<'_>, app: &str) -> PyResult<Py<PyAny>> {
         let app = app.to_owned();
         let cluster = self.run(py, async |c| c.verify_app_cluster(&app).await)?;
-        let keys = pyo3::types::PyDict::new_bound(py);
+        let keys = pyo3::types::PyDict::new(py);
         for (node, key) in &cluster.keys {
             keys.set_item(node, hex::encode(key))?;
         }
-        let out = pyo3::types::PyDict::new_bound(py);
+        let out = pyo3::types::PyDict::new(py);
         out.set_item("keys", keys)?;
         out.set_item("governance", to_py(py, &cluster.governance)?)?;
         Ok(out.into_any().unbind())
