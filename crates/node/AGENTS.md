@@ -791,6 +791,11 @@ is its command line.
   (`UpgradeRun::target_of`). A member upgraded alone off its instance's range
   is refused at the API (`refuse_off_unit_range`, `409 OUTSIDE_UNIT_RANGE`).
   Regression: `a_unit_upgrades_in_one_consent_and_its_members_keep_to_their_range`.
+  The consent page's `upgradeUnit { app, toVersion }` (`unit_upgrade_request`)
+  builds one model from `api::unit_plan` and each app's `upgrade_request` sheet
+  (members skip the package-bound session's `within`: the instance created them),
+  `Action::UpgradeUnit` is stale when a bundle or the targets moved, and `act`
+  runs `api::upgrade_unit`. Regression: `a_unit_upgrades_on_the_page_in_one_approval`.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas (`payer_quotas`: its override, else the cluster's, with `MoveApp { org_quotas }`, which the API always sets; `Feature::MoveOrgQuotas`, rc.24; an entry without it replays judging the cluster's limits). `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`) and a target that approves none of the releases holding the app (`MOVE_RELEASES_DISJOINT`); clients see each as `400 REJECTED` with the reason as the message. `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs` (`a_move_is_judged_by_the_targets_own_quota`), `tests/move_app.rs`.
 - **Every app is in an organization** (`AppRecord::org`, required; hard

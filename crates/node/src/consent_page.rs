@@ -195,6 +195,11 @@ pub enum CreateBody {
         subject: UpgradeSubject,
         return_to: String,
     },
+    /// Upgrade an app and the apps its release created with it, in one approval.
+    UpgradeUnit {
+        subject: UpgradeSubject,
+        return_to: String,
+    },
     /// Let a package's apps in the scope call out to URL prefixes.
     Outbound {
         scope: ScopeBody,
@@ -398,6 +403,14 @@ enum Action {
         scope: ReleaseScope,
         version: String,
         change: ReleaseChange,
+    },
+    /// A unit's upgrade: the instance to `version`, each member to its target.
+    UpgradeUnit {
+        app: String,
+        version: String,
+        targets: BTreeMap<String, crate::types::RunTarget>,
+        /// Each app's bundle when the page was made, the instance's included.
+        from: BTreeMap<String, String>,
     },
     Upgrade {
         app: String,
@@ -956,7 +969,12 @@ pub async fn create(
         }
         CreateBody::Upgrade { subject, return_to } => {
             let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
-            let (action, model) = upgrade_request(&node, &p, &account, subject).await?;
+            let (action, model) = upgrade_request(&node, &p, &account, subject, false).await?;
+            (action, model, to)
+        }
+        CreateBody::UpgradeUnit { subject, return_to } => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = unit_upgrade_request(&node, &p, &account, subject).await?;
             (action, model, to)
         }
         CreateBody::Outbound {
@@ -1583,11 +1601,16 @@ async fn upgrade_request(
     p: &Principal,
     account: &str,
     subject: UpgradeSubject,
+    member_of_unit: bool,
 ) -> Result<(Action, Value), ApiError> {
     owner_holds(node, |g| g.app_upgrades, "app upgrades")?;
     let app_id = node.canonical_app_id(&subject.app);
     let app = node.app(&app_id).await?;
-    p.within(node, &app)?;
+    // A unit's member is another package's app; the frontend that asks reaches the
+    // instance it created (checked for it), and the person approves on the node's page.
+    if !member_of_unit {
+        p.within(node, &app)?;
+    }
     // The route's own authority rules, asked before anything is shown: a
     // package its publisher upgrades is not the instance owner's to approve.
     let (may, unbound) = node.sys(|s| (s.may_upgrade(&app, account), s.upgrades_unbound(&app)));
@@ -1750,6 +1773,110 @@ async fn upgrade_request(
             version: target.version.clone(),
             service,
             mpk: target.mpk.clone(),
+        },
+        model,
+    ))
+}
+
+/// An `upgradeUnit` request: the plan the route would carry out (`api::unit_plan`), and
+/// one page with the instance's capability sheet and each moving member's, each built and
+/// judged as a single upgrade's page is (`upgrade_request`).
+async fn unit_upgrade_request(
+    node: &Node,
+    p: &Principal,
+    account: &str,
+    subject: UpgradeSubject,
+) -> Result<(Action, Value), ApiError> {
+    let app_id = node.canonical_app_id(&subject.app);
+    let plan = crate::api::unit_plan(node, account, &app_id, &subject.to_version).await?;
+    let (_, root) = upgrade_request(
+        node,
+        p,
+        account,
+        UpgradeSubject {
+            app: app_id.clone(),
+            to_version: subject.to_version.clone(),
+        },
+        false,
+    )
+    .await?;
+    let mut from = BTreeMap::from([(app_id.clone(), plan.app.bundle.clone())]);
+    let mut pages = vec![root.clone()];
+    for member in &plan.members {
+        let Some(t) = plan.targets.get(&member.app_id) else {
+            continue;
+        };
+        let (_, page) = upgrade_request(
+            node,
+            p,
+            account,
+            UpgradeSubject {
+                app: member.app_id.clone(),
+                to_version: t.version.clone(),
+            },
+            true,
+        )
+        .await?;
+        let _prev = from.insert(member.app_id.clone(), member.bundle.clone());
+        pages.push(page);
+    }
+    let name = plan.app.name.clone();
+    let others = pages.len() - 1;
+    let mut points: Vec<Value> = pages.iter().map(|m| m["points"][0].clone()).collect();
+    points.push(json!(
+        "Until you approve, nothing changes: every one of them keeps running its current version."
+    ));
+    let attention: Vec<Value> = pages
+        .iter()
+        .flat_map(|m| {
+            let who = m["scope"]["name"].as_str().unwrap_or_default().to_owned();
+            m["attention"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |mut a| {
+                    if let Some(t) = a["text"].as_str() {
+                        a["text"] = json!(format!("{who}: {t}"));
+                    }
+                    a
+                })
+        })
+        .collect();
+    let notes: Vec<Value> = pages
+        .iter()
+        .flat_map(|m| m["notes"].as_array().cloned().unwrap_or_default())
+        .collect();
+    let mut model = root.clone();
+    if let Some(o) = model.as_object_mut() {
+        let _prev = o.insert("kind".into(), json!("upgradeUnit"));
+        let _prev = o.insert(
+            "headline".into(),
+            json!(format!(
+                "Upgrade {name} and the {others} app(s) it created, in one approval"
+            )),
+        );
+        let _prev = o.insert(
+            "title".into(),
+            json!(format!("Update {name} and the apps it uses")),
+        );
+        let _prev = o.insert("points".into(), json!(points));
+        let _prev = o.insert("attention".into(), json!(attention));
+        let _prev = o.insert("notes".into(), json!(notes));
+        let _prev = o.insert(
+            "apps".into(),
+            json!(pages
+                .iter()
+                .map(|m| json!({ "scope": m["scope"], "headline": m["headline"], "upgrade": m["upgrade"] }))
+                .collect::<Vec<_>>()),
+        );
+    }
+    Ok((
+        Action::UpgradeUnit {
+            app: app_id,
+            version: subject.to_version,
+            targets: plan.targets,
+            from,
         },
         model,
     ))
@@ -2508,6 +2635,16 @@ fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
         | Action::CreateInvite { .. }
         | Action::AcceptInvite { .. } => Ok(()),
         Action::Org(a) => orgs::still_current(node, a),
+        Action::UpgradeUnit { from, .. } => {
+            let moved = node.sys(|s| {
+                from.iter()
+                    .any(|(app, bundle)| s.apps.get(app).map(|a| &a.bundle) != Some(bundle))
+            });
+            if moved {
+                return Err(stale("an app of the unit's running release"));
+            }
+            Ok(())
+        }
         Action::Upgrade {
             app,
             from_bundle,
@@ -2737,6 +2874,20 @@ async fn act(
                 shown,
             )
             .await?
+        }
+        Action::UpgradeUnit {
+            app,
+            version,
+            targets,
+            ..
+        } => {
+            // What the page showed is what is approved: the same members to the same
+            // releases, judged again now.
+            let plan = crate::api::unit_plan(node, &req.account, app, version).await?;
+            if &plan.targets != targets {
+                return Err(stale("the releases the unit's apps would move to"));
+            }
+            crate::api::upgrade_unit(node, &p, app, version, confirm).await?
         }
         Action::Upgrade {
             app,

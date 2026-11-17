@@ -151,7 +151,9 @@ detail.
      `links` in `initArgs` is the node's; a client that sends it is refused.
      `attach` references are never created.
 
-     A unit upgrades in one consent: `POST /apps/{app}/upgrade-unit { version }`
+     A unit upgrades in one consent: an app's frontend asks the node's consent
+     page with `upgradeUnit { app, toVersion }` (every app's sheet on one page),
+     or a client calls `POST /apps/{app}/upgrade-unit { version }`
      (`meroctl` and the clients: `upgrade_unit`) moves the instance to `version`
      and each member to the release the new one pins for it (else the newest
      installed one in range), with one passkey assertion over the instance, its

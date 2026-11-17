@@ -144,7 +144,7 @@
           a.items.forEach(function (i) { sub.appendChild(el("li", i)); });
         }
       });
-    } else if (m.kind === "upgrade") {
+    } else if (m.kind === "upgrade" || m.kind === "upgradeUnit") {
       box.appendChild(el("p", "No new permissions.", "calm"));
     }
   }
@@ -159,10 +159,11 @@
     check(ul, "Served by your node at " + host + ",", " not by the app.", "Your browser's address bar should show " + host + ".");
     check(ul, "Your passkey will ask to sign in to " + m.rpId + ".", "", "If it shows any other site, cancel.");
     var p = m.publisher;
-    if (p && p.org && (m.kind === "upgrade" || m.kind === "outbound")) {
+    var upgrade = m.kind === "upgrade" || m.kind === "upgradeUnit";
+    if (p && p.org && (upgrade || m.kind === "outbound")) {
       check(ul, end("Published by " + p.org.name), "", "Its signing key is bound to the organization " + p.org.name +
         " on your cluster, and your node verified the signature" + (p.keyChanged ? ", though the key differs from the version you run now." : "."), p.keyChanged);
-    } else if (p && m.kind === "upgrade") {
+    } else if (p && upgrade) {
       if (p.keyChanged) {
         check(ul, "Published by " + (p.name || "an unnamed publisher") + ", signed with a new key.", "", "Your node verified the signature, but the key differs from the version you run now (" + shortKey(p.signer) + ").", true);
       } else {
@@ -216,6 +217,13 @@
     [m.headline, m.before, m.after].concat(m.notes || []).forEach(function (s) { if (s) t.appendChild(el("p", s)); });
     if (m.kind === "release") techRelease(t, m.release);
     if (m.kind === "upgrade") techUpgrade(t, m.upgrade);
+    // A unit: each app's own sheet, the instance first.
+    if (m.kind === "upgradeUnit") {
+      (m.apps || []).forEach(function (a) {
+        t.appendChild(el("h3", a.headline));
+        techUpgrade(t, a.upgrade);
+      });
+    }
     if (m.kind === "outbound") techOutbound(t, m.outbound);
   }
   function techRelease(t, r) {
