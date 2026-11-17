@@ -443,8 +443,8 @@ async fn publish_pushes_the_bundle_to_the_registry() {
         std::fs::read(d.join("out.mpk")).unwrap()
     );
 
-    // A registry and a Cloud manager from before their unversioned routes
-    // serve only `/api/v2/...`: each request falls back to it on the `404`.
+    // Only `/api/...` is called: a registry and a Cloud manager that serve
+    // nothing but `/api/v2/...` are refused with their `404`, not tried there.
     async fn token(Json(body): Json<Value>) -> Json<Value> {
         assert_eq!(body["org"], "o");
         Json(serde_json::json!({"token": "publish-token"}))
@@ -472,9 +472,13 @@ async fn publish_pushes_the_bundle_to_the_registry() {
     ])
     .await
     .unwrap();
-    assert_eq!(ok(&out)["version"], "1.0.0");
-    let (auth, _) = older.lock().unwrap().clone().unwrap();
-    assert_eq!(auth, "Bearer publish-token");
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("404"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(older.lock().unwrap().is_none(), "nothing reached /api/v2");
 
     // A refusal comes back with the registry's code.
     let out = run(vec![
