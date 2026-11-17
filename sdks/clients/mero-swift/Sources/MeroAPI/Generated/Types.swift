@@ -130,6 +130,33 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /apps/{app}/blobs/{id}/revoke`.
     /// - Remark: Generated from `#/paths//apps/{app}/blobs/{id}/revoke/post(blob_revoke)`.
     func blobRevoke(_ input: Operations.BlobRevoke.Input) async throws -> Operations.BlobRevoke.Output
+    /// What you let an app do as you
+    ///
+    /// The apps you let this app call as you, each with the methods (`SetDelegation`). A session bound to an app's frontend reads its own app's only.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/delegations`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/get(app_delegations)`.
+    func appDelegations(_ input: Operations.AppDelegations.Input) async throws -> Operations.AppDelegations.Output
+    /// Let an app call another as you
+    ///
+    /// The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none. A session opened on an app's frontend is refused (`403`): the app asks on the consent page instead (`POST /consent/requests { kind: "delegate" }`).
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/delegations/{target}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/{target}/put(app_delegate)`.
+    func appDelegate(_ input: Operations.AppDelegate.Input) async throws -> Operations.AppDelegate.Output
+    /// Take back what an app may do on another as you
+    ///
+    /// No passkey: it only narrows. `404 NOT_DELEGATED` when you granted nothing there.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/delegations/{target}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/{target}/delete(app_undelegate)`.
+    func appUndelegate(_ input: Operations.AppUndelegate.Input) async throws -> Operations.AppUndelegate.Output
     /// An app's events as server-sent events
     ///
     /// Committed events from index `from`, then live ones, each to its audience.
@@ -232,6 +259,33 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /apps/{app}/intents`.
     /// - Remark: Generated from `#/paths//apps/{app}/intents/post(intents)`.
     func intents(_ input: Operations.Intents.Input) async throws -> Operations.Intents.Output
+    /// List an app's links to the apps its release uses
+    ///
+    /// One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.
+    ///
+    /// **Who:** whoever the app's access admits (a public app: anyone).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/links`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/get(app_links)`.
+    func appLinks(_ input: Operations.AppLinks.Input) async throws -> Operations.AppLinks.Output
+    /// Attach an app to one of an app's references
+    ///
+    /// `name` is an `attach` reference of the release the app runs, and `app` an app of the same organization that runs its package; the caller manages both. One outside the reference's range is attached anyway and answered `inRange: false`, and the consent page warns about it on later upgrades: an attached app is never upgraded with the instance. `env::linked(name)` answers it from the next run on. Answers the link as `GET /apps/{app}/links` lists it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/links/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/{name}/put(app_link)`.
+    func appLink(_ input: Operations.AppLink.Input) async throws -> Operations.AppLink.Output
+    /// Detach an app attached to an app
+    ///
+    /// Whoever manages the app. A member made with the instance is never detached.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/links/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/{name}/delete(app_unlink)`.
+    func appUnlink(_ input: Operations.AppUnlink.Input) async throws -> Operations.AppUnlink.Output
     /// Set an app's metadata
     ///
     /// The owner or an organization admin; 16 KiB at most. `metadata` is the caller's own JSON, free-form, kept as given.
@@ -392,6 +446,33 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `GET /apps/{app}/runs/{run}/logs`.
     /// - Remark: Generated from `#/paths//apps/{app}/runs/{run}/logs/get(app_run_logs)`.
     func appRunLogs(_ input: Operations.AppRunLogs.Input) async throws -> Operations.AppRunLogs.Output
+    /// The secrets an app's release declares
+    ///
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/secrets`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/get(app_secrets)`.
+    func appSecrets(_ input: Operations.AppSecrets.Input) async throws -> Operations.AppSecrets.Output
+    /// Set an app's own value of a declared secret
+    ///
+    /// Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/{name}/put(app_secret_set)`.
+    func appSecretSet(_ input: Operations.AppSecretSet.Input) async throws -> Operations.AppSecretSet.Output
+    /// Remove an app's own value of a secret
+    ///
+    /// The operator's value applies again. Same rules as setting one; a step-up over `{ name }`.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/{name}/delete(app_secret_clear)`.
+    func appSecretClear(_ input: Operations.AppSecretClear.Input) async throws -> Operations.AppSecretClear.Output
     /// What an app stores
     ///
     /// Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).
@@ -419,6 +500,15 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `POST /apps/{app}/upgrade`.
     /// - Remark: Generated from `#/paths//apps/{app}/upgrade/post(app_upgrade)`.
     func appUpgrade(_ input: Operations.AppUpgrade.Input) async throws -> Operations.AppUpgrade.Output
+    /// Upgrade an app and the apps it created, in one consent
+    ///
+    /// An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/upgrade-unit`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-unit/post(app_upgrade_unit)`.
+    func appUpgradeUnit(_ input: Operations.AppUpgradeUnit.Input) async throws -> Operations.AppUpgradeUnit.Output
     /// An app's runs per day
     ///
     /// The owner or an organization admin: `today` and the 30 `days` before it, figures as decimal strings; `wallMs` is information only.
@@ -448,7 +538,7 @@ public protocol APIProtocol: Sendable {
     func appXcalls(_ input: Operations.AppXcalls.Input) async throws -> Operations.AppXcalls.Output
     /// The node's attestation
     ///
-    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
     ///
     /// **Who:** anyone.
     ///
@@ -1639,6 +1729,59 @@ extension APIProtocol {
             headers: headers
         ))
     }
+    /// What you let an app do as you
+    ///
+    /// The apps you let this app call as you, each with the methods (`SetDelegation`). A session bound to an app's frontend reads its own app's only.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/delegations`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/get(app_delegations)`.
+    public func appDelegations(
+        path: Operations.AppDelegations.Input.Path,
+        headers: Operations.AppDelegations.Input.Headers = .init()
+    ) async throws -> Operations.AppDelegations.Output {
+        try await appDelegations(Operations.AppDelegations.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Let an app call another as you
+    ///
+    /// The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none. A session opened on an app's frontend is refused (`403`): the app asks on the consent page instead (`POST /consent/requests { kind: "delegate" }`).
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/delegations/{target}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/{target}/put(app_delegate)`.
+    public func appDelegate(
+        path: Operations.AppDelegate.Input.Path,
+        headers: Operations.AppDelegate.Input.Headers = .init(),
+        body: Operations.AppDelegate.Input.Body
+    ) async throws -> Operations.AppDelegate.Output {
+        try await appDelegate(Operations.AppDelegate.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Take back what an app may do on another as you
+    ///
+    /// No passkey: it only narrows. `404 NOT_DELEGATED` when you granted nothing there.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/delegations/{target}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/{target}/delete(app_undelegate)`.
+    public func appUndelegate(
+        path: Operations.AppUndelegate.Input.Path,
+        headers: Operations.AppUndelegate.Input.Headers = .init()
+    ) async throws -> Operations.AppUndelegate.Output {
+        try await appUndelegate(Operations.AppUndelegate.Input(
+            path: path,
+            headers: headers
+        ))
+    }
     /// An app's events as server-sent events
     ///
     /// Committed events from index `from`, then live ones, each to its audience.
@@ -1844,6 +1987,61 @@ extension APIProtocol {
         body: Operations.Intents.Input.Body
     ) async throws -> Operations.Intents.Output {
         try await intents(Operations.Intents.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// List an app's links to the apps its release uses
+    ///
+    /// One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.
+    ///
+    /// **Who:** whoever the app's access admits (a public app: anyone).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/links`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/get(app_links)`.
+    public func appLinks(
+        path: Operations.AppLinks.Input.Path,
+        headers: Operations.AppLinks.Input.Headers = .init()
+    ) async throws -> Operations.AppLinks.Output {
+        try await appLinks(Operations.AppLinks.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Attach an app to one of an app's references
+    ///
+    /// `name` is an `attach` reference of the release the app runs, and `app` an app of the same organization that runs its package; the caller manages both. One outside the reference's range is attached anyway and answered `inRange: false`, and the consent page warns about it on later upgrades: an attached app is never upgraded with the instance. `env::linked(name)` answers it from the next run on. Answers the link as `GET /apps/{app}/links` lists it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/links/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/{name}/put(app_link)`.
+    public func appLink(
+        path: Operations.AppLink.Input.Path,
+        headers: Operations.AppLink.Input.Headers = .init(),
+        body: Operations.AppLink.Input.Body
+    ) async throws -> Operations.AppLink.Output {
+        try await appLink(Operations.AppLink.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Detach an app attached to an app
+    ///
+    /// Whoever manages the app. A member made with the instance is never detached.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/links/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/{name}/delete(app_unlink)`.
+    public func appUnlink(
+        path: Operations.AppUnlink.Input.Path,
+        headers: Operations.AppUnlink.Input.Headers = .init(),
+        body: Operations.AppUnlink.Input.Body
+    ) async throws -> Operations.AppUnlink.Output {
+        try await appUnlink(Operations.AppUnlink.Input(
             path: path,
             headers: headers,
             body: body
@@ -2173,6 +2371,61 @@ extension APIProtocol {
             headers: headers
         ))
     }
+    /// The secrets an app's release declares
+    ///
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/secrets`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/get(app_secrets)`.
+    public func appSecrets(
+        path: Operations.AppSecrets.Input.Path,
+        headers: Operations.AppSecrets.Input.Headers = .init()
+    ) async throws -> Operations.AppSecrets.Output {
+        try await appSecrets(Operations.AppSecrets.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Set an app's own value of a declared secret
+    ///
+    /// Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/{name}/put(app_secret_set)`.
+    public func appSecretSet(
+        path: Operations.AppSecretSet.Input.Path,
+        headers: Operations.AppSecretSet.Input.Headers = .init(),
+        body: Operations.AppSecretSet.Input.Body
+    ) async throws -> Operations.AppSecretSet.Output {
+        try await appSecretSet(Operations.AppSecretSet.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Remove an app's own value of a secret
+    ///
+    /// The operator's value applies again. Same rules as setting one; a step-up over `{ name }`.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/{name}/delete(app_secret_clear)`.
+    public func appSecretClear(
+        path: Operations.AppSecretClear.Input.Path,
+        headers: Operations.AppSecretClear.Input.Headers = .init(),
+        body: Operations.AppSecretClear.Input.Body? = nil
+    ) async throws -> Operations.AppSecretClear.Output {
+        try await appSecretClear(Operations.AppSecretClear.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
     /// What an app stores
     ///
     /// Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).
@@ -2221,6 +2474,25 @@ extension APIProtocol {
         body: Operations.AppUpgrade.Input.Body
     ) async throws -> Operations.AppUpgrade.Output {
         try await appUpgrade(Operations.AppUpgrade.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Upgrade an app and the apps it created, in one consent
+    ///
+    /// An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/upgrade-unit`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-unit/post(app_upgrade_unit)`.
+    public func appUpgradeUnit(
+        path: Operations.AppUpgradeUnit.Input.Path,
+        headers: Operations.AppUpgradeUnit.Input.Headers = .init(),
+        body: Operations.AppUpgradeUnit.Input.Body
+    ) async throws -> Operations.AppUpgradeUnit.Output {
+        try await appUpgradeUnit(Operations.AppUpgradeUnit.Input(
             path: path,
             headers: headers,
             body: body
@@ -2281,7 +2553,7 @@ extension APIProtocol {
     }
     /// The node's attestation
     ///
-    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
     ///
     /// **Who:** anyone.
     ///
@@ -5746,6 +6018,49 @@ public enum Components {
             public var failed: Components.Schemas.UpgradeRun.FailedPayload
             /// - Remark: Generated from `#/components/schemas/UpgradeRun/finished`.
             public var finished: Swift.Bool
+            /// - Remark: Generated from `#/components/schemas/UpgradeRun/targets`.
+            public struct TargetsPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/UpgradeRun/targets/additionalProperties`.
+                public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/components/schemas/UpgradeRun/targets/additionalProperties/package`.
+                    public var package: Swift.String
+                    /// - Remark: Generated from `#/components/schemas/UpgradeRun/targets/additionalProperties/version`.
+                    public var version: Swift.String
+                    /// Creates a new `AdditionalPropertiesPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - package:
+                    ///   - version:
+                    public init(
+                        package: Swift.String,
+                        version: Swift.String
+                    ) {
+                        self.package = package
+                        self.version = version
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case package
+                        case version
+                    }
+                }
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Components.Schemas.UpgradeRun.TargetsPayload.AdditionalPropertiesPayload]
+                /// Creates a new `TargetsPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Components.Schemas.UpgradeRun.TargetsPayload.AdditionalPropertiesPayload] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/UpgradeRun/targets`.
+            public var targets: Components.Schemas.UpgradeRun.TargetsPayload?
             /// Creates a new `UpgradeRun`.
             ///
             /// - Parameters:
@@ -5760,6 +6075,7 @@ public enum Components {
             ///   - done:
             ///   - failed:
             ///   - finished:
+            ///   - targets:
             public init(
                 runId: Swift.String,
                 package: Swift.String,
@@ -5771,7 +6087,8 @@ public enum Components {
                 apps: [Swift.String],
                 done: [Swift.String],
                 failed: Components.Schemas.UpgradeRun.FailedPayload,
-                finished: Swift.Bool
+                finished: Swift.Bool,
+                targets: Components.Schemas.UpgradeRun.TargetsPayload? = nil
             ) {
                 self.runId = runId
                 self.package = package
@@ -5784,6 +6101,7 @@ public enum Components {
                 self.done = done
                 self.failed = failed
                 self.finished = finished
+                self.targets = targets
             }
             public enum CodingKeys: String, CodingKey {
                 case runId
@@ -5797,6 +6115,7 @@ public enum Components {
                 case done
                 case failed
                 case finished
+                case targets
             }
         }
         /// An app instance (a context) as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way.
@@ -5906,6 +6225,46 @@ public enum Components {
             }
             /// - Remark: Generated from `#/components/schemas/App/restore`.
             public var restore: Components.Schemas.App.RestorePayload?
+            /// - Remark: Generated from `#/components/schemas/App/links`.
+            public struct LinksPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Swift.String]
+                /// Creates a new `LinksPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Swift.String] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/App/links`.
+            public var links: Components.Schemas.App.LinksPayload?
+            /// - Remark: Generated from `#/components/schemas/App/attached`.
+            public struct AttachedPayload: Codable, Hashable, Sendable {
+                /// A container of undocumented properties.
+                public var additionalProperties: [String: Swift.String]
+                /// Creates a new `AttachedPayload`.
+                ///
+                /// - Parameters:
+                ///   - additionalProperties: A container of undocumented properties.
+                public init(additionalProperties: [String: Swift.String] = .init()) {
+                    self.additionalProperties = additionalProperties
+                }
+                public init(from decoder: any Decoder) throws {
+                    additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                }
+                public func encode(to encoder: any Encoder) throws {
+                    try encoder.encodeAdditionalProperties(additionalProperties)
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/App/attached`.
+            public var attached: Components.Schemas.App.AttachedPayload?
             /// Creates a new `App`.
             ///
             /// - Parameters:
@@ -5928,6 +6287,8 @@ public enum Components {
             ///   - deployment:
             ///   - release:
             ///   - restore:
+            ///   - links:
+            ///   - attached:
             public init(
                 appId: Swift.String,
                 name: Swift.String,
@@ -5947,7 +6308,9 @@ public enum Components {
                 lastUpgrade: Components.Schemas.Upgrade? = nil,
                 deployment: Swift.String? = nil,
                 release: Components.Schemas.PackageRef? = nil,
-                restore: Components.Schemas.App.RestorePayload? = nil
+                restore: Components.Schemas.App.RestorePayload? = nil,
+                links: Components.Schemas.App.LinksPayload? = nil,
+                attached: Components.Schemas.App.AttachedPayload? = nil
             ) {
                 self.appId = appId
                 self.name = name
@@ -5968,6 +6331,8 @@ public enum Components {
                 self.deployment = deployment
                 self.release = release
                 self.restore = restore
+                self.links = links
+                self.attached = attached
             }
             public enum CodingKeys: String, CodingKey {
                 case appId
@@ -5989,6 +6354,8 @@ public enum Components {
                 case deployment
                 case release
                 case restore
+                case links
+                case attached
             }
         }
         /// An app as `GET /apps` lists it: `package` and `version` name the release its bundle came from (`null` for a raw upload), `deployment` the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1).
@@ -8349,6 +8716,158 @@ public enum Components {
                 )
                 self.subject = try container.decode(
                     Components.Schemas.ConsentPageCreateBodyUpgrade.SubjectPayload.self,
+                    forKey: .subject
+                )
+                self.returnTo = try container.decode(
+                    Swift.String.self,
+                    forKey: .returnTo
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "kind",
+                    "subject",
+                    "returnTo"
+                ])
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpgradeUnit`.
+        public struct ConsentPageCreateBodyUpgradeUnit: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpgradeUnit/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case upgradeUnit = "upgradeUnit"
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpgradeUnit/kind`.
+            public var kind: Components.Schemas.ConsentPageCreateBodyUpgradeUnit.KindPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpgradeUnit/subject`.
+            public struct SubjectPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpgradeUnit/subject/app`.
+                public var app: Swift.String
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpgradeUnit/subject/toVersion`.
+                public var toVersion: Swift.String
+                /// Creates a new `SubjectPayload`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                ///   - toVersion:
+                public init(
+                    app: Swift.String,
+                    toVersion: Swift.String
+                ) {
+                    self.app = app
+                    self.toVersion = toVersion
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case app
+                    case toVersion
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpgradeUnit/subject`.
+            public var subject: Components.Schemas.ConsentPageCreateBodyUpgradeUnit.SubjectPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyUpgradeUnit/returnTo`.
+            public var returnTo: Swift.String
+            /// Creates a new `ConsentPageCreateBodyUpgradeUnit`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - subject:
+            ///   - returnTo:
+            public init(
+                kind: Components.Schemas.ConsentPageCreateBodyUpgradeUnit.KindPayload,
+                subject: Components.Schemas.ConsentPageCreateBodyUpgradeUnit.SubjectPayload,
+                returnTo: Swift.String
+            ) {
+                self.kind = kind
+                self.subject = subject
+                self.returnTo = returnTo
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case subject
+                case returnTo
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.kind = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodyUpgradeUnit.KindPayload.self,
+                    forKey: .kind
+                )
+                self.subject = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodyUpgradeUnit.SubjectPayload.self,
+                    forKey: .subject
+                )
+                self.returnTo = try container.decode(
+                    Swift.String.self,
+                    forKey: .returnTo
+                )
+                try decoder.ensureNoAdditionalProperties(knownKeys: [
+                    "kind",
+                    "subject",
+                    "returnTo"
+                ])
+            }
+        }
+        /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyDelegate`.
+        public struct ConsentPageCreateBodyDelegate: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyDelegate/kind`.
+            @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
+                case delegate = "delegate"
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyDelegate/kind`.
+            public var kind: Components.Schemas.ConsentPageCreateBodyDelegate.KindPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyDelegate/subject`.
+            public struct SubjectPayload: Codable, Hashable, Sendable {
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyDelegate/subject/app`.
+                public var app: Swift.String
+                /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyDelegate/subject/target`.
+                public var target: Swift.String
+                /// Creates a new `SubjectPayload`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                ///   - target:
+                public init(
+                    app: Swift.String,
+                    target: Swift.String
+                ) {
+                    self.app = app
+                    self.target = target
+                }
+                public enum CodingKeys: String, CodingKey {
+                    case app
+                    case target
+                }
+            }
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyDelegate/subject`.
+            public var subject: Components.Schemas.ConsentPageCreateBodyDelegate.SubjectPayload
+            /// - Remark: Generated from `#/components/schemas/ConsentPageCreateBodyDelegate/returnTo`.
+            public var returnTo: Swift.String
+            /// Creates a new `ConsentPageCreateBodyDelegate`.
+            ///
+            /// - Parameters:
+            ///   - kind:
+            ///   - subject:
+            ///   - returnTo:
+            public init(
+                kind: Components.Schemas.ConsentPageCreateBodyDelegate.KindPayload,
+                subject: Components.Schemas.ConsentPageCreateBodyDelegate.SubjectPayload,
+                returnTo: Swift.String
+            ) {
+                self.kind = kind
+                self.subject = subject
+                self.returnTo = returnTo
+            }
+            public enum CodingKeys: String, CodingKey {
+                case kind
+                case subject
+                case returnTo
+            }
+            public init(from decoder: any Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                self.kind = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodyDelegate.KindPayload.self,
+                    forKey: .kind
+                )
+                self.subject = try container.decode(
+                    Components.Schemas.ConsentPageCreateBodyDelegate.SubjectPayload.self,
                     forKey: .subject
                 )
                 self.returnTo = try container.decode(
@@ -11864,6 +12383,520 @@ public enum Operations {
             }
         }
     }
+    /// What you let an app do as you
+    ///
+    /// The apps you let this app call as you, each with the methods (`SetDelegation`). A session bound to an app's frontend reads its own app's only.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/delegations`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/get(app_delegations)`.
+    public enum AppDelegations {
+        public static let id: Swift.String = "app_delegations"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppDelegations.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppDelegations.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppDelegations.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppDelegations.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.AppDelegations.Input.Path,
+                headers: Operations.AppDelegations.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content/json/source`.
+                        public var source: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content/json/delegations`.
+                        public struct DelegationsPayload: Codable, Hashable, Sendable {
+                            /// A container of undocumented properties.
+                            public var additionalProperties: [String: [Swift.String]]
+                            /// Creates a new `DelegationsPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - additionalProperties: A container of undocumented properties.
+                            public init(additionalProperties: [String: [Swift.String]] = .init()) {
+                                self.additionalProperties = additionalProperties
+                            }
+                            public init(from decoder: any Decoder) throws {
+                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                            }
+                            public func encode(to encoder: any Encoder) throws {
+                                try encoder.encodeAdditionalProperties(additionalProperties)
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content/json/delegations`.
+                        public var delegations: Operations.AppDelegations.Output.Ok.Body.JsonPayload.DelegationsPayload
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - source:
+                        ///   - delegations:
+                        public init(
+                            source: Swift.String,
+                            delegations: Operations.AppDelegations.Output.Ok.Body.JsonPayload.DelegationsPayload
+                        ) {
+                            self.source = source
+                            self.delegations = delegations
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case source
+                            case delegations
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/delegations/GET/responses/200/content/application\/json`.
+                    case json(Operations.AppDelegations.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppDelegations.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppDelegations.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppDelegations.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/delegations/get(app_delegations)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppDelegations.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppDelegations.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Let an app call another as you
+    ///
+    /// The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none. A session opened on an app's frontend is refused (`403`): the app asks on the consent page instead (`POST /consent/requests { kind: "delegate" }`).
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/delegations/{target}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/{target}/put(app_delegate)`.
+    public enum AppDelegate {
+        public static let id: Swift.String = "app_delegate"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/path/app`.
+                public var app: Swift.String
+                /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/path/target`.
+                public var target: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                ///   - target:
+                public init(
+                    app: Swift.String,
+                    target: Swift.String
+                ) {
+                    self.app = app
+                    self.target = target
+                }
+            }
+            public var path: Operations.AppDelegate.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppDelegate.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppDelegate.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppDelegate.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - confirm:
+                    public init(confirm: Components.Schemas.Confirm? = nil) {
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/requestBody/content/application\/json`.
+                case json(Operations.AppDelegate.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppDelegate.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppDelegate.Input.Path,
+                headers: Operations.AppDelegate.Input.Headers = .init(),
+                body: Operations.AppDelegate.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content/json/source`.
+                        public var source: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content/json/target`.
+                        public var target: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content/json/methods`.
+                        public var methods: [Swift.String]
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - source:
+                        ///   - target:
+                        ///   - methods:
+                        public init(
+                            source: Swift.String,
+                            target: Swift.String,
+                            methods: [Swift.String]
+                        ) {
+                            self.source = source
+                            self.target = target
+                            self.methods = methods
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case source
+                            case target
+                            case methods
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/PUT/responses/200/content/application\/json`.
+                    case json(Operations.AppDelegate.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppDelegate.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppDelegate.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppDelegate.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/delegations/{target}/put(app_delegate)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppDelegate.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppDelegate.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Take back what an app may do on another as you
+    ///
+    /// No passkey: it only narrows. `404 NOT_DELEGATED` when you granted nothing there.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/delegations/{target}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/{target}/delete(app_undelegate)`.
+    public enum AppUndelegate {
+        public static let id: Swift.String = "app_undelegate"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/DELETE/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/DELETE/path/app`.
+                public var app: Swift.String
+                /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/DELETE/path/target`.
+                public var target: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                ///   - target:
+                public init(
+                    app: Swift.String,
+                    target: Swift.String
+                ) {
+                    self.app = app
+                    self.target = target
+                }
+            }
+            public var path: Operations.AppUndelegate.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/DELETE/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUndelegate.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUndelegate.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppUndelegate.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.AppUndelegate.Input.Path,
+                headers: Operations.AppUndelegate.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/DELETE/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/delegations/{target}/DELETE/responses/200/content/application\/json`.
+                    case json(OpenAPIRuntime.OpenAPIObjectContainer)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: OpenAPIRuntime.OpenAPIObjectContainer {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppUndelegate.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppUndelegate.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/delegations/{target}/delete(app_undelegate)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppUndelegate.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppUndelegate.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
     /// An app's events as server-sent events
     ///
     /// Committed events from index `from`, then live ones, each to its audience.
@@ -13989,6 +15022,628 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.Intents.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// List an app's links to the apps its release uses
+    ///
+    /// One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.
+    ///
+    /// **Who:** whoever the app's access admits (a public app: anyone).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/links`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/get(app_links)`.
+    public enum AppLinks {
+        public static let id: Swift.String = "app_links"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/links/GET/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppLinks.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppLinks.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppLinks.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppLinks.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.AppLinks.Input.Path,
+                headers: Operations.AppLinks.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/app`.
+                        public var app: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload`.
+                        public struct LinksPayloadPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/name`.
+                            public var name: Swift.String
+                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/package`.
+                            public var package: Swift.String?
+                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/range`.
+                            public var range: Swift.String?
+                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/mode`.
+                            public var mode: Swift.String?
+                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/app`.
+                            public var app: Swift.String?
+                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/version`.
+                            public var version: Swift.String?
+                            /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/LinksPayload/inRange`.
+                            public var inRange: Swift.Bool?
+                            /// Creates a new `LinksPayloadPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - name:
+                            ///   - package:
+                            ///   - range:
+                            ///   - mode:
+                            ///   - app:
+                            ///   - version:
+                            ///   - inRange:
+                            public init(
+                                name: Swift.String,
+                                package: Swift.String? = nil,
+                                range: Swift.String? = nil,
+                                mode: Swift.String? = nil,
+                                app: Swift.String? = nil,
+                                version: Swift.String? = nil,
+                                inRange: Swift.Bool? = nil
+                            ) {
+                                self.name = name
+                                self.package = package
+                                self.range = range
+                                self.mode = mode
+                                self.app = app
+                                self.version = version
+                                self.inRange = inRange
+                            }
+                            public enum CodingKeys: String, CodingKey {
+                                case name
+                                case package
+                                case range
+                                case mode
+                                case app
+                                case version
+                                case inRange
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/links`.
+                        public typealias LinksPayload = [Operations.AppLinks.Output.Ok.Body.JsonPayload.LinksPayloadPayload]
+                        /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/json/links`.
+                        public var links: Operations.AppLinks.Output.Ok.Body.JsonPayload.LinksPayload
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - app:
+                        ///   - links:
+                        public init(
+                            app: Swift.String,
+                            links: Operations.AppLinks.Output.Ok.Body.JsonPayload.LinksPayload
+                        ) {
+                            self.app = app
+                            self.links = links
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case app
+                            case links
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/links/GET/responses/200/content/application\/json`.
+                    case json(Operations.AppLinks.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppLinks.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppLinks.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppLinks.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/links/get(app_links)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppLinks.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppLinks.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Attach an app to one of an app's references
+    ///
+    /// `name` is an `attach` reference of the release the app runs, and `app` an app of the same organization that runs its package; the caller manages both. One outside the reference's range is attached anyway and answered `inRange: false`, and the consent page warns about it on later upgrades: an attached app is never upgraded with the instance. `env::linked(name)` answers it from the next run on. Answers the link as `GET /apps/{app}/links` lists it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/links/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/{name}/put(app_link)`.
+    public enum AppLink {
+        public static let id: Swift.String = "app_link"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/path/app`.
+                public var app: Swift.String
+                /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/path/name`.
+                public var name: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                ///   - name:
+                public init(
+                    app: Swift.String,
+                    name: Swift.String
+                ) {
+                    self.app = app
+                    self.name = name
+                }
+            }
+            public var path: Operations.AppLink.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppLink.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppLink.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppLink.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/requestBody/json/app`.
+                    public var app: Swift.String
+                    /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - app:
+                    ///   - confirm:
+                    public init(
+                        app: Swift.String,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.app = app
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case app
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.app = try container.decode(
+                            Swift.String.self,
+                            forKey: .app
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "app",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/requestBody/content/application\/json`.
+                case json(Operations.AppLink.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppLink.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppLink.Input.Path,
+                headers: Operations.AppLink.Input.Headers = .init(),
+                body: Operations.AppLink.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/name`.
+                        public var name: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/package`.
+                        public var package: Swift.String?
+                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/range`.
+                        public var range: Swift.String?
+                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/mode`.
+                        public var mode: Swift.String?
+                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/app`.
+                        public var app: Swift.String?
+                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/version`.
+                        public var version: Swift.String?
+                        /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/json/inRange`.
+                        public var inRange: Swift.Bool?
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - name:
+                        ///   - package:
+                        ///   - range:
+                        ///   - mode:
+                        ///   - app:
+                        ///   - version:
+                        ///   - inRange:
+                        public init(
+                            name: Swift.String,
+                            package: Swift.String? = nil,
+                            range: Swift.String? = nil,
+                            mode: Swift.String? = nil,
+                            app: Swift.String? = nil,
+                            version: Swift.String? = nil,
+                            inRange: Swift.Bool? = nil
+                        ) {
+                            self.name = name
+                            self.package = package
+                            self.range = range
+                            self.mode = mode
+                            self.app = app
+                            self.version = version
+                            self.inRange = inRange
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case name
+                            case package
+                            case range
+                            case mode
+                            case app
+                            case version
+                            case inRange
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/PUT/responses/200/content/application\/json`.
+                    case json(Operations.AppLink.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppLink.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppLink.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppLink.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/links/{name}/put(app_link)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppLink.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppLink.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Detach an app attached to an app
+    ///
+    /// Whoever manages the app. A member made with the instance is never detached.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/links/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/{name}/delete(app_unlink)`.
+    public enum AppUnlink {
+        public static let id: Swift.String = "app_unlink"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/DELETE/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/DELETE/path/app`.
+                public var app: Swift.String
+                /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/DELETE/path/name`.
+                public var name: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                ///   - name:
+                public init(
+                    app: Swift.String,
+                    name: Swift.String
+                ) {
+                    self.app = app
+                    self.name = name
+                }
+            }
+            public var path: Operations.AppUnlink.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/DELETE/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUnlink.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUnlink.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppUnlink.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/DELETE/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/DELETE/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/DELETE/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - confirm:
+                    public init(confirm: Components.Schemas.Confirm? = nil) {
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/DELETE/requestBody/content/application\/json`.
+                case json(Operations.AppUnlink.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppUnlink.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppUnlink.Input.Path,
+                headers: Operations.AppUnlink.Input.Headers = .init(),
+                body: Operations.AppUnlink.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/DELETE/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/links/{name}/DELETE/responses/200/content/application\/json`.
+                    case json(OpenAPIRuntime.OpenAPIObjectContainer)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: OpenAPIRuntime.OpenAPIObjectContainer {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppUnlink.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppUnlink.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/links/{name}/delete(app_unlink)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppUnlink.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppUnlink.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):
@@ -17506,6 +19161,600 @@ public enum Operations {
             }
         }
     }
+    /// The secrets an app's release declares
+    ///
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/secrets`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/get(app_secrets)`.
+    public enum AppSecrets {
+        public static let id: Swift.String = "app_secrets"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppSecrets.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppSecrets.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppSecrets.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppSecrets.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.AppSecrets.Input.Path,
+                headers: Operations.AppSecrets.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets`.
+                        public struct SecretsPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties`.
+                            public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/hosts`.
+                                public var hosts: [Swift.String]
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/description`.
+                                public var description: Swift.String
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/required`.
+                                public var required: Swift.Bool
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/source`.
+                                @frozen public enum SourcePayload: String, Codable, Hashable, Sendable, CaseIterable {
+                                    case app = "app"
+                                    case cluster = "cluster"
+                                }
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/source`.
+                                public var source: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.SourcePayload
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/fingerprint`.
+                                public var fingerprint: Swift.String?
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/setBy`.
+                                public var setBy: Swift.String?
+                                /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/setAt`.
+                                public var setAt: Swift.Int64?
+                                /// Creates a new `AdditionalPropertiesPayload`.
+                                ///
+                                /// - Parameters:
+                                ///   - hosts:
+                                ///   - description:
+                                ///   - required:
+                                ///   - source:
+                                ///   - fingerprint:
+                                ///   - setBy:
+                                ///   - setAt:
+                                public init(
+                                    hosts: [Swift.String],
+                                    description: Swift.String,
+                                    required: Swift.Bool,
+                                    source: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload.SourcePayload,
+                                    fingerprint: Swift.String? = nil,
+                                    setBy: Swift.String? = nil,
+                                    setAt: Swift.Int64? = nil
+                                ) {
+                                    self.hosts = hosts
+                                    self.description = description
+                                    self.required = required
+                                    self.source = source
+                                    self.fingerprint = fingerprint
+                                    self.setBy = setBy
+                                    self.setAt = setAt
+                                }
+                                public enum CodingKeys: String, CodingKey {
+                                    case hosts
+                                    case description
+                                    case required
+                                    case source
+                                    case fingerprint
+                                    case setBy
+                                    case setAt
+                                }
+                            }
+                            /// A container of undocumented properties.
+                            public var additionalProperties: [String: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload]
+                            /// Creates a new `SecretsPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - additionalProperties: A container of undocumented properties.
+                            public init(additionalProperties: [String: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload] = .init()) {
+                                self.additionalProperties = additionalProperties
+                            }
+                            public init(from decoder: any Decoder) throws {
+                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                            }
+                            public func encode(to encoder: any Encoder) throws {
+                                try encoder.encodeAdditionalProperties(additionalProperties)
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets`.
+                        public var secrets: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - secrets:
+                        public init(secrets: Operations.AppSecrets.Output.Ok.Body.JsonPayload.SecretsPayload) {
+                            self.secrets = secrets
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case secrets
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/application\/json`.
+                    case json(Operations.AppSecrets.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppSecrets.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppSecrets.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppSecrets.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/secrets/get(app_secrets)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppSecrets.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppSecrets.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Set an app's own value of a declared secret
+    ///
+    /// Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/{name}/put(app_secret_set)`.
+    public enum AppSecretSet {
+        public static let id: Swift.String = "app_secret_set"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/path/app`.
+                public var app: Swift.String
+                /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/path/name`.
+                public var name: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                ///   - name:
+                public init(
+                    app: Swift.String,
+                    name: Swift.String
+                ) {
+                    self.app = app
+                    self.name = name
+                }
+            }
+            public var path: Operations.AppSecretSet.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppSecretSet.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppSecretSet.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppSecretSet.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/requestBody/json/value`.
+                    public var value: Swift.String
+                    /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - value:
+                    ///   - confirm:
+                    public init(
+                        value: Swift.String,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.value = value
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case value
+                        case confirm
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/requestBody/content/application\/json`.
+                case json(Operations.AppSecretSet.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppSecretSet.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppSecretSet.Input.Path,
+                headers: Operations.AppSecretSet.Input.Headers = .init(),
+                body: Operations.AppSecretSet.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content/json/name`.
+                        public var name: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content/json/fingerprint`.
+                        public var fingerprint: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content/json/index`.
+                        public var index: Swift.Int64
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - name:
+                        ///   - fingerprint:
+                        ///   - index:
+                        public init(
+                            name: Swift.String,
+                            fingerprint: Swift.String,
+                            index: Swift.Int64
+                        ) {
+                            self.name = name
+                            self.fingerprint = fingerprint
+                            self.index = index
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case name
+                            case fingerprint
+                            case index
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/PUT/responses/200/content/application\/json`.
+                    case json(Operations.AppSecretSet.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppSecretSet.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppSecretSet.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppSecretSet.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/secrets/{name}/put(app_secret_set)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppSecretSet.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppSecretSet.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Remove an app's own value of a secret
+    ///
+    /// The operator's value applies again. Same rules as setting one; a step-up over `{ name }`.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/{name}/delete(app_secret_clear)`.
+    public enum AppSecretClear {
+        public static let id: Swift.String = "app_secret_clear"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/path/app`.
+                public var app: Swift.String
+                /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/path/name`.
+                public var name: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                ///   - name:
+                public init(
+                    app: Swift.String,
+                    name: Swift.String
+                ) {
+                    self.app = app
+                    self.name = name
+                }
+            }
+            public var path: Operations.AppSecretClear.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppSecretClear.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppSecretClear.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppSecretClear.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/requestBody/content/application\/json`.
+                case json(Components.Schemas.ConfirmOnly)
+            }
+            public var body: Operations.AppSecretClear.Input.Body?
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppSecretClear.Input.Path,
+                headers: Operations.AppSecretClear.Input.Headers = .init(),
+                body: Operations.AppSecretClear.Input.Body? = nil
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/responses/200/content/json/name`.
+                        public var name: Swift.String
+                        /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/responses/200/content/json/index`.
+                        public var index: Swift.Int64
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - name:
+                        ///   - index:
+                        public init(
+                            name: Swift.String,
+                            index: Swift.Int64
+                        ) {
+                            self.name = name
+                            self.index = index
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case name
+                            case index
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/apps/{app}/secrets/{name}/DELETE/responses/200/content/application\/json`.
+                    case json(Operations.AppSecretClear.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.AppSecretClear.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppSecretClear.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppSecretClear.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/secrets/{name}/delete(app_secret_clear)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppSecretClear.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppSecretClear.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
     /// What an app stores
     ///
     /// Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).
@@ -17969,6 +20218,170 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.AppUpgrade.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Upgrade an app and the apps it created, in one consent
+    ///
+    /// An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/upgrade-unit`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-unit/post(app_upgrade_unit)`.
+    public enum AppUpgradeUnit {
+        public static let id: Swift.String = "app_upgrade_unit"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/upgrade-unit/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-unit/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppUpgradeUnit.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/upgrade-unit/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUpgradeUnit.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppUpgradeUnit.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppUpgradeUnit.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/upgrade-unit/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-unit/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-unit/POST/requestBody/json/version`.
+                    public var version: Swift.String
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-unit/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - version:
+                    ///   - confirm:
+                    public init(
+                        version: Swift.String,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.version = version
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case version
+                        case confirm
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-unit/POST/requestBody/content/application\/json`.
+                case json(Operations.AppUpgradeUnit.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppUpgradeUnit.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppUpgradeUnit.Input.Path,
+                headers: Operations.AppUpgradeUnit.Input.Headers = .init(),
+                body: Operations.AppUpgradeUnit.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/upgrade-unit/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/upgrade-unit/POST/responses/200/content/application\/json`.
+                    case json(Components.Schemas.UpgradeRun)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Components.Schemas.UpgradeRun {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppUpgradeUnit.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppUpgradeUnit.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/upgrade-unit/post(app_upgrade_unit)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppUpgradeUnit.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppUpgradeUnit.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):
@@ -18538,7 +20951,7 @@ public enum Operations {
     }
     /// The node's attestation
     ///
-    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
     ///
     /// **Who:** anyone.
     ///
@@ -24162,6 +26575,8 @@ public enum Operations {
                     case createInvite(Components.Schemas.ConsentPageCreateBodyCreateInvite)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyCreateOrg`.
                     case createOrg(Components.Schemas.ConsentPageCreateBodyCreateOrg)
+                    /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyDelegate`.
+                    case delegate(Components.Schemas.ConsentPageCreateBodyDelegate)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyDeleteOrg`.
                     case deleteOrg(Components.Schemas.ConsentPageCreateBodyDeleteOrg)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyLeaveOrg`.
@@ -24188,6 +26603,8 @@ public enum Operations {
                     case setMemberTeams(Components.Schemas.ConsentPageCreateBodySetMemberTeams)
                     /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyUpgrade`.
                     case upgrade(Components.Schemas.ConsentPageCreateBodyUpgrade)
+                    /// - Remark: Generated from `#/paths/consent/requests/POST/requestBody/json/ConsentPageCreateBodyUpgradeUnit`.
+                    case upgradeUnit(Components.Schemas.ConsentPageCreateBodyUpgradeUnit)
                     public enum CodingKeys: String, CodingKey {
                         case kind
                     }
@@ -24204,6 +26621,8 @@ public enum Operations {
                             self = .createInvite(try .init(from: decoder))
                         case "createOrg":
                             self = .createOrg(try .init(from: decoder))
+                        case "delegate":
+                            self = .delegate(try .init(from: decoder))
                         case "deleteOrg":
                             self = .deleteOrg(try .init(from: decoder))
                         case "leaveOrg":
@@ -24230,6 +26649,8 @@ public enum Operations {
                             self = .setMemberTeams(try .init(from: decoder))
                         case "upgrade":
                             self = .upgrade(try .init(from: decoder))
+                        case "upgradeUnit":
+                            self = .upgradeUnit(try .init(from: decoder))
                         default:
                             throw Swift.DecodingError.unknownOneOfDiscriminator(
                                 discriminatorKey: CodingKeys.kind,
@@ -24245,6 +26666,8 @@ public enum Operations {
                         case let .createInvite(value):
                             try value.encode(to: encoder)
                         case let .createOrg(value):
+                            try value.encode(to: encoder)
+                        case let .delegate(value):
                             try value.encode(to: encoder)
                         case let .deleteOrg(value):
                             try value.encode(to: encoder)
@@ -24271,6 +26694,8 @@ public enum Operations {
                         case let .setMemberTeams(value):
                             try value.encode(to: encoder)
                         case let .upgrade(value):
+                            try value.encode(to: encoder)
+                        case let .upgradeUnit(value):
                             try value.encode(to: encoder)
                         }
                     }
@@ -24471,6 +26896,8 @@ public enum Operations {
                         @frozen public enum KindPayload: String, Codable, Hashable, Sendable, CaseIterable {
                             case release = "release"
                             case upgrade = "upgrade"
+                            case upgradeUnit = "upgradeUnit"
+                            case delegate = "delegate"
                             case outbound = "outbound"
                             case createOrg = "createOrg"
                             case createInvite = "createInvite"

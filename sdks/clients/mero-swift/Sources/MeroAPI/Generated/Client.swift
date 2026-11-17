@@ -974,6 +974,215 @@ public struct Client: APIProtocol {
             }
         )
     }
+    /// What you let an app do as you
+    ///
+    /// The apps you let this app call as you, each with the methods (`SetDelegation`). A session bound to an app's frontend reads its own app's only.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/delegations`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/get(app_delegations)`.
+    public func appDelegations(_ input: Operations.AppDelegations.Input) async throws -> Operations.AppDelegations.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppDelegations.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/delegations",
+                    parameters: [
+                        input.path.app
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .get
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                return (request, nil)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppDelegations.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Operations.AppDelegations.Output.Ok.Body.JsonPayload.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Let an app call another as you
+    ///
+    /// The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none. A session opened on an app's frontend is refused (`403`): the app asks on the consent page instead (`POST /consent/requests { kind: "delegate" }`).
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/delegations/{target}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/{target}/put(app_delegate)`.
+    public func appDelegate(_ input: Operations.AppDelegate.Input) async throws -> Operations.AppDelegate.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppDelegate.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/delegations/{}",
+                    parameters: [
+                        input.path.app,
+                        input.path.target
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .put
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case let .json(value):
+                    body = try converter.setRequiredRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppDelegate.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Operations.AppDelegate.Output.Ok.Body.JsonPayload.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Take back what an app may do on another as you
+    ///
+    /// No passkey: it only narrows. `404 NOT_DELEGATED` when you granted nothing there.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/delegations/{target}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/delegations/{target}/delete(app_undelegate)`.
+    public func appUndelegate(_ input: Operations.AppUndelegate.Input) async throws -> Operations.AppUndelegate.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppUndelegate.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/delegations/{}",
+                    parameters: [
+                        input.path.app,
+                        input.path.target
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .delete
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                return (request, nil)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppUndelegate.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            OpenAPIRuntime.OpenAPIObjectContainer.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
     /// An app's events as server-sent events
     ///
     /// Committed events from index `from`, then live ones, each to its audience.
@@ -1800,6 +2009,224 @@ public struct Client: APIProtocol {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
                             Operations.Intents.Output.Ok.Body.JsonPayload.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// List an app's links to the apps its release uses
+    ///
+    /// One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.
+    ///
+    /// **Who:** whoever the app's access admits (a public app: anyone).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/links`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/get(app_links)`.
+    public func appLinks(_ input: Operations.AppLinks.Input) async throws -> Operations.AppLinks.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppLinks.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/links",
+                    parameters: [
+                        input.path.app
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .get
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                return (request, nil)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppLinks.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Operations.AppLinks.Output.Ok.Body.JsonPayload.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Attach an app to one of an app's references
+    ///
+    /// `name` is an `attach` reference of the release the app runs, and `app` an app of the same organization that runs its package; the caller manages both. One outside the reference's range is attached anyway and answered `inRange: false`, and the consent page warns about it on later upgrades: an attached app is never upgraded with the instance. `env::linked(name)` answers it from the next run on. Answers the link as `GET /apps/{app}/links` lists it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/links/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/{name}/put(app_link)`.
+    public func appLink(_ input: Operations.AppLink.Input) async throws -> Operations.AppLink.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppLink.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/links/{}",
+                    parameters: [
+                        input.path.app,
+                        input.path.name
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .put
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case let .json(value):
+                    body = try converter.setRequiredRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppLink.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Operations.AppLink.Output.Ok.Body.JsonPayload.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Detach an app attached to an app
+    ///
+    /// Whoever manages the app. A member made with the instance is never detached.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/links/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/links/{name}/delete(app_unlink)`.
+    public func appUnlink(_ input: Operations.AppUnlink.Input) async throws -> Operations.AppUnlink.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppUnlink.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/links/{}",
+                    parameters: [
+                        input.path.app,
+                        input.path.name
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .delete
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case let .json(value):
+                    body = try converter.setRequiredRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppUnlink.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            OpenAPIRuntime.OpenAPIObjectContainer.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3108,6 +3535,226 @@ public struct Client: APIProtocol {
             }
         )
     }
+    /// The secrets an app's release declares
+    ///
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/secrets`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/get(app_secrets)`.
+    public func appSecrets(_ input: Operations.AppSecrets.Input) async throws -> Operations.AppSecrets.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppSecrets.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/secrets",
+                    parameters: [
+                        input.path.app
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .get
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                return (request, nil)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppSecrets.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Operations.AppSecrets.Output.Ok.Body.JsonPayload.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Set an app's own value of a declared secret
+    ///
+    /// Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /apps/{app}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/{name}/put(app_secret_set)`.
+    public func appSecretSet(_ input: Operations.AppSecretSet.Input) async throws -> Operations.AppSecretSet.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppSecretSet.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/secrets/{}",
+                    parameters: [
+                        input.path.app,
+                        input.path.name
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .put
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case let .json(value):
+                    body = try converter.setRequiredRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppSecretSet.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Operations.AppSecretSet.Output.Ok.Body.JsonPayload.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Remove an app's own value of a secret
+    ///
+    /// The operator's value applies again. Same rules as setting one; a step-up over `{ name }`.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//apps/{app}/secrets/{name}/delete(app_secret_clear)`.
+    public func appSecretClear(_ input: Operations.AppSecretClear.Input) async throws -> Operations.AppSecretClear.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppSecretClear.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/secrets/{}",
+                    parameters: [
+                        input.path.app,
+                        input.path.name
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .delete
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case .none:
+                    body = nil
+                case let .json(value):
+                    body = try converter.setOptionalRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppSecretClear.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Operations.AppSecretClear.Output.Ok.Body.JsonPayload.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
     /// What an app stores
     ///
     /// Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).
@@ -3279,6 +3926,81 @@ public struct Client: APIProtocol {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
                             Operations.AppUpgrade.Output.Ok.Body.JsonPayload.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Upgrade an app and the apps it created, in one consent
+    ///
+    /// An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/upgrade-unit`.
+    /// - Remark: Generated from `#/paths//apps/{app}/upgrade-unit/post(app_upgrade_unit)`.
+    public func appUpgradeUnit(_ input: Operations.AppUpgradeUnit.Input) async throws -> Operations.AppUpgradeUnit.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppUpgradeUnit.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/upgrade-unit",
+                    parameters: [
+                        input.path.app
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .post
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case let .json(value):
+                    body = try converter.setRequiredRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppUpgradeUnit.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Components.Schemas.UpgradeRun.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3509,7 +4231,7 @@ public struct Client: APIProtocol {
     }
     /// The node's attestation
     ///
-    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+    /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
     ///
     /// **Who:** anyone.
     ///
