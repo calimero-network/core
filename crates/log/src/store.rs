@@ -346,6 +346,12 @@ pub(crate) static HELD: std::sync::Mutex<Vec<(PathBuf, GroupId)>> =
 pub(crate) static HELD_BUILDS: std::sync::Mutex<Vec<crate::testing::HeldBuild>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Groups whose state reads fail, by the directory their node opened
+/// (feature `testing`; see [`crate::testing::fail_state_reads`]).
+#[cfg(feature = "testing")]
+pub(crate) static FAILING_READS: std::sync::Mutex<Vec<(PathBuf, GroupId)>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// How long closing a store waits first, by the directory it was opened in
 /// (feature `testing`; see [`crate::testing::slow_close`]).
 #[cfg(feature = "testing")]
@@ -780,6 +786,13 @@ impl Db {
         generation: u32,
         key: &[u8],
     ) -> eyre::Result<Option<Vec<u8>>> {
+        #[cfg(feature = "testing")]
+        if FAILING_READS
+            .lock()
+            .is_ok_and(|f| f.iter().any(|(d, g)| *g == group && *d == self.dir))
+        {
+            eyre::bail!("state read failed (injected by a test)");
+        }
         self.raw_get(Column::State, &state_key(group, generation, key))
     }
 
@@ -947,7 +960,16 @@ impl GroupState {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// One row. A storage fault reads as absent and is logged.
+    /// One row, or the storage fault that kept it from being read. Anything
+    /// that decides state (a machine's `restore`) reads with this, never
+    /// [`GroupState::get`].
+    pub fn try_get(&self, key: &[u8]) -> eyre::Result<Option<Vec<u8>>> {
+        self.db.get_state(self.group, self.generation(), key)
+    }
+
+    /// One row, for a reader that only answers (a view, a route). A storage
+    /// fault reads as absent and is logged; nothing applied may read this way
+    /// (an apply reads through its [`StateTx`], which fails the batch instead).
     #[must_use]
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         match self.db.get_state(self.group, self.generation(), key) {
@@ -988,7 +1010,10 @@ impl GroupState {
             }
             match unwrap_hidden(raw) {
                 Some((key, value)) => f(key, value),
-                None => Ok(true),
+                None => Err(eyre::eyre!(
+                    "group {}: a hidden row under tag {tag} is malformed",
+                    self.group
+                )),
             }
         })
     }
@@ -997,10 +1022,15 @@ impl GroupState {
 /// The writes one batch of applied entries makes to its group's state, read
 /// back by later entries of the batch. Committed with the applied index, in
 /// one write.
+///
+/// A read that fails (a storage fault, a hidden row that is malformed) reads
+/// as absent *and fails the batch* ([`StateTx::fail`]): the group stops on that
+/// entry rather than apply it differently from the other replicas.
 pub struct StateTx<'a> {
     state: &'a GroupState,
     staged: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
-    error: Option<String>,
+    /// The first fault recorded; set through `&self` too, by a read.
+    error: Mutex<Option<String>>,
 }
 
 impl<'a> StateTx<'a> {
@@ -1009,7 +1039,7 @@ impl<'a> StateTx<'a> {
         Self {
             state,
             staged: BTreeMap::new(),
-            error: None,
+            error: Mutex::new(None),
         }
     }
 
@@ -1019,7 +1049,8 @@ impl<'a> StateTx<'a> {
         self.state
     }
 
-    /// One row, as this batch left it.
+    /// One row, as this batch left it. A storage fault fails the batch (see
+    /// [`StateTx`]) and reads as absent.
     #[must_use]
     pub fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
         match self.staged.get(key) {
@@ -1031,7 +1062,7 @@ impl<'a> StateTx<'a> {
             {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::error!(group = self.state.group, error = %e, "state read failed");
+                    self.fail(format_args!("state read failed: {e}"));
                     None
                 }
             },
@@ -1050,10 +1081,15 @@ impl<'a> StateTx<'a> {
         hide(&self.state.db.hider, self.state.group, tag, key)
     }
 
+    /// The row a hidden key stands for (see [`hide`]). A row that is not a
+    /// hidden row's shape fails the batch, as a storage fault does.
     #[must_use]
     pub fn get_hidden(&self, tag: u8, key: &[u8]) -> Option<Vec<u8>> {
         let raw = self.get(&self.hidden(tag, key))?;
-        let (k, v) = unwrap_hidden(&raw)?;
+        let Some((k, v)) = unwrap_hidden(&raw) else {
+            self.fail(format_args!("a hidden row under tag {tag} is malformed"));
+            return None;
+        };
         (k == key).then(|| v.to_vec())
     }
 
@@ -1069,16 +1105,24 @@ impl<'a> StateTx<'a> {
 
     /// Record a fault: the batch then fails to commit, which stops the
     /// group's Raft core where it is (the entries after it are not applied).
-    pub fn fail(&mut self, why: impl std::fmt::Display) {
-        if self.error.is_none() {
-            self.error = Some(why.to_string());
+    /// A machine calls it for a row it read but cannot decode, as a read does
+    /// for a storage fault: a replica that cannot read what the others read
+    /// stops instead of applying differently.
+    pub fn fail(&self, why: impl std::fmt::Display) {
+        let mut error = self.error.lock().unwrap_or_else(PoisonError::into_inner);
+        if error.is_none() {
+            tracing::error!(group = self.state.group, error = %why, "this batch fails");
+            *error = Some(why.to_string());
         }
     }
 
     /// Whether a fault was recorded ([`StateTx::fail`]).
     #[must_use]
     pub fn failed(&self) -> bool {
-        self.error.is_some()
+        self.error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
     }
 
     /// Write the batch now, outside any group's apply: for tools and tests
@@ -1093,8 +1137,12 @@ impl<'a> StateTx<'a> {
 
     /// Stage the writes into `tx`, or answer the fault recorded.
     pub(crate) fn into_batch(self, tx: &mut Transaction) -> eyre::Result<()> {
-        if let Some(e) = self.error {
-            eyre::bail!("state write failed: {e}");
+        if let Some(e) = self
+            .error
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
+            eyre::bail!("the batch failed: {e}");
         }
         for (k, v) in self.staged {
             self.state.db.stage_state(
@@ -1358,5 +1406,60 @@ mod segments {
         assert!(db.list_segments().unwrap().is_empty());
         db.put_segment(A, b"x").unwrap();
         assert_eq!(db.list_segments().unwrap(), vec![A]);
+    }
+}
+
+#[cfg(test)]
+mod apply_reads {
+    use super::*;
+
+    fn state(dir: &tempfile::TempDir) -> GroupState {
+        GroupState::new(Db::open(dir.path(), &[1; 32]).unwrap(), 5, 0)
+    }
+
+    /// Review finding B3: a read that failed inside an apply read as absent and
+    /// the batch committed. It now fails the batch.
+    #[test]
+    fn a_read_fault_fails_the_batch_instead_of_reading_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let mut tx = StateTx::new(&state);
+        tx.put(b"k".to_vec(), b"v".to_vec());
+        tx.commit().unwrap();
+        crate::testing::fail_state_reads(dir.path(), 5);
+        let tx = StateTx::new(&state);
+        let read = tx.get(b"k");
+        crate::testing::heal_state_reads(dir.path(), 5);
+        assert_eq!(read, None);
+        assert!(tx.failed(), "the batch goes on as if the row were absent");
+        assert!(tx.commit().is_err());
+        // A row this batch wrote is read back without touching the disk.
+        let mut tx = StateTx::new(&state);
+        tx.put(b"k".to_vec(), b"w".to_vec());
+        assert_eq!(tx.get(b"k").as_deref(), Some(&b"w"[..]));
+        assert!(!tx.failed());
+    }
+
+    /// A row under a hidden key that is not a hidden row's shape is unreadable
+    /// too: inside an apply it fails the batch, and a scan reports it.
+    #[test]
+    fn a_malformed_hidden_row_fails_the_batch_and_the_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(&dir);
+        let mut tx = StateTx::new(&state);
+        let row = tx.hidden(7, b"key");
+        tx.put(row, b"\xff".to_vec());
+        tx.commit().unwrap();
+        let tx = StateTx::new(&state);
+        assert_eq!(tx.get_hidden(7, b"key"), None);
+        assert!(
+            tx.failed(),
+            "a malformed row reads as absent and the batch goes on"
+        );
+        assert!(state.scan_hidden(7, |_k, _v| Ok(true)).is_err());
+        // An absent row is no fault.
+        let tx = StateTx::new(&state);
+        assert_eq!(tx.get_hidden(7, b"other"), None);
+        assert!(!tx.failed());
     }
 }

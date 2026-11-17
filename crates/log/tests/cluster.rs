@@ -804,6 +804,36 @@ impl DiskCluster {
     }
 }
 
+/// Review finding B3: a state row a replica could not read during an apply read
+/// as absent, and the replica applied the entry anyway, answering (and writing)
+/// differently from the others. The read fault now fails the batch, so that
+/// replica stops on the entry instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_row_a_replica_cannot_read_stops_it_rather_than_applying_differently() {
+    let c = DiskCluster::new(3).await;
+    let first = c.put("a", "1").await;
+    for g in c.groups.values() {
+        assert!(g.wait_applied(first, Duration::from_secs(5)).await);
+    }
+    let leader = c.leader().await;
+    let faulty = (1..=3).find(|id| *id != leader).unwrap();
+    calimero_log::testing::fail_state_reads(c.dirs[&faulty].path(), 1);
+    let second = c.put("a", "2").await;
+    for (id, g) in &c.groups {
+        if *id != faulty {
+            assert!(g.wait_applied(second, Duration::from_secs(5)).await);
+        }
+    }
+    let applied_anyway = c.groups[&faulty]
+        .wait_applied(second, Duration::from_secs(2))
+        .await;
+    calimero_log::testing::heal_state_reads(c.dirs[&faulty].path(), 1);
+    assert!(
+        !applied_anyway,
+        "the replica applied an entry over a row it could not read"
+    );
+}
+
 /// A stopped node's stored commit index (group 1).
 fn commit_record(dir: &tempfile::TempDir) -> Option<LogId> {
     let db = Db::open(dir.path(), &KEY).unwrap();

@@ -56,6 +56,16 @@ A machine can hide a key (`StateTx::put_hidden`). The row is then stored at
 `u32 BE key length ‖ key ‖ value`. The disk then shows neither which keys an app
 uses nor how they sort; reading a hidden key needs K_c.
 
+### A row an apply cannot read
+
+An entry's apply reads rows through its batch (`StateTx`). A read that fails (a
+storage fault, a hidden row that is not a hidden row's shape, a row the machine
+cannot decode) fails the batch: nothing in it commits, the applied index stays
+where it was, and the group stops on that entry on this node. Reading the row as
+absent would apply the entry differently from the replicas that read it, with
+nothing to show for it. A machine's `restore` and a hidden-row scan fail the same
+way; only answers (views, routes) read a fault as absent, and log it.
+
 ## An app group's rows
 
 An app group's machine key space (`crates/node/src/app.rs`, `rows`). Hidden
