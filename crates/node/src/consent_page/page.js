@@ -296,6 +296,7 @@
     [m.headline, m.before, m.after].concat(m.notes || []).forEach(function (s) { if (s) t.appendChild(el("p", s)); });
     if (m.kind === "release") techRelease(t, m.release);
     if (m.kind === "upgrade") techUpgrade(t, m.upgrade);
+    if (m.kind === "delegate") techDelegate(t, m.delegate);
     // A unit: each app's own sheet, the instance first.
     if (m.kind === "upgradeUnit") {
       (m.apps || []).forEach(function (a) {
@@ -304,6 +305,18 @@
       });
     }
     if (m.kind === "outbound") techOutbound(t, m.outbound);
+  }
+  function techDelegate(t, d) {
+    t.appendChild(facts([
+      ["Acts for you", d.source.name + " (" + d.source.app + ")"],
+      ["In", d.target.name + " (" + d.target.app + ")"],
+    ]));
+    t.appendChild(el("h3", "Methods it may call as you"));
+    var ul = add(t, el("ul"));
+    d.methods.forEach(function (m) { ul.appendChild(el("li", m)); });
+    if (d.alreadyGranted && d.alreadyGranted.length) {
+      t.appendChild(el("p", "Already allowed: " + d.alreadyGranted.join(", ") + "."));
+    }
   }
   function techRelease(t, r) {
     t.appendChild(el("h3", "The release"));

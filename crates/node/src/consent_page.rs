@@ -200,6 +200,11 @@ pub enum CreateBody {
         subject: UpgradeSubject,
         return_to: String,
     },
+    /// Let an app call another as the person, for the methods its release lists.
+    Delegate {
+        subject: DelegateSubject,
+        return_to: String,
+    },
     /// Let a package's apps in the scope call out to URL prefixes.
     Outbound {
         scope: ScopeBody,
@@ -323,6 +328,14 @@ pub struct UpgradeSubject {
     to_version: String,
 }
 
+/// A `delegate` request: `app` (the asking frontend's own) may call `target` as the person.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DelegateSubject {
+    app: String,
+    target: String,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OutboundSubject {
@@ -411,6 +424,14 @@ enum Action {
         targets: BTreeMap<String, crate::types::RunTarget>,
         /// Each app's bundle when the page was made, the instance's included.
         from: BTreeMap<String, String>,
+    },
+    /// A grant: `source` calls `methods` of `target` as the person.
+    Delegate {
+        source: String,
+        target: String,
+        methods: Vec<String>,
+        /// The release `source` ran when the page was made, whose `uses` listed `methods`.
+        source_release: Option<crate::system::PackageRef>,
     },
     Upgrade {
         app: String,
@@ -997,6 +1018,11 @@ pub async fn create(
         CreateBody::UpgradeUnit { subject, return_to } => {
             let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
             let (action, model) = unit_upgrade_request(&node, &p, &account, subject).await?;
+            (action, model, to)
+        }
+        CreateBody::Delegate { subject, return_to } => {
+            let to = allowed_return_to(&node, package.as_deref(), &return_to).await?;
+            let (action, model) = delegate_request(&node, &p, &account, subject).await?;
             (action, model, to)
         }
         CreateBody::Outbound {
@@ -1934,6 +1960,77 @@ fn join(items: &[Value]) -> String {
         .join(", ")
 }
 
+/// A `delegate` request: the grant the route would make (`api::apps::delegation_plan`),
+/// asked by the source app's own frontend (or an unbound session), on one page naming both
+/// apps and every method the source would call as the person.
+async fn delegate_request(
+    node: &Node,
+    p: &Principal,
+    account: &str,
+    subject: DelegateSubject,
+) -> Result<(Action, Value), ApiError> {
+    let source_id = node.canonical_app_id(&subject.app);
+    let target_id = node.canonical_app_id(&subject.target);
+    let (source, target, methods) =
+        crate::api::apps::delegation_plan(node, account, &source_id, &target_id).await?;
+    p.within(node, &source)?;
+    let name = |a: &crate::types::AppRecord| {
+        if a.name.is_empty() {
+            a.app_id.clone()
+        } else {
+            a.name.clone()
+        }
+    };
+    let (from, to) = (name(&source), name(&target));
+    let granted: Vec<String> = node.sys(|s| {
+        s.delegations
+            .get(account)
+            .and_then(|g| g.get(&source_id))
+            .and_then(|t| t.get(&target_id))
+            .cloned()
+            .unwrap_or_default()
+    });
+    let source_package = node.release_of_app(&source).map(|r| r.at.package);
+    let target_package = node.release_of_app(&target).map(|r| r.at.package);
+    let model = json!({
+        "kind": "delegate",
+        "scope": { "kind": "app", "app": source_id, "name": from, "org": source.org },
+        "headline": format!("Let {from} use {to} as you"),
+        "title": format!("Allow {from} to act as you in {to}"),
+        "points": [
+            format!(
+                "When you use {from}, it may call {} of {to} as you: {to} sees you, not {from}, and applies your own permissions there.",
+                if methods.len() == 1 { "one method".to_owned() } else { format!("{} methods", methods.len()) }
+            ),
+            format!("{to} still knows the call came through {from}, and decides for itself what to allow."),
+            "It never confirms anything for you: a step that needs your passkey there still asks you.".to_owned(),
+            "Until you approve, it calls only as itself. You can take this back at any time.".to_owned(),
+        ],
+        "attention": [],
+        "app": { "name": from, "package": source_package },
+        "before": format!("Until you approve, {from} calls {to} as itself, without your name."),
+        "after": format!(
+            "Once you approve, {from} may call these methods of {to} as you, when it acts for you. Taking it back needs no passkey."
+        ),
+        "notes": [],
+        "delegate": {
+            "source": { "app": source_id, "name": from, "package": source_package },
+            "target": { "app": target_id, "name": to, "package": target_package },
+            "methods": methods,
+            "alreadyGranted": granted,
+        },
+    });
+    Ok((
+        Action::Delegate {
+            source: source_id,
+            target: target_id,
+            methods,
+            source_release: source.release.clone(),
+        },
+        model,
+    ))
+}
+
 async fn outbound_request(
     node: &Node,
     account: &str,
@@ -2679,6 +2776,17 @@ fn still_current(node: &Node, action: &Action) -> Result<(), ApiError> {
         | Action::CreateInvite { .. }
         | Action::AcceptInvite { .. } => Ok(()),
         Action::Org(a) => orgs::still_current(node, a),
+        Action::Delegate {
+            source,
+            source_release,
+            ..
+        } => {
+            let now = node.sys(|s| s.apps.get(source).map(|a| a.release.clone()));
+            if now.as_ref() != Some(source_release) {
+                return Err(stale("the release the app runs"));
+            }
+            Ok(())
+        }
         Action::UpgradeUnit { from, .. } => {
             let moved = node.sys(|s| {
                 from.iter()
@@ -2932,6 +3040,20 @@ async fn act(
                 return Err(stale("the releases the unit's apps would move to"));
             }
             crate::api::upgrade_unit(node, &p, app, version, confirm).await?
+        }
+        Action::Delegate {
+            source,
+            target,
+            methods,
+            ..
+        } => {
+            // What the page listed is what is granted: the same methods, judged again now.
+            let (_, _, now) =
+                crate::api::apps::delegation_plan(node, &req.account, source, target).await?;
+            if &now != methods {
+                return Err(stale("the methods the app's release lists"));
+            }
+            crate::api::apps::delegate(node, &p, source, target, confirm).await?
         }
         Action::Upgrade {
             app,

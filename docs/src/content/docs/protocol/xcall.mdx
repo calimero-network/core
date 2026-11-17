@@ -97,6 +97,10 @@ person's events works unchanged under a scheduling plugin.
   __delegate / { target, methods }`). They must reach both apps, which are in one
   organization. `DELETE` takes it back without a passkey; `GET
   /apps/{source}/delegations` lists what they granted. Deleting either app ends it.
+  The grant is the account holder's own: a session opened on an app's frontend is
+  refused the route (`403`), and the source's frontend asks on the
+  [consent page](/protocol/consent-page/) instead (`delegate { app, target }`),
+  which names both apps and every method before the passkey.
 - **The node decides, call by call.** When the source's run was started by the
   person (their account or an API key of theirs), its message, synchronous call or
   view of a granted method runs on the target with the person as the caller and

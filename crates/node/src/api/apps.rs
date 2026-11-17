@@ -1026,26 +1026,26 @@ pub(super) struct DelegateBody {
     confirm: Option<ConfirmBody>,
 }
 
-/// Let `source`'s runs for the caller call `target` as them (`SystemCmd::SetDelegation`):
-/// the methods the release `source` runs lists for `target`'s package in its `uses`, with
-/// the caller's passkey over exactly those (412 first). The caller must reach both apps,
-/// which are in one organization. From then on `target` sees the caller, not `source`, as
-/// the caller of those methods when `source` calls them for this person, and reads
-/// `env::via()` to know it came through `source`. `409 NOTHING_TO_DELEGATE` when the release
-/// lists none.
-async fn app_delegate(
-    State(node): State<Arc<Node>>,
-    headers: HeaderMap,
-    Path((source_id, target_id)): Path<(String, String)>,
-    Json(body): Json<DelegateBody>,
-) -> ApiResult {
-    let source_id = node.canonical_app_id(&source_id);
-    let target_id = node.canonical_app_id(&target_id);
-    let p = signed_in(&node, &headers).await?;
-    let account = p.account()?;
-    let source = node.app(&source_id).await?;
-    p.within(&node, &source)?;
-    let target = node.app(&target_id).await?;
+/// What a grant of `source` over `target` would be for `account`: both apps, and the methods
+/// of `target` that the release `source` runs lists for its package. `404` unless the account
+/// reaches both and they are two apps of one organization; `409 NOTHING_TO_DELEGATE` when the
+/// release lists none. The route and the consent page's `delegate` request share it.
+pub(crate) async fn delegation_plan(
+    node: &Node,
+    account: &str,
+    source_id: &str,
+    target_id: &str,
+) -> Result<
+    (
+        crate::types::AppRecord,
+        crate::types::AppRecord,
+        Vec<String>,
+    ),
+    ApiError,
+> {
+    let source = node.app(source_id).await?;
+    let target = node.app(target_id).await?;
+    let account = account.to_owned();
     let reaches =
         node.sys(|s| s.may_reach(&source, Some(&account)) && s.may_reach(&target, Some(&account)));
     if !reaches || source_id == target_id || source.org != target.org {
@@ -1055,7 +1055,7 @@ async fn app_delegate(
             "no such pair of apps of one organization that you reach",
         ));
     }
-    let methods = delegable_methods(&node, &source, &target).await?;
+    let methods = delegable_methods(node, &source, &target).await?;
     if methods.is_empty() {
         return Err(ApiError::new(
             409,
@@ -1063,14 +1063,47 @@ async fn app_delegate(
             &format!("the release {source_id} runs lists no method of {target_id}'s package to call as you"),
         ));
     }
+    Ok((source, target, methods))
+}
+
+/// Let `source`'s runs for the caller call `target` as them (`SystemCmd::SetDelegation`):
+/// the methods the release `source` runs lists for `target`'s package in its `uses`, with
+/// the caller's passkey over exactly those (412 first). The caller must reach both apps,
+/// which are in one organization. From then on `target` sees the caller, not `source`, as
+/// the caller of those methods when `source` calls them for this person, and reads
+/// `env::via()` to know it came through `source`. `409 NOTHING_TO_DELEGATE` when the release
+/// lists none. The account holder's own: an app's frontend asks for it on the consent page
+/// (`delegate`), never here, as for any approval.
+async fn app_delegate(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((source_id, target_id)): Path<(String, String)>,
+    Json(body): Json<DelegateBody>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let source_id = node.canonical_app_id(&source_id);
+    let target_id = node.canonical_app_id(&target_id);
+    delegate(&node, &p, &source_id, &target_id, body.confirm).await
+}
+
+/// The grant itself, for the route and the consent page alike.
+pub(crate) async fn delegate(
+    node: &Node,
+    p: &Principal,
+    source_id: &str,
+    target_id: &str,
+    confirm: Option<ConfirmBody>,
+) -> ApiResult {
+    let account = p.account()?;
+    let (_, _, methods) = delegation_plan(node, &account, source_id, target_id).await?;
     node.require_features(&[Feature::Delegation]).await?;
-    let args = crate::system::delegation_args(&target_id, &methods);
-    let consent = consent(&node, &p, &source_id, "__delegate", &args, body.confirm).await?;
+    let args = crate::system::delegation_args(target_id, &methods);
+    let consent = consent(node, p, source_id, "__delegate", &args, confirm).await?;
     let _ok = node
         .sys_write(&SystemCmd::SetDelegation {
             account,
-            source: source_id.clone(),
-            target: target_id.clone(),
+            source: source_id.to_owned(),
+            target: target_id.to_owned(),
             methods: Some(methods.clone()),
             consent,
         })
