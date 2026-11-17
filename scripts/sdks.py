@@ -29,10 +29,16 @@ Commands:
 
     sdks.py list                  name, kind and directory of every SDK
     sdks.py scope < changed-paths `<name>=true|false` per SDK and `any=`, for sdks.yml
-    sdks.py version-check         every version file states VERSION (exit 1 otherwise)
-    sdks.py version-sync [VER]    write VER (default: VERSION) into every version file
+    sdks.py version-check         VERSION is core's release and every version file states it
+    sdks.py version-sync [VER]    write VER (default: core's release) into VERSION and every version file
     sdks.py generate [NAME...]    run each SDK's `generate` (all when no name)
     sdks.py generated [NAME...]   print the generated paths, repo-relative
+
+VERSION is core's release version, the one `[workspace.metadata.workspaces]`
+`version` in the root Cargo.toml states (the release cut, see RELEASING.md):
+`version-check` fails while the two differ, and `version-sync` with no
+argument copies Cargo's into VERSION and every SDK. A release cut bumps
+Cargo's version and runs `scripts/sdks.py version-sync` in the same commit.
 
 Scope fails closed, as ci-scope.py does: no input runs every SDK. A change
 reaches an SDK when it touches the SDK's directory, an SDK it depends on (and
@@ -81,6 +87,18 @@ def read_version() -> str:
     if not VERSION_RE.match(version):
         raise SdkError(f"VERSION holds {version!r}, not a version like 1.0.0-rc.30")
     return version
+
+
+def core_version(root: Path = ROOT) -> str:
+    """Core's release: the root Cargo.toml's [workspace.metadata.workspaces] version."""
+    import tomllib
+
+    with (root / "Cargo.toml").open("rb") as fh:
+        meta = tomllib.load(fh)
+    try:
+        return str(meta["workspace"]["metadata"]["workspaces"]["version"])
+    except KeyError as e:
+        raise SdkError("Cargo.toml has no [workspace.metadata.workspaces] version") from e
 
 
 def load_sdks(root: Path = ROOT) -> list[dict]:
@@ -324,7 +342,10 @@ def main(argv: list[str]) -> int:
             print("sdks=" + json.dumps([n for n, runs in verdict.items() if runs]))
         elif command == "version-check":
             version = read_version()
+            core = core_version()
             wrong = version_report(sdks, version)
+            if version != core:
+                wrong.insert(0, f"VERSION: {version} (core's release, Cargo.toml's workspace version, is {core})")
             for line in wrong:
                 print(f"::error::{line}")
             if wrong:
@@ -332,11 +353,12 @@ def main(argv: list[str]) -> int:
                 return 1
             print(f"every SDK states {version} ({sum(len(s['version_files']) for s in sdks)} files)")
         elif command == "version-sync":
-            version = rest[0] if rest else read_version()
+            version = rest[0] if rest else core_version()
             if not VERSION_RE.match(version):
                 raise SdkError(f"{version!r} is not a version like 1.0.0-rc.30")
-            if rest:
+            if not VERSION_FILE.exists() or VERSION_FILE.read_text(encoding="utf-8").strip() != version:
                 VERSION_FILE.write_text(version + "\n", encoding="utf-8")
+                print("VERSION")
             changed = [
                 f"{sdk['dir']}/{spec['path']}"
                 for sdk in sdks

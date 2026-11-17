@@ -88,7 +88,7 @@ jobs:
         id: base
         run: |
           set -euo pipefail
-          mapfile -t paths < <(python3 scripts/sdks.py generated)
+          paths=(); while IFS= read -r path; do paths+=("$path"); done < <(python3 scripts/sdks.py generated)
           base=$(git log -1 --format=%H -- "${paths[@]}" || true)
           if [ -n "$base" ]; then
             git show "$base:docs/public/openapi.json" > "$RUNNER_TEMP/base.json" 2>/dev/null || : > "$RUNNER_TEMP/base.json"
@@ -105,7 +105,7 @@ jobs:
         id: diff
         run: |
           set -euo pipefail
-          mapfile -t paths < <(python3 scripts/sdks.py generated)
+          paths=(); while IFS= read -r path; do paths+=("$path"); done < <(python3 scripts/sdks.py generated)
           if [ -z "$(git status --porcelain --untracked-files=all -- "${paths[@]}")" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "::notice::every SDK already matches docs/public/openapi.json"
@@ -136,7 +136,7 @@ jobs:
             additive) title="feat(sdks): regenerate from the node API at $short" ;;
             *) title="chore(sdks): regenerate from the node API at $short" ;;
           esac
-          mapfile -t paths < <(python3 scripts/sdks.py generated)
+          paths=(); while IFS= read -r path; do paths+=("$path"); done < <(python3 scripts/sdks.py generated)
           {
             echo "$title"
             echo
@@ -204,7 +204,7 @@ jobs:
           git config user.name "${SLUG}[bot]"
           git config user.email "${uid}+${SLUG}[bot]@users.noreply.github.com"
           git checkout -B "$branch"
-          mapfile -t paths < <(python3 scripts/sdks.py generated)
+          paths=(); while IFS= read -r path; do paths+=("$path"); done < <(python3 scripts/sdks.py generated)
           git add -A -- "${paths[@]}"
           git commit -q -F "$out/commit-message.txt"
           git push --force "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/$branch"

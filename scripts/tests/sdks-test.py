@@ -96,10 +96,10 @@ def fixture(root: Path) -> None:
         {
             "kind": "client",
             "language": "swift",
-            "version_files": [{"path": "mero-swift.podspec", "format": "regex", "pattern": r"s\.version\s*=\s*'([^']+)'"}],
+            "version_files": [{"path": "README.md", "format": "regex", "pattern": r'calimero-network/swift-sdk", exact: "([^"]+)"'}],
             "workflow": ".github/workflows/sdk-mero-swift.yml",
         },
-        {"mero-swift.podspec": "Pod::Spec.new do |s|\n  s.name = 'mero-swift'\n  s.version = '0.5.0'\nend\n"},
+        {"README.md": '.package(url: "https://github.com/calimero-network/swift-sdk", exact: "0.5.0"),\n'},
     )
 
 
@@ -145,8 +145,8 @@ def test_versions(root: Path) -> None:
     check("json keeps other fields", '"x": "1.0.0"' in pkg and '"version": "1.0.0-rc.30"' in pkg, pkg)
     cargo = (root / "sdks/clients/mero-py/Cargo.toml").read_text()
     check("toml rewrites only [package]", 'serde = { version = "1" }' in cargo and 'version = "1.0.0-rc.30"' in cargo, cargo)
-    pod = (root / "sdks/clients/mero-swift/mero-swift.podspec").read_text()
-    check("regex", "s.version = '1.0.0-rc.30'" in pod, pod)
+    readme = (root / "sdks/clients/mero-swift/README.md").read_text()
+    check("regex", 'swift-sdk", exact: "1.0.0-rc.30"' in readme, readme)
     props = (root / "sdks/clients/mero-kotlin/gradle.properties").read_text()
     check("properties", "VERSION_NAME=1.0.0-rc.30" in props and "GROUP=network.calimero" in props, props)
     # Idempotent: a second sync changes nothing.
@@ -183,6 +183,7 @@ def test_repository() -> None:
         check(f"{sdk['name']} workflow exists", (ROOT / sdk["workflow"]).is_file(), sdk["workflow"])
         for spec in sdk["version_files"]:
             check(f"{sdk['name']} {spec['path']} exists", (ROOT / sdk["dir"] / spec["path"]).is_file(), "")
+    check("VERSION is core's release", sdks.read_version() == sdks.core_version(), f"{sdks.read_version()} vs {sdks.core_version()}")
     if loaded:
         version = sdks.read_version()
         wrong = sdks.version_report(loaded, version)
