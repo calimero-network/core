@@ -42,6 +42,11 @@ key, which also signs sessions, is made on the node's first start and kept in
 its data directory wrapped under K_r, so it survives a restart and only the
 release that holds that K_r opens it.
 
+Search indexes are the one exception: derived data that tantivy writes as it is,
+so a node keeps them on disk only on a data disk the TD encrypts itself (mero-tee's
+LUKS2 volume with integrity, keyed by mero-kms and opened inside the TD) and in
+memory anywhere else.
+
 Each node's data — every Raft entry, vote, state row, snapshot frame and blob —
 is sealed under one 32-byte **cluster key**, K_c, which the node keeps on disk
 wrapped under its **storage key**, K_r, from mero-kms.

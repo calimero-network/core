@@ -1820,14 +1820,23 @@ API and system group:
   apply, the same `TOUCHED_RING`) and indexes nothing; its first query brings the app's
   indexes up to that state on the view's own thread (`RunSearch::ready`): from those keys
   for every table whose declared fields are what it was built with, across an upgrade
-  too; a table that is new or whose fields changed is scanned and one no longer declared
-  is dropped; everything is scanned only when the keys since are unknown (the first search
-  after a start, keys the ring lost, a mark another view moved meanwhile). A view that
-  never searches indexes nothing. Indexes stay in memory: persisting them would put
-  tantivy's plaintext segments on disk outside the sealed store. Regressions:
+  too; a table that is new or whose fields changed starts from a new index and one no
+  longer declared is dropped; when the keys since are unknown (the first search after a
+  start, keys the ring lost, a mark another view moved meanwhile) each index is compared
+  with the state (`TableIndex::reconcile`: every record's document digest,
+  `calimero_search::index::doc_digest`, against the one the index holds) and only what
+  differs is indexed again. A view that never searches indexes nothing. Indexes are kept
+  under `<data dir>/search/<sha256(app)>/<sha256(table)>` (tantivy `MmapDirectory`) only
+  when `Config::kms_keys.disk` is set (`--kms-disk-evidence`: mero-tee's LUKS2 data disk
+  with integrity, keyed by mero-kms and opened inside the TD), since tantivy writes its
+  files as they are; otherwise in memory. One on disk is never trusted to be current: it
+  is compared with the state on its first use, and one under another schema or format is
+  made anew; `drop_app` removes its files. Regressions:
   `preparing_a_views_search_indexes_nothing_until_it_queries`,
   `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`,
-  `an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps`. The run
+  `an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps`,
+  `an_index_kept_on_disk_catches_up_after_a_restart_reindexing_only_what_changed`,
+  `an_index_on_disk_under_other_fields_is_made_anew`. The run
   gets it through `HostCore::with_search` (`RunSearch`): hits are the guest's record keys.
   Derived, in memory, dropped with the app group. Test:
   `views_search_a_components_tables_as_they_change`.

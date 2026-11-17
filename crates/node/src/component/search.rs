@@ -14,6 +14,7 @@
 //! rebuilt after a restart.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use calimero_app_host::{SearchHit, SearchHost, SearchMode, SearchPage, SearchQuery, GENERATION};
@@ -21,7 +22,7 @@ use calimero_primitives::search::{
     SearchDoc, SearchFieldKind, SearchFieldSchema, SearchIndexSchema, SearchMode as IndexMode,
     SearchOrder, SearchRequest, SearchValue,
 };
-use calimero_search::index::{ContextIndex, SchemaOptions};
+use calimero_search::index::{doc_digest, ContextIndex, SchemaOptions};
 use ring::digest::{digest, SHA256};
 use tracing::{debug, warn};
 
@@ -116,7 +117,9 @@ struct TableIndex {
 }
 
 impl TableIndex {
-    fn new(table: &str, fields: &[String]) -> Result<Self, String> {
+    /// `table`'s index: in memory, or kept in `dir`, opened as it was left there, or made
+    /// anew when there is none or it was made under another schema or format.
+    fn open(dir: Option<&Path>, table: &str, fields: &[String]) -> Result<Self, String> {
         let def = SearchIndexSchema {
             name: table.to_owned(),
             version: 1,
@@ -131,14 +134,74 @@ impl TableIndex {
                 })
                 .collect(),
         };
-        let dir = Box::new(tantivy::directory::RamDirectory::create());
-        let (index, _state) =
-            ContextIndex::open(dir, &def, SchemaOptions::default()).map_err(|e| e.to_string())?;
+        let open = |dir: Box<dyn tantivy::Directory>| {
+            ContextIndex::open(dir, &def, SchemaOptions::default())
+                .map(|(index, _state)| index)
+                .map_err(|e| e.to_string())
+        };
+        let index = match dir {
+            None => open(Box::new(tantivy::directory::RamDirectory::create()))?
+                .ok_or("a new index opened stale")?,
+            Some(dir) => {
+                let on_disk = || -> Result<Box<dyn tantivy::Directory>, String> {
+                    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                    let d =
+                        tantivy::directory::MmapDirectory::open(dir).map_err(|e| e.to_string())?;
+                    Ok(Box::new(d))
+                };
+                match open(on_disk()?)? {
+                    Some(index) => index,
+                    // Made under another schema or format: made anew.
+                    None => {
+                        std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+                        open(on_disk()?)?.ok_or("a new index opened stale")?
+                    }
+                }
+            }
+        };
         Ok(Self {
             fields: fields.to_vec(),
-            index: index.ok_or("a new index opened stale")?,
+            index,
             keys: HashMap::new(),
         })
+    }
+
+    /// Bring the index up to `kv` by comparing: every record of `table` is read and its
+    /// document's digest compared with the one the index holds, and only the documents
+    /// that differ are indexed again (or dropped). On a new index that is every one.
+    /// Answers how many documents were indexed or dropped.
+    fn reconcile(&mut self, kv: &Kv, table: &str, at: u64) -> Result<u64, String> {
+        let mut held = self.index.digests().map_err(|e| e.to_string())?;
+        let mut changes = Vec::new();
+        self.keys.clear();
+        let prefix = record_prefix(table);
+        for (key, value) in kv
+            .range(prefix.clone()..)
+            .take_while(|(k, _)| k.starts_with(&prefix))
+        {
+            let id = doc_id(key);
+            match document(key, value, &self.fields) {
+                Some(doc) => {
+                    let _prev = self.keys.insert(id, key.clone());
+                    if held.remove(&id) != Some(doc_digest(&doc)) {
+                        changes.push((id, Some(doc)));
+                    }
+                }
+                None => {
+                    if held.remove(&id).is_some() {
+                        changes.push((id, None));
+                    }
+                }
+            }
+        }
+        changes.extend(held.into_keys().map(|id| (id, None)));
+        let n = changes.len() as u64;
+        let _n = self
+            .index
+            .apply(changes.iter().map(|(id, doc)| (id, doc.as_ref())))
+            .map_err(|e| e.to_string())?;
+        self.index.commit(at, [0; 32]).map_err(|e| e.to_string())?;
+        Ok(n)
     }
 
     /// Replace the documents of `records` (stored key, value or `None` when gone).
@@ -175,8 +238,10 @@ struct AppIndexes {
     fields: Fields,
     built_at: u64,
     tables: HashMap<String, TableIndex>,
-    /// Tables built from a scan of the state so far, for tests and logs.
+    /// Tables brought up to a state by comparing every record so far, for tests and logs.
     scans: u64,
+    /// Documents those comparisons indexed again or dropped.
+    reindexed: u64,
 }
 
 /// What an app's indexes were last brought up to: kept apart from the indexes, and
@@ -193,6 +258,8 @@ struct Mark {
 struct AppEntry {
     mark: Mutex<Mark>,
     indexes: Mutex<AppIndexes>,
+    /// Where its indexes are kept on disk; `None`: in memory.
+    dir: Option<PathBuf>,
 }
 
 impl AppEntry {
@@ -204,10 +271,13 @@ impl AppEntry {
     }
 }
 
-/// Full-text search over the component apps hosted here, in memory.
+/// Full-text search over the component apps hosted here: in memory, or kept on disk.
 #[derive(Default)]
 pub struct ComponentSearch {
     apps: Mutex<HashMap<AppId, Arc<AppEntry>>>,
+    /// Where indexes are kept (`<data dir>/search`), only on a data disk the node knows is
+    /// encrypted; `None`: in memory.
+    root: Option<PathBuf>,
 }
 
 /// What a view's state holds for its search: taken under the app's read lock (an
@@ -249,7 +319,7 @@ impl RunSearch {
                     .indexes
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
-                match refresh(&mut ix, &p) {
+                match refresh(&mut ix, &p, self.entry.dir.as_deref()) {
                     Ok(()) => {
                         *self
                             .entry
@@ -324,6 +394,21 @@ impl SearchHost for RunSearch {
 }
 
 impl ComponentSearch {
+    /// Indexes kept under `root` when given, else in memory.
+    ///
+    /// tantivy writes its files as they are, so `root` must be on a data disk the TD
+    /// encrypts (mero-tee's LUKS2 volume, keyed by mero-kms): the node passes one only
+    /// when it was started with the record of that disk's key (`--kms-disk-evidence`).
+    /// An index kept there is never trusted to be current: it is compared with the
+    /// state on its first use, and only what differs is indexed again.
+    #[must_use]
+    pub fn new(root: Option<PathBuf>) -> Self {
+        Self {
+            apps: Mutex::default(),
+            root,
+        }
+    }
+
     /// The app's search for a view on the state `m` holds at `applied`, whose bundle's
     /// ABI declares `fields` (table to text fields); `None` when it declares none.
     ///
@@ -360,7 +445,12 @@ impl ComponentSearch {
         }
         let entry = {
             let mut apps = self.apps.lock().unwrap_or_else(PoisonError::into_inner);
-            Arc::clone(apps.entry(app_id.to_owned()).or_default())
+            Arc::clone(apps.entry(app_id.to_owned()).or_insert_with(|| {
+                Arc::new(AppEntry {
+                    dir: self.root.as_deref().map(|r| app_dir(r, app_id)),
+                    ..AppEntry::default()
+                })
+            }))
         };
         let from = entry.mark();
         // Whatever the bundle: an upgrade that keeps a table's fields keeps its index,
@@ -382,25 +472,35 @@ impl ComponentSearch {
         }))
     }
 
-    /// Forget an app's indexes (it moved off this node, or was deleted).
+    /// Forget an app's indexes (it moved off this node, or was deleted), on disk too.
     pub fn drop_app(&self, app_id: &str) {
         let _gone = self
             .apps
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(app_id);
+        if let Some(root) = &self.root {
+            let dir = app_dir(root, app_id);
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    warn!(app = %app_id, error = %e, "search indexes not removed from disk");
+                }
+            }
+        }
     }
 }
 
-/// Bring `ix` up to the view's state `p`.
+/// Bring `ix` up to the view's state `p`; indexes are kept under `dir` when given.
 ///
 /// Incremental where it can be: from the record keys the entries since touched, for
-/// every table whose declared fields are what the indexes were built with, also across
-/// an upgrade. A table that is new or whose fields changed is built from a scan of the
-/// state, and one the ABI no longer declares is dropped. Everything is built from a scan
-/// only when the keys since are unknown (the first search after a start, more than
-/// `TOUCHED_RING` entries since, or indexes another view moved meanwhile).
-fn refresh(ix: &mut AppIndexes, p: &Pending) -> Result<(), String> {
+/// every table whose declared fields are what its index was made with, also across an
+/// upgrade. When the keys since are unknown (the first search after a start, more than
+/// `TOUCHED_RING` entries since, or indexes another view moved meanwhile), each index is
+/// compared with the state instead (`TableIndex::reconcile`), which indexes only the
+/// documents that differ: an index kept on disk from before a restart catches up so. A
+/// table that is new or whose fields changed starts from a new index; one no longer
+/// declared is dropped, with its files.
+fn refresh(ix: &mut AppIndexes, p: &Pending, dir: Option<&Path>) -> Result<(), String> {
     if ix.built && ix.fields == p.fields && ix.built_at >= p.applied {
         // Already there, or brought past it by a later view meanwhile: as before, a
         // view's search may answer from a later state than it reads (C4).
@@ -413,51 +513,65 @@ fn refresh(ix: &mut AppIndexes, p: &Pending) -> Result<(), String> {
     } else {
         p.touched.clone()
     };
-    let Some(touched) = delta else {
-        debug!(app = %p.app_id, applied = p.applied, "building component search indexes");
-        let mut tables = HashMap::new();
-        for (table, table_fields) in &p.fields {
-            let _prev = tables.insert(table.clone(), scan_table(p, table, table_fields)?);
-            ix.scans += 1;
-        }
-        ix.tables = tables;
-        ix.fields = p.fields.clone();
-        ix.built_at = p.applied;
-        ix.built = true;
-        return Ok(());
-    };
-    // Tables kept as they are catch up; the rest are built (or dropped).
+    // Built again from here on: a failure part way leaves the indexes to be compared
+    // with the state next time.
+    ix.built = false;
     let mut tables = std::mem::take(&mut ix.tables);
-    tables.retain(|table, t| p.fields.get(table) == Some(&t.fields));
-    let mut by_table: HashMap<String, Records> = HashMap::new();
-    for key in touched.iter().filter_map(|h| hex::decode(h).ok()) {
-        let Some(table) = record_table(&key).filter(|t| tables.contains_key(t)) else {
-            continue;
-        };
-        let value = p.kv.get(&key).cloned();
-        by_table.entry(table).or_default().push((key, value));
+    let gone: Vec<String> = tables
+        .iter()
+        .filter(|(table, t)| p.fields.get(*table) != Some(&t.fields))
+        .map(|(table, _)| table.clone())
+        .collect();
+    for table in gone {
+        drop(tables.remove(&table));
+        if let Some(dir) = dir {
+            let _gone = std::fs::remove_dir_all(table_dir(dir, &table));
+        }
     }
-    for (table, records) in by_table {
-        if let Some(t) = tables.get_mut(&table) {
-            t.apply(&records, p.applied)?;
+    match delta {
+        Some(touched) => {
+            let mut by_table: HashMap<String, Records> = HashMap::new();
+            for key in touched.iter().filter_map(|h| hex::decode(h).ok()) {
+                let Some(table) = record_table(&key).filter(|t| tables.contains_key(t)) else {
+                    continue;
+                };
+                let value = p.kv.get(&key).cloned();
+                by_table.entry(table).or_default().push((key, value));
+            }
+            for (table, records) in by_table {
+                if let Some(t) = tables.get_mut(&table) {
+                    t.apply(&records, p.applied)?;
+                }
+            }
+        }
+        None => {
+            debug!(app = %p.app_id, applied = p.applied, "comparing component search indexes with the state");
+            for (table, t) in &mut tables {
+                ix.reindexed += t.reconcile(&p.kv, table, p.applied)?;
+                ix.scans += 1;
+            }
         }
     }
     for (table, table_fields) in &p.fields {
-        if !tables.contains_key(table) {
-            debug!(app = %p.app_id, table, "building a component search index");
-            let _prev = tables.insert(table.clone(), scan_table(p, table, table_fields)?);
-            ix.scans += 1;
+        if tables.contains_key(table) {
+            continue;
         }
+        debug!(app = %p.app_id, table, "opening a component search index");
+        let path = dir.map(|d| table_dir(d, table));
+        let mut t = TableIndex::open(path.as_deref(), table, table_fields)?;
+        ix.reindexed += t.reconcile(&p.kv, table, p.applied)?;
+        ix.scans += 1;
+        let _prev = tables.insert(table.clone(), t);
     }
     ix.tables = tables;
     ix.fields = p.fields.clone();
     ix.built_at = p.applied;
+    ix.built = true;
     Ok(())
 }
 
-/// `table`'s index, built from every record of it in the view's state.
-fn scan_table(p: &Pending, table: &str, fields: &[String]) -> Result<TableIndex, String> {
-    let mut t = TableIndex::new(table, fields)?;
+/// The stored-key prefix of `table`'s records: `generation ‖ (table, "r", ..)`.
+fn record_prefix(table: &str) -> Vec<u8> {
     let mut prefix = GENERATION.to_be_bytes().to_vec();
     prefix.push(0x30);
     prefix.extend(
@@ -466,13 +580,17 @@ fn scan_table(p: &Pending, table: &str, fields: &[String]) -> Result<TableIndex,
             .flat_map(|b| if b == 0 { vec![0x00, 0xFF] } else { vec![b] }),
     );
     prefix.extend_from_slice(&[0x00, 0x00, 0x30, b'r', 0x00, 0x00]);
-    let records: Records =
-        p.kv.range(prefix.clone()..)
-            .take_while(|(k, _)| k.starts_with(&prefix))
-            .map(|(k, v)| (k.clone(), Some(v.clone())))
-            .collect();
-    t.apply(&records, p.applied)?;
-    Ok(t)
+    prefix
+}
+
+/// An app's directory under `root`: named by the SHA-256 of its id, so any id is a path.
+fn app_dir(root: &Path, app_id: &str) -> PathBuf {
+    root.join(hex::encode(digest(&SHA256, app_id.as_bytes()).as_ref()))
+}
+
+/// A table's index directory under its app's.
+fn table_dir(app_dir: &Path, table: &str) -> PathBuf {
+    app_dir.join(hex::encode(digest(&SHA256, table.as_bytes()).as_ref()))
 }
 
 #[cfg(test)]
@@ -768,5 +886,111 @@ mod tests {
             .unwrap();
         assert_eq!(find(&*later, "hello"), vec![key("2")]);
         assert_eq!(scans(&search, "app"), 2);
+    }
+
+    fn reindexed(search: &ComponentSearch, app: &str) -> u64 {
+        let apps = search.apps.lock().unwrap();
+        let ix = apps[app].indexes.lock().unwrap();
+        ix.reindexed
+    }
+
+    /// Indexes kept on disk survive a restart: the new process compares them with the
+    /// state and indexes again only the documents that changed, appeared or went.
+    #[test]
+    fn an_index_kept_on_disk_catches_up_after_a_restart_reindexing_only_what_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let before = ComponentSearch::new(Some(dir.path().to_owned()));
+            let first = before
+                .prepare(
+                    "app",
+                    &fields(),
+                    state(&[("1", "hello"), ("2", "hello two"), ("3", "hello three")]),
+                    5,
+                    |_| None,
+                )
+                .unwrap();
+            assert_eq!(find(&*first, "hello"), vec![key("1"), key("2"), key("3")]);
+            assert_eq!(reindexed(&before, "app"), 3);
+        }
+        // A restart: nothing in memory, and the entries since are unknown.
+        let after = ComponentSearch::new(Some(dir.path().to_owned()));
+        let view = after
+            .prepare(
+                "app",
+                &fields(),
+                state(&[("1", "hello"), ("2", "goodbye two"), ("4", "hello four")]),
+                9,
+                |_| None,
+            )
+            .unwrap();
+        assert_eq!(find(&*view, "hello"), vec![key("1"), key("4")]);
+        assert_eq!(find(&*view, "goodbye"), vec![key("2")]);
+        assert_eq!(
+            reindexed(&after, "app"),
+            3,
+            "2 changed, 3 went, 4 appeared; 1 was left as it was"
+        );
+
+        after.drop_app("app");
+        assert!(
+            !app_dir(dir.path(), "app").exists(),
+            "a dropped app's files go too"
+        );
+    }
+
+    /// An index left on disk under another schema is made anew, never read as current.
+    #[test]
+    fn an_index_on_disk_under_other_fields_is_made_anew() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let before = ComponentSearch::new(Some(dir.path().to_owned()));
+            let first = before
+                .prepare("app", &fields(), state(&[("1", "hello")]), 5, |_| None)
+                .unwrap();
+            assert_eq!(find(&*first, "hello"), vec![key("1")]);
+        }
+        let other: Fields = [(
+            "notes".to_owned(),
+            vec!["title".to_owned(), "body".to_owned()],
+        )]
+        .into();
+        let after = ComponentSearch::new(Some(dir.path().to_owned()));
+        let view = after
+            .prepare("app", &other, state(&[("2", "hello again")]), 6, |_| None)
+            .unwrap();
+        assert_eq!(find(&*view, "hello"), vec![key("2")]);
+        assert_eq!(reindexed(&after, "app"), 1);
+    }
+
+    /// In memory too, a comparison after the ring was passed indexes only what differs.
+    #[test]
+    fn a_comparison_in_memory_indexes_only_what_differs() {
+        let search = ComponentSearch::default();
+        let first = search
+            .prepare(
+                "app",
+                &fields(),
+                state(&[("1", "hello"), ("2", "hello")]),
+                5,
+                |_| None,
+            )
+            .unwrap();
+        assert_eq!(find(&*first, "hello").len(), 2);
+        let later = search
+            .prepare(
+                "app",
+                &fields(),
+                state(&[("1", "hello"), ("2", "bye")]),
+                9_000,
+                |_| None,
+            )
+            .unwrap();
+        assert_eq!(find(&*later, "hello"), vec![key("1")]);
+        assert_eq!(
+            reindexed(&search, "app"),
+            3,
+            "2 at first, then only 2 again"
+        );
     }
 }
