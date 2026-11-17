@@ -415,18 +415,18 @@ async fn forged_decisions_are_refused_where_they_apply_on_every_node() {
         (
             "an upgrade without consent",
             json!({
-                "op": "upgradeApp", "appId": app, "bundle": bundle, "byOperator": false,
+                "op": "upgradeApp", "app_id": app, "bundle": bundle, "by_operator": false,
                 "actor": alice, "consent": null,
             }),
         ),
         (
             "a transfer without consent",
-            json!({ "op": "transferApp", "appId": app, "to": bob, "actor": alice, "consent": null }),
+            json!({ "op": "transferApp", "app_id": app, "to": bob, "actor": alice, "consent": null }),
         ),
         (
             "a transfer with bob's passkey",
             json!({
-                "op": "transferApp", "appId": app, "to": bob, "actor": alice,
+                "op": "transferApp", "app_id": app, "to": bob, "actor": alice,
                 "consent": consent(&mut bob_pk, &app, "__transfer", &json!({ "to": bob })),
             }),
         ),
