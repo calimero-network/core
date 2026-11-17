@@ -172,11 +172,14 @@ jobs:
           persist-credentials: false
 
       - name: Set up pnpm
+        # Only the JavaScript SDKs need Node; a tree with none has no lockfile.
+        if: hashFiles('sdks/pnpm-lock.yaml') != ''
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: sdks/package.json
 
       - name: Set up Node.js
+        if: hashFiles('sdks/pnpm-lock.yaml') != ''
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -189,6 +192,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the JS workspace
+        if: hashFiles('sdks/pnpm-lock.yaml') != ''
         working-directory: sdks
         run: pnpm install --frozen-lockfile
 
