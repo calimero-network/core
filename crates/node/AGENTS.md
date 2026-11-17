@@ -550,7 +550,7 @@ is its command line.
   (`spawn_blocking`), `MAX_CONCURRENT_QUOTES` (1) at a time; `MAX_QUEUED_QUOTES` (8) more
   wait, each at most `QUOTE_WAIT` (3 s), and anything past that answers `503 BUSY` with
   `Retry-After: 1` at once (`ApiError::busy`). The slot is released only when the quote
-  returns, even if its caller went away. `/attestation` takes it after `?app=`'s lookup.
+  returns, even if its caller went away. `/attestation` takes it after `?app=`'s lookup, which, in the clear and without a credential, is judged as an anonymous `GET /apps/{app}` (fresh system state; an app anyone may not reach answers `404` as an unknown id; regression `attestation_names_no_app_an_anonymous_caller_cannot_reach`).
   Mock quotes take the same path. Regressions: `attest::tests`,
   `a_flood_of_attestations_does_not_stall_the_node` (`testing::slow_quotes` makes each
   quote block its thread).
