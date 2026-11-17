@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::{bounds, iter_entries, read_page};
+use crate::commons::{bounds, iter_entries, read_page, KeyPath};
 use crate::encoding::key::{self, KeyPart, ToKey};
 use crate::encoding::value;
 use crate::error::{StorageError, TableError};
@@ -217,7 +217,7 @@ struct Entries {
 
 /// A table of `T` records over a store.
 pub struct Table<T: Record, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _record: PhantomData<fn() -> T>,
 }
@@ -238,14 +238,15 @@ impl<T: Record, S: Store> Table<T, S> {
     /// A table on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _record: PhantomData,
         }
     }
 
     fn prefix(&self, kind: &str, rest: &[&str], parts: &[KeyPart]) -> Vec<KeyPart> {
-        let mut all = vec![KeyPart::Str(self.name.clone()), KeyPart::Str(kind.into())];
+        let mut all = self.name.parts().to_vec();
+        all.push(KeyPart::Str(kind.into()));
         all.extend(rest.iter().map(|r| KeyPart::Str((*r).into())));
         all.extend_from_slice(parts);
         all
@@ -398,10 +399,21 @@ impl<T: Record, S: Store> Table<T, S> {
         text: &str,
         opts: crate::SearchOpts,
     ) -> Result<crate::SearchResults<T>, StorageError> {
+        if self.name.is_nested() {
+            // The host indexes the tables the state declares, by name; a nested one is not.
+            return Err(StorageError::Search(
+                "search covers the state's own tables, not a nested one".into(),
+            ));
+        }
         let limit = opts.limit.unwrap_or(crate::search::DEFAULT_SEARCH_LIMIT);
-        let page =
-            crate::env::search_query(&self.name, text, opts.mode, opts.cursor.unwrap_or(0), limit)
-                .map_err(StorageError::Search)?;
+        let page = crate::env::search_query(
+            self.name.label(),
+            text,
+            opts.mode,
+            opts.cursor.unwrap_or(0),
+            limit,
+        )
+        .map_err(StorageError::Search)?;
         let mut items = Vec::with_capacity(page.hits.len());
         for hit in page.hits {
             if let Some(record) = self.read(&hit.key)? {
@@ -501,7 +513,7 @@ impl<T: Record, S: Store> Table<T, S> {
     pub fn clear(&mut self) -> Result<u64, StorageError> {
         let records = self.encode(&self.prefix("r", &[], &[]))?;
         let removed = crate::commons::clear_prefix(&mut self.store, &records);
-        let all = self.encode(&[KeyPart::Str(self.name.clone())])?;
+        let all = self.encode(self.name.parts())?;
         let _ = crate::commons::clear_prefix(&mut self.store, &all);
         Ok(removed)
     }
@@ -574,5 +586,15 @@ impl<T: Record, S: Store> Table<T, S> {
             sum
         };
         u64::try_from(sum).map_err(|_| StorageError::BadCounter(name.into()))
+    }
+}
+
+impl<T: Record, S: Store> crate::collections::Nestable<S> for Table<T, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _record: PhantomData,
+        }
     }
 }

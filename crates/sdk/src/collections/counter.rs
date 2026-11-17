@@ -1,15 +1,15 @@
 //! `Counter`: a non-negative integer at `(name, "n")`.
 
 use crate::app::StateField;
-use crate::encoding::key::{self, KeyPart};
+use crate::commons::{collection_key, KeyPath};
 use crate::encoding::value;
 use crate::error::StorageError;
-use crate::store::{check_key, DefaultStore, Store};
+use crate::store::{DefaultStore, Store};
 
 /// A counter. `add` never conflicts; `increment` reads and rewrites the key, so it
 /// serializes every call that uses it (D47). Use `env::unique_id()` for generated ids.
 pub struct Counter<S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
 }
 
@@ -28,15 +28,13 @@ impl<S: Store> Counter<S> {
     /// A counter on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
         }
     }
 
     fn storage_key(&self) -> Result<Vec<u8>, StorageError> {
-        let encoded = key::encode(&[KeyPart::Str(self.name.clone()), KeyPart::Str("n".into())]);
-        check_key(&encoded)?;
-        Ok(encoded)
+        collection_key(&self.name, "n", &[])
     }
 
     fn read(&self) -> Result<i128, StorageError> {
@@ -48,13 +46,14 @@ impl<S: Store> Counter<S> {
 
     /// The current value.
     pub fn get(&self) -> Result<u64, StorageError> {
-        u64::try_from(self.read()?).map_err(|_| StorageError::BadCounter(self.name.clone()))
+        u64::try_from(self.read()?).map_err(|_| StorageError::BadCounter(self.name.label().into()))
     }
 
     /// Add one and return the new value. Reads and serializes the key; see the type docs.
     pub fn increment(&mut self) -> Result<u64, StorageError> {
         let next = self.read()? + 1;
-        let out = u64::try_from(next).map_err(|_| StorageError::BadCounter(self.name.clone()))?;
+        let out =
+            u64::try_from(next).map_err(|_| StorageError::BadCounter(self.name.label().into()))?;
         let key = self.storage_key()?;
         self.store.put(&key, &value::int_to_vec(next)?);
         Ok(out)
@@ -85,5 +84,11 @@ impl<S: Store> Counter<S> {
         let key = self.storage_key()?;
         self.store.add(&key, delta);
         Ok(())
+    }
+}
+
+impl<S: Store> crate::collections::Nestable<S> for Counter<S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self { name: path, store }
     }
 }

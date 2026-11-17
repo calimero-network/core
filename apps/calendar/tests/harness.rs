@@ -111,6 +111,14 @@ fn events_come_back_in_time_order_and_two_at_one_time_both_stay() {
     }
     let got = titles(t.as_("ann").view("myEvents", json!({})).unwrap());
     assert_eq!(got.len(), 4);
+    assert_eq!(
+        t.as_("ann").view("eventCount", json!({})).unwrap(),
+        json!("4")
+    );
+    assert_eq!(
+        t.as_("owner").view("eventCount", json!({})).unwrap(),
+        json!("0")
+    );
     assert_eq!(got[0], "early");
     assert_eq!(got[3], "late");
 }

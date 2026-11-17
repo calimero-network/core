@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::app::StateField;
-use crate::commons::{bounds, clear_prefix, collection_key, key_after, read_count};
+use crate::commons::{bounds, clear_prefix, collection_key, key_after, read_count, KeyPath};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
@@ -122,7 +122,7 @@ impl Tree {
 
 /// A Fugue text; see the module docs.
 pub struct Text<S: Store = DefaultStore> {
-    pub(crate) name: String,
+    pub(crate) name: KeyPath,
     pub(crate) store: S,
 }
 
@@ -141,7 +141,7 @@ impl<S: Store> Text<S> {
     /// A text on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
         }
     }
@@ -161,7 +161,7 @@ impl<S: Store> Text<S> {
     /// Reserve `n` fresh ids; returns the first.
     pub(crate) fn mint(&mut self, n: u64) -> Result<u64, StorageError> {
         let key = self.next_id_key()?;
-        let first = read_count(&self.store, &key, &self.name)?;
+        let first = read_count(&self.store, &key, self.name.label())?;
         let delta = i64::try_from(n).map_err(|_| StorageError::Encode("too many ids".into()))?;
         self.store.add(&key, delta);
         Ok(first)
@@ -191,7 +191,7 @@ impl<S: Store> Text<S> {
 
     /// The number of live characters: one read of the stored count.
     pub fn len(&self) -> Result<u64, StorageError> {
-        read_count(&self.store, &self.len_key()?, &self.name)
+        read_count(&self.store, &self.len_key()?, self.name.label())
     }
 
     /// Whether the text has no live characters.
@@ -355,6 +355,12 @@ fn live_at(tree: &Tree, index: u64) -> Option<u64> {
         .into_iter()
         .filter(|id| tree.is_live(*id))
         .nth(index)
+}
+
+impl<S: Store> crate::collections::Nestable<S> for Text<S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self { name: path, store }
+    }
 }
 
 #[cfg(test)]

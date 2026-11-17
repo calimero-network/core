@@ -19,13 +19,66 @@ pub(crate) fn encode(parts: &[KeyPart]) -> Result<Vec<u8>, StorageError> {
     Ok(encoded)
 }
 
-/// The key `(name, kind, rest..)` of a collection, checked.
+/// Where a collection's keys start.
+///
+/// A state field's collection starts at its name, `(name)`, so its keys are
+/// `(name, kind, rest..)` as they always were. A collection nested under a key of a
+/// [`Nested`](crate::collections::Nested) starts at its parent's path, then `"c"` and that
+/// key encoded as one bytes part: `(name, "c", key)`, and so on for each level.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyPath {
+    label: String,
+    parts: Vec<KeyPart>,
+}
+
+impl KeyPath {
+    /// A state field's path: its name.
+    pub fn root(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            parts: vec![KeyPart::Str(name.clone())],
+            label: name,
+        }
+    }
+
+    /// The path of the collection nested under the key `key` here.
+    pub(crate) fn child(&self, key: &[KeyPart]) -> Self {
+        let mut parts = self.parts.clone();
+        parts.push(KeyPart::Str(NESTED.into()));
+        parts.push(KeyPart::Bytes(key::encode(key)));
+        Self {
+            label: self.label.clone(),
+            parts,
+        }
+    }
+
+    /// The state field this path starts at, for error messages.
+    pub(crate) fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// The key parts every key of the collection starts with.
+    pub(crate) fn parts(&self) -> &[KeyPart] {
+        &self.parts
+    }
+
+    /// Whether this is a nested collection's path rather than a state field's.
+    pub(crate) fn is_nested(&self) -> bool {
+        self.parts.len() > 1
+    }
+}
+
+/// The kind part under which a [`Nested`](crate::collections::Nested) keeps its children.
+pub(crate) const NESTED: &str = "c";
+
+/// The key `(path.., kind, rest..)` of a collection, checked.
 pub(crate) fn collection_key(
-    name: &str,
+    path: &KeyPath,
     kind: &str,
     rest: &[KeyPart],
 ) -> Result<Vec<u8>, StorageError> {
-    let mut parts = vec![KeyPart::Str(name.into()), KeyPart::Str(kind.into())];
+    let mut parts = path.parts().to_vec();
+    parts.push(KeyPart::Str(kind.into()));
     parts.extend_from_slice(rest);
     encode(&parts)
 }

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::StateField;
 use crate::collections::text::{Text, Tree};
-use crate::commons::{bounds, clear_prefix, collection_key, key_after};
+use crate::commons::{bounds, clear_prefix, collection_key, key_after, KeyPath};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
@@ -243,6 +243,14 @@ impl<S: Store> RichText<S> {
         let base = collection_key(&self.text.name, "k", &[])?;
         let _removed = clear_prefix(&mut self.text.store, &base);
         self.text.clear()
+    }
+}
+
+impl<S: Store> crate::collections::Nestable<S> for RichText<S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            text: <Text<S> as crate::collections::Nestable<S>>::at(path, store),
+        }
     }
 }
 

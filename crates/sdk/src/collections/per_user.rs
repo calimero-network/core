@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::{collection_key, iter_entries, key_after, read_page, Entry};
+use crate::commons::{collection_key, iter_entries, key_after, read_page, Entry, KeyPath};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::env::{self, Caller};
@@ -19,7 +19,7 @@ use crate::table::{FindOpts, Iter, Page};
 /// account's value can be read with [`PerUser::get_for`]. Callers that are not an account
 /// (system, public, another app) get `LoginRequired`.
 pub struct PerUser<T, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _type: PhantomData<fn() -> T>,
 }
@@ -58,7 +58,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
     /// A per-account store on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _type: PhantomData,
         }
@@ -134,6 +134,16 @@ impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
             self.store.delete(&key);
         }
         Ok(old)
+    }
+}
+
+impl<T, S: Store> crate::collections::Nestable<S> for PerUser<T, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _type: PhantomData,
+        }
     }
 }
 

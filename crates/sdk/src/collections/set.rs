@@ -6,6 +6,7 @@ use core::marker::PhantomData;
 use crate::app::StateField;
 use crate::commons::{
     bounds, clear_prefix, collection_key, iter_entries, key_after, read_count, read_page, Entry,
+    KeyPath,
 };
 use crate::encoding::key::{self, FromKey, KeyPart, ToKey};
 use crate::error::StorageError;
@@ -17,7 +18,7 @@ const PRESENT: &[u8] = &[0xF6];
 
 /// A set of key-encodable elements, ordered by their key encoding.
 pub struct Set<T: ToKey, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _type: PhantomData<fn() -> T>,
 }
@@ -37,7 +38,7 @@ impl<T: ToKey, S: Store> Set<T, S> {
     /// A set on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _type: PhantomData,
         }
@@ -84,7 +85,7 @@ impl<T: ToKey, S: Store> Set<T, S> {
 
     /// How many elements there are: one read of the stored count, never a scan.
     pub fn len(&self) -> Result<u64, StorageError> {
-        read_count(&self.store, &self.count_key()?, &self.name)
+        read_count(&self.store, &self.count_key()?, self.name.label())
     }
 
     /// Whether the set is empty.
@@ -258,6 +259,16 @@ impl<T: ToKey + FromKey, S: Store> Set<T, S> {
             .page(FindOpts::default().limit(1).reverse())?
             .items
             .pop())
+    }
+}
+
+impl<T: ToKey, S: Store> crate::collections::Nestable<S> for Set<T, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _type: PhantomData,
+        }
     }
 }
 

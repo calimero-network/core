@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::app::StateField;
 use crate::commons::{
     bounds, clear_prefix, collection_key, iter_entries, key_after, read_count, read_page, Entry,
+    KeyPath,
 };
 use crate::encoding::key::{self, FromKey, KeyPart, ToKey};
 use crate::encoding::value;
@@ -20,7 +21,7 @@ use crate::table::{FindOpts, Iter, Page};
 
 /// A map from tuple keys to CBOR values, ordered by key.
 pub struct UnorderedMap<K: ToKey, V, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _types: PhantomData<fn() -> (K, V)>,
 }
@@ -40,7 +41,7 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
     /// A map on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _types: PhantomData,
         }
@@ -174,7 +175,7 @@ impl<K: ToKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap<K, V, S> 
 
     /// How many keys hold a value: one read of the stored count, never a scan.
     pub fn len(&self) -> Result<u64, StorageError> {
-        read_count(&self.store, &self.count_key()?, &self.name)
+        read_count(&self.store, &self.count_key()?, self.name.label())
     }
 
     /// Whether the map is empty.
@@ -336,6 +337,16 @@ impl<K: ToKey + FromKey, V: Serialize + DeserializeOwned, S: Store> UnorderedMap
             .page(FindOpts::default().limit(1).reverse())?
             .items
             .pop())
+    }
+}
+
+impl<K: ToKey, V, S: Store> crate::collections::Nestable<S> for UnorderedMap<K, V, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _types: PhantomData,
+        }
     }
 }
 

@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::{clear_prefix, collection_key, iter_entries, read_count, read_page};
+use crate::commons::{clear_prefix, collection_key, iter_entries, read_count, read_page, KeyPath};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
@@ -16,7 +16,7 @@ use crate::table::{FindOpts, Iter, Page};
 
 /// A list of values by position; it grows and shrinks at the end.
 pub struct Vector<T, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _type: PhantomData<fn() -> T>,
 }
@@ -36,7 +36,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
     /// A vector on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _type: PhantomData,
         }
@@ -56,7 +56,7 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
 
     /// How many elements there are: one read of the stored length.
     pub fn len(&self) -> Result<u64, StorageError> {
-        read_count(&self.store, &self.len_key()?, &self.name)
+        read_count(&self.store, &self.len_key()?, self.name.label())
     }
 
     /// Whether the vector is empty.
@@ -382,6 +382,16 @@ impl<T: Serialize + DeserializeOwned, S: Store> Vector<T, S> {
         let removed = clear_prefix(&mut self.store, &base);
         self.store.delete(&count);
         Ok(removed)
+    }
+}
+
+impl<T, S: Store> crate::collections::Nestable<S> for Vector<T, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _type: PhantomData,
+        }
     }
 }
 
