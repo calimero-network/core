@@ -81,6 +81,7 @@ fn release_with(package: &str, version: &str, frontend: &[(&str, &[u8])]) -> Vec
         frontend_aliases: Vec::new(),
         upgrades: None,
         outbound: Vec::new(),
+        secrets: None,
         services: None,
         pipelines: Vec::new(),
         signature: None,
@@ -465,12 +466,14 @@ async fn a_registered_origin_signs_up_only_whom_the_cluster_takes() {
     .await;
     let ops = c.client(0);
     ops.use_api_key("ops-secret").await;
-    let expires = chrono::Utc::now() + chrono::Duration::hours(1);
+    let expires = (time::OffsetDateTime::now_utc() + time::Duration::hours(1))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
     for token in ["sup_alice_000000000", "sup_carol_000000000"] {
         let _i = ops_signed(
             &ops,
             "ops/sign-up/invites",
-            json!({ "token": token, "uses": 1, "expiresAt": expires.to_rfc3339() }),
+            json!({ "token": token, "uses": 1, "expiresAt": expires }),
         )
         .await
         .unwrap();

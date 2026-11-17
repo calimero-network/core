@@ -55,6 +55,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8]) -> Vec<u8> {
         frontend_aliases: Vec::new(),
         upgrades: None,
         outbound: Vec::new(),
+        secrets: None,
         services: None,
         pipelines: Vec::new(),
         signature: None,
