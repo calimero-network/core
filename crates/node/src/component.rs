@@ -652,6 +652,17 @@ pub enum ComponentCmd {
         uploader: Option<String>,
     },
     /// Applies as nothing: committed through the leader to settle which earlier entries stand.
+    /// The app's owner set its own value of a secret its release declares (`PUT
+    /// /apps/{app}/secrets/{name}`): the node's own command, built by the API after judging
+    /// who may and that the name is declared.
+    #[serde(rename = "componentSecretSet")]
+    SecretSet {
+        name: String,
+        secret: InstanceSecret,
+    },
+    /// The owner removed its value: the operator's applies again.
+    #[serde(rename = "componentSecretClear")]
+    SecretClear { name: String },
     #[serde(rename = "componentBarrier")]
     Barrier,
     /// An action's attempt timed out (`retry`, D22), or the action ended: done, or failed
@@ -1424,6 +1435,8 @@ impl AppMachine {
                 ComponentCmd::Upgrade { .. }
                 | ComponentCmd::BlobForget { .. }
                 | ComponentCmd::BlobRevoke { .. }
+                | ComponentCmd::SecretSet { .. }
+                | ComponentCmd::SecretClear { .. }
                 | ComponentCmd::BlobsCollected { .. }
                 | ComponentCmd::ComputeAttempt(_)
                 | ComponentCmd::Barrier
@@ -1599,6 +1612,22 @@ impl AppMachine {
                 }
                 host_answer(index, forgotten.is_some(), "no such blob in this app")
             }
+            Ok(ComponentCmd::SecretSet { name, secret }) => {
+                let mut all = instance_secrets_in(tx);
+                if all.len() >= calimero_bundle::MAX_SECRETS && !all.contains_key(&name) {
+                    host_answer(index, false, "too many secrets")
+                } else {
+                    let _prev = all.insert(name, secret);
+                    put_instance_secrets(tx, &all);
+                    host_answer(index, true, "")
+                }
+            }
+            Ok(ComponentCmd::SecretClear { name }) => {
+                let mut all = instance_secrets_in(tx);
+                let had = all.remove(&name).is_some();
+                put_instance_secrets(tx, &all);
+                host_answer(index, had, "no value of that secret here")
+            }
             Ok(ComponentCmd::BlobRevoke { id }) => {
                 let c = &mut self.state.component;
                 let revoked = parse_hex32(&id)
@@ -1728,6 +1757,66 @@ pub(crate) fn put_json<T: Serialize>(tx: &mut StateTx<'_>, family: u8, key: &str
 
 /// The answer to a host command (an upload, a delete, a collection): `Ok`, or an
 /// `AppError` with `why`.
+/// A secret value. Its `Debug` never shows it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SecretValue(pub String);
+
+impl std::fmt::Debug for SecretValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SecretValue(…)")
+    }
+}
+
+/// An instance's own value of a declared secret ([`rows::CSECRET`]): the value, and what
+/// the routes answer of it (never the value).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceSecret {
+    pub value: SecretValue,
+    /// The first 16 hex digits of the value's SHA-256, to tell values apart.
+    pub fingerprint: String,
+    /// `account:<id>`.
+    pub set_by: String,
+    /// Unix seconds.
+    pub set_at: u64,
+}
+
+/// The instance's own secrets, by name.
+pub type InstanceSecrets = BTreeMap<String, InstanceSecret>;
+
+const SECRETS_ROW: &[u8] = b"all";
+
+fn instance_secrets_in(tx: &StateTx<'_>) -> InstanceSecrets {
+    tx.get_hidden(rows::CSECRET, SECRETS_ROW)
+        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .unwrap_or_default()
+}
+
+fn put_instance_secrets(tx: &mut StateTx<'_>, all: &InstanceSecrets) {
+    if all.is_empty() {
+        tx.delete_hidden(rows::CSECRET, SECRETS_ROW);
+        return;
+    }
+    match serde_json::to_vec(all) {
+        Ok(v) => tx.put_hidden(rows::CSECRET, SECRETS_ROW, &v),
+        Err(e) => tx.fail(e),
+    }
+}
+
+impl AppMachine {
+    /// The instance's own secrets ([`rows::CSECRET`]), as applied here.
+    #[must_use]
+    pub fn instance_secrets(&self) -> InstanceSecrets {
+        self.state
+            .kv
+            .group()
+            .and_then(|g| g.get_hidden(rows::CSECRET, SECRETS_ROW))
+            .and_then(|raw| serde_json::from_slice(&raw).ok())
+            .unwrap_or_default()
+    }
+}
+
 pub(crate) fn host_answer(index: u64, ok: bool, why: &str) -> Applied {
     Applied {
         index,

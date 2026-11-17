@@ -5709,6 +5709,163 @@ async fn a_release_names_the_apps_it_uses_on_its_card() {
     );
 }
 
+/// An instance's owner sets its own value of a secret its release declares: no operator
+/// bound one here, so the action that names it fails until the owner sets it, then reaches
+/// the echo host with it (redacted in what comes back). The value is never answered, only
+/// its fingerprint; a name the release does not declare, an empty value and a stranger are
+/// refused; clearing it goes back to the operator's (none).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_owner_sets_its_instances_own_secret_and_it_goes_only_where_declared() {
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const HOST: &str = "echo.outbound.test";
+    const PACKAGE: &str = "com.calimero.owns-echo";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[19; 32]);
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            turnstile: false,
+            secrets: std::collections::BTreeMap::new(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let _ = alice
+        .packages()
+        .upload(mpk_with_secrets(
+            PACKAGE,
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[PREFIX],
+            Some(&[("ECHO_KEY", HOST)]),
+        ))
+        .await
+        .unwrap();
+    let _ = alice
+        .orgs()
+        .outbound_approval(
+            &alice.personal_org().await.unwrap(),
+            PACKAGE,
+            Some(typed(json!("manifest"))),
+            Some(false),
+            Some(&mut pk),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "owned", "package": PACKAGE })))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let enrich = || async {
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": "acme", "value": "acme.com" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let _r = alice
+            .apps()
+            .call(
+                &app,
+                "startEnrich",
+                Some(json!({ "key": "acme" })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    };
+
+    // Nothing set, nothing bound by the operator: the request never leaves.
+    let listed = alice.apps().secrets(&app).await.map(wire).unwrap();
+    assert_eq!(
+        listed["secrets"]["ECHO_KEY"]["source"],
+        json!("cluster"),
+        "{listed}"
+    );
+    enrich().await;
+    let failures = eventually(&alice, &app, "actionFailures", json!({}), |f| {
+        f["enrich"].is_string()
+    })
+    .await;
+    assert!(
+        failures["enrich"].as_str().unwrap().contains("ECHO_KEY"),
+        "{failures}"
+    );
+
+    // Refused: an undeclared name, an empty value, a stranger.
+    let e = alice
+        .apps()
+        .secret_set(&app, "OTHER", "x", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    let e = alice
+        .apps()
+        .secret_set(&app, "ECHO_KEY", "", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_SECRET"), "{e}");
+    assert!(bob
+        .apps()
+        .secret_set(&app, "ECHO_KEY", "bobs", Some(&mut bob_pk))
+        .await
+        .is_err());
+
+    // Set with the owner's passkey: answered by fingerprint only, and used.
+    let set = alice
+        .apps()
+        .secret_set(&app, "ECHO_KEY", "owners-own-key", Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    let listed = alice.apps().secrets(&app).await.map(wire).unwrap();
+    let row = &listed["secrets"]["ECHO_KEY"];
+    assert_eq!(row["source"], json!("app"), "{listed}");
+    assert_eq!(row["fingerprint"], set["fingerprint"]);
+    assert!(!listed.to_string().contains("owners-own-key"), "{listed}");
+    enrich().await;
+    let got = eventually(&alice, &app, "enrichment", json!({ "key": "acme" }), |v| {
+        v.is_string()
+    })
+    .await;
+    let got = got.as_str().unwrap();
+    assert!(got.starts_with("200 "), "{got}");
+    assert!(
+        got.contains("[redacted]") && !got.contains("owners-own-key"),
+        "{got}"
+    );
+
+    // Cleared: the operator's again.
+    let _ = alice
+        .apps()
+        .secret_clear(&app, "ECHO_KEY", Some(&mut pk))
+        .await
+        .unwrap();
+    let listed = alice.apps().secrets(&app).await.map(wire).unwrap();
+    assert_eq!(
+        listed["secrets"]["ECHO_KEY"]["source"],
+        json!("cluster"),
+        "{listed}"
+    );
+}
+
 /// A release that creates the apps it uses (`uses`, `mode: create`): creating an instance
 /// first creates each in the same organization, by the same owner, from the release its lock
 /// pinned; the instance's record names them (`links`) and its `init` is told their ids. A

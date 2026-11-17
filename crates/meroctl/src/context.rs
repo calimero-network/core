@@ -1,4 +1,4 @@
-//! `meroctl context`: app instances, v1's contexts. A context runs one
+//! `meroctl instance`: app instances, v1's contexts. A context runs one
 //! application release (or, on a development cluster, a raw bundle), on the
 //! replicas the cluster places it on.
 
@@ -36,15 +36,10 @@ pub enum ContextCmd {
         #[arg(long)]
         params: Option<String>,
         /// Create it in this organization.
-        #[arg(long = "org", alias = "namespace", value_name = "ORG")]
+        #[arg(long = "org", value_name = "ORG")]
         namespace: Option<String>,
         /// Reached by this team's members (a team of `--org`).
-        #[arg(
-            long = "team",
-            alias = "group",
-            value_name = "TEAM",
-            requires = "namespace"
-        )]
+        #[arg(long = "team", value_name = "TEAM", requires = "namespace")]
         group: Option<String>,
         /// Also name it with this alias.
         #[arg(long)]
@@ -134,7 +129,7 @@ pub enum ContextCmd {
         #[arg(value_enum)]
         kind: AccessKind,
         /// For `team`: the team.
-        #[arg(long = "team", alias = "group", value_name = "TEAM")]
+        #[arg(long = "team", value_name = "TEAM")]
         group: Option<String>,
         /// For `accounts`: who.
         #[arg(long = "account")]

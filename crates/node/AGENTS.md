@@ -796,6 +796,20 @@ is its command line.
   Entries leave past `MAX_CACHE_ENTRIES` (oldest first) and after `CACHE_TTL_MS` by the applied entry's timestamp (`expire_step_cache`, at most `CACHE_EXPIRY_STEP` per entry), releasing their holds; a hit refreshes the entry and moves it last.
   `StepState::is_cached` and `cached_items` feed `cached` and `cachedItems` in the run view; a start naming a file id the app does not hold answers `410 OUTPUT_EXPIRED`, and `503 UNAVAILABLE` when the app's leader does not answer (regressions: `a_start_while_the_apps_leader_changes_finds_its_uploaded_file`, `a_start_while_the_app_has_no_leader_is_unavailable_not_expired`).
   Tests: `component/tests/pipelines.rs` (apply), `compute/pipelines.rs` (`plan` keys and hits), `pipeline_runs.rs` (`rerunning_with_one_changed_param_runs_only_the_steps_it_reaches`, `a_step_with_cache_false_always_runs`, `a_fan_out_reuses_its_cached_items`, `starting_with_an_expired_output_answers_output_expired`).
+- **Instance secrets** (`api/apps.rs`: `app_secrets`, `app_secret_set`,
+  `app_secret_clear`; `component.rs`: `ComponentCmd::SecretSet`/`SecretClear`,
+  `InstanceSecret`, `rows::CSECRET`): an app's owner (or whoever manages its
+  organization's apps) sets its own value of a secret its release declares
+  (`PackageVersion::secrets`), with a step-up over `{ name, fingerprint }`. The
+  host command `__secret_set` / `__secret_clear` writes one hidden row on the
+  app's replicas (`AppMachine::instance_secrets`), which no host function reads;
+  a call's or tick's run reads it with the state it sees (`RunExtras::secrets`),
+  an action reads it on the leader, and `outbound_for` hands it to the gate
+  (`calimero_outbound::OwnSecrets`, which wins over the operator's for a
+  declared name, only to its declared hosts). `GET` answers through the leader's
+  reserved view `__secrets`: fingerprints, never values. Set or clear only once
+  every node runs this release (`require_upgraded_nodes`). Regression:
+  `an_owner_sets_its_instances_own_secret_and_it_goes_only_where_declared`.
 - **Units** (`api/apps.rs`: `create_instance`, `unit_members`; docs: build
   packaging-signing, `uses`): creating an instance of a release whose signed
   manifest has `uses` with `mode: create` first creates each referenced app
@@ -1799,11 +1813,16 @@ API and system group:
   search needs (`ComponentSearch::for_view`, inside `read_local`: the state's `Arc` and the
   record keys the entries since the indexes' mark touched, `AppMachine::note_touched` at
   apply, the same `TOUCHED_RING`) and indexes nothing; its first query brings the app's
-  indexes up to that state on the view's own thread (`RunSearch::ready`): from those keys,
-  else (a new bundle, keys the ring lost, a mark another view moved meanwhile) a full scan
-  of its state. A view that never searches indexes nothing. Regressions:
+  indexes up to that state on the view's own thread (`RunSearch::ready`): from those keys
+  for every table whose declared fields are what it was built with, across an upgrade
+  too; a table that is new or whose fields changed is scanned and one no longer declared
+  is dropped; everything is scanned only when the keys since are unknown (the first search
+  after a start, keys the ring lost, a mark another view moved meanwhile). A view that
+  never searches indexes nothing. Indexes stay in memory: persisting them would put
+  tantivy's plaintext segments on disk outside the sealed store. Regressions:
   `preparing_a_views_search_indexes_nothing_until_it_queries`,
-  `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`. The run
+  `a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state`,
+  `an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps`. The run
   gets it through `HostCore::with_search` (`RunSearch`): hits are the guest's record keys.
   Derived, in memory, dropped with the app group. Test:
   `views_search_a_components_tables_as_they_change`.
