@@ -778,7 +778,7 @@ is its command line.
   (same organization and owner, the release its lock pinned or the newest
   installed one in range, else `409 USES_NOT_INSTALLED`; at most
   `MAX_UNIT_DEPTH` deep), then records them on the instance
-  (`AppRecord::links`, `Feature::AppLinks`, rc.30) and, when the release's
+  (`AppRecord::links`, `Feature::AppLinks`, rc.31) and, when the release's
   `init` takes `links`, passes their ids in `initArgs` (a client's own
   `links` there is refused). A failure after a member was made leaves it in
   place. Regression: `creating_an_instance_creates_the_apps_its_release_uses`.
