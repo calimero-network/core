@@ -572,6 +572,11 @@ pub struct RaftSample {
     pub follower_lag: Vec<(u64, u64)>,
     /// The index this node's latest snapshot covers.
     pub snapshot: Option<u64>,
+    /// Whether this node's Raft core of the group has stopped (it restarts
+    /// from the disk on its own; `calimero_log::RESTART_FIRST`).
+    pub stopped: bool,
+    /// How many times this node tried to restart the group's core.
+    pub restarts: u64,
 }
 
 /// Read `g`'s Raft metrics.
@@ -602,6 +607,8 @@ pub fn raft_sample<M: calimero_log::Machine>(
         },
         follower_lag,
         snapshot: m.snapshot.map(|l| l.index),
+        stopped: status.stopped.is_some(),
+        restarts: status.restarts,
     }
 }
 
@@ -675,6 +682,30 @@ pub fn render_raft(out: &mut String, samples: &[RaftSample]) {
                 ms as f64 / 1000.0
             );
         }
+    }
+    family(
+        out,
+        "calimero_group_stopped",
+        "1 while this node's Raft core of the group is stopped (a write the disk refused, a machine that panicked, an entry it could not apply): it restarts from the disk, waiting longer each time it stops again.",
+    );
+    for s in samples {
+        let _w = writeln!(
+            out,
+            "calimero_group_stopped{{group=\"{}\"}} {}",
+            s.group,
+            u8::from(s.stopped)
+        );
+    }
+    let _w = writeln!(
+        out,
+        "# HELP calimero_group_restarts_total Times this node restarted its Raft core of the group after it stopped, since the group started here.\n# TYPE calimero_group_restarts_total counter"
+    );
+    for s in samples {
+        let _w = writeln!(
+            out,
+            "calimero_group_restarts_total{{group=\"{}\"}} {}",
+            s.group, s.restarts
+        );
     }
     family(
         out,

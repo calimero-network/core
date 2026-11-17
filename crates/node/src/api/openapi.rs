@@ -3254,6 +3254,9 @@ mod tests {
                 applied: 3,
                 voters: vec![1, 2],
                 learners: vec![3],
+                // Not serialized: the answer keeps the shape clients know.
+                stopped: Some("a disk error".to_owned()),
+                restarts: 1,
             })
             .expect("a status")
         };

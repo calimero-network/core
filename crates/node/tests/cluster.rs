@@ -6805,3 +6805,59 @@ async fn an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart() {
     cl.use_api_key("ops-secret").await;
     assert_eq!(reported_last_write(&cl, "ops/apps", &app).await, at);
 }
+
+/// Review finding B2: a node whose system-group core stopped on a write the disk
+/// refused (EIO, ENOSPC) stayed out of the cluster until the process restarted:
+/// openraft treats it as fatal, and nothing started the core again. Now the group
+/// reads its state again from the disk and restarts the core, waiting
+/// `calimero_log::RESTART_FIRST` first, and the node catches up and serves what
+/// the cluster wrote meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_node_whose_system_group_stopped_on_a_disk_error_rejoins_on_its_own() {
+    let c = Cluster::start(3).await;
+    let (_alice, _pk) = signed_up(&c, 0, "alice").await;
+    let leader = system_leader(&c).await;
+    let follower = (leader + 1) % 3;
+    let node = |i: usize| std::sync::Arc::clone(&c.nodes[i].as_ref().unwrap().node);
+    let accounts = |i: usize| node(i).sys(|s| s.accounts.len());
+    let before = accounts(leader);
+    calimero_log::testing::fail_applies(
+        c._dirs[follower].path(),
+        calimero_node::node::SYSTEM_GROUP,
+        1,
+    );
+    let (_bob, _pk) = signed_up(&c, leader, "bob").await;
+    let stopped = within(Duration::from_secs(10), || {
+        let n = node(follower);
+        n.system.stopped().is_some() || n.system.status().restarts > 0
+    })
+    .await;
+    assert!(
+        stopped,
+        "the injected disk error never reached the follower"
+    );
+    // The cluster goes on writing; the follower comes back and has it all.
+    let (_carol, _pk) = signed_up(&c, leader, "carol").await;
+    let caught_up = within(Duration::from_secs(30), || accounts(follower) >= before + 2).await;
+    assert!(
+        caught_up,
+        "the follower's system group stays stopped: {} accounts there, {} on the leader",
+        accounts(follower),
+        accounts(leader)
+    );
+    let status = node(follower).system.status();
+    assert_eq!(status.stopped, None, "{status:?}");
+    assert!(status.restarts >= 1, "{status:?}");
+}
+
+/// Whether `done` holds within `limit`, looking every 20 ms.
+async fn within(limit: Duration, done: impl Fn() -> bool) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    while tokio::time::Instant::now() < deadline {
+        if done() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}

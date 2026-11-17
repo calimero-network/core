@@ -24,6 +24,18 @@ pub fn release_apply(dir: &Path, group: GroupId) {
     }
 }
 
+/// Make the next `n` applied batches of `group` on the node at `dir` fail to
+/// commit, as a disk that answers EIO or ENOSPC would: each stops the group's
+/// Raft core on that batch.
+pub fn fail_applies(dir: &Path, group: GroupId, n: u32) {
+    if n == 0 {
+        return;
+    }
+    if let Ok(mut f) = crate::store::FAILING.lock() {
+        f.push((dir.to_owned(), group, n));
+    }
+}
+
 /// Make closing the store of the node at `dir` wait `delay` before RocksDB
 /// closes, as a thread descheduled in the middle of dropping the last handle
 /// would.
