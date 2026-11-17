@@ -180,7 +180,7 @@ async fn personal_org(node: &Node, owner: &str) -> Result<String, ApiError> {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CreateAppBody {
     #[serde(default)]
@@ -235,6 +235,22 @@ async fn app_create(
         return Err(ApiError::forbidden("read-only API key"));
     }
     let owner = p.account()?;
+    create_instance(&node, &p, owner, body, 0).await.map(Json)
+}
+
+/// How deep `create` references may nest: an app, the apps it creates, theirs.
+pub(crate) const MAX_UNIT_DEPTH: usize = 3;
+
+/// Creates one instance for `owner`, after the apps its release creates with it (`uses`
+/// with `mode: create`, [`unit_members`]), and waits for its `init`. `depth` counts the
+/// instances above this one in its unit.
+async fn create_instance(
+    node: &Arc<Node>,
+    p: &Principal,
+    owner: String,
+    body: CreateAppBody,
+    depth: usize,
+) -> Result<Value, ApiError> {
     let now = now_secs();
     let (bundle, compute_bundle, release) = match &body.deployment {
         // From a deployment's offer: installed already, and the caller's
@@ -327,6 +343,60 @@ async fn app_create(
             "no node runs a release this app's owner approved",
         ));
     }
+    // The apps its release creates with it, made first in the same organization, so its
+    // `init` can be told their ids.
+    let mut init_args = body.init_args;
+    let links = match &release {
+        Some(release) => {
+            let unit = unit_members(node, release).await?;
+            if unit.is_empty() {
+                BTreeMap::new()
+            } else {
+                if depth >= MAX_UNIT_DEPTH {
+                    return Err(ApiError::bad_request(
+                        "UNIT_TOO_DEEP",
+                        &format!("apps a release creates nest at most {MAX_UNIT_DEPTH} deep"),
+                    ));
+                }
+                node.require_features(&[crate::system::cluster_version::Feature::AppLinks])
+                    .await?;
+                if init_args.get("links").is_some() {
+                    return Err(ApiError::bad_request(
+                        "BAD_REQUEST",
+                        "`links` in initArgs is the node's: it names the apps the release creates",
+                    ));
+                }
+                let mut links = BTreeMap::new();
+                for (name, (package, version)) in unit.members {
+                    let member = CreateAppBody {
+                        name: format!("{}.{name}", body.name),
+                        bundle: None,
+                        package: Some(package),
+                        version: Some(version),
+                        service: None,
+                        org: Some(org.clone()),
+                        access: body.access.clone(),
+                        init_args: Value::Null,
+                        metadata: json!({ "unit": { "of": body.name, "as": name } }),
+                        deployment: None,
+                    };
+                    let made = Box::pin(create_instance(node, p, owner.clone(), member, depth + 1))
+                        .await?;
+                    let id = made["appId"].as_str().unwrap_or_default().to_owned();
+                    let _prev = links.insert(name, id);
+                }
+                if unit.init_takes_links {
+                    if !init_args.is_object() {
+                        init_args = json!({});
+                    }
+                    init_args["links"] = json!(links);
+                }
+                links
+            }
+        }
+        None => BTreeMap::new(),
+    };
+    let links_answer = links.clone();
     let app_id = typed_id::<16>();
     let has_compute = compute_bundle.is_some();
     let components = node.sys(|s| s.components_of(release.as_ref()));
@@ -345,7 +415,7 @@ async fn app_create(
                 executor,
                 replicas,
                 created_at: now,
-                init_args: body.init_args,
+                init_args,
                 metadata: body.metadata,
                 last_upgrade: None,
                 deployment: body.deployment,
@@ -353,6 +423,7 @@ async fn app_create(
                 components,
                 release,
                 restore: None,
+                links,
             }),
         })
         .await?;
@@ -360,7 +431,7 @@ async fn app_create(
     // but its group cannot take a pipeline start before it.
     let deadline = tokio::time::Instant::now() + node.app_start_wait();
     loop {
-        match app_ready(&node, &app_id).await {
+        match app_ready(node, &app_id).await {
             Some(Ok(())) => break,
             Some(Err(error)) => {
                 return Err(init_failed(&app_id, &error));
@@ -374,13 +445,101 @@ async fn app_create(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Ok(Json(json!({
+    Ok(json!({
         "appId": app_id,
         "contextId": hex::encode(sha256(app_id.as_bytes())),
         "group": out["group"],
         "replicas": out["replicas"],
         "compute": has_compute,
-    })))
+        "links": links_answer,
+    }))
+}
+
+/// What a release creates with an instance of it: by name, the package and the release of
+/// each `create` reference in its signed manifest (`uses`), and whether its `init` takes
+/// `links` (then the node passes it the ids).
+pub(crate) struct Unit {
+    pub members: BTreeMap<String, (String, String)>,
+    pub init_takes_links: bool,
+}
+
+impl Unit {
+    fn is_empty(&self) -> bool {
+        self.members.is_empty()
+    }
+}
+
+/// The [`Unit`] of `release`, read from its verified manifest and embedded ABI. Each
+/// member's release is the one its lock pinned (`uses.version`), else the newest installed
+/// release of the package inside its range; a package with none is `409
+/// USES_NOT_INSTALLED`, naming what to install.
+async fn unit_members(node: &Node, release: &crate::system::PackageRef) -> Result<Unit, ApiError> {
+    let Some(version) = node.sys(|s| {
+        s.packages
+            .get(&release.package)
+            .and_then(|p| p.versions.get(&release.version))
+            .cloned()
+    }) else {
+        return Ok(Unit {
+            members: BTreeMap::new(),
+            init_takes_links: false,
+        });
+    };
+    let card = crate::consent_page::release_capabilities(
+        node,
+        &release.package,
+        &version,
+        release.service.as_deref(),
+    )
+    .await?;
+    let uses: BTreeMap<String, calimero_bundle::BundleUse> =
+        serde_json::from_value(card["uses"].clone()).unwrap_or_default();
+    let init_takes_links = card["abi"]["methods"]["init"]["params"]
+        .as_array()
+        .is_some_and(|ps| ps.iter().any(|p| p[0] == "links"));
+    let mut members = BTreeMap::new();
+    for (name, u) in uses {
+        if u.mode != calimero_bundle::UseMode::Create {
+            continue;
+        }
+        let range = semver::VersionReq::parse(&u.range)
+            .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
+        let installed: Vec<String> = node.sys(|s| {
+            s.packages
+                .get(&u.package)
+                .map(|p| p.versions.keys().cloned().collect())
+                .unwrap_or_default()
+        });
+        let chosen = match &u.version {
+            Some(v) if installed.contains(v) => Some(v.clone()),
+            Some(_) => None,
+            None => installed
+                .iter()
+                .filter_map(|v| semver::Version::parse(v).ok().map(|p| (p, v)))
+                .filter(|(p, _)| range.matches(p))
+                .max_by(|a, b| a.0.cmp(&b.0))
+                .map(|(_, v)| v.clone()),
+        };
+        let Some(chosen) = chosen else {
+            return Err(ApiError::new(
+                409,
+                "USES_NOT_INSTALLED",
+                &format!(
+                    "{}@{} creates {name} from {} {}, which is not installed here: install {}",
+                    release.package,
+                    release.version,
+                    u.package,
+                    u.version.as_deref().unwrap_or(&u.range),
+                    u.package,
+                ),
+            ));
+        };
+        let _prev = members.insert(name, (u.package, chosen));
+    }
+    Ok(Unit {
+        members,
+        init_takes_links,
+    })
 }
 
 /// How long creating an app waits for its `init` to commit before answering `503 UNAVAILABLE`
