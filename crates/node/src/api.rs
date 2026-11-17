@@ -1129,7 +1129,10 @@ fn last_active(s: &SystemState, account: &str, used: &BTreeMap<&str, (usize, u64
 /// A Unix time's UTC day, `YYYY-MM-DD`.
 fn utc_day(secs: u64) -> Option<String> {
     let secs = i64::try_from(secs).ok()?;
-    chrono::DateTime::from_timestamp(secs, 0).map(|t| t.format("%Y-%m-%d").to_string())
+    time::OffsetDateTime::from_unix_timestamp(secs)
+        .ok()?
+        .format(time::macros::format_description!("[year]-[month]-[day]"))
+        .ok()
 }
 
 // ---------------------------------------------------------------- account recovery
@@ -2113,9 +2116,9 @@ fn ops_proof_body(body: &[u8]) -> Result<OpsProofBody, ApiError> {
 /// An RFC 3339 time in the API as Unix seconds, as the log keeps it.
 fn unix_secs(t: Option<&str>, field: &str) -> Result<Option<u64>, ApiError> {
     t.map(|t| {
-        chrono::DateTime::parse_from_rfc3339(t)
+        time::OffsetDateTime::parse(t, &time::format_description::well_known::Rfc3339)
             .ok()
-            .and_then(|t| u64::try_from(t.timestamp()).ok())
+            .and_then(|t| u64::try_from(t.unix_timestamp()).ok())
             .ok_or_else(|| {
                 ApiError::bad_request(
                     "BAD_REQUEST",
