@@ -117,7 +117,7 @@ secret into state, where it would replicate to every member.
    ```rust
    use calimero_sdk::action::Request;
 
-   /// Whether Cloudflare Turnstile accepts `token` (`apps/v2-fixtures/captcha`).
+   /// Whether Cloudflare Turnstile accepts `token` (`apps/fixture-captcha`).
    pub fn verify_turnstile(&mut self, token: String) -> app::Result<bool> {
        let body = format!(
            "secret={{{{secret:TURNSTILE_SECRET}}}}&response={}",
@@ -269,7 +269,7 @@ scenario sees exactly what left the node. The node's cluster tests use it
 this way: `actions_run_on_the_leader_and_reach_only_declared_approved_hosts`
 (declared and approved prefixes, secrets, redaction) and
 `a_call_checks_a_turnstile_token_through_a_captcha_service` (a call's
-`env::fetch` through `apps/v2-fixtures/captcha`), both in
+`env::fetch` through `apps/fixture-captcha`), both in
 `crates/node/tests/component_cluster.rs`:
 
 ```bash
@@ -283,7 +283,7 @@ out once, from the leader, and the call's log entry records it with the
 response, so a retry with the same idempotency key replays the answer instead
 of fetching again (what a single-use token like Turnstile's needs). A timeout
 or a refusal comes back as an error the call handles. Example:
-`apps/v2-fixtures/captcha` (`verifyTurnstile`), a captcha service other apps
+`apps/fixture-captcha` (`verifyTurnstile`), a captcha service other apps
 call synchronously ([Synchronous xcalls](/protocol/xcall/#synchronous-xcalls)).
 Protocol detail:
 [Outbound HTTP from component calls](/protocol/execution/#outbound-http-from-component-calls).

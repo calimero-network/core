@@ -11,7 +11,7 @@
 //! serves the package's frontend on, from its signed bundle; everything else
 //! about it is a registered origin's.
 //!
-//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
 
 use calimero_client::{Passkey, Request};

@@ -229,7 +229,7 @@ impl Rig {
             n.node.set_compute_limits(test_limits());
         }
         let (alice, pk) = signed_up(&c, 0, "alice").await;
-        let compute = common::components("compute")
+        let compute = common::components("fixture-compute")
             .compute
             .expect("a compute component");
         let pipelines = [
@@ -913,7 +913,7 @@ async fn a_run_started_on_v1_keeps_running_v1_after_an_upgrade_to_v2() {
 async fn starting_needs_every_node_on_this_release() {
     let mut c = Cluster::start_with(3, |cfg| cfg.allow_unsigned_bundles = false).await;
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
-    let compute = common::components("compute")
+    let compute = common::components("fixture-compute")
         .compute
         .expect("a compute component");
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);

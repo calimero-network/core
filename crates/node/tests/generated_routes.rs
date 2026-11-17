@@ -76,7 +76,7 @@ async fn raw_bodies_go_up_and_come_back_as_bytes() {
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
         .packages()
-        .bundle_put(component("kv"))
+        .bundle_put(component("fixture-kv"))
         .await
         .unwrap()
         .hash;

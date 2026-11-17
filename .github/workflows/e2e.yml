@@ -163,7 +163,7 @@ jobs:
           fi
           node=false
           if [ "$e2e" = true ] && { [ "$all" = true ] || [ "$node_closure" = true ] \
-               || grep -qE '^(apps/v2-fixtures/compute/|apps/compute-redact/|crates/meroctl/|crates/node/tests/fault/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
+               || grep -qE '^(apps/fixture-compute/|apps/compute-redact/|crates/meroctl/|crates/node/tests/fault/|scripts/(soak-summary|pack-component|resolve-paired-ref))' <<<"$files"; }; then
             node=true
           fi
           echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
@@ -223,8 +223,8 @@ jobs:
           set -euo pipefail
           cargo build --release -p merod -p meroctl
           "${CARGO_TARGET_DIR:-target}/release/meroctl" app build \
-            apps/v2-fixtures/kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
-          "${CARGO_TARGET_DIR:-target}/release/meroctl" app build apps/v2-fixtures/compute \
+            apps/fixture-kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
+          "${CARGO_TARGET_DIR:-target}/release/meroctl" app build apps/fixture-compute \
             --out "${CARGO_TARGET_DIR:-target}/app-components/compute-app.wasm" \
             --compute-out "${CARGO_TARGET_DIR:-target}/app-components/compute.wasm"
           for v in 1.0.0 1.1.0; do
@@ -427,7 +427,7 @@ jobs:
           set -euo pipefail
           cargo build -p merod -p meroctl --profile profiling
           RUSTFLAGS= "${CARGO_TARGET_DIR:-target}/profiling/meroctl" app build \
-            apps/v2-fixtures/kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
+            apps/fixture-kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -773,7 +773,7 @@ jobs:
           elif [ ! -e scripts/pack-component.py ]; then
             # A release whose meroctl builds and packs apps itself.
             "${CARGO_TARGET_DIR:-target}/release/meroctl" app build \
-              apps/v2-fixtures/kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
+              apps/fixture-kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
             for v in 1.0.0 1.1.0; do
               "${CARGO_TARGET_DIR:-target}/release/meroctl" app pack --wasm "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm" \
                 --package com.calimero.kv-store --app-version "$v" --out "dist/com.calimero.kv-store-$v.mpk"
@@ -786,7 +786,7 @@ jobs:
               cargo install --path crates/app-build --locked --force
             fi
             mero-app-build \
-              apps/v2-fixtures/kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
+              apps/fixture-kv --out "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm"
             cargo build --release -p mero-sign
             for v in 1.0.0 1.1.0; do
               python3 -I scripts/pack-component.py --wasm "${CARGO_TARGET_DIR:-target}/app-components/kv.wasm" \
@@ -891,7 +891,7 @@ jobs:
           shared-key: ci-checks
           rust-cache: false
 
-      # KV_STORE_WASM is the kv component (apps/v2-fixtures/kv: set, get, len,
+      # KV_STORE_WASM is the kv component (apps/fixture-kv: set, get, len,
       # and `clear`, a confirm method it declares itself).
       - name: Download merod and the kv fixture
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -927,7 +927,7 @@ jobs:
         env:
           MEROCTL: ${{ github.workspace }}/target/release/meroctl
           COMPUTE_WASM: ${{ github.workspace }}/target/app-components/compute.wasm
-          COMPUTE_FIXTURE_DIR: ${{ github.workspace }}/apps/v2-fixtures/compute
+          COMPUTE_FIXTURE_DIR: ${{ github.workspace }}/apps/fixture-compute
           MERO_JS_REQUIRE_COMPUTE: "1"
         run: |
           npm install -g pnpm
