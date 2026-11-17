@@ -389,9 +389,28 @@ pub(crate) fn app_origin(node: &Node, origin: &str) -> Option<AppOrigin> {
 }
 
 /// The package frontend a ceremony claims to come from (unverified: the
-/// ceremony is then checked against that origin).
-fn claimed_app(node: &Node, client_data_json: &str) -> Option<AppOrigin> {
-    app_origin(node, &calimero_identity::claimed_origin(client_data_json)?)
+/// ceremony is then checked against that origin). An origin this node does not
+/// know is looked up again on fresh state: a package installed or an origin
+/// registered through another node a moment ago is not in this node's copy of
+/// the directory until it applies that entry.
+async fn claimed_app(node: &Node, client_data_json: &str) -> Option<AppOrigin> {
+    let origin = calimero_identity::claimed_origin(client_data_json)?;
+    if let Some(app) = app_origin(node, &origin) {
+        return Some(app);
+    }
+    // The cluster's own origins are no app's: nothing to look up again.
+    if node
+        .config
+        .origins
+        .iter()
+        .any(|o| o.trim_end_matches('/') == origin)
+        || node.api_origins().contains(&origin)
+    {
+        return None;
+    }
+    // As `begin_rp_id` does for the begin.
+    let _fresh = node.sys_fresh().await;
+    app_origin(node, &origin)
 }
 
 /// The relying party for a ceremony that may come from `app`'s frontend
@@ -1028,6 +1047,7 @@ async fn check_assertion_for(
     any_app: bool,
 ) -> Result<(String, Option<AppOrigin>), ApiError> {
     let app = claimed_app(node, &assertion.client_data_json)
+        .await
         .filter(|a| any_app || bound == Some(a.package.as_str()));
     let (owner, cred) = node
         .sys_until(|s| {

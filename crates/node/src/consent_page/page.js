@@ -8,6 +8,8 @@
   var $ = function (sel) { return document.getElementById(sel); };
   // Withdrawing a release approval reads differently from approving.
   var withdrawing = false;
+  // Checks that call for care: listed under Details, and repeated up top.
+  var cautions = [];
 
   function el(tag, text, cls) {
     var e = document.createElement(tag);
@@ -94,26 +96,76 @@
     return k.length > 24 ? k.slice(0, 14) + "…" + k.slice(-6) : k;
   }
 
+  var EYEBROWS = {
+    release: "Server version approval", upgrade: "Update request", outbound: "Outbound access",
+    createOrg: "New organization", createInvite: "Invite", acceptInvite: "Invitation",
+  };
+
   function render(m) {
     var host = location.host;
     document.querySelectorAll(".host").forEach(function (h) { h.textContent = host; });
     withdrawing = m.kind === "release" && m.release.change === "withdraw";
-    if (withdrawing) $("approve").textContent = "Withdraw approval";
+    if (withdrawing) $("approve-label").textContent = "Withdraw approval";
+    $("eyebrow").textContent = withdrawing ? "Withdraw approval" : EYEBROWS[m.kind] || "Approval request";
     renderWho(m);
     $("headline").textContent = m.title || m.headline;
+    renderVersion(m);
     renderMeans(m);
     renderChecks(m, host);
-    $("code").textContent = m.code || "";
+    renderFacts(m);
+    var pill = el("span", cautions.length ? cautions.length + " to check" : "Checks passed", cautions.length ? "pill pill-warn" : "pill pill-ok");
+    document.querySelector("#tech > summary").appendChild(pill);
+    renderCode(m.code || "");
     renderTech(m);
     $("content").hidden = false;
     $("tech").hidden = false;
-    $("expires").textContent = "This request expires at " +
-      new Date(m.expiresAt * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) + ".";
+    $("meta").hidden = false;
+    countdown(m.expiresAt, m.status === "pending");
     if (m.status === "pending") {
       $("actions").hidden = false;
     } else {
       $("status").textContent = "This request was " + m.status + " already.";
     }
+  }
+  function renderVersion(m) {
+    var u = m.kind === "upgrade" && m.upgrade;
+    if (!u || !u.from || !u.to || !u.from.version || !u.to.version) return;
+    $("ver-from").textContent = u.from.version;
+    $("ver-to").textContent = u.to.version;
+    $("ver").hidden = false;
+  }
+  // The code in two halves, the way people read it back.
+  function renderCode(code) {
+    var box = $("code");
+    code.split("-").forEach(function (part, i) {
+      if (i) box.appendChild(el("span", "-", "dash"));
+      box.appendChild(el("span", part));
+    });
+  }
+  // Time left, not a clock time: a person at the page does no clock math.
+  function countdown(expiresAt, pending) {
+    var total = Math.max(1, expiresAt - Math.floor(Date.now() / 1000));
+    var ring = $("ring"), out = $("expires"), timer = null;
+    var at = new Date(expiresAt * 1000).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    out.title = "Expires at " + at;
+    function tick() {
+      var left = expiresAt - Math.floor(Date.now() / 1000);
+      if (left <= 0) {
+        out.textContent = "Expired";
+        ring.setAttribute("stroke-dashoffset", "50.27");
+        if (timer) clearInterval(timer);
+        if (pending && !$("approve").disabled) {
+          $("actions").hidden = true;
+          $("status").textContent = "This request expired. Ask again from the app.";
+        }
+        return;
+      }
+      var mins = Math.floor(left / 60), secs = left % 60;
+      out.textContent = mins >= 60 ? "Expires at " + at : "Expires in " + mins + ":" + (secs < 10 ? "0" : "") + secs;
+      ring.setAttribute("stroke-dashoffset", String((1 - Math.min(1, left / total)) * 50.27));
+    }
+    tick();
+    timer = setInterval(tick, 1000);
   }
   function renderWho(m) {
     var by = m.requestedBy || {}, name, publisher;
@@ -132,27 +184,50 @@
     var points = m.points || [m.before, m.after];
     var ul = $("points");
     points.forEach(function (p) { if (p) ul.appendChild(el("li", p)); });
-    var box = $("attention"), attn = m.attention || [];
-    if (attn.length) {
-      var w = add(box, el("div", null, "attn"));
-      w.appendChild(el("h3", "Needs your attention"));
-      var list = add(w, el("ul"));
-      attn.forEach(function (a) {
-        var li = add(list, el("li", a.text));
-        if (has(a.items)) {
-          var sub = add(li, el("ul"));
-          a.items.forEach(function (i) { sub.appendChild(el("li", i)); });
-        }
-      });
-    } else if (m.kind === "upgrade" || m.kind === "upgradeUnit") {
-      box.appendChild(el("p", "No new permissions.", "calm"));
-    }
   }
+  // The publisher's signature as one line of the main view, when it holds up.
+  var signed = null;
   function check(ul, strong, rest, sub, note) {
     var li = add(ul, el("li", null, note ? "note" : ""));
     li.appendChild(el("strong", strong));
     if (rest) li.appendChild(document.createTextNode(rest));
     if (sub) li.appendChild(el("span", sub, "sub"));
+    if (note) cautions.push([strong + (rest || ""), sub]);
+    return li;
+  }
+  var ICONS = {
+    warn: ["M10.3 4.2L2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.2a2 2 0 0 0-3.4 0z", "M12 9.5v4.5M12 17.3v.2"],
+    shield: ["M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z", "M9 12l2 2 4-4"],
+    key: ["M11 12l8.5-8.5M16.5 6.5l2.5 2.5M14 9l2 2", "M12 15a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"],
+    info: ["M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z", "M12 11v5.5M12 7.8v.2"],
+  };
+  function icon(name) {
+    var ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("class", "ic"); svg.setAttribute("aria-hidden", "true");
+    ICONS[name].forEach(function (d) { var p = document.createElementNS(ns, "path"); p.setAttribute("d", d); svg.appendChild(p); });
+    return svg;
+  }
+  function fact(kind, name, title, sub, items) {
+    var li = add($("attention"), el("li", null, "fact " + kind));
+    add(li, el("span", null, "fact-ic")).appendChild(icon(name));
+    var body = add(li, el("div"));
+    body.appendChild(el("p", title, "fact-t"));
+    if (sub) body.appendChild(el("p", sub, "fact-s"));
+    if (has(items)) {
+      var box = add(body, el("p", null, "fact-items"));
+      items.forEach(function (i) { var c = add(box, el("code", i)); c.title = i; });
+    }
+  }
+  // The main view: what needs care first (in colour), then what holds up,
+  // then what happens. Only risk gets colour, so a warning stands out.
+  function renderFacts(m) {
+    var attn = m.attention || [];
+    attn.forEach(function (a) { fact("warn", "warn", a.text, null, a.items); });
+    cautions.forEach(function (c) { fact("warn", "warn", c[0], c[1]); });
+    if (!attn.length && (m.kind === "upgrade" || m.kind === "upgradeUnit")) fact("ok", "shield", "No new permissions", "It reaches what the version you run now reaches.");
+    if (signed) fact("ok", "key", signed[0], signed[1]);
+    var points = (m.points || []).filter(Boolean);
+    if (points.length) fact("", "info", points[0], points[1]);
   }
   function renderChecks(m, host) {
     var ul = $("checks"), mockShown = false;
@@ -163,20 +238,24 @@
     if (p && p.org && (upgrade || m.kind === "outbound")) {
       check(ul, end("Published by " + p.org.name), "", "Its signing key is bound to the organization " + p.org.name +
         " on your cluster, and your node verified the signature" + (p.keyChanged ? ", though the key differs from the version you run now." : "."), p.keyChanged);
+      if (!p.keyChanged) signed = ["Published by " + p.org.name, "Its signing key is bound to " + p.org.name + " on your cluster."];
     } else if (p && upgrade) {
       if (p.keyChanged) {
         check(ul, "Published by " + (p.name || "an unnamed publisher") + ", signed with a new key.", "", "Your node verified the signature, but the key differs from the version you run now (" + shortKey(p.signer) + ").", true);
       } else {
         check(ul, end("Published and signed by " + (p.name || "the app's publisher")), "", "Your node verified the signature: the same key as the version you run now (" + shortKey(p.signer) + ").");
+        signed = ["Signed by " + (p.name || "the app's publisher"), "Same key as the version you run now."];
       }
     } else if (p && m.kind === "outbound") {
       check(ul, end("Published and signed by " + (p.name || "the app's publisher")), "", "Your node verified the signature: the key this app has used since its first release (" + shortKey(p.signer) + ").");
+      signed = ["Signed by " + (p.name || "the app's publisher"), "The key this app has used since its first release."];
     } else if (m.kind === "release" && !withdrawing) {
       if (m.release.measurements && m.release.measurements.mock) {
         check(ul, "Test cluster: no hardware checks.", "", "This cluster runs without hardware attestation, so there are no measurements to verify. Use it for testing only.", true);
         mockShown = true;
       } else {
         check(ul, "Built and published by Calimero's public release process.", "", "Your node verified its signature before showing you this page.");
+        signed = ["Built by Calimero's public release process", "Your node verified its signature."];
       }
     }
     verifier(ul, m.verifier, mockShown);
@@ -337,13 +416,32 @@
     $("approve").disabled = on; $("decline").disabled = on;
     $("status").textContent = text || "";
   }
+  // Where the approval is: 1 asks the node, 2 waits for the passkey, 3
+  // records it; 0 puts the buttons back.
+  function step(n) {
+    var ol = $("steps");
+    ol.hidden = !n;
+    $("actions").hidden = !!n;
+    for (var i = 0; i < ol.children.length; i++) {
+      ol.children[i].className = i + 1 < n ? "did" : i + 1 === n ? "now" : "";
+    }
+    if (n) busy(true, "");
+  }
+  function finished() {
+    var sheet = document.querySelector(".sheet");
+    sheet.classList.add("finished");
+    ["who", "ver", "content", "steps", "actions", "meta"].forEach(function (k) { $(k).hidden = true; });
+    $("done").hidden = false;
+    $("headline").textContent = withdrawing ? "Withdrawn" : "Approved";
+    $("status").textContent = "Returning you to the app…";
+  }
 
   function approve() {
-    busy(true, "Asking the node for a challenge…");
+    step(1);
     post("/approve").then(function (r) {
       if (r.status !== 412) throw new Error((r.body && r.body.message) || "unexpected answer " + r.status);
       var d = r.body.details;
-      busy(true, "Confirm with your passkey…");
+      step(2);
       return navigator.credentials.get({ publicKey: {
         challenge: b64urlToBytes(d.challenge),
         rpId: d.rpId,
@@ -351,7 +449,7 @@
         userVerification: "required",
         timeout: 120000,
       } }).then(function (cred) {
-        busy(true, withdrawing ? "Withdrawing the approval…" : "Recording your approval…");
+        step(3);
         return post("/approve", { confirm: { challengeId: d.challengeId, assertion: {
           credentialId: bytesToB64url(cred.rawId),
           authenticatorData: bytesToB64url(cred.response.authenticatorData),
@@ -361,9 +459,9 @@
       });
     }).then(function (r) {
       if (r.status !== 200) throw new Error((r.body && r.body.message) || "refused: " + r.status);
-      busy(true, (withdrawing ? "Withdrawn." : "Approved.") + " Returning you to the app…");
+      finished();
       leave(r.body.redirect);
-    }).catch(function (e) { busy(false, (withdrawing ? "Not withdrawn: " : "Not approved: ") + e.message); });
+    }).catch(function (e) { step(0); busy(false, (withdrawing ? "Not withdrawn: " : "Not approved: ") + e.message); });
   }
   function decline() {
     busy(true, "Declining…");
