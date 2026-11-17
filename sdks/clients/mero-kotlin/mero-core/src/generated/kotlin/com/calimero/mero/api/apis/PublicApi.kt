@@ -84,7 +84,7 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
     /**
      * GET /attestation
      * The node&#39;s attestation
-     * In the clear. A TDX quote binding the node&#39;s transport key (or, with &#x60;purpose&#x3D;receipts&#x60;, its receipt key and the governance; with &#x60;purpose&#x3D;kms&#x60;, what it verified of its KMS; with &#x60;purpose&#x3D;orchestrator&#x60;, the cluster identity this replica holds) to &#x60;nonce&#x60;; &#x60;app&#x60;/&#x60;appHash&#x60; bind an app&#39;s bundle hash. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that &#x60;503 BUSY&#x60; with &#x60;Retry-After: 1&#x60;, ask again then.  **Who:** anyone.
+     * In the clear. A TDX quote binding the node&#39;s transport key (or, with &#x60;purpose&#x3D;receipts&#x60;, its receipt key and the governance; with &#x60;purpose&#x3D;kms&#x60;, what it verified of its KMS; with &#x60;purpose&#x3D;orchestrator&#x60;, the cluster identity this replica holds) to &#x60;nonce&#x60;; &#x60;app&#x60;/&#x60;appHash&#x60; bind an app&#39;s bundle hash: &#x60;app&#x60; only an app anyone may reach (public), any other answering &#x60;404&#x60; as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that &#x60;503 BUSY&#x60; with &#x60;Retry-After: 1&#x60;, ask again then.  **Who:** anyone.
      * @param nonce 
      * @param app  (optional)
      * @param appHash  (optional)
@@ -119,7 +119,7 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
     /**
      * GET /attestation
      * The node&#39;s attestation
-     * In the clear. A TDX quote binding the node&#39;s transport key (or, with &#x60;purpose&#x3D;receipts&#x60;, its receipt key and the governance; with &#x60;purpose&#x3D;kms&#x60;, what it verified of its KMS; with &#x60;purpose&#x3D;orchestrator&#x60;, the cluster identity this replica holds) to &#x60;nonce&#x60;; &#x60;app&#x60;/&#x60;appHash&#x60; bind an app&#39;s bundle hash. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that &#x60;503 BUSY&#x60; with &#x60;Retry-After: 1&#x60;, ask again then.  **Who:** anyone.
+     * In the clear. A TDX quote binding the node&#39;s transport key (or, with &#x60;purpose&#x3D;receipts&#x60;, its receipt key and the governance; with &#x60;purpose&#x3D;kms&#x60;, what it verified of its KMS; with &#x60;purpose&#x3D;orchestrator&#x60;, the cluster identity this replica holds) to &#x60;nonce&#x60;; &#x60;app&#x60;/&#x60;appHash&#x60; bind an app&#39;s bundle hash: &#x60;app&#x60; only an app anyone may reach (public), any other answering &#x60;404&#x60; as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that &#x60;503 BUSY&#x60; with &#x60;Retry-After: 1&#x60;, ask again then.  **Who:** anyone.
      * @param nonce 
      * @param app  (optional)
      * @param appHash  (optional)

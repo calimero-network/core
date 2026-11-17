@@ -62,12 +62,14 @@ data class ConsentPageResult200Response (
     /**
      * 
      *
-     * Values: RELEASE,UPGRADE,OUTBOUND,CREATE_ORG,CREATE_INVITE,ACCEPT_INVITE,LEAVE_ORG,REMOVE_MEMBER,SET_MEMBER_ROLE,SET_MEMBER_TEAMS,REMOVE_MEMBER_TEAMS,REVOKE_INVITE,RENAME_ORG,DELETE_ORG,SET_CAPABILITIES,SET_ALL_APPS
+     * Values: RELEASE,UPGRADE,UPGRADE_UNIT,DELEGATE,OUTBOUND,CREATE_ORG,CREATE_INVITE,ACCEPT_INVITE,LEAVE_ORG,REMOVE_MEMBER,SET_MEMBER_ROLE,SET_MEMBER_TEAMS,REMOVE_MEMBER_TEAMS,REVOKE_INVITE,RENAME_ORG,DELETE_ORG,SET_CAPABILITIES,SET_ALL_APPS
      */
     @Serializable
     enum class Kind(val value: kotlin.String) {
         @SerialName(value = "release") RELEASE("release"),
         @SerialName(value = "upgrade") UPGRADE("upgrade"),
+        @SerialName(value = "upgradeUnit") UPGRADE_UNIT("upgradeUnit"),
+        @SerialName(value = "delegate") DELEGATE("delegate"),
         @SerialName(value = "outbound") OUTBOUND("outbound"),
         @SerialName(value = "createOrg") CREATE_ORG("createOrg"),
         @SerialName(value = "createInvite") CREATE_INVITE("createInvite"),
