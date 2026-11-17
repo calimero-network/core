@@ -6,9 +6,6 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..models.consent_page_create_body_type_4_subject_role import (
-    ConsentPageCreateBodyType4SubjectRole,
-)
 from ..types import UNSET, Unset
 from typing import cast
 from typing import Union
@@ -20,87 +17,41 @@ T = TypeVar("T", bound="ConsentPageCreateBodyType4Subject")
 class ConsentPageCreateBodyType4Subject:
     """
     Attributes:
-        org (str):
-        role (ConsentPageCreateBodyType4SubjectRole):
-        teams (Union[Unset, list[str]]):
-        ttl_secs (Union[Unset, int]):
-        uses (Union[Unset, int]):
-        all_apps (Union[Unset, bool]):
-        capabilities (Union[Unset, int]):
+        package (Union[Unset, str]):
+        prefixes (Union[Unset, list[str]]):
     """
 
-    org: str
-    role: ConsentPageCreateBodyType4SubjectRole
-    teams: Union[Unset, list[str]] = UNSET
-    ttl_secs: Union[Unset, int] = UNSET
-    uses: Union[Unset, int] = UNSET
-    all_apps: Union[Unset, bool] = UNSET
-    capabilities: Union[Unset, int] = UNSET
+    package: Union[Unset, str] = UNSET
+    prefixes: Union[Unset, list[str]] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        org = self.org
+        package = self.package
 
-        role = self.role.value
-
-        teams: Union[Unset, list[str]] = UNSET
-        if not isinstance(self.teams, Unset):
-            teams = self.teams
-
-        ttl_secs = self.ttl_secs
-
-        uses = self.uses
-
-        all_apps = self.all_apps
-
-        capabilities = self.capabilities
+        prefixes: Union[Unset, list[str]] = UNSET
+        if not isinstance(self.prefixes, Unset):
+            prefixes = self.prefixes
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "org": org,
-                "role": role,
-            }
-        )
-        if teams is not UNSET:
-            field_dict["teams"] = teams
-        if ttl_secs is not UNSET:
-            field_dict["ttlSecs"] = ttl_secs
-        if uses is not UNSET:
-            field_dict["uses"] = uses
-        if all_apps is not UNSET:
-            field_dict["allApps"] = all_apps
-        if capabilities is not UNSET:
-            field_dict["capabilities"] = capabilities
+        field_dict.update({})
+        if package is not UNSET:
+            field_dict["package"] = package
+        if prefixes is not UNSET:
+            field_dict["prefixes"] = prefixes
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        org = d.pop("org")
+        package = d.pop("package", UNSET)
 
-        role = ConsentPageCreateBodyType4SubjectRole(d.pop("role"))
-
-        teams = cast(list[str], d.pop("teams", UNSET))
-
-        ttl_secs = d.pop("ttlSecs", UNSET)
-
-        uses = d.pop("uses", UNSET)
-
-        all_apps = d.pop("allApps", UNSET)
-
-        capabilities = d.pop("capabilities", UNSET)
+        prefixes = cast(list[str], d.pop("prefixes", UNSET))
 
         consent_page_create_body_type_4_subject = cls(
-            org=org,
-            role=role,
-            teams=teams,
-            ttl_secs=ttl_secs,
-            uses=uses,
-            all_apps=all_apps,
-            capabilities=capabilities,
+            package=package,
+            prefixes=prefixes,
         )
 
         consent_page_create_body_type_4_subject.additional_properties = d

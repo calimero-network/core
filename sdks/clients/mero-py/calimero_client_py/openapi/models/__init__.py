@@ -45,6 +45,7 @@ from .app import App
 from .app_abi_response_200 import AppAbiResponse200
 from .app_access_body import AppAccessBody
 from .app_access_response_200 import AppAccessResponse200
+from .app_attached import AppAttached
 from .app_attestation_response_200 import AppAttestationResponse200
 from .app_attestation_response_200_replicas_item_type_0 import (
     AppAttestationResponse200ReplicasItemType0,
@@ -55,10 +56,21 @@ from .app_attestation_response_200_replicas_item_type_1 import (
 from .app_components import AppComponents
 from .app_create_body import AppCreateBody
 from .app_create_response_200 import AppCreateResponse200
+from .app_delegate_body import AppDelegateBody
+from .app_delegate_response_200 import AppDelegateResponse200
+from .app_delegations_response_200 import AppDelegationsResponse200
+from .app_delegations_response_200_delegations import (
+    AppDelegationsResponse200Delegations,
+)
 from .app_delete_response_200 import AppDeleteResponse200
 from .app_entry import AppEntry
 from .app_error import AppError
 from .app_executor import AppExecutor
+from .app_link_body import AppLinkBody
+from .app_link_response_200 import AppLinkResponse200
+from .app_links import AppLinks
+from .app_links_response_200 import AppLinksResponse200
+from .app_links_response_200_links_item import AppLinksResponse200LinksItem
 from .app_list_response_200 import AppListResponse200
 from .app_metadata_body import AppMetadataBody
 from .app_metadata_response_200 import AppMetadataResponse200
@@ -78,6 +90,17 @@ from .app_scope_type_0 import AppScopeType0
 from .app_scope_type_0_kind import AppScopeType0Kind
 from .app_scope_type_1 import AppScopeType1
 from .app_scope_type_1_kind import AppScopeType1Kind
+from .app_secret_clear_response_200 import AppSecretClearResponse200
+from .app_secret_set_body import AppSecretSetBody
+from .app_secret_set_response_200 import AppSecretSetResponse200
+from .app_secrets_response_200 import AppSecretsResponse200
+from .app_secrets_response_200_secrets import AppSecretsResponse200Secrets
+from .app_secrets_response_200_secrets_additional_property import (
+    AppSecretsResponse200SecretsAdditionalProperty,
+)
+from .app_secrets_response_200_secrets_additional_property_source import (
+    AppSecretsResponse200SecretsAdditionalPropertySource,
+)
 from .app_storage_response_200 import AppStorageResponse200
 from .app_team_list_response_200 import AppTeamListResponse200
 from .app_team_list_response_200_app_teams_item import (
@@ -90,8 +113,12 @@ from .app_teams_scope_response_200 import AppTeamsScopeResponse200
 from .app_teams_scope_response_200_mode import AppTeamsScopeResponse200Mode
 from .app_teams_scope_response_200_teams_item import AppTeamsScopeResponse200TeamsItem
 from .app_transfer_body import AppTransferBody
+from .app_undelegate_response_200 import AppUndelegateResponse200
+from .app_unlink_body import AppUnlinkBody
+from .app_unlink_response_200 import AppUnlinkResponse200
 from .app_upgrade_body import AppUpgradeBody
 from .app_upgrade_response_200 import AppUpgradeResponse200
+from .app_upgrade_unit_body import AppUpgradeUnitBody
 from .app_usage_response_200 import AppUsageResponse200
 from .app_xcalls_response_200 import AppXcallsResponse200
 from .applied import Applied
@@ -129,9 +156,18 @@ from .consent_page_create_body_type_1 import ConsentPageCreateBodyType1
 from .consent_page_create_body_type_10 import ConsentPageCreateBodyType10
 from .consent_page_create_body_type_10_kind import ConsentPageCreateBodyType10Kind
 from .consent_page_create_body_type_10_subject import ConsentPageCreateBodyType10Subject
+from .consent_page_create_body_type_10_subject_role import (
+    ConsentPageCreateBodyType10SubjectRole,
+)
 from .consent_page_create_body_type_11 import ConsentPageCreateBodyType11
 from .consent_page_create_body_type_11_kind import ConsentPageCreateBodyType11Kind
 from .consent_page_create_body_type_11_subject import ConsentPageCreateBodyType11Subject
+from .consent_page_create_body_type_11_subject_teams_item import (
+    ConsentPageCreateBodyType11SubjectTeamsItem,
+)
+from .consent_page_create_body_type_11_subject_teams_item_role import (
+    ConsentPageCreateBodyType11SubjectTeamsItemRole,
+)
 from .consent_page_create_body_type_12 import ConsentPageCreateBodyType12
 from .consent_page_create_body_type_12_kind import ConsentPageCreateBodyType12Kind
 from .consent_page_create_body_type_12_subject import ConsentPageCreateBodyType12Subject
@@ -144,50 +180,47 @@ from .consent_page_create_body_type_14_subject import ConsentPageCreateBodyType1
 from .consent_page_create_body_type_15 import ConsentPageCreateBodyType15
 from .consent_page_create_body_type_15_kind import ConsentPageCreateBodyType15Kind
 from .consent_page_create_body_type_15_subject import ConsentPageCreateBodyType15Subject
+from .consent_page_create_body_type_16 import ConsentPageCreateBodyType16
+from .consent_page_create_body_type_16_kind import ConsentPageCreateBodyType16Kind
+from .consent_page_create_body_type_16_subject import ConsentPageCreateBodyType16Subject
+from .consent_page_create_body_type_17 import ConsentPageCreateBodyType17
+from .consent_page_create_body_type_17_kind import ConsentPageCreateBodyType17Kind
+from .consent_page_create_body_type_17_subject import ConsentPageCreateBodyType17Subject
 from .consent_page_create_body_type_1_kind import ConsentPageCreateBodyType1Kind
 from .consent_page_create_body_type_1_subject import ConsentPageCreateBodyType1Subject
 from .consent_page_create_body_type_2 import ConsentPageCreateBodyType2
 from .consent_page_create_body_type_2_kind import ConsentPageCreateBodyType2Kind
-from .consent_page_create_body_type_2_scope_type_0 import (
-    ConsentPageCreateBodyType2ScopeType0,
-)
-from .consent_page_create_body_type_2_scope_type_1 import (
-    ConsentPageCreateBodyType2ScopeType1,
-)
 from .consent_page_create_body_type_2_subject import ConsentPageCreateBodyType2Subject
 from .consent_page_create_body_type_3 import ConsentPageCreateBodyType3
 from .consent_page_create_body_type_3_kind import ConsentPageCreateBodyType3Kind
 from .consent_page_create_body_type_3_subject import ConsentPageCreateBodyType3Subject
 from .consent_page_create_body_type_4 import ConsentPageCreateBodyType4
 from .consent_page_create_body_type_4_kind import ConsentPageCreateBodyType4Kind
-from .consent_page_create_body_type_4_subject import ConsentPageCreateBodyType4Subject
-from .consent_page_create_body_type_4_subject_role import (
-    ConsentPageCreateBodyType4SubjectRole,
+from .consent_page_create_body_type_4_scope_type_0 import (
+    ConsentPageCreateBodyType4ScopeType0,
 )
+from .consent_page_create_body_type_4_scope_type_1 import (
+    ConsentPageCreateBodyType4ScopeType1,
+)
+from .consent_page_create_body_type_4_subject import ConsentPageCreateBodyType4Subject
 from .consent_page_create_body_type_5 import ConsentPageCreateBodyType5
 from .consent_page_create_body_type_5_kind import ConsentPageCreateBodyType5Kind
 from .consent_page_create_body_type_5_subject import ConsentPageCreateBodyType5Subject
 from .consent_page_create_body_type_6 import ConsentPageCreateBodyType6
 from .consent_page_create_body_type_6_kind import ConsentPageCreateBodyType6Kind
 from .consent_page_create_body_type_6_subject import ConsentPageCreateBodyType6Subject
+from .consent_page_create_body_type_6_subject_role import (
+    ConsentPageCreateBodyType6SubjectRole,
+)
 from .consent_page_create_body_type_7 import ConsentPageCreateBodyType7
 from .consent_page_create_body_type_7_kind import ConsentPageCreateBodyType7Kind
 from .consent_page_create_body_type_7_subject import ConsentPageCreateBodyType7Subject
 from .consent_page_create_body_type_8 import ConsentPageCreateBodyType8
 from .consent_page_create_body_type_8_kind import ConsentPageCreateBodyType8Kind
 from .consent_page_create_body_type_8_subject import ConsentPageCreateBodyType8Subject
-from .consent_page_create_body_type_8_subject_role import (
-    ConsentPageCreateBodyType8SubjectRole,
-)
 from .consent_page_create_body_type_9 import ConsentPageCreateBodyType9
 from .consent_page_create_body_type_9_kind import ConsentPageCreateBodyType9Kind
 from .consent_page_create_body_type_9_subject import ConsentPageCreateBodyType9Subject
-from .consent_page_create_body_type_9_subject_teams_item import (
-    ConsentPageCreateBodyType9SubjectTeamsItem,
-)
-from .consent_page_create_body_type_9_subject_teams_item_role import (
-    ConsentPageCreateBodyType9SubjectTeamsItemRole,
-)
 from .consent_page_create_response_200 import ConsentPageCreateResponse200
 from .consent_page_result_response_200 import ConsentPageResultResponse200
 from .consent_page_result_response_200_kind import ConsentPageResultResponse200Kind
@@ -601,6 +634,8 @@ from .upgrade_pending import UpgradePending
 from .upgrade_pending_nodes_item import UpgradePendingNodesItem
 from .upgrade_run import UpgradeRun
 from .upgrade_run_failed import UpgradeRunFailed
+from .upgrade_run_targets import UpgradeRunTargets
+from .upgrade_run_targets_additional_property import UpgradeRunTargetsAdditionalProperty
 from .upload_abort_response_200 import UploadAbortResponse200
 from .upload_begin_body import UploadBeginBody
 from .upload_begin_response_200 import UploadBeginResponse200
@@ -657,18 +692,28 @@ __all__ = (
     "AppAbiResponse200",
     "AppAccessBody",
     "AppAccessResponse200",
+    "AppAttached",
     "AppAttestationResponse200",
     "AppAttestationResponse200ReplicasItemType0",
     "AppAttestationResponse200ReplicasItemType1",
     "AppComponents",
     "AppCreateBody",
     "AppCreateResponse200",
+    "AppDelegateBody",
+    "AppDelegateResponse200",
+    "AppDelegationsResponse200",
+    "AppDelegationsResponse200Delegations",
     "AppDeleteResponse200",
     "AppEntry",
     "AppError",
     "AppExecutor",
     "Applied",
     "AppliedStatus",
+    "AppLinkBody",
+    "AppLinkResponse200",
+    "AppLinks",
+    "AppLinksResponse200",
+    "AppLinksResponse200LinksItem",
     "AppListResponse200",
     "AppMetadataBody",
     "AppMetadataResponse200",
@@ -689,6 +734,13 @@ __all__ = (
     "AppScopeType0Kind",
     "AppScopeType1",
     "AppScopeType1Kind",
+    "AppSecretClearResponse200",
+    "AppSecretSetBody",
+    "AppSecretSetResponse200",
+    "AppSecretsResponse200",
+    "AppSecretsResponse200Secrets",
+    "AppSecretsResponse200SecretsAdditionalProperty",
+    "AppSecretsResponse200SecretsAdditionalPropertySource",
     "AppStorageResponse200",
     "AppTeamListResponse200",
     "AppTeamListResponse200AppTeamsItem",
@@ -699,8 +751,12 @@ __all__ = (
     "AppTeamsScopeResponse200Mode",
     "AppTeamsScopeResponse200TeamsItem",
     "AppTransferBody",
+    "AppUndelegateResponse200",
+    "AppUnlinkBody",
+    "AppUnlinkResponse200",
     "AppUpgradeBody",
     "AppUpgradeResponse200",
+    "AppUpgradeUnitBody",
     "AppUsageResponse200",
     "AppXcallsResponse200",
     "Assertion",
@@ -731,9 +787,12 @@ __all__ = (
     "ConsentPageCreateBodyType10",
     "ConsentPageCreateBodyType10Kind",
     "ConsentPageCreateBodyType10Subject",
+    "ConsentPageCreateBodyType10SubjectRole",
     "ConsentPageCreateBodyType11",
     "ConsentPageCreateBodyType11Kind",
     "ConsentPageCreateBodyType11Subject",
+    "ConsentPageCreateBodyType11SubjectTeamsItem",
+    "ConsentPageCreateBodyType11SubjectTeamsItemRole",
     "ConsentPageCreateBodyType12",
     "ConsentPageCreateBodyType12Kind",
     "ConsentPageCreateBodyType12Subject",
@@ -746,38 +805,41 @@ __all__ = (
     "ConsentPageCreateBodyType15",
     "ConsentPageCreateBodyType15Kind",
     "ConsentPageCreateBodyType15Subject",
+    "ConsentPageCreateBodyType16",
+    "ConsentPageCreateBodyType16Kind",
+    "ConsentPageCreateBodyType16Subject",
+    "ConsentPageCreateBodyType17",
+    "ConsentPageCreateBodyType17Kind",
+    "ConsentPageCreateBodyType17Subject",
     "ConsentPageCreateBodyType1Kind",
     "ConsentPageCreateBodyType1Subject",
     "ConsentPageCreateBodyType2",
     "ConsentPageCreateBodyType2Kind",
-    "ConsentPageCreateBodyType2ScopeType0",
-    "ConsentPageCreateBodyType2ScopeType1",
     "ConsentPageCreateBodyType2Subject",
     "ConsentPageCreateBodyType3",
     "ConsentPageCreateBodyType3Kind",
     "ConsentPageCreateBodyType3Subject",
     "ConsentPageCreateBodyType4",
     "ConsentPageCreateBodyType4Kind",
+    "ConsentPageCreateBodyType4ScopeType0",
+    "ConsentPageCreateBodyType4ScopeType1",
     "ConsentPageCreateBodyType4Subject",
-    "ConsentPageCreateBodyType4SubjectRole",
     "ConsentPageCreateBodyType5",
     "ConsentPageCreateBodyType5Kind",
     "ConsentPageCreateBodyType5Subject",
     "ConsentPageCreateBodyType6",
     "ConsentPageCreateBodyType6Kind",
     "ConsentPageCreateBodyType6Subject",
+    "ConsentPageCreateBodyType6SubjectRole",
     "ConsentPageCreateBodyType7",
     "ConsentPageCreateBodyType7Kind",
     "ConsentPageCreateBodyType7Subject",
     "ConsentPageCreateBodyType8",
     "ConsentPageCreateBodyType8Kind",
     "ConsentPageCreateBodyType8Subject",
-    "ConsentPageCreateBodyType8SubjectRole",
     "ConsentPageCreateBodyType9",
     "ConsentPageCreateBodyType9Kind",
     "ConsentPageCreateBodyType9Subject",
-    "ConsentPageCreateBodyType9SubjectTeamsItem",
-    "ConsentPageCreateBodyType9SubjectTeamsItemRole",
     "ConsentPageCreateResponse200",
     "ConsentPageResultResponse200",
     "ConsentPageResultResponse200Kind",
@@ -1143,6 +1205,8 @@ __all__ = (
     "UpgradePendingNodesItem",
     "UpgradeRun",
     "UpgradeRunFailed",
+    "UpgradeRunTargets",
+    "UpgradeRunTargetsAdditionalProperty",
     "UploadAbortResponse200",
     "UploadBeginBody",
     "UploadBeginResponse200",

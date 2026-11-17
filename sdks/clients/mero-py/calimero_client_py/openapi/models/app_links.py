@@ -6,52 +6,38 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="ConsentPageCreateBodyType2ScopeType1")
+T = TypeVar("T", bound="AppLinks")
 
 
 @_attrs_define
-class ConsentPageCreateBodyType2ScopeType1:
-    """
-    Attributes:
-        org (str):
-    """
+class AppLinks:
+    """ """
 
-    org: str
-    additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
+    additional_properties: dict[str, str] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        org = self.org
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "org": org,
-            }
-        )
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        org = d.pop("org")
+        app_links = cls()
 
-        consent_page_create_body_type_2_scope_type_1 = cls(
-            org=org,
-        )
-
-        consent_page_create_body_type_2_scope_type_1.additional_properties = d
-        return consent_page_create_body_type_2_scope_type_1
+        app_links.additional_properties = d
+        return app_links
 
     @property
     def additional_keys(self) -> list[str]:
         return list(self.additional_properties.keys())
 
-    def __getitem__(self, key: str) -> Any:
+    def __getitem__(self, key: str) -> str:
         return self.additional_properties[key]
 
-    def __setitem__(self, key: str, value: Any) -> None:
+    def __setitem__(self, key: str, value: str) -> None:
         self.additional_properties[key] = value
 
     def __delitem__(self, key: str) -> None:

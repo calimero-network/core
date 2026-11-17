@@ -14,19 +14,24 @@ class ConsentPageCreateBodyType13Subject:
     """
     Attributes:
         org (str):
+        invite_key (str):
     """
 
     org: str
+    invite_key: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         org = self.org
+
+        invite_key = self.invite_key
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "org": org,
+                "inviteKey": invite_key,
             }
         )
 
@@ -37,8 +42,11 @@ class ConsentPageCreateBodyType13Subject:
         d = dict(src_dict)
         org = d.pop("org")
 
+        invite_key = d.pop("inviteKey")
+
         consent_page_create_body_type_13_subject = cls(
             org=org,
+            invite_key=invite_key,
         )
 
         consent_page_create_body_type_13_subject.additional_properties = d
