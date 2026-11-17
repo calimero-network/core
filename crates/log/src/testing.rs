@@ -45,6 +45,21 @@ pub fn slow_close(dir: &Path, delay: std::time::Duration) {
     }
 }
 
+/// Make every read of `group`'s state rows on the node at `dir` fail, as a
+/// disk answering EIO would, until [`heal_state_reads`].
+pub fn fail_state_reads(dir: &Path, group: GroupId) {
+    if let Ok(mut f) = crate::store::FAILING_READS.lock() {
+        f.push((dir.to_owned(), group));
+    }
+}
+
+/// Let `group`'s state reads on the node at `dir` succeed again.
+pub fn heal_state_reads(dir: &Path, group: GroupId) {
+    if let Ok(mut f) = crate::store::FAILING_READS.lock() {
+        f.retain(|(d, g)| !(*g == group && d == dir));
+    }
+}
+
 /// Where a snapshot build of a group can be held ([`hold_build`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuildPoint {

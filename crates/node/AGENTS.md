@@ -1846,6 +1846,11 @@ API and system group:
   applied them one at a time, did. `XcallDone` read the outbox row committed and lost the
   dead letter on such a replica; `ActionEnd` and a node command's first answer under a key
   had the same hole. Tests: `a_replica_catching_up_*` in `component.rs`.
+  A row such a read cannot read or decode (`decode_in`, `get_json`; an idempotency
+  record retention cannot read) fails the batch (`StateTx::fail`) instead of reading as
+  absent, so that replica stops on the entry rather than apply it differently (B3).
+  Tests: `a_row_an_apply_cannot_decode_fails_the_batch`,
+  `an_undecodable_idempotency_record_is_never_expired`.
 - **Blobs** (R8, `component/blobs.rs`): the cluster's store and routes
   (`store_blob`, a majority, `fetch_blob`, `collect_blob`, `blob_held_strong`), but the
   app holds a blob through a host record (`BlobRecord { size, mime, refs, idleSinceMs }`,
