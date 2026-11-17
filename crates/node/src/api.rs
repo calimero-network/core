@@ -389,9 +389,28 @@ pub(crate) fn app_origin(node: &Node, origin: &str) -> Option<AppOrigin> {
 }
 
 /// The package frontend a ceremony claims to come from (unverified: the
-/// ceremony is then checked against that origin).
-fn claimed_app(node: &Node, client_data_json: &str) -> Option<AppOrigin> {
-    app_origin(node, &calimero_identity::claimed_origin(client_data_json)?)
+/// ceremony is then checked against that origin). An origin this node does not
+/// know is looked up again on fresh state: a package installed or an origin
+/// registered through another node a moment ago is not in this node's copy of
+/// the directory until it applies that entry.
+async fn claimed_app(node: &Node, client_data_json: &str) -> Option<AppOrigin> {
+    let origin = calimero_identity::claimed_origin(client_data_json)?;
+    if let Some(app) = app_origin(node, &origin) {
+        return Some(app);
+    }
+    // The cluster's own origins are no app's: nothing to look up again.
+    if node
+        .config
+        .origins
+        .iter()
+        .any(|o| o.trim_end_matches('/') == origin)
+        || node.api_origins().contains(&origin)
+    {
+        return None;
+    }
+    // As `begin_rp_id` does for the begin.
+    let _fresh = node.sys_fresh().await;
+    app_origin(node, &origin)
 }
 
 /// The relying party for a ceremony that may come from `app`'s frontend
@@ -943,7 +962,16 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
         .ok_or_else(|| ApiError::bad_request("BAD_NONCE", "nonce must be 32 bytes hex"))?;
     let app_hash: [u8; 32] = match (&q.app, &q.app_hash) {
         (Some(app), _) => {
-            let rec = node.app(app).await?;
+            // In the clear and without a credential, so judged as an anonymous
+            // `GET /apps/{app}` is (#4723): on the cluster's latest system state,
+            // and an app nobody anonymous may reach answers as one that does not
+            // exist, so the bound hash never says that a private app exists or
+            // which release it runs. Read at once after the round: an unknown id
+            // does not wait for the directory to name it.
+            let _fresh = node.sys_fresh().await;
+            let rec = node
+                .sys(|s| s.apps.get(app).filter(|a| s.may_reach(a, None)).cloned())
+                .ok_or_else(|| ApiError::not_found("no such app"))?;
             hex::decode(&rec.bundle)
                 .ok()
                 .and_then(|v| v.try_into().ok())
@@ -1014,6 +1042,12 @@ async fn attestation(State(node): State<Arc<Node>>, Query(q): Query<AttestQuery>
     Ok(Json(serde_json::to_value(doc).unwrap_or_default()))
 }
 
+/// A consent as the JSON a system command logs: an error, never `null`, which would be
+/// logged and only refused where the command applies.
+pub(crate) fn consent_value(consent: &crate::proof::Consent) -> Result<Value, ApiError> {
+    serde_json::to_value(consent).map_err(|e| ApiError::internal(&format!("the consent: {e}")))
+}
+
 // ---------------------------------------------------------------- auth
 
 /// [`check_assertion`] against the relying party `base` (the cluster's own
@@ -1028,6 +1062,7 @@ async fn check_assertion_for(
     any_app: bool,
 ) -> Result<(String, Option<AppOrigin>), ApiError> {
     let app = claimed_app(node, &assertion.client_data_json)
+        .await
         .filter(|a| any_app || bound == Some(a.package.as_str()));
     let (owner, cred) = node
         .sys_until(|s| {
@@ -1049,7 +1084,8 @@ async fn check_assertion_for(
             .sys_write(&SystemCmd::SetSignCount {
                 credential_id: cred.id.clone(),
                 count,
-                assertion: serde_json::to_value(assertion).unwrap_or_default(),
+                assertion: serde_json::to_value(assertion)
+                    .map_err(|e| ApiError::internal(&format!("the assertion: {e}")))?,
             })
             .await
             .map_err(|e| {
@@ -1353,7 +1389,8 @@ async fn step_up(
         }
     }
     let account = p.account()?;
-    let args_bytes = serde_json::to_vec(args).unwrap_or_default();
+    // `Value`'s `Display` is its compact JSON and cannot fail.
+    let args_bytes = args.to_string().into_bytes();
     let Some(confirm) = confirm else {
         let nonce = random::<16>();
         let challenge = confirm_challenge(app_id, method, &args_bytes, &nonce);
@@ -1432,7 +1469,8 @@ async fn step_up(
     .await?;
     // Logged with what was signed, so every replica checks it where the
     // command applies (`system::authorize`).
-    let signed = String::from_utf8(a).unwrap_or_default();
+    let signed = String::from_utf8(a)
+        .map_err(|_| ApiError::internal("the signed arguments are not UTF-8"))?;
     let args = serde_json::from_str(&signed).unwrap_or(Value::Null);
     let consent = crate::proof::Consent {
         statement: crate::proof::Statement {
@@ -1446,7 +1484,7 @@ async fn step_up(
         at: now_secs(),
     };
     Ok(Consented {
-        consent: serde_json::to_value(&consent).unwrap_or_default(),
+        consent: consent_value(&consent)?,
         args,
         carry,
     })

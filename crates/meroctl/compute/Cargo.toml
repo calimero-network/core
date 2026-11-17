@@ -1,5 +1,5 @@
 [package]
-name = "mero-compute"
+name = "meroctl-compute"
 description = "Runs a compute component alone, on the compute engine a job node uses (behind `meroctl local compute run`)"
 version = "0.1.0"
 authors.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 publish = false
 
 [lib]
-name = "mero_compute"
+name = "meroctl_compute"
 path = "src/lib.rs"
 
 [dependencies]

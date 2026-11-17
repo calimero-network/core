@@ -953,6 +953,7 @@ fn mpk_full(
         frontend_aliases: Vec::new(),
         upgrades,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
+        secrets: None,
         uses: None,
         services: None,
         pipelines: Vec::new(),
@@ -4831,7 +4832,7 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
             },
             strong: false,
             min_index: at,
-            on_behalf_of: None,
+            via: None,
         })
         .await
         .unwrap();

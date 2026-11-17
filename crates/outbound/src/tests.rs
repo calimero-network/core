@@ -16,6 +16,8 @@ fn forms() -> AppIdentity {
     AppIdentity {
         package: "com.calimero.mero-forms".to_owned(),
         signer: "did:key:zForms".to_owned(),
+        secrets: None,
+        own: OwnSecrets::default(),
     }
 }
 
@@ -276,6 +278,8 @@ fn a_secret_goes_only_to_its_own_hosts_and_only_for_its_own_app() {
     let other = AppIdentity {
         package: "com.example.other".to_owned(),
         signer: "did:key:zOther".to_owned(),
+        secrets: None,
+        own: OwnSecrets::default(),
     };
     let stolen = s
         .prepare(
@@ -728,4 +732,89 @@ mod merge {
             .collect();
         assert!(merge_approval(None, &many, &OutboundSelection::Manifest, false).is_err());
     }
+}
+
+/// A release that declares its secrets (`AppIdentity::secrets`) gets only those, each only
+/// into a request to one of its declared hosts, even where the operator bound more; a
+/// release that declares none is filled from the operator's bindings alone, as before.
+#[test]
+fn a_release_that_declares_secrets_gets_only_those_and_only_to_their_hosts() {
+    let fake = Arc::new(Fake::default());
+    let s = service(&fake);
+    let with = |secrets: &[(&str, &[&str])]| AppIdentity {
+        secrets: Some(
+            secrets
+                .iter()
+                .map(|(n, h)| ((*n).to_owned(), h.iter().map(|h| (*h).to_owned()).collect()))
+                .collect(),
+        ),
+        ..forms()
+    };
+    let prepare = |app: &AppIdentity| {
+        s.prepare(
+            app,
+            &declared(),
+            Some(&approving(&declared())),
+            post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}"),
+        )
+    };
+
+    // Declared for its host: filled, as the operator bound it.
+    assert!(prepare(&with(&[("TURNSTILE_SECRET", &[HOST])])).is_ok());
+    // Not declared: refused, though the operator bound it to the package.
+    let undeclared = prepare(&with(&[("OTHER_KEY", &[HOST])]))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        undeclared.contains("declares no secret TURNSTILE_SECRET"),
+        "{undeclared}"
+    );
+    // Declared for another host only: refused here.
+    let elsewhere = prepare(&with(&[("TURNSTILE_SECRET", &["api.example.com"])]))
+        .unwrap_err()
+        .to_string();
+    assert!(elsewhere.contains("for other hosts"), "{elsewhere}");
+    // Declaring nothing: the operator's bindings alone, as before.
+    assert!(prepare(&forms()).is_ok());
+}
+
+/// An instance's own value for a declared name wins over the operator's and goes only to
+/// that name's declared hosts; a release that declares nothing never uses one.
+#[test]
+fn an_instances_own_value_wins_for_its_declared_name_only() {
+    let fake = Arc::new(Fake::default());
+    let s = service(&fake);
+    let own = OwnSecrets(BTreeMap::from([(
+        "TURNSTILE_SECRET".to_owned(),
+        Zeroizing::new("owners-own".to_owned()),
+    )]));
+    let declared_for = |host: &str| AppIdentity {
+        secrets: Some(BTreeMap::from([(
+            "TURNSTILE_SECRET".to_owned(),
+            vec![host.to_owned()],
+        )])),
+        own: own.clone(),
+        ..forms()
+    };
+    let prepare = |app: &AppIdentity| {
+        s.prepare(
+            app,
+            &declared(),
+            Some(&approving(&declared())),
+            post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}"),
+        )
+    };
+    let p = prepare(&declared_for(HOST)).unwrap();
+    assert_eq!(&*p.body, b"secret=owners-own");
+    // Its declared hosts are elsewhere: refused, though the value is the instance's.
+    assert!(prepare(&declared_for("api.example.com")).is_err());
+    // A release declaring nothing ignores it: the operator's value.
+    let p = prepare(&AppIdentity {
+        own: own.clone(),
+        ..forms()
+    })
+    .unwrap();
+    assert_eq!(&*p.body, format!("secret={SECRET}").as_bytes());
+    // Never in a debug print.
+    assert!(!format!("{:?}", declared_for(HOST)).contains("owners-own"));
 }

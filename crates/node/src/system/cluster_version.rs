@@ -101,6 +101,9 @@ pub enum Feature {
     /// `CreateInvite` with `capabilities`: an earlier release drops the field,
     /// so a member redeeming it would get the organization's default.
     InviteCapabilities,
+    /// `InstallPackage` of a release that declares `secrets`: an earlier release drops
+    /// them and fills any secret its operator bound to the package.
+    DeclaredSecrets,
     /// `StartUpgradeRun` of a unit, whose members each have their own target
     /// (`UpgradeRun::targets`): an earlier release drops the targets and would refuse each
     /// member's `UpgradeApp` as not in the run.
@@ -108,21 +111,19 @@ pub enum Feature {
     /// `CreateApp` naming the apps its release created with it (`AppRecord::links`): an
     /// earlier release drops them, so its replicas would list the instance without its unit.
     AppLinks,
+    /// `SetDelegation`, a person letting an app call another as them
+    /// (`SystemState::delegations`): an earlier release cannot decode it, so its replicas
+    /// would hold no grant and deliver the same call as the app on one leader and as the
+    /// person on another.
+    Delegation,
     /// `LinkApp`, an app attached to an instance's `attach` reference
     /// (`AppRecord::attached`): an earlier release cannot decode it, so its replicas would
     /// list the instance without the app and its runs would read no link.
     AttachApp,
-    /// A run's xcalls carrying the person it serves (`XcallOut::on_behalf_of`,
-    /// `CallRequest::on_behalf_of`): an earlier release drops the field from the
-    /// outbox row and the forwarded request, so the same delivery would reach the
-    /// target with the person on one leader and without on another. Not a system
-    /// command: the app path reads it from the logged cluster version
-    /// (`Node::delegates`).
-    OnBehalfOf,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 29] = [
+pub const FEATURES: [Feature; 30] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -148,9 +149,10 @@ pub const FEATURES: [Feature; 29] = [
     Feature::PublishedRunByRelease,
     Feature::OrgCapabilities,
     Feature::InviteCapabilities,
-    Feature::OnBehalfOf,
+    Feature::DeclaredSecrets,
     Feature::AppLinks,
     Feature::UnitUpgrade,
+    Feature::Delegation,
     Feature::AttachApp,
 ];
 
@@ -184,19 +186,12 @@ impl Feature {
             Self::PublishedRunByRelease => "publishedRunByRelease",
             Self::OrgCapabilities => "orgCapabilities",
             Self::InviteCapabilities => "inviteCapabilities",
-            Self::OnBehalfOf => "onBehalfOf",
+            Self::DeclaredSecrets => "declaredSecrets",
             Self::AppLinks => "appLinks",
             Self::UnitUpgrade => "unitUpgrade",
+            Self::Delegation => "delegation",
             Self::AttachApp => "attachApp",
         }
-    }
-
-    /// Whether a system command carries it ([`SystemCmd::features`]). `false` for a
-    /// shape on an app's path, which the node reads from the logged cluster version
-    /// itself ([`Feature::OnBehalfOf`]).
-    #[must_use]
-    pub const fn system(self) -> bool {
-        !matches!(self, Self::OnBehalfOf)
     }
 
     /// The first core release that applies it. The features of a release
@@ -226,9 +221,11 @@ impl Feature {
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
             Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
-            Self::OnBehalfOf | Self::AppLinks | Self::UnitUpgrade | Self::AttachApp => {
-                "1.0.0-rc.31"
-            }
+            Self::DeclaredSecrets
+            | Self::AppLinks
+            | Self::UnitUpgrade
+            | Self::Delegation
+            | Self::AttachApp => "1.0.0-rc.31",
         }
     }
 }
@@ -438,6 +435,7 @@ impl SystemCmd {
                 f
             }
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
+            Self::SetDelegation { .. } => vec![Feature::Delegation],
             Self::LinkApp { .. } => vec![Feature::AttachApp],
             Self::SetPools { .. } => vec![Feature::ComputePools],
             Self::ScopeApps {
@@ -487,6 +485,9 @@ impl SystemCmd {
                 }
                 if !release.pipelines.is_empty() {
                     f.push(Feature::Pipelines);
+                }
+                if !release.secrets.is_empty() {
+                    f.push(Feature::DeclaredSecrets);
                 }
                 f
             }
@@ -656,7 +657,8 @@ mod tests {
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
         match feature {
-            Feature::OnBehalfOf => unreachable!("not carried by a system command"),
+            Feature::Delegation => entry(json!({ "op": "setDelegation", "account": "a",
+                "source": "app", "target": "kv-app", "methods": ["get"] })),
             Feature::InviteCapabilities => SystemCmd::CreateInvite {
                 invite_key: "k".into(),
                 invite: serde_json::from_value(json!({
@@ -870,6 +872,10 @@ mod tests {
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
+            Feature::DeclaredSecrets => install(json!({
+                "outbound": ["https://api.example.com/"],
+                "secrets": { "API_KEY": { "hosts": ["api.example.com"] } },
+            })),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",
@@ -1017,7 +1023,7 @@ mod tests {
     #[test]
     fn a_feature_is_never_proposed_while_an_older_node_holds_the_log() {
         let mut nodes = cluster(&[RC16, RC16, RC14]);
-        for feature in FEATURES.into_iter().filter(|f| f.system()) {
+        for feature in FEATURES {
             let cmd = uses(feature);
             let needs = cmd.features();
             assert!(needs.contains(&feature), "{feature:?}: {needs:?}");
@@ -1051,7 +1057,6 @@ mod tests {
             .all(|n| n.machine.state.cluster_version.as_deref() == Some(RC16)));
         let (older, newer): (Vec<Feature>, Vec<Feature>) = FEATURES
             .iter()
-            .filter(|f| f.system())
             .partition(|f| ![RC19, RC20, RC22, RC24, RC29, RC31].contains(&f.since()));
         let (engine, later): (Vec<Feature>, Vec<Feature>) =
             newer.into_iter().partition(|f| f.since() == RC19);
@@ -1409,20 +1414,6 @@ mod tests {
             let refused = check(Some(below), &invite_features(all_apps, capabilities)).unwrap_err();
             assert_eq!(refused.feature, feature);
         }
-    }
-
-    /// The delegated caller is an app-path shape: no system command carries it, and the
-    /// node reads it from the logged version alone.
-    #[test]
-    fn the_delegated_caller_turns_on_with_its_release() {
-        assert!(!Feature::OnBehalfOf.system());
-        assert!(FEATURES
-            .iter()
-            .filter(|f| !f.system())
-            .eq([Feature::OnBehalfOf].iter()));
-        assert!(check(None, &[Feature::OnBehalfOf]).is_err());
-        assert!(check(Some(RC29), &[Feature::OnBehalfOf]).is_err());
-        assert!(check(Some(Feature::OnBehalfOf.since()), &[Feature::OnBehalfOf]).is_ok());
     }
 
     #[test]

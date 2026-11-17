@@ -57,6 +57,12 @@ pub const ENTRY_TOO_LARGE: &str = "entry too large";
 pub const MAX_WRITES: u32 = 10_000;
 /// Entries one `range_next` returns at most.
 pub const MAX_RANGE_BATCH: u32 = 1_000;
+/// Bytes of keys and values one `range_next` returns at most, past its first entry (which
+/// is always returned, so a cursor never stalls). The host gathers a batch before the
+/// guest sees it, so without it 1,000 values of about 1 MiB each (a value is bounded only
+/// by [`MAX_RUN_BYTES`] as it is written) would make the host hold about 1 GiB for one
+/// call, far past the 64 MiB a guest can take. 4 MiB stays well below that.
+pub const MAX_RANGE_BATCH_BYTES: usize = 4 * 1024 * 1024;
 /// Range cursors one run may hold open at once.
 pub const MAX_OPEN_CURSORS: usize = 1_024;
 /// Bytes of app log one run keeps; later lines are dropped after one marker line.
@@ -115,8 +121,8 @@ pub struct HostCore {
     state: Arc<dyn StateView>,
     applied_index: u64,
     inv: Invocation,
-    /// The person the calling app's run serves ([`HostCore::with_origin`]).
-    origin: Option<Caller>,
+    /// The app a person's call came through ([`HostCore::with_via`]).
+    via: Option<String>,
     dir: Arc<dyn Directory>,
     blobs: Arc<dyn BlobHost>,
     search: Arc<dyn SearchHost>,
@@ -148,7 +154,7 @@ pub struct HostCore {
     rng: ChaCha20Rng,
     cursors: BTreeMap<u32, Cursor>,
     next_cursor: u32,
-    peak_buffered: usize,
+    peak_buffered: crate::overlay::Buffered,
     provider: Arc<dyn Files>,
     files: FileTable,
     progress: Option<Progress>,
@@ -187,7 +193,7 @@ impl HostCore {
             state,
             applied_index,
             inv,
-            origin: None,
+            via: None,
             dir,
             blobs: Arc::new(NoBlobs),
             search: Arc::new(NoSearch),
@@ -212,7 +218,7 @@ impl HostCore {
             rng,
             cursors: BTreeMap::new(),
             next_cursor: 0,
-            peak_buffered: 0,
+            peak_buffered: crate::overlay::Buffered::default(),
             provider: Arc::new(NoFiles),
             files: FileTable::default(),
             progress: None,
@@ -383,14 +389,21 @@ impl HostCore {
         Ok(CursorId(id))
     }
 
-    /// The next entries of a cursor, at most `max` (capped at `MAX_RANGE_BATCH`), with
-    /// keys as the guest wrote them. An exhausted cursor returns an empty list.
+    /// The next entries of a cursor, at most `max` (capped at `MAX_RANGE_BATCH`) and, past
+    /// the first, at most `MAX_RANGE_BATCH_BYTES` of keys and values, with keys as the guest
+    /// wrote them. A shorter batch is not the end: only an empty list is.
     pub fn range_next(&mut self, id: CursorId, max: u32) -> Result<Vec<KeyValue>, HostDenied> {
         let Some(cursor) = self.cursors.get_mut(&id.0) else {
             return Err(HostDenied::new("unknown cursor"));
         };
         let max = max.min(MAX_RANGE_BATCH) as usize;
-        let batch = cursor.next_batch(&*self.state, &self.overlay, max, &mut self.peak_buffered);
+        let batch = cursor.next_batch(
+            &*self.state,
+            &self.overlay,
+            max,
+            MAX_RANGE_BATCH_BYTES,
+            &mut self.peak_buffered,
+        );
         Ok(batch
             .into_iter()
             .map(|(key, value)| (key[GENERATION_PREFIX..].to_vec(), value))
@@ -436,35 +449,35 @@ impl HostCore {
         &self.inv.caller
     }
 
-    /// The person the calling app's run serves (`context.on-behalf-of`): set by the node on a
-    /// delivery or a synchronous xcall from a run that had one; none otherwise.
+    /// The app this call came through (`context.via`): set by the node when another app
+    /// called as the person it serves, who granted it this method (the caller is that
+    /// person); none otherwise.
     #[must_use]
-    pub fn on_behalf_of(&self) -> Option<&Caller> {
-        self.origin.as_ref()
+    pub fn via(&self) -> Option<&str> {
+        self.via.as_deref()
     }
 
-    /// Names the person the calling app's run serves. Only a run another app calls
-    /// (`Caller::App`, as a delivery or a view) carries one, and only an account or an API
-    /// key: anything else is the node's mistake, refused here.
+    /// Names the app a person's call came through. Only a run another app delivered (a
+    /// delivery or a view) whose caller is that person, an account or an API key, carries
+    /// one: anything else is the node's mistake, refused here.
     ///
     /// # Errors
     ///
-    /// [`InvalidInvocation::OriginOutsideXcall`].
-    pub fn with_origin(mut self, origin: Option<Caller>) -> Result<Self, InvalidInvocation> {
-        let Some(origin) = origin else {
-            self.origin = None;
+    /// [`InvalidInvocation::ViaOutsideXcall`].
+    pub fn with_via(mut self, via: Option<String>) -> Result<Self, InvalidInvocation> {
+        let Some(via) = via else {
+            self.via = None;
             return Ok(self);
         };
-        let from_app = matches!(self.inv.caller, Caller::App(_))
-            && matches!(
-                self.inv.kind,
-                InvocationKind::XcallDeliver | InvocationKind::View
-            );
-        let person = matches!(origin, Caller::Account(_) | Caller::ApiKey { .. });
-        if !(from_app && person) {
-            return Err(InvalidInvocation::OriginOutsideXcall);
+        let delivered = matches!(
+            self.inv.kind,
+            InvocationKind::XcallDeliver | InvocationKind::View
+        );
+        let person = matches!(self.inv.caller, Caller::Account(_) | Caller::ApiKey { .. });
+        if !(delivered && person) || via.is_empty() {
+            return Err(InvalidInvocation::ViaOutsideXcall);
         }
-        self.origin = Some(origin);
+        self.via = Some(via);
         Ok(self)
     }
 
@@ -1143,7 +1156,14 @@ impl HostCore {
     #[cfg(feature = "testing")]
     #[must_use]
     pub fn peak_buffered(&self) -> usize {
-        self.peak_buffered
+        self.peak_buffered.entries
+    }
+
+    /// The most bytes of range keys and values held at once by any cursor of this run.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn peak_buffered_bytes(&self) -> usize {
+        self.peak_buffered.bytes
     }
 
     // --- policy ----------------------------------------------------------------------

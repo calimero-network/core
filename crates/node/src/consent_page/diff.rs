@@ -60,6 +60,7 @@ pub fn capability_sheet(from: &Side<'_>, to: &Side<'_>) -> Value {
             from.manifest.outbound.iter().cloned().collect(),
             to.manifest.outbound.iter().cloned().collect(),
         ),
+        "secrets": secrets(from.manifest, to.manifest),
         "uses": uses(from.manifest, to.manifest),
         "frontend": frontend(from.manifest, to.manifest),
         "interfaces": {
@@ -104,13 +105,35 @@ pub fn capability_card(s: &Side<'_>) -> Value {
     // SAFETY: `side` builds an object, which string keys index.
     card["author"] = json!(s.manifest.metadata.as_ref().and_then(|m| m.author.clone()));
     card["outbound"] = json!(s.manifest.outbound.iter().collect::<BTreeSet<_>>());
+    card["secrets"] = json!(s.manifest.secrets.clone().unwrap_or_default());
     card["uses"] = json!(s.manifest.uses.clone().unwrap_or_default());
     card["abi"] = json!(s.abi);
     card
 }
 
+/// The secrets each side declares: `{ added, removed, kept }` by name, and `hostsChanged`,
+/// the kept names whose hosts differ (a secret the new code would send elsewhere).
+fn secrets(from: &BundleManifest, to: &BundleManifest) -> Value {
+    let empty = std::collections::BTreeMap::new();
+    let (a, b) = (
+        from.secrets.as_ref().unwrap_or(&empty),
+        to.secrets.as_ref().unwrap_or(&empty),
+    );
+    let names = |m: &std::collections::BTreeMap<String, calimero_bundle::BundleSecret>| {
+        m.keys().cloned().collect::<BTreeSet<_>>()
+    };
+    let mut diff = set_diff(names(a), names(b));
+    let changed: Vec<&String> = a
+        .iter()
+        .filter(|(name, s)| b.get(*name).is_some_and(|t| t.hosts != s.hosts))
+        .map(|(name, _)| name)
+        .collect();
+    diff["hostsChanged"] = json!(changed);
+    diff
+}
+
 /// The apps each side references: `{ added, removed, kept }` by name, `changed` (a kept name
-/// whose package, range or mode differs, with both sides), and `createdAdded`, the added
+/// whose package, range, mode or methods called as the person differ, with both sides), and `createdAdded`, the added
 /// names the upgrade would create with the app (`create`), which the person approves with it.
 fn uses(from: &BundleManifest, to: &BundleManifest) -> Value {
     let empty = std::collections::BTreeMap::new();
@@ -126,7 +149,10 @@ fn uses(from: &BundleManifest, to: &BundleManifest) -> Value {
         .iter()
         .filter_map(|(name, u)| {
             let t = b.get(name)?;
-            (t.package != u.package || t.range != u.range || t.mode != u.mode)
+            (t.package != u.package
+                || t.range != u.range
+                || t.mode != u.mode
+                || t.methods != u.methods)
                 .then(|| json!({ "name": name, "from": u, "to": t }))
         })
         .collect();
@@ -338,6 +364,39 @@ mod tests {
             manifest,
             abi,
         }
+    }
+
+    /// An upgrade's sheet names the secrets the target adds, drops and keeps, and a kept
+    /// one whose hosts change; the card of a release lists what it declares.
+    #[test]
+    fn the_sheet_and_card_name_declared_secrets() {
+        let from = manifest(json!({
+            "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
+            "outbound": ["https://a.example/", "https://b.example/"],
+            "secrets": { "A_KEY": { "hosts": ["a.example"] }, "GONE": { "hosts": ["a.example"] } },
+        }));
+        let to = manifest(json!({
+            "version": "1.0", "package": "p", "appVersion": "2.0.0", "minRuntimeVersion": "0.1.0",
+            "outbound": ["https://a.example/", "https://b.example/"],
+            "secrets": { "A_KEY": { "hosts": ["b.example"] }, "NEW_KEY": { "hosts": ["a.example"], "required": true } },
+        }));
+        let sheet = capability_sheet(&side("1.0.0", &from, None), &side("2.0.0", &to, None));
+        assert_eq!(
+            sheet["secrets"],
+            json!({ "added": ["NEW_KEY"], "removed": ["GONE"], "kept": ["A_KEY"], "hostsChanged": ["A_KEY"] })
+        );
+        let card = capability_card(&side("2.0.0", &to, None));
+        assert_eq!(
+            card["secrets"]["NEW_KEY"],
+            json!({ "hosts": ["a.example"], "required": true })
+        );
+        let none = manifest(json!({
+            "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
+        }));
+        assert_eq!(
+            capability_card(&side("1.0.0", &none, None))["secrets"],
+            json!({})
+        );
     }
 
     /// An upgrade's sheet names the apps the target starts or stops using, a reference that

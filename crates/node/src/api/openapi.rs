@@ -1088,7 +1088,7 @@ fn operations() -> Vec<Op> {
             .about("In the clear. The node's id, the system group's leader (`null`: none known), its `merod` release, the newest cluster version it supports (`clusterVersion`) and the cluster's rollback epoch (`null` on a node without a rollback counter).")
             .ok("{ ok: bool, node: uint, systemLeader: uint | null, release: string, clusterVersion: string, rollbackEpoch: uint | null }"),
         get("/attestation", "attestation", Anyone, "The node's attestation")
-            .about("In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.")
+            .about("In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.")
             .query::<super::AttestQuery>(r#"{ nonce: string, app?: string, appHash?: string, purpose?: "receipts" | "kms" | "orchestrator" }"#)
             .ok("#AttestationDoc")
             .errors(&[(400, "BAD_NONCE"), (400, "BAD_HASH"), (404, "NOT_FOUND"), (503, "BUSY")]),
@@ -1377,6 +1377,22 @@ fn operations() -> Vec<Op> {
             .ok("#UpgradeRun")
             .step_up()
             .errors(&[(400, "NOT_A_UNIT"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "FEATURE_NOT_ACTIVE"), (409, "USES_NOT_INSTALLED")]),
+        get("/apps/{app}/secrets", "app_secrets", SignedIn, "The secrets an app's release declares")
+            .about("For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.")
+            .ok("{ secrets: { [string]: { hosts: string[], description: string, required: bool, source: \"app\" | \"cluster\", fingerprint?: string, setBy?: string, setAt?: uint } } }")
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
+        put("/apps/{app}/secrets/{name}", "app_secret_set", AccountHolder, "Set an app's own value of a declared secret")
+            .about("Sent only to the secret's declared hosts, never shown again (`app_secrets` answers its fingerprint), kept in the app's log on its replicas, out of the app's own reach. The owner, or whoever manages the organization's apps, with a step-up over `{ name, fingerprint }`: the value is never in the consent. `404` for a name the release does not declare; 1 to 4,096 bytes (`400 BAD_SECRET`); `409 CLUSTER_NOT_UPGRADED` while a node runs an earlier release.")
+            .json::<super::apps::SecretBody>("{ value: string, confirm?: #Confirm }")
+            .ok("{ name: string, fingerprint: string, index: uint }")
+            .step_up()
+            .errors(&[(400, "BAD_SECRET"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "CONFLICT"), (409, "CLUSTER_NOT_UPGRADED")]),
+        delete("/apps/{app}/secrets/{name}", "app_secret_clear", AccountHolder, "Remove an app's own value of a secret")
+            .about("The operator's value applies again. Same rules as setting one; a step-up over `{ name }`.")
+            .opt_json::<super::ConfirmOnlyBody>("#ConfirmOnly")
+            .ok("{ name: string, index: uint }")
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "CLUSTER_NOT_UPGRADED")]),
         post("/apps/{app}/access", "app_access", Session, "Set who may reach an app")
             .about("A package-bound session: only its own package's app, from one of its package's teams to another.")
             .json::<super::AccessBody>("{ access: #Access }")
@@ -1386,6 +1402,19 @@ fn operations() -> Vec<Op> {
             .json::<super::TransferBody>("{ to: string, confirm?: #Confirm }")
             .ok("null")
             .step_up(),
+        get("/apps/{app}/delegations", "app_delegations", SignedIn, "What you let an app do as you")
+            .about("The apps you let this app call as you, each with the methods (`SetDelegation`). A session bound to an app's frontend reads its own app's only.")
+            .ok("{ source: string, delegations: { [string]: string[] } }"),
+        put("/apps/{app}/delegations/{target}", "app_delegate", SignedIn, "Let an app call another as you")
+            .about("The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none.")
+            .json::<super::apps::DelegateBody>("{ confirm?: #Confirm }")
+            .ok("{ source: string, target: string, methods: string[] }")
+            .step_up()
+            .errors(&[(404, "NOT_FOUND"), (409, "NOTHING_TO_DELEGATE"), (409, "FEATURE_NOT_ACTIVE")]),
+        delete("/apps/{app}/delegations/{target}", "app_undelegate", SignedIn, "Take back what an app may do on another as you")
+            .about("No passkey: it only narrows. `404 NOT_DELEGATED` when you granted nothing there.")
+            .ok("{}")
+            .errors(&[(404, "NOT_DELEGATED"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/move", "app_move", AccountHolder, "Move an app to another organization")
             .about("Its data where it is; its files, runs and quotas go to the target, `org` or app-team access becomes the target's app team of its package. `bringMembers` adds the source's members who reach it, capped at `member`. `from` is the organization it left, `null` for an app of the caller's own; `added` the accounts brought; `revokedInvites` how many invites to its old team were withdrawn.")
             .json::<super::MoveBody>("{ toOrg: string, bringMembers?: bool, confirm?: #Confirm }")

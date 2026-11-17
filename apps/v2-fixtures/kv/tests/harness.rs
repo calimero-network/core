@@ -380,12 +380,12 @@ fn a_captcha_service_answers_in_the_same_call() {
     );
 }
 
-/// `env::on_behalf_of`: the person the calling app's run served, carried by the node, never
-/// by an argument. A plain delivery has none; one sent for an account or a key names it;
-/// a run started by a person passes that person to every app it calls, by message or
-/// synchronously, and a timer or another app's run passes none of its own.
+/// A delivery runs as the app that sent it, or, as a node delivers a call made with the
+/// person's grant, as that person with `env::via()` naming the app. A run started by a person
+/// offers that person to every app it calls, by message or synchronously (each call runs as
+/// them only with their grant).
 #[test]
-fn a_delivery_names_the_person_the_sending_run_served() {
+fn a_delivery_runs_as_the_app_or_as_the_person_through_it() {
     let mut t = TestApp::new(
         component(),
         Org::new().members(["bob", "carol"]),
@@ -395,20 +395,25 @@ fn a_delivery_names_the_person_the_sending_run_served() {
 
     t.deliver("app-a", "recordWho", json!({ "key": "plain" }))
         .unwrap();
-    assert_eq!(get(&mut t, "plain"), json!("none"));
+    assert_eq!(get(&mut t, "plain"), json!("app:app-a"));
     t.deliver_for("app-a", "bob", "recordWho", json!({ "key": "bob" }))
         .unwrap();
-    assert_eq!(get(&mut t, "bob"), json!("account:bob"));
+    assert_eq!(get(&mut t, "bob"), json!("account:bob via:app-a"));
     t.deliver_for_key("app-a", "k1", "bob", "recordWho", json!({ "key": "key" }))
         .unwrap();
-    assert_eq!(get(&mut t, "key"), json!("key:k1"));
-    // A person calling this app directly is its caller, not someone it serves.
+    assert_eq!(get(&mut t, "key"), json!("key:k1 via:app-a"));
+    // A person calling this app directly is its caller, through no app.
     assert_eq!(
         t.as_("bob").view("whoView", json!({})).unwrap(),
-        json!("none")
+        json!("account:bob")
     );
+    // Through an app as someone the organization does not hold: refused as their own call.
+    let e = t
+        .deliver_for("app-a", "mallory", "recordWho", json!({ "key": "m" }))
+        .unwrap_err();
+    assert!(matches!(e, Failure::Refused { status: 404, .. }), "{e:?}");
 
-    // What this app sends for Bob carries Bob.
+    // What this app sends for Bob offers Bob.
     t.as_("bob")
         .call("relayWho", json!({ "app": "other", "key": "k" }))
         .unwrap();
@@ -417,15 +422,8 @@ fn a_delivery_names_the_person_the_sending_run_served() {
         sent[0].on_behalf_of,
         Some(calimero_sdk::env::Caller::Account("bob".into()))
     );
-    t.as_("owner")
-        .call("relayWho", json!({ "app": "other", "key": "k" }))
-        .unwrap();
-    assert_eq!(
-        t.take_xcalls()[0].on_behalf_of,
-        Some(calimero_sdk::env::Caller::Account("owner".into()))
-    );
 
-    // Synchronously too: the other app's mock sees the person.
+    // Synchronously too: the other app's mock sees whom the call may run as.
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let log = std::sync::Arc::clone(&seen);
     t.mock_app("other", move |c| {

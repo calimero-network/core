@@ -1,4 +1,4 @@
-//! `meroctl namespace`: organizations, v1's namespaces. An organization holds
+//! `meroctl org`: organizations, v1's namespaces. An organization holds
 //! members (with roles), teams (`meroctl team`), invites and instances.
 
 use std::path::PathBuf;
@@ -75,7 +75,7 @@ pub enum NamespaceCmd {
         #[arg(long, value_enum, default_value = "member")]
         role: Role,
         /// Teams the invitee joins too.
-        #[arg(long = "team", alias = "group", value_name = "TEAM")]
+        #[arg(long = "team", value_name = "TEAM")]
         groups: Vec<String>,
         #[arg(long)]
         ttl_secs: Option<u64>,
@@ -99,13 +99,13 @@ pub enum NamespaceCmd {
         dev_passkey: Option<PathBuf>,
     },
     /// The organization's teams.
-    #[command(name = "teams", alias = "groups")]
+    #[command(name = "teams")]
     Groups {
         #[arg(value_name = "ORG")]
         namespace: String,
     },
     /// Create a team.
-    #[command(name = "create-team", alias = "create-group")]
+    #[command(name = "create-team")]
     CreateGroup {
         #[arg(value_name = "ORG")]
         namespace: String,
@@ -136,7 +136,7 @@ pub enum NamespaceCmd {
         capabilities: u32,
         #[arg(long, conflicts_with = "group")]
         account: Option<String>,
-        #[arg(long = "team", alias = "group", value_name = "TEAM")]
+        #[arg(long = "team", value_name = "TEAM")]
         group: Option<String>,
         /// Approve with this passkey file (development clusters).
         #[arg(long)]

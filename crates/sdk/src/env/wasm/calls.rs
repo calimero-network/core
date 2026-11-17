@@ -28,8 +28,8 @@ pub fn caller() -> Caller {
     from_wit(context::caller())
 }
 
-pub fn on_behalf_of() -> Option<Caller> {
-    context::on_behalf_of().map(from_wit)
+pub fn via() -> Option<String> {
+    context::via()
 }
 
 pub fn app_id() -> String {

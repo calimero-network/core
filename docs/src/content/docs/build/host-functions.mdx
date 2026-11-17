@@ -18,8 +18,8 @@ tests they read a thread-local stand-in (`env::mock`). Source:
 | Function | Returns |
 | --- | --- |
 | `env::caller()` | `Caller`: `Account(id)`, `ApiKey { key_id, account }`, `Public` (not signed in), `System` (the node: timers) or `App(id)` (a delivered cross-app call). |
+| `env::via()` | For a call another app made as the person it serves, with their grant (the caller is that person): the app it came through; `None` otherwise. Read it to give a call through an app less than the person's own ([As the person](/protocol/xcall/#as-the-person)). |
 | `env::linked(name)` | The app linked under `name`, a reference of the release the app runs (`uses`): the member created with the instance, or the app its owner attached since. `None` when nothing is linked there, and in a compute run. |
-| `env::on_behalf_of()` | For a run another app called (`App(id)`): the person that app's run served, `Account` or `ApiKey`, set by the node; `None` otherwise. Not consent: trust it as far as the source app ([On whose behalf](/protocol/xcall/#on-whose-behalf)). |
 | `env::app_id()` | This app instance's id. |
 | `env::app_owner()` | The account that owns the app. |
 | `env::org()` | The app's organization. Every app is in one (an app created without naming one is in its owner's personal organization), so on a node this is always `Some`. |
@@ -126,7 +126,7 @@ system, a socket or the network except through these.
 | --- | --- |
 | `storage` (`get`, `put`, `delete`, `add`, `range`) | Every table and collection; `add` keeps counts and lengths without a read |
 | `rebuild` | Nothing: it is for state migrations, which this version does not run |
-| `context` | `env::caller`, `on_behalf_of`, `app_id`, `linked`, `app_owner`, `org`, `org_role`, `in_team`, `applied_index`, `unique_id`, `start_action` (`org-role-strict` and `orgs-of` have no SDK wrapper) |
+| `context` | `env::caller`, `via`, `app_id`, `linked`, `app_owner`, `org`, `org_role`, `in_team`, `applied_index`, `unique_id`, `start_action` (`org-role-strict` and `orgs-of` have no SDK wrapper) |
 | `events` | `env::emit`, `env::emit_raw` |
 | `blobs` | `BlobRef::info`, `BlobRef::grant` (`env::blob_info`, `env::blob_grant`) |
 | `search` | `Table::search` (`env::search_query`), views only |

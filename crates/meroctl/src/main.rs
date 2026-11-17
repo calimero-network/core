@@ -135,18 +135,6 @@ enum Cmd {
     Attest {
         #[command(subcommand)]
         cmd: Option<AttestCmd>,
-        /// `attest app INSTANCE`, under its old spelling.
-        #[arg(long, short, hide = true)]
-        context: Option<String>,
-    },
-    /// `attest release`, under its old name.
-    #[command(hide = true)]
-    AttestRelease {
-        #[arg(long, requires = "nonce")]
-        file: Option<PathBuf>,
-        /// The nonce the file's attestation was made over, hex.
-        #[arg(long, requires = "file")]
-        nonce: Option<String>,
     },
     /// Signed packages (v1's applications): make one (new, build, codegen,
     /// abi), ship it (key, pack, sign, inspect, publish), and install, list,
@@ -154,19 +142,12 @@ enum Cmd {
     #[command(subcommand, alias = "package")]
     App(app::AppCmd),
     /// App instances (v1's contexts): create, list, get, update, delete, aliases, access.
-    /// `context` is its old name, kept as a hidden alias.
-    #[command(subcommand, name = "instance", alias = "context")]
+    #[command(subcommand, name = "instance")]
     Context(context::ContextCmd),
     /// Call a method on an instance (a write), or `--view` to read.
     Call {
         /// The app instance (an id or an alias).
-        #[arg(
-            long = "instance",
-            short = 'i',
-            alias = "context",
-            short_alias = 'c',
-            value_name = "INSTANCE"
-        )]
+        #[arg(long = "instance", short = 'i', value_name = "INSTANCE")]
         #[arg(value_name = "INSTANCE")]
         context: String,
         method: String,
@@ -192,23 +173,15 @@ enum Cmd {
     /// An instance's sealed files: upload.
     #[command(subcommand)]
     File(file::FileCmd),
-    /// `cloud compute pipeline`, under its old name.
-    #[command(subcommand, hide = true)]
-    Pipeline(pipeline::PipelineCmd),
-    /// `cloud compute logs`, under its old name (`run logs`).
-    #[command(subcommand, hide = true)]
-    Run(run::RunCmd),
     /// Calimero Cloud: sign in, organizations, clusters, `use` one as the
     /// node; and a cluster's compute (pipelines, run logs).
     #[command(subcommand)]
     Cloud(cloud::CloudCmd),
     /// Organizations (v1's namespaces): members, invites, teams, metadata, approvals.
-    /// `namespace` (and `ns`) is its old name, kept as a hidden alias.
-    #[command(subcommand, name = "org", aliases = ["namespace", "ns"])]
+    #[command(subcommand, name = "org")]
     Namespace(namespace::NamespaceCmd),
     /// An organization's teams (v1's groups): members, metadata, reparent, upgrades.
-    /// `group` is its old name, kept as a hidden alias.
-    #[command(subcommand, name = "team", alias = "group")]
+    #[command(subcommand, name = "team")]
     Group(group::GroupCmd),
     /// This account: passkeys (devices), API keys, usage, approvals.
     #[command(subcommand)]
@@ -316,8 +289,8 @@ async fn verified_release(
 }
 
 /// The old spellings an invocation used, each with the one that replaced it.
-/// They still parse (hidden aliases) and `main` warns about each on stderr,
-/// ahead of their removal; the answer on stdout is unchanged.
+/// They no longer parse; when a command line is refused, `main` names the
+/// replacement of each one it used under clap's error.
 fn old_spellings(args: &[String]) -> Vec<(&'static str, &'static str)> {
     use clap::CommandFactory as _;
     // meroctl's own options that take a value, so `--node group` is a value.
@@ -387,32 +360,23 @@ fn old_spellings(args: &[String]) -> Vec<(&'static str, &'static str)> {
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
-    let mut cli = Cli::parse();
     let argv: Vec<String> = std::env::args_os()
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
-    for (old, new) in old_spellings(&argv) {
-        eprintln!(
-            "warning: `{old}` is now `{new}`; the old spelling will be removed in a later release"
-        );
-    }
-    // `attest node|app|release` are the old `attest [--context]` and `attest-release`.
-    match &mut cli.cmd {
-        Cmd::Attest {
-            cmd: Some(AttestCmd::Release { file, nonce }),
-            ..
-        } => {
-            cli.cmd = Cmd::AttestRelease {
-                file: file.take(),
-                nonce: nonce.take(),
-            };
+    let cli = match Cli::try_parse_from(&argv) {
+        Ok(cli) => cli,
+        Err(e) => {
+            let renamed = old_spellings(&argv);
+            if e.use_stderr() && !renamed.is_empty() {
+                let _ = e.print();
+                for (old, new) in renamed {
+                    eprintln!("note: `{old}` was renamed `{new}`");
+                }
+                std::process::exit(e.exit_code());
+            }
+            e.exit()
         }
-        Cmd::Attest { cmd, context } => match cmd.take() {
-            Some(AttestCmd::App { context: c }) => *context = Some(c),
-            Some(AttestCmd::Node | AttestCmd::Release { .. }) | None => {}
-        },
-        _ => {}
-    }
+    };
     let home = Home {
         dir: cli.home.clone(),
     };
@@ -437,20 +401,12 @@ async fn main() -> eyre::Result<()> {
         };
         return print(&app::run_offline(cmd).await?);
     }
-    if let Cmd::Dev(dev::DevCmd::New {
-        dir,
-        template,
-        git_ref,
-        repo,
-        no_git,
-    }) = &cli.cmd
-    {
-        return print(&dev::new(dir, template, git_ref, repo, !no_git)?);
-    }
 
-    if let Cmd::AttestRelease {
-        file: Some(file),
-        nonce,
+    if let Cmd::Attest {
+        cmd: Some(AttestCmd::Release {
+            file: Some(file),
+            nonce,
+        }),
     } = &cli.cmd
     {
         let doc = serde_json::from_slice(&std::fs::read(file)?)?;
@@ -478,7 +434,10 @@ async fn main() -> eyre::Result<()> {
         }
     };
     let trust = trust(&cli, saved_mock);
-    if let Cmd::AttestRelease { file: None, .. } = &cli.cmd {
+    if let Cmd::Attest {
+        cmd: Some(AttestCmd::Release { file: None, .. }),
+    } = &cli.cmd
+    {
         let nonce = calimero_identity::random::<32>();
         let base = url::Url::parse(&url)?;
         let doc =
@@ -545,7 +504,9 @@ async fn main() -> eyre::Result<()> {
     env.authenticate().await?;
     let out: Value = match cli.cmd {
         Cmd::Whoami => to_json(&env.client.auth().me().await?)?,
-        Cmd::Attest { context: None, .. } => {
+        Cmd::Attest {
+            cmd: None | Some(AttestCmd::Node),
+        } => {
             // For display: the channel attested the node already, under the policy.
             let nonce = hex::encode([7_u8; 32]);
             to_json(
@@ -556,8 +517,7 @@ async fn main() -> eyre::Result<()> {
             )?
         }
         Cmd::Attest {
-            context: Some(context),
-            ..
+            cmd: Some(AttestCmd::App { context }),
         } => {
             let app = env.app(&context).await?;
             let proven = env.client.verify_app_cluster(&app).await?;
@@ -606,8 +566,6 @@ async fn main() -> eyre::Result<()> {
         }
         Cmd::Blob(cmd) => blob::run(cmd, &env).await?,
         Cmd::File(cmd) => file::run(cmd, &env).await?,
-        Cmd::Pipeline(cmd) => pipeline::run(cmd, &env).await?,
-        Cmd::Run(cmd) => run::run(cmd, &env).await?,
         Cmd::Cloud(cloud::CloudCmd::Compute(cmd)) => match cmd {
             cloud::ComputeCmd::Pipeline(cmd) => pipeline::run(cmd, &env).await?,
             cloud::ComputeCmd::Logs { app, run, attempt } => {
@@ -653,7 +611,9 @@ async fn main() -> eyre::Result<()> {
         | Cmd::Login { .. }
         | Cmd::Logout { .. }
         | Cmd::Proxy(_)
-        | Cmd::AttestRelease { .. } => {
+        | Cmd::Attest {
+            cmd: Some(AttestCmd::Release { .. }),
+        } => {
             unreachable!("handled above")
         }
     };
@@ -676,7 +636,7 @@ mod tests {
     /// No help a user can see calls an app instance a context (its name before
     /// 1.0.0-rc.26), an organization a namespace or a team a group (before
     /// 1.0.0-rc.29): every visible command's help, the examples included. The
-    /// lines that name the old aliases and the answer's `contextId` aside.
+    /// answer's `contextId` aside.
     #[test]
     fn help_says_instance_org_and_team() {
         fn walk(cmd: &mut clap::Command, path: &str, found: &mut Vec<String>) {
@@ -693,7 +653,7 @@ mod tests {
                         || (l.contains("group")
                             && !l.contains("raft group")
                             && !l.contains("system group")));
-                if (old_instance || old_org) && !l.contains("is its old name") {
+                if old_instance || old_org {
                     found.push(format!("{path}: {}", line.trim()));
                 }
             }
@@ -716,17 +676,18 @@ mod tests {
         );
     }
 
-    /// The old spellings still parse, to the commands that replaced them.
+    /// The current spellings parse.
     #[test]
-    fn old_spellings_still_parse() {
+    fn the_current_spellings_parse() {
         for args in [
-            &["meroctl", "dev", "new", "x"][..],
-            &["meroctl", "attest-release"],
-            &["meroctl", "attest", "--context", "c"],
-            &["meroctl", "run", "logs", "a", "r"],
-            &["meroctl", "pipeline", "runs", "a"],
+            &["meroctl", "attest"][..],
+            &["meroctl", "attest", "node"],
             &["meroctl", "attest", "release"],
+            &[
+                "meroctl", "attest", "release", "--file", "f", "--nonce", "00",
+            ],
             &["meroctl", "attest", "app", "c"],
+            &["meroctl", "app", "new", "x"],
             &["meroctl", "cloud", "compute", "logs", "a", "r"],
             &["meroctl", "cloud", "compute", "pipeline", "runs", "a"],
             &[
@@ -738,50 +699,12 @@ mod tests {
             &[
                 "meroctl", "app", "abi", "diff", "old.mpk", "new.wasm", "--json",
             ],
-            // v1's `context` is `instance`: the old command and `--context`/`-c` still parse.
-            &[
-                "meroctl", "context", "create", "--name", "kv", "--path", "a.wasm",
-            ],
-            &["meroctl", "call", "--context", "kv", "get"],
-            &["meroctl", "call", "-c", "kv", "get"],
             &[
                 "meroctl", "instance", "create", "--name", "kv", "--path", "a.wasm",
             ],
             &["meroctl", "call", "--instance", "kv", "get"],
             &["meroctl", "call", "-i", "kv", "get"],
-            &["meroctl", "blob", "list", "-c", "kv"],
-            // v1's `namespace` and `group` are `org` and `team`: the old commands,
-            // their `groups`/`create-group`/`subgroups` and `--namespace`/`--group` still parse.
-            &["meroctl", "namespace", "create", "acme"],
-            &["meroctl", "ns", "list"],
-            &["meroctl", "namespace", "groups", "o"],
-            &["meroctl", "namespace", "create-group", "o", "eng"],
-            &["meroctl", "namespace", "invite", "o", "--group", "t"],
-            &["meroctl", "group", "get", "o", "t"],
-            &["meroctl", "group", "subgroups", "o", "t"],
-            &[
-                "meroctl",
-                "instance",
-                "create",
-                "--name",
-                "kv",
-                "--package",
-                "p",
-                "--namespace",
-                "o",
-                "--group",
-                "t",
-            ],
-            &[
-                "meroctl",
-                "ops",
-                "upgrade-namespace",
-                "o",
-                "--package",
-                "p",
-                "--version",
-                "1",
-            ],
+            &["meroctl", "blob", "list", "-i", "kv"],
             &["meroctl", "org", "create", "acme"],
             &["meroctl", "org", "teams", "o"],
             &["meroctl", "org", "create-team", "o", "eng"],
@@ -830,12 +753,46 @@ mod tests {
             &["meroctl", "local", "up", "--local"],
             &["meroctl", "local", "dev", "app", "--local"],
         ] {
-            assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
+            let parsed = Cli::try_parse_from(args);
+            assert!(parsed.is_ok(), "{args:?}: {}", parsed.unwrap_err());
         }
         assert!(
             Cli::try_parse_from(["meroctl", "local", "up", "--docker", "--local"]).is_err(),
             "--docker and --local contradict"
         );
+    }
+
+    /// The spellings rc.30 warned about are gone: each is refused, and the
+    /// refusal can name what replaced it.
+    #[test]
+    fn old_spellings_are_refused_and_named() {
+        for line in [
+            "meroctl dev new x",
+            "meroctl attest-release",
+            "meroctl attest --context c",
+            "meroctl run logs a r",
+            "meroctl pipeline runs a",
+            "meroctl context create --name kv --path a.wasm",
+            "meroctl call --context kv get",
+            "meroctl call -c kv get",
+            "meroctl blob list -c kv",
+            "meroctl namespace create acme",
+            "meroctl ns list",
+            "meroctl org groups o",
+            "meroctl org create-group o eng",
+            "meroctl org invite o --group t",
+            "meroctl group get o t",
+            "meroctl team subgroups o t",
+            "meroctl instance create --name kv --package p --namespace o",
+            "meroctl ops upgrade-namespace o --package p --version 1",
+        ] {
+            let args: Vec<String> = line.split(' ').map(str::to_owned).collect();
+            assert!(Cli::try_parse_from(&args).is_err(), "{line} still parses");
+            assert!(
+                !crate::old_spellings(&args).is_empty(),
+                "{line} is refused without naming its replacement"
+            );
+        }
     }
 
     /// Each old spelling is named with its replacement, and a new one, or a

@@ -176,7 +176,7 @@ pub(super) async fn receipt(
             caller: p.caller,
             strong: true,
             min_index: 0,
-            on_behalf_of: None,
+            via: None,
         })
         .await?;
     if answer.result.is_null() {

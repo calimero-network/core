@@ -43,10 +43,10 @@ interface rebuild {
 interface context {
   use types.{caller as caller-t, account-id, org-id, team-id, org-role as org-role-t, org-membership, action-id};
   caller: func() -> caller-t;
-  // The person (account or API key) the calling app's run serves, when this run is an xcall
-  // delivery or a synchronous xcall from a run started by one: set by the node from that
-  // run's own caller, never by an argument; none for any other run. 0.5.2.
-  on-behalf-of: func() -> option<caller-t>;
+  // The app this call came through, when another app called as the person it serves (who
+  // granted it this method; `caller` is that person): set by the node, never by an
+  // argument; none for any other run. 0.5.2.
+  via: func() -> option<string>;
   app-id: func() -> string;
   // The app this instance's release references under `name` (its signed manifest's `uses`):
   // a member its creation made, or an app its owner attached. None when nothing is linked

@@ -33,7 +33,7 @@ use types::Types;
 /// The repository's root, from this crate's directory.
 #[must_use]
 pub fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
 }
 
 /// The document the client is generated from.

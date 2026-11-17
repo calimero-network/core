@@ -10,8 +10,8 @@ use calimero_app_host::{
     Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError, Status, TimerCtx,
     Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG,
     EMIT_TOO_MANY, EMIT_TOO_MANY_ACCOUNTS, EMIT_UNKNOWN_TEAM, GENERATION, MAX_AUDIENCE_ACCOUNTS,
-    MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RUN_BYTES,
-    MAX_WRITES, SUPPORTED_ABI_VERSIONS,
+    MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RANGE_BATCH,
+    MAX_RANGE_BATCH_BYTES, MAX_RUN_BYTES, MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
 use calimero_app_host::{
     subcall_key, ActionHost, HttpHost, HttpRequest, HttpResponse, ACTION_WALL_CLOCK,
@@ -308,6 +308,61 @@ fn range_is_lazy() {
     assert!(host.peak_buffered() <= 10, "{}", host.peak_buffered());
     let big = host.range_next(cursor, 5_000).unwrap();
     assert_eq!(big.len(), 1_000, "max is capped at 1,000");
+}
+
+/// Review finding A4: 1,000 values of about 1 MiB each made one `range_next` gather
+/// about 1 GiB on the host before the guest (64 MiB) saw any of it. A batch now stops at
+/// `MAX_RANGE_BATCH_BYTES`, and the next one carries on where it stopped.
+#[test]
+fn a_range_batch_stops_at_its_byte_cap_and_the_next_carries_on() {
+    const VALUE: usize = 1024 * 1024;
+    const ENTRIES: u32 = 20;
+    let state: BTreeMap<Vec<u8>, Vec<u8>> = (0..ENTRIES)
+        .map(|i| (stored_key(GENERATION, &i.to_be_bytes()), vec![b'v'; VALUE]))
+        .collect();
+    let inv = inv(InvocationKind::View);
+    let mut host = core_for(&state, &inv);
+    let cursor = host.range_open(b"", b"", false).unwrap();
+    let mut seen = Vec::new();
+    let mut batches = 0;
+    loop {
+        let batch = host.range_next(cursor, MAX_RANGE_BATCH).unwrap();
+        if batch.is_empty() {
+            break;
+        }
+        batches += 1;
+        let bytes: usize = batch.iter().map(|(k, v)| k.len() + v.len()).sum();
+        assert!(bytes <= MAX_RANGE_BATCH_BYTES, "a batch of {bytes} bytes");
+        seen.extend(batch.into_iter().map(|(k, _)| k));
+    }
+    let want: Vec<Vec<u8>> = (0..ENTRIES).map(|i| i.to_be_bytes().to_vec()).collect();
+    assert_eq!(seen, want, "every entry once, in order");
+    assert!(batches > 1, "{batches}");
+    assert!(
+        host.peak_buffered_bytes() <= MAX_RANGE_BATCH_BYTES + VALUE + 64,
+        "{}",
+        host.peak_buffered_bytes()
+    );
+}
+
+/// An entry larger than the cap on its own still comes back, alone, so the cursor moves on.
+#[test]
+fn an_entry_past_the_byte_cap_comes_back_alone() {
+    let big = vec![b'b'; MAX_RANGE_BATCH_BYTES + 1];
+    let state: BTreeMap<Vec<u8>, Vec<u8>> = [
+        (stored_key(GENERATION, b"a"), big.clone()),
+        (stored_key(GENERATION, b"b"), b"small".to_vec()),
+    ]
+    .into_iter()
+    .collect();
+    let inv = inv(InvocationKind::View);
+    let mut host = core_for(&state, &inv);
+    let cursor = host.range_open(b"", b"", false).unwrap();
+    let first = host.range_next(cursor, 10).unwrap();
+    assert_eq!(first, vec![(b"a".to_vec(), big)]);
+    let second = host.range_next(cursor, 10).unwrap();
+    assert_eq!(second, vec![(b"b".to_vec(), b"small".to_vec())]);
+    assert!(host.range_next(cursor, 10).unwrap().is_empty());
 }
 
 #[test]
@@ -1592,11 +1647,11 @@ fn synchronous_xcalls_are_keyed_bounded_and_one_hop_deep() {
     );
 }
 
-/// `context.on-behalf-of`: only a run another app called (a delivery or a view with
-/// `Caller::App`) carries an origin, and only an account or an API key; anything else is the
+/// `context.via`: only a person's call another app delivered (a delivery or a view whose
+/// caller is an account or an API key) names the app it came through; anything else is the
 /// node's mistake and refused before the run.
 #[test]
-fn only_a_run_another_app_called_carries_a_person_it_serves() {
+fn only_a_persons_delivered_call_names_the_app_it_came_through() {
     let person = Caller::Account("bob".into());
     let key = Caller::ApiKey {
         key_id: "k1".into(),
@@ -1604,28 +1659,30 @@ fn only_a_run_another_app_called_carries_a_person_it_serves() {
     };
     let state = BTreeMap::new();
     for kind in [InvocationKind::XcallDeliver, InvocationKind::View] {
-        let mut i = inv(kind);
-        i.caller = Caller::App("source".into());
-        for origin in [person.clone(), key.clone()] {
+        for caller in [person.clone(), key.clone()] {
+            let mut i = inv(kind);
+            i.caller = caller;
             let core = core_for(&state, &i)
-                .with_origin(Some(origin.clone()))
+                .with_via(Some("source".into()))
                 .unwrap();
-            assert_eq!(core.on_behalf_of(), Some(&origin));
+            assert_eq!(core.via(), Some("source"));
+            assert_eq!(core_for(&state, &i).via(), None);
+            let refused = core_for(&state, &i).with_via(Some(String::new()));
+            assert_eq!(refused.err(), Some(InvalidInvocation::ViaOutsideXcall));
         }
-        assert_eq!(core_for(&state, &i).on_behalf_of(), None);
         for not_a_person in [Caller::App("other".into()), Caller::System, Caller::Public] {
-            let refused = core_for(&state, &i).with_origin(Some(not_a_person));
-            assert_eq!(refused.err(), Some(InvalidInvocation::OriginOutsideXcall));
+            let mut i = inv(kind);
+            i.caller = not_a_person;
+            let refused = core_for(&state, &i).with_via(Some("source".into()));
+            assert_eq!(refused.err(), Some(InvalidInvocation::ViaOutsideXcall));
         }
     }
-    // A person's own call, a timer and an action serve no one but their caller.
+    // A person's own call, a timer and an action came through no app.
     let mut call = inv(InvocationKind::Call);
     call.caller = Caller::Account("alice".into());
-    let mut call_from_app = inv(InvocationKind::Call);
-    call_from_app.caller = Caller::App("source".into());
-    for i in [call, call_from_app, inv(InvocationKind::Action)] {
-        let refused = core_for(&state, &i).with_origin(Some(person.clone()));
-        assert_eq!(refused.err(), Some(InvalidInvocation::OriginOutsideXcall));
-        assert!(core_for(&state, &i).with_origin(None).is_ok());
+    for i in [call, inv(InvocationKind::Action)] {
+        let refused = core_for(&state, &i).with_via(Some("source".into()));
+        assert_eq!(refused.err(), Some(InvalidInvocation::ViaOutsideXcall));
+        assert!(core_for(&state, &i).with_via(None).is_ok());
     }
 }

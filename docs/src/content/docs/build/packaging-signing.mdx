@@ -127,12 +127,18 @@ detail.
      ```toml
      [package.metadata.calimero.uses]
      kv = { package = "com.calimero.confidential-kv", range = "^0.1", mode = "create" }
-     calendar = { package = "com.example.calendar", range = "^2", mode = "attach" }
+     calendar = { package = "com.example.calendar", range = "^2", mode = "attach", methods = ["listEvents", "createEvent"] }
      ```
+
+     `methods` lists what the release calls on that app as the person its run
+     serves, once that person grants it
+     ([As the person](/protocol/xcall/#as-the-person)); without it the release
+     calls the app as itself. `pack` checks each against the vendored ABI.
 
      A node refuses a release whose references break the rules (`400 BAD_USES`:
      names `a-z0-9_`, at most 16, not its own package, a semver range, a locked
-     version inside it, an ABI digest `sha256:<hex>`). It lists them on the
+     version inside it, an ABI digest `sha256:<hex>`, at most 64 distinct method
+     names, none of the node's own `__`). It lists them on the
      release's capability card, and an upgrade's consent page names the apps the
      new release starts using or uses differently.
 

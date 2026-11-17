@@ -345,7 +345,7 @@ impl Node {
         let mut segments = Vec::new();
         let meta = super::off_workers(|| {
             opened.app(key, |row| {
-                segments.extend(segments_of_row(&row));
+                segments.extend(segments_of_row(&row)?);
                 Ok(())
             })
         })

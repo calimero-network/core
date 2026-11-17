@@ -252,7 +252,9 @@ impl Engine for WasmtimeEngine {
         let abi = calimero_app_build::abi_of(component)
             .map_err(|e| PrepareError::BadAbi(e.to_string()))?
             .ok_or(PrepareError::NoAbi)?;
-        let names_compute_world = abi["world"] == calimero_app_wit::COMPUTE_WORLD;
+        let names_compute_world = abi["world"]
+            .as_str()
+            .is_some_and(calimero_app_wit::names_compute_world);
         if names_compute_world != (self.world == World::Compute) {
             return Err(PrepareError::BadAbi(format!(
                 "the ABI is for the {} world, this engine runs the {} world",

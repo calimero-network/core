@@ -49,8 +49,9 @@ pub struct XcallOut {
     pub app: String,
     pub method: String,
     pub args: Value,
-    /// The person the sending run served, set by its leader once the cluster runs
-    /// `Feature::OnBehalfOf`; the delivery carries it to the target.
+    /// The person the sending run served, set by its leader once the logged cluster version
+    /// brings `Feature::Delegation`: the delivery runs as them where they granted the
+    /// source this method of the target (`Node::caller_for`), else as the source app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<crate::types::Caller>,
 }
@@ -66,7 +67,7 @@ pub struct Outgoing {
     /// The entry timestamp it was sent at (app time).
     pub sent_ms: u64,
     /// [`XcallOut::on_behalf_of`]: a row an earlier release wrote has none, and is
-    /// delivered as before.
+    /// delivered as the source app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_behalf_of: Option<crate::types::Caller>,
 }

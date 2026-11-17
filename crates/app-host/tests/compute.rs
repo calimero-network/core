@@ -373,6 +373,13 @@ fn a_compute_world_abi_lists_compute_methods_without_their_result_methods() {
         Abi::from_json(&other),
         Err(PrepareError::BadAbi(_))
     ));
+    // A compute component built before 0.5.2 names the world at its own patch.
+    let mut older = only_digest.clone();
+    older["world"] = json!("calimero:app/compute@0.5.1");
+    assert!(matches!(
+        Abi::from_json(&older).unwrap().methods["digest"].kind,
+        MethodKind::Compute(_)
+    ));
     let mut app_world = only_digest;
     app_world["world"] = json!("calimero:app@0.5.2");
     assert!(matches!(

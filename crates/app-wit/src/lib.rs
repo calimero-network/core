@@ -9,6 +9,23 @@ pub const WORLD: &str = "calimero:app/app@0.5.2";
 /// The fully qualified world of a component holding only an app's compute methods.
 pub const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.2";
 
+/// Whether an ABI's `world` names the compute world: [`COMPUTE_WORLD`], or the same world at
+/// an older `0.5` patch, which a compute component built before the newest patch names (an
+/// older patch is a subset of this one, so it still runs).
+#[must_use]
+pub fn names_compute_world(world: &str) -> bool {
+    let patch = |w: &str| -> Option<(String, u32)> {
+        let (name, version) = w.split_once('@')?;
+        Some((name.to_owned(), version.strip_prefix("0.5.")?.parse().ok()?))
+    };
+    match (patch(world), patch(COMPUTE_WORLD)) {
+        (Some((name, patch)), Some((newest_name, newest))) => {
+            name == newest_name && patch <= newest
+        }
+        _ => false,
+    }
+}
+
 /// Most bytes one `wasi:random` call returns; the host refuses more and the SDK asks in pieces.
 pub const MAX_RANDOM_BYTES_PER_CALL: usize = 1024 * 1024;
 

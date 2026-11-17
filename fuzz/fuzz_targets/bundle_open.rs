@@ -11,7 +11,7 @@ use calimero_bundle::{extract_bundle_manifest, is_bundle_blob, sign_manifest_jso
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use libfuzzer_sys::fuzz_target;
-use mero_sign::{dev_signer_id, dev_signing_key};
+use meroctl_sign::{dev_signer_id, dev_signing_key};
 use sha2::{Digest, Sha256};
 use tar::Header;
 

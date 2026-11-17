@@ -91,6 +91,7 @@ fn release_of(
         frontend: None,
         frontend_aliases: d.aliases.iter().map(|a| (*a).to_owned()).collect(),
         outbound: d.outbound.iter().map(|u| (*u).to_owned()).collect(),
+        secrets: None,
         uses: d.uses.clone().map(|u| serde_json::from_value(u).unwrap()),
         upgrades: d
             .publisher_upgrades
@@ -484,6 +485,7 @@ async fn an_app_asks_and_the_person_approves_on_the_nodes_page() {
                 "removed": [],
                 "kept": ["https://api.example/v1/"],
             },
+            "secrets": { "added": [], "removed": [], "kept": [], "hostsChanged": [] },
             "uses": { "added": [], "removed": [], "kept": [], "changed": [], "createdAdded": [] },
             "frontend": {
                 "from": "https://notes.example",
@@ -2359,6 +2361,7 @@ async fn a_package_versions_capabilities_are_readable_before_an_app_exists() {
             "name": "Notes",
             "author": "Example",
             "outbound": ["https://api.example/v1/", "https://metrics.example/"],
+            "secrets": {},
             "uses": {},
             "abi": abi,
         })
@@ -2752,6 +2755,58 @@ async fn an_invite_carries_capabilities_to_the_member_who_joins_with_it() {
     })
     .await;
     assert_eq!(o["capabilities"][&carol_id], 0, "clamped to Bob's: {o}");
+}
+
+/// A sign-in from a package's frontend reaches a node that has committed the
+/// package's install but not applied it yet: the node judges the origin on
+/// fresh state rather than refusing it as unknown (`401 origin does not
+/// match`, the intermittent failure of
+/// `a_frontend_creates_an_organization_with_member_capabilities_in_one_approval`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_sign_in_from_a_frontend_installed_a_moment_ago_reaches_a_node_behind() {
+    let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("localhost".into())).await;
+    let leader = (0..3)
+        .find(|i| c.nodes[*i].as_ref().unwrap().node.system.status().is_leader)
+        .unwrap();
+    let behind = (0..3).find(|i| *i != leader).unwrap();
+    let (alice, alice_key) = signed_up(&c, leader, "alice").await;
+    let behind_node = &c.nodes[behind].as_ref().unwrap().node;
+    for _ in 0..100 {
+        if behind_node.sys(|s| !s.accounts.is_empty()) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // The node commits the install with the others but applies nothing yet.
+    let dir = c._dirs[behind].path().to_owned();
+    calimero_log::testing::hold_apply(&dir, calimero_node::node::SYSTEM_GROUP);
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[37; 32]);
+    let (v1, _) = release("1.0.0", &kv_wasm(), &publisher, &Declares::default());
+    let _ = alice.packages().upload(v1).await.unwrap();
+    assert!(
+        behind_node.sys(|s| !s.packages.contains_key(PACKAGE)),
+        "the node must not have applied the install yet"
+    );
+
+    let port = url::Url::parse(&c.urls[behind]).unwrap().port().unwrap();
+    let app_origin = format!(
+        "http://{}.localhost:{port}",
+        calimero_node::app_host::label(PACKAGE)
+    );
+    let in_app = c.client(behind);
+    let sign_in = tokio::spawn(async move {
+        let mut pk = SoftAuthenticator::with_key(&alice_key, "localhost", &app_origin);
+        in_app.sign_in(&mut pk).await.map(|_| ())
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    calimero_log::testing::release_apply(&dir, calimero_node::node::SYSTEM_GROUP);
+    let signed_in = sign_in.await.unwrap();
+    assert!(
+        signed_in.is_ok(),
+        "the frontend's origin is judged on fresh state: {:?}",
+        signed_in.err()
+    );
 }
 
 /// A unit upgrades on the page in one approval: an app's frontend asks `upgradeUnit`, the
