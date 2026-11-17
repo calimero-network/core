@@ -675,6 +675,29 @@ clients refresh. Removing a node ends the sessions it signed the same way.
 - **Restarting** a node with the same data directory and configuration resumes
   it: it catches up from the leaders.
 
+## A replica's state differs
+
+`calimero_group_diverged{group, peer}` on an app group's leader, and an error
+log naming the group, the peer and the index (`a replica's state differs from
+this leader's at the same index`), say that replica `peer` holds another state
+than the leader at the same log index: it applied an entry differently, or a
+row changed on its disk outside the log. The replicas still serve; the one that
+differs answers reads from its own state.
+
+1. Find which side is wrong: with three replicas, the two that agree hold the
+   group's state (`calimero_group_diverged` names only the peers that differ
+   from the leader; if it names both followers, the leader is the odd one out).
+2. Move the app off the replica that differs (`ops move`, [Move an app's
+   replicas](#move-an-apps-replicas)) to a healthy node: the new replica starts
+   from a snapshot of the leader, and the old one drops the group.
+3. If the leader is the one that differs, transfer leadership away first (stop
+   it briefly, or move its replica), then move it.
+4. Keep the replica's data directory for the bug report before reusing the
+   node: `merod inspect` on a stopped copy shows the group's applied index.
+
+The series goes away once a comparison agrees again (after the move, the peer
+is no longer a replica and is no longer compared).
+
 ## A group stays stopped
 
 A node whose Raft core of a group stops (`calimero_group_stopped{group}` is `1`,

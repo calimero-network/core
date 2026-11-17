@@ -549,6 +549,11 @@ impl Db {
         Ok(())
     }
 
+    /// Stage the removal of group metadata `name`.
+    pub(crate) fn stage_drop_meta(&self, tx: &mut Transaction, group: GroupId, name: &str) {
+        tx.raw_delete(Column::Meta, meta_key(group, name));
+    }
+
     /// Write group metadata `name`, synced (votes must survive power loss).
     pub fn put_meta<T: Serialize>(
         &self,
@@ -1024,6 +1029,9 @@ pub struct StateTx<'a> {
     state: &'a GroupState,
     staged: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     error: Option<String>,
+    /// How the batch's writes so far move the group's state digest
+    /// ([`crate::digest`]): each row it writes less the row that write replaces.
+    delta: crate::digest::StateDigest,
 }
 
 impl<'a> StateTx<'a> {
@@ -1033,6 +1041,34 @@ impl<'a> StateTx<'a> {
             state,
             staged: BTreeMap::new(),
             error: None,
+            delta: crate::digest::StateDigest::default(),
+        }
+    }
+
+    /// How this batch's writes so far move the group's state digest.
+    #[must_use]
+    pub(crate) const fn digest_delta(&self) -> crate::digest::StateDigest {
+        self.delta
+    }
+
+    /// Row `key` as this batch left it, for the digest of a write that replaces
+    /// it. A row that cannot be read fails the batch: a digest taken over a row
+    /// guessed absent would differ from the other replicas' for no fault of the
+    /// state.
+    fn replaced(&mut self, key: &[u8]) -> Option<Vec<u8>> {
+        if let Some(v) = self.staged.get(key) {
+            return v.clone();
+        }
+        match self
+            .state
+            .db
+            .get_state(self.state.group, self.state.generation(), key)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                self.fail(format_args!("state read failed: {e}"));
+                None
+            }
         }
     }
 
@@ -1062,10 +1098,14 @@ impl<'a> StateTx<'a> {
     }
 
     pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        let old = self.replaced(&key);
+        self.delta = self.delta.replace(&key, old.as_deref(), Some(&value));
         let _prev = self.staged.insert(key, Some(value));
     }
 
     pub fn delete(&mut self, key: Vec<u8>) {
+        let old = self.replaced(&key);
+        self.delta = self.delta.replace(&key, old.as_deref(), None);
         let _prev = self.staged.insert(key, None);
     }
 
@@ -1100,10 +1140,16 @@ impl<'a> StateTx<'a> {
     /// Write the batch now, outside any group's apply: for tools and tests
     /// working on a group that is not running. A running group commits its
     /// batches itself, with the index they bring it to.
+    ///
+    /// The group's stored state digest no longer describes its rows, which
+    /// changed outside the log: it is dropped, and taken again from the rows
+    /// when the group next opens.
     pub fn commit(self) -> eyre::Result<()> {
         let db = Arc::clone(&self.state.db);
+        let group = self.state.group;
         let mut tx = Transaction::default();
         self.into_batch(&mut tx)?;
+        db.stage_drop_meta(&mut tx, group, crate::machine::DIGEST_META);
         db.commit(&tx, true)
     }
 
