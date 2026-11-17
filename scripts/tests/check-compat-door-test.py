@@ -16,7 +16,7 @@ spec.loader.exec_module(door)
 
 PLAIN = "diff --git a/crates/node/src/api.rs b/crates/node/src/api.rs\n+fn x() {}\n"
 BUMP = "diff --git a/crates/log/src/format.rs b/crates/log/src/format.rs\n" + "-pub const STORE_" + "FORMAT: u32 = 1;\n+pub const STORE_" + "FORMAT: u32 = 2;\n"
-WIT = "diff --git a/crates/app-wit/wit/calimero-app.wit b/crates/app-wit/wit/calimero-app.wit\n" + "+" + "package calimero:app@0.5.3;\n"
+WIT = "diff --git a/crates/app-wit/wit/calimero-app.wit b/crates/app-wit/wit/calimero-app.wit\n" + "+" + "package calimero:app@0.5.2;\n"
 ONE_WAY = "## Merge Danger\n\n**Door:** one-way\n"
 
 CASES = [
