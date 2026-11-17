@@ -116,7 +116,7 @@ pub enum ComputeCmd {
     /// Run one compute method of a compute component alone, with the engine,
     /// caps and determinism of a job node and plain files in place of sealed ones.
     #[cfg(feature = "compute")]
-    Run(mero_compute::RunArgs),
+    Run(meroctl_compute::RunArgs),
     /// Not built in: this meroctl was built without the `compute` feature.
     #[cfg(not(feature = "compute"))]
     Run,
@@ -544,7 +544,7 @@ pub async fn run(cmd: LocalCmd, home: Home) -> eyre::Result<Value> {
         }
         #[cfg(feature = "compute")]
         LocalCmd::Compute(ComputeCmd::Run(args)) => {
-            let code = mero_compute::main_run(args);
+            let code = meroctl_compute::main_run(args);
             if code != std::process::ExitCode::SUCCESS {
                 std::process::exit(1);
             }

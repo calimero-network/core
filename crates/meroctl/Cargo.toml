@@ -22,8 +22,8 @@ eyre.workspace = true
 futures-util.workspace = true
 flate2.workspace = true
 hex.workspace = true
-mero-compute = { workspace = true, optional = true }
-mero-sign.workspace = true
+meroctl-compute = { workspace = true, optional = true }
+meroctl-sign.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 semver.workspace = true
 serde.workspace = true
@@ -46,7 +46,7 @@ calimero-utils-fs.workspace = true
 [features]
 default = ["compute"]
 # `meroctl local compute run`: the job node's wasmtime engine, the largest dependency.
-compute = ["dep:mero-compute"]
+compute = ["dep:meroctl-compute"]
 
 [build-dependencies]
 calimero-build-utils.workspace = true

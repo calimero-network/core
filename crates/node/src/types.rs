@@ -1,5 +1,7 @@
 //! Types shared by the node's state machines and its API.
 
+use std::collections::BTreeMap;
+
 use calimero_identity::Credential;
 use serde::{Deserialize, Serialize};
 
@@ -206,6 +208,12 @@ pub struct AppRecord {
     /// so a record writes as it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore: Option<PendingRestore>,
+    /// The apps this instance's release creates with it (`uses` with `mode: create` in its
+    /// signed manifest), by the name its code knows each by: made in the same
+    /// organization, by the same owner, just before it. Set once, at create. Left out when
+    /// empty, so a record writes as it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub links: BTreeMap<String, AppId>,
 }
 
 /// The backup a restore takes an app's state from (`crate::backup`): the

@@ -1234,7 +1234,7 @@ impl Node {
         uploader: &str,
     ) -> Result<calimero_log::Proposed, WriteError> {
         g.propose(|m, _| match m.component_replay(&Caller::System, key) {
-            Some(prev) => Proposal::Reply(serde_json::to_vec(&prev).unwrap_or_default()),
+            Some(prev) => Proposal::Reply(crate::app::applied_bytes(prev.index, &prev)),
             None => Proposal::Append(
                 serde_json::to_vec(&ComponentCmd::File {
                     mark: mark.clone(),

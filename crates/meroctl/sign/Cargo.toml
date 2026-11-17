@@ -1,5 +1,5 @@
 [package]
-name = "mero-sign"
+name = "meroctl-sign"
 description = "Signing Calimero bundle manifests (Ed25519 over the JCS manifest); the command line is `meroctl app sign`"
 version = "0.1.0"
 authors.workspace = true
@@ -7,10 +7,10 @@ edition.workspace = true
 repository.workspace = true
 license.workspace = true
 readme = "README.md"
-publish = true
+publish = false
 
 [lib]
-name = "mero_sign"
+name = "meroctl_sign"
 
 [dependencies]
 calimero-app-abi.workspace = true

@@ -28,7 +28,7 @@ cargo test -p calimero-utils-fs
 
 - `crates/merod/src/node_config.rs`: `replace_owner_only` for the node config
 - `crates/meroctl/src/file.rs` (`create_owner_only`, a download's `.part` file) and `src/env.rs` (`replace_owner_only` in `write_private`, sessions and passkeys)
-- `tools/mero-sign/src/lib.rs`: `write_owner_only` for the signing key file
+- `crates/meroctl/sign/src/lib.rs`: `write_owner_only` for the signing key file
 
 `restrict_existing_to_owner` has no caller outside its own tests.
 

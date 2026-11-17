@@ -64,7 +64,12 @@ NOT_COVERED = [
      "nothing is stored: the node checks them at install and reads them from the release's manifest; the "
      "deep fixtures are packed by the old release's meroctl, which writes no `uses`. "
      "`a_release_names_the_apps_it_uses_on_its_card` (`component_cluster.rs`) covers install and the card "
-     "on one build. A case once units create and link referenced apps"),
+     "on one build. A case once the upgrade-from release packs them"),
+    ("Apps", "An instance created with the apps its release creates (`AppRecord::links`, `init`'s `links`)",
+     "the deep fixtures are packed by the old release's meroctl, which writes no `uses`, and a record with "
+     "`links` is written only once every node runs this release (`Feature::AppLinks`); "
+     "`creating_an_instance_creates_the_apps_its_release_uses` (`component_cluster.rs`) covers it on one "
+     "build, and a record without it reads as before (`serde(default)`)"),
     ("Apps", "A person's grant letting an app call another as them (`SetDelegation`, `env::via`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `uses` with `methods`, and a "
      "grant is written only once every node runs this release (`Feature::Delegation`); "

@@ -45,8 +45,8 @@ impl Machine for Mem {
         Vec::new()
     }
 
-    fn snapshot(&self) -> Vec<u8> {
-        serde_json::to_vec(&self.0).unwrap()
+    fn snapshot(&self) -> eyre::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(&self.0)?)
     }
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {

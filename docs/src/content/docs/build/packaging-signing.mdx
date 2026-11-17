@@ -140,9 +140,23 @@ detail.
      version inside it, an ABI digest `sha256:<hex>`, at most 64 distinct method
      names, none of the node's own `__`). It lists them on the
      release's capability card, and an upgrade's consent page names the apps the
-     new release starts using or uses differently. The node does not yet create
-     or upgrade referenced apps with the one that uses them: linking an instance
-     to another is still the app's own call.
+     new release starts using or uses differently.
+
+     Creating an instance of a release with `create` references first creates
+     each of them: in the same organization, by the same owner, from the release
+     its lock pinned (else the newest installed one inside its range; a package
+     with none answers `409 USES_NOT_INSTALLED`), named `<instance>.<name>`. The
+     instance's record names them (`links`), the create answers them, and an
+     `init` that takes a `links` parameter is told their ids:
+
+     ```rust
+     #[app::init]
+     pub fn init(links: Option<BTreeMap<String, String>>) -> app::Result<Self> { .. }
+     ```
+
+     `links` in `initArgs` is the node's; a client that sends it is refused.
+     `attach` references are never created. Upgrading a unit in one consent is
+     not done yet: each app upgrades on its own.
 
    A package of several services (each app instance runs one of them, named by
    `meroctl instance create --service NAME`) gives each with `--service

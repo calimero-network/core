@@ -2,7 +2,7 @@
 //! clients, compare its ABI, make a signing key (`signer`), pack and sign an `.mpk`,
 //! inspect one, and publish it to a registry. Each calls the library the
 //! tool it replaced was built on (`calimero-app-build`, `calimero-app-abi`,
-//! `mero-sign`, `calimero-bundle`), so the formats are the node's own.
+//! `meroctl-sign`, `calimero-bundle`), so the formats are the node's own.
 
 use std::collections::BTreeSet;
 use std::io::Write as _;
@@ -91,7 +91,7 @@ pub enum AbiCmd {
 
 #[derive(Debug, Subcommand)]
 pub enum SignerCmd {
-    /// A new Ed25519 signing key, written owner-only (`mero-sign generate-key`).
+    /// A new Ed25519 signing key, written owner-only (`meroctl-sign`'s `generate_key`).
     New {
         /// The key file to write.
         output: PathBuf,
@@ -294,11 +294,11 @@ pub fn abi(cmd: &AbiCmd) -> eyre::Result<Value> {
 pub fn signer(cmd: &SignerCmd) -> eyre::Result<Value> {
     match cmd {
         SignerCmd::New { output, force } => {
-            mero_sign::generate_key(output, *force)?;
+            meroctl_sign::generate_key(output, *force)?;
             Ok(Value::Null)
         }
         SignerCmd::Id { key } => {
-            mero_sign::derive_signer_id(key)?;
+            meroctl_sign::derive_signer_id(key)?;
             Ok(Value::Null)
         }
     }
@@ -306,13 +306,13 @@ pub fn signer(cmd: &SignerCmd) -> eyre::Result<Value> {
 
 fn signing_key(key: Option<&Path>) -> eyre::Result<ed25519_dalek::SigningKey> {
     match key {
-        Some(k) => mero_sign::load_signing_key(k),
-        None => Ok(mero_sign::dev_signing_key()),
+        Some(k) => meroctl_sign::load_signing_key(k),
+        None => Ok(meroctl_sign::dev_signing_key()),
     }
 }
 
 fn report_abi(manifest: &Path, previous: &Path) -> eyre::Result<()> {
-    let check = mero_sign::check_abi(manifest, previous)?;
+    let check = meroctl_sign::check_abi(manifest, previous)?;
     eprintln!("ABI changes since {}:", previous.display());
     eprint!("{}", check.report);
     if check.breaking {
@@ -330,7 +330,7 @@ pub fn sign(a: &SignArgs) -> eyre::Result<Value> {
     if let Some(previous) = &a.previous {
         report_abi(&a.manifest, previous)?;
     }
-    mero_sign::sign_manifest(&a.manifest, &signing_key(a.key.as_deref())?)?;
+    meroctl_sign::sign_manifest(&a.manifest, &signing_key(a.key.as_deref())?)?;
     Ok(json!({ "signed": a.manifest }))
 }
 
@@ -1063,7 +1063,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     if let Some(previous) = &a.previous {
         report_abi(&path, &std::path::absolute(previous)?)?;
     }
-    mero_sign::sign_manifest(&path, &key)?;
+    meroctl_sign::sign_manifest(&path, &key)?;
     let signed = std::fs::read(&path)?;
 
     let out = a.out.clone().unwrap_or_else(|| {

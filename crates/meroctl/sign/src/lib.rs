@@ -1,4 +1,4 @@
-//! mero-sign: library for signing Calimero bundle manifests
+//! meroctl-sign: library for signing Calimero bundle manifests
 //!
 //! Implements the signing flow:
 //! - Generate Ed25519 keypairs

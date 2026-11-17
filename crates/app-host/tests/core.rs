@@ -10,8 +10,8 @@ use calimero_app_host::{
     Invocation, InvocationKind, KeyValue, MethodKind, OrgRole, PrepareError, Status, TimerCtx,
     Usage, EMIT_BAD_AUDIENCE, EMIT_DATA_TOO_LARGE, EMIT_FOREIGN_ORG, EMIT_NAME_TOO_LONG,
     EMIT_TOO_MANY, EMIT_TOO_MANY_ACCOUNTS, EMIT_UNKNOWN_TEAM, GENERATION, MAX_AUDIENCE_ACCOUNTS,
-    MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RUN_BYTES,
-    MAX_WRITES, SUPPORTED_ABI_VERSIONS,
+    MAX_EVENTS, MAX_EVENT_DATA_BYTES, MAX_EVENT_NAME_BYTES, MAX_KEY_BYTES, MAX_RANGE_BATCH,
+    MAX_RANGE_BATCH_BYTES, MAX_RUN_BYTES, MAX_WRITES, SUPPORTED_ABI_VERSIONS,
 };
 use calimero_app_host::{
     subcall_key, ActionHost, HttpHost, HttpRequest, HttpResponse, ACTION_WALL_CLOCK,
@@ -308,6 +308,61 @@ fn range_is_lazy() {
     assert!(host.peak_buffered() <= 10, "{}", host.peak_buffered());
     let big = host.range_next(cursor, 5_000).unwrap();
     assert_eq!(big.len(), 1_000, "max is capped at 1,000");
+}
+
+/// Review finding A4: 1,000 values of about 1 MiB each made one `range_next` gather
+/// about 1 GiB on the host before the guest (64 MiB) saw any of it. A batch now stops at
+/// `MAX_RANGE_BATCH_BYTES`, and the next one carries on where it stopped.
+#[test]
+fn a_range_batch_stops_at_its_byte_cap_and_the_next_carries_on() {
+    const VALUE: usize = 1024 * 1024;
+    const ENTRIES: u32 = 20;
+    let state: BTreeMap<Vec<u8>, Vec<u8>> = (0..ENTRIES)
+        .map(|i| (stored_key(GENERATION, &i.to_be_bytes()), vec![b'v'; VALUE]))
+        .collect();
+    let inv = inv(InvocationKind::View);
+    let mut host = core_for(&state, &inv);
+    let cursor = host.range_open(b"", b"", false).unwrap();
+    let mut seen = Vec::new();
+    let mut batches = 0;
+    loop {
+        let batch = host.range_next(cursor, MAX_RANGE_BATCH).unwrap();
+        if batch.is_empty() {
+            break;
+        }
+        batches += 1;
+        let bytes: usize = batch.iter().map(|(k, v)| k.len() + v.len()).sum();
+        assert!(bytes <= MAX_RANGE_BATCH_BYTES, "a batch of {bytes} bytes");
+        seen.extend(batch.into_iter().map(|(k, _)| k));
+    }
+    let want: Vec<Vec<u8>> = (0..ENTRIES).map(|i| i.to_be_bytes().to_vec()).collect();
+    assert_eq!(seen, want, "every entry once, in order");
+    assert!(batches > 1, "{batches}");
+    assert!(
+        host.peak_buffered_bytes() <= MAX_RANGE_BATCH_BYTES + VALUE + 64,
+        "{}",
+        host.peak_buffered_bytes()
+    );
+}
+
+/// An entry larger than the cap on its own still comes back, alone, so the cursor moves on.
+#[test]
+fn an_entry_past_the_byte_cap_comes_back_alone() {
+    let big = vec![b'b'; MAX_RANGE_BATCH_BYTES + 1];
+    let state: BTreeMap<Vec<u8>, Vec<u8>> = [
+        (stored_key(GENERATION, b"a"), big.clone()),
+        (stored_key(GENERATION, b"b"), b"small".to_vec()),
+    ]
+    .into_iter()
+    .collect();
+    let inv = inv(InvocationKind::View);
+    let mut host = core_for(&state, &inv);
+    let cursor = host.range_open(b"", b"", false).unwrap();
+    let first = host.range_next(cursor, 10).unwrap();
+    assert_eq!(first, vec![(b"a".to_vec(), big)]);
+    let second = host.range_next(cursor, 10).unwrap();
+    assert_eq!(second, vec![(b"b".to_vec(), b"small".to_vec())]);
+    assert!(host.range_next(cursor, 10).unwrap().is_empty());
 }
 
 #[test]

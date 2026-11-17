@@ -277,7 +277,7 @@ pub fn build_components_cached(
 /// one component cache, `target/app-components` (under `CARGO_TARGET_DIR` when set), for tests.
 ///
 /// Every test binary that builds a guest goes through it (the node's cluster tests, the
-/// engine's, the SDK's, mero-compute's), so a guest is compiled once per tree, by whichever
+/// engine's, the SDK's, meroctl-compute's), so a guest is compiled once per tree, by whichever
 /// test process gets there first, rather than once per test binary into its own target dir,
 /// and every other process reads the result instead of running cargo again. The key hashes
 /// the crate and the SDK, its macros, its old name and the WIT (`calimero:app`), which are
