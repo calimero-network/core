@@ -13,6 +13,8 @@ struct Inner {
     map: BTreeMap<Vec<u8>, Vec<u8>>,
     pulled: usize,
     writes: usize,
+    /// Every call the host would serve: get, put, delete, add, range open, cursor batch.
+    calls: usize,
     /// Per key: how many `put`s and how many `add`s it has seen.
     ops: BTreeMap<Vec<u8>, (usize, usize)>,
 }
@@ -55,6 +57,17 @@ impl MemStore {
         self.inner.borrow_mut().pulled = 0;
     }
 
+    /// How many host calls this store has served: `get`, `put`, `delete`, `add`, opening a
+    /// range and each cursor batch, the unit a guest pays per crossing into the host.
+    pub fn calls(&self) -> usize {
+        self.inner.borrow().calls
+    }
+
+    /// Reset the host-call counter.
+    pub fn reset_calls(&self) {
+        self.inner.borrow_mut().calls = 0;
+    }
+
     /// How many writes (`put`, `delete`, `add`) this store has seen.
     pub fn writes(&self) -> usize {
         self.inner.borrow().writes
@@ -88,12 +101,15 @@ impl Store for MemStore {
 
     fn get(&self, k: &[u8]) -> Option<Vec<u8>> {
         host_limit(k);
-        self.inner.borrow().map.get(k).cloned()
+        let mut inner = self.inner.borrow_mut();
+        inner.calls += 1;
+        inner.map.get(k).cloned()
     }
 
     fn put(&mut self, k: &[u8], v: &[u8]) {
         host_limit(k);
         let mut inner = self.inner.borrow_mut();
+        inner.calls += 1;
         inner.writes += 1;
         inner.ops.entry(k.to_vec()).or_default().0 += 1;
         inner.map.insert(k.to_vec(), v.to_vec());
@@ -102,6 +118,7 @@ impl Store for MemStore {
     fn delete(&mut self, k: &[u8]) {
         host_limit(k);
         let mut inner = self.inner.borrow_mut();
+        inner.calls += 1;
         inner.writes += 1;
         inner.map.remove(k);
     }
@@ -109,6 +126,7 @@ impl Store for MemStore {
     fn add(&mut self, k: &[u8], delta: i64) {
         host_limit(k);
         let mut inner = self.inner.borrow_mut();
+        inner.calls += 1;
         inner.writes += 1;
         inner.ops.entry(k.to_vec()).or_default().1 += 1;
         let current = match inner.map.get(k) {
@@ -125,6 +143,7 @@ impl Store for MemStore {
     fn range(&self, start: &[u8], end: &[u8], reverse: bool) -> MemCursor {
         host_limit(start);
         host_limit(end);
+        self.inner.borrow_mut().calls += 1;
         MemCursor {
             inner: Rc::clone(&self.inner),
             start: start.to_vec(),
@@ -148,6 +167,7 @@ impl RangeCursor for MemCursor {
     fn next(&mut self, max: u32) -> Vec<(Vec<u8>, Vec<u8>)> {
         let max = max.min(MAX_RANGE_BATCH) as usize;
         let mut inner = self.inner.borrow_mut();
+        inner.calls += 1;
         if max == 0 || self.start >= self.end {
             return Vec::new();
         }

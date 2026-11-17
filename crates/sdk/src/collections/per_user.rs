@@ -6,12 +6,13 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::collection_key;
+use crate::commons::{collection_key, iter_entries, key_after, read_page, Entry};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::env::{self, Caller};
 use crate::error::{AppError, StorageError};
 use crate::store::{DefaultStore, Store};
+use crate::table::{FindOpts, Iter, Page};
 
 /// A value per account. Writes always go to the caller's own value (`env::caller()`'s
 /// account, or the account an API key acts for), so no method can name anyone else's; any
@@ -32,6 +33,17 @@ fn caller_account() -> Result<String, AppError> {
     match env::caller() {
         Caller::Account(account) | Caller::ApiKey { account, .. } => Ok(account),
         Caller::Public | Caller::System | Caller::App(_) => Err(AppError::login_required()),
+    }
+}
+
+/// A stored `(account, value)` under `base`.
+fn decode_account<T: DeserializeOwned>(
+    base: &[u8],
+    (k, v): Entry,
+) -> Result<(String, T), StorageError> {
+    match key_after(&k, base)?.as_slice() {
+        [KeyPart::Str(account)] => Ok((account.clone(), value::from_slice(&v)?)),
+        _ => Err(StorageError::Decode("not an account key".into())),
     }
 }
 
@@ -62,6 +74,42 @@ impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
             .get(&self.storage_key(account)?)
             .map(|bytes| value::from_slice(&bytes))
             .transpose()
+    }
+
+    /// Whether `account` has a value.
+    pub fn contains_for(&self, account: &str) -> Result<bool, StorageError> {
+        Ok(self.store.get(&self.storage_key(account)?).is_some())
+    }
+
+    /// Every account's value as `(account, value)`, in account order (last first with
+    /// `reverse`), one page of at most 1,000; `from` and `to` take accounts as
+    /// `KeyPart::Str`.
+    pub fn page(&self, opts: FindOpts) -> Result<Page<(String, T)>, StorageError> {
+        let base = collection_key(&self.name, "u", &[])?;
+        let (entries, next) = read_page(&self.store, &base, &opts)?;
+        let items = entries
+            .into_iter()
+            .map(|e| decode_account(&base, e))
+            .collect::<Result<_, StorageError>>()?;
+        Ok(Page { items, next })
+    }
+
+    /// Every account's value, in account order, a page at a time as the loop reaches it.
+    pub fn iter(&self) -> Iter<'_, (String, T)> {
+        self.iter_with(FindOpts::default())
+    }
+
+    /// [`PerUser::page`] over every page from `opts` on.
+    pub fn iter_with(&self, opts: FindOpts) -> Iter<'_, (String, T)> {
+        match collection_key(&self.name, "u", &[]) {
+            Ok(base) => {
+                let under = base.clone();
+                iter_entries(&self.store, &base, &opts, move |e| {
+                    decode_account(&under, e)
+                })
+            }
+            Err(e) => Iter::failed(e),
+        }
     }
 
     /// The caller's own value.

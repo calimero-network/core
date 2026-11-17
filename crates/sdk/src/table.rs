@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::{bounds, read_page};
+use crate::commons::{bounds, iter_entries, read_page};
 use crate::encoding::key::{self, KeyPart, ToKey};
 use crate::encoding::value;
 use crate::error::{StorageError, TableError};
@@ -62,6 +62,103 @@ pub struct Page<T> {
     /// The cursor of the next page.
     pub next: Option<String>,
 }
+
+impl<T> IntoIterator for Page<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
+}
+
+/// Reads the next batch for [`Iter`]; an empty batch is the end.
+type NextBatch<'a, T> = Box<dyn FnMut() -> Result<Vec<T>, StorageError> + 'a>;
+
+/// Every item of a multi-row read, in the read's order, fetched a batch at a time as the
+/// loop reaches it: nothing is read before the first `next`, and stopping early (`take`,
+/// `find`, `break`) reads no further batch.
+///
+/// The collections' and tables' iterators read through one host cursor: one range open, then
+/// one host call per batch of `limit` entries (1,000 when unset, the host's largest batch),
+/// with no entry read twice. `from`, `to`, `reverse` and a starting `cursor` apply as they do
+/// to one page. A failed read is yielded once as `Err`, and the iterator ends after it.
+///
+/// On a node a cursor reads the state as of the first batch (the committed state and the
+/// run's writes before it), so writes the loop makes are not met again.
+pub struct Iter<'a, T> {
+    next_batch: NextBatch<'a, T>,
+    items: std::vec::IntoIter<T>,
+    done: bool,
+}
+
+impl<'a, T: 'a> Iter<'a, T> {
+    /// Iterate the pages `fetch` reads, starting at `opts`: each page is one [`Page`] read
+    /// of `opts.limit` (1,000 when unset), continued from its `next`.
+    pub fn new(
+        mut opts: FindOpts,
+        mut fetch: impl FnMut(&FindOpts) -> Result<Page<T>, StorageError> + 'a,
+    ) -> Self {
+        opts.limit = Some(opts.limit.unwrap_or(MAX_LIMIT).clamp(1, MAX_LIMIT));
+        let mut last = false;
+        Self::from_batches(move || {
+            if last {
+                return Ok(Vec::new());
+            }
+            let page = fetch(&opts)?;
+            match page.next {
+                Some(cursor) => opts.cursor = Some(cursor),
+                None => last = true,
+            }
+            Ok(page.items)
+        })
+    }
+
+    /// Iterate the batches `next_batch` reads until it answers an empty one.
+    pub(crate) fn from_batches(
+        next_batch: impl FnMut() -> Result<Vec<T>, StorageError> + 'a,
+    ) -> Self {
+        Self {
+            next_batch: Box::new(next_batch),
+            items: Vec::new().into_iter(),
+            done: false,
+        }
+    }
+
+    /// An iterator that yields `e` and ends.
+    pub(crate) fn failed(e: StorageError) -> Self {
+        let mut e = Some(e);
+        Self::from_batches(move || match e.take() {
+            Some(e) => Err(e),
+            None => Ok(Vec::new()),
+        })
+    }
+}
+
+impl<T> Iterator for Iter<'_, T> {
+    type Item = Result<T, StorageError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(item) = self.items.next() {
+                return Some(Ok(item));
+            }
+            if self.done {
+                return None;
+            }
+            match (self.next_batch)() {
+                Ok(batch) if batch.is_empty() => self.done = true,
+                Ok(batch) => self.items = batch.into_iter(),
+                Err(e) => {
+                    self.done = true;
+                    return Some(Err(e));
+                }
+            }
+        }
+    }
+}
+
+impl<T> core::iter::FusedIterator for Iter<'_, T> {}
 
 /// Options of [`Table::find`] and [`Table::scan`].
 #[derive(Clone, Debug, Default)]
@@ -397,6 +494,49 @@ impl<T: Record, S: Store> Table<T, S> {
             .map(|(_, bytes)| value::from_slice(bytes))
             .collect::<Result<_, _>>()?;
         Ok(Page { items, next })
+    }
+
+    /// Remove every record with its index, unique and count entries, a batch at a time;
+    /// returns how many records there were.
+    pub fn clear(&mut self) -> Result<u64, StorageError> {
+        let records = self.encode(&self.prefix("r", &[], &[]))?;
+        let removed = crate::commons::clear_prefix(&mut self.store, &records);
+        let all = self.encode(&[KeyPart::Str(self.name.clone())])?;
+        let _ = crate::commons::clear_prefix(&mut self.store, &all);
+        Ok(removed)
+    }
+
+    /// Every record in key order, a page at a time as the loop reaches it.
+    pub fn iter(&self) -> Iter<'_, T> {
+        self.scan_iter(FindOpts::default())
+    }
+
+    /// [`Table::scan`] over every page from `opts` on.
+    pub fn scan_iter(&self, opts: FindOpts) -> Iter<'_, T> {
+        match self.encode(&self.prefix("r", &[], &[])) {
+            Ok(base) => iter_entries(&self.store, &base, &opts, |(_, v)| value::from_slice(&v)),
+            Err(e) => Iter::failed(e),
+        }
+    }
+
+    /// [`Table::find`] over every page from `opts` on.
+    pub fn find_iter(&self, index: &str, prefix: &[KeyPart], opts: FindOpts) -> Iter<'_, T> {
+        let Some((_, fields)) = T::INDEXES.iter().find(|(name, _)| *name == index) else {
+            return Iter::failed(StorageError::UnknownName(index.into()));
+        };
+        if prefix.len() > fields.len() {
+            return Iter::failed(StorageError::PrefixTooLong {
+                given: prefix.len(),
+                max: fields.len(),
+            });
+        }
+        match self.encode(&self.prefix("i", &[index], prefix)) {
+            // An index entry holds the record's storage key: one read per record.
+            Ok(base) => iter_entries(&self.store, &base, &opts, move |(_, record_key)| {
+                self.read(&record_key)?.ok_or(StorageError::Dangling)
+            }),
+            Err(e) => Iter::failed(e),
+        }
     }
 
     /// The maintained count `name` for the records matching `prefix`.

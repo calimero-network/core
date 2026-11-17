@@ -8,11 +8,12 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::app::StateField;
-use crate::commons::collection_key;
+use crate::commons::{collection_key, iter_entries, key_after, read_page, Entry};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{DefaultStore, Store};
+use crate::table::{FindOpts, Iter, Page};
 
 /// How a [`Frozen`] addresses a value: the 32 bytes it is stored under.
 pub trait ContentHash<T> {
@@ -96,6 +97,46 @@ impl<T: Serialize + DeserializeOwned, H: ContentHash<T>, S: Store> Frozen<T, H, 
             return Ok(false);
         };
         Ok(self.store.get(&self.storage_key(hash)?).is_some())
+    }
+}
+
+impl<T: DeserializeOwned, H, S: Store> Frozen<T, H, S> {
+    /// Every value as `(hex hash, value)`, in hash order, one page of at most 1,000.
+    pub fn page(&self, opts: FindOpts) -> Result<Page<(String, T)>, StorageError> {
+        let base = collection_key(&self.name, "f", &[])?;
+        let (entries, next) = read_page(&self.store, &base, &opts)?;
+        let items = entries
+            .into_iter()
+            .map(|e| decode_hashed(&base, e))
+            .collect::<Result<_, StorageError>>()?;
+        Ok(Page { items, next })
+    }
+
+    /// Every value, in hash order, through one cursor as the loop reaches it.
+    pub fn iter(&self) -> Iter<'_, (String, T)> {
+        match collection_key(&self.name, "f", &[]) {
+            Ok(base) => {
+                let under = base.clone();
+                iter_entries(&self.store, &base, &FindOpts::default(), move |e| {
+                    decode_hashed(&under, e)
+                })
+            }
+            Err(e) => Iter::failed(e),
+        }
+    }
+}
+
+/// A stored `(hex hash, value)` under `base`.
+fn decode_hashed<T: DeserializeOwned>(
+    base: &[u8],
+    (k, v): Entry,
+) -> Result<(String, T), StorageError> {
+    match key_after(&k, base)?.as_slice() {
+        [KeyPart::Bytes(hash)] if hash.len() == 32 => Ok((
+            hash.iter().map(|b| format!("{b:02x}")).collect(),
+            value::from_slice(&v)?,
+        )),
+        _ => Err(StorageError::Decode("not a content hash".into())),
     }
 }
 

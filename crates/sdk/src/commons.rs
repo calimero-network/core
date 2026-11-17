@@ -7,7 +7,7 @@ use crate::encoding::key::{self, KeyPart};
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{check_key, RangeCursor, Store, MAX_RANGE_BATCH, MAX_SDK_KEY_BYTES};
-use crate::table::{FindOpts, DEFAULT_LIMIT, MAX_LIMIT};
+use crate::table::{FindOpts, Iter, DEFAULT_LIMIT, MAX_LIMIT};
 
 /// One key-value entry read from the store.
 pub(crate) type Entry = (Vec<u8>, Vec<u8>);
@@ -72,11 +72,34 @@ pub(crate) fn read_page<S: Store>(
     base: &[u8],
     opts: &FindOpts,
 ) -> Result<(Vec<Entry>, Option<String>), StorageError> {
-    check_key(base)?;
     let limit = opts.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as usize;
     if limit == 0 {
+        check_key(base)?;
         return Ok((Vec::new(), None));
     }
+    let (start, end) = read_bounds(base, opts)?;
+    let mut cursor = store.range(&start, &end, opts.reverse);
+    let mut entries = Vec::with_capacity(limit + 1);
+    while entries.len() <= limit {
+        let want = (limit + 1 - entries.len()).min(MAX_RANGE_BATCH as usize);
+        let batch = cursor.next(want as u32);
+        if batch.is_empty() {
+            break;
+        }
+        entries.extend(batch);
+    }
+    let next = if entries.len() > limit {
+        entries.truncate(limit);
+        entries.last().map(|(k, _)| URL_SAFE_NO_PAD.encode(k))
+    } else {
+        None
+    };
+    Ok((entries, next))
+}
+
+/// The `[start, end)` a read under `base` covers with `opts`' `from`, `to` and `cursor`.
+fn read_bounds(base: &[u8], opts: &FindOpts) -> Result<(Vec<u8>, Vec<u8>), StorageError> {
+    check_key(base)?;
     let (mut start, mut end) = bounds(base);
     if let Some(from) = &opts.from {
         start = [base, &key::encode(from)].concat();
@@ -100,23 +123,32 @@ pub(crate) fn read_page<S: Store>(
             start = [last.as_slice(), &[0x00]].concat();
         }
     }
-    let mut cursor = store.range(&start, &end, opts.reverse);
-    let mut entries = Vec::with_capacity(limit + 1);
-    while entries.len() <= limit {
-        let want = (limit + 1 - entries.len()).min(MAX_RANGE_BATCH as usize);
-        let batch = cursor.next(want as u32);
-        if batch.is_empty() {
-            break;
-        }
-        entries.extend(batch);
-    }
-    let next = if entries.len() > limit {
-        entries.truncate(limit);
-        entries.last().map(|(k, _)| URL_SAFE_NO_PAD.encode(k))
-    } else {
-        None
+    Ok((start, end))
+}
+
+/// Every entry under `base` within `opts`' bounds, decoded, through one cursor: one range
+/// open, then one host call per batch of `opts.limit` (1,000 unset), with no entry read
+/// twice and none read ahead of the batch.
+pub(crate) fn iter_entries<'a, S: Store, T: 'a>(
+    store: &'a S,
+    base: &[u8],
+    opts: &FindOpts,
+    mut decode: impl FnMut(Entry) -> Result<T, StorageError> + 'a,
+) -> Iter<'a, T> {
+    let batch = opts
+        .limit
+        .unwrap_or(MAX_RANGE_BATCH)
+        .clamp(1, MAX_RANGE_BATCH);
+    let (start, end) = match read_bounds(base, opts) {
+        Ok(b) => b,
+        Err(e) => return Iter::failed(e),
     };
-    Ok((entries, next))
+    let reverse = opts.reverse;
+    let mut cursor: Option<S::Range> = None;
+    Iter::from_batches(move || {
+        let cursor = cursor.get_or_insert_with(|| store.range(&start, &end, reverse));
+        cursor.next(batch).into_iter().map(&mut decode).collect()
+    })
 }
 
 /// The parts of a stored key after its `base` bytes; `Decode` when they are not a key.

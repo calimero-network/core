@@ -60,6 +60,26 @@ impl<S: Store> Counter<S> {
         Ok(out)
     }
 
+    /// Subtract one and return the new value; at zero it stays zero and writes nothing.
+    /// Reads and serializes the key, as [`Counter::increment`] does.
+    pub fn decrement(&mut self) -> Result<u64, StorageError> {
+        let now = self.get()?;
+        if now == 0 {
+            return Ok(0);
+        }
+        let key = self.storage_key()?;
+        self.store
+            .put(&key, &value::int_to_vec(i128::from(now - 1))?);
+        Ok(now - 1)
+    }
+
+    /// Set the counter back to zero (deletes its key).
+    pub fn reset(&mut self) -> Result<(), StorageError> {
+        let key = self.storage_key()?;
+        self.store.delete(&key);
+        Ok(())
+    }
+
     /// Add `delta` without reading the counter (`storage.add`).
     pub fn add(&mut self, delta: i64) -> Result<(), StorageError> {
         let key = self.storage_key()?;
