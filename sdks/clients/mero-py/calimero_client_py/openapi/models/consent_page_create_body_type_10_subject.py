@@ -6,7 +6,9 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from typing import cast
+from ..models.consent_page_create_body_type_10_subject_role import (
+    ConsentPageCreateBodyType10SubjectRole,
+)
 
 T = TypeVar("T", bound="ConsentPageCreateBodyType10Subject")
 
@@ -17,12 +19,12 @@ class ConsentPageCreateBodyType10Subject:
     Attributes:
         org (str):
         account (str):
-        teams (list[str]):
+        role (ConsentPageCreateBodyType10SubjectRole):
     """
 
     org: str
     account: str
-    teams: list[str]
+    role: ConsentPageCreateBodyType10SubjectRole
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -30,7 +32,7 @@ class ConsentPageCreateBodyType10Subject:
 
         account = self.account
 
-        teams = self.teams
+        role = self.role.value
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -38,7 +40,7 @@ class ConsentPageCreateBodyType10Subject:
             {
                 "org": org,
                 "account": account,
-                "teams": teams,
+                "role": role,
             }
         )
 
@@ -51,12 +53,12 @@ class ConsentPageCreateBodyType10Subject:
 
         account = d.pop("account")
 
-        teams = cast(list[str], d.pop("teams"))
+        role = ConsentPageCreateBodyType10SubjectRole(d.pop("role"))
 
         consent_page_create_body_type_10_subject = cls(
             org=org,
             account=account,
-            teams=teams,
+            role=role,
         )
 
         consent_page_create_body_type_10_subject.additional_properties = d

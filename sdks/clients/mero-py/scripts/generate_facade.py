@@ -280,6 +280,11 @@ def generate(document: dict) -> str:
                         if name in OVERRIDES or prop in ("confirm", "operatorProof"):
                             continue
                         ps = resolve(document, ps) if "$ref" in ps else ps
+                        # A body field named as a path or query parameter
+                        # (`app_link`: the path's `app` and the body's) is
+                        # `body_<name>`, as Swift's and Kotlin's `bodyApp`.
+                        if name in seen:
+                            name = f"body_{name}"
                         add(name, prop in required, f"body `{prop}`")
                         body_exprs.append(f"{prop!r}: {name}")
                     if open_body(schema):

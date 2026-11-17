@@ -6,9 +6,6 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..types import UNSET, Unset
-from typing import Union
-
 T = TypeVar("T", bound="ConsentPageCreateBodyType3Subject")
 
 
@@ -16,41 +13,40 @@ T = TypeVar("T", bound="ConsentPageCreateBodyType3Subject")
 class ConsentPageCreateBodyType3Subject:
     """
     Attributes:
-        name (str):
-        capabilities (Union[Unset, int]):
+        app (str):
+        target (str):
     """
 
-    name: str
-    capabilities: Union[Unset, int] = UNSET
+    app: str
+    target: str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        name = self.name
+        app = self.app
 
-        capabilities = self.capabilities
+        target = self.target
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "name": name,
+                "app": app,
+                "target": target,
             }
         )
-        if capabilities is not UNSET:
-            field_dict["capabilities"] = capabilities
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        name = d.pop("name")
+        app = d.pop("app")
 
-        capabilities = d.pop("capabilities", UNSET)
+        target = d.pop("target")
 
         consent_page_create_body_type_3_subject = cls(
-            name=name,
-            capabilities=capabilities,
+            app=app,
+            target=target,
         )
 
         consent_page_create_body_type_3_subject.additional_properties = d

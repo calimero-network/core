@@ -6,26 +6,26 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-from ..models.consent_page_create_body_type_9_subject_teams_item_role import (
-    ConsentPageCreateBodyType9SubjectTeamsItemRole,
+from ..models.consent_page_create_body_type_11_subject_teams_item_role import (
+    ConsentPageCreateBodyType11SubjectTeamsItemRole,
 )
 from ..types import UNSET, Unset
 from typing import Union
 
-T = TypeVar("T", bound="ConsentPageCreateBodyType9SubjectTeamsItem")
+T = TypeVar("T", bound="ConsentPageCreateBodyType11SubjectTeamsItem")
 
 
 @_attrs_define
-class ConsentPageCreateBodyType9SubjectTeamsItem:
+class ConsentPageCreateBodyType11SubjectTeamsItem:
     """
     Attributes:
         team (str):
-        role (Union[Unset, ConsentPageCreateBodyType9SubjectTeamsItemRole]):
+        role (Union[Unset, ConsentPageCreateBodyType11SubjectTeamsItemRole]):
         capabilities (Union[Unset, int]):
     """
 
     team: str
-    role: Union[Unset, ConsentPageCreateBodyType9SubjectTeamsItemRole] = UNSET
+    role: Union[Unset, ConsentPageCreateBodyType11SubjectTeamsItemRole] = UNSET
     capabilities: Union[Unset, int] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -58,22 +58,22 @@ class ConsentPageCreateBodyType9SubjectTeamsItem:
         team = d.pop("team")
 
         _role = d.pop("role", UNSET)
-        role: Union[Unset, ConsentPageCreateBodyType9SubjectTeamsItemRole]
+        role: Union[Unset, ConsentPageCreateBodyType11SubjectTeamsItemRole]
         if isinstance(_role, Unset):
             role = UNSET
         else:
-            role = ConsentPageCreateBodyType9SubjectTeamsItemRole(_role)
+            role = ConsentPageCreateBodyType11SubjectTeamsItemRole(_role)
 
         capabilities = d.pop("capabilities", UNSET)
 
-        consent_page_create_body_type_9_subject_teams_item = cls(
+        consent_page_create_body_type_11_subject_teams_item = cls(
             team=team,
             role=role,
             capabilities=capabilities,
         )
 
-        consent_page_create_body_type_9_subject_teams_item.additional_properties = d
-        return consent_page_create_body_type_9_subject_teams_item
+        consent_page_create_body_type_11_subject_teams_item.additional_properties = d
+        return consent_page_create_body_type_11_subject_teams_item
 
     @property
     def additional_keys(self) -> list[str]:

@@ -6,6 +6,8 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from typing import cast
+
 T = TypeVar("T", bound="ConsentPageCreateBodyType12Subject")
 
 
@@ -14,24 +16,29 @@ class ConsentPageCreateBodyType12Subject:
     """
     Attributes:
         org (str):
-        name (str):
+        account (str):
+        teams (list[str]):
     """
 
     org: str
-    name: str
+    account: str
+    teams: list[str]
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         org = self.org
 
-        name = self.name
+        account = self.account
+
+        teams = self.teams
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "org": org,
-                "name": name,
+                "account": account,
+                "teams": teams,
             }
         )
 
@@ -42,11 +49,14 @@ class ConsentPageCreateBodyType12Subject:
         d = dict(src_dict)
         org = d.pop("org")
 
-        name = d.pop("name")
+        account = d.pop("account")
+
+        teams = cast(list[str], d.pop("teams"))
 
         consent_page_create_body_type_12_subject = cls(
             org=org,
-            name=name,
+            account=account,
+            teams=teams,
         )
 
         consent_page_create_body_type_12_subject.additional_properties = d

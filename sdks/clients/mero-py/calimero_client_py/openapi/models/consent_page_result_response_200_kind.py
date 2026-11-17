@@ -5,6 +5,7 @@ class ConsentPageResultResponse200Kind(str, Enum):
     ACCEPTINVITE = "acceptInvite"
     CREATEINVITE = "createInvite"
     CREATEORG = "createOrg"
+    DELEGATE = "delegate"
     DELETEORG = "deleteOrg"
     LEAVEORG = "leaveOrg"
     OUTBOUND = "outbound"
@@ -18,6 +19,7 @@ class ConsentPageResultResponse200Kind(str, Enum):
     SETMEMBERROLE = "setMemberRole"
     SETMEMBERTEAMS = "setMemberTeams"
     UPGRADE = "upgrade"
+    UPGRADEUNIT = "upgradeUnit"
 
     def __str__(self) -> str:
         return str(self.value)

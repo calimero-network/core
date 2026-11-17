@@ -14,29 +14,19 @@ class ConsentPageCreateBodyType15Subject:
     """
     Attributes:
         org (str):
-        account (str):
-        all_apps (bool):
     """
 
     org: str
-    account: str
-    all_apps: bool
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         org = self.org
-
-        account = self.account
-
-        all_apps = self.all_apps
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "org": org,
-                "account": account,
-                "allApps": all_apps,
             }
         )
 
@@ -47,14 +37,8 @@ class ConsentPageCreateBodyType15Subject:
         d = dict(src_dict)
         org = d.pop("org")
 
-        account = d.pop("account")
-
-        all_apps = d.pop("allApps")
-
         consent_page_create_body_type_15_subject = cls(
             org=org,
-            account=account,
-            all_apps=all_apps,
         )
 
         consent_page_create_body_type_15_subject.additional_properties = d

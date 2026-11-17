@@ -15,12 +15,14 @@ from typing import Union
 
 if TYPE_CHECKING:
     from ..models.app_restore import AppRestore
+    from ..models.app_links import AppLinks
     from ..models.access_type_0 import AccessType0
     from ..models.access_type_3 import AccessType3
-    from ..models.package_ref import PackageRef
     from ..models.access_type_1 import AccessType1
+    from ..models.package_ref import PackageRef
     from ..models.access_type_4 import AccessType4
     from ..models.access_type_2 import AccessType2
+    from ..models.app_attached import AppAttached
     from ..models.upgrade import Upgrade
 
 
@@ -57,6 +59,8 @@ class App:
             release (Union[Unset, PackageRef]): One service of one package release: `service` is absent for a single-service
                 bundle, `compute` (absent: false) marks the service's compute component.
             restore (Union[Unset, AppRestore]):
+            links (Union[Unset, AppLinks]):
+            attached (Union[Unset, AppAttached]):
     """
 
     app_id: str
@@ -80,16 +84,20 @@ class App:
     deployment: Union[Unset, str] = UNSET
     release: Union[Unset, "PackageRef"] = UNSET
     restore: Union[Unset, "AppRestore"] = UNSET
+    links: Union[Unset, "AppLinks"] = UNSET
+    attached: Union[Unset, "AppAttached"] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.app_restore import AppRestore
+        from ..models.app_links import AppLinks
         from ..models.access_type_0 import AccessType0
         from ..models.access_type_3 import AccessType3
-        from ..models.package_ref import PackageRef
         from ..models.access_type_1 import AccessType1
+        from ..models.package_ref import PackageRef
         from ..models.access_type_4 import AccessType4
         from ..models.access_type_2 import AccessType2
+        from ..models.app_attached import AppAttached
         from ..models.upgrade import Upgrade
 
         app_id = self.app_id
@@ -151,6 +159,14 @@ class App:
         if not isinstance(self.restore, Unset):
             restore = self.restore.to_dict()
 
+        links: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.links, Unset):
+            links = self.links.to_dict()
+
+        attached: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.attached, Unset):
+            attached = self.attached.to_dict()
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -183,18 +199,24 @@ class App:
             field_dict["release"] = release
         if restore is not UNSET:
             field_dict["restore"] = restore
+        if links is not UNSET:
+            field_dict["links"] = links
+        if attached is not UNSET:
+            field_dict["attached"] = attached
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.app_restore import AppRestore
+        from ..models.app_links import AppLinks
         from ..models.access_type_0 import AccessType0
         from ..models.access_type_3 import AccessType3
-        from ..models.package_ref import PackageRef
         from ..models.access_type_1 import AccessType1
+        from ..models.package_ref import PackageRef
         from ..models.access_type_4 import AccessType4
         from ..models.access_type_2 import AccessType2
+        from ..models.app_attached import AppAttached
         from ..models.upgrade import Upgrade
 
         d = dict(src_dict)
@@ -309,6 +331,20 @@ class App:
         else:
             restore = AppRestore.from_dict(_restore)
 
+        _links = d.pop("links", UNSET)
+        links: Union[Unset, AppLinks]
+        if isinstance(_links, Unset):
+            links = UNSET
+        else:
+            links = AppLinks.from_dict(_links)
+
+        _attached = d.pop("attached", UNSET)
+        attached: Union[Unset, AppAttached]
+        if isinstance(_attached, Unset):
+            attached = UNSET
+        else:
+            attached = AppAttached.from_dict(_attached)
+
         app = cls(
             app_id=app_id,
             name=name,
@@ -329,6 +365,8 @@ class App:
             deployment=deployment,
             release=release,
             restore=restore,
+            links=links,
+            attached=attached,
         )
 
         app.additional_properties = d

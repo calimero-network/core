@@ -11,6 +11,7 @@ from typing import cast
 from typing import Union
 
 if TYPE_CHECKING:
+    from ..models.upgrade_run_targets import UpgradeRunTargets
     from ..models.upgrade_run_failed import UpgradeRunFailed
 
 
@@ -33,6 +34,7 @@ class UpgradeRun:
         failed (UpgradeRunFailed):
         finished (bool):
         team (Union[Unset, str]):
+        targets (Union[Unset, UpgradeRunTargets]):
     """
 
     run_id: str
@@ -46,9 +48,11 @@ class UpgradeRun:
     failed: "UpgradeRunFailed"
     finished: bool
     team: Union[Unset, str] = UNSET
+    targets: Union[Unset, "UpgradeRunTargets"] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.upgrade_run_targets import UpgradeRunTargets
         from ..models.upgrade_run_failed import UpgradeRunFailed
 
         run_id = self.run_id
@@ -73,6 +77,10 @@ class UpgradeRun:
 
         team = self.team
 
+        targets: Union[Unset, dict[str, Any]] = UNSET
+        if not isinstance(self.targets, Unset):
+            targets = self.targets.to_dict()
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -91,11 +99,14 @@ class UpgradeRun:
         )
         if team is not UNSET:
             field_dict["team"] = team
+        if targets is not UNSET:
+            field_dict["targets"] = targets
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.upgrade_run_targets import UpgradeRunTargets
         from ..models.upgrade_run_failed import UpgradeRunFailed
 
         d = dict(src_dict)
@@ -121,6 +132,13 @@ class UpgradeRun:
 
         team = d.pop("team", UNSET)
 
+        _targets = d.pop("targets", UNSET)
+        targets: Union[Unset, UpgradeRunTargets]
+        if isinstance(_targets, Unset):
+            targets = UNSET
+        else:
+            targets = UpgradeRunTargets.from_dict(_targets)
+
         upgrade_run = cls(
             run_id=run_id,
             package=package,
@@ -133,6 +151,7 @@ class UpgradeRun:
             failed=failed,
             finished=finished,
             team=team,
+            targets=targets,
         )
 
         upgrade_run.additional_properties = d
