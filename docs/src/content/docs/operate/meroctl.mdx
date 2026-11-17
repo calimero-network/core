@@ -28,8 +28,8 @@ Its command names differ from the rest of these docs for a few objects
 | --- | --- |
 | `app` | signed packages (applications), installed once per cluster |
 | `context` | app instances |
-| `org` | organizations (`namespace` before 1.0.0-rc.29, still accepted) |
-| `team` | an organization's teams (`group` before 1.0.0-rc.29, still accepted) |
+| `org` | organizations (`namespace` before 1.0.0-rc.29) |
+| `team` | an organization's teams (`group` before 1.0.0-rc.29) |
 | `account` | the signed-in account; each passkey is one of its devices |
 | `local` | a development cluster on this machine, and the build loop around it |
 | `cloud` | Calimero Cloud (organizations, clusters), and a cluster's compute |
@@ -105,7 +105,7 @@ Saved nodes, in `{home}/meroctl/nodes.json` (mode `0600`). No network.
 | `whoami` | `GET /auth/me` | Who the requests run as. |
 | `attest` (`attest node`) | `GET /attestation` | The node's attestation document. |
 | `attest app INSTANCE` (was `attest --context`) | `GET /apps/{app}/attestation` | Every replica of that app verified, their receipt keys and the governance they attest. |
-| `attest release [--file FILE --nonce HEX]` (was `attest-release`) | `GET /attestation/release` | Verify a [release attestation](/operate/merod/#attest) (`merod attest`): fetched from the node's URL over a fresh nonce (a booting TD's `merod attest --serve`), or read from `FILE` with the nonce it was made over. Judged with `--allow-mock`, `--tee-profiles` and `--min-release` like any quote; needs no session. Prints the claim, the verified registers and the profile they matched. |
+| `attest release [--file FILE --nonce HEX]`  | `GET /attestation/release` | Verify a [release attestation](/operate/merod/#attest) (`merod attest`): fetched from the node's URL over a fresh nonce (a booting TD's `merod attest --serve`), or read from `FILE` with the nonce it was made over. Judged with `--allow-mock`, `--tee-profiles` and `--min-release` like any quote; needs no session. Prints the claim, the verified registers and the profile they matched. |
 
 ## app
 
@@ -378,7 +378,7 @@ cluster an older `meroctl` started in `./.merod-local`.
 
 | Command | Meaning |
 | --- | --- |
-| `local up [--nodes N] [--base-port P] [--dir DIR] [--fresh] [--local] [--image IMG] [--registry-url URL]` | Start the cluster (one node unless `--nodes`; node `i` on `127.0.0.1:P+i`, from `2501`) and wait until it serves, then save it as the node `local` (mock quotes trusted), the default when there is none. It runs in the release's image (`ghcr.io/calimero-network/merod:<release>`, `merod local --bind 0.0.0.0` with its ports published on `127.0.0.1` and its state in a Docker volume named after `DIR`; macOS and Linux), so Docker must be installed and running; `--local` (or `MEROD`) runs the `merod` on `PATH` (or in `MEROD`) instead. `--docker` is still accepted and changes nothing. Its log is `DIR/merod.log`; it prints the URLs and the ops token. A cluster already running from `DIR` is answered as is. The cluster installs packages from `--registry-url` (`MEROD_REGISTRY_URL`; default the public registry, `https://apps.calimero.network`; empty for none), so `app install PACKAGE@VERSION` works on it. |
+| `local up [--nodes N] [--base-port P] [--dir DIR] [--fresh] [--local] [--image IMG] [--registry-url URL]` | Start the cluster (one node unless `--nodes`; node `i` on `127.0.0.1:P+i`, from `2501`) and wait until it serves, then save it as the node `local` (mock quotes trusted), the default when there is none. It runs in the release's image (`ghcr.io/calimero-network/merod:<release>`, `merod local --bind 0.0.0.0` with its ports published on `127.0.0.1` and its state in a Docker volume named after `DIR`; macOS and Linux), so Docker must be installed and running; `--local` (or `MEROD`) runs the `merod` on `PATH` (or in `MEROD`) instead. Its log is `DIR/merod.log`; it prints the URLs and the ops token. A cluster already running from `DIR` is answered as is. The cluster installs packages from `--registry-url` (`MEROD_REGISTRY_URL`; default the public registry, `https://apps.calimero.network`; empty for none), so `app install PACKAGE@VERSION` works on it. |
 | `local down [--dir DIR]` | Stop it; its state stays for the next `up`. |
 | `local status [--dir DIR]` | Whether it runs, its URLs and ops token. |
 | `local dev [DIR] [--no-frontend] [cluster flags]` | Develop an app (`DIR` holds `logic/` and `app/`, as `app new` lays it out, or is the crate): start the cluster unless it runs, sign up a deployer, build the crate and upload it as a raw bundle, write `DIR/app/.env.development.local` (`VITE_CALIMERO_TARGET`, `VITE_CALIMERO_NODES`, `VITE_CALIMERO_BUNDLE`), run the frontend's dev server on `http://localhost:5173` (`pnpm dev`, the origin the cluster trusts), then rebuild and upload on every save. Ctrl-C stops the frontend, and the cluster when `dev` started it. |

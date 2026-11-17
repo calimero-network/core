@@ -455,7 +455,7 @@ fn callers_follow_d13() {
 }
 
 /// `init` takes arguments by name, like a call: what the node passes from `POST /apps`
-/// `initArgs` (`meroctl context create --params`) reaches it, the ABI lists its parameters, and
+/// `initArgs` (`meroctl instance create --params`) reaches it, the ABI lists its parameters, and
 /// bad arguments fail it with `BadArgs`.
 #[test]
 fn init_takes_arguments_like_a_call() {

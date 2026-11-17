@@ -1,5 +1,5 @@
-//! `meroctl group`: an organization's teams, v1's groups (nested, open or
-//! restricted), and v1's group upgrades (`group upgrade`), which move an
+//! `meroctl team`: an organization's teams, v1's groups (nested, open or
+//! restricted), and v1's group upgrades (`team upgrade`), which move an
 //! organization's (or one team's) instances to a release.
 
 use std::path::PathBuf;
@@ -70,7 +70,7 @@ pub enum GroupCmd {
         top: bool,
     },
     /// The teams directly below one.
-    #[command(name = "subteams", alias = "subgroups")]
+    #[command(name = "subteams")]
     Subgroups {
         #[arg(value_name = "ORG")]
         namespace: String,
@@ -162,7 +162,7 @@ pub enum UpgradeCmd {
         package: String,
         #[arg(long)]
         version: String,
-        #[arg(long = "team", alias = "group", value_name = "TEAM")]
+        #[arg(long = "team", value_name = "TEAM")]
         group: Option<String>,
         #[arg(long, requires = "group")]
         cascade: bool,

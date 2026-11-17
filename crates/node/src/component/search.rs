@@ -164,12 +164,19 @@ impl TableIndex {
     }
 }
 
-/// An app's indexes, as of `built_at` on bundle `bundle`.
+/// Tables to the text fields an ABI declares for them.
+type Fields = BTreeMap<String, Vec<String>>;
+
+/// An app's indexes, as of `built_at`, of the tables and fields `fields` names.
 #[derive(Default)]
 struct AppIndexes {
-    bundle: String,
+    /// Whether they were ever built (an empty `fields` never is).
+    built: bool,
+    fields: Fields,
     built_at: u64,
     tables: HashMap<String, TableIndex>,
+    /// Tables built from a scan of the state so far, for tests and logs.
+    scans: u64,
 }
 
 /// What an app's indexes were last brought up to: kept apart from the indexes, and
@@ -177,7 +184,7 @@ struct AppIndexes {
 /// rebuild holds the indexes.
 #[derive(Clone, Default)]
 struct Mark {
-    bundle: String,
+    built: bool,
     built_at: u64,
 }
 
@@ -208,8 +215,7 @@ pub struct ComponentSearch {
 /// and indexed only when the view first searches, on the view's own thread.
 struct Pending {
     app_id: AppId,
-    bundle: String,
-    fields: BTreeMap<String, Vec<String>>,
+    fields: Fields,
     kv: Kv,
     applied: u64,
     /// The mark the touched keys were read against.
@@ -250,7 +256,7 @@ impl RunSearch {
                             .mark
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner) = Mark {
-                            bundle: ix.bundle.clone(),
+                            built: ix.built,
                             built_at: ix.built_at,
                         };
                         Prepared::Ready
@@ -318,8 +324,8 @@ impl SearchHost for RunSearch {
 }
 
 impl ComponentSearch {
-    /// The app's search for a view of `bundle` on the state `m` holds at `applied`,
-    /// whose ABI declares `fields` (table to text fields); `None` when it declares none.
+    /// The app's search for a view on the state `m` holds at `applied`, whose bundle's
+    /// ABI declares `fields` (table to text fields); `None` when it declares none.
     ///
     /// Called under the app's read lock, so it indexes nothing: it keeps the state (an
     /// `Arc`) and the record keys touched since the indexes were last brought up, and the
@@ -328,14 +334,12 @@ impl ComponentSearch {
     /// index that cannot be built answers that query with an error.
     pub fn for_view(
         &self,
-        bundle: &str,
-        fields: &BTreeMap<String, Vec<String>>,
+        fields: &Fields,
         m: &AppMachine,
         applied: u64,
     ) -> Option<Arc<dyn SearchHost>> {
         self.prepare(
             &m.app_id,
-            bundle,
             fields,
             Arc::clone(&m.state.component.kv),
             applied,
@@ -346,8 +350,7 @@ impl ComponentSearch {
     fn prepare(
         &self,
         app_id: &str,
-        bundle: &str,
-        fields: &BTreeMap<String, Vec<String>>,
+        fields: &Fields,
         kv: Kv,
         applied: u64,
         touched_after: impl FnOnce(u64) -> Option<Vec<String>>,
@@ -360,12 +363,13 @@ impl ComponentSearch {
             Arc::clone(apps.entry(app_id.to_owned()).or_default())
         };
         let from = entry.mark();
-        let touched = (from.bundle == bundle && from.built_at < applied)
+        // Whatever the bundle: an upgrade that keeps a table's fields keeps its index,
+        // which catches up from these keys like any other.
+        let touched = (from.built && from.built_at < applied)
             .then(|| touched_after(from.built_at))
             .flatten();
         let pending = Pending {
             app_id: app_id.to_owned(),
-            bundle: bundle.to_owned(),
             fields: fields.clone(),
             kv,
             applied,
@@ -389,59 +393,86 @@ impl ComponentSearch {
 }
 
 /// Bring `ix` up to the view's state `p`.
+///
+/// Incremental where it can be: from the record keys the entries since touched, for
+/// every table whose declared fields are what the indexes were built with, also across
+/// an upgrade. A table that is new or whose fields changed is built from a scan of the
+/// state, and one the ABI no longer declares is dropped. Everything is built from a scan
+/// only when the keys since are unknown (the first search after a start, more than
+/// `TOUCHED_RING` entries since, or indexes another view moved meanwhile).
 fn refresh(ix: &mut AppIndexes, p: &Pending) -> Result<(), String> {
-    if ix.bundle == p.bundle && ix.built_at >= p.applied {
+    if ix.built && ix.fields == p.fields && ix.built_at >= p.applied {
         // Already there, or brought past it by a later view meanwhile: as before, a
         // view's search may answer from a later state than it reads (C4).
         return Ok(());
     }
-    if ix.bundle == p.bundle && ix.built_at == p.from.built_at && p.from.bundle == p.bundle {
-        if let Some(touched) = &p.touched {
-            let mut by_table: HashMap<String, Records> = HashMap::new();
-            for key in touched.iter().filter_map(|h| hex::decode(h).ok()) {
-                let Some(table) = record_table(&key).filter(|t| ix.tables.contains_key(t)) else {
-                    continue;
-                };
-                let value = p.kv.get(&key).cloned();
-                by_table.entry(table).or_default().push((key, value));
-            }
-            for (table, records) in by_table {
-                if let Some(t) = ix.tables.get_mut(&table) {
-                    t.apply(&records, p.applied)?;
-                }
-            }
-            ix.built_at = p.applied;
-            return Ok(());
+    let delta = if !ix.built || ix.built_at != p.from.built_at {
+        None
+    } else if ix.built_at == p.applied {
+        Some(Vec::new())
+    } else {
+        p.touched.clone()
+    };
+    let Some(touched) = delta else {
+        debug!(app = %p.app_id, applied = p.applied, "building component search indexes");
+        let mut tables = HashMap::new();
+        for (table, table_fields) in &p.fields {
+            let _prev = tables.insert(table.clone(), scan_table(p, table, table_fields)?);
+            ix.scans += 1;
+        }
+        ix.tables = tables;
+        ix.fields = p.fields.clone();
+        ix.built_at = p.applied;
+        ix.built = true;
+        return Ok(());
+    };
+    // Tables kept as they are catch up; the rest are built (or dropped).
+    let mut tables = std::mem::take(&mut ix.tables);
+    tables.retain(|table, t| p.fields.get(table) == Some(&t.fields));
+    let mut by_table: HashMap<String, Records> = HashMap::new();
+    for key in touched.iter().filter_map(|h| hex::decode(h).ok()) {
+        let Some(table) = record_table(&key).filter(|t| tables.contains_key(t)) else {
+            continue;
+        };
+        let value = p.kv.get(&key).cloned();
+        by_table.entry(table).or_default().push((key, value));
+    }
+    for (table, records) in by_table {
+        if let Some(t) = tables.get_mut(&table) {
+            t.apply(&records, p.applied)?;
         }
     }
-    // A new bundle, entries this replica cannot account for, or indexes another view
-    // moved since this view's state was taken: rebuild from this view's state.
-    debug!(app = %p.app_id, applied = p.applied, "building component search indexes");
-    let mut tables = HashMap::new();
     for (table, table_fields) in &p.fields {
-        let mut t = TableIndex::new(table, table_fields)?;
-        let mut prefix = GENERATION.to_be_bytes().to_vec();
-        prefix.push(0x30);
-        prefix.extend(
-            table
-                .bytes()
-                .flat_map(|b| if b == 0 { vec![0x00, 0xFF] } else { vec![b] }),
-        );
-        prefix.extend_from_slice(&[0x00, 0x00, 0x30, b'r', 0x00, 0x00]);
-        let records: Records =
-            p.kv.range(prefix.clone()..)
-                .take_while(|(k, _)| k.starts_with(&prefix))
-                .map(|(k, v)| (k.clone(), Some(v.clone())))
-                .collect();
-        t.apply(&records, p.applied)?;
-        let _prev = tables.insert(table.clone(), t);
+        if !tables.contains_key(table) {
+            debug!(app = %p.app_id, table, "building a component search index");
+            let _prev = tables.insert(table.clone(), scan_table(p, table, table_fields)?);
+            ix.scans += 1;
+        }
     }
-    *ix = AppIndexes {
-        bundle: p.bundle.clone(),
-        built_at: p.applied,
-        tables,
-    };
+    ix.tables = tables;
+    ix.fields = p.fields.clone();
+    ix.built_at = p.applied;
     Ok(())
+}
+
+/// `table`'s index, built from every record of it in the view's state.
+fn scan_table(p: &Pending, table: &str, fields: &[String]) -> Result<TableIndex, String> {
+    let mut t = TableIndex::new(table, fields)?;
+    let mut prefix = GENERATION.to_be_bytes().to_vec();
+    prefix.push(0x30);
+    prefix.extend(
+        table
+            .bytes()
+            .flat_map(|b| if b == 0 { vec![0x00, 0xFF] } else { vec![b] }),
+    );
+    prefix.extend_from_slice(&[0x00, 0x00, 0x30, b'r', 0x00, 0x00]);
+    let records: Records =
+        p.kv.range(prefix.clone()..)
+            .take_while(|(k, _)| k.starts_with(&prefix))
+            .map(|(k, v)| (k.clone(), Some(v.clone())))
+            .collect();
+    t.apply(&records, p.applied)?;
+    Ok(t)
 }
 
 #[cfg(test)]
@@ -551,7 +582,7 @@ mod tests {
         let search = ComponentSearch::default();
         let kv = state(&[("1", "hello world"), ("2", "other")]);
         let prepared = search
-            .prepare("app", "b1", &fields(), kv, 5, |_| {
+            .prepare("app", &fields(), kv, 5, |_| {
                 panic!("no mark yet: nothing to catch up from")
             })
             .unwrap();
@@ -566,16 +597,13 @@ mod tests {
     fn a_later_view_catches_up_from_the_keys_touched_since() {
         let search = ComponentSearch::default();
         let first = search
-            .prepare("app", "b1", &fields(), state(&[("1", "hello")]), 5, |_| {
-                None
-            })
+            .prepare("app", &fields(), state(&[("1", "hello")]), 5, |_| None)
             .unwrap();
         assert_eq!(find(&*first, "hello"), vec![key("1")]);
         let touched = vec![hex::encode(stored(&["notes", "r", "2"]))];
         let later = search
             .prepare(
                 "app",
-                "b1",
                 &fields(),
                 state(&[("1", "hello"), ("2", "hello again")]),
                 7,
@@ -595,32 +623,28 @@ mod tests {
     fn a_view_whose_mark_moved_meanwhile_rebuilds_from_its_own_state() {
         let search = ComponentSearch::default();
         let base = search
-            .prepare("app", "b1", &fields(), state(&[("1", "hello")]), 5, |_| {
-                None
-            })
+            .prepare("app", &fields(), state(&[("1", "hello")]), 5, |_| None)
             .unwrap();
         assert_eq!(find(&*base, "hello"), vec![key("1")]);
         // Prepared at 6 against the mark at 5, queried after another view moved the
-        // indexes to 8 on a new bundle.
+        // indexes to 8 for other fields (an upgrade), from a state the keys since 5
+        // cannot describe.
         let stale = search
             .prepare(
                 "app",
-                "b1",
                 &fields(),
                 state(&[("1", "hello"), ("3", "hello three")]),
                 6,
                 |_| Some(vec![hex::encode(stored(&["notes", "r", "3"]))]),
             )
             .unwrap();
+        let upgraded: Fields = [(
+            "notes".to_owned(),
+            vec!["title".to_owned(), "body".to_owned()],
+        )]
+        .into();
         let other = search
-            .prepare(
-                "app",
-                "b2",
-                &fields(),
-                state(&[("9", "hello nine")]),
-                8,
-                |_| None,
-            )
+            .prepare("app", &upgraded, state(&[("9", "hello nine")]), 8, |_| None)
             .unwrap();
         assert_eq!(find(&*other, "hello"), vec![key("9")]);
         assert_eq!(find(&*stale, "hello"), vec![key("1"), key("3")]);
@@ -631,7 +655,118 @@ mod tests {
     fn an_app_that_declares_no_search_gets_none() {
         let search = ComponentSearch::default();
         assert!(search
-            .prepare("app", "b1", &BTreeMap::new(), state(&[]), 1, |_| None)
+            .prepare("app", &BTreeMap::new(), state(&[]), 1, |_| None)
             .is_none());
+    }
+
+    fn scans(search: &ComponentSearch, app: &str) -> u64 {
+        let apps = search.apps.lock().unwrap();
+        let ix = apps[app].indexes.lock().unwrap();
+        ix.scans
+    }
+
+    fn find_in(search: &dyn SearchHost, table: &str, text: &str) -> Result<usize, String> {
+        search
+            .query(&SearchQuery {
+                table: table.into(),
+                text: text.into(),
+                mode: SearchMode::Words,
+                cursor: 0,
+                limit: 10,
+            })
+            .map(|page| page.hits.len())
+    }
+
+    fn with_tags(notes: &[(&str, &str)], tags: &[(&str, &str)]) -> Kv {
+        let mut kv: BTreeMap<Vec<u8>, Vec<u8>> = notes
+            .iter()
+            .map(|(id, title)| (stored(&["notes", "r", id]), note(title)))
+            .collect();
+        for (id, title) in tags {
+            let _prev = kv.insert(stored(&["tags", "r", id]), note(title));
+        }
+        Arc::new(kv)
+    }
+
+    /// Review finding A5 follow-up: an upgrade rebuilt every table from a scan of the
+    /// whole state, because the indexes were keyed by bundle. A table whose declared
+    /// fields an upgrade keeps now catches up from the keys touched since, like any
+    /// other view; only a table that is new or whose fields changed is scanned, and one
+    /// the ABI no longer declares is dropped.
+    #[test]
+    fn an_upgrade_keeps_the_index_of_a_table_whose_fields_it_keeps() {
+        let search = ComponentSearch::default();
+        let v1: Fields = [
+            ("notes".to_owned(), vec!["title".to_owned()]),
+            ("tags".to_owned(), vec!["title".to_owned()]),
+        ]
+        .into();
+        let first = search
+            .prepare(
+                "app",
+                &v1,
+                with_tags(&[("1", "hello")], &[("t", "hello")]),
+                5,
+                |_| None,
+            )
+            .unwrap();
+        assert_eq!(find_in(&*first, "notes", "hello"), Ok(1));
+        assert_eq!(scans(&search, "app"), 2, "both tables scanned once");
+
+        // The upgrade keeps `notes` as it was, drops `tags` and adds `labels`.
+        let v2: Fields = [
+            ("notes".to_owned(), vec!["title".to_owned()]),
+            ("labels".to_owned(), vec!["title".to_owned()]),
+        ]
+        .into();
+        let touched = vec![hex::encode(stored(&["notes", "r", "2"]))];
+        let upgraded = search
+            .prepare(
+                "app",
+                &v2,
+                with_tags(&[("1", "hello"), ("2", "hello again")], &[("t", "hello")]),
+                9,
+                |since| {
+                    assert_eq!(since, 5);
+                    Some(touched)
+                },
+            )
+            .unwrap();
+        assert_eq!(find_in(&*upgraded, "notes", "hello"), Ok(2), "caught up");
+        assert_eq!(scans(&search, "app"), 3, "only the new table was scanned");
+        assert!(find_in(&*upgraded, "tags", "hello").is_err(), "dropped");
+        assert_eq!(find_in(&*upgraded, "labels", "hello"), Ok(0));
+
+        // A changed field list scans that table again.
+        let v3: Fields = [
+            (
+                "notes".to_owned(),
+                vec!["title".to_owned(), "body".to_owned()],
+            ),
+            ("labels".to_owned(), vec!["title".to_owned()]),
+        ]
+        .into();
+        let changed = search
+            .prepare("app", &v3, with_tags(&[("1", "hello")], &[]), 10, |_| {
+                Some(Vec::new())
+            })
+            .unwrap();
+        assert_eq!(find_in(&*changed, "notes", "hello"), Ok(1));
+        assert_eq!(scans(&search, "app"), 4, "notes again, labels kept");
+    }
+
+    /// When the keys since are unknown (the ring was passed), every table is scanned.
+    #[test]
+    fn indexes_the_ring_cannot_catch_up_are_scanned_again() {
+        let search = ComponentSearch::default();
+        let first = search
+            .prepare("app", &fields(), state(&[("1", "hello")]), 5, |_| None)
+            .unwrap();
+        assert_eq!(find(&*first, "hello"), vec![key("1")]);
+        let later = search
+            .prepare("app", &fields(), state(&[("2", "hello")]), 9_000, |_| None)
+            .unwrap();
+        assert_eq!(find(&*later, "hello"), vec![key("2")]);
+        assert_eq!(scans(&search, "app"), 2);
     }
 }
