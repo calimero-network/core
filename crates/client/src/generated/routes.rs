@@ -662,6 +662,28 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 
+    /// Upgrade an app and the apps it created, in one consent.
+    ///
+    /// `POST /apps/{app}/upgrade-unit` (`app_upgrade_unit`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn upgrade_unit(
+        self,
+        app: &str,
+        version: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<UpgradeRun> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "version", &version)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("apps/{}/upgrade-unit", route::segment(app)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
     /// Abort an upload.
     ///
     /// `DELETE /apps/{app}/files/uploads/{upload}` (`upload_abort`). Who: signed in (a session or an API key).
