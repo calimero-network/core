@@ -1,19 +1,21 @@
 [package]
-name = "kv-store-init"
+name = "wiki"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "A key-value store whose init seeds entries, on the component SDK"
+description = "A team wiki on the component SDK: slug-keyed author-owned pages, a sorted tag set, per-person drafts and content-addressed attachments"
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
 calimero-sdk = { path = "../../crates/sdk" }
+serde = { version = "1", features = ["derive"] }
+sha2 = { version = "0.10", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-calimero-sdk = { path = "../../crates/sdk", features = ["testing"] }
 calimero-app-build = { path = "../../crates/app-build" }
+calimero-sdk = { path = "../../crates/sdk", features = ["testing"] }
 serde_json = "1"
 
 # Standalone, like the SDK's sample guest: the tests build this crate for wasm32-wasip2.

@@ -1544,15 +1544,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sorted-set-store"
-version = "0.1.0"
-dependencies = [
- "calimero-app-build",
- "calimero-sdk",
- "serde_json",
-]
-
-[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2144,6 +2135,17 @@ dependencies = [
  "futures",
  "tracing",
  "wasmtime",
+]
+
+[[package]]
+name = "wiki"
+version = "0.1.0"
+dependencies = [
+ "calimero-app-build",
+ "calimero-sdk",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
