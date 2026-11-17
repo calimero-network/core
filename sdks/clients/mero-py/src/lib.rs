@@ -16,14 +16,9 @@
 //! - [`error`] - `CloudError`
 //! - [`convert`] - Python <-> JSON
 
-// pyo3 0.22's `#[pymethods]` expands each `PyResult` return through an
-// `Into<PyErr>` that newer clippy reports as `useless_conversion`; the lint
-// points at macro-generated code, not ours. pyo3 0.23 fixed it upstream.
-#[allow(clippy::useless_conversion)]
 pub mod client;
 pub mod convert;
 pub mod error;
-#[allow(clippy::useless_conversion)]
 pub mod passkey;
 
 use pyo3::prelude::*;
@@ -33,15 +28,12 @@ use pyo3::prelude::*;
 fn _native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<client::PyCloudClient>()?;
     m.add_class::<passkey::PySoftPasskey>()?;
-    m.add("CloudError", m.py().get_type_bound::<error::CloudError>())?;
-    m.add(
-        "LoginRequired",
-        m.py().get_type_bound::<error::LoginRequired>(),
-    )?;
-    m.add("WrongNode", m.py().get_type_bound::<error::WrongNode>())?;
+    m.add("CloudError", m.py().get_type::<error::CloudError>())?;
+    m.add("LoginRequired", m.py().get_type::<error::LoginRequired>())?;
+    m.add("WrongNode", m.py().get_type::<error::WrongNode>())?;
     m.add(
         "FeatureNotActive",
-        m.py().get_type_bound::<error::FeatureNotActive>(),
+        m.py().get_type::<error::FeatureNotActive>(),
     )?;
 
     m.add("VERSION", env!("CARGO_PKG_VERSION"))?;

@@ -33,7 +33,7 @@ impl PySoftPasskey {
     /// Answer `navigator.credentials.create(options)`: a new credential for
     /// the `options` a ceremony's `begin` answered. Returns the registration
     /// (`{attestationObject, clientDataJson}`, base64url) its `finish` takes.
-    fn create(&self, py: Python<'_>, options: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn create(&self, py: Python<'_>, options: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let options = to_json(py, Some(options))?;
         let registration = self.inner.blocking_lock().create(&options);
         to_py(py, &registration)
@@ -43,7 +43,7 @@ impl PySoftPasskey {
     /// `412 CONFIRM_REQUIRED` or a sign-in's `begin` named). Returns the
     /// assertion (`{credentialId, authenticatorData, clientDataJson,
     /// signature}`, base64url).
-    fn get(&self, py: Python<'_>, challenge: &[u8]) -> PyResult<PyObject> {
+    fn get(&self, py: Python<'_>, challenge: &[u8]) -> PyResult<Py<PyAny>> {
         let assertion = self.inner.blocking_lock().get(challenge);
         to_py(py, &assertion)
     }

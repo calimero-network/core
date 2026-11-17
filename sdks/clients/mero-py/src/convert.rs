@@ -13,19 +13,16 @@ pub(crate) fn to_json(py: Python<'_>, obj: Option<&Bound<'_, PyAny>>) -> PyResul
         return Ok(Value::Object(serde_json::Map::new()));
     }
     let s: String = py
-        .import_bound("json")?
+        .import("json")?
         .call_method1("dumps", (obj,))?
         .extract()?;
     serde_json::from_str(&s).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 /// JSON -> Python object.
-pub(crate) fn to_py(py: Python<'_>, v: &impl serde::Serialize) -> PyResult<PyObject> {
+pub(crate) fn to_py(py: Python<'_>, v: &impl serde::Serialize) -> PyResult<Py<PyAny>> {
     let s = serde_json::to_string(v).map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(py
-        .import_bound("json")?
-        .call_method1("loads", (s,))?
-        .unbind())
+    Ok(py.import("json")?.call_method1("loads", (s,))?.unbind())
 }
 
 /// One path segment, percent-encoded, so an id can never reach another route.

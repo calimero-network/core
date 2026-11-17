@@ -23,10 +23,14 @@ def closed_port_url() -> str:
 
 
 class Directory:
-    """`listings` maps a cluster to its answer body; any other is 404."""
+    """`listings` maps a cluster to its answer body, `raw` to its answer as
+    bytes and `redirects` to a `Location` it answers `302` with; any other
+    is 404."""
 
     def __init__(self):
         self.listings = {}
+        self.raw = {}
+        self.redirects = {}
         self.hits = []
         directory = self
 
@@ -34,12 +38,20 @@ class Directory:
             def do_GET(self):
                 cluster = self.path.rsplit("/", 1)[-1]
                 directory.hits.append(cluster)
+                if cluster in directory.redirects:
+                    self.send_response(302)
+                    self.send_header("Location", directory.redirects[cluster])
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 body = directory.listings.get(cluster)
-                if body is None:
+                data = directory.raw.get(cluster)
+                if body is None and data is None:
                     self.send_response(404)
                     self.end_headers()
                     return
-                data = json.dumps(body).encode()
+                if data is None:
+                    data = json.dumps(body).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
@@ -123,6 +135,32 @@ def test_a_listing_with_no_usable_node_is_an_error(directory):
             Client.connect(cluster, allow_mock=True, directory=directory.url)
         assert "no usable node" in e.value.args[0]
         assert e.value.args[2] == "DIRECTORY"
+
+
+def test_a_redirect_is_not_followed(directory):
+    # The directory names its own nodes: a redirect to another listing (or
+    # to the same one over plain http) is refused, not followed.
+    node = closed_port_url()
+    directory.listings["elsewhere"] = listing(
+        "elsewhere", [{"id": 1, "url": node, "weight": 1}]
+    )
+    directory.redirects["c"] = directory.url + "/elsewhere"
+    with pytest.raises(CloudError) as e:
+        Client.connect("c", allow_mock=True, directory=directory.url)
+    assert e.value.args[1:3] == (302, "DIRECTORY")
+    assert directory.hits == ["c"]
+
+
+def test_an_oversized_listing_is_refused(directory):
+    # Valid JSON, but far larger than any listing: refused before it is held.
+    node = closed_port_url()
+    body = listing("big", [{"id": 1, "url": node, "weight": 1}])
+    body["padding"] = "x" * (4 * 1024 * 1024)
+    directory.raw["big"] = json.dumps(body).encode()
+    with pytest.raises(CloudError) as e:
+        Client.connect("big", allow_mock=True, directory=directory.url)
+    assert e.value.args[1:3] == (0, "DIRECTORY")
+    assert "larger than" in e.value.args[0]
 
 
 def test_an_unreachable_directory_is_an_error():

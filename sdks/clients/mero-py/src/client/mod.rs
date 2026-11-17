@@ -159,7 +159,7 @@ impl PyCloudClient {
         op: impl AsyncFn(Arc<SealedNode>) -> Result<T, Error> + Send,
     ) -> PyResult<T> {
         let (rt, nodes) = (Arc::clone(&self.runtime), Arc::clone(&self.nodes));
-        py.allow_threads(move || rt.block_on(nodes.run(op)).map_err(cloud_err))
+        py.detach(move || rt.block_on(nodes.run(op)).map_err(cloud_err))
     }
 
     /// [`run`](Self::run) for a request that is safe to send twice (a read):
@@ -171,7 +171,7 @@ impl PyCloudClient {
         op: impl AsyncFn(Arc<SealedNode>) -> Result<T, Error> + Send,
     ) -> PyResult<T> {
         let (rt, nodes) = (Arc::clone(&self.runtime), Arc::clone(&self.nodes));
-        py.allow_threads(move || rt.block_on(nodes.run_repeatable(op)).map_err(cloud_err))
+        py.detach(move || rt.block_on(nodes.run_repeatable(op)).map_err(cloud_err))
     }
 
     /// Block on `f` with the GIL released, as it is: no recovery.
@@ -181,7 +181,7 @@ impl PyCloudClient {
         f: impl std::future::Future<Output = Result<T, Error>> + Send,
     ) -> PyResult<T> {
         let rt = Arc::clone(&self.runtime);
-        py.allow_threads(move || rt.block_on(f).map_err(cloud_err))
+        py.detach(move || rt.block_on(f).map_err(cloud_err))
     }
 
     /// The node in use.
@@ -218,10 +218,8 @@ impl PyCloudClient {
 }
 
 /// The answer, as Python gets it: `(status, [(name, value)], body)`.
-fn to_tuple(py: Python<'_>, r: RawResponse) -> (u16, Vec<(String, String)>, PyObject) {
-    let body = pyo3::types::PyBytes::new_bound(py, &r.body)
-        .into_any()
-        .unbind();
+fn to_tuple(py: Python<'_>, r: RawResponse) -> (u16, Vec<(String, String)>, Py<PyAny>) {
+    let body = pyo3::types::PyBytes::new(py, &r.body).into_any().unbind();
     (r.status, r.headers, body)
 }
 
@@ -392,7 +390,7 @@ impl PyCloudClient {
             roots: roots.clone(),
         };
         let (urls, refresh_after) = py
-            .allow_threads(|| runtime.block_on(source.listing()))
+            .detach(|| runtime.block_on(source.listing()))
             .map_err(directory_err)?;
         let nodes = connect_all(&runtime, urls, &policy, &roots)?;
         Ok(Self {
@@ -431,7 +429,7 @@ impl PyCloudClient {
         body: Vec<u8>,
         mode: &str,
         retry_unavailable: bool,
-    ) -> PyResult<(u16, Vec<(String, String)>, PyObject)> {
+    ) -> PyResult<(u16, Vec<(String, String)>, Py<PyAny>)> {
         let mode = Mode::parse(mode)?;
         let req = RawRequest {
             method,
@@ -446,7 +444,7 @@ impl PyCloudClient {
             attempt(&node, &req, token.as_deref(), repeatable, retry_unavailable).await
         };
         let (rt, n) = (Arc::clone(&self.runtime), Arc::clone(&self.nodes));
-        let answer = py.allow_threads(move || {
+        let answer = py.detach(move || {
             rt.block_on(async {
                 let sent = match mode {
                     Mode::Run => n.run(op).await,
@@ -472,7 +470,7 @@ impl PyCloudClient {
         path: String,
         headers: Vec<(String, String)>,
         body: Vec<u8>,
-    ) -> PyResult<(u16, Vec<(String, String)>, PyObject)> {
+    ) -> PyResult<(u16, Vec<(String, String)>, Py<PyAny>)> {
         let Some(key) = self.nodes.api_key() else {
             return Err(PyValueError::new_err(
                 "a leader is sent the request only with an API key",
@@ -500,7 +498,7 @@ impl PyCloudClient {
     /// Exchange the refresh token for a new session, on the node in use (any
     /// node of the cluster takes it). One at a time with the refreshes the
     /// client makes on its own after a `401`: a refresh token is used once.
-    fn refresh(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn refresh(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let nodes = Arc::clone(&self.nodes);
         let s = self.block(py, async move { nodes.refresh().await })?;
         to_py(py, &s)
@@ -531,7 +529,7 @@ impl PyCloudClient {
 
     /// The session in use (`sign_up`, `sign_in`, `refresh`, `use_session`),
     /// or `None` (none yet, or an API key instead).
-    fn session(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn session(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let c = self.client();
         let s = self.block(py, async move { Ok(c.session().await) })?;
         to_py(py, &s)
@@ -589,7 +587,7 @@ impl PyCloudClient {
     }
 
     /// The node's attestation document (unverified, for display).
-    fn attestation(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn attestation(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         // Unverified and for display only, so a fixed nonce is enough: the
         // verifying paths (`verify_app_cluster`) pick their own.
         let nonce = hex::encode([7_u8; 32]);
