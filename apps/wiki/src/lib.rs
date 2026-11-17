@@ -429,23 +429,14 @@ impl Wiki {
     /// last tag held.
     #[app::view]
     pub fn tags(&self, offset: u32, limit: u32) -> app::Result<Vec<String>> {
+        // `?` on every tag, the skipped ones too: a failed read is never skipped over.
+        let end = offset as usize + limit.min(MAX_ROWS) as usize;
         let mut out = Vec::new();
-        let limit = limit.min(MAX_ROWS) as usize;
-        let mut skipped = 0;
-        let mut opts = FindOpts::default().limit(MAX_ROWS);
-        while out.len() < limit {
-            let page = self.tags.page(opts.clone())?;
-            for tag in page.items {
-                if skipped < offset {
-                    skipped += 1;
-                } else if out.len() < limit {
-                    out.push(tag);
-                }
+        for (i, tag) in self.tags.iter().enumerate().take(end) {
+            let tag = tag?;
+            if i >= offset as usize {
+                out.push(tag);
             }
-            let Some(next) = page.next else {
-                break;
-            };
-            opts = opts.cursor(next);
         }
         Ok(out)
     }
