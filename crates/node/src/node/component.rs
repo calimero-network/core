@@ -304,6 +304,8 @@ fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
         | ComponentCmd::Blob { .. }
         | ComponentCmd::BlobForget { .. }
         | ComponentCmd::BlobRevoke { .. }
+        | ComponentCmd::SecretSet { .. }
+        | ComponentCmd::SecretClear { .. }
         | ComponentCmd::BlobsCollected { .. }
         | ComponentCmd::File { .. }
         | ComponentCmd::Barrier
@@ -871,6 +873,7 @@ impl Node {
                     app_id,
                     &prepared.hash,
                     self.usage.outbound(&meter.app, &meter.billed),
+                    &extras.secrets,
                 ))),
                 timeout: CALL_FETCH_TIMEOUT,
             })
@@ -1423,6 +1426,7 @@ impl Node {
                         runs: Some(m.runs_provider(None)),
                         compute_component: m.state.component.head.compute_bundle.is_some(),
                         read_only: false,
+                        secrets: m.instance_secrets(),
                     },
                 );
                 let outcome = ran.outcome;
@@ -1667,6 +1671,7 @@ impl Node {
                             read_only,
                             runs: Some(m.runs_provider(None)),
                             compute_component: m.state.component.head.compute_bundle.is_some(),
+                            secrets: m.instance_secrets(),
                         },
                     );
                     ran_for = Some(started.elapsed());
@@ -2083,6 +2088,25 @@ impl Node {
         if req.method == PIPELINE_VIEW {
             return self.pipeline_view(g, req);
         }
+        if req.method == crate::node::SECRETS_VIEW {
+            let (all, applied) = g.read_local(|m, applied| (m.instance_secrets(), applied));
+            let result: serde_json::Map<String, Value> = all
+                .into_iter()
+                .map(|(name, s)| {
+                    (
+                        name,
+                        json!({ "fingerprint": s.fingerprint, "setBy": s.set_by, "setAt": s.set_at }),
+                    )
+                })
+                .collect();
+            return Ok(ViewAnswer {
+                index: applied,
+                status: Status::Ok,
+                result: Value::Object(result),
+                error: Value::Null,
+                timeout: false,
+            });
+        }
         let bundle = g
             .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
@@ -2140,6 +2164,7 @@ impl Node {
                         runs: None,
                         compute_component: false,
                         read_only: false,
+                        secrets: crate::component::InstanceSecrets::new(),
                     },
                     search,
                 )
@@ -2184,6 +2209,41 @@ impl Node {
                 };
                 Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default())
             })
+            .await?;
+        let a: Applied = serde_json::from_slice(&p.output)
+            .map_err(|e| WriteError::Unavailable(e.to_string()))?;
+        Ok(to_host_applied(a))
+    }
+
+    /// An instance's own secret on its leader: `__secret_set { name, value, fingerprint, by,
+    /// at }` or `__secret_clear { name }`, built by the API after judging who may and that the
+    /// release declares the name.
+    pub(super) async fn component_secret_cmd(
+        &self,
+        g: &Group<AppMachine>,
+        req: &CallRequest,
+    ) -> Result<crate::app::Applied, WriteError> {
+        let name = req.args["name"].as_str().unwrap_or_default().to_owned();
+        let cmd = if req.method == "__secret_set" {
+            ComponentCmd::SecretSet {
+                name,
+                secret: crate::component::InstanceSecret {
+                    value: crate::component::SecretValue(
+                        req.args["value"].as_str().unwrap_or_default().to_owned(),
+                    ),
+                    fingerprint: req.args["fingerprint"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned(),
+                    set_by: req.args["by"].as_str().unwrap_or_default().to_owned(),
+                    set_at: req.args["at"].as_u64().unwrap_or_default(),
+                },
+            }
+        } else {
+            ComponentCmd::SecretClear { name }
+        };
+        let p = g
+            .propose_led(|_, _, _| Proposal::Append(serde_json::to_vec(&cmd).unwrap_or_default()))
             .await?;
         let a: Applied = serde_json::from_slice(&p.output)
             .map_err(|e| WriteError::Unavailable(e.to_string()))?;
@@ -2319,10 +2379,16 @@ impl Node {
             read_only: false,
         });
         let meter = self.meter(app_id, &prepared.hash);
+        // An action runs outside the machine's lock: the instance's own secrets as applied here.
+        let own_secrets = self
+            .hosted(app_id)
+            .map(|g| g.read_local(|m, _| m.instance_secrets()))
+            .unwrap_or_default();
         let http = Arc::new(NodeHttp(self.outbound_for(
             app_id,
             &prepared.hash,
             self.usage.outbound(&meter.app, &meter.billed),
+            &own_secrets,
         )));
         let invocation = Invocation {
             kind: InvocationKind::Action,
@@ -2770,6 +2836,9 @@ struct RunExtras {
     /// A read-only member's call: its synchronous xcalls may view, not call, since a
     /// call commits on the target before this run's outcome is judged.
     read_only: bool,
+    /// The instance's own secret values (`AppMachine::instance_secrets`), read with the
+    /// state the run sees, for the outbound gate.
+    secrets: crate::component::InstanceSecrets,
 }
 
 /// How long a call, timer or delivery waits for one outbound response (D76): within the

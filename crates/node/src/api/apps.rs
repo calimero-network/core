@@ -985,6 +985,185 @@ async fn app_usage(
 }
 
 /// This area's routes, merged into [`super::router`].
+/// Most bytes of an instance's own secret value.
+pub(crate) const MAX_SECRET_VALUE_BYTES: usize = 4096;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SecretBody {
+    value: String,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// The app, its release's declared secrets, and the account, for whoever manages the app.
+async fn secrets_gate(
+    node: &Node,
+    headers: &HeaderMap,
+    app_id: &str,
+    holder_only: bool,
+) -> Result<
+    (
+        Principal,
+        crate::types::AppRecord,
+        BTreeMap<String, calimero_bundle::BundleSecret>,
+    ),
+    ApiError,
+> {
+    let app_id = node.canonical_app_id(app_id);
+    let p = if holder_only {
+        holder(node, headers).await?
+    } else {
+        signed_in(node, headers).await?
+    };
+    let app = node.app(&app_id).await?;
+    p.within(node, &app)?;
+    if !manages_app(node, &app, p.caller.account()) {
+        return Err(ApiError::forbidden(
+            "only the app's owner, or whoever manages its organization's apps, handles its secrets",
+        ));
+    }
+    let declared = node
+        .release_of_app(&app)
+        .map(|r| r.version.secrets)
+        .unwrap_or_default();
+    Ok((p, app, declared))
+}
+
+/// The secrets the release an instance runs declares, and for each whether the instance
+/// has its own value (`source: app`, with its fingerprint, who set it and when) or uses the
+/// operator's (`source: cluster`). Never a value.
+async fn app_secrets(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app_id): Path<String>,
+) -> ApiResult {
+    let (p, app, declared) = secrets_gate(&node, &headers, &app_id, false).await?;
+    let own = node
+        .view(&ViewRequest {
+            app_id: app.app_id.clone(),
+            method: crate::node::SECRETS_VIEW.to_owned(),
+            args: Value::Null,
+            caller: p.caller,
+            strong: true,
+            min_index: 0,
+        })
+        .await?
+        .result;
+    let secrets: serde_json::Map<String, Value> = declared
+        .into_iter()
+        .map(|(name, d)| {
+            let mut row = json!({
+                "hosts": d.hosts, "description": d.description, "required": d.required,
+                "source": "cluster",
+            });
+            if let Some(o) = own.get(&name).filter(|o| o.is_object()) {
+                row["source"] = json!("app");
+                row["fingerprint"] = o["fingerprint"].clone();
+                row["setBy"] = o["setBy"].clone();
+                row["setAt"] = o["setAt"].clone();
+            }
+            (name, row)
+        })
+        .collect();
+    Ok(Json(json!({ "secrets": secrets })))
+}
+
+/// Set the instance's own value of a secret its release declares, sent only to that
+/// secret's declared hosts and never shown again: the owner's (or whoever manages the
+/// organization's apps), with a step-up over `{ name, fingerprint }` (never the value).
+async fn app_secret_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, name)): Path<(String, String)>,
+    Json(mut body): Json<SecretBody>,
+) -> ApiResult {
+    let (p, app, declared) = secrets_gate(&node, &headers, &app_id, true).await?;
+    if !declared.contains_key(&name) {
+        return Err(ApiError::not_found(
+            "the release this app runs declares no such secret",
+        ));
+    }
+    if body.value.is_empty() || body.value.len() > MAX_SECRET_VALUE_BYTES {
+        return Err(ApiError::bad_request(
+            "BAD_SECRET",
+            &format!("a secret's value is 1 to {MAX_SECRET_VALUE_BYTES} bytes"),
+        ));
+    }
+    // An older node would not apply the command: its replicas would hold no value.
+    node.require_upgraded_nodes().await?;
+    let fingerprint = hex::encode(sha256(body.value.as_bytes()))[..16].to_owned();
+    let account = p.account()?;
+    let _consent = consent(
+        &node,
+        &p,
+        &app.app_id,
+        "__set_secret",
+        &json!({ "name": name, "fingerprint": fingerprint }),
+        body.confirm.take(),
+    )
+    .await?;
+    let a = node
+        .call(&CallRequest {
+            sys_index: p.sys_index,
+            ..CallRequest::host(
+                app.app_id.clone(),
+                "__secret_set",
+                json!({
+                    "name": name, "value": body.value, "fingerprint": fingerprint,
+                    "by": format!("account:{account}"), "at": now_secs(),
+                }),
+                p.caller,
+            )
+        })
+        .await?;
+    if a.status != Status::Ok {
+        return Err(ApiError::conflict(a.error.as_str().unwrap_or("refused")));
+    }
+    Ok(Json(
+        json!({ "name": name, "fingerprint": fingerprint, "index": a.index }),
+    ))
+}
+
+/// Remove the instance's own value of a secret: the operator's applies again. Same rules
+/// as setting one; a step-up over `{ name }`.
+async fn app_secret_clear(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((app_id, name)): Path<(String, String)>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let (p, app, _declared) = secrets_gate(&node, &headers, &app_id, true).await?;
+    node.require_upgraded_nodes().await?;
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let _consent = consent(
+        &node,
+        &p,
+        &app.app_id,
+        "__clear_secret",
+        &json!({ "name": name }),
+        confirm,
+    )
+    .await?;
+    let a = node
+        .call(&CallRequest {
+            sys_index: p.sys_index,
+            ..CallRequest::host(
+                app.app_id.clone(),
+                "__secret_clear",
+                json!({ "name": name }),
+                p.caller,
+            )
+        })
+        .await?;
+    if a.status != Status::Ok {
+        return Err(ApiError::not_found(
+            "this app holds no value of that secret",
+        ));
+    }
+    Ok(Json(json!({ "name": name, "index": a.index })))
+}
+
 pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/apps", post(app_create).get(app_list))
@@ -999,4 +1178,9 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/transfer", post(app_transfer))
         .route("/apps/{app}/move", post(app_move))
         .route("/apps/{app}/xcalls", get(app_xcalls))
+        .route("/apps/{app}/secrets", get(app_secrets))
+        .route(
+            "/apps/{app}/secrets/{name}",
+            put(app_secret_set).delete(app_secret_clear),
+        )
 }

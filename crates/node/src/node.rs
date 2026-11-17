@@ -326,14 +326,20 @@ pub struct CallRequest {
 /// request: they change what the app is (its bundle, its blob marks), so
 /// authority over them is the API's (`run_upgrade`, the blob routes), never
 /// the app's or a caller's.
-pub const HOST_METHODS: [&str; 6] = [
+pub const HOST_METHODS: [&str; 8] = [
     "__upgrade",
     "__blob",
     "__blob_forget",
     "__blob_revoke",
     "__pipeline_start",
     "__pipeline_cancel",
+    "__secret_set",
+    "__secret_clear",
 ];
+
+/// The reserved view of an instance's own secrets, answered by its leader: what each holds
+/// (fingerprint, who set it and when), never a value.
+pub const SECRETS_VIEW: &str = "__secrets";
 
 /// Whether a method name is reserved: the node's commands and the runtime's
 /// own exports (`__calimero_*`) are not methods a client, an xcall or a
@@ -2449,6 +2455,7 @@ impl Node {
         app_id: &str,
         bundle: &str,
         sent: Arc<std::sync::atomic::AtomicU64>,
+        own: &crate::component::InstanceSecrets,
     ) -> Option<Arc<dyn calimero_outbound::OutboundHost>> {
         let service = self.config.outbound.as_ref()?;
         // The release the app runs, when its record names one for this bundle: releases may
@@ -2481,6 +2488,15 @@ impl Node {
                             .map(|(name, s)| (name.clone(), s.hosts.clone()))
                             .collect()
                     }),
+                    // The owner's own values, for names the release still declares.
+                    own: calimero_outbound::OwnSecrets(
+                        own.iter()
+                            .filter(|(name, _)| release.version.secrets.contains_key(*name))
+                            .map(|(name, s)| {
+                                (name.clone(), zeroize::Zeroizing::new(s.value.0.clone()))
+                            })
+                            .collect(),
+                    ),
                 },
                 approval,
             ))
@@ -3223,6 +3239,12 @@ impl Node {
         }
         if executor == Some(Kind::Component)
             && req.host
+            && matches!(req.method.as_str(), "__secret_set" | "__secret_clear")
+        {
+            return self.component_secret_cmd(g, req).await;
+        }
+        if executor == Some(Kind::Component)
+            && req.host
             && matches!(
                 req.method.as_str(),
                 "__pipeline_start" | "__pipeline_cancel"
@@ -3464,7 +3486,10 @@ impl Node {
         ) {
             app.require_app_component()?;
         }
-        if req.method != component::RUN_VIEW && req.method != component::PIPELINE_VIEW {
+        if req.method != component::RUN_VIEW
+            && req.method != component::PIPELINE_VIEW
+            && req.method != SECRETS_VIEW
+        {
             self.abi_gate(&app, &req.method, &req.caller, true, false)
                 .await?;
         }
