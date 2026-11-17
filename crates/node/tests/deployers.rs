@@ -5,7 +5,7 @@
 //! cluster's owner does (`deployers: owner`), the owner once the operator
 //! names it.
 //!
-//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
 
 use std::collections::BTreeMap;

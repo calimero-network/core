@@ -272,7 +272,7 @@ impl Rig {
         let (alice, _pk) = signed_up(&c, 0, "alice").await;
         let bundle = alice
             .packages()
-            .bundle_put(common::component("files"))
+            .bundle_put(common::component("fixture-files"))
             .await
             .map(|b| b.hash)
             .unwrap();
@@ -288,7 +288,7 @@ impl Rig {
             app,
             alice_bundle: bundle,
             file_key,
-            bundle: common::components("compute")
+            bundle: common::components("fixture-compute")
                 .compute
                 .expect("the compute fixture builds a compute component"),
             alice,
@@ -1236,7 +1236,7 @@ async fn a_job_node_takes_components_only_when_the_cluster_signed_their_name() {
 async fn a_job_node_refuses_an_app_component_even_when_the_cluster_signed_it() {
     let rig = Rig::start().await;
     let (_a, job) = rig.job(JOB_A).await;
-    let app = common::component("compute");
+    let app = common::component("fixture-compute");
     let signature = rig.leader().sign_bundle(&sha256_hex(&app)).unwrap();
     let (status, e) = job.put_bundle_signed(&app, Some(&signature)).await;
     assert_eq!((status, e["error"].as_str()), (400, Some("BAD_BUNDLE")));

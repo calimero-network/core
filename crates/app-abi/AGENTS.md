@@ -73,7 +73,7 @@
 - The JSON forms in the type table (u64/i64 decimal strings, bytes base64url) are the SDK's
   (`crates/sdk-macros/src/types.rs`, D20); change them only with it.
 - Generated output is pinned by golden files: `tests/fixtures/<app>.abi.json` (ABIs of
-  `apps/kv-store`, `apps/rooms`, `apps/permissions-showcase`, and a crafted `kitchen-sink`)
+  `apps/kv-store`, `apps/rooms`, `apps/forum`, and a crafted `kitchen-sink`)
   against `tests/golden/` (plus `kitchen-sink.plugin.kt`, the Kotlin client for the
   serialization plugin). Refresh a fixture from a build: extract the component's
   `calimero:abi` section.

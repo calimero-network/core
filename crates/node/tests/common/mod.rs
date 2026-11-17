@@ -1,5 +1,5 @@
-//! Test support shared by the test binaries: the v2 app components (`apps/v2-fixtures/*`
-//! and `apps/rooms`) built into components, and the in-process three-node cluster.
+//! Test support shared by the test binaries: the apps the tests run (`apps/fixture-*`,
+//! `apps/team-space` and `apps/rooms`) built into components, and the in-process three-node cluster.
 
 // Each test binary includes this module and uses a different subset of it.
 #![allow(dead_code)]
@@ -14,16 +14,16 @@ use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::attest::Mode;
 use calimero_node::{run, run_job, Config, JobConfig, Running, RunningJob};
 
-/// The fixture `name` ("kv" or "org-gated") as a component, built on first use and cached
+/// The app `apps/<name>` (e.g. "fixture-kv" or "team-space") as a component, built on first use and cached
 /// by source hash under `target/app-components` (the fixture, the SDK crates, the toolchain and
 /// app-build's post-processing are hashed; see `calimero_app_build::cache_key`).
 pub fn component(name: &str) -> Vec<u8> {
     components(name).app
 }
 
-/// The fixture `name`'s app component and, when it declares compute methods, its compute component.
+/// The app `apps/<name>`'s app component and, when it declares compute methods, its compute component.
 pub fn components(name: &str) -> CachedApp {
-    build(&Path::new("apps/v2-fixtures").join(name))
+    build(&Path::new("apps").join(name))
 }
 
 /// The Rooms reference app (`apps/rooms`) as a component, cached like [`component`].
