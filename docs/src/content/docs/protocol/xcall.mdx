@@ -13,7 +13,7 @@ API is in [Cross-app calls](/build/guides/cross-context/); this page is how the
 cluster runs them (`crates/node/src/component/xcall.rs`).
 
 ```rust
-// Sender (apps/v2-fixtures/kv): queue a message; it leaves once this entry commits.
+// Sender (apps/fixture-kv): queue a message; it leaves once this entry commits.
 pub fn relay(&mut self, app: String, key: String, value: String) -> app::Result<()> {
     env::xcall(&app, "setFromApp", &SetArgs { key: &key, value: &value })?;
     Ok(())

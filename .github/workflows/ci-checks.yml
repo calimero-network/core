@@ -435,7 +435,7 @@ jobs:
           out=target/mero-compute-check
           rm -rf "$out" && mkdir -p "$out"
           meroctl app build \
-            apps/v2-fixtures/compute --target-dir "$out/build" --out "$out/app.wasm"
+            apps/fixture-compute --target-dir "$out/build" --out "$out/app.wasm"
           head -c 300000 /dev/urandom > "$out/input.bin"
           meroctl local compute run "$out/compute.component.wasm" --method digest \
             --input "$out/input.bin" --out "$out/out" --twice

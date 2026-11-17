@@ -14,4 +14,4 @@ Build a Calimero app into a `calimero:app` component for deployment.
 3. Output: one component with its ABI in it. The node reads handlers, timers, xcall entry points, search exports and migrations from that ABI, so a plain `cargo build` of the crate is not an installable app.
 4. To install it as a signed package, pack and sign it into an `.mpk` with `meroctl app pack` (see `docs/src/content/docs/build/packaging-signing.mdx`).
 
-**Common apps:** kv-store, rooms, indexed-forum, org-gated, compute-redact (all under `apps/`; the node's test fixtures are under `apps/v2-fixtures/`).
+**Common apps:** kv-store, wiki, forum, team-space, rooms, compute-redact (all under `apps/`; the node's test fixtures are `apps/fixture-*`).

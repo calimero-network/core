@@ -1,6 +1,6 @@
 //! The in-process cluster the node's tests and the cluster throughput bench
 //! share: `n` nodes on loopback ports, mock attestation, sealed channels, the
-//! kv fixture (`apps/v2-fixtures/kv`, a `calimero:app` component).
+//! kv fixture (`apps/fixture-kv`, a `calimero:app` component).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -13,11 +13,11 @@ use calimero_node::{run, Config, Running};
 
 pub const ORIGIN: &str = "http://localhost:3000";
 
-/// The kv fixture (`apps/v2-fixtures/kv`: `set`, `get`, `entries`, `remove`, ...) as a
+/// The kv fixture (`apps/fixture-kv`: `set`, `get`, `entries`, `remove`, ...) as a
 /// component, built on first use and cached by source hash under
 /// `target/app-components`, as `tests/common/mod.rs` builds its fixtures.
 pub fn kv_wasm() -> Vec<u8> {
-    fixture("apps/v2-fixtures/kv")
+    fixture("apps/fixture-kv")
 }
 
 /// The component at `dir` (relative to the repository root), built and cached.

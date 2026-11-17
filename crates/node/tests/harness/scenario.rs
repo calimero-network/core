@@ -87,7 +87,7 @@ fn crate_name(dir: &Path) -> Option<String> {
     doc.get("package")?.get("name")?.as_str().map(str::to_owned)
 }
 
-/// The app directory under `apps/` (up to three levels down, e.g. `apps/v2-fixtures/*`)
+/// The app directory under `apps/` (up to three levels down)
 /// whose crate is `krate` (`-` and `_` alike).
 fn app_dir_of_crate(krate: &str) -> Option<PathBuf> {
     fn crates(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {

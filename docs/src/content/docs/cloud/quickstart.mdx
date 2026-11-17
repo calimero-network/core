@@ -163,7 +163,7 @@ within a time budget.
 ```bash
 cargo test -p calimero-node --test scenarios -- apps/kv-store/   # kv-store's scenarios
 cargo build --release -p merod -p meroctl
-meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
+meroctl app build apps/fixture-kv --out target/app-components/kv.wasm
 python3 -I crates/node/tests/fault/suite.py --only frozen-leader
 ```
 

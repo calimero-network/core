@@ -13,7 +13,7 @@
 # kv-store-test-fixture.mpk, as a dev bundle of its own), files.wasm, and the signed
 # packages kv-a-1.0.0.mpk, kv-a-1.1.0.mpk, kv-b-1.0.0.mpk, kv-c-1.0.0.mpk,
 # kv-u-1.0.0.mpk, kv-u-1.1.0.mpk (com.calimero.upgrade.kv-*), notes-1.0.0.mpk and notes-2.0.0.mpk
-# (com.calimero.upgrade.notes, apps/v2-fixtures/notes-v1 and notes-v2).
+# (com.calimero.upgrade.notes, apps/fixture-notes-v1 and fixture-notes-v2).
 set -euo pipefail
 
 OUT=$(cd "${1:?usage: build-upgrade-deep-fixtures.sh OUT}" && pwd -P)
@@ -32,7 +32,10 @@ mkdir -p "$DEEP"
 python3 -I "$(dirname "$0")/upgrade-dev-bundle.py" "$OUT/kv-store-test-fixture.mpk" "$DEEP" dev a b c u
 
 for app in files notes-v1 notes-v2; do
-  (cd "$SRC" && "$BUILD" "apps/v2-fixtures/$app" --out "$DEEP/$app.wasm")
+  # An older release keeps its test fixtures under apps/v2-fixtures/.
+  dir="apps/fixture-$app"
+  [ -d "$SRC/$dir" ] || dir="apps/v2-fixtures/$app"
+  (cd "$SRC" && "$BUILD" "$dir" --out "$DEEP/$app.wasm")
 done
 
 pack() { # WASM PACKAGE VERSION OUT

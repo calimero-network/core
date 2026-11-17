@@ -3,7 +3,7 @@
 //! back with its recovery seed, after the delay; a wrong seed, a non-owner, a
 //! rotated seed and a node writing to the log on its own recover nothing.
 //!
-//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
 
 use calimero_client::types::OrgRole;
