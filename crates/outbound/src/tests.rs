@@ -16,6 +16,7 @@ fn forms() -> AppIdentity {
     AppIdentity {
         package: "com.calimero.mero-forms".to_owned(),
         signer: "did:key:zForms".to_owned(),
+        secrets: None,
     }
 }
 
@@ -276,6 +277,7 @@ fn a_secret_goes_only_to_its_own_hosts_and_only_for_its_own_app() {
     let other = AppIdentity {
         package: "com.example.other".to_owned(),
         signer: "did:key:zOther".to_owned(),
+        secrets: None,
     };
     let stolen = s
         .prepare(
@@ -728,4 +730,48 @@ mod merge {
             .collect();
         assert!(merge_approval(None, &many, &OutboundSelection::Manifest, false).is_err());
     }
+}
+
+/// A release that declares its secrets (`AppIdentity::secrets`) gets only those, each only
+/// into a request to one of its declared hosts, even where the operator bound more; a
+/// release that declares none is filled from the operator's bindings alone, as before.
+#[test]
+fn a_release_that_declares_secrets_gets_only_those_and_only_to_their_hosts() {
+    let fake = Arc::new(Fake::default());
+    let s = service(&fake);
+    let with = |secrets: &[(&str, &[&str])]| AppIdentity {
+        secrets: Some(
+            secrets
+                .iter()
+                .map(|(n, h)| ((*n).to_owned(), h.iter().map(|h| (*h).to_owned()).collect()))
+                .collect(),
+        ),
+        ..forms()
+    };
+    let prepare = |app: &AppIdentity| {
+        s.prepare(
+            app,
+            &declared(),
+            Some(&approving(&declared())),
+            post(VERIFY, "secret={{secret:TURNSTILE_SECRET}}"),
+        )
+    };
+
+    // Declared for its host: filled, as the operator bound it.
+    assert!(prepare(&with(&[("TURNSTILE_SECRET", &[HOST])])).is_ok());
+    // Not declared: refused, though the operator bound it to the package.
+    let undeclared = prepare(&with(&[("OTHER_KEY", &[HOST])]))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        undeclared.contains("declares no secret TURNSTILE_SECRET"),
+        "{undeclared}"
+    );
+    // Declared for another host only: refused here.
+    let elsewhere = prepare(&with(&[("TURNSTILE_SECRET", &["api.example.com"])]))
+        .unwrap_err()
+        .to_string();
+    assert!(elsewhere.contains("for other hosts"), "{elsewhere}");
+    // Declaring nothing: the operator's bindings alone, as before.
+    assert!(prepare(&forms()).is_ok());
 }
