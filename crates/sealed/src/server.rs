@@ -65,11 +65,9 @@
 //! ```
 //!
 //! Releases up to 1.0.0-rc.24 served the two endpoints at `/sealed/v2/handshake`
-//! and `/sealed/v2` ([`LEGACY_HANDSHAKE_PATH`], [`LEGACY_SEALED_PATH`]). They are
-//! still served, byte for byte the same, so clients and peers of those releases
-//! keep working through a rollout; their answers carry the `Deprecation` header
-//! (`crates/node/api-deprecations.toml` says when they go). The `v2` there never
-//! named the wire format: the version byte does.
+//! and `/sealed/v2`; 1.0.0-rc.25 to 1.0.0-rc.29 served those too, deprecated, and
+//! this release no longer does. The `v2` there never named the wire format: the
+//! version byte does, and it is still `0x02`.
 
 use core::ops::Range;
 use core::time::Duration;
@@ -80,7 +78,7 @@ use std::time::Instant;
 use axum::body::{to_bytes, Body, BodyDataStream, Bytes};
 use axum::extract::{Request, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, EXPECT, HOST, LINK, RETRY_AFTER,
+    CACHE_CONTROL, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, EXPECT, HOST, RETRY_AFTER,
     TRANSFER_ENCODING, UPGRADE,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
@@ -112,19 +110,6 @@ use crate::session::{
 pub const HANDSHAKE_PATH: &str = "/sealed/handshake";
 /// Where sealed requests are posted, under the node's mount.
 pub const SEALED_PATH: &str = "/sealed";
-/// [`HANDSHAKE_PATH`] as releases up to 1.0.0-rc.24 named it, served the same
-/// until its `remove_after` in `crates/node/api-deprecations.toml`.
-pub const LEGACY_HANDSHAKE_PATH: &str = "/sealed/v2/handshake";
-/// [`SEALED_PATH`] as releases up to 1.0.0-rc.24 named it, served the same
-/// until its `remove_after` in `crates/node/api-deprecations.toml`.
-pub const LEGACY_SEALED_PATH: &str = "/sealed/v2";
-/// When the legacy paths were deprecated (2026-11-13), in Unix seconds: the
-/// `Deprecation` header (RFC 9745) on their answers. The `date` of their entries
-/// in `crates/node/api-deprecations.toml`, which the node's tests hold it to.
-pub const LEGACY_PATHS_DEPRECATED_AT: i64 = 1_794_528_000;
-/// The policy a deprecated path's answers link to, as the node's API does.
-const DEPRECATION_POLICY_LINK: &str =
-    "<https://calimero-network.github.io/core/operate/compatibility/>; rel=\"deprecation\"";
 /// Content type of every sealed body.
 pub const SEALED_CONTENT_TYPE: &str = "application/vnd.calimero.sealed";
 
@@ -179,8 +164,6 @@ const FRAME_END: u8 = 2;
 /// Tells nginx-style proxies not to buffer a response, which would hold back
 /// every frame of a sealed event stream.
 const X_ACCEL_BUFFERING: HeaderName = HeaderName::from_static("x-accel-buffering");
-/// RFC 9745's header, on the answers of a deprecated path.
-const DEPRECATION: HeaderName = HeaderName::from_static("deprecation");
 
 /// Headers that describe the hop, not the message, and so never cross the
 /// envelope in either direction.
@@ -330,18 +313,15 @@ impl SealedTransport {
             .store(sessions.len() as u64, Ordering::Relaxed);
     }
 
-    /// Which envelope endpoint `path` names, the mount it names it under, and
-    /// whether it names it by its deprecated legacy path.
-    fn route(&self, path: &str) -> Option<(Endpoint, &str, bool)> {
+    /// Which envelope endpoint `path` names, and the mount it names it under.
+    fn route(&self, path: &str) -> Option<(Endpoint, &str)> {
         self.mounts.iter().find_map(|mount| {
-            let (endpoint, legacy) = match path.strip_prefix(mount.as_str())? {
-                HANDSHAKE_PATH => (Endpoint::Handshake, false),
-                SEALED_PATH => (Endpoint::Exchange, false),
-                LEGACY_HANDSHAKE_PATH => (Endpoint::Handshake, true),
-                LEGACY_SEALED_PATH => (Endpoint::Exchange, true),
+            let endpoint = match path.strip_prefix(mount.as_str())? {
+                HANDSHAKE_PATH => Endpoint::Handshake,
+                SEALED_PATH => Endpoint::Exchange,
                 _ => return None,
             };
-            Some((endpoint, mount.as_str(), legacy))
+            Some((endpoint, mount.as_str()))
         })
     }
 
@@ -453,9 +433,8 @@ pub async fn expire_sessions(transport: Weak<SealedTransport>, shutdown: Cancell
     }
 }
 
-/// Route [`HANDSHAKE_PATH`] and [`SEALED_PATH`] (and their legacy paths, the
-/// same with a `Deprecation` header) through the envelope; pass everything else
-/// by, unless sealing is required.
+/// Route [`HANDSHAKE_PATH`] and [`SEALED_PATH`] through the envelope; pass
+/// everything else by, unless sealing is required.
 ///
 /// This has to wrap the router from outside, not sit on a route: the inner
 /// request is handed back to the router to be routed afresh, and does not pass
@@ -466,7 +445,7 @@ pub async fn intercept(
     next: Next,
 ) -> Response {
     let path = request.uri().path();
-    let Some((endpoint, mount, legacy)) = transport.route(path) else {
+    let Some((endpoint, mount)) = transport.route(path) else {
         if transport.refuses_unsealed(path) {
             let refusal = Refusal {
                 status: StatusCode::FORBIDDEN,
@@ -487,22 +466,10 @@ pub async fn intercept(
         Endpoint::Handshake => handshake(&transport, request).await,
         Endpoint::Exchange => open_and_dispatch(&transport, request, &mount, next).await,
     };
-    let mut response = result.unwrap_or_else(|refusal| {
+    result.unwrap_or_else(|refusal| {
         transport.refuse(&refusal);
         refusal.into_response()
-    });
-    if legacy {
-        mark_deprecated(response.headers_mut());
-    }
-    response
-}
-
-/// The `Deprecation` header and its policy `Link` on an answer to a legacy path.
-fn mark_deprecated(headers: &mut HeaderMap) {
-    if let Ok(value) = HeaderValue::from_str(&format!("@{LEGACY_PATHS_DEPRECATED_AT}")) {
-        let _previous = headers.insert(DEPRECATION, value);
-    }
-    headers.append(LINK, HeaderValue::from_static(DEPRECATION_POLICY_LINK));
+    })
 }
 
 async fn handshake(transport: &SealedTransport, request: Request) -> Result<Response, Refusal> {
