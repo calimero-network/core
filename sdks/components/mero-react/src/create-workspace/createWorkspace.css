@@ -1,10 +1,10 @@
 /* Tokens (--cw-*) are defined in workspaceReview.css. */
-.mero-cw-overlay { position: fixed; inset: 0; z-index: var(--cw-z, 2147483000); display: grid; place-items: center; padding: 16px; background: rgba(15, 17, 23, 0.45); }
+.mero-cw-overlay { position: fixed; inset: 0; z-index: var(--cw-z, 2147483000); display: grid; place-items: center; padding: 16px; background: rgba(15, 17, 23, 0.5); overscroll-behavior: contain; }
 .mero-cw-card {
   position: relative;
   box-sizing: border-box;
   width: 100%;
-  max-width: 420px;
+  max-width: 440px;
   max-height: calc(100dvh - 32px);
   display: flex;
   flex-direction: column;
@@ -12,49 +12,75 @@
   border-radius: 18px;
   background: var(--_surface);
   color: var(--_ink);
-  box-shadow: 0 10px 30px rgba(15, 17, 23, 0.18);
+  box-shadow: 0 0 0 1px var(--_line), 0 24px 64px -12px rgba(15, 17, 23, 0.35);
 }
-.mero-cw-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 20px 22px 0; }
-.mero-cw-body > :last-child { margin-bottom: 20px; }
+.mero-cw-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px 24px 0; font-size: 15px; line-height: 1.5; }
+.mero-cw-body > :last-child { margin-bottom: 24px; }
 .mero-cw-body .mero-cw-review__buttons { margin-bottom: 0; padding-bottom: 18px; }
 .mero-cw-card *, .mero-cw-card *::before, .mero-cw-card *::after { box-sizing: border-box; }
-.mero-cw-x { position: absolute; top: 12px; right: 14px; z-index: 2; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--_muted); cursor: pointer; }
+.mero-cw-x { position: absolute; top: 14px; right: 14px; z-index: 2; display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--_muted); cursor: pointer; }
 .mero-cw-x:hover { background: var(--_code-bg); color: var(--_ink); }
-.mero-cw-title { margin: 0 0 4px; padding-right: 28px; font-size: 17px; font-weight: 700; }
-.mero-cw-sub { margin: 0 0 14px; color: var(--_muted); font-size: 12.5px; line-height: 1.45; }
-.mero-cw-field { margin: 0 0 12px; }
-.mero-cw-field label { display: block; margin: 0 0 5px; font-size: 12px; font-weight: 600; }
-.mero-cw-field input { width: 100%; padding: 9px 11px; border: 1px solid var(--_line); border-radius: 10px; background: var(--_surface); color: var(--_ink); font: inherit; font-size: 13px; }
-.mero-cw-field select { width: 100%; padding: 9px 11px; border: 1px solid var(--_line); border-radius: 10px; background: var(--_surface); color: var(--_ink); font: inherit; font-size: 13px; }
+.mero-cw-title { margin: 0 0 4px; padding-right: 36px; font-size: 20px; font-weight: 700; line-height: 1.25; letter-spacing: -0.01em; text-wrap: balance; }
+.mero-cw-sub { margin: 0 0 20px; color: var(--_muted); font-size: 14px; line-height: 1.5; text-wrap: pretty; }
+.mero-cw-field { margin: 0 0 16px; }
+.mero-cw-field label { display: block; margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+.mero-cw-field input { width: 100%; min-height: 48px; padding: 10px 14px; border: 1px solid var(--_control); border-radius: 12px; background: var(--_surface); color: var(--_ink); font: inherit; font-size: 16px; }
+.mero-cw-field select { width: 100%; min-height: 48px; padding: 10px 14px; border: 1px solid var(--_control); border-radius: 12px; background: var(--_surface); color: var(--_ink); font: inherit; font-size: 16px; }
 .mero-cw-field input:focus-visible, .mero-cw-field select:focus-visible { outline: 2px solid var(--_focus); outline-offset: 1px; }
-.mero-cw-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; padding: 0 16px; border: 1px solid var(--_line); border-radius: 999px; background: var(--_surface); color: var(--_ink); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.mero-cw-btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 20px; border: 1px solid var(--_line); border-radius: 999px; background: var(--_surface); color: var(--_ink); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+.mero-cw-btn:hover:not(:disabled) { border-color: var(--_ink); }
 .mero-cw-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .mero-cw-btn--primary { border-color: transparent; background: var(--_primary-bg); color: var(--_primary-ink); }
-.mero-cw-btn--full { width: 100%; }
+.mero-cw-btn--primary:hover:not(:disabled) { border-color: transparent; opacity: 0.88; }
+.mero-cw-btn--full { width: 100%; min-height: 48px; margin-top: 4px; }
 .mero-cw-btn:focus-visible, .mero-cw-link:focus-visible, .mero-cw-x:focus-visible { outline: 2px solid var(--_focus); outline-offset: 2px; }
-.mero-cw-link { border: 0; background: none; color: var(--_focus); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.mero-cw-link { min-height: 44px; padding: 0 4px; border: 0; background: none; color: var(--_focus); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; }
 .mero-cw-link:hover { text-decoration: underline; }
-.mero-cw-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; }
-.mero-cw-code { margin: 10px 0; padding: 10px; border-radius: 12px; background: var(--_code-bg); font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 22px; font-weight: 700; letter-spacing: 3px; text-align: center; }
-.mero-cw-wait { display: flex; align-items: center; gap: 8px; color: var(--_muted); font-size: 12.5px; }
+.mero-cw-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 16px; }
+.mero-cw-code { margin: 0 0 16px; padding: 18px 12px; border: 1px dashed var(--_control); border-radius: 14px; background: var(--_code-bg); font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 28px; font-weight: 700; letter-spacing: 0.18em; text-align: center; font-variant-numeric: tabular-nums; }
+.mero-cw-wait { display: flex; align-items: center; gap: 8px; color: var(--_muted); font-size: 14px; }
 .mero-cw-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--_focus); }
 @media (prefers-reduced-motion: no-preference) {
   .mero-cw-dot { animation: mero-cw-pulse 1.2s infinite; }
 }
 @keyframes mero-cw-pulse { 50% { opacity: 0.25; } }
-.mero-cw-error { margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; background: var(--_bad-bg); color: var(--_bad-ink); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.mero-cw-error { margin: 0 0 16px; padding: 10px 12px; border-radius: 12px; background: var(--_bad-bg); color: var(--_bad-ink); font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .mero-cw-notice { position: fixed; right: 16px; bottom: 16px; z-index: var(--cw-z, 2147483000); max-width: 360px; padding: 10px 14px; border-radius: 10px; background: var(--_surface); color: var(--_ink); font-size: 13px; line-height: 1.4; box-shadow: 0 0 0 1px var(--_line), 0 12px 28px -12px rgba(14, 18, 34, 0.4); }
 .mero-cw-choices { display: flex; flex-direction: column; gap: 8px; margin: 0 0 12px; padding: 0; border: 0; }
-.mero-cw-choice { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--_line); border-radius: 12px; cursor: pointer; }
+.mero-cw-choice { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border: 1px solid var(--_line); border-radius: 12px; cursor: pointer; }
 .mero-cw-choice:has(input:checked) { border-color: var(--_ink); }
-.mero-cw-choice input { margin-top: 3px; accent-color: var(--_primary-bg); }
-.mero-cw-choice b { display: block; font-size: 13px; }
+.mero-cw-choice input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--_primary-bg); }
+.mero-cw-choice b { display: block; font-size: 15px; }
 .mero-cw-choice .mero-cw-sub { display: block; margin: 2px 0 0; }
 .mero-cw-caps { display: flex; flex-direction: column; gap: 2px; margin: 0 0 14px; padding: 6px 4px; border-top: 1px solid var(--_line); border-bottom: 1px solid var(--_line); max-height: 220px; overflow-y: auto; }
-.mero-cw-cap { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; padding: 6px 8px; font-size: 13px; }
+.mero-cw-cap { display: flex; flex-wrap: wrap; align-items: center; gap: 0 10px; min-height: 44px; padding: 4px 8px; font-size: 15px; }
 .mero-cw-cap label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
 .mero-cw-cap[data-disabled] { color: var(--_muted); }
 .mero-cw-cap[data-disabled] label { cursor: not-allowed; }
-.mero-cw-cap input { margin: 0; accent-color: var(--_primary-bg); }
-.mero-cw-hint { display: inline; color: var(--_muted); font-size: 11.5px; }
+.mero-cw-cap input { width: 18px; height: 18px; margin: 0; accent-color: var(--_primary-bg); }
+.mero-cw-hint { display: inline; color: var(--_muted); font-size: 13px; }
 .mero-cw-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Opens with a short rise; still for people who ask for less motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .mero-cw-overlay { animation: mero-cw-fade 160ms ease-out; }
+  .mero-cw-card { animation: mero-cw-rise 220ms cubic-bezier(0.22, 1, 0.36, 1); }
+}
+@keyframes mero-cw-fade { from { opacity: 0; } }
+@keyframes mero-cw-rise { from { opacity: 0; transform: translateY(12px) scale(0.98); } }
+
+/* On a phone the dialog is a bottom sheet: full width, within thumb reach, clear of the home indicator. */
+@media (max-width: 560px) {
+  .mero-cw-overlay { place-items: end stretch; padding: 0; }
+  .mero-cw-card { max-width: none; max-height: calc(100dvh - 24px); border-radius: 20px 20px 0 0; }
+  .mero-cw-card::before { content: ""; position: absolute; top: 8px; left: 50%; width: 36px; height: 4px; margin-left: -18px; border-radius: 999px; background: var(--_line); }
+  .mero-cw-body { padding: 28px 20px 0; }
+  .mero-cw-body > :last-child { margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); }
+  .mero-cw-body .mero-cw-review__buttons { padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); }
+  .mero-cw-x { top: 16px; right: 12px; }
+  .mero-cw-notice { left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 12px); max-width: none; }
+}
+@media (max-width: 560px) and (prefers-reduced-motion: no-preference) {
+  .mero-cw-card { animation: mero-cw-sheet 260ms cubic-bezier(0.22, 1, 0.36, 1); }
+}
+@keyframes mero-cw-sheet { from { transform: translateY(100%); } }
