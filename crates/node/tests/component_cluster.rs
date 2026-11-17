@@ -5542,6 +5542,126 @@ async fn a_release_names_the_apps_it_uses_on_its_card() {
     );
 }
 
+/// A release that creates the apps it uses (`uses`, `mode: create`): creating an instance
+/// first creates each in the same organization, by the same owner, from the release its lock
+/// pinned; the instance's record names them (`links`) and its `init` is told their ids. A
+/// release whose referenced package is not installed creates nothing (`409
+/// USES_NOT_INSTALLED`), and a client may not pass `links` itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn creating_an_instance_creates_the_apps_its_release_uses() {
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[13; 32]);
+    let c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let uses = json!({
+        "kv": { "package": "com.calimero.unit-kv", "range": "^0.1", "version": "0.1.0" },
+        "calendar": { "package": "com.example.calendar", "range": "^2", "mode": "attach" },
+    });
+    let _ = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.unit-notes",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            uses,
+        ))
+        .await
+        .unwrap();
+    let create = |name: &'static str, init: Value| {
+        typed(json!({ "name": name, "package": "com.calimero.unit-notes", "initArgs": init }))
+    };
+
+    // The referenced package is not installed yet: nothing is created.
+    let e = alice
+        .apps()
+        .create(create("notes", Value::Null))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("USES_NOT_INSTALLED"), "{e}");
+    let mine = |apps: Value| -> Vec<String> {
+        apps["apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert!(mine(alice.apps().list(None, None).await.map(wire).unwrap()).is_empty());
+
+    let _ = alice
+        .packages()
+        .upload(mpk_using(
+            "com.calimero.unit-kv",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            Value::Null,
+        ))
+        .await
+        .unwrap();
+    let e = alice
+        .apps()
+        .create(create(
+            "forged",
+            json!({ "links": { "kv": "someone-elses" } }),
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_REQUEST"), "{e}");
+
+    let made = alice
+        .apps()
+        .create(create("notes", Value::Null))
+        .await
+        .map(wire)
+        .unwrap();
+    let notes = made["appId"].as_str().unwrap().to_owned();
+    let kv = made["links"]["kv"].as_str().unwrap().to_owned();
+    assert!(
+        made["links"].get("calendar").is_none(),
+        "an attached app is never created"
+    );
+
+    let notes_record = alice.apps().get(&notes).await.map(wire).unwrap();
+    let kv_record = alice.apps().get(&kv).await.map(wire).unwrap();
+    assert_eq!(notes_record["links"], json!({ "kv": kv }));
+    assert_eq!(kv_record["name"], json!("notes.kv"));
+    assert_eq!(kv_record["org"], notes_record["org"]);
+    assert_eq!(kv_record["owner"], notes_record["owner"]);
+    assert_eq!(
+        kv_record["release"]["package"],
+        json!("com.calimero.unit-kv")
+    );
+    // The instance's init was told the ids; the member's was told nothing.
+    assert_eq!(
+        strong_view(&alice, &notes, "links", json!({})).await,
+        json!({ "kv": kv })
+    );
+    assert_eq!(
+        strong_view(&alice, &kv, "links", json!({})).await,
+        json!({})
+    );
+    // One organization's apps: the instance's messages reach its member.
+    let _r = alice
+        .apps()
+        .call(
+            &notes,
+            "relay",
+            Some(json!({ "app": kv, "key": "from-notes", "value": "hi" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let got = eventually(&alice, &kv, "get", json!({ "key": "from-notes" }), |v| {
+        v.is_string()
+    })
+    .await;
+    assert_eq!(got, json!("hi"));
+}
+
 /// A synchronous xcall: the forms app (kv) verifies a captcha answer with the captcha
 /// service, another app in the same organization, inside its own call, and writes only if
 /// it passed. The challenge is spent in the captcha app's own log; a second use fails; an

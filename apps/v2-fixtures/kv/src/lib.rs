@@ -58,6 +58,9 @@ pub struct Kv {
     enrichments: UnorderedMap<String, String>,
     /// What `onActionFailed` was told, by method.
     action_failures: UnorderedMap<String, String>,
+    /// The apps the node created with this instance (`uses` with `mode: create`), by name,
+    /// as `init` was told them.
+    links: UnorderedMap<String, String>,
 }
 
 /// `{ key }`, as an action passes it on.
@@ -127,9 +130,22 @@ const BEAT_MS: u64 = 3_600_000;
 #[app::logic]
 #[allow(clippy::len_without_is_empty)]
 impl Kv {
+    /// `links`: the apps the node created with this instance, when its release creates
+    /// any (the node passes them; a client never does).
     #[app::init]
-    pub fn init() -> app::Result<Self> {
-        Ok(Self::load())
+    pub fn init(links: Option<std::collections::BTreeMap<String, String>>) -> app::Result<Self> {
+        let mut s = Self::load();
+        for (name, app) in links.unwrap_or_default() {
+            let _prev = s.links.insert(&name, &app)?;
+        }
+        Ok(s)
+    }
+
+    /// What `init` was told of the apps created with this instance.
+    #[app::view]
+    pub fn links(&self) -> app::Result<std::collections::BTreeMap<String, String>> {
+        let page = self.links.page(FindOpts::default().limit(LIST_LIMIT))?;
+        Ok(page.items.into_iter().collect())
     }
 
     /// Sets `key`; emits `Inserted` for a new key, `Updated` for an existing one.

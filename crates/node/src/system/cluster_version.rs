@@ -104,10 +104,13 @@ pub enum Feature {
     /// `InstallPackage` of a release that declares `secrets`: an earlier release drops
     /// them and fills any secret its operator bound to the package.
     DeclaredSecrets,
+    /// `CreateApp` naming the apps its release created with it (`AppRecord::links`): an
+    /// earlier release drops them, so its replicas would list the instance without its unit.
+    AppLinks,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 26] = [
+pub const FEATURES: [Feature; 27] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -134,6 +137,7 @@ pub const FEATURES: [Feature; 26] = [
     Feature::OrgCapabilities,
     Feature::InviteCapabilities,
     Feature::DeclaredSecrets,
+    Feature::AppLinks,
 ];
 
 impl Feature {
@@ -167,6 +171,7 @@ impl Feature {
             Self::OrgCapabilities => "orgCapabilities",
             Self::InviteCapabilities => "inviteCapabilities",
             Self::DeclaredSecrets => "declaredSecrets",
+            Self::AppLinks => "appLinks",
         }
     }
 
@@ -197,7 +202,7 @@ impl Feature {
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
             Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
-            Self::DeclaredSecrets => "1.0.0-rc.31",
+            Self::DeclaredSecrets | Self::AppLinks => "1.0.0-rc.31",
         }
     }
 }
@@ -452,7 +457,16 @@ impl SystemCmd {
                 }
                 f
             }
-            Self::CreateApp { app } if !app.components.is_app() => vec![Feature::ComputeOnly],
+            Self::CreateApp { app } => {
+                let mut f = Vec::new();
+                if !app.components.is_app() {
+                    f.push(Feature::ComputeOnly);
+                }
+                if !app.links.is_empty() {
+                    f.push(Feature::AppLinks);
+                }
+                f
+            }
             Self::AcquireRun { pool: Some(_), .. } => vec![Feature::NamedPool],
             Self::CreateOrg {
                 app_team,
@@ -472,7 +486,6 @@ impl SystemCmd {
             | Self::RemoveNode { .. }
             | Self::PutBundle { .. }
             | Self::UninstallPackage { .. }
-            | Self::CreateApp { .. }
             | Self::UpgradeApp { .. }
             | Self::TransferApp { .. }
             | Self::DeleteApp { .. }
@@ -810,6 +823,12 @@ mod tests {
                 "connectorGib": 1, "storageGibMonth": 1, "egressGib": 1,
             } })),
             Feature::ComputeOnly => install(json!({ "components": "computeOnly" })),
+            Feature::AppLinks => entry(json!({ "op": "createApp", "app": {
+                "appId": "app", "name": "notes", "group": 0, "bundle": "b", "owner": "a",
+                "org": "org", "access": { "kind": "org" }, "confirmMethods": [], "replicas": [1],
+                "createdAt": 1, "initArgs": null, "metadata": null,
+                "links": { "kv": "kv-app" },
+            } })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),

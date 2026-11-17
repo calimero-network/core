@@ -772,6 +772,16 @@ is its command line.
   Entries leave past `MAX_CACHE_ENTRIES` (oldest first) and after `CACHE_TTL_MS` by the applied entry's timestamp (`expire_step_cache`, at most `CACHE_EXPIRY_STEP` per entry), releasing their holds; a hit refreshes the entry and moves it last.
   `StepState::is_cached` and `cached_items` feed `cached` and `cachedItems` in the run view; a start naming a file id the app does not hold answers `410 OUTPUT_EXPIRED`, and `503 UNAVAILABLE` when the app's leader does not answer (regressions: `a_start_while_the_apps_leader_changes_finds_its_uploaded_file`, `a_start_while_the_app_has_no_leader_is_unavailable_not_expired`).
   Tests: `component/tests/pipelines.rs` (apply), `compute/pipelines.rs` (`plan` keys and hits), `pipeline_runs.rs` (`rerunning_with_one_changed_param_runs_only_the_steps_it_reaches`, `a_step_with_cache_false_always_runs`, `a_fan_out_reuses_its_cached_items`, `starting_with_an_expired_output_answers_output_expired`).
+- **Units** (`api/apps.rs`: `create_instance`, `unit_members`; docs: build
+  packaging-signing, `uses`): creating an instance of a release whose signed
+  manifest has `uses` with `mode: create` first creates each referenced app
+  (same organization and owner, the release its lock pinned or the newest
+  installed one in range, else `409 USES_NOT_INSTALLED`; at most
+  `MAX_UNIT_DEPTH` deep), then records them on the instance
+  (`AppRecord::links`, `Feature::AppLinks`, rc.31) and, when the release's
+  `init` takes `links`, passes their ids in `initArgs` (a client's own
+  `links` there is refused). A failure after a member was made leaves it in
+  place. Regression: `creating_an_instance_creates_the_apps_its_release_uses`.
 - **Transfers**: `POST /apps/{app}/transfer { to }` (owner, or for an org app its owner while a member or an org admin, `SystemState::manages_app`; passkey consent; an org app only to a member). Regression: `an_owner_transfers_an_app_with_their_passkey`.
 - **Moves**: `POST /apps/{app}/move { toOrg, bringMembers }` (`SystemCmd::MoveApp`, `SystemState::move_app`; consent `<app> / __move`): the app's manager where it is now, as an admin of `toOrg`. Data stays put; `AppRecord.org`, the payer's file bytes and compute slots move, within the target's quotas (`payer_quotas`: its override, else the cluster's, with `MoveApp { org_quotas }`, which the API always sets; `Feature::MoveOrgQuotas`, rc.24; an entry without it replays judging the cluster's limits). `org`/app-team access becomes the target's app team (made open, or closed when every app team of the target is; `org` access in a legacy target); a team other than the package's app team is refused (`MOVE_NEEDS_APP_TEAM`), and so is an owner who is not a member of the target afterwards (`MOVE_OWNER_NOT_IN_TARGET`) and a target that approves none of the releases holding the app (`MOVE_RELEASES_DISJOINT`); clients see each as `400 REJECTED` with the reason as the message. `bringMembers` adds the source's members who reach the app, capped at member, with app-team rows. Regressions: the `moving` unit tests in `system.rs` (`a_move_is_judged_by_the_targets_own_quota`), `tests/move_app.rs`.
 - **Every app is in an organization** (`AppRecord::org`, required; hard
