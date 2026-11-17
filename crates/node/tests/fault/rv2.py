@@ -74,8 +74,22 @@ def knows_org(meroctl: str) -> bool:
     return _KNOWS_ORG[meroctl]
 
 
+# `cloud compute pipeline` from 1.0.0-rc.24; before, the top-level `pipeline`
+# (which 1.0.0-rc.31 removes).
+_KNOWS_CLOUD_COMPUTE: dict[str, bool] = {}
+
+
+def knows_cloud_compute(meroctl: str) -> bool:
+    if meroctl not in _KNOWS_CLOUD_COMPUTE:
+        probe = subprocess.run([meroctl, "cloud", "compute", "--help"], capture_output=True, timeout=30)
+        _KNOWS_CLOUD_COMPUTE[meroctl] = probe.returncode == 0
+    return _KNOWS_CLOUD_COMPUTE[meroctl]
+
+
 def spelled_for(meroctl: str, args) -> list[str]:
     args = [str(a) for a in args]
+    if args[:2] == ["cloud", "compute"] and not knows_cloud_compute(meroctl):
+        args = args[2:]
     if not knows_org(meroctl):
         args = [_OLD_TOP.get(a, a) if i == 0 else _OLD_SUB.get(a, a) if i == 1 else a
                 for i, a in enumerate(args)]
