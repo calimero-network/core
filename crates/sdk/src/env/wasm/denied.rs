@@ -20,6 +20,10 @@ pub fn app_id() -> String {
     denied()
 }
 
+pub fn linked(_name: &str) -> Option<String> {
+    denied()
+}
+
 pub fn app_owner() -> String {
     denied()
 }

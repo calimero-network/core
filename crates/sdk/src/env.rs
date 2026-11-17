@@ -110,6 +110,14 @@ pub fn app_id() -> String {
     backend::app_id()
 }
 
+/// The app this instance's release references under `name` (`uses` in the release's
+/// `Cargo.toml` metadata): the member the node created with this instance, or the app its
+/// owner attached. `None` when nothing is linked under that name. Read it whenever you call
+/// the app: an owner may attach another one later.
+pub fn linked(name: &str) -> Option<String> {
+    backend::linked(name)
+}
+
 /// The account that owns the app.
 pub fn app_owner() -> String {
     backend::app_owner()

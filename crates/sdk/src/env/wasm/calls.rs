@@ -36,6 +36,10 @@ pub fn app_id() -> String {
     context::app_id()
 }
 
+pub fn linked(name: &str) -> Option<String> {
+    context::linked(name)
+}
+
 pub fn app_owner() -> String {
     context::app_owner()
 }

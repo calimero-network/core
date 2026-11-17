@@ -69,6 +69,12 @@ NOT_COVERED = [
      "`links` is written only once every node runs this release (`Feature::AppLinks`); "
      "`creating_an_instance_creates_the_apps_its_release_uses` (`component_cluster.rs`) covers it on one "
      "build, and a record without it reads as before (`serde(default)`)"),
+    ("Apps", "An app attached to an instance's `attach` reference (`AppRecord::attached`, `env::linked`)",
+     "the deep fixtures are packed by the old release's meroctl, which writes no `uses`, so no instance has "
+     "a reference to attach to, and a `LinkApp` is written only once every node runs this release "
+     "(`Feature::AttachApp`); `an_owner_attaches_an_app_and_the_instance_reads_it_with_linked` "
+     "(`component_cluster.rs`) covers it on one build, and a record without it reads as before "
+     "(`serde(default)`)"),
     ("Apps", "The person a run serves, carried to the apps it calls (`env::on_behalf_of`, `Feature::OnBehalfOf`)",
      "it stores nothing of its own (an outbox row only gains the person while the message waits), and the deep "
      "fixtures are built from the old release's source, whose kv fixture has no method that reads it; "

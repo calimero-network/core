@@ -1442,6 +1442,8 @@ pub struct App {
     pub restore: Option<AppRestore>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub links: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attached: Option<BTreeMap<String, String>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -2648,6 +2650,51 @@ pub struct IntentsResponse {
     pub result: Value,
     pub events: Vec<IntentsResponseEventsItem>,
     pub receipt: Receipt,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppLinksResponseLinksItem {
+    pub name: String,
+    pub package: Option<String>,
+    pub range: Option<String>,
+    pub mode: Option<String>,
+    pub app: Option<String>,
+    pub version: Option<String>,
+    #[serde(rename = "inRange")]
+    pub in_range: Option<bool>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppLinksResponse {
+    pub app: String,
+    pub links: Vec<AppLinksResponseLinksItem>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppLinkRequest {
+    pub app: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppLinkResponse {
+    pub name: String,
+    pub package: Option<String>,
+    pub range: Option<String>,
+    pub mode: Option<String>,
+    pub app: Option<String>,
+    pub version: Option<String>,
+    #[serde(rename = "inRange")]
+    pub in_range: Option<bool>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

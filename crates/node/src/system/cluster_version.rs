@@ -108,6 +108,10 @@ pub enum Feature {
     /// `CreateApp` naming the apps its release created with it (`AppRecord::links`): an
     /// earlier release drops them, so its replicas would list the instance without its unit.
     AppLinks,
+    /// `LinkApp`, an app attached to an instance's `attach` reference
+    /// (`AppRecord::attached`): an earlier release cannot decode it, so its replicas would
+    /// list the instance without the app and its runs would read no link.
+    AttachApp,
     /// A run's xcalls carrying the person it serves (`XcallOut::on_behalf_of`,
     /// `CallRequest::on_behalf_of`): an earlier release drops the field from the
     /// outbox row and the forwarded request, so the same delivery would reach the
@@ -118,7 +122,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 28] = [
+pub const FEATURES: [Feature; 29] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -147,6 +151,7 @@ pub const FEATURES: [Feature; 28] = [
     Feature::OnBehalfOf,
     Feature::AppLinks,
     Feature::UnitUpgrade,
+    Feature::AttachApp,
 ];
 
 impl Feature {
@@ -182,6 +187,7 @@ impl Feature {
             Self::OnBehalfOf => "onBehalfOf",
             Self::AppLinks => "appLinks",
             Self::UnitUpgrade => "unitUpgrade",
+            Self::AttachApp => "attachApp",
         }
     }
 
@@ -220,7 +226,9 @@ impl Feature {
             Self::OrgAppTeam => "1.0.0-rc.22",
             Self::MoveOrgQuotas | Self::PublishedRunByRelease => "1.0.0-rc.24",
             Self::OrgCapabilities | Self::InviteCapabilities => "1.0.0-rc.29",
-            Self::OnBehalfOf | Self::AppLinks | Self::UnitUpgrade => "1.0.0-rc.30",
+            Self::OnBehalfOf | Self::AppLinks | Self::UnitUpgrade | Self::AttachApp => {
+                "1.0.0-rc.30"
+            }
         }
     }
 }
@@ -430,6 +438,7 @@ impl SystemCmd {
                 f
             }
             Self::SetOrgQuotas { .. } => vec![Feature::OrgQuotas],
+            Self::LinkApp { .. } => vec![Feature::AttachApp],
             Self::SetPools { .. } => vec![Feature::ComputePools],
             Self::ScopeApps {
                 apps, by_release, ..
@@ -856,6 +865,8 @@ mod tests {
                 "createdAt": 1, "initArgs": null, "metadata": null,
                 "links": { "kv": "kv-app" },
             } })),
+            Feature::AttachApp => entry(json!({ "op": "linkApp", "app_id": "app", "name": "kv",
+                "target": "kv-app", "actor": "a" })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),

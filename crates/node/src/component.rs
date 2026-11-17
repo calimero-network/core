@@ -1824,6 +1824,11 @@ impl host::Directory for SysDirectory {
                 .unwrap_or_default()
         })
     }
+
+    /// A unit member the instance was created with, else an app its owner attached.
+    fn linked(&self, name: &str) -> Option<String> {
+        self.with(|_, a| a.links.get(name).or_else(|| a.attached.get(name)).cloned())
+    }
 }
 
 /// The ABI JSON a component embeds (its top-level `calimero:abi` section), as the
