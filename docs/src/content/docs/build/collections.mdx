@@ -1,6 +1,6 @@
 ---
 title: Tables & Collections
-description: Reference for the state types of calimero-sdk — Table with indexes, unique constraints and counts, and the collections Cell, UnorderedMap, Set, Vector, Counter, Frozen, PerUser, Text and RichText.
+description: Reference for the state types of calimero-sdk — Table with indexes, unique constraints, counts and a maintained length, and the collections Cell, UnorderedMap, Set, Vector, Counter, Frozen, PerUser, Text and RichText.
 sidebar:
   order: 5
 ---
@@ -105,6 +105,7 @@ pub struct Booking {
 | `clear_some(max)` | Removes at most `max` records; `done` once the table is empty. |
 | `iter()` / `scan_iter(opts)` / `find_iter(index, &prefix, opts)` | The same reads over every page, as an iterator (see [Iterating](#iterating)). |
 | `count(name, &prefix)` | A maintained count: one read when `prefix` names every field of the count. |
+| `len()` / `is_empty()` | How many records the table holds / whether none: one read of a maintained length (see [The length](#the-length)). |
 | `search(text, SearchOpts)` | Full-text search over `#[table(search = [..])]` fields, best match first (views only). |
 
 Index and count names are camelCase (`by_start` → `"byStart"`); a name the
@@ -122,6 +123,32 @@ for b in due.items {
     self.bookings.remove(&b.id)?;
 }
 ```
+
+### The length
+
+A table keeps how many records it holds at `(table, "n")`, so `len()` is one
+read, as a collection's `len` is. Every write that adds or removes records moves
+it with one `add`: `insert` and `upsert` of a new key, `remove` of a present one,
+and `retain`, `remove_by` and `clear_some` once per call for all they removed.
+An `update`, an `upsert` of an existing key, a removal of an absent key and a
+refused write (an existing key, a unique clash, a changed key) leave it alone.
+Use it instead of summing a count over every value (`count(name, &[])`).
+
+A table stored before tables kept a length has no length row, and `len()` never
+guesses: until the table's next insert or removal, it counts the records
+through one cursor (a host call per 1,000 records), and `is_empty()` reads one
+record. That first insert or removal counts the records once and writes the
+length and a mark, `(table, "l")`, beside it; from then on it is one read. A
+table emptied by `clear()` has neither row and starts again the same way, for
+the price of counting nothing.
+
+A write reads the mark, never the length, so inserts into one table still do
+not conflict over a shared row (D47).
+
+Once a table has a length, every release that writes it must keep it: a
+release built with an SDK from before `len()` inserts and removes records
+without moving it, and nothing can tell afterwards. Do not go back to such an
+SDK for an app whose tables have a length.
 
 ### Pages
 
@@ -237,8 +264,8 @@ Each key's collection costs exactly what a state field's does: a write per
 element, its own stored length, reads through its own cursor. Nothing is
 serialized whole, as a `Vec<T>` value would be on every change. `insert`,
 `len`, `page` and `range` are for plain values; a map of collections keeps no
-count of its keys. A `Table` value keeps its indexes, unique constraints and
-counts, but full-text `search` covers only the state's own tables.
+count of its keys. A `Table` value keeps its indexes, unique constraints,
+counts and length, but full-text `search` covers only the state's own tables.
 
 ```rust
 #[app::state(version = 1)]
@@ -253,10 +280,16 @@ pub struct Store {
 ## Costs and limits
 
 - Lengths and counts are stored and kept with an atomic add on every write, so
-  `len` and `count` are one read, never a scan.
+  `len` and `count` are one read, never a scan (a table stored before it kept
+  a length counts its records until its next insert or removal:
+  [The length](#the-length)).
+- Inserting a table record costs `1 + indexes + uniques + counts` writes and
+  one more for the length (two more, the length and its mark, the first time a
+  table has none); an update costs none for the length.
 - `clear` deletes in batches of at most 1,000 until nothing is left.
-- Removing a table record costs `1 + indexes + uniques + counts` writes, so a
-  run removes a few thousand at most. Past that, remove a slice per run:
+- Removing a table record costs `1 + indexes + uniques + counts` writes, and
+  one more for the length per `remove`, or per call of `retain`, `remove_by`
+  and `clear_some`, so a run removes a few thousand at most. Past that, remove a slice per run:
   `clear_some(max)` on a `Table`, `UnorderedMap`, `Set` or `Vector`, and
   `Table::remove_by(index, &prefix, max)`, answer `Progress { removed, done }`;
   call them from a timer until `done`.
