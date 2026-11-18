@@ -27,6 +27,7 @@ use crate::usage::{Meter, Usage};
 pub(crate) mod blob_guards;
 mod cluster_version;
 mod component;
+pub mod digests;
 mod job;
 pub(crate) mod recovery_disk;
 pub(crate) mod restore;

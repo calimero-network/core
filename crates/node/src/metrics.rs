@@ -152,6 +152,11 @@ struct Registry {
     undecodable: [u64; LogKind::ALL.len()],
     /// The system state's serialized size when it was last checkpointed or restored.
     system_state_bytes: u64,
+    /// `(group, peer)` → the index at which this leader last found that
+    /// replica's state digest different from its own ([`digest_compared`]).
+    diverged: BTreeMap<(u64, u64), u64>,
+    /// Times a comparison found a replica newly different.
+    divergences: u64,
 }
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(Mutex::default);
@@ -255,6 +260,25 @@ pub fn undecodable_entry(log: LogKind) -> u64 {
 /// snapshot hold, as last checkpointed or restored here.
 pub fn system_state_bytes(bytes: usize) {
     registry().system_state_bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+}
+
+/// Note how a group's state digest compared with a replica's
+/// (`Node::compare_digests`); answers whether that changed what is recorded
+/// for the pair (it differs now and did not, or agrees now and did not). A
+/// comparison that could not tell leaves it as it was.
+pub fn digest_compared(group: u64, peer: u64, outcome: calimero_log::Comparison) -> bool {
+    let mut r = registry();
+    match outcome {
+        calimero_log::Comparison::Differ { index, .. } => {
+            let first = r.diverged.insert((group, peer), index).is_none();
+            if first {
+                r.divergences += 1;
+            }
+            first
+        }
+        calimero_log::Comparison::Agree { .. } => r.diverged.remove(&(group, peer)).is_some(),
+        calimero_log::Comparison::Unknown => false,
+    }
 }
 
 /// Note one WASM run's wall time on this node, whatever became of its result.
@@ -486,6 +510,21 @@ pub fn render(out: &mut String) {
         out,
         "# HELP calimero_system_state_bytes The system state's serialized size (one checkpoint row, carried by every system snapshot and backup), as last checkpointed or restored here; 0 before either.\n# TYPE calimero_system_state_bytes gauge\ncalimero_system_state_bytes {}",
         r.system_state_bytes
+    );
+    let _w = writeln!(
+        out,
+        "# HELP calimero_group_diverged The index at which this node, leading the group, last found the replica's state different from its own at the same index; present only while the latest comparison differs. Anything here is a bug or a disk fault: see the runbook.\n# TYPE calimero_group_diverged gauge"
+    );
+    for ((group, peer), index) in &r.diverged {
+        let _w = writeln!(
+            out,
+            "calimero_group_diverged{{group=\"{group}\",peer=\"{peer}\"}} {index}"
+        );
+    }
+    let _w = writeln!(
+        out,
+        "# HELP calimero_group_divergences_total Times a leader found a replica's state newly different from its own at the same index.\n# TYPE calimero_group_divergences_total counter\ncalimero_group_divergences_total {}",
+        r.divergences
     );
     let _w = writeln!(
         out,

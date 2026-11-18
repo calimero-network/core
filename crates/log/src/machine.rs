@@ -16,6 +16,7 @@
     reason = "openraft's trait signatures fix these error types"
 )]
 
+use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -28,6 +29,7 @@ use openraft::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
+use crate::digest::{DigestAt, StateDigest, DIGEST_EVERY, DIGEST_KEPT};
 use crate::store::{load_generation, Db, GroupState, StateTx, Transaction};
 use crate::types::{
     Bytes, Entry, GroupId, LogId, SnapshotMeta, StorageError, StoredMembership, TypeConfig,
@@ -73,6 +75,12 @@ pub struct Applied<M> {
     pub machine: M,
     pub last_applied: Option<LogId>,
     pub membership: StoredMembership,
+    /// The digest of a disk machine's state rows at `last_applied`
+    /// ([`crate::digest`]); the empty digest for an in-memory machine.
+    pub digest: StateDigest,
+    /// Its digests at the latest indexes that are multiples of
+    /// [`crate::digest::DIGEST_EVERY`] this node applied, oldest first.
+    pub recorded: VecDeque<DigestAt>,
 }
 
 impl<M> Applied<M> {
@@ -96,6 +104,29 @@ struct AppliedMeta {
 struct SnapshotRecord {
     meta: SnapshotMeta,
     file: String,
+}
+
+/// The group meta row the state digest at the applied index lives in
+/// ([`DigestAt`]), committed with every batch that moves it.
+pub(crate) const DIGEST_META: &str = "digest";
+
+/// Keep `at` among the recorded digests, at most [`DIGEST_KEPT`] of them.
+fn record(recorded: &mut VecDeque<DigestAt>, at: DigestAt) {
+    recorded.push_back(at);
+    while recorded.len() > DIGEST_KEPT {
+        let _oldest = recorded.pop_front();
+    }
+}
+
+/// The digest of a group generation's state rows, taken from all of them: for a
+/// state whose stored digest is missing or stale.
+fn digest_of_rows(db: &Db, group: GroupId, generation: u32) -> eyre::Result<StateDigest> {
+    let mut d = StateDigest::default();
+    db.scan_state(group, generation, &[], |k, v| {
+        d = d.plus(StateDigest::of_row(k, v));
+        Ok(true)
+    })?;
+    Ok(d)
 }
 
 /// The state row an in-memory machine's checkpoint lives in (and so where a
@@ -377,6 +408,29 @@ fn load<M: Machine>(db: &Db, state: &GroupState, st: &mut Applied<M>) -> eyre::R
     }
     st.last_applied = applied.last_applied;
     st.membership = applied.membership;
+    // What was recorded in memory may be of batches that never committed.
+    st.recorded.clear();
+    st.digest = if M::IN_MEMORY {
+        StateDigest::default()
+    } else {
+        let group = state.group();
+        let index = st.applied_index();
+        match db.get_meta::<DigestAt>(group, DIGEST_META)? {
+            Some(d) if d.index == index => d.digest,
+            stored => {
+                // Rows changed outside the log (`StateTx::commit`), or kept by a
+                // release before the digest: taken from the rows once.
+                let d = digest_of_rows(db, group, state.generation.load(Ordering::Acquire))?;
+                tracing::info!(
+                    group,
+                    index,
+                    had = stored.is_some(),
+                    "the state digest was taken from the rows"
+                );
+                d
+            }
+        }
+    };
     Ok(())
 }
 
@@ -440,6 +494,8 @@ impl<M: Machine> StateMachine<M> {
             machine,
             last_applied: None,
             membership: StoredMembership::default(),
+            digest: StateDigest::default(),
+            recorded: VecDeque::new(),
         };
         load(&db, &state, &mut applied)?;
         let _ = applied_tx.send(applied.applied_index());
@@ -484,6 +540,7 @@ impl<M: Machine> StateMachine<M> {
         let mut out = Vec::new();
         let mut last = 0;
         let mut tx = StateTx::new(&self.state);
+        let mut recorded = Vec::new();
         for entry in entries {
             st.last_applied = Some(entry.log_id);
             last = entry.log_id.index;
@@ -513,12 +570,32 @@ impl<M: Machine> StateMachine<M> {
             if tx.failed() {
                 break;
             }
+            // Each entry's digest, wherever the batches split: replicas meet
+            // at the same indexes.
+            if !M::IN_MEMORY && last.is_multiple_of(DIGEST_EVERY) {
+                recorded.push(DigestAt {
+                    index: last,
+                    digest: st.digest.plus(tx.digest_delta()),
+                });
+            }
         }
+        let digest = st.digest.plus(tx.digest_delta());
         // The batch's writes and the index they bring the state to land
         // together; readers, held off by the lock, see neither until then.
         let mut batch = Transaction::default();
         tx.into_batch(&mut batch).map_err(io)?;
         if !M::IN_MEMORY && last > 0 {
+            self.db
+                .stage_meta(
+                    &mut batch,
+                    self.group,
+                    DIGEST_META,
+                    &DigestAt {
+                        index: last,
+                        digest,
+                    },
+                )
+                .map_err(io)?;
             self.db
                 .stage_meta(
                     &mut batch,
@@ -539,6 +616,12 @@ impl<M: Machine> StateMachine<M> {
         // re-applied from there.
         if !self.db.losing_unsynced(self.group) {
             self.db.commit(&batch, false).map_err(io)?;
+        }
+        if !M::IN_MEMORY {
+            st.digest = digest;
+            for at in recorded {
+                record(&mut st.recorded, at);
+            }
         }
         Ok((out, last))
     }
@@ -729,6 +812,7 @@ impl<M: Machine> StateMachine<M> {
         let group = self.group;
         let db = Arc::clone(&self.db);
         let file = std::fs::File::open(&path)?;
+        let mut digest = StateDigest::default();
         let read = read_frames(
             &db.snapshot_sealer,
             group,
@@ -736,6 +820,7 @@ impl<M: Machine> StateMachine<M> {
             file,
             |key, sealed| {
                 let plain = db.open_state(group, key, sealed)?;
+                digest = digest.plus(StateDigest::of_row(key, &plain));
                 db.stage_state(&mut batch, group, next, key, Some(&plain))?;
                 pending += key.len() + plain.len();
                 if pending >= INSTALL_BATCH_BYTES {
@@ -771,8 +856,23 @@ impl<M: Machine> StateMachine<M> {
                     membership: meta.last_membership.clone(),
                 },
             )?;
+            let at = DigestAt {
+                index: meta.last_log_id.map_or(0, |l| l.index),
+                digest,
+            };
+            if !M::IN_MEMORY {
+                db.stage_meta(&mut switch, group, DIGEST_META, &at)?;
+            }
             db.commit(&switch, true)?;
             self.state.generation.store(next, Ordering::Release);
+            // A state that came by snapshot, not by the entries recorded before.
+            st.recorded.clear();
+            if !M::IN_MEMORY {
+                st.digest = digest;
+                if at.index.is_multiple_of(DIGEST_EVERY) {
+                    record(&mut st.recorded, at);
+                }
+            }
             if M::IN_MEMORY {
                 let data = self.state.get(CHECKPOINT_KEY).unwrap_or_default();
                 st.machine.restore(&data)?;
@@ -942,6 +1042,7 @@ pub(crate) fn replace_state<M: Machine>(
     let mut batch = Transaction::default();
     let mut pending = 0_usize;
     let mut rows = 0_u64;
+    let mut digest = StateDigest::default();
     let read = read_frames(
         &db.snapshot_sealer,
         from,
@@ -950,6 +1051,7 @@ pub(crate) fn replace_state<M: Machine>(
         |key, sealed| {
             let plain = db.open_state(from, key, sealed)?;
             let key = rehide(db, from, group, key, &plain);
+            digest = digest.plus(StateDigest::of_row(&key, &plain));
             db.stage_state(&mut batch, group, next, &key, Some(&plain))?;
             pending += key.len() + plain.len();
             rows += 1;
@@ -972,9 +1074,17 @@ pub(crate) fn replace_state<M: Machine>(
         let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
         let mut switch = Transaction::default();
         db.stage_meta(&mut switch, group, "generation", &next)?;
+        let at = DigestAt {
+            index: st.applied_index(),
+            digest,
+        };
+        db.stage_meta(&mut switch, group, DIGEST_META, &at)?;
         db.commit(&switch, true)?;
         state.generation.store(next, Ordering::Release);
         st.machine.restore(&[])?;
+        // Another state at the same index: what was recorded before no longer holds.
+        st.digest = digest;
+        st.recorded.clear();
     }
     db.drop_generation(group, old)?;
     if let Some(served) = db.get_meta::<SnapshotRecord>(group, "snapshot")? {
@@ -1126,6 +1236,7 @@ pub(crate) fn replace_state_rows<M: Machine>(
     let mut batch = Transaction::default();
     let mut pending = 0_usize;
     let mut count = 0_u64;
+    let mut digest = StateDigest::default();
     let mut stage = |row: PortableRow| -> eyre::Result<()> {
         let (key, value) = match row {
             PortableRow::Plain { key, value } => (key, value),
@@ -1133,6 +1244,7 @@ pub(crate) fn replace_state_rows<M: Machine>(
                 (hide(&db.hider, group, tag, &key), wrap_hidden(&key, &value))
             }
         };
+        digest = digest.plus(StateDigest::of_row(&key, &value));
         db.stage_state(&mut batch, group, next, &key, Some(&value))?;
         pending += key.len() + value.len();
         count += 1;
@@ -1155,9 +1267,17 @@ pub(crate) fn replace_state_rows<M: Machine>(
         let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
         let mut switch = Transaction::default();
         db.stage_meta(&mut switch, group, "generation", &next)?;
+        let at = DigestAt {
+            index: st.applied_index(),
+            digest,
+        };
+        db.stage_meta(&mut switch, group, DIGEST_META, &at)?;
         db.commit(&switch, true)?;
         state.generation.store(next, Ordering::Release);
         st.machine.restore(&[])?;
+        // Another state at the same index: what was recorded before no longer holds.
+        st.digest = digest;
+        st.recorded.clear();
     }
     db.drop_generation(group, old)?;
     if let Some(served) = db.get_meta::<SnapshotRecord>(group, "snapshot")? {

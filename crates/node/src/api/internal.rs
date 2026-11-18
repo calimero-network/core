@@ -767,6 +767,25 @@ async fn internal_app_index(
     Ok(Json(json!({ "index": index })))
 }
 
+/// This node's state digests of the app groups a peer leads
+/// (`Node::compare_digests`): only of a group the caller is a member of, at most
+/// [`crate::node::digests::DIGEST_GROUPS_PER_ASK`] groups an ask.
+async fn internal_digests(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    key: Option<Extension<calimero_sealed::PeerKey>>,
+    Json(ask): Json<crate::node::digests::DigestsAsk>,
+) -> ApiResult {
+    let caller = peer(&node, &headers, key).await?;
+    if ask.groups.len() > crate::node::digests::DIGEST_GROUPS_PER_ASK {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            "too many groups in one ask",
+        ));
+    }
+    Ok(Json(json!(node.digests_for(caller.node, &ask.groups))))
+}
+
 /// This node's runtime (`Config::release`), for a peer judging whether this
 /// node may run a release (`Node::runtime_of_node`).
 async fn internal_runtime(
@@ -860,6 +879,7 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/internal/system/index", post(internal_system_index))
         .route("/internal/app/index", post(internal_app_index))
         .route("/internal/runtime", post(internal_runtime))
+        .route("/internal/digests", post(internal_digests))
         .route("/internal/call", post(internal_call))
         .route(
             "/internal/upload-begin/{app}/{account}/{size}",
