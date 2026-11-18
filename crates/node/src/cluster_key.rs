@@ -148,6 +148,9 @@ pub fn write_secret(dir: &Path, file: &str, bytes: &[u8]) -> eyre::Result<()> {
     }
     std::fs::File::open(&tmp)?.sync_all()?;
     std::fs::rename(&tmp, &path)?;
+    // The rename is durable with the directory, not with the file.
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
     Ok(())
 }
 

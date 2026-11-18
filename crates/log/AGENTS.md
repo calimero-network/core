@@ -105,6 +105,18 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   again, never failing (a failed build is fatal to openraft's core), and a
   record no newer than the served one is never kept. Lock order: the
   snapshot-record lock, then `shared`. Regressions: `machine::build_races`.
+  openraft does not wait for a build when a core shuts down, so
+  `Engine::remove_group` drops a group's data under both locks and marks its
+  `GroupState` removed (`Group::drop_data`); a build still running then fails
+  (`refuse_if_removed`) and writes no checkpoint, record or file for it.
+  `Engine::open` deletes every `g<group>-*.snap` file no group's `snapshot`
+  record names (a receive or build a crash cut short, a file a crash kept from
+  being deleted, a removed group's), before any group starts
+  (`machine::clean_snapshot_dir`). Regressions: `tests/snapshot_files.rs`.
+  A group builds a full snapshot every `Config::snapshot_every` (1,000) applied
+  entries whatever the state's size: openraft 0.9's `SnapshotPolicy` knows only
+  `LogsSinceLast(n)` and `Never`, so a size-aware policy would mean `Never` and
+  triggering builds from the engine (not done).
 - State digests (`digest.rs`): a disk machine's state has a digest, the sum mod 2^256 of
   `SHA-256(label ‖ len(key) ‖ key ‖ value)` over its rows (`StateDigest`), so it depends on
   the rows alone. `StateTx::put`/`delete` move it by the row written less the row replaced

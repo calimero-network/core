@@ -1498,7 +1498,9 @@ is its command line.
   sealed snapshot file with a sealed manifest beside it (`backup::Manifest`: app,
   group, index, SHA-256, `backup::FORMAT`, the `merod` and release that wrote it,
   bound to the app and file name under `HMAC(K_c, "calimero.backup.manifest.v1")`);
-  `backup::find` checks one, `backup::latest` opens one with K_c.
+  `backup::find` checks one, `backup::latest` opens one with K_c. The file and its
+  manifest are synced before the rename that lists the backup, and the directory
+  after it (likewise kept code and the kept cluster key).
 - **Restore** (`node/restore.rs`, `api/restore.rs`, `POST /ops/apps/{app}/restore`):
   operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before the
   signature (`backup::find`, `Found::check_release`, the bundle the backup's head

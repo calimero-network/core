@@ -587,6 +587,7 @@ impl<M: Machine> StateMachine<M> {
             self.db
                 .pause_build(self.group, crate::testing::BuildPoint::Record);
             let held = self.state.lock_snapshot_record();
+            self.refuse_if_removed(&record.file)?;
             if self.state.generation.load(Ordering::Acquire) == generation {
                 return self.serve_built(record);
             }
@@ -616,6 +617,11 @@ impl<M: Machine> StateMachine<M> {
         // the lock is not held while the file is written, and an install that
         // then drops this generation's rows does not take them from the view.
         let st = self.shared.read().map_err(|e| eyre::eyre!("{e}"))?;
+        // Removed meanwhile: its rows and files are gone, and nothing (an
+        // in-memory machine's checkpoint below, a file) is written again.
+        // Under the read lock, so the removal cannot happen between this and
+        // the checkpoint.
+        self.refuse_if_removed("")?;
         let generation = self.state.generation.load(Ordering::Acquire);
         let last = st.last_applied;
         let meta = SnapshotMeta {
@@ -685,6 +691,20 @@ impl<M: Machine> StateMachine<M> {
         drop(guard);
         w.finish()?;
         Ok((SnapshotRecord { meta, file: name }, generation))
+    }
+
+    /// Fail the build of a group the engine removed (`Engine::remove_group`),
+    /// deleting the file it wrote (`file`, if any) so nothing of the group is
+    /// left. The caller holds the snapshot-record lock or the applied-state
+    /// lock, which the removal takes both of.
+    fn refuse_if_removed(&self, file: &str) -> eyre::Result<()> {
+        if !self.state.removed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if !file.is_empty() {
+            let _removed = std::fs::remove_file(self.snapshot_path(file));
+        }
+        eyre::bail!("group {} was removed: no snapshot is built", self.group)
     }
 
     /// Record a snapshot this node built as the one the group serves, and
@@ -816,6 +836,40 @@ impl<M: Machine> StateMachine<M> {
         })?;
         Ok(())
     }
+}
+
+/// Delete the files in the snapshot directory that no group serves: a
+/// snapshot being received (`g<group>-recv-*.snap`) or built when the node
+/// stopped, one whose record a crash kept from being replaced or deleted, and
+/// those of a group whose rows are gone. Runs as the engine opens, before any
+/// group starts, so no receive or build is under way. A file whose group's
+/// record cannot be read is kept, and anything not named like a snapshot is
+/// left alone.
+pub(crate) fn clean_snapshot_dir(db: &Db) -> eyre::Result<()> {
+    for entry in std::fs::read_dir(&db.snapshot_dir)?.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(group) = name
+            .strip_suffix(".snap")
+            .and_then(|n| n.strip_prefix('g'))
+            .and_then(|n| n.split_once('-'))
+            .and_then(|(g, _)| g.parse::<GroupId>().ok())
+        else {
+            continue;
+        };
+        let served = match db.get_meta::<SnapshotRecord>(group, "snapshot") {
+            Ok(record) => record.is_some_and(|r| r.file == name),
+            Err(e) => {
+                tracing::warn!(group, file = %name, error = %e,
+                    "the group's snapshot record does not read: its file is kept");
+                continue;
+            }
+        };
+        if !served {
+            tracing::info!(group, file = %name, "deleting a snapshot file no group serves");
+            let _removed = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
 }
 
 fn hex_id() -> String {
