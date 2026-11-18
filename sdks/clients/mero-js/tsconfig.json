@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "NodeNext",
+    "lib": ["ES2020", "DOM", "ES2019.Object"],
+    "moduleResolution": "NodeNext",
+    "declaration": true,
+    // No declarationMap/sourceMap: the published package is `dist` only, so any
+    // map tsc emits points at a `../src` that never ships. The esbuild bundles
+    // carry their own maps with sourcesContent inlined.
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "noEmit": false,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": false,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.spec.ts", "src/**/fixtures/**"]
+}

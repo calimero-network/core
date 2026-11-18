@@ -1,0 +1,59 @@
+---
+title: Migrating from v1
+description: What version 27 removed (the v1 SDK for merod 0.x nodes) and what replaces each part on Calimero 1.0.
+sidebar:
+  order: 3
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Version 27 is the client for Calimero 1.0 only. Calimero 1.0 nodes serve no
+admin API, no JSON-RPC, no mero-auth and no contexts or namespaces, so the v1
+SDK that talked to them is gone. An app that still talks to a v1 (0.x) node
+stays on `@calimero-network/mero-js@26`.
+
+<Aside type="note">
+  npm never moves a `^26` range to 27, so nothing upgrades by accident.
+</Aside>
+
+## Names
+
+v1's names map to 1.0's: namespace → **organization**, group → **team**,
+context → **app** (instance), application → signed **package**.
+
+## Removed, and what replaces it
+
+| v1 (removed) | Calimero 1.0 |
+| --- | --- |
+| `MeroJs`, `createMeroJs`, `MeroJsConfig`, `TokenData` | `CalimeroClient` |
+| `sdk.auth` (`AuthApiClient`, mero-auth: username/password, SSO callback, JWT refresh) | `signUp` / `signIn` with a passkey, `refresh`, `createApiKey` |
+| `parseAuthCallback`, `buildAuthLoginUrl`, `MemoryTokenStore`, `LocalStorageTokenStore`, `TokenStore` | keep the `CalimeroSession` yourself and pass it to `useSession` |
+| `login`, `signLoginStatement`, `generateSessionKey`, `DelegatedSession` | passkey sessions and API keys |
+| `sdk.admin` (`AdminApiClient`): applications | `client.packages.install`, `.upload`, `.list`, `.uninstall` |
+| `sdk.admin`: contexts, identities, join | `client.apps.create`, `.list`, `.get`, `.delete`, `.access` |
+| `sdk.admin`: namespaces, groups, members, invitations | `client.orgs.create`, `.teamCreate`, `.setMember`, `.teamSetMember`, `.inviteCreate`, `.inviteRedeem` |
+| `sdk.admin`: group upgrades and their status | `client.orgs.upgrade`, `.upgradeStatus`, `.upgradeRetry` |
+| `sdk.admin`: blobs | `client.apps.blobUpload`, `downloadBlob`, `client.apps.blobList`, `.blobInfo`, `.blobDelete` |
+| `sdk.admin`: TEE admission policy, release admission | `client.orgs.releaseApproval` (the owner's passkey) |
+| `sdk.rpc` (`RpcClient`, `RpcError`, `execute`) | `client.apps.call`, `client.apps.view`; `AppError`, `TrapError` |
+| `sdk.events` / `sdk.ws` (`SseClient`, `WsClient`) and their event types | `events(app)` (sealed SSE) |
+| `EphemeralClient`, `subscribePresence`, `jsonCodec` | `client.apps.presencePublish`, `client.apps.presenceGet`, `presenceStream` |
+| `CloudClient` (namespaces, relays, HA) | none: every app is replicated on the cluster |
+| account roots (`generateAccountRoot`, `accountRootFromPhrase`, `signAccountLink`, …), `resolveRoot` | the account is its passkeys |
+| device certificates and scopes (`signDeviceCert`, `signDeviceScope`, …) | each passkey is a device (`addPasskey`, `client.auth.passkeyLabel`) |
+| `signGroupInvitation`, `signMemberJoinOp`, owner ops (`transferOwnershipOp`, `teeAdmissionPolicyOp`, …) | `client.orgs.inviteCreate`; `client.orgs.setMember({ org, account, role: 'owner' }, { confirm })`; `client.orgs.releaseApproval` |
+| `signerFromSecret`, `signerFromCryptoKey` | none needed |
+| `CAPABILITIES`, `CAPABILITY_PRESETS`, `capMask`, `hasCap`, … | `ORG_CAPABILITIES`, `orgCapabilities` (same bit values, 1.0 names) |
+| `HTTPError`, `AuthRevokedError`, `classifyError` | `CalimeroError` and its subclasses |
+| `createBrowserHttpClient`, `createNodeHttpClient`, `withRetry`, … | the generated methods (`client.orgs.get({ org })`, …), sealed |
+| `discoverLocalNodes`, `probeNodeHealth`, `localNodeUrl` | `meroctl local up` prints its node URLs (`meroctl local status` later) |
+| `fetchAttestedTransportKey`, `createAttestedSealedFetch` (`/admin-api/tee/attest`) | `fetchAttestedKey(baseUrl, policy)` (`/attestation`) |
+| `createSignedReleaseSealedFetch`, `fetchNodeReleaseVersion`, `nodeReleaseVersionFromImage` (`/admin-api/tee/info`) | `CalimeroClient` with `policy.release` (the node names its release in its attestation) |
+
+## Kept
+
+The sealed transport (`createSealedFetch`, `transportKeyBinding`, the error
+types), quote and signed-release verification (`createQuoteVerifier`,
+`trustedMeasurementsFromReleases`, `createSignedReleaseVerifier`,
+`trustSignedRelease`, `verifySignedNodeRelease`, …) and the private agent
+gate (`attestAgent`, `provisionAgent`, `releaseAgent`, …) are unchanged.

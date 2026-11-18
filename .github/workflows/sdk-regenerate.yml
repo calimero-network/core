@@ -1,0 +1,221 @@
+name: SDK regenerate
+
+# When master's node API document (docs/public/openapi.json) changes, regenerate
+# every SDK under sdks/ from it and open, or refresh, ONE pull request in this
+# repository on the machine-owned branch `chore/sdk-regenerate`. Each SDK's
+# `generate` (its sdk.json) regenerates only its generated layer (types,
+# transport, the methods list); the hand-written layer stays as it is, and the
+# pull request's own CI (sdks.yml) builds and tests every SDK it touches.
+#
+# This replaces openapi-sync.yml's notice to the SDK repositories for the SDKs
+# that live here: they regenerate in the same tree as the server.
+#
+# The pull request says what the API change does to callers
+# (scripts/openapi-classify.py), against the document the SDKs were last
+# generated from: the one at the last master commit that touched any SDK's
+# generated code. So a pull request that has gathered several server changes
+# carries the largest of them, and a refresh can move its title either way:
+#
+#   feat(sdks)!: regenerate from the node API at <sha>  + label api-breaking
+#   feat(sdks): regenerate from the node API at <sha>   something was added
+#   chore(sdks): regenerate from the node API at <sha>  nothing a caller sees
+#
+# Pushed and opened with a GitHub App token (vars.ACTIONS_APP_ID /
+# secrets.ACTIONS_APP_PRIVATE_KEY), not GITHUB_TOKEN: a pull request
+# GITHUB_TOKEN opens runs no workflows, so it would arrive with no CI and read as
+# green.
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - docs/public/openapi.json
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Regenerate and classify, write the title and body to the summary, push nothing"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+# One regeneration at a time; a later push regenerates from a later document.
+concurrency:
+  group: sdk-regenerate
+  cancel-in-progress: true
+
+jobs:
+  regenerate:
+    name: Regenerate the SDKs
+    # mero-swift generates with the Swift toolchain, which only macOS runners have.
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: master
+          # The history: the base document is the one at the last commit that
+          # touched the generated code.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: sdks/package.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: sdks/pnpm-lock.yaml
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the JS workspace
+        working-directory: sdks
+        run: pnpm install --frozen-lockfile
+
+      - name: Find the document the SDKs were last generated from
+        id: base
+        run: |
+          set -euo pipefail
+          paths=(); while IFS= read -r path; do paths+=("$path"); done < <(python3 scripts/sdks.py generated)
+          base=$(git log -1 --format=%H -- "${paths[@]}" || true)
+          if [ -n "$base" ]; then
+            git show "$base:docs/public/openapi.json" > "$RUNNER_TEMP/base.json" 2>/dev/null || : > "$RUNNER_TEMP/base.json"
+          else
+            : > "$RUNNER_TEMP/base.json"
+          fi
+          echo "commit=${base:-none}" >> "$GITHUB_OUTPUT"
+          echo "the SDKs were last generated at ${base:-(never)}"
+
+      - name: Regenerate every SDK
+        run: python3 scripts/sdks.py generate
+
+      - name: Decide whether anything changed
+        id: diff
+        run: |
+          set -euo pipefail
+          paths=(); while IFS= read -r path; do paths+=("$path"); done < <(python3 scripts/sdks.py generated)
+          if [ -z "$(git status --porcelain --untracked-files=all -- "${paths[@]}")" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::every SDK already matches docs/public/openapi.json"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          git --no-pager diff --stat -- "${paths[@]}"
+
+      - name: Classify the change and write the pull request
+        if: steps.diff.outputs.changed == 'true'
+        id: classify
+        env:
+          SHA: ${{ github.sha }}
+          BASE: ${{ steps.base.outputs.commit }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/regen"
+          mkdir -p "$out"
+          OASDIFF=$(scripts/install-oasdiff.sh)
+          export OASDIFF
+          python3 scripts/openapi-classify.py "$RUNNER_TEMP/base.json" docs/public/openapi.json \
+            --markdown "$out/api.md" --footer "$out/footer.txt" > "$out/class.json"
+          class=$(jq -r .class "$out/class.json")
+          counts=$(jq -r .summary "$out/class.json")
+          short=${SHA:0:9}
+          case "$class" in
+            breaking) title="feat(sdks)!: regenerate from the node API at $short" ;;
+            additive) title="feat(sdks): regenerate from the node API at $short" ;;
+            *) title="chore(sdks): regenerate from the node API at $short" ;;
+          esac
+          paths=(); while IFS= read -r path; do paths+=("$path"); done < <(python3 scripts/sdks.py generated)
+          {
+            echo "$title"
+            echo
+            echo "Regenerates every SDK under sdks/ from docs/public/openapi.json at $SHA."
+            echo "API change since the SDKs were last generated (${BASE:0:9}): $class ($counts)."
+            if [ -s "$out/footer.txt" ]; then
+              echo
+              cat "$out/footer.txt"
+            fi
+          } > "$out/commit-message.txt"
+          {
+            echo "Regenerates the SDKs under \`sdks/\` from the node API document (\`docs/public/openapi.json\`) at $SHA:"
+            echo
+            echo '```sh'
+            echo 'python3 scripts/sdks.py generate'
+            echo '```'
+            echo
+            echo "API change since the SDKs were last generated (at \`${BASE:0:9}\`): **$class** ($counts)."
+            [ "$class" = breaking ] && echo "Callers of a generated client must change: this is labelled \`api-breaking\`."
+            echo
+            echo "### API changes"
+            echo
+            cat "$out/api.md"
+            echo
+            echo "<details><summary>Files: $(git --no-pager diff --shortstat -- "${paths[@]}" | sed 's/^ *//')</summary>"
+            echo
+            echo '```'
+            git --no-pager diff --stat=100 -- "${paths[@]}"
+            git status --porcelain --untracked-files=all -- "${paths[@]}" | grep '^??' || true
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "Opened by \`.github/workflows/sdk-regenerate.yml\` on the machine-owned branch \`chore/sdk-regenerate\`, force-pushed on every regeneration: push fixes to a branch of your own."
+          } > "$out/pr-body.md"
+          echo "class=$class" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+          { echo "## $title"; echo; cat "$out/pr-body.md"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mint a token for this repository
+        if: steps.diff.outputs.changed == 'true' && inputs.dry_run != true
+        id: token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.ACTIONS_APP_ID }}
+          private-key: ${{ secrets.ACTIONS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open or refresh the pull request
+        if: steps.diff.outputs.changed == 'true' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          SLUG: ${{ steps.token.outputs.app-slug }}
+          TITLE: ${{ steps.classify.outputs.title }}
+          CLASS: ${{ steps.classify.outputs.class }}
+        run: |
+          set -euo pipefail
+          branch="chore/sdk-regenerate"
+          out="$RUNNER_TEMP/regen"
+          uid=$(gh api "/users/${SLUG}[bot]" --jq .id)
+          git config user.name "${SLUG}[bot]"
+          git config user.email "${uid}+${SLUG}[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          paths=(); while IFS= read -r path; do paths+=("$path"); done < <(python3 scripts/sdks.py generated)
+          git add -A -- "${paths[@]}"
+          git commit -q -F "$out/commit-message.txt"
+          git push --force "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/$branch"
+          if gh pr view "$branch" --repo "$REPO" --json state --jq .state 2>/dev/null | grep -qx OPEN; then
+            gh pr edit "$branch" --repo "$REPO" --title "$TITLE" --body-file "$out/pr-body.md"
+          else
+            gh pr create --repo "$REPO" --head "$branch" --title "$TITLE" --body-file "$out/pr-body.md"
+          fi
+          if [ "$CLASS" = breaking ]; then
+            gh pr edit "$branch" --repo "$REPO" --add-label api-breaking || echo "::warning::could not add the api-breaking label"
+          else
+            gh pr edit "$branch" --repo "$REPO" --remove-label api-breaking 2>/dev/null || true
+          fi
+          gh pr view "$branch" --repo "$REPO" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"

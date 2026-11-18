@@ -1,0 +1,161 @@
+---
+title: Apps and packages
+description: Install signed packages, create app instances, call and view methods with idempotency and retries, follow events, store blobs, publish presence, and upgrade.
+sidebar:
+  order: 1
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+
+A method that takes a passkey answers the node's `412 CONFIRM_REQUIRED` with
+`{ confirm: passkeyConfirm(passkey) }` (`import { passkeyConfirm } from '@calimero-network/mero-js'`).
+
+## Packages
+
+A package is a signed `.mpk` release. The node verifies the publisher's
+signature and every digest before it records the release, and pins the
+package to its first signer: another key cannot release the same package.
+
+```ts
+await client.packages.install({ package: 'com.example.kv', version: '1.0.0' }); // from the cluster's registry
+await client.packages.upload({ body: mpkBytes, contentType: 'application/octet-stream' });                    // a signed .mpk file
+const all = await (await client.packages.list()).packages;
+const kv = await client.packages.get({ package: 'com.example.kv' });       // { latest, versions: [...] }
+await client.packages.versionUninstall({ package: 'com.example.kv', version: '1.0.0' }); // refused while an app runs it
+```
+
+Core's `meroctl` (1.0.0-rc.24 or later) makes the `.mpk`: `meroctl app pack DIR`
+builds an app crate and signs the package (`--key K`; without it, the
+development key, which a public registry refuses), and `meroctl app publish F.mpk`
+sends it to a registry. `meroctl app codegen --abi F --lang ts` writes a typed
+client from the app's ABI (`F` is a component, an `.mpk`, a `manifest.json` or
+ABI JSON).
+
+A cluster without `--registry-url` answers an install with `NO_REGISTRY`.
+`uploadBundle(wasm)` takes raw WASM and answers its hash, on development
+clusters only.
+
+## App instances
+
+```ts
+const { appId: app } = await client.apps.create({
+  name: 'notes',
+  package: 'com.example.kv',
+  version: '1.0.0',
+  org,                     // an organization's app (else your own)
+  access: { kind: 'org' }, // who may reach it: owner, org, public, accounts, team
+  initArgs: { title: 'Notes' },
+});
+// A method that needs the caller's passkey says so in the app's ABI (`confirm`).
+
+await (await client.apps.list({ package: 'com.example.kv' })).apps;
+await client.apps.get({ app });
+await client.apps.access({ app, access: { kind: 'accounts', accounts: [bobId] } });
+await client.apps.metadata({ app, metadata: { colour: 'teal' } }); // at most 16 KiB
+await client.apps.storage({ app }); // { keys, bytes, blobs, blobBytes }
+await client.apps.abi({ app });     // the ABI the bundle embeds
+await client.auth.aliasSet({ alias: 'notes', app });
+await client.apps.transfer({ app, to: bobId }, { confirm: passkeyConfirm(passkey) }); // the owner's passkey, or an org admin's for an org app
+await client.apps.move({ app, toOrg: otherOrg, bringMembers: true }, { confirm: passkeyConfirm(passkey) }); // into an org you administer
+await client.apps.delete({ app });
+```
+
+A missing app and one you may not reach answer the same `NotFound`.
+
+## Calls and views
+
+```ts
+const { index, result, events } = await client.apps.call({ app, method: 'set', args: { key: 'a', value: '1' } });
+const { result: value } = await client.apps.view({ app, method: 'get', args: { key: 'a' } });
+const stale = await client.apps.view({ app, method: 'get', args: { key: 'a' }, consistency: { stale: true, minIndex: index }.stale ? 'stale' : undefined, minIndex: { stale: true, minIndex: index }.minIndex });
+```
+
+A call always carries an idempotency key: yours (kept 24 hours), or one the
+client makes (`node:c-…`, kept 10 minutes). While the node answers `503` or
+cannot be reached, the client sends the same call again with the same key, by
+default 6 times from 200 ms doubling to 2 s (`retry` in the options). A call
+that did commit is answered from its record, never run twice. When the retries
+run out it rejects with `UnavailableError`, whose `committed` is `false` or
+`'unknown'`.
+
+```ts
+await client.apps.call({ app, method: 'transfer', args: { to: 'bob', amount: 5 }, idempotencyKey: 'transfer-42' }); // your own key
+await client.apps.call({ app, method: 'clear', args: {} }, { confirm: passkeyConfirm(passkey) }); // a confirm method
+```
+
+The app's own refusals are `AppError` (`appCode`, `fields`), a trap is
+`TrapError`; see the [error model](/reference/error-model/).
+
+## Events
+
+```ts
+const ac = new AbortController();
+for await (const { id, kind, data } of client.events(app, 0, ac.signal)) {
+  // committed events from index 0, then live
+}
+ac.abort(); // ends the stream within a few hundred milliseconds
+```
+
+## Blobs
+
+```ts
+const { blobId, id, size } = await client.apps.blobUpload({ app, body: bytes }); // blobId base58, id hex
+const back = await client.downloadBlob(app, blobId);
+await (await client.apps.blobList({ app })).blobs;
+await client.apps.blobInfo({ app, id: blobId });
+await client.apps.blobDelete({ app, id: blobId });
+```
+
+A blob over 47 MiB is refused with `TOO_LARGE`, by the node or, past 64 MiB,
+by the sealed envelope.
+
+## Sealed files
+
+```ts
+const { id, blobId, size, sha256, index } = await client.uploadFile(app, file); // a Blob, Uint8Array or ArrayBuffer
+await client.apps.filesList({ app });
+await client.apps.fileInfo({ app, id });
+```
+
+Up to 16 MiB (`FILE_PART_BYTES`) a file is one request, sent once: a `503` or a
+dropped connection is an error, because the node may already have committed it.
+A larger file goes up as a session of parts, read from a `Blob` one slice at a
+time. A part is sent again after a dropped connection or a `503`, the session
+is begun again once if the node lost it, and any other failure aborts it.
+Only the app's owner or a member of its organization may upload; the node must
+be release rc.15 or later.
+
+## Presence
+
+Who is in an app now: in memory on every node, never logged.
+
+```ts
+await client.apps.presencePublish({ app, seq, state: presenceState(new TextEncoder().encode(JSON.stringify({ cursor: 12 }))) });
+const present = await (await client.apps.presenceGet({ app })).present; // [{ account, device, state }], state hex
+for await (const e of client.presenceStream(app, signal)) {
+  // 'snapshot' first, then 'presence' per change
+}
+await client.apps.presencePublish({ app, seq: seq + 1, state: presenceState(null) }); // leave
+```
+
+The newest `seq` wins; send the same `seq` and state again as a heartbeat
+within 7 seconds, or the entry is gone.
+
+## Upgrades
+
+```ts
+await client.apps.upgrade({ app, version: '1.1.0' }, { confirm: passkeyConfirm(passkey) }); // whoever the package's manifest names approves
+```
+
+The node plans the migration from the two ABIs and runs the target's migrate
+edge; a failed migration is `UPGRADE_FAILED` (422) and the app keeps its
+release. To upgrade every app of an organization at once, see
+[upgrade runs](/guides/organizations/#upgrade-runs). An app's own frontend
+cannot upgrade (its session is refused, `403`): it sends its user to the
+node's consent page, see [user approvals](/guides/user-approvals/).
+
+<Aside type="note">
+  Where the cluster gives app upgrades to the operator (`--app-upgrades
+  operator`), the owner's upgrade is refused with `403`.
+</Aside>

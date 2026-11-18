@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calimero | mero-react — Errors</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<meta name="description" content="Typed errors from mero-js, described for the UI">
+<meta name="theme-color" content="#0d1117">
+</head>
+<body>
+<div class="main">
+<div class="content prose">
+<div class="breadcrumb"><a href="index.html">Home</a><span class="sep">/</span><span>Errors</span></div>
+<h1>Errors</h1>
+<p class="page-subtitle">Typed errors from mero-js, described for the UI</p>
+<p>mero-js maps every refusal to a typed error (<span class="code">errorFrom</span>, mero-js#312). mero-react keeps that error in <span class="code">error</span> and adds <span class="code">failure = describeError(error)</span>:</p>
+<pre class="typedef">type Failure = {
+  kind: FailureKind;          // see the table
+  message: string;            // a sentence you can show as it is
+  retryable: boolean;
+  status?: number; code?: string;
+  appCode?: string; fields?: Record&lt;string, unknown&gt;;   // kind &#x27;app&#x27;
+  committed?: false | &#x27;unknown&#x27;;                         // kind &#x27;unavailable&#x27;
+  release?: string;                                      // kind &#x27;release-deadline&#x27;
+  error: unknown;
+};</pre>
+<div class="table-wrap"><table><thead><tr><th><span class="code">kind</span></th><th>From</th></tr></thead><tbody><tr><td><span class="code">app</span></td><td><span class="code">AppError</span> (<span class="code">422 APP_ERROR</span>): the app's own error, with <span class="code">appCode</span> and named <span class="code">fields</span></td></tr><tr><td><span class="code">trap</span></td><td><span class="code">TrapError</span> (<span class="code">422 TRAP</span>)</td></tr><tr><td><span class="code">login</span></td><td><span class="code">LoginRequired</span>: the refresh was refused. The provider ends the session.</td></tr><tr><td><span class="code">confirm</span> / <span class="code">cancelled</span></td><td><span class="code">ConfirmRequired</span> (<span class="code">412</span>) / <span class="code">ConfirmCancelled</span> (the person dismissed the passkey prompt)</td></tr><tr><td><span class="code">wrong-node</span></td><td><span class="code">WrongNode</span> / <span class="code">421 NOT_LEADER</span> after failover ran out</td></tr><tr><td><span class="code">unavailable</span></td><td><span class="code">UnavailableError</span> (<span class="code">503</span> or no answer after retries). Check <span class="code">committed</span>.</td></tr><tr><td><span class="code">not-found</span>, <span class="code">forbidden</span>, <span class="code">too-large</span>, <span class="code">idempotency</span>, <span class="code">rate-limited</span></td><td><span class="code">404</span>, <span class="code">403</span>, <span class="code">413</span>, <span class="code">409 IDEMPOTENCY_MISMATCH</span>, <span class="code">429</span></td></tr><tr><td><span class="code">release-deadline</span>, <span class="code">consent-stale</span>, <span class="code">operator-signature</span></td><td><span class="code">409 RELEASE_DEADLINE</span>, <span class="code">409 CONSENT_STALE</span>, <span class="code">428 OPERATOR_SIGNATURE_REQUIRED</span></td></tr><tr><td><span class="code">attestation</span></td><td>The sealed channel or the attestation check failed</td></tr><tr><td><span class="code">directory</span></td><td><span class="code">DirectoryError</span>: the node directory does not know the cluster (<span class="code">code: 'not-found'</span>), lists no usable node (<span class="code">empty</span>) or could not be read</td></tr></tbody></table></div>
+</div>
+</div>
+<script src="nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "js-built.mpk": {
+    "accepted": true,
+    "detail": {
+      "appVersion": "1.2.3",
+      "bundleHash": "ace158821f251a1e8bd4071593244ca4189829d2e1b2fbad5a4fbc968ee97dbb",
+      "computeOnly": true,
+      "package": "com.example.pipeline",
+      "pipelines": [
+        "pipelines/double.yaml",
+        "pipelines/triple.yaml"
+      ],
+      "signerId": "did:key:z6MkehRgf7yJbgaGfYsdoAsKdBPE3dj2CYhowQdcjqSJgvVd"
+    }
+  },
+  "tampered-manifest.mpk": {
+    "accepted": false,
+    "error": "Ed25519 signature verification failed: signature error"
+  },
+  "tampered-archive.mpk": {
+    "accepted": false,
+    "error": "bundle artifact 'compute.wasm' failed its integrity check: manifest hash 6b71504fa99bda90624abd4f71fd91a3a9911ca6d3858bb4e7d8b58cbf2690e1, actual 45b019092e9a4e5f15fd8c2553109918b851f4295b982f2cb349ad70b1c0c7cf"
+  }
+}

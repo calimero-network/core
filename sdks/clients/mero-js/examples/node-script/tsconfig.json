@@ -1,0 +1,16 @@
+{
+  // Compiled as an outside consumer would: `@calimero-network/mero-js` resolves
+  // through the package's own `exports` to the built dist/ (run `pnpm build` first).
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "outDir": "dist",
+    "rootDir": "."
+  },
+  "include": ["index.ts"]
+}
