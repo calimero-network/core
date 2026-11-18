@@ -1,0 +1,54 @@
+# Detekt config for mero-kotlin. Builds upon the default config (buildUponDefaultConfig = true),
+# so this file only records deliberate deviations.
+
+complexity:
+  LongMethod:
+    threshold: 80
+  LongParameterList:
+    functionThreshold: 8
+    constructorThreshold: 8
+    # Wire DTOs are faithful 1:1 field ports of the node's admin API (some have many fields, e.g. a
+    # TEE quote body). Their constructors can't be trimmed without diverging from the wire shape.
+    ignoreAnnotated: ['Serializable']
+  # AdminApi is a 1:1 port of the node's admin surface (~140 endpoints in one client since core
+  # rc.83 added owner ops and the delegated-execution routes), mirroring
+  # the Swift SDK's AdminApi. Keep it as a single cohesive client rather than splitting it to
+  # satisfy the linter — so both the function-count and the class-size gates are relaxed for it.
+  TooManyFunctions:
+    thresholdInClasses: 170
+    thresholdInFiles: 170
+  LargeClass:
+    active: false
+  # The OkHttp transport's request-dispatch method fans out over HTTP verbs; allow it.
+  CyclomaticComplexMethod:
+    threshold: 25
+  ComplexCondition:
+    threshold: 5
+
+style:
+  MagicNumber:
+    active: false
+  ReturnCount:
+    max: 5
+  # Long lines are common in KDoc and snake_case wire DTOs; wrapping is ktlint's job, not detekt's.
+  MaxLineLength:
+    active: false
+  UnnecessaryAbstractClass:
+    active: false
+
+naming:
+  # Test methods use backtick-quoted sentence names; the core code is camelCase, so turn off the
+  # camelCase function-name gate rather than special-casing test sources.
+  FunctionNaming:
+    active: false
+  # Backing properties use the idiomatic leading underscore (e.g. `_state`).
+  VariableNaming:
+    active: false
+  FunctionParameterNaming:
+    active: true
+
+exceptions:
+  TooGenericExceptionCaught:
+    active: false
+  SwallowedException:
+    active: false

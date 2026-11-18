@@ -1,0 +1,37 @@
+---
+title: mero-kotlin
+description: The Calimero Android SDK for Calimero 1.0 — attest the node, seal every request to it, sign people in with passkeys, and call apps on the confidential cloud.
+template: splash
+hero:
+  tagline: The native Kotlin SDK for Calimero 1.0, the confidential cloud. CalimeroClient verifies a node's TDX attestation, seals every request to it over Noise NK, signs people in with Android passkeys, and calls your app's intents and views. MeroAppSession and MeroAppBackend give a Compose app its signed-in account in a few lines.
+  actions:
+    - text: Quickstart
+      link: /get-started/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/calimero-network/kotlin-sdk
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="Get Started" icon="rocket">
+    Add the dependency, point a `CalimeroClient` at a cluster, sign in with a passkey and
+    call an app. [Quickstart →](/get-started/quickstart/)
+  </Card>
+  <Card title="Understand" icon="open-book">
+    What Calimero 1.0 is, how the SDK is layered, and the words it uses.
+    [Read the overview →](/understand/system-overview/)
+  </Card>
+  <Card title="Guides" icon="puzzle">
+    Apps, organizations and teams, approvals on the consent page, the app session for Compose
+    apps, and the sealed transport. [Apps →](/guides/apps/)
+  </Card>
+  <Card title="Reference" icon="document">
+    Every `CalimeroClient` method, the typed errors, and the 0.x → 1.0 map.
+    [Client →](/reference/client/)
+  </Card>
+</CardGrid>

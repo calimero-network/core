@@ -1,0 +1,42 @@
+---
+title: Migrating from 0.x
+description: What was removed with the 0.x node API, what replaces it, and what changed for apps built on MeroAppSession and MeroAppBackend.
+---
+
+Calimero 1.0 is a different node: no `/admin-api`, `/jsonrpc`, `/ws`, `/sse`, mero-auth or
+`/auth/token`; no relays, delegated execution or `authorProof`; no `/api/cloud/*`. The SDK's
+0.x clients are gone with it.
+
+| 0.x | 1.0 |
+|---|---|
+| `Mero`, `MeroConfig`, `AdminApi`, `AuthApi`, `RpcClient`, `SseClient`, `WsClient` | `CalimeroClient` |
+| username/password, `/auth/token`, JWT | passkeys (`PlatformPasskey`, `SoftPasskey`), `CalimeroSession` |
+| `CloudClient`, wallet enrolment, `DeviceCert` | `signUp` / `signIn` with a passkey on the cluster |
+| `RelayClient`, warrants, `DelegatedClient` | none: the client talks to the cluster over the sealed channel |
+| namespace / group / context / application | organization / team / app instance / package |
+| `rpc.execute`, `/admin-api/contexts/{id}/query` | `call` (`/intents`), `view` (`/views`) |
+| `/admin-api/tee/attest` | `GET /attestation` (`fetchAttestedKey`) |
+| admin-dashboard approvals | the node's consent page (`client.consent.pageCreate`, `openConsentPage`) |
+| `MeroClient` (compose), `LoginSheet`, invitation flows, state holders | `MeroAppSession`, `ConsentLauncher` |
+| `FakeNode`, `FakeCloud` (testkit) | `InMemoryAppBackend` |
+
+## App-facing breaks
+
+Apps on `MeroAppSession` / `MeroAppBackend` keep their method names; these changed:
+
+- `MeroAppSession.create(context, packageName, callbackUrl, config, …)`: `config` is now
+  `MeroAppConfig(nodeUrl, nodes, policy, httpClient)` (required `nodeUrl`); `walletUrl` is gone;
+  `callbackUrl` is now where the consent page returns.
+- `MeroAppSession(client: CalimeroClient, packageName, callbackUrl, store, …)`; `client` is a
+  `CalimeroClient`.
+- `signIn(context)` opens the passkey sheet (an Activity); `signUp(context, name)` and
+  `signIn(passkey)` / `signUp(passkey, name)` are new.
+- `createInvitation` returns, and `joinNamespace` takes, an `OrgInvitation` (was
+  `SignedGroupOpenInvitation`). Link payload: `{"invitation":"inv_…","namespaceId":"<org>",…}`.
+- `GovernanceMemberRole` moved to `com.calimero.mero.app`.
+- `NoRelayException` / `NoRelayContextContract` → `SignedOutException` /
+  `SignedOutContextContract` (rename them: the deprecated aliases are removed).
+- Subgroup group ids are `"{orgId}/{teamId}"`; `AppSubgroup` gained `isPublic`;
+  `AppContextEvent` gained `data` and `id`.
+- `hasRelay` and `canSubscribe` are `true` whenever signed in; `didJoinNamespace()` only bumps
+  `revision`; `AppFoundedNamespace.haEnabled` and `AppJoinedNamespace.published` are always `true`.

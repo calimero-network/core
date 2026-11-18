@@ -1,0 +1,73 @@
+---
+title: Agent gate
+description: Attest an agent in a private TD, claim it with an owner key, provision its secrets sealed to the TD with HPKE, and release it.
+sidebar:
+  order: 12
+---
+
+`com.calimero.mero.agentgate` is a client for **mero-agent-gate**, the gate in a private agent TD
+(mero-tee). The owner uses it to attest an agent, claim it, send it secrets sealed to the TD, and
+release it. It runs on the owner's phone, so whoever carries the requests (mdma included) sees only
+quotes and ciphertext. It is a port of mero-js `src/agent-gate/`, wire-identical with the gate's
+`POST /attest`, `/provision` and `/release`.
+
+## Which agent images: a signed policy
+
+Each mero-kms release measures its agent image. The release workflow signs the allowlist
+(`kms-agent-attestation-policy.<profile>.json`) with cosign keyless. Because the signature is
+verified on the device, the file can come from anywhere:
+
+```kotlin
+val policy = verifySignedAgentPolicy(policyJson, bundleJson)              // signed by KMS_RELEASE_SIGNER
+val verifier = agentQuoteVerifier(policy, fetchCollateral = { quote -> PccsCollateral.fetch(quote) })
+```
+
+The policy must be an agent allowlist (`role: "agent"`) for `locked-read-only` (or the `profile`
+you name), and every list in it must be non-empty. The gate sends no collateral, so
+`fetchCollateral` gets it. `PccsCollateral.fetch` reads it from a PCCS (Phala's by default). The
+collateral is Intel-signed, so the PCCS is only a transport.
+
+`agentQuoteVerifier` accepts a quote only when all of these hold:
+
+- its signature verifies, and so does its collateral;
+- its TCB status is one the policy allows (never `Revoked`);
+- it is not from a debug TD;
+- each of MRTD and RTMR0–3 is in the policy's list.
+
+## Attest, claim, provision, release
+
+One TD hosts several owners' agents, each named by an agent id (`validateAgentId`:
+`[a-z0-9][a-z0-9-]{0,62}`). The gate's quote binds, after the nonce:
+
+```text
+SHA-256("mero-agent-gate/attest/v3" ‖ provisioning_pub ‖ len(id) ‖ id ‖ signing_pub ‖ owner_pub)
+```
+
+The signing and owner keys are 32 zero bytes while the agent is unclaimed (`agentKeyBinding`,
+`AGENT_ATTEST_DOMAIN`).
+
+```kotlin
+val owner = generateOwnerKey()            // keep owner.secret: the only key that can change the agent
+val agent = attestAgent(gateUrl, "a-1f2e", verifier)
+val done = provisionAgent(gateUrl, agent, owner.secret, mapOf("NEAR_AI_API_KEY" to key), verifier)
+done.claimed                              // true: this bundle claimed the agent for owner.publicKey
+releaseAgent(gateUrl, attestAgent(gateUrl, "a-1f2e", verifier), owner.secret, verifier)
+```
+
+- **Nothing before the quote.** `attestAgent` returns the agent's keys only after its quote passed
+  the verifier, for this nonce, the id asked about, and the keys the gate names. A verifier that
+  returns `false` refuses the quote too, where mero-js refuses only one that throws.
+- **Only your own agent.** Every call that sends anything refuses, before sending, an agent whose
+  quote names another owner (`checkOwner`: `AgentGateException`, code `not_yours`).
+- **Sealed to the TD, signed by you.** Secrets are sealed with RFC 9180 HPKE in Auth mode, using
+  DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and ChaCha20-Poly1305. They go to the TD's provisioning
+  key under the owner's key, with `info = "mero-agent-gate/provision/v2" ‖ provisioning_pub ‖ len(id) ‖ id`
+  (`provisionInfo`). So a message cannot be replayed to another gate, across a restart, or to another
+  agent. The implementation opens the gate's own Rust-sealed fixture, and Bouncy Castle's HPKE opens
+  what it seals.
+- **Checked, not assumed.** After `provisionAgent`, a fresh quote must name your key as owner, and
+  the agent's signing key must not have changed. After `releaseAgent`, a fresh quote must name no
+  owner.
+
+The gate's refusals come back as `AgentGateException` with its `status` and `code`, for example
+`not_the_owner` or `no_free_slot`.
