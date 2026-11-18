@@ -2412,7 +2412,8 @@ impl Node {
             });
             if !keep {
                 if let Some(app) = app {
-                    self.component_search.drop_app(&app);
+                    // Removes the app's index directory.
+                    off_workers(|| self.component_search.drop_app(&app));
                 }
                 let stopped = self.apps.write().ok().and_then(|mut a| a.remove(&group));
                 // A deleted app's files go with it; an app restored into a new
@@ -3696,16 +3697,21 @@ impl Node {
     ///
     /// A backup is the group's snapshot file as the log wrote it: streamed
     /// from disk, sealed frame by frame, never the whole state in memory.
+    /// Its file work (the copy, the kept code and cluster key, each synced)
+    /// runs off the async workers ([`off_workers`]).
     async fn back_up(&self, everything: bool) -> eyre::Result<usize> {
         let Some(dir) = self.config.backup_dir.clone() else {
             return Ok(0);
         };
-        let _kept = crate::backup::keep_cluster_key(
-            &dir,
-            &self.own_release(),
-            &self.config.storage_key,
-            &self.cluster_key,
-        )?;
+        let release = self.own_release();
+        let _kept = off_workers(|| {
+            crate::backup::keep_cluster_key(
+                &dir,
+                &release,
+                &self.config.storage_key,
+                &self.cluster_key,
+            )
+        })?;
         let mut written = 0;
         if everything || self.system.status().is_leader {
             if self
@@ -3714,7 +3720,7 @@ impl Node {
             {
                 written += 1;
             }
-            self.keep_code(&dir)?;
+            off_workers(|| self.keep_code(&dir))?;
         }
         let groups: Vec<Arc<Group<AppMachine>>> = self
             .apps
@@ -3780,7 +3786,7 @@ impl Node {
             written_at: crate::types::now_secs(),
             node: self.config.node_id,
         };
-        crate::backup::write(dir, &self.cluster_key, &file, &manifest)
+        off_workers(|| crate::backup::write(dir, &self.cluster_key, &file, &manifest))
     }
 
     /// Keep in `dir` the code the system state names that this node holds:

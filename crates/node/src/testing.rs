@@ -67,3 +67,54 @@ pub fn shared_http_timeout(timeout: Duration) {
 pub(crate) fn shared_http_timeout_override() -> Option<Duration> {
     SHARED_HTTP_TIMEOUT.lock().ok().and_then(|t| *t)
 }
+
+/// Backup directories whose file writes take long, each with its delay, and
+/// how many writes wait there now.
+static SLOW_BACKUP_FILES: Mutex<Vec<(std::path::PathBuf, Duration, usize)>> =
+    Mutex::new(Vec::new());
+
+/// Make each file a backup writes into `dir` (a snapshot copy, kept code, the
+/// kept cluster key) hold the thread that writes it for `delay`, or until
+/// [`heal_backup_files`], as a slow or contended disk's copy and fsync would.
+/// [`backup_file_waiting`] says whether one waits meanwhile.
+pub fn slow_backup_files(dir: &std::path::Path, delay: Duration) {
+    if let Ok(mut s) = SLOW_BACKUP_FILES.lock() {
+        s.retain(|(d, ..)| d != dir);
+        s.push((dir.to_owned(), delay, 0));
+    }
+}
+
+/// Let backup files into `dir` be written at the disk's speed again, a write
+/// held now included.
+pub fn heal_backup_files(dir: &std::path::Path) {
+    if let Ok(mut s) = SLOW_BACKUP_FILES.lock() {
+        s.retain(|(d, ..)| d != dir);
+    }
+}
+
+/// Whether a backup file write into `dir` waits now where [`slow_backup_files`] holds it.
+#[must_use]
+pub fn backup_file_waiting(dir: &std::path::Path) -> bool {
+    SLOW_BACKUP_FILES
+        .lock()
+        .is_ok_and(|s| s.iter().any(|(d, _, n)| d == dir && *n > 0))
+}
+
+/// Where a backup writes a file into `dir`: holds the thread as
+/// [`slow_backup_files`] says, nothing otherwise.
+pub(crate) fn backup_file_write(dir: &std::path::Path) {
+    let slowed = |n: isize| {
+        let mut s = SLOW_BACKUP_FILES.lock().ok()?;
+        let e = s.iter_mut().find(|(d, ..)| d == dir)?;
+        e.2 = e.2.saturating_add_signed(n);
+        Some(e.1)
+    };
+    let Some(delay) = slowed(1) else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    while started.elapsed() < delay && slowed(0).is_some() {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let _left = slowed(-1);
+}
