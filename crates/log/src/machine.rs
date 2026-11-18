@@ -16,6 +16,7 @@
     reason = "openraft's trait signatures fix these error types"
 )]
 
+use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -28,7 +29,8 @@ use openraft::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::store::{load_generation, Db, GroupState, StateTx, Transaction};
+use crate::digest::{DigestAt, StateDigest, DIGEST_EVERY, DIGEST_KEPT};
+use crate::store::{load_generation, off_workers, Db, GroupState, StateTx, Transaction};
 use crate::types::{
     Bytes, Entry, GroupId, LogId, SnapshotMeta, StorageError, StoredMembership, TypeConfig,
 };
@@ -73,6 +75,12 @@ pub struct Applied<M> {
     pub machine: M,
     pub last_applied: Option<LogId>,
     pub membership: StoredMembership,
+    /// The digest of a disk machine's state rows at `last_applied`
+    /// ([`crate::digest`]); the empty digest for an in-memory machine.
+    pub digest: StateDigest,
+    /// Its digests at the latest indexes that are multiples of
+    /// [`crate::digest::DIGEST_EVERY`] this node applied, oldest first.
+    pub recorded: VecDeque<DigestAt>,
 }
 
 impl<M> Applied<M> {
@@ -96,6 +104,29 @@ struct AppliedMeta {
 struct SnapshotRecord {
     meta: SnapshotMeta,
     file: String,
+}
+
+/// The group meta row the state digest at the applied index lives in
+/// ([`DigestAt`]), committed with every batch that moves it.
+pub(crate) const DIGEST_META: &str = "digest";
+
+/// Keep `at` among the recorded digests, at most [`DIGEST_KEPT`] of them.
+fn record(recorded: &mut VecDeque<DigestAt>, at: DigestAt) {
+    recorded.push_back(at);
+    while recorded.len() > DIGEST_KEPT {
+        let _oldest = recorded.pop_front();
+    }
+}
+
+/// The digest of a group generation's state rows, taken from all of them: for a
+/// state whose stored digest is missing or stale.
+fn digest_of_rows(db: &Db, group: GroupId, generation: u32) -> eyre::Result<StateDigest> {
+    let mut d = StateDigest::default();
+    db.scan_state(group, generation, &[], |k, v| {
+        d = d.plus(StateDigest::of_row(k, v));
+        Ok(true)
+    })?;
+    Ok(d)
 }
 
 /// The state row an in-memory machine's checkpoint lives in (and so where a
@@ -305,6 +336,29 @@ fn load<M: Machine>(db: &Db, state: &GroupState, st: &mut Applied<M>) -> eyre::R
     }
     st.last_applied = applied.last_applied;
     st.membership = applied.membership;
+    // What was recorded in memory may be of batches that never committed.
+    st.recorded.clear();
+    st.digest = if M::IN_MEMORY {
+        StateDigest::default()
+    } else {
+        let group = state.group();
+        let index = st.applied_index();
+        match db.get_meta::<DigestAt>(group, DIGEST_META)? {
+            Some(d) if d.index == index => d.digest,
+            stored => {
+                // Rows changed outside the log (`StateTx::commit`), or kept by a
+                // release before the digest: taken from the rows once.
+                let d = digest_of_rows(db, group, state.generation.load(Ordering::Acquire))?;
+                tracing::info!(
+                    group,
+                    index,
+                    had = stored.is_some(),
+                    "the state digest was taken from the rows"
+                );
+                d
+            }
+        }
+    };
     Ok(())
 }
 
@@ -349,6 +403,22 @@ pub struct StateMachine<M: Machine> {
     receiving: Option<PathBuf>,
 }
 
+impl<M: Machine> Clone for StateMachine<M> {
+    /// Another handle on the same group state, to run disk work on tokio's
+    /// blocking pool ([`crate::store::off_workers`]).
+    fn clone(&self) -> Self {
+        Self {
+            group: self.group,
+            db: Arc::clone(&self.db),
+            state: self.state.clone(),
+            shared: Arc::clone(&self.shared),
+            applied_tx: Arc::clone(&self.applied_tx),
+            snapshots_built: self.snapshots_built,
+            receiving: self.receiving.clone(),
+        }
+    }
+}
+
 impl<M: Machine> StateMachine<M> {
     /// Open a group's state: resume a disk machine where it stopped, restore
     /// an in-memory one from its last checkpoint, and bring in a state left by
@@ -368,6 +438,8 @@ impl<M: Machine> StateMachine<M> {
             machine,
             last_applied: None,
             membership: StoredMembership::default(),
+            digest: StateDigest::default(),
+            recorded: VecDeque::new(),
         };
         load(&db, &state, &mut applied)?;
         let _ = applied_tx.send(applied.applied_index());
@@ -412,6 +484,7 @@ impl<M: Machine> StateMachine<M> {
         let mut out = Vec::new();
         let mut last = 0;
         let mut tx = StateTx::new(&self.state);
+        let mut recorded = Vec::new();
         for entry in entries {
             st.last_applied = Some(entry.log_id);
             last = entry.log_id.index;
@@ -441,12 +514,32 @@ impl<M: Machine> StateMachine<M> {
             if tx.failed() {
                 break;
             }
+            // Each entry's digest, wherever the batches split: replicas meet
+            // at the same indexes.
+            if !M::IN_MEMORY && last.is_multiple_of(DIGEST_EVERY) {
+                recorded.push(DigestAt {
+                    index: last,
+                    digest: st.digest.plus(tx.digest_delta()),
+                });
+            }
         }
+        let digest = st.digest.plus(tx.digest_delta());
         // The batch's writes and the index they bring the state to land
         // together; readers, held off by the lock, see neither until then.
         let mut batch = Transaction::default();
         tx.into_batch(&mut batch).map_err(io)?;
         if !M::IN_MEMORY && last > 0 {
+            self.db
+                .stage_meta(
+                    &mut batch,
+                    self.group,
+                    DIGEST_META,
+                    &DigestAt {
+                        index: last,
+                        digest,
+                    },
+                )
+                .map_err(io)?;
             self.db
                 .stage_meta(
                     &mut batch,
@@ -467,6 +560,12 @@ impl<M: Machine> StateMachine<M> {
         // re-applied from there.
         if !self.db.losing_unsynced(self.group) {
             self.db.commit(&batch, false).map_err(io)?;
+        }
+        if !M::IN_MEMORY {
+            st.digest = digest;
+            for at in recorded {
+                record(&mut st.recorded, at);
+            }
         }
         Ok((out, last))
     }
@@ -504,6 +603,7 @@ impl<M: Machine> StateMachine<M> {
             self.db
                 .pause_build(self.group, crate::testing::BuildPoint::Record);
             let held = self.state.lock_snapshot_record();
+            self.refuse_if_removed(&record.file)?;
             if self.state.generation.load(Ordering::Acquire) == generation {
                 return self.serve_built(record);
             }
@@ -533,6 +633,11 @@ impl<M: Machine> StateMachine<M> {
         // the lock is not held while the file is written, and an install that
         // then drops this generation's rows does not take them from the view.
         let st = self.shared.read().map_err(|e| eyre::eyre!("{e}"))?;
+        // Removed meanwhile: its rows and files are gone, and nothing (an
+        // in-memory machine's checkpoint below, a file) is written again.
+        // Under the read lock, so the removal cannot happen between this and
+        // the checkpoint.
+        self.refuse_if_removed("")?;
         let generation = self.state.generation.load(Ordering::Acquire);
         let last = st.last_applied;
         let meta = SnapshotMeta {
@@ -604,6 +709,20 @@ impl<M: Machine> StateMachine<M> {
         Ok((SnapshotRecord { meta, file: name }, generation))
     }
 
+    /// Fail the build of a group the engine removed (`Engine::remove_group`),
+    /// deleting the file it wrote (`file`, if any) so nothing of the group is
+    /// left. The caller holds the snapshot-record lock or the applied-state
+    /// lock, which the removal takes both of.
+    fn refuse_if_removed(&self, file: &str) -> eyre::Result<()> {
+        if !self.state.removed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if !file.is_empty() {
+            let _removed = std::fs::remove_file(self.snapshot_path(file));
+        }
+        eyre::bail!("group {} was removed: no snapshot is built", self.group)
+    }
+
     /// Record a snapshot this node built as the one the group serves, and
     /// hand it to openraft. The caller holds the snapshot-record lock.
     fn serve_built(&self, record: SnapshotRecord) -> eyre::Result<Snapshot<TypeConfig>> {
@@ -656,6 +775,7 @@ impl<M: Machine> StateMachine<M> {
         let group = self.group;
         let db = Arc::clone(&self.db);
         let file = std::fs::File::open(&path)?;
+        let mut digest = StateDigest::default();
         let read = read_frames(
             &db.snapshot_sealer,
             group,
@@ -663,6 +783,7 @@ impl<M: Machine> StateMachine<M> {
             file,
             |key, sealed| {
                 let plain = db.open_state(group, key, sealed)?;
+                digest = digest.plus(StateDigest::of_row(key, &plain));
                 db.stage_state(&mut batch, group, next, key, Some(&plain))?;
                 pending += key.len() + plain.len();
                 if pending >= INSTALL_BATCH_BYTES {
@@ -698,8 +819,23 @@ impl<M: Machine> StateMachine<M> {
                     membership: meta.last_membership.clone(),
                 },
             )?;
+            let at = DigestAt {
+                index: meta.last_log_id.map_or(0, |l| l.index),
+                digest,
+            };
+            if !M::IN_MEMORY {
+                db.stage_meta(&mut switch, group, DIGEST_META, &at)?;
+            }
             db.commit(&switch, true)?;
             self.state.generation.store(next, Ordering::Release);
+            // A state that came by snapshot, not by the entries recorded before.
+            st.recorded.clear();
+            if !M::IN_MEMORY {
+                st.digest = digest;
+                if at.index.is_multiple_of(DIGEST_EVERY) {
+                    record(&mut st.recorded, at);
+                }
+            }
             if M::IN_MEMORY {
                 let data = self.state.get(CHECKPOINT_KEY).unwrap_or_default();
                 st.machine.restore(&data)?;
@@ -718,6 +854,40 @@ impl<M: Machine> StateMachine<M> {
     }
 }
 
+/// Delete the files in the snapshot directory that no group serves: a
+/// snapshot being received (`g<group>-recv-*.snap`) or built when the node
+/// stopped, one whose record a crash kept from being replaced or deleted, and
+/// those of a group whose rows are gone. Runs as the engine opens, before any
+/// group starts, so no receive or build is under way. A file whose group's
+/// record cannot be read is kept, and anything not named like a snapshot is
+/// left alone.
+pub(crate) fn clean_snapshot_dir(db: &Db) -> eyre::Result<()> {
+    for entry in std::fs::read_dir(&db.snapshot_dir)?.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(group) = name
+            .strip_suffix(".snap")
+            .and_then(|n| n.strip_prefix('g'))
+            .and_then(|n| n.split_once('-'))
+            .and_then(|(g, _)| g.parse::<GroupId>().ok())
+        else {
+            continue;
+        };
+        let served = match db.get_meta::<SnapshotRecord>(group, "snapshot") {
+            Ok(record) => record.is_some_and(|r| r.file == name),
+            Err(e) => {
+                tracing::warn!(group, file = %name, error = %e,
+                    "the group's snapshot record does not read: its file is kept");
+                continue;
+            }
+        };
+        if !served {
+            tracing::info!(group, file = %name, "deleting a snapshot file no group serves");
+            let _removed = std::fs::remove_file(entry.path());
+        }
+    }
+    Ok(())
+}
+
 fn hex_id() -> String {
     use ring::rand::SecureRandom;
     let mut b = [0_u8; 6];
@@ -732,7 +902,11 @@ pub struct Builder<M: Machine> {
 
 impl<M: Machine> RaftSnapshotBuilder<TypeConfig> for Builder<M> {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError> {
-        self.inner.build().map_err(io)
+        // The file is written on the blocking pool, not on an async worker.
+        let mut inner = self.inner.clone();
+        let (built, inner) = off_workers(move || Ok((inner.build().map_err(io), inner))).await?;
+        self.inner = inner;
+        built
     }
 }
 
@@ -740,8 +914,13 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
     type SnapshotBuilder = Builder<M>;
 
     async fn applied_state(&mut self) -> Result<(Option<LogId>, StoredMembership), StorageError> {
-        let st = self.shared.read().map_err(io)?;
-        Ok((st.last_applied, st.membership.clone()))
+        // A std lock: never waited for on an async worker.
+        let shared = Arc::clone(&self.shared);
+        off_workers(move || {
+            let st = shared.read().map_err(io)?;
+            Ok((st.last_applied, st.membership.clone()))
+        })
+        .await
     }
 
     async fn apply<I>(&mut self, entries: I) -> Result<Vec<Bytes>, StorageError>
@@ -753,23 +932,25 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
         while self.db.apply_held(self.group) {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        let (out, last) = {
-            let mut st = self.shared.write().map_err(io)?;
-            match self.apply_batch(&mut st, entries) {
-                Ok(applied) => applied,
-                Err(e) => {
-                    // The core stops on this error ([`crate::Group`] restarts
-                    // it); until then nothing may read what never committed.
-                    tracing::error!(group = self.group, error = %e,
-                        "a batch did not apply: this group's Raft core stops, and restarts from the disk");
-                    if let Err(r) = reload(&self.db, &self.state, &mut st, &self.applied_tx) {
-                        tracing::error!(group = self.group, error = %r,
-                            "the group's state could not be read again from the disk");
-                    }
-                    return Err(e);
+        // On the blocking pool: the write lock waits for readers (a proposal
+        // built under the read lock may run a WASM call), and the machine and
+        // the commit may take long; neither may hold an async worker.
+        let entries: Vec<Entry> = entries.into_iter().collect();
+        let sm = self.clone();
+        let (out, last) = off_workers(move || {
+            let mut st = sm.shared.write().map_err(io)?;
+            sm.apply_batch(&mut st, entries).inspect_err(|e| {
+                // The core stops on this error ([`crate::Group`] restarts
+                // it); until then nothing may read what never committed.
+                tracing::error!(group = sm.group, error = %e,
+                    "a batch did not apply: this group's Raft core stops, and restarts from the disk");
+                if let Err(r) = reload(&sm.db, &sm.state, &mut st, &sm.applied_tx) {
+                    tracing::error!(group = sm.group, error = %r,
+                        "the group's state could not be read again from the disk");
                 }
-            }
-        };
+            })
+        })
+        .await?;
         if last > 0 {
             let _ = self.applied_tx.send(last);
         }
@@ -816,7 +997,11 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
             file.flush().await.map_err(io)?;
             file.sync_all().await.map_err(io)?;
         }
-        self.install(meta).map_err(io)?;
+        // Reads the file and writes the next generation on the blocking pool.
+        let mut sm = self.clone();
+        self.receiving = None;
+        let owned = meta.clone();
+        off_workers(move || sm.install(&owned).map_err(io)).await?;
         let _ = self
             .applied_tx
             .send(meta.last_log_id.map_or(0, |l| l.index));
@@ -869,6 +1054,7 @@ pub(crate) fn replace_state<M: Machine>(
     let mut batch = Transaction::default();
     let mut pending = 0_usize;
     let mut rows = 0_u64;
+    let mut digest = StateDigest::default();
     let read = read_frames(
         &db.snapshot_sealer,
         from,
@@ -877,6 +1063,7 @@ pub(crate) fn replace_state<M: Machine>(
         |key, sealed| {
             let plain = db.open_state(from, key, sealed)?;
             let key = rehide(db, from, group, key, &plain);
+            digest = digest.plus(StateDigest::of_row(&key, &plain));
             db.stage_state(&mut batch, group, next, &key, Some(&plain))?;
             pending += key.len() + plain.len();
             rows += 1;
@@ -899,9 +1086,17 @@ pub(crate) fn replace_state<M: Machine>(
         let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
         let mut switch = Transaction::default();
         db.stage_meta(&mut switch, group, "generation", &next)?;
+        let at = DigestAt {
+            index: st.applied_index(),
+            digest,
+        };
+        db.stage_meta(&mut switch, group, DIGEST_META, &at)?;
         db.commit(&switch, true)?;
         state.generation.store(next, Ordering::Release);
         st.machine.restore(&[])?;
+        // Another state at the same index: what was recorded before no longer holds.
+        st.digest = digest;
+        st.recorded.clear();
     }
     db.drop_generation(group, old)?;
     if let Some(served) = db.get_meta::<SnapshotRecord>(group, "snapshot")? {
@@ -1053,6 +1248,7 @@ pub(crate) fn replace_state_rows<M: Machine>(
     let mut batch = Transaction::default();
     let mut pending = 0_usize;
     let mut count = 0_u64;
+    let mut digest = StateDigest::default();
     let mut stage = |row: PortableRow| -> eyre::Result<()> {
         let (key, value) = match row {
             PortableRow::Plain { key, value } => (key, value),
@@ -1060,6 +1256,7 @@ pub(crate) fn replace_state_rows<M: Machine>(
                 (hide(&db.hider, group, tag, &key), wrap_hidden(&key, &value))
             }
         };
+        digest = digest.plus(StateDigest::of_row(&key, &value));
         db.stage_state(&mut batch, group, next, &key, Some(&value))?;
         pending += key.len() + value.len();
         count += 1;
@@ -1082,9 +1279,17 @@ pub(crate) fn replace_state_rows<M: Machine>(
         let mut st = shared.write().map_err(|e| eyre::eyre!("{e}"))?;
         let mut switch = Transaction::default();
         db.stage_meta(&mut switch, group, "generation", &next)?;
+        let at = DigestAt {
+            index: st.applied_index(),
+            digest,
+        };
+        db.stage_meta(&mut switch, group, DIGEST_META, &at)?;
         db.commit(&switch, true)?;
         state.generation.store(next, Ordering::Release);
         st.machine.restore(&[])?;
+        // Another state at the same index: what was recorded before no longer holds.
+        st.digest = digest;
+        st.recorded.clear();
     }
     db.drop_generation(group, old)?;
     if let Some(served) = db.get_meta::<SnapshotRecord>(group, "snapshot")? {

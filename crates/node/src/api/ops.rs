@@ -534,7 +534,22 @@ async fn move_replicas(
     if current == target && voters == target {
         return Ok(Json(json!({ "status": st, "unchanged": true })));
     }
-    let union: Vec<u64> = current.union(&target).copied().collect();
+    // `replicas[0]` forms the group when it is created (`Node::ensure_app_group`
+    // initializes it there): every set this move records keeps the current
+    // replicas first, in their order, so it is never a node that has not
+    // joined the group yet. A sorted union put a newcomer with a lower id
+    // first, and it formed an empty group of its own with the others as voters
+    // (B8). The system group compares these sets as sets, so the order is the
+    // writer's to choose.
+    let kept = |set: &std::collections::BTreeSet<u64>| -> Vec<u64> {
+        app.replicas
+            .iter()
+            .copied()
+            .filter(|id| set.contains(id))
+            .chain(set.iter().copied().filter(|id| !current.contains(id)))
+            .collect()
+    };
+    let union: Vec<u64> = kept(&current.union(&target).copied().collect());
     // Already the target (the move only adds nodes): this write spends the
     // signature, and the final one is not needed.
     let grows = union.len() == target.len();
@@ -585,7 +600,7 @@ async fn move_replicas(
         let _ok = node
             .sys_write(&SystemCmd::SetReplicas {
                 app_id,
-                replicas: target.into_iter().collect(),
+                replicas: kept(&target),
                 proof,
             })
             .await?;

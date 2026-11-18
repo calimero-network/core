@@ -358,6 +358,12 @@ pub(crate) static HELD_BUILDS: std::sync::Mutex<Vec<crate::testing::HeldBuild>> 
 pub(crate) static FAILING_READS: std::sync::Mutex<Vec<(PathBuf, GroupId)>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Groups whose synced writes take longer, by the directory their node opened
+/// (feature `testing`; see [`crate::testing::slow_synced_writes`]).
+#[cfg(feature = "testing")]
+pub(crate) static SLOW_SYNCS: std::sync::Mutex<Vec<(PathBuf, GroupId, std::time::Duration)>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// How long closing a store waits first, by the directory it was opened in
 /// (feature `testing`; see [`crate::testing::slow_close`]).
 #[cfg(feature = "testing")]
@@ -467,6 +473,25 @@ impl Db {
         }
     }
 
+    /// Wait as long as [`crate::testing::slow_synced_writes`] slows `group`'s
+    /// synced writes on this node (feature `testing`). Blocks the calling
+    /// thread, as a slow fsync does.
+    fn slow_sync(&self, group: GroupId) {
+        #[cfg(feature = "testing")]
+        {
+            let delay = SLOW_SYNCS.lock().ok().and_then(|s| {
+                s.iter()
+                    .find(|(d, g, _)| *g == group && *d == self.dir)
+                    .map(|(_, _, delay)| *delay)
+            });
+            if let Some(delay) = delay {
+                std::thread::sleep(delay);
+            }
+        }
+        #[cfg(not(feature = "testing"))]
+        let _ = group;
+    }
+
     /// Whether `group`'s unsynced writes are being dropped (feature `testing`).
     #[must_use]
     pub(crate) fn losing_unsynced(&self, group: GroupId) -> bool {
@@ -555,6 +580,11 @@ impl Db {
         Ok(())
     }
 
+    /// Stage the removal of group metadata `name`.
+    pub(crate) fn stage_drop_meta(&self, tx: &mut Transaction, group: GroupId, name: &str) {
+        tx.raw_delete(Column::Meta, meta_key(group, name));
+    }
+
     /// Write group metadata `name`, synced (votes must survive power loss).
     pub fn put_meta<T: Serialize>(
         &self,
@@ -564,6 +594,7 @@ impl Db {
     ) -> eyre::Result<()> {
         let mut tx = Transaction::default();
         self.stage_meta(&mut tx, group, name, value)?;
+        self.slow_sync(group);
         self.write(&tx, true)
     }
 
@@ -651,6 +682,7 @@ impl Db {
                 serde_json::to_vec(e)?,
             );
         }
+        self.slow_sync(group);
         self.write(&tx, true)
     }
 
@@ -951,6 +983,10 @@ pub struct GroupState {
     /// install or a replace switches the generation and records (or drops)
     /// it: see [`GroupState::lock_snapshot_record`].
     pub(crate) snapshot_record: Arc<Mutex<()>>,
+    /// Set (under the snapshot-record lock and the applied-state write lock)
+    /// when the engine removes the group: a snapshot build still running then
+    /// writes and records nothing more for it.
+    pub(crate) removed: Arc<AtomicBool>,
 }
 
 impl GroupState {
@@ -960,6 +996,7 @@ impl GroupState {
             group,
             generation: Arc::new(AtomicU32::new(generation)),
             snapshot_record: Arc::default(),
+            removed: Arc::default(),
         }
     }
 
@@ -1054,6 +1091,9 @@ pub struct StateTx<'a> {
     staged: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     /// The first fault recorded; set through `&self` too, by a read.
     error: Mutex<Option<String>>,
+    /// How the batch's writes so far move the group's state digest
+    /// ([`crate::digest`]): each row it writes less the row that write replaces.
+    delta: crate::digest::StateDigest,
 }
 
 impl<'a> StateTx<'a> {
@@ -1063,6 +1103,34 @@ impl<'a> StateTx<'a> {
             state,
             staged: BTreeMap::new(),
             error: Mutex::new(None),
+            delta: crate::digest::StateDigest::default(),
+        }
+    }
+
+    /// How this batch's writes so far move the group's state digest.
+    #[must_use]
+    pub(crate) const fn digest_delta(&self) -> crate::digest::StateDigest {
+        self.delta
+    }
+
+    /// Row `key` as this batch left it, for the digest of a write that replaces
+    /// it. A row that cannot be read fails the batch: a digest taken over a row
+    /// guessed absent would differ from the other replicas' for no fault of the
+    /// state.
+    fn replaced(&mut self, key: &[u8]) -> Option<Vec<u8>> {
+        if let Some(v) = self.staged.get(key) {
+            return v.clone();
+        }
+        match self
+            .state
+            .db
+            .get_state(self.state.group, self.state.generation(), key)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                self.fail(format_args!("state read failed: {e}"));
+                None
+            }
         }
     }
 
@@ -1093,10 +1161,14 @@ impl<'a> StateTx<'a> {
     }
 
     pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        let old = self.replaced(&key);
+        self.delta = self.delta.replace(&key, old.as_deref(), Some(&value));
         let _prev = self.staged.insert(key, Some(value));
     }
 
     pub fn delete(&mut self, key: Vec<u8>) {
+        let old = self.replaced(&key);
+        self.delta = self.delta.replace(&key, old.as_deref(), None);
         let _prev = self.staged.insert(key, None);
     }
 
@@ -1151,10 +1223,16 @@ impl<'a> StateTx<'a> {
     /// Write the batch now, outside any group's apply: for tools and tests
     /// working on a group that is not running. A running group commits its
     /// batches itself, with the index they bring it to.
+    ///
+    /// The group's stored state digest no longer describes its rows, which
+    /// changed outside the log: it is dropped, and taken again from the rows
+    /// when the group next opens.
     pub fn commit(self) -> eyre::Result<()> {
         let db = Arc::clone(&self.state.db);
+        let group = self.state.group;
         let mut tx = Transaction::default();
         self.into_batch(&mut tx)?;
+        db.stage_drop_meta(&mut tx, group, crate::machine::DIGEST_META);
         db.commit(&tx, true)
     }
 
@@ -1182,6 +1260,18 @@ impl<'a> StateTx<'a> {
 
 pub(crate) fn io(e: impl std::fmt::Display) -> StorageError {
     StorageIOError::write_logs(AnyError::error(e.to_string())).into()
+}
+
+/// Run `f`, which waits on the disk (a synced write, a snapshot file), on
+/// tokio's blocking pool and wait for it there. Every group of a node shares
+/// the async workers: a slow fsync run on one of them would hold up the other
+/// groups' heartbeats and elections for as long as it takes. The caller still
+/// awaits `f`, so what openraft relies on (an append durable before its
+/// callback, a vote before the reply) holds as before.
+pub(crate) async fn off_workers<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, StorageError> + Send + 'static,
+) -> Result<T, StorageError> {
+    tokio::task::spawn_blocking(f).await.map_err(io)?
 }
 
 /// One group's view of the log storage.
@@ -1238,7 +1328,8 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn save_vote(&mut self, vote: &Vote) -> Result<(), StorageError> {
-        self.db.put_meta(self.group, "vote", vote).map_err(io)
+        let (db, group, vote) = (Arc::clone(&self.db), self.group, *vote);
+        off_workers(move || db.put_meta(group, "vote", &vote).map_err(io)).await
     }
 
     async fn read_vote(&mut self) -> Result<Option<Vote>, StorageError> {
@@ -1279,7 +1370,10 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         I::IntoIter: OptionalSend,
     {
         let entries: Vec<Entry> = entries.into_iter().collect();
-        let res = self.db.put_entries(self.group, &entries);
+        let (db, group) = (Arc::clone(&self.db), self.group);
+        // Synced before the callback: openraft counts the entries as this
+        // node's only once they are on the disk.
+        let res = off_workers(move || db.put_entries(group, &entries).map_err(io)).await;
         match res {
             Ok(()) => {
                 callback.log_io_completed(Ok(()));
@@ -1287,22 +1381,23 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             }
             Err(e) => {
                 callback.log_io_completed(Err(std::io::Error::other(e.to_string())));
-                Err(io(e))
+                Err(e)
             }
         }
     }
 
     async fn truncate(&mut self, log_id: LogId) -> Result<(), StorageError> {
-        self.db
-            .delete_log(self.group, log_id.index, u64::MAX)
-            .map_err(io)
+        let (db, group) = (Arc::clone(&self.db), self.group);
+        off_workers(move || db.delete_log(group, log_id.index, u64::MAX).map_err(io)).await
     }
 
     async fn purge(&mut self, log_id: LogId) -> Result<(), StorageError> {
-        self.db
-            .put_meta(self.group, "purged", &log_id)
-            .map_err(io)?;
-        self.db.delete_log(self.group, 0, log_id.index).map_err(io)
+        let (db, group) = (Arc::clone(&self.db), self.group);
+        off_workers(move || {
+            db.put_meta(group, "purged", &log_id).map_err(io)?;
+            db.delete_log(group, 0, log_id.index).map_err(io)
+        })
+        .await
     }
 }
 

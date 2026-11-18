@@ -7,8 +7,8 @@ use std::time::Duration;
 use calimero_log::store::Db;
 use calimero_log::types::LogId;
 use calimero_log::{
-    BoxFuture, Config, Engine, Group, GroupId, GroupState, Machine, NodeId, PortableRow, Proposal,
-    RpcRequest, RpcResponse, StateTx, Transport, WriteError,
+    BoxFuture, Comparison, Config, Digests, Engine, Group, GroupId, GroupState, Machine, NodeId,
+    PortableRow, Proposal, RpcRequest, RpcResponse, StateDigest, StateTx, Transport, WriteError,
 };
 
 /// A key-value machine: command `key=value` sets, output is the previous value.
@@ -682,6 +682,9 @@ fn all_bytes(dir: &std::path::Path) -> String {
 struct DiskKv {
     state: Option<GroupState>,
     applies: Arc<Mutex<Vec<u64>>>,
+    /// Applies differently from every other replica (writes `value!`): what a
+    /// replica that misread a row, or skipped an entry, would hold.
+    skew: bool,
 }
 
 impl DiskKv {
@@ -701,6 +704,11 @@ impl Machine for DiskKv {
         let s = String::from_utf8_lossy(command);
         let (k, v) = s.split_once('=').unwrap_or((&s, ""));
         let prev = state.get_hidden(b'k', k.as_bytes()).unwrap_or_default();
+        let v = if self.skew {
+            format!("{v}!")
+        } else {
+            v.to_owned()
+        };
         state.put_hidden(b'k', k.as_bytes(), v.as_bytes());
         prev
     }
@@ -719,6 +727,8 @@ struct DiskCluster {
     dirs: HashMap<NodeId, tempfile::TempDir>,
     groups: HashMap<NodeId, Arc<Group<DiskKv>>>,
     applies: HashMap<NodeId, Arc<Mutex<Vec<u64>>>>,
+    /// Nodes whose machine applies with `skew`.
+    skewed: BTreeSet<NodeId>,
 }
 
 impl DiskCluster {
@@ -738,6 +748,7 @@ impl DiskCluster {
                 DiskKv {
                     state: None,
                     applies: Arc::clone(&applies),
+                    skew: self.skewed.contains(&id),
                 },
             )
             .await
@@ -755,11 +766,17 @@ impl DiskCluster {
     }
 
     async fn new(n: u64) -> Self {
+        Self::skewed(n, &[]).await
+    }
+
+    /// A cluster whose nodes `skewed` apply differently from the others.
+    async fn skewed(n: u64, skewed: &[NodeId]) -> Self {
         let mut c = Self {
             net: Arc::new(Net::default()),
             dirs: HashMap::new(),
             groups: HashMap::new(),
             applies: HashMap::new(),
+            skewed: skewed.iter().copied().collect(),
         };
         for id in 1..=n {
             let _g = c.start_node(id, tempfile::tempdir().unwrap()).await;
@@ -1071,10 +1088,12 @@ async fn a_disk_machine_restarts_without_replaying_the_log() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_big_state_streams_to_a_new_node() {
     let mut c = DiskCluster::new(3).await;
-    // ~6 MiB of state: six snapshot chunks, several frames.
-    let value = "v".repeat(2048);
+    // ~6 MiB of state: six snapshot chunks, several frames. Written as 600
+    // values of 10 KiB rather than 3000 of 2 KiB: the same bytes in a fifth of
+    // the Raft rounds, which is where this test spends its time.
+    let value = "v".repeat(10 * 1024);
     let mut last = 0;
-    for i in 0..3000 {
+    for i in 0..600 {
         last = c.put(&format!("key-{i:05}"), &value).await;
     }
     let lid = c.leader().await;
@@ -1095,9 +1114,9 @@ async fn a_big_state_streams_to_a_new_node() {
         .await
         .unwrap();
     assert!(g4.wait_applied(last, Duration::from_secs(30)).await);
-    // It installed a snapshot rather than replaying 3000 entries.
-    assert!(c.applies[&4].lock().unwrap().len() < 3000);
-    for i in [0, 1234, 2999] {
+    // It installed a snapshot rather than replaying 600 entries.
+    assert!(c.applies[&4].lock().unwrap().len() < 600);
+    for i in [0, 234, 599] {
         assert_eq!(
             g4.read_local(|m, _| m.get(&format!("key-{i:05}")))
                 .as_deref(),
@@ -1107,7 +1126,7 @@ async fn a_big_state_streams_to_a_new_node() {
     drop(g4);
     let g4 = c.restart(4).await;
     assert_eq!(
-        g4.read_local(|m, _| m.get("key-02999")).as_deref(),
+        g4.read_local(|m, _| m.get("key-00599")).as_deref(),
         Some(value.as_str())
     );
     // The snapshot on disk is sealed too.
@@ -1165,6 +1184,7 @@ async fn portable_rows_seed_a_group_under_another_clusters_key() {
             DiskKv {
                 state: None,
                 applies: Arc::default(),
+                skew: false,
             },
         )
         .await
@@ -1224,6 +1244,7 @@ async fn a_backup_seeds_another_group_that_replicas_then_join() {
     let disk = || DiskKv {
         state: None,
         applies: Arc::default(),
+        skew: false,
     };
     let seed = engine(1).start_group(2, disk()).await.unwrap();
     seed.initialize([(1, "node-1".to_owned())].into_iter().collect())
@@ -1275,6 +1296,177 @@ async fn a_backup_seeds_another_group_that_replicas_then_join() {
     assert_eq!(
         c.groups[&lid].read_local(|m, _| m.get("k0")).as_deref(),
         Some("changed")
+    );
+}
+
+/// Every replica's digests, once each has applied `index`.
+async fn digests_at(c: &DiskCluster, index: u64) -> BTreeMap<NodeId, Digests> {
+    let mut out = BTreeMap::new();
+    for (id, g) in &c.groups {
+        assert!(g.wait_applied(index, Duration::from_secs(10)).await);
+        let _prev = out.insert(*id, g.digests().expect("a disk machine has digests"));
+    }
+    out
+}
+
+/// Replicas that applied the same entries hold the same digest at the same
+/// index, however they got there: applying entries in different batches,
+/// restarting from disk, taking the digest again from the rows, or installing
+/// a snapshot as a new node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replicas_that_applied_the_same_entries_hold_the_same_digest() {
+    let mut c = DiskCluster::new(3).await;
+    let mut last = 0;
+    for i in 0..40 {
+        last = c.put(&format!("k{}", i % 7), &i.to_string()).await;
+    }
+    let all = digests_at(&c, last).await;
+    let leader = &all[&c.leader().await];
+    assert!(
+        !leader.recorded.is_empty(),
+        "digests were recorded on the way"
+    );
+    for (id, d) in &all {
+        assert!(
+            matches!(leader.compare(d), Comparison::Agree { .. }),
+            "node {id}: {:?}",
+            leader.compare(d)
+        );
+    }
+    // An empty and a written state differ.
+    assert_ne!(leader.applied.digest, StateDigest::default());
+
+    // A restart reads the digest it stored with the applied index.
+    let before = c.groups[&3].digests().unwrap().applied;
+    let g3 = c.restart(3).await;
+    assert!(g3.wait_applied(last, Duration::from_secs(10)).await);
+    assert_eq!(g3.digests().unwrap().applied, before);
+
+    // Rows rewritten outside the log, to what they were: the stored digest is
+    // dropped, and taken again from the rows at the next start, the same.
+    let dir = c.stop(2).await;
+    {
+        let engine = Engine::open(
+            2,
+            dir.path(),
+            &KEY,
+            Arc::new(Wire(Arc::clone(&c.net), 2)),
+            config(),
+        )
+        .unwrap();
+        let state = engine.group_state(1);
+        let mut tx = StateTx::new(&state);
+        let v = tx.get_hidden(b'k', b"k0").unwrap();
+        tx.put_hidden(b'k', b"k0", &v);
+        tx.commit().unwrap();
+        engine.shutdown().await;
+    }
+    // Its store is free again once RocksDB lets go of the lock.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while Db::open(dir.path(), &KEY).is_err() {
+        assert!(std::time::Instant::now() < deadline, "the store stays held");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let g2 = c.start_node(2, dir).await;
+    assert!(g2.wait_applied(last, Duration::from_secs(10)).await);
+    assert_eq!(g2.digests().unwrap().applied, before);
+
+    // A new node that installs a snapshot holds the same state, and digest:
+    // the log it could replay instead is purged.
+    for g in c.groups.values() {
+        g.snapshot_through(last, Duration::from_secs(10))
+            .await
+            .unwrap();
+        g.purge_log_through(last, Duration::from_secs(10))
+            .await
+            .unwrap();
+    }
+    let g4 = c.start_node(4, tempfile::tempdir().unwrap()).await;
+    let lid = c.leader().await;
+    c.groups[&lid]
+        .add_learner(4, "node-4".into())
+        .await
+        .unwrap();
+    last = c.put("after", "join").await;
+    let all = digests_at(&c, last).await;
+    assert!(
+        c.applies[&4].lock().unwrap().len() <= 1,
+        "node 4 came by snapshot: {:?}",
+        c.applies[&4].lock().unwrap()
+    );
+    let leader = &all[&c.leader().await];
+    for (id, d) in &all {
+        assert!(
+            matches!(leader.compare(d), Comparison::Agree { index } if index >= last - 1),
+            "node {id}: {:?}",
+            leader.compare(d)
+        );
+    }
+    drop(g4);
+}
+
+/// A replica that applies an entry differently from the others (as one that
+/// misread a row, or skipped an entry, would) holds another digest from that
+/// entry on, and comparing tells it apart; the replicas that agree still agree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replica_that_applied_differently_is_told_apart() {
+    let c = DiskCluster::skewed(3, &[3]).await;
+    let mut last = 0;
+    for i in 0..20 {
+        last = c.put(&format!("k{i}"), "v").await;
+    }
+    let all = digests_at(&c, last).await;
+    // Every replica answers the same reads but node 3, which nothing else noticed.
+    assert_eq!(
+        c.groups[&3].read_local(|m, _| m.get("k1")).as_deref(),
+        Some("v!")
+    );
+    let (one, two, three) = (&all[&1], &all[&2], &all[&3]);
+    assert!(matches!(one.compare(two), Comparison::Agree { .. }));
+    let Comparison::Differ {
+        index,
+        ours,
+        theirs,
+        ..
+    } = one.compare(three)
+    else {
+        panic!("node 3's state went unnoticed: {:?}", one.compare(three));
+    };
+    assert!(index >= last - 1, "compared at {index}, applied {last}");
+    assert_ne!(ours, theirs);
+    assert!(matches!(three.compare(two), Comparison::Differ { .. }));
+}
+
+/// A row changed under a running replica, outside its log (a disk fault, a
+/// bad tool), shows once an entry rewrites it: the write moves that replica's
+/// digest from the row it holds, not the row the others hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_row_changed_under_a_replica_shows_once_an_entry_rewrites_it() {
+    let c = DiskCluster::new(3).await;
+    let mut last = c.put("k", "1").await;
+    for i in 0..5 {
+        last = c.put(&format!("other{i}"), "x").await;
+    }
+    let all = digests_at(&c, last).await;
+    assert!(matches!(
+        all[&1].compare(&all[&3]),
+        Comparison::Agree { .. }
+    ));
+    // Node 3's row `k` changes behind its log.
+    let state = c.groups[&3].state().clone();
+    let mut tx = StateTx::new(&state);
+    tx.put_hidden(b'k', b"k", b"bad");
+    tx.commit().unwrap();
+    last = c.put("k", "2").await;
+    let all = digests_at(&c, last).await;
+    assert!(matches!(
+        all[&1].compare(&all[&2]),
+        Comparison::Agree { .. }
+    ));
+    assert!(
+        matches!(all[&1].compare(&all[&3]), Comparison::Differ { .. }),
+        "{:?}",
+        all[&1].compare(&all[&3])
     );
 }
 

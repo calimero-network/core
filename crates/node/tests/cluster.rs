@@ -4377,6 +4377,145 @@ async fn replica_moves_are_idempotent_and_one_at_a_time() {
     );
 }
 
+/// B8: a move must not let a node that has not joined the app's group form one
+/// of its own. Growing an app on node 3 to nodes 1, 2 and 3 first records the
+/// union of the replica sets, and every node of it starts the group. With the
+/// union sorted, node 1, a newcomer, was `replicas[0]`, the node that
+/// initializes: it formed an empty group with 1, 2 and 3 as voters, and with
+/// node 2 (also empty) it had a majority. Node 3 stops before it adds the
+/// learners, as a crash or an upgrade would: the empty group elects a leader,
+/// and once node 3 is back that group's higher term wins and its empty log
+/// replaces node 3's. With the current replicas first in every set the move
+/// records, nodes 1 and 2 wait for node 3, which still leads its group when
+/// it is back, and a move sent again completes with every key on every node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_replica_move_onto_lower_id_nodes_never_forms_a_second_group() {
+    let mut c = Cluster::start_with(3, |cfg| cfg.replicas = 1).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    // Placement takes the least loaded node: the third app lands on node 3.
+    let mut app = None;
+    for i in 0..3 {
+        let (id, _) = deploy(&alice, &format!("kv{i}"), kv_wasm(), json!({})).await;
+        if alice.apps().get(&id).await.map(wire).unwrap()["replicas"] == json!([3]) {
+            app = Some(id);
+            break;
+        }
+    }
+    let app = app.expect("an app placed on node 3 alone");
+    let keys = 20;
+    for i in 0..keys {
+        let _ = alice
+            .apps()
+            .call(
+                &app,
+                "set",
+                Some(json!({ "key": format!("k{i}"), "value": format!("v{i}") })),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    // Node 3 records the union, then stops before it adds the learners.
+    let lead = ops_at(&c, 2).await;
+    let moving = tokio::spawn({
+        let app = app.clone();
+        async move {
+            lead.ops()
+                .set_replicas(&app, typed(json!([1, 2, 3])), Some(&harness::operator_sign))
+                .await
+                .map(wire)
+                .map_err(|e| e.to_string())
+        }
+    });
+    let one = c.nodes[0].as_ref().unwrap().node.clone();
+    let two = c.nodes[1].as_ref().unwrap().node.clone();
+    for _ in 0..500 {
+        if one.hosted(&app).is_some() && two.hosted(&app).is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(one.hosted(&app).is_some(), "node 1 never started the group");
+    // Its groups stop at once, as in a crash (a graceful stop would let the
+    // move finish first).
+    c.nodes[2].as_ref().unwrap().node.engine.shutdown().await;
+    c.stop(2).await;
+    let _ = moving.await;
+    // An empty group of nodes 1 and 2 would elect within a few election
+    // timeouts; nodes that only joined node 3's group as learners never do.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let formed: Vec<(u64, u64, Option<u64>)> = [(1, &one), (2, &two)]
+        .iter()
+        .filter_map(|(id, n)| n.hosted(&app).map(|g| (*id, g.status())))
+        .map(|(id, st)| (id, st.term, st.leader))
+        .collect();
+    assert!(
+        formed
+            .iter()
+            .all(|(_, _, leader)| leader.is_none_or(|l| l == 3)),
+        "nodes 1 and 2 formed a group of their own while node 3 was down: {formed:?}"
+    );
+    drop((one, two));
+
+    // Node 3 comes back and still leads the group; the move sent again
+    // completes.
+    c.restart(2).await;
+    let mut moved = Err(String::new());
+    for _ in 0..100 {
+        moved = ops_at(&c, 2)
+            .await
+            .ops()
+            .set_replicas(&app, typed(json!([1, 2, 3])), Some(&harness::operator_sign))
+            .await
+            .map(wire)
+            .map_err(|e| e.to_string());
+        if moved.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let moved = moved.unwrap();
+    assert_eq!(moved["status"]["voters"], json!([1, 2, 3]), "{moved}");
+    let st = c.nodes[2]
+        .as_ref()
+        .unwrap()
+        .node
+        .hosted(&app)
+        .unwrap()
+        .status();
+    assert!(st.is_leader, "node 3 leads its group: {st:?}");
+    for i in 0..keys {
+        let v = eventually(
+            &alice,
+            &app,
+            "get",
+            json!({ "key": format!("k{i}") }),
+            |v| *v == json!(format!("v{i}")),
+        )
+        .await;
+        assert_eq!(v, json!(format!("v{i}")), "k{i}");
+    }
+    // Every replica holds every key.
+    for n in 0..3 {
+        let applied = c.nodes[n]
+            .as_ref()
+            .unwrap()
+            .node
+            .hosted(&app)
+            .unwrap()
+            .status();
+        assert_eq!(applied.voters, vec![1, 2, 3], "node {}: {applied:?}", n + 1);
+    }
+    let replicas = alice.apps().get(&app).await.map(wire).unwrap()["replicas"].clone();
+    assert_eq!(
+        replicas,
+        json!([3, 1, 2]),
+        "node 3, which formed the group, stays first"
+    );
+}
+
 /// A release upgrade, as the runbook does it: nodes on the next mero-tee
 /// release join, every app moves onto them, and the founders leave. The next
 /// release's nodes take their storage key from that release's mero-kms, whose
@@ -6821,6 +6960,105 @@ async fn an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart() {
     let cl = c.client(replica);
     cl.use_api_key("ops-secret").await;
     assert_eq!(reported_last_write(&cl, "ops/apps", &app).await, at);
+}
+
+/// The leader of an app's group compares its replicas' state digests, and a
+/// replica whose state differs from the leader's at the same index (here a row
+/// that appeared on its disk outside the log, found when it restarts) is
+/// reported: an error log and `calimero_group_diverged` for that group and
+/// peer. Replicas that hold the same state are never reported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_replica_whose_state_differs_from_its_leaders_is_reported() {
+    let mut c = Cluster::start(3).await;
+    let (alice, _pk) = signed_up(&c, 0, "alice").await;
+    let (app, _ctx) = deploy(&alice, "kv", kv_wasm(), json!({})).await;
+    for i in 0..20 {
+        set_through(&alice, &app, &format!("k{i}"), "v")
+            .await
+            .unwrap();
+    }
+    let leader = c.app_leader(&app).expect("the app has a leader");
+    let group = c.nodes[leader].as_ref().unwrap().node.hosted(&app).unwrap();
+    let id = group.id();
+    let follower = (0..3).find(|i| *i != leader).unwrap();
+    let peer = follower as u64 + 1;
+
+    // Every replica agrees, once each has applied what the leader has.
+    let compare = |c: &Cluster| {
+        let node = std::sync::Arc::clone(&c.nodes[leader].as_ref().unwrap().node);
+        async move { node.compare_digests().await }
+    };
+    let mut agreed = Vec::new();
+    for _ in 0..100 {
+        let found: Vec<_> = compare(&c)
+            .await
+            .into_iter()
+            .filter(|x| x.group == id)
+            .collect();
+        assert!(
+            found
+                .iter()
+                .all(|x| !matches!(x.outcome, calimero_log::Comparison::Differ { .. })),
+            "replicas that hold the same state differ: {found:?}"
+        );
+        agreed = found
+            .iter()
+            .filter(|x| matches!(x.outcome, calimero_log::Comparison::Agree { .. }))
+            .map(|x| x.peer)
+            .collect();
+        if agreed.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(agreed.len(), 2, "both followers were compared");
+
+    // A row appears on the follower's disk, outside the log.
+    {
+        let node = &c.nodes[follower].as_ref().unwrap().node;
+        let state = node.engine.group_state(id);
+        let mut tx = calimero_log::StateTx::new(&state);
+        tx.put(b"\xffnot-from-the-log".to_vec(), b"x".to_vec());
+        tx.commit().unwrap();
+    }
+    c.restart(follower).await;
+
+    let mut differ = None;
+    for _ in 0..100 {
+        differ = compare(&c).await.into_iter().find(|x| {
+            x.group == id
+                && x.peer == peer
+                && matches!(x.outcome, calimero_log::Comparison::Differ { .. })
+        });
+        if differ.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        differ.is_some(),
+        "the leader never noticed node {peer}'s state"
+    );
+    let mut metrics = String::new();
+    calimero_node::metrics::render(&mut metrics);
+    assert!(
+        metrics.contains(&format!(
+            "calimero_group_diverged{{group=\"{id}\",peer=\"{peer}\"}}"
+        )),
+        "{metrics}"
+    );
+    // The follower that holds the leader's state is not reported.
+    let other = (0..3u64)
+        .find(|i| *i as usize != leader && *i as usize != follower)
+        .unwrap()
+        + 1;
+    assert!(!metrics.contains(&format!(
+        "calimero_group_diverged{{group=\"{id}\",peer=\"{other}\"}}"
+    )));
+    // A peer that is not a member of the group is told nothing of it.
+    let node = &c.nodes[leader].as_ref().unwrap().node;
+    assert!(node.digests_for(99, &[id]).groups.is_empty());
+    assert!(!node.digests_for(peer, &[id]).groups.is_empty());
 }
 
 /// Review finding B2: a node whose system-group core stopped on a write the disk

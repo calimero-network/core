@@ -27,6 +27,7 @@ use crate::usage::{Meter, Usage};
 pub(crate) mod blob_guards;
 mod cluster_version;
 mod component;
+pub mod digests;
 mod job;
 pub(crate) mod recovery_disk;
 pub(crate) mod restore;
@@ -1319,6 +1320,12 @@ impl Node {
         self.system.read_local(|m, _| f(&m.state))
     }
 
+    /// [`Node::sys`] with the machine, for what it derives from the state
+    /// (`SystemMachine::app_of_group`, `apps_on`, `group_may_hold`).
+    pub fn sys_machine<R>(&self, f: impl FnOnce(&SystemMachine) -> R) -> R {
+        self.system.read_local(|m, _| f(m))
+    }
+
     /// Commit a system command through the system group's leader; `409
     /// FEATURE_NOT_ACTIVE` for one that uses a feature above the cluster
     /// version ([`Node::require_features`]).
@@ -1880,9 +1887,11 @@ impl Node {
         if group == SYSTEM_GROUP {
             return true;
         }
-        let Some(app) = self.sys(|s| s.apps.values().find(|a| a.group == group).cloned()) else {
+        // Every heartbeat of every app group asks this: an index probe and a
+        // cached decision ([`SystemMachine::group_may_hold`]), no scan or clone.
+        if self.sys_machine(|m| m.app_of_group(group).is_none()) {
             return true;
-        };
+        }
         if self.release_at(addr).is_none() {
             // Not attested yet: any sealed request attests it.
             let _ = self
@@ -1890,7 +1899,9 @@ impl Node {
                 .await;
         }
         let release = self.release_at(addr);
-        self.sys(|s| s.release_may_hold(&app, release.as_deref()))
+        // An app deleted meanwhile has no data left to send.
+        self.sys_machine(|m| m.group_may_hold(group, release.as_deref()))
+            .unwrap_or(true)
     }
 
     /// A session token for `claims`, signed with this node's receipt key
@@ -2055,6 +2066,11 @@ impl Node {
             .write()
             .map_err(|e| eyre::eyre!("{e}"))?
             .insert(app.group, Arc::clone(&g));
+        // Only `replicas[0]` initializes: at creation the node that forms the
+        // group, later one that holds it already (openraft refuses to
+        // initialize a node with a vote or a log, which `initialize` treats as
+        // done). A move keeps the current replicas first (`api::ops::move_replicas`),
+        // so a node that has not joined yet never forms a group of its own.
         if app.replicas.first() == Some(&self.config.node_id) {
             // A restore's seed forms the new group alone: it seeds the state,
             // then adds the others (`restore`).
@@ -2326,10 +2342,9 @@ impl Node {
             self.promote_learners();
         }
         // An app waiting for its backup (a cluster founded again) is hosted nowhere.
-        let mine: Vec<AppRecord> = self.sys(|s| {
-            s.apps
-                .values()
-                .filter(|a| a.replicas.contains(&self.config.node_id))
+        // Through the replica index: this node's apps, not every app.
+        let mine: Vec<AppRecord> = self.sys_machine(|m| {
+            m.apps_on(self.config.node_id)
                 .filter(|a| !a.restore.as_ref().is_some_and(|r| r.awaits_backup()))
                 .cloned()
                 .collect()
@@ -2367,18 +2382,17 @@ impl Node {
             .map(|a| a.keys().copied().collect())
             .unwrap_or_default();
         for group in hosted {
-            let keep = self.sys(|s| {
-                s.apps
-                    .values()
-                    .any(|a| a.group == group && a.replicas.contains(&self.config.node_id))
+            // One index probe per hosted group, not a scan of every app.
+            let (keep, app) = self.sys_machine(|m| {
+                m.app_of_group(group).map_or((false, None), |a| {
+                    (
+                        a.replicas.contains(&self.config.node_id),
+                        Some(a.app_id.clone()),
+                    )
+                })
             });
             if !keep {
-                if let Some(app) = self.sys(|s| {
-                    s.apps
-                        .values()
-                        .find(|a| a.group == group)
-                        .map(|a| a.app_id.clone())
-                }) {
+                if let Some(app) = app {
                     self.component_search.drop_app(&app);
                 }
                 let stopped = self.apps.write().ok().and_then(|mut a| a.remove(&group));

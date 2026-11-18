@@ -23,6 +23,7 @@ use openraft::error::{CheckIsLeaderError, ClientWriteError, InitializeError, Raf
 use openraft::{BasicNode, ServerState};
 use tokio::sync::{watch, Mutex};
 
+pub mod digest;
 pub mod format;
 pub mod machine;
 pub mod network;
@@ -32,6 +33,7 @@ pub mod testing;
 pub mod tuning;
 pub mod types;
 
+pub use digest::{Comparison, DigestAt, Digests, StateDigest, DIGEST_VERSION};
 pub use format::{OtherStore, STORE_FORMAT};
 pub use machine::{
     read_snapshot_file, read_snapshot_rows, Applied, Machine, PortableRow, Shared, SNAPSHOT_FORMAT,
@@ -171,6 +173,9 @@ struct Reopen {
 trait RpcTarget: Send + Sync {
     fn handle(&self, request: RpcRequest) -> BoxFuture<RpcResponse>;
     fn shutdown(&self) -> BoxFuture<()>;
+    /// Delete the group's data from this node (after [`Self::shutdown`]): a
+    /// snapshot build openraft still runs records nothing for it after.
+    fn drop_data(&self) -> eyre::Result<()>;
 }
 
 /// One Raft group on this node.
@@ -240,17 +245,18 @@ impl<M: Machine> Group<M> {
         let old = self.raft();
         let _stopped = old.shutdown().await;
         {
-            let mut st = self
-                .shared
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            self.shared.clear_poison();
-            machine::reload(
-                &self.reopen.db,
-                &self.state,
-                &mut st,
-                &self.reopen.applied_tx,
-            )?;
+            // A std lock and a read of the whole state: on the blocking pool.
+            let shared = Arc::clone(&self.shared);
+            let (db, state) = (Arc::clone(&self.reopen.db), self.state.clone());
+            let applied_tx = Arc::clone(&self.reopen.applied_tx);
+            tokio::task::spawn_blocking(move || {
+                let mut st = shared
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                shared.clear_poison();
+                machine::reload(&db, &state, &mut st, &applied_tx)
+            })
+            .await??;
         }
         let sm = machine::StateMachine::reopened(
             self.id,
@@ -550,6 +556,27 @@ impl<M: Machine> Group<M> {
         f(&st.machine, st.applied_index())
     }
 
+    /// The digests of this node's applied state ([`digest`]) to compare with
+    /// another replica's: `None` for an in-memory machine, which has none.
+    #[must_use]
+    pub fn digests(&self) -> Option<Digests> {
+        if M::IN_MEMORY {
+            return None;
+        }
+        let st = self
+            .shared
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(Digests {
+            version: DIGEST_VERSION,
+            applied: DigestAt {
+                index: st.applied_index(),
+                digest: st.digest,
+            },
+            recorded: st.recorded.iter().copied().collect(),
+        })
+    }
+
     /// The index this node has applied.
     #[must_use]
     pub fn applied(&self) -> u64 {
@@ -807,6 +834,20 @@ impl<M: Machine> RpcTarget for Group<M> {
             let _ = raft.shutdown().await;
         })
     }
+
+    fn drop_data(&self) -> eyre::Result<()> {
+        // openraft does not wait for a snapshot build when its core shuts
+        // down. Under both locks no build is between its check and its write
+        // (`StateMachine::refuse_if_removed`), so one that runs on finds the
+        // group removed and leaves no checkpoint, record or file behind.
+        let _record = self.state.lock_snapshot_record();
+        let _applied = self
+            .shared
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.state.removed.store(true, Ordering::Release);
+        self.state.db.drop_group(self.id)
+    }
 }
 
 /// Watch a group's Raft core and start it again from the disk whenever it
@@ -916,6 +957,7 @@ impl Engine {
                 store::store_path(dir).display()
             ))
         })?;
+        machine::clean_snapshot_dir(&db)?;
         Ok(Arc::new(Self {
             node,
             db,
@@ -1051,12 +1093,15 @@ impl Engine {
         let config = Arc::new(config);
         let (applied_tx, applied_rx) = watch::channel(0);
         let applied_tx = Arc::new(applied_tx);
-        let sm = machine::StateMachine::open(
-            id,
-            Arc::clone(&self.db),
-            machine,
-            Arc::clone(&applied_tx),
-        )?;
+        // Reads the group's state from the disk (an in-memory machine's whole
+        // checkpoint): on the blocking pool, not an async worker.
+        let sm = {
+            let (db, applied_tx) = (Arc::clone(&self.db), Arc::clone(&applied_tx));
+            tokio::task::spawn_blocking(move || {
+                machine::StateMachine::open(id, db, machine, applied_tx)
+            })
+            .await??
+        };
         let shared = sm.shared();
         let state = sm.state();
         let log = LogStore::new(id, Arc::clone(&self.db));
@@ -1107,10 +1152,13 @@ impl Engine {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&id);
-        if let Some(t) = target {
-            t.shutdown().await;
+        match target {
+            Some(t) => {
+                t.shutdown().await;
+                t.drop_data()
+            }
+            None => self.db.drop_group(id),
         }
-        self.db.drop_group(id)
     }
 
     /// Whether the store is still open: it closes, releasing its lock, once

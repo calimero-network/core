@@ -80,6 +80,32 @@ what the client sees. Name it for the behaviour
 (`teams_work_like_v1_subgroups`,
 `a_node_added_to_a_running_cluster_hosts_replicas`).
 
+### Seeded faults (`calimero-log`)
+
+`crates/log/tests/sim.rs` runs one group on three engines over the in-memory
+transport and, for each seed, a plan of 30 steps drawn from it: writes,
+crashes (half of them losing the writes not yet synced, as power loss would),
+restarts, a node partitioned off, messages dropped or delayed, and snapshot
+builds with log purges that make a lagging or restarted node install a
+snapshot. It then heals everything and checks that no write a leader
+acknowledged is missing on any replica, that a strong read right after each
+acknowledged write saw it, and that every replica's state digest is the same
+at the same index ([State digests](/protocol/replication/#state-digests)).
+
+```bash
+cargo test -p calimero-log --features testing --test sim               # the seeds CI runs (ci_seeds!), a test each
+SIM_RUNS=50 cargo test -p calimero-log --features testing --test sim seeds_from_the_environment -- --nocapture   # 50 more, each printed
+SIM_SEED=1234 SIM_TRACE=1 cargo test -p calimero-log --features testing --test sim seeds_from_the_environment -- --nocapture # one seed again, with its trace
+```
+
+A failure names its seed and the trace of the steps it took. The seed fixes the
+plan and every fault decision in the order messages are sent; thread
+scheduling and openraft's own randomized election timeouts are not under its
+control, so a replay runs the same faults and may take a few runs to meet the
+same interleaving. A seed that found a bug joins `ci_seeds!` with the fix, as
+`seed_8609365135234708664` did when it found the simulator itself comparing
+replicas that stood at different indexes.
+
 ## App logic: `TestApp`
 
 `calimero-sdk`'s `testing` feature (`crates/sdk/src/testing`) runs an app as
@@ -592,6 +618,7 @@ a case is never skipped.
 | Pipelines | Live pipeline events (`meroctl cloud compute pipeline watch`) | - | - | no: the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal is covered, the stream itself by the cluster tests |
 | Ops | Restoring a backup onto the new release | - | - | no: `POST /ops/backup` is exercised on the new nodes (`ops-state`); a restore is a recovery drill, not a rollout |
 | Ops | A job node's attestation check (`GET /ops/job-nodes/{id}/attestation`) | - | - | no: a read that stores nothing, so there is no data to carry across a roll; it needs a registered job node, which the suite does not start; `job_nodes.rs` covers admitted, refused and unreachable |
+| Ops | Replicas' state digests compared by each app's leader (`calimero_group_diverged`) | - | - | no: nothing a rollout carries: each replica takes its digest from its own rows (kept with the applied index, taken again from the rows when it is missing), and a peer on a release before answers `/internal/digests` with `404` and is not compared; `a_replica_whose_state_differs_from_its_leaders_is_reported` (`cluster.rs`) covers it on one build |
 {/* upgrade-matrix:end */}
 
 ### Replaying a release's data directory
@@ -822,9 +849,9 @@ every node in the process suite (its rolling upgrade moves to a copy of the
 same binary unless `--upgrade-merod` names another), so neither tests data
 written by an older version. The [upgrade path](#upgrade-path) does, for the
 data its cases write, from the last release only. A change to an on-disk or
-wire format also needs its own migration test, as `calimero-log`'s
-`migration_tests.rs` does for the `log.redb` store, and a case in the upgrade
-path when it stores a kind of data none of its cases writes. What else tests
+wire format also needs its own test that reads the old shape (or refuses it,
+as `calimero-log`'s `format::tests` do for a store of another format), and a
+case in the upgrade path when it stores a kind of data none of its cases writes. What else tests
 across releases, and what a change that breaks one declares, is in
 [Compatibility](/operate/compatibility/): ci-checks' `Compatibility` job (no
 route, field, WIT or ABI version dropped) and `Rust tests (2/4)`'s

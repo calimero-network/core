@@ -70,6 +70,13 @@ is its command line.
   caller and, for an app group, an approved release and membership (replicas or
   the group's voters/learners): openraft itself never checks (F4). Outbound,
   blobs (`spread_blob`) and presence go only to peers `may_send` allows.
+  Both Raft checks run per heartbeat of every app group, so they read
+  `SystemMachine::app_of_group` and `group_may_hold` (`system/routing.rs`: a
+  group -> app and node -> apps index and a (group, release) decision cache,
+  derived, dropped on every system apply and restore; `Node::sys_machine`),
+  never a scan of `apps`; `reconcile` uses `apps_on` and `app_of_group` too.
+  Regressions: `system::routing::tests`
+  (`routing_a_raft_message_does_not_scan_the_apps`, a scaling guard).
   No interop with nodes before this (a hard cutover: clusters are recreated).
   Regression (`tests/approval_bypasses.rs`):
   `a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
@@ -957,9 +964,15 @@ is its command line.
   leader hands them the app's bundle and the blobs its state marks
   (`Node::hand_over_bytes`, over `internal/blob`): a bundle or blob stored while
   the cluster was one node is held by that node alone ("a majority" of one).
+  Every replica set a move records keeps the current replicas first, in their
+  order, then the new ones (`move_replicas`): `replicas[0]` is the node that
+  initializes the group (`Node::ensure_app_group`), and a sorted union made a
+  newcomer with a lower id form an empty group of its own, which a majority of
+  newcomers elected and which then overwrote the real group's log (B8).
   Regressions: `replica_moves_are_idempotent_and_one_at_a_time`,
   `a_cluster_started_on_one_node_grows_and_survives_losing_it` (node 1 stops
-  after the move; the app still runs and its blob downloads).
+  after the move; the app still runs and its blob downloads),
+  `a_replica_move_onto_lower_id_nodes_never_forms_a_second_group`.
 - **Placement read** (`GET /ops/placement`, `meroctl ops placement`, for mdma's
   rebalancer): each app's id, group and replicas, each node's id, zone,
   attested release (`Node::release_of_node`, at most `PLACEMENT_RELEASE_WAIT`)
@@ -991,6 +1004,16 @@ is its command line.
   `app_versions_and_release_approvals_are_reported_without_names`,
   `an_operator_upgrade_is_reported_as_the_operators`,
   `an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart`.
+- **State digests** (`node/digests.rs`, `calimero_log::digest`): every
+  `DIGEST_COMPARE_EVERY` (60 s, `lib.rs`) the leader of each app group asks each other
+  replica for its digests (`POST /internal/digests { groups }`, `Node::digests_for`: only
+  groups the caller is a voter or learner of, at most `DIGEST_GROUPS_PER_ASK`) and compares
+  them at the latest index both recorded (`Node::compare_digests`). A difference logs an
+  error once per (group, peer) and sets `calimero_group_diverged{group,peer}` (the index)
+  until a comparison agrees (`metrics::digest_compared`); `calimero_group_divergences_total`
+  counts them. A peer that answers `404` (a release before) or another `DIGEST_VERSION` is
+  not compared. The system group is not (in-memory machine). Regression:
+  `a_replica_whose_state_differs_from_its_leaders_is_reported`.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
   `FORWARD_TIMEOUT` (5 s, `peer_forward`), then retries at whoever leads now; a frozen
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
@@ -1488,7 +1511,9 @@ is its command line.
   sealed snapshot file with a sealed manifest beside it (`backup::Manifest`: app,
   group, index, SHA-256, `backup::FORMAT`, the `merod` and release that wrote it,
   bound to the app and file name under `HMAC(K_c, "calimero.backup.manifest.v1")`);
-  `backup::find` checks one, `backup::latest` opens one with K_c.
+  `backup::find` checks one, `backup::latest` opens one with K_c. The file and its
+  manifest are synced before the rename that lists the backup, and the directory
+  after it (likewise kept code and the kept cluster key).
 - **Restore** (`node/restore.rs`, `api/restore.rs`, `POST /ops/apps/{app}/restore`):
   operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before the
   signature (`backup::find`, `Found::check_release`, the bundle the backup's head
@@ -1713,9 +1738,12 @@ API and system group:
 - **State** (`component::ComponentState`, D46): the component's stored keys
   (generation prefix included, D39) are hidden rows of the group (`rows::CKV`, sealed
   and HMAC-keyed), and each replica keeps them in memory too as an
-  ordered `Arc<BTreeMap>`: a run gets the current version as its `StateView` (ordered
-  `range` scans, which hidden rows cannot answer); `apply` copies it only while a run
-  still holds the previous one; `restore` (a restart, a snapshot install) reads it
+  ordered persistent map (`component::Kv`, an `imbl::OrdMap`): a run gets the current
+  version as its `StateView` (ordered `range` scans, which hidden rows cannot answer),
+  an O(1) clone; `apply` writes the next version sharing all it does not change, so a
+  write while a run holds the previous one copies O(log n) nodes, never the whole state
+  (B7; `a_write_under_a_view_does_not_copy_the_whole_state`,
+  `the_state_reads_as_the_ordered_map_it_replaced`); `restore` (a restart, a snapshot install) reads it
   back from the rows. Host records (`ComponentHead`: `last_ts_ms`, `last_id`,
   `install_ts_ms`, `timers`, the idempotency rings) live in the group's `Head`.
   `last_write_ms` is the entry timestamp of the newest call that applied with a

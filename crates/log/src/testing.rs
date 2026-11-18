@@ -113,3 +113,19 @@ pub fn release_build(dir: &Path, group: GroupId) {
         h.retain(|b| !(b.group == group && b.dir == dir));
     }
 }
+
+/// Make every synced write of `group` on the node at `dir` (a log append, a
+/// vote, a purge) take `delay` longer, as a slow or contended disk's fsync
+/// would, until [`heal_synced_writes`]. The write blocks the thread it runs on.
+pub fn slow_synced_writes(dir: &Path, group: GroupId, delay: std::time::Duration) {
+    if let Ok(mut s) = crate::store::SLOW_SYNCS.lock() {
+        s.push((dir.to_owned(), group, delay));
+    }
+}
+
+/// Let `group`'s synced writes on the node at `dir` run at the disk's speed again.
+pub fn heal_synced_writes(dir: &Path, group: GroupId) {
+    if let Ok(mut s) = crate::store::SLOW_SYNCS.lock() {
+        s.retain(|(d, g, _)| !(*g == group && d == dir));
+    }
+}
