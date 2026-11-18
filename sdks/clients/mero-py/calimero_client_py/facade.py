@@ -226,6 +226,15 @@ from .openapi.api.sign_up_and_deployments import deployment_list as _deployment_
 from .openapi.api.sign_up_and_deployments import deployment_offer as _deployment_offer
 from .openapi.api.sign_up_and_deployments import deployment_orgs as _deployment_orgs
 from .openapi.api.sign_up_and_deployments import (
+    deployment_secret_clear as _deployment_secret_clear,
+)
+from .openapi.api.sign_up_and_deployments import (
+    deployment_secret_set as _deployment_secret_set,
+)
+from .openapi.api.sign_up_and_deployments import (
+    deployment_secrets as _deployment_secrets,
+)
+from .openapi.api.sign_up_and_deployments import (
     deployment_withdraw as _deployment_withdraw,
 )
 from .openapi.api.sign_up_and_deployments import (
@@ -282,6 +291,7 @@ from .openapi.models import ConsentPageCreateBodyType9
 from .openapi.models import DeployerGrantBody
 from .openapi.models import DeploymentCreateBody
 from .openapi.models import DeploymentOfferBody
+from .openapi.models import DeploymentSecretSetBody
 from .openapi.models import ExportsExportBody
 from .openapi.models import IntentsBody
 from .openapi.models import InviteCreateBody
@@ -1569,7 +1579,7 @@ class Apps(Group):
     def secrets(self, *, app):
         """The secrets an app's release declares (`GET /apps/{app}/secrets`, `app_secrets`).
 
-        For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+        For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
 
         **Who:** signed in (a session or an API key).
 
@@ -2688,6 +2698,26 @@ _DEPLOYMENT_ORGS = Operation(
     body="none",
     answer="json",
 )
+_DEPLOYMENT_SECRET_CLEAR = Operation(
+    _deployment_secret_clear,
+    "deployment_secret_clear",
+    body=ConfirmOnly,
+    answer="json",
+    confirm=True,
+)
+_DEPLOYMENT_SECRET_SET = Operation(
+    _deployment_secret_set,
+    "deployment_secret_set",
+    body=DeploymentSecretSetBody,
+    answer="json",
+    confirm=True,
+)
+_DEPLOYMENT_SECRETS = Operation(
+    _deployment_secrets,
+    "deployment_secrets",
+    body="none",
+    answer="json",
+)
 _SIGN_UP_INVITE_CREATE = Operation(
     _sign_up_invite_create,
     "sign_up_invite_create",
@@ -2866,6 +2896,71 @@ class Deployments(Group):
         Returns: DeploymentOrgsResponse200
         """
         return self._run(_DEPLOYMENT_ORGS, (id,), {}, None)
+
+    def secret_clear(self, *, id, name, confirm=None):
+        """Remove a deployment's value of a secret (`DELETE /deployments/{id}/secrets/{name}`, `deployment_secret_clear`).
+
+        Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            id: path
+            name: path
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: DeploymentSecretClearResponse200
+        """
+        return self._run(
+            _DEPLOYMENT_SECRET_CLEAR,
+            (
+                id,
+                name,
+            ),
+            {},
+            {},
+            confirm=confirm,
+        )
+
+    def secret_set(self, *, id, name, value, confirm=None):
+        """Set a deployment's value of a secret (`PUT /deployments/{id}/secrets/{name}`, `deployment_secret_set`).
+
+        Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            id: path
+            name: path
+            value: body `value`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: DeploymentSecretSetResponse200
+        """
+        return self._run(
+            _DEPLOYMENT_SECRET_SET,
+            (
+                id,
+                name,
+            ),
+            {},
+            {"value": value},
+            confirm=confirm,
+        )
+
+    def secrets(self, *, id):
+        """A deployment's secrets (`GET /deployments/{id}/secrets`, `deployment_secrets`).
+
+        For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`, empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
+
+        **Who:** signed in (a session or an API key).
+
+        Args:
+            id: path
+
+        Returns: DeploymentSecretsResponse200
+        """
+        return self._run(_DEPLOYMENT_SECRETS, (id,), {}, None)
 
     def sign_up_invite_create(self, *, uses=UNSET, ttl_secs=UNSET, confirm=None):
         """Issue a cluster sign-up invite (`POST /sign-up/invites`, `sign_up_invite_create`).

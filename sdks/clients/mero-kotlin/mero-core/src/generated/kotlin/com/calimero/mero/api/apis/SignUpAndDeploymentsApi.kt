@@ -40,6 +40,10 @@ import com.calimero.mero.api.models.DeploymentList200Response
 import com.calimero.mero.api.models.DeploymentOffer200Response
 import com.calimero.mero.api.models.DeploymentOfferRequest
 import com.calimero.mero.api.models.DeploymentOrgs200Response
+import com.calimero.mero.api.models.DeploymentSecretClear200Response
+import com.calimero.mero.api.models.DeploymentSecretSet200Response
+import com.calimero.mero.api.models.DeploymentSecretSetRequest
+import com.calimero.mero.api.models.DeploymentSecrets200Response
 import com.calimero.mero.api.models.Error
 import com.calimero.mero.api.models.InviteKey
 import com.calimero.mero.api.models.SignUpInviteCreate200Response
@@ -735,6 +739,239 @@ open class SignUpAndDeploymentsApi(basePath: kotlin.String = defaultBasePath, cl
         return RequestConfig(
             method = RequestMethod.GET,
             path = "/deployments/{id}/orgs".replace("{"+"id"+"}", encodeURIComponent(id.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * DELETE /deployments/{id}/secrets/{name}
+     * Remove a deployment&#39;s value of a secret
+     * Its instances that set no value of their own fall back to the operator&#39;s. A manager, with a step-up over &#x60;deployment:{id} / __clear_secret / { name }&#x60;; &#x60;404&#x60; when the deployment holds no value of it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param name 
+     * @param confirmOnly May be absent. (optional)
+     * @return DeploymentSecretClear200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun deploymentSecretClear(id: kotlin.String, name: kotlin.String, confirmOnly: ConfirmOnly? = null) : DeploymentSecretClear200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = deploymentSecretClearWithHttpInfo(id = id, name = name, confirmOnly = confirmOnly)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentSecretClear200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * DELETE /deployments/{id}/secrets/{name}
+     * Remove a deployment&#39;s value of a secret
+     * Its instances that set no value of their own fall back to the operator&#39;s. A manager, with a step-up over &#x60;deployment:{id} / __clear_secret / { name }&#x60;; &#x60;404&#x60; when the deployment holds no value of it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param name 
+     * @param confirmOnly May be absent. (optional)
+     * @return ApiResponse<DeploymentSecretClear200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun deploymentSecretClearWithHttpInfo(id: kotlin.String, name: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<DeploymentSecretClear200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = deploymentSecretClearRequestConfig(id = id, name = name, confirmOnly = confirmOnly)
+
+        return@withContext request<ConfirmOnly, DeploymentSecretClear200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation deploymentSecretClear
+     *
+     * @param id 
+     * @param name 
+     * @param confirmOnly May be absent. (optional)
+     * @return RequestConfig
+     */
+    fun deploymentSecretClearRequestConfig(id: kotlin.String, name: kotlin.String, confirmOnly: ConfirmOnly?) : RequestConfig<ConfirmOnly> {
+        val localVariableBody = confirmOnly
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.DELETE,
+            path = "/deployments/{id}/secrets/{name}".replace("{"+"id"+"}", encodeURIComponent(id.toString())).replace("{"+"name"+"}", encodeURIComponent(name.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * PUT /deployments/{id}/secrets/{name}
+     * Set a deployment&#39;s value of a secret
+     * Every instance created from the deployment uses it unless the instance set its own (&#x60;app_secret_set&#x60;), and only in a request to the secret&#39;s declared hosts, for an instance whose release declares the name; it wins over the operator&#39;s. Kept in the system group&#39;s state, sealed, never shown again (&#x60;deployment_secrets&#x60; answers its fingerprint) and out of every app&#39;s reach. A manager of the deployment, with a step-up over &#x60;deployment:{id} / __set_secret / { name, fingerprint }&#x60;: the value is never in the consent. &#x60;404 UNDECLARED_SECRET&#x60; unless a release the deployment offers declares the name; a name of A-Z, 0-9 and &#x60;_&#x60; and a value of 1 to 4,096 bytes (&#x60;400 BAD_SECRET&#x60;); at most 16 per deployment (&#x60;429 QUOTA_EXCEEDED&#x60;); &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.32.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param name 
+     * @param deploymentSecretSetRequest 
+     * @return DeploymentSecretSet200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun deploymentSecretSet(id: kotlin.String, name: kotlin.String, deploymentSecretSetRequest: DeploymentSecretSetRequest) : DeploymentSecretSet200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = deploymentSecretSetWithHttpInfo(id = id, name = name, deploymentSecretSetRequest = deploymentSecretSetRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentSecretSet200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * PUT /deployments/{id}/secrets/{name}
+     * Set a deployment&#39;s value of a secret
+     * Every instance created from the deployment uses it unless the instance set its own (&#x60;app_secret_set&#x60;), and only in a request to the secret&#39;s declared hosts, for an instance whose release declares the name; it wins over the operator&#39;s. Kept in the system group&#39;s state, sealed, never shown again (&#x60;deployment_secrets&#x60; answers its fingerprint) and out of every app&#39;s reach. A manager of the deployment, with a step-up over &#x60;deployment:{id} / __set_secret / { name, fingerprint }&#x60;: the value is never in the consent. &#x60;404 UNDECLARED_SECRET&#x60; unless a release the deployment offers declares the name; a name of A-Z, 0-9 and &#x60;_&#x60; and a value of 1 to 4,096 bytes (&#x60;400 BAD_SECRET&#x60;); at most 16 per deployment (&#x60;429 QUOTA_EXCEEDED&#x60;); &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.32.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param id 
+     * @param name 
+     * @param deploymentSecretSetRequest 
+     * @return ApiResponse<DeploymentSecretSet200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun deploymentSecretSetWithHttpInfo(id: kotlin.String, name: kotlin.String, deploymentSecretSetRequest: DeploymentSecretSetRequest) : ApiResponse<DeploymentSecretSet200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = deploymentSecretSetRequestConfig(id = id, name = name, deploymentSecretSetRequest = deploymentSecretSetRequest)
+
+        return@withContext request<DeploymentSecretSetRequest, DeploymentSecretSet200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation deploymentSecretSet
+     *
+     * @param id 
+     * @param name 
+     * @param deploymentSecretSetRequest 
+     * @return RequestConfig
+     */
+    fun deploymentSecretSetRequestConfig(id: kotlin.String, name: kotlin.String, deploymentSecretSetRequest: DeploymentSecretSetRequest) : RequestConfig<DeploymentSecretSetRequest> {
+        val localVariableBody = deploymentSecretSetRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.PUT,
+            path = "/deployments/{id}/secrets/{name}".replace("{"+"id"+"}", encodeURIComponent(id.toString())).replace("{"+"name"+"}", encodeURIComponent(name.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /deployments/{id}/secrets
+     * A deployment&#39;s secrets
+     * For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment&#39;s apps whose release declares it (&#x60;apps&#x60;, empty when none does any more: the value is kept, unused, until cleared) and &#x60;set&#x60;; a set one adds its &#x60;fingerprint&#x60; (the first 16 hex digits of the value&#39;s SHA-256), &#x60;setBy&#x60; (&#x60;account:&lt;id&gt;&#x60;) and &#x60;setAt&#x60; (Unix seconds). Never a value.  **Who:** signed in (a session or an API key).
+     * @param id 
+     * @return DeploymentSecrets200Response
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun deploymentSecrets(id: kotlin.String) : DeploymentSecrets200Response = withContext(Dispatchers.IO) {
+        val localVarResponse = deploymentSecretsWithHttpInfo(id = id)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as DeploymentSecrets200Response
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /deployments/{id}/secrets
+     * A deployment&#39;s secrets
+     * For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment&#39;s apps whose release declares it (&#x60;apps&#x60;, empty when none does any more: the value is kept, unused, until cleared) and &#x60;set&#x60;; a set one adds its &#x60;fingerprint&#x60; (the first 16 hex digits of the value&#39;s SHA-256), &#x60;setBy&#x60; (&#x60;account:&lt;id&gt;&#x60;) and &#x60;setAt&#x60; (Unix seconds). Never a value.  **Who:** signed in (a session or an API key).
+     * @param id 
+     * @return ApiResponse<DeploymentSecrets200Response?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun deploymentSecretsWithHttpInfo(id: kotlin.String) : ApiResponse<DeploymentSecrets200Response?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = deploymentSecretsRequestConfig(id = id)
+
+        return@withContext request<Unit, DeploymentSecrets200Response>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation deploymentSecrets
+     *
+     * @param id 
+     * @return RequestConfig
+     */
+    fun deploymentSecretsRequestConfig(id: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/deployments/{id}/secrets".replace("{"+"id"+"}", encodeURIComponent(id.toString())),
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,
