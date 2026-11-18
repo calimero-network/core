@@ -426,7 +426,7 @@ impl ComponentSearch {
         self.prepare(
             &m.app_id,
             fields,
-            Arc::clone(&m.state.component.kv),
+            m.state.component.kv.clone(),
             applied,
             |since| m.touched_after(since),
         )
@@ -654,12 +654,10 @@ mod tests {
     }
 
     fn state(notes: &[(&str, &str)]) -> Kv {
-        Arc::new(
-            notes
-                .iter()
-                .map(|(id, title)| (stored(&["notes", "r", id]), note(title)))
-                .collect(),
-        )
+        notes
+            .iter()
+            .map(|(id, title)| (stored(&["notes", "r", id]), note(title)))
+            .collect()
     }
 
     fn find(search: &dyn SearchHost, text: &str) -> Vec<Vec<u8>> {
@@ -803,7 +801,7 @@ mod tests {
         for (id, title) in tags {
             let _prev = kv.insert(stored(&["tags", "r", id]), note(title));
         }
-        Arc::new(kv)
+        kv.into_iter().collect()
     }
 
     /// Review finding A5 follow-up: an upgrade rebuilt every table from a scan of the

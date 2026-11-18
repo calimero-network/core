@@ -53,7 +53,21 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   as a stalled last holder would (`tests/store_close.rs`);
   `testing::hold_build(dir, group, BuildPoint)` / `build_waiting` /
   `release_build` hold a snapshot build before it reads the applied state or
-  before it records its file (`machine::build_races`).
+  before it records its file (`machine::build_races`);
+  `testing::slow_synced_writes(dir, group, delay)` / `heal_synced_writes` make
+  a group's synced writes (appends, votes, purges) block for `delay` longer, as a
+  slow disk's fsync would (`tests/slow_disk.rs`).
+- Disk work never runs on an async worker: every group of a node shares them, so
+  a slow fsync or a long apply there would hold up the other groups' heartbeats
+  and start elections across the cluster. `RaftLogStorage`'s append, `save_vote`,
+  `truncate` and `purge`, and the state machine's `apply` (the machine, its
+  commit, the `shared` write lock that waits for a proposal's build), snapshot
+  build and install, `applied_state`, `StateMachine::open` in `start_group` and a
+  restart's `reload` run on tokio's blocking pool (`store::off_workers`); each is
+  still awaited, so an append is durable before its callback and a vote before
+  the reply. Log reads, `save_committed` (unsynced) and the small snapshot file
+  opens stay inline. Regression: `a_slow_disk_under_one_group_does_not_stall_the_others`
+  (one worker thread; a group's synced writes slowed 250 ms stalled it 750 ms before).
 - `Engine::store_watch` reports the store open until RocksDB has closed and
   released its lock (`Db::closed`, the last field), not merely until the last
   `Arc<Db>` starts dropping.
@@ -151,8 +165,13 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 
 Tests: `cargo test -p calimero-log` runs a 3-node cluster in one process
 (replication, failover, restart from disk, a lost or older commit index, learner catch-up, no plaintext in snapshot files,
-a disk machine restarting without replay, a ~6 MiB state streamed to a new node) and
-the store format (`format::tests`).
+a disk machine restarting without replay, a ~6 MiB state streamed to a new node),
+the store format (`format::tests`), and a seeded fault simulator (`tests/sim.rs`:
+writes, crashes losing unsynced writes, restarts, partitions, dropped and delayed
+messages, snapshot builds and log purges; then no acknowledged write lost, strong
+reads see them, every replica's digest equal at one index). One test per seed in
+`ci_seeds!`; `SIM_SEED`, `SIM_RUNS` and `SIM_TRACE` replay, widen and print
+(docs: contribute/testing, "Seeded faults").
 
 Bench: `cargo bench -p calimero-log --bench log` (`benches/log.rs`): a proposal
 appended, committed and applied on one group, on 1 node and on a 3-node group

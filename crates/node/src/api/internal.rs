@@ -88,11 +88,12 @@ fn caller_may_hold(
     if node.sys(|s| s.release_may_hold(app, caller.release.as_deref())) {
         Ok(())
     } else {
-        Err(ApiError::forbidden(
-            "the calling node's release is not approved for this app's data",
-        ))
+        Err(ApiError::forbidden(NOT_APPROVED))
     }
 }
+
+/// What [`caller_may_hold`] refuses with.
+const NOT_APPROVED: &str = "the calling node's release is not approved for this app's data";
 
 /// [`caller_may_hold`] for an app named by id.
 async fn caller_may_hold_app(
@@ -242,11 +243,21 @@ async fn internal_raft(
         ));
     }
     if body.group != crate::node::SYSTEM_GROUP {
-        let app = node
-            .sys(|s| s.apps.values().find(|a| a.group == body.group).cloned())
+        // Every heartbeat of every app group comes through here: an index
+        // probe and a cached decision, no scan of the apps and no clone.
+        let (approved, replica) = node
+            .sys_machine(|m| {
+                let app = m.app_of_group(body.group)?;
+                Some((
+                    m.group_may_hold(body.group, caller.release.as_deref())?,
+                    app.replicas.contains(&caller.node),
+                ))
+            })
             .ok_or_else(|| ApiError::forbidden("no such group"))?;
-        caller_may_hold(&node, &caller, &app)?;
-        let member = app.replicas.contains(&caller.node)
+        if !approved {
+            return Err(ApiError::forbidden(NOT_APPROVED));
+        }
+        let member = replica
             || node
                 .group_members(body.group)
                 .is_some_and(|m| m.contains(&caller.node));
