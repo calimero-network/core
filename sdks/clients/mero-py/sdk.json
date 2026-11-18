@@ -1,0 +1,33 @@
+{
+  "name": "mero-py",
+  "kind": "client",
+  "language": "python",
+  "published": [{"registry": "pypi", "name": "mero-py"}],
+  "version_files": [
+    {"path": "Cargo.toml", "format": "toml", "key": "package.version"},
+    {"path": "Cargo.lock", "format": "regex", "pattern": "^name = \"mero-py\"\\nversion = \"([^\"]+)\""},
+    {"path": "abi-codegen/pyproject.toml", "format": "toml", "key": "project.version"},
+    {"path": "abi-codegen/src/calimero_abi_codegen/__init__.py", "format": "regex", "pattern": "^__version__ = \"([^\"]+)\""}
+  ],
+  "depends_on": [],
+  "inputs": [
+    "docs/public/openapi.json",
+    "crates/client",
+    "crates/identity",
+    "crates/sealed",
+    "crates/tee-attestation",
+    "crates/tee-release",
+    "Cargo.toml",
+    "rust-toolchain.toml",
+    "crates/app-abi/tests/py",
+    "crates/app-abi/tests/golden/*.py"
+  ],
+  "generate": "bash scripts/generate.sh",
+  "generated": [
+    "calimero_client_py/openapi",
+    "calimero_client_py/facade.py",
+    "docs/src/content/docs/reference/methods.mdx",
+    "abi-codegen/examples/generated_client"
+  ],
+  "workflow": ".github/workflows/sdk-mero-py.yml"
+}
