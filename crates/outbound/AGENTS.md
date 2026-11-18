@@ -31,7 +31,7 @@ hosts; `None` keeps the operator's bindings alone.
   (the node's `calimero_app_outbound_requests_total`).
 - `merge_approval` computes the approval an owner's selection leaves.
 - `TURNSTILE_VERIFY_URL`: Cloudflare Turnstile's siteverify, for apps that check a
-  token from a call (D76; `apps/v2-fixtures/captcha`) and for the `turnstile` stand-in.
+  token from a call (D76; `apps/fixture-captcha`) and for the `turnstile` stand-in.
 - Feature `outbound-testing`: `[outbound.testing] echo` answers `.test` hosts
   in-process (cluster tests and scenarios) and takes literal secrets; `turnstile`
   answers `TURNSTILE_VERIFY_URL` in-process as Cloudflare answers its test secrets

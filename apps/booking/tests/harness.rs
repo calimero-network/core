@@ -42,6 +42,14 @@ fn attach_calendar(t: &mut TestApp) -> Arc<Mutex<Vec<(String, String)>>> {
         };
         let mut kept = seen.lock().unwrap();
         match c.method.as_str() {
+            // As `apps/calendar` answers: a private event through an app is refused with its
+            // own error, which the node passes back as `XcallFailed { code, fields }`.
+            "addEvent" if c.args["private"] == json!(true) && who != "app:booking" => {
+                Err(json!({ "code": "PrivateThroughApp", "fields": {} }))
+            }
+            "addEvent" if c.args["title"] == "who am I" => {
+                Err(json!({ "code": "UnknownCaller", "fields": {} }))
+            }
             "addEvent" => {
                 kept.push((who, c.args["at"].as_str().unwrap().to_owned()));
                 Ok(Value::Null)
@@ -69,7 +77,7 @@ fn without_a_calendar_nothing_is_booked() {
             t.as_("ann")
                 .call("book", json!({ "at": "10:00", "title": "call" }))
         ),
-        "NoCalendar"
+        "NotLinked"
     );
 }
 
@@ -123,4 +131,32 @@ fn a_booking_lands_in_the_persons_own_calendar() {
         ),
         "SlotTaken"
     );
+}
+
+#[test]
+fn the_calendars_own_errors_come_back_typed() {
+    let mut t = TestApp::new(component(), Org::new().members(["ann"]), 1_700_000_000_000);
+    let kept = attach_calendar(&mut t);
+    t.as_("owner")
+        .call("setSlots", json!({ "slots": ["10:00"] }))
+        .unwrap();
+    // The calendar refuses a private event through an app; booking matches that error
+    // (`uses::calendar::Error::PrivateThroughApp`) and answers with its own.
+    assert_eq!(
+        code(t.as_("ann").call(
+            "book",
+            json!({ "at": "10:00", "title": "secret", "private": true })
+        )),
+        "PrivateNotAllowed"
+    );
+    // One booking does not match passes on as the calendar answered it.
+    let passed = t
+        .as_("ann")
+        .call("book", json!({ "at": "10:00", "title": "who am I" }));
+    assert!(
+        matches!(&passed, Err(Failure::App { code, fields })
+            if code == "XcallFailed" && fields["code"] == "UnknownCaller"),
+        "{passed:?}"
+    );
+    assert!(kept.lock().unwrap().is_empty());
 }

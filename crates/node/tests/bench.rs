@@ -262,7 +262,7 @@ async fn g1_measurements() {
     }
 
     // 4. fresh instance: the kv fixture's `len` view (no reads but one counter).
-    let kv = common::component("kv");
+    let kv = common::component("fixture-kv");
     let kv_bundle = owner
         .packages()
         .bundle_put(kv.clone())

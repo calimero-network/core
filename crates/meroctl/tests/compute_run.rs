@@ -21,7 +21,7 @@ struct Built {
 fn built() -> &'static Built {
     static BUILT: OnceLock<Built> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/fixture-compute");
         let both = build_in_repo_cache(&dir).expect("build the compute fixture");
         let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("components");
         std::fs::create_dir_all(&out).expect("components dir");

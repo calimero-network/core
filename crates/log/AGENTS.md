@@ -25,7 +25,24 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   restored into its old term (a restart, no election) can hold entries it
   appended past the commit index it saved, which is not synced. The node's
   component apps take their unique ids (D52, `term.seq.n`) from it.
+- A stopped Raft core restarts (`supervise`, one task per group, ended with it):
+  openraft stops a group's core for good on a storage error, a failed apply or a
+  panic, so as it stops `StateMachine::apply` drops what it applied in memory and
+  reads the state and applied index back from the disk (`machine::reload`; the
+  machine's `restore` rereads everything, an in-memory one from its checkpoint, or
+  from nothing when `data` is empty), and a panic in `Machine::apply` is caught and
+  fails the batch like a refused write. After `RESTART_FIRST` (1 s, doubled per stop
+  within `RESTART_MAX`, 5 min, ±25 % jitter) `Group::restart` starts a new core on
+  the same `Shared`, `GroupState` and applied watch, so readers and subscribers keep
+  their handles; `Group::raft()` answers the current core. `Group::stopped`,
+  `Status::stopped`/`restarts` (not serialized). The engine's `shutdown` and
+  `remove_group` close a group first, so it is never restarted after. Regressions
+  (`tests/cluster.rs`): `a_batch_that_fails_to_commit_stops_the_group_which_reloads_and_restarts`,
+  `a_machine_that_panics_stops_the_group_which_reloads_and_restarts`,
+  `a_fault_that_outlasts_a_restart_backs_off_and_shows_in_the_status`.
 - Test hooks (feature `testing`, never in a release build):
+  `testing::fail_applies(dir, group, n)` makes the next `n` applied batches of a
+  group fail to commit, as a disk answering EIO would;
   `Engine::lose_unsynced_writes(group)` drops a group's commit index and applied
   batches from then on, as a crash before they reach the disk would;
   `testing::hold_apply(dir, group)` / `release_apply` hold every apply of a group
@@ -36,7 +53,21 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   as a stalled last holder would (`tests/store_close.rs`);
   `testing::hold_build(dir, group, BuildPoint)` / `build_waiting` /
   `release_build` hold a snapshot build before it reads the applied state or
-  before it records its file (`machine::build_races`).
+  before it records its file (`machine::build_races`);
+  `testing::slow_synced_writes(dir, group, delay)` / `heal_synced_writes` make
+  a group's synced writes (appends, votes, purges) block for `delay` longer, as a
+  slow disk's fsync would (`tests/slow_disk.rs`).
+- Disk work never runs on an async worker: every group of a node shares them, so
+  a slow fsync or a long apply there would hold up the other groups' heartbeats
+  and start elections across the cluster. `RaftLogStorage`'s append, `save_vote`,
+  `truncate` and `purge`, and the state machine's `apply` (the machine, its
+  commit, the `shared` write lock that waits for a proposal's build), snapshot
+  build and install, `applied_state`, `StateMachine::open` in `start_group` and a
+  restart's `reload` run on tokio's blocking pool (`store::off_workers`); each is
+  still awaited, so an append is durable before its callback and a vote before
+  the reply. Log reads, `save_committed` (unsynced) and the small snapshot file
+  opens stay inline. Regression: `a_slow_disk_under_one_group_does_not_stall_the_others`
+  (one worker thread; a group's synced writes slowed 250 ms stalled it 750 ms before).
 - `Engine::store_watch` reports the store open until RocksDB has closed and
   released its lock (`Db::closed`, the last field), not merely until the last
   `Arc<Db>` starts dropping.
@@ -59,7 +90,18 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `an_in_memory_machine_applies_each_entry_once_after_losing_its_commit_index`).
 - State machines (`machine.rs`): a `Machine` writes through `StateTx` in `apply`;
   each applied batch commits its writes and the applied index in one batch, so a
-  restart resumes instead of replaying. `Machine::IN_MEMORY` machines (the system
+  restart resumes instead of replaying. A machine that cannot apply an entry (one
+  it cannot decode, a row it read but cannot decode) calls `StateTx::fail`, and a
+  `StateTx` read that fails (a storage fault, a malformed hidden row) fails the batch
+  itself and reads as absent: no later entry of the batch is applied,
+  the applied index stays where it was, and the batch's error stops the group's
+  Raft core there (stop rather than diverge); restarted, it stops there again, with backoff. Regression:
+  `a_failed_batch_stops_that_nodes_group_on_the_entry`,
+  `a_row_a_replica_cannot_read_stops_it_rather_than_applying_differently` (B3; the
+  `testing::fail_state_reads` hook makes a node's reads of a group fail).
+  `GroupState::get` (views, routes) still reads a fault as absent and logs it; a
+  machine's `restore` reads with `GroupState::try_get`, and `scan_hidden` fails on a
+  malformed row. `Machine::IN_MEMORY` machines (the system
   group) keep state in memory and are checkpointed with each snapshot instead.
   `Machine::snapshot` answers a `Result`: a state that does not serialize fails the
   build (logged with the group) and keeps the last checkpoint, never an empty one that
@@ -77,6 +119,31 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   again, never failing (a failed build is fatal to openraft's core), and a
   record no newer than the served one is never kept. Lock order: the
   snapshot-record lock, then `shared`. Regressions: `machine::build_races`.
+  openraft does not wait for a build when a core shuts down, so
+  `Engine::remove_group` drops a group's data under both locks and marks its
+  `GroupState` removed (`Group::drop_data`); a build still running then fails
+  (`refuse_if_removed`) and writes no checkpoint, record or file for it.
+  `Engine::open` deletes every `g<group>-*.snap` file no group's `snapshot`
+  record names (a receive or build a crash cut short, a file a crash kept from
+  being deleted, a removed group's), before any group starts
+  (`machine::clean_snapshot_dir`). Regressions: `tests/snapshot_files.rs`.
+  A group builds a full snapshot every `Config::snapshot_every` (1,000) applied
+  entries whatever the state's size: openraft 0.9's `SnapshotPolicy` knows only
+  `LogsSinceLast(n)` and `Never`, so a size-aware policy would mean `Never` and
+  triggering builds from the engine (not done).
+- State digests (`digest.rs`): a disk machine's state has a digest, the sum mod 2^256 of
+  `SHA-256(label ‖ len(key) ‖ key ‖ value)` over its rows (`StateDigest`), so it depends on
+  the rows alone. `StateTx::put`/`delete` move it by the row written less the row replaced
+  (`StateTx::replaced`, a failed read fails the batch); `apply` records it after every entry
+  at a multiple of `DIGEST_EVERY` (`Applied::recorded`, the last `DIGEST_KEPT`) and commits it
+  with the applied index (meta row `digest`, `DigestAt`). `StateMachine::open` takes it again
+  from the rows when the stored one is not at the applied index (`StateTx::commit` drops it);
+  installs and `replace_state*` sum the rows they write. `Group::digests` answers them (none
+  for an in-memory machine) and `Digests::compare` finds the latest index two replicas share.
+  The node compares them across replicas. Tests: `digest::tests`,
+  `replicas_that_applied_the_same_entries_hold_the_same_digest`,
+  `a_replica_that_applied_differently_is_told_apart`,
+  `a_row_changed_under_a_replica_shows_once_an_entry_rewrites_it`.
 - Node rows: `Engine::put_node_meta`/`get_node_meta` keep rows of the node's own in
   `meta` under group id `NODE_ROWS` (`u64::MAX`, which no group takes), sealed and
   synced like a vote: the node's rollback counter lives in the same store as the
@@ -90,8 +157,13 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   (each release has its own K_r) and receive their data by snapshot, whose format is
   unchanged; only a node restarted in place on an older directory (development) is refused. Tests: `format::tests`
   (`any_other_store_format_is_refused_and_left_as_it_was`).
-  A snapshot file's first line is `CALIMERO-SNAPSHOT-<SNAPSHOT_FORMAT>`; a later format is
-  refused by it, not by its frames. A change to any row's shape raises `STORE_FORMAT` (and
+  A snapshot file's first line is `CALIMERO-SNAPSHOT-<n>`; a later format than
+  `SNAPSHOT_FORMAT` (2) is refused by it, not by its frames. Format 2 lets a row span frames
+  (pieces of `FRAME_BYTES`, the value length's top bit marking "continued"): a reader refuses
+  a frame over `MAX_FRAME_BYTES` (64 MiB), and an in-memory machine's checkpoint (the whole
+  system state) is one row. A file with no such row is written as format 1, which the
+  release before reads, so a rollout needs no gate; the first line is patched to 2 only when
+  a row was split. Regression: `machine::large_rows`. A change to any row's shape raises `STORE_FORMAT` (and
   `SNAPSHOT_FORMAT`, since snapshots carry rows) and appends its step. Tests:
   `format::tests`, `machine::snapshot_format`.
 - Entries are capped at `MAX_ENTRY_BYTES` (1 MiB; `WriteError::TooLarge`): openraft
@@ -105,8 +177,13 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 
 Tests: `cargo test -p calimero-log` runs a 3-node cluster in one process
 (replication, failover, restart from disk, a lost or older commit index, learner catch-up, no plaintext in snapshot files,
-a disk machine restarting without replay, a ~6 MiB state streamed to a new node) and
-the store format (`format::tests`).
+a disk machine restarting without replay, a ~6 MiB state streamed to a new node),
+the store format (`format::tests`), and a seeded fault simulator (`tests/sim.rs`:
+writes, crashes losing unsynced writes, restarts, partitions, dropped and delayed
+messages, snapshot builds and log purges; then no acknowledged write lost, strong
+reads see them, every replica's digest equal at one index). One test per seed in
+`ci_seeds!`; `SIM_SEED`, `SIM_RUNS` and `SIM_TRACE` replay, widen and print
+(docs: contribute/testing, "Seeded faults").
 
 Bench: `cargo bench -p calimero-log --bench log` (`benches/log.rs`): a proposal
 appended, committed and applied on one group, on 1 node and on a 3-node group
