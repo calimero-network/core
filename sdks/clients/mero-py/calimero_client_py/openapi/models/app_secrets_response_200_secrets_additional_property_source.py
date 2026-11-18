@@ -4,6 +4,7 @@ from enum import Enum
 class AppSecretsResponse200SecretsAdditionalPropertySource(str, Enum):
     APP = "app"
     CLUSTER = "cluster"
+    DEPLOYMENT = "deployment"
 
     def __str__(self) -> str:
         return str(self.value)

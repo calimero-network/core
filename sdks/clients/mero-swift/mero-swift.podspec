@@ -6,7 +6,7 @@
 Pod::Spec.new do |spec|
   spec.name         = 'mero-swift'
   spec.module_name  = 'MeroKit'
-  spec.version      = '1.0.0-rc.30'
+  spec.version      = '1.0.0-rc.31'
   spec.summary      = 'Native Swift SDK for building iOS apps against a remote Calimero node.'
   spec.description  = <<-DESC
     mero-swift (module MeroKit) is the Swift port of the Calimero mero-js

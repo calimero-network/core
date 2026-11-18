@@ -276,7 +276,7 @@ extension CalimeroClient {
 
         /// The secrets an app's release declares: `GET /apps/{app}/secrets` (`app_secrets`).
         ///
-        /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+        /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
         ///
         /// **Who:** signed in (a session or an API key).
         @discardableResult
@@ -1358,6 +1358,45 @@ extension CalimeroClient {
             let input = Operations.DeploymentOrgs.Input(path: .init(id: id))
             return try await client.perform { api in
                 try await api.deploymentOrgs(input).ok.body.json
+            }
+        }
+
+        /// Remove a deployment's value of a secret: `DELETE /deployments/{id}/secrets/{name}` (`deployment_secret_clear`).
+        ///
+        /// Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func secretClear(id: Swift.String, name: Swift.String, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.DeploymentSecretClear.Output.Ok.Body.JsonPayload {
+            let input = Operations.DeploymentSecretClear.Input(path: .init(id: id, name: name))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.deploymentSecretClear(input).ok.body.json
+            }
+        }
+
+        /// Set a deployment's value of a secret: `PUT /deployments/{id}/secrets/{name}` (`deployment_secret_set`).
+        ///
+        /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func secretSet(id: Swift.String, name: Swift.String, value: Swift.String, passkey: (any PasskeyProvider)? = nil) async throws -> Operations.DeploymentSecretSet.Output.Ok.Body.JsonPayload {
+            let input = Operations.DeploymentSecretSet.Input(path: .init(id: id, name: name), body: .json(.init(value: value)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.deploymentSecretSet(input).ok.body.json
+            }
+        }
+
+        /// A deployment's secrets: `GET /deployments/{id}/secrets` (`deployment_secrets`).
+        ///
+        /// For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`, empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
+        ///
+        /// **Who:** signed in (a session or an API key).
+        @discardableResult
+        public func secrets(id: Swift.String) async throws -> Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload {
+            let input = Operations.DeploymentSecrets.Input(path: .init(id: id))
+            return try await client.perform { api in
+                try await api.deploymentSecrets(input).ok.body.json
             }
         }
 
