@@ -172,6 +172,63 @@ class DeploymentsFacade internal constructor(
         api(null, null, emptySet()).signUpAndDeployments.deploymentOrgs(id = id)
 
     /**
+     * Remove a deployment's value of a secret
+     *
+     * Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `DELETE /deployments/{id}/secrets/{name}` (`deployment_secret_clear`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun secretClear(
+        id: kotlin.String,
+        name: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): DeploymentSecretClear200Response =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentSecretClear(id = id, name = name)
+
+    /**
+     * Set a deployment's value of a secret
+     *
+     * Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `PUT /deployments/{id}/secrets/{name}` (`deployment_secret_set`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun secretSet(
+        id: kotlin.String,
+        name: kotlin.String,
+        value: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): DeploymentSecretSet200Response =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentSecretSet(id = id, name = name, deploymentSecretSetRequest = DeploymentSecretSetRequest(value = value))
+
+    /**
+     * A deployment's secrets
+     *
+     * For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`, empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
+     *
+     * **Who:** signed in (a session or an API key).
+     *
+     * `GET /deployments/{id}/secrets` (`deployment_secrets`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun secrets(
+        id: kotlin.String,
+    ): DeploymentSecrets200Response =
+        api(null, null, emptySet()).signUpAndDeployments.deploymentSecrets(id = id)
+
+    /**
      * Withdraw an offer
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.

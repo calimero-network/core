@@ -69,11 +69,12 @@ data class AppSecrets200ResponseSecretsValue (
     /**
      * 
      *
-     * Values: APP,CLUSTER
+     * Values: APP,DEPLOYMENT,CLUSTER
      */
     @Serializable
     enum class Source(val value: kotlin.String) {
         @SerialName(value = "app") APP("app"),
+        @SerialName(value = "deployment") DEPLOYMENT("deployment"),
         @SerialName(value = "cluster") CLUSTER("cluster");
     }
 

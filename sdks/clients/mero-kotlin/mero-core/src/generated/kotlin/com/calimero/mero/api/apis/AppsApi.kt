@@ -1671,7 +1671,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/secrets
      * The secrets an app&#39;s release declares
-     * For each secret the release the instance runs declares (its signed manifest&#39;s &#x60;secrets&#x60;): its hosts, description and whether it is required, and &#x60;source&#x60;: &#x60;app&#x60; when the instance has its own value (with its &#x60;fingerprint&#x60;, the first 16 hex digits of its SHA-256, &#x60;setBy&#x60; and &#x60;setAt&#x60;), else &#x60;cluster&#x60; (the operator&#39;s, if it bound one). Never a value. The owner, or whoever manages the organization&#39;s apps.  **Who:** signed in (a session or an API key).
+     * For each secret the release the instance runs declares (its signed manifest&#39;s &#x60;secrets&#x60;): its hosts, description and whether it is required, and &#x60;source&#x60;: &#x60;app&#x60; when the instance has its own value (with its &#x60;fingerprint&#x60;, the first 16 hex digits of its SHA-256, &#x60;setBy&#x60; and &#x60;setAt&#x60;), else &#x60;deployment&#x60; when the deployment it was created from holds one (&#x60;deployment_secret_set&#x60;; nothing more of it), else &#x60;cluster&#x60; (the operator&#39;s, if it bound one). Never a value. The owner, or whoever manages the organization&#39;s apps.  **Who:** signed in (a session or an API key).
      * @param app 
      * @return AppSecrets200Response
      * @throws IllegalStateException If the request is not correctly configured
@@ -1703,7 +1703,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/secrets
      * The secrets an app&#39;s release declares
-     * For each secret the release the instance runs declares (its signed manifest&#39;s &#x60;secrets&#x60;): its hosts, description and whether it is required, and &#x60;source&#x60;: &#x60;app&#x60; when the instance has its own value (with its &#x60;fingerprint&#x60;, the first 16 hex digits of its SHA-256, &#x60;setBy&#x60; and &#x60;setAt&#x60;), else &#x60;cluster&#x60; (the operator&#39;s, if it bound one). Never a value. The owner, or whoever manages the organization&#39;s apps.  **Who:** signed in (a session or an API key).
+     * For each secret the release the instance runs declares (its signed manifest&#39;s &#x60;secrets&#x60;): its hosts, description and whether it is required, and &#x60;source&#x60;: &#x60;app&#x60; when the instance has its own value (with its &#x60;fingerprint&#x60;, the first 16 hex digits of its SHA-256, &#x60;setBy&#x60; and &#x60;setAt&#x60;), else &#x60;deployment&#x60; when the deployment it was created from holds one (&#x60;deployment_secret_set&#x60;; nothing more of it), else &#x60;cluster&#x60; (the operator&#39;s, if it bound one). Never a value. The owner, or whoever manages the organization&#39;s apps.  **Who:** signed in (a session or an API key).
      * @param app 
      * @return ApiResponse<AppSecrets200Response?>
      * @throws IllegalStateException If the request is not correctly configured

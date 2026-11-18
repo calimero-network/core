@@ -448,7 +448,7 @@ public protocol APIProtocol: Sendable {
     func appRunLogs(_ input: Operations.AppRunLogs.Input) async throws -> Operations.AppRunLogs.Output
     /// The secrets an app's release declares
     ///
-    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -931,6 +931,33 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `GET /deployments/{id}/orgs`.
     /// - Remark: Generated from `#/paths//deployments/{id}/orgs/get(deployment_orgs)`.
     func deploymentOrgs(_ input: Operations.DeploymentOrgs.Input) async throws -> Operations.DeploymentOrgs.Output
+    /// A deployment's secrets
+    ///
+    /// For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`, empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /deployments/{id}/secrets`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/secrets/get(deployment_secrets)`.
+    func deploymentSecrets(_ input: Operations.DeploymentSecrets.Input) async throws -> Operations.DeploymentSecrets.Output
+    /// Set a deployment's value of a secret
+    ///
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /deployments/{id}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/secrets/{name}/put(deployment_secret_set)`.
+    func deploymentSecretSet(_ input: Operations.DeploymentSecretSet.Input) async throws -> Operations.DeploymentSecretSet.Output
+    /// Remove a deployment's value of a secret
+    ///
+    /// Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /deployments/{id}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/secrets/{name}/delete(deployment_secret_clear)`.
+    func deploymentSecretClear(_ input: Operations.DeploymentSecretClear.Input) async throws -> Operations.DeploymentSecretClear.Output
     /// Node health
     ///
     /// In the clear. The node's id, the system group's leader (`null`: none known), its `merod` release, the newest cluster version it supports (`clusterVersion`) and the cluster's rollback epoch (`null` on a node without a rollback counter).
@@ -2373,7 +2400,7 @@ extension APIProtocol {
     }
     /// The secrets an app's release declares
     ///
-    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -3270,6 +3297,61 @@ extension APIProtocol {
         try await deploymentOrgs(Operations.DeploymentOrgs.Input(
             path: path,
             headers: headers
+        ))
+    }
+    /// A deployment's secrets
+    ///
+    /// For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`, empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /deployments/{id}/secrets`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/secrets/get(deployment_secrets)`.
+    public func deploymentSecrets(
+        path: Operations.DeploymentSecrets.Input.Path,
+        headers: Operations.DeploymentSecrets.Input.Headers = .init()
+    ) async throws -> Operations.DeploymentSecrets.Output {
+        try await deploymentSecrets(Operations.DeploymentSecrets.Input(
+            path: path,
+            headers: headers
+        ))
+    }
+    /// Set a deployment's value of a secret
+    ///
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /deployments/{id}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/secrets/{name}/put(deployment_secret_set)`.
+    public func deploymentSecretSet(
+        path: Operations.DeploymentSecretSet.Input.Path,
+        headers: Operations.DeploymentSecretSet.Input.Headers = .init(),
+        body: Operations.DeploymentSecretSet.Input.Body
+    ) async throws -> Operations.DeploymentSecretSet.Output {
+        try await deploymentSecretSet(Operations.DeploymentSecretSet.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
+    /// Remove a deployment's value of a secret
+    ///
+    /// Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /deployments/{id}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/secrets/{name}/delete(deployment_secret_clear)`.
+    public func deploymentSecretClear(
+        path: Operations.DeploymentSecretClear.Input.Path,
+        headers: Operations.DeploymentSecretClear.Input.Headers = .init(),
+        body: Operations.DeploymentSecretClear.Input.Body? = nil
+    ) async throws -> Operations.DeploymentSecretClear.Output {
+        try await deploymentSecretClear(Operations.DeploymentSecretClear.Input(
+            path: path,
+            headers: headers,
+            body: body
         ))
     }
     /// Node health
@@ -19163,7 +19245,7 @@ public enum Operations {
     }
     /// The secrets an app's release declares
     ///
-    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
+    /// For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -19229,6 +19311,7 @@ public enum Operations {
                                 /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/source`.
                                 @frozen public enum SourcePayload: String, Codable, Hashable, Sendable, CaseIterable {
                                     case app = "app"
+                                    case deployment = "deployment"
                                     case cluster = "cluster"
                                 }
                                 /// - Remark: Generated from `#/paths/apps/{app}/secrets/GET/responses/200/content/json/secrets/additionalProperties/source`.
@@ -28965,6 +29048,618 @@ public enum Operations {
             /// - Throws: An error if `self` is not `.ok`.
             /// - SeeAlso: `.ok`.
             public var ok: Operations.DeploymentOrgs.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// A deployment's secrets
+    ///
+    /// For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`, empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /deployments/{id}/secrets`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/secrets/get(deployment_secrets)`.
+    public enum DeploymentSecrets {
+        public static let id: Swift.String = "deployment_secrets"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/path/id`.
+                public var id: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - id:
+                public init(id: Swift.String) {
+                    self.id = id
+                }
+            }
+            public var path: Operations.DeploymentSecrets.Input.Path
+            /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentSecrets.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentSecrets.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.DeploymentSecrets.Input.Headers
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            public init(
+                path: Operations.DeploymentSecrets.Input.Path,
+                headers: Operations.DeploymentSecrets.Input.Headers = .init()
+            ) {
+                self.path = path
+                self.headers = headers
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/deployment`.
+                        public var deployment: Swift.String
+                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets`.
+                        public struct SecretsPayload: Codable, Hashable, Sendable {
+                            /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties`.
+                            public struct AdditionalPropertiesPayload: Codable, Hashable, Sendable {
+                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/apps`.
+                                public var apps: [Swift.String]
+                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/set`.
+                                public var set: Swift.Bool
+                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/fingerprint`.
+                                public var fingerprint: Swift.String?
+                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/setBy`.
+                                public var setBy: Swift.String?
+                                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets/additionalProperties/setAt`.
+                                public var setAt: Swift.Int64?
+                                /// Creates a new `AdditionalPropertiesPayload`.
+                                ///
+                                /// - Parameters:
+                                ///   - apps:
+                                ///   - set:
+                                ///   - fingerprint:
+                                ///   - setBy:
+                                ///   - setAt:
+                                public init(
+                                    apps: [Swift.String],
+                                    set: Swift.Bool,
+                                    fingerprint: Swift.String? = nil,
+                                    setBy: Swift.String? = nil,
+                                    setAt: Swift.Int64? = nil
+                                ) {
+                                    self.apps = apps
+                                    self.set = set
+                                    self.fingerprint = fingerprint
+                                    self.setBy = setBy
+                                    self.setAt = setAt
+                                }
+                                public enum CodingKeys: String, CodingKey {
+                                    case apps
+                                    case set
+                                    case fingerprint
+                                    case setBy
+                                    case setAt
+                                }
+                            }
+                            /// A container of undocumented properties.
+                            public var additionalProperties: [String: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload]
+                            /// Creates a new `SecretsPayload`.
+                            ///
+                            /// - Parameters:
+                            ///   - additionalProperties: A container of undocumented properties.
+                            public init(additionalProperties: [String: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload.AdditionalPropertiesPayload] = .init()) {
+                                self.additionalProperties = additionalProperties
+                            }
+                            public init(from decoder: any Decoder) throws {
+                                additionalProperties = try decoder.decodeAdditionalProperties(knownKeys: [])
+                            }
+                            public func encode(to encoder: any Encoder) throws {
+                                try encoder.encodeAdditionalProperties(additionalProperties)
+                            }
+                        }
+                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/json/secrets`.
+                        public var secrets: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - deployment:
+                        ///   - secrets:
+                        public init(
+                            deployment: Swift.String,
+                            secrets: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.SecretsPayload
+                        ) {
+                            self.deployment = deployment
+                            self.secrets = secrets
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case deployment
+                            case secrets
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/GET/responses/200/content/application\/json`.
+                    case json(Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.DeploymentSecrets.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.DeploymentSecrets.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//deployments/{id}/secrets/get(deployment_secrets)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.DeploymentSecrets.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.DeploymentSecrets.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Set a deployment's value of a secret
+    ///
+    /// Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `PUT /deployments/{id}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/secrets/{name}/put(deployment_secret_set)`.
+    public enum DeploymentSecretSet {
+        public static let id: Swift.String = "deployment_secret_set"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/path/id`.
+                public var id: Swift.String
+                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/path/name`.
+                public var name: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - id:
+                ///   - name:
+                public init(
+                    id: Swift.String,
+                    name: Swift.String
+                ) {
+                    self.id = id
+                    self.name = name
+                }
+            }
+            public var path: Operations.DeploymentSecretSet.Input.Path
+            /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentSecretSet.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentSecretSet.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.DeploymentSecretSet.Input.Headers
+            /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/requestBody/json/value`.
+                    public var value: Swift.String
+                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - value:
+                    ///   - confirm:
+                    public init(
+                        value: Swift.String,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.value = value
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case value
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.value = try container.decode(
+                            Swift.String.self,
+                            forKey: .value
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "value",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/requestBody/content/application\/json`.
+                case json(Operations.DeploymentSecretSet.Input.Body.JsonPayload)
+            }
+            public var body: Operations.DeploymentSecretSet.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.DeploymentSecretSet.Input.Path,
+                headers: Operations.DeploymentSecretSet.Input.Headers = .init(),
+                body: Operations.DeploymentSecretSet.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json/deployment`.
+                        public var deployment: Swift.String
+                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json/name`.
+                        public var name: Swift.String
+                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json/fingerprint`.
+                        public var fingerprint: Swift.String
+                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json/setBy`.
+                        public var setBy: Swift.String
+                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/json/setAt`.
+                        public var setAt: Swift.Int64
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - deployment:
+                        ///   - name:
+                        ///   - fingerprint:
+                        ///   - setBy:
+                        ///   - setAt:
+                        public init(
+                            deployment: Swift.String,
+                            name: Swift.String,
+                            fingerprint: Swift.String,
+                            setBy: Swift.String,
+                            setAt: Swift.Int64
+                        ) {
+                            self.deployment = deployment
+                            self.name = name
+                            self.fingerprint = fingerprint
+                            self.setBy = setBy
+                            self.setAt = setAt
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case deployment
+                            case name
+                            case fingerprint
+                            case setBy
+                            case setAt
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/PUT/responses/200/content/application\/json`.
+                    case json(Operations.DeploymentSecretSet.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.DeploymentSecretSet.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.DeploymentSecretSet.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.DeploymentSecretSet.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//deployments/{id}/secrets/{name}/put(deployment_secret_set)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.DeploymentSecretSet.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.DeploymentSecretSet.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
+    /// Remove a deployment's value of a secret
+    ///
+    /// Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /deployments/{id}/secrets/{name}`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/secrets/{name}/delete(deployment_secret_clear)`.
+    public enum DeploymentSecretClear {
+        public static let id: Swift.String = "deployment_secret_clear"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/path/id`.
+                public var id: Swift.String
+                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/path/name`.
+                public var name: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - id:
+                ///   - name:
+                public init(
+                    id: Swift.String,
+                    name: Swift.String
+                ) {
+                    self.id = id
+                    self.name = name
+                }
+            }
+            public var path: Operations.DeploymentSecretClear.Input.Path
+            /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentSecretClear.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.DeploymentSecretClear.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.DeploymentSecretClear.Input.Headers
+            /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/requestBody/content/application\/json`.
+                case json(Components.Schemas.ConfirmOnly)
+            }
+            public var body: Operations.DeploymentSecretClear.Input.Body?
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.DeploymentSecretClear.Input.Path,
+                headers: Operations.DeploymentSecretClear.Input.Headers = .init(),
+                body: Operations.DeploymentSecretClear.Input.Body? = nil
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/responses/200/content/json`.
+                    public struct JsonPayload: Codable, Hashable, Sendable {
+                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/responses/200/content/json/deployment`.
+                        public var deployment: Swift.String
+                        /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/responses/200/content/json/name`.
+                        public var name: Swift.String
+                        /// Creates a new `JsonPayload`.
+                        ///
+                        /// - Parameters:
+                        ///   - deployment:
+                        ///   - name:
+                        public init(
+                            deployment: Swift.String,
+                            name: Swift.String
+                        ) {
+                            self.deployment = deployment
+                            self.name = name
+                        }
+                        public enum CodingKeys: String, CodingKey {
+                            case deployment
+                            case name
+                        }
+                    }
+                    /// - Remark: Generated from `#/paths/deployments/{id}/secrets/{name}/DELETE/responses/200/content/application\/json`.
+                    case json(Operations.DeploymentSecretClear.Output.Ok.Body.JsonPayload)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Operations.DeploymentSecretClear.Output.Ok.Body.JsonPayload {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.DeploymentSecretClear.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.DeploymentSecretClear.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//deployments/{id}/secrets/{name}/delete(deployment_secret_clear)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.DeploymentSecretClear.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.DeploymentSecretClear.Output.Ok {
                 get throws {
                     switch self {
                     case let .ok(response):
