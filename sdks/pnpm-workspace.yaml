@@ -1,5 +1,11 @@
 # The JavaScript SDKs, one workspace so mero-react builds against this tree's
-# mero-js (`workspace:*`, published as the exact same version).
+# mero-js, and the design-system packages against each other (`workspace:*`,
+# published as the exact same version).
 packages:
   - "clients/mero-js"
   - "components/mero-react"
+  - "components/mero-ui"
+  - "components/mero-ui/examples/storybook"
+  - "components/mero-icons"
+  - "components/mero-tokens"
+  - "components/mero-charts"

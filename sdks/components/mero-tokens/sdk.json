@@ -1,0 +1,21 @@
+{
+  "name": "mero-tokens",
+  "kind": "component",
+  "language": "typescript",
+  "published": [
+    {
+      "registry": "npm",
+      "name": "@calimero-network/mero-tokens"
+    }
+  ],
+  "version_files": [
+    {
+      "path": "package.json",
+      "format": "json",
+      "key": "version"
+    }
+  ],
+  "depends_on": [],
+  "inputs": [],
+  "workflow": ".github/workflows/sdk-mero-tokens.yml"
+}
