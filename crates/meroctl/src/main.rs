@@ -212,7 +212,7 @@ enum Cmd {
         method: String,
         path: String,
         body: Option<String>,
-        /// Answer a `412 CONFIRM_REQUIRED` on a post or delete with this
+        /// Answer a `412 CONFIRM_REQUIRED` on a post, put or delete with this
         /// passkey file (development clusters).
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
@@ -597,9 +597,10 @@ async fn main() -> eyre::Result<()> {
                     let body = body.unwrap_or_else(|| json!({}));
                     env.raw(Method::POST, path, Some(body), dev_passkey).await?
                 }
+                // A step-up `PUT` (an app's or a deployment's secret) signs with the dev passkey.
                 "put" => {
                     let body = body.unwrap_or_else(|| json!({}));
-                    env.raw(Method::PUT, path, Some(body), None).await?
+                    env.raw(Method::PUT, path, Some(body), dev_passkey).await?
                 }
                 other => bail!("unknown method {other}: use get, post, put or delete"),
             }

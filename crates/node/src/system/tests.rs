@@ -7279,6 +7279,346 @@ fn state_from_before_deployments_reads_with_none_and_writes_as_before() {
     assert_eq!(serde_json::to_value(&restored).unwrap(), before);
 }
 
+// ----------------------------------------------------- deployment secrets
+
+/// `install_at`, the release declaring secret `API_KEY` for `api.example.com`.
+fn install_declaring(by: &str, version: &str) -> SystemCmd {
+    SystemCmd::InstallPackage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        release: serde_json::from_value(json!({
+            "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+            "services": { "": format!("b-{version}") }, "installedBy": by, "installedAt": 5,
+            "outbound": ["https://api.example.com/"],
+            "secrets": { "API_KEY": { "hosts": ["api.example.com"] } },
+        }))
+        .unwrap(),
+    }
+}
+
+fn set_secret(deployment: &str, name: &str, value: &str, actor: &str) -> SystemCmd {
+    SystemCmd::SetDeploymentSecret {
+        deployment: deployment.into(),
+        name: name.into(),
+        value: crate::component::SecretValue(value.into()),
+        actor: actor.into(),
+        at: 20,
+        consent: serde_json::Value::Null,
+    }
+}
+
+fn clear_secret(deployment: &str, name: &str, actor: &str) -> SystemCmd {
+    SystemCmd::ClearDeploymentSecret {
+        deployment: deployment.into(),
+        name: name.into(),
+        actor: actor.into(),
+        consent: serde_json::Value::Null,
+    }
+}
+
+/// A deployment's managers set a value of a secret a release it offers
+/// declares, read by every instance created from it; nobody else, no other
+/// deployment, no undeclared or malformed name and no empty or oversized value.
+/// Clearing takes it back; deleting the deployment drops its values. A value
+/// whose name no offer declares any more is kept, unused, until cleared.
+#[test]
+fn a_deployments_managers_set_secrets_its_offers_declare() {
+    use super::{
+        Deployer, Deployments, MAX_SECRETS_PER_DEPLOYMENT, NO_DEPLOYMENT_SECRET, QUOTA_PREFIX,
+        UNDECLARED_SECRET,
+    };
+    let mut m = deploying(Deployments::Open);
+    let _ok = m.run_unproven(install_declaring("alice", "1.0.0")).unwrap();
+    let _ok = m.run_unproven(install_at("alice", "2.0.0", 5)).unwrap();
+    let _ok = m
+        .run_unproven(create_deployment(
+            "a",
+            Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(create_deployment("o", Deployer::Org("org".into()), "carol"))
+        .unwrap();
+    // Nothing offered yet: nothing declares it.
+    assert_eq!(
+        m.run_unproven(set_secret("a", "API_KEY", "k1", "alice"))
+            .unwrap_err(),
+        UNDECLARED_SECRET
+    );
+    let _ok = m
+        .run_unproven(offer_app("a", "notes", "1.0.0", "alice"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(offer_app("o", "notes", "1.0.0", "carol"))
+        .unwrap();
+
+    // Refused: another account, a plain member, a missing deployment, an
+    // undeclared or malformed name, an empty or oversized value.
+    assert!(m
+        .run_unproven(set_secret("a", "API_KEY", "k1", "bob"))
+        .is_err());
+    assert!(m
+        .run_unproven(set_secret("o", "API_KEY", "k1", "bob"))
+        .is_err());
+    assert!(m
+        .run_unproven(set_secret("zz", "API_KEY", "k1", "alice"))
+        .is_err());
+    assert_eq!(
+        m.run_unproven(set_secret("a", "OTHER", "k1", "alice"))
+            .unwrap_err(),
+        UNDECLARED_SECRET
+    );
+    assert!(m
+        .run_unproven(set_secret("a", "api_key", "k1", "alice"))
+        .is_err());
+    assert!(m
+        .run_unproven(set_secret("a", "API_KEY", "", "alice"))
+        .is_err());
+    let long = "x".repeat(crate::component::MAX_SECRET_VALUE_BYTES + 1);
+    assert!(m
+        .run_unproven(set_secret("a", "API_KEY", &long, "alice"))
+        .is_err());
+    assert!(m.state.deployment_secrets.is_empty());
+
+    // Set: answered by fingerprint, never the value; an org's by its manager.
+    let out = m
+        .run_unproven(set_secret("a", "API_KEY", "alices-key", "alice"))
+        .unwrap();
+    assert!(!out.to_string().contains("alices-key"), "{out}");
+    assert_eq!(
+        out["fingerprint"],
+        json!(crate::component::SecretValue("alices-key".into()).fingerprint())
+    );
+    assert_eq!(out["setBy"], json!("account:alice"));
+    let _ok = m
+        .run_unproven(set_secret("o", "API_KEY", "orgs-key", "carol"))
+        .unwrap();
+    // Replaced in place, within the bound.
+    let _ok = m
+        .run_unproven(set_secret("a", "API_KEY", "alices-new-key", "alice"))
+        .unwrap();
+    assert_eq!(m.state.deployment_secrets["a"].len(), 1);
+    assert_eq!(MAX_SECRETS_PER_DEPLOYMENT, calimero_bundle::MAX_SECRETS);
+    let held = m.state.deployment_secrets.get_mut("a").unwrap();
+    for i in 1..MAX_SECRETS_PER_DEPLOYMENT {
+        let mut filler = held["API_KEY"].clone();
+        filler.set_at = u64::try_from(i).unwrap();
+        let _prev = held.insert(format!("FILLER_{i}"), filler);
+    }
+    // A name the offers declare, but the deployment is full: refused; the
+    // one it holds is still replaced.
+    let _ok = m
+        .run_unproven(SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: serde_json::from_value(json!({
+                "version": "3.0.0", "mpk": "3.0.0", "mpkSize": 1, "source": "upload",
+                "services": { "": "b-3.0.0" }, "installedBy": "alice", "installedAt": 5,
+                "outbound": ["https://api.example.com/"],
+                "secrets": { "MORE": { "hosts": ["api.example.com"] } },
+            }))
+            .unwrap(),
+        })
+        .unwrap();
+    let _ok = m
+        .run_unproven(offer_app("a", "more", "3.0.0", "alice"))
+        .unwrap();
+    let e = m
+        .run_unproven(set_secret("a", "MORE", "v", "alice"))
+        .unwrap_err();
+    assert!(e.starts_with(QUOTA_PREFIX), "{e}");
+    let _ok = m
+        .run_unproven(set_secret("a", "API_KEY", "again", "alice"))
+        .unwrap();
+    let _ok = m.run_unproven(withdraw_app("a", "more", "alice")).unwrap();
+    for i in 1..MAX_SECRETS_PER_DEPLOYMENT {
+        let _ok = m
+            .run_unproven(clear_secret("a", &format!("FILLER_{i}"), "alice"))
+            .unwrap();
+    }
+
+    let _ok = m
+        .run_unproven(instance("i1", "bob", "b-1.0.0", Some("a")))
+        .unwrap();
+    let _ok = m
+        .run_unproven(instance("i2", "bob", "b-1.0.0", None))
+        .unwrap();
+    let of = |m: &SystemMachine, app: &str| {
+        m.state
+            .deployment_secrets_of(app)
+            .and_then(|h| h.get("API_KEY"))
+            .map(|s| s.value.0.clone())
+    };
+    assert_eq!(of(&m, "i1").as_deref(), Some("again"));
+    assert_eq!(of(&m, "i2"), None, "created from no deployment");
+
+    // Clear: only a manager, only what it holds.
+    assert!(m.run_unproven(clear_secret("a", "API_KEY", "bob")).is_err());
+    assert_eq!(
+        m.run_unproven(clear_secret("a", "OTHER", "alice"))
+            .unwrap_err(),
+        NO_DEPLOYMENT_SECRET
+    );
+    let _ok = m
+        .run_unproven(clear_secret("a", "API_KEY", "alice"))
+        .unwrap();
+    assert_eq!(of(&m, "i1"), None);
+    assert!(!m.state.deployment_secrets.contains_key("a"));
+
+    // An offer moved to a release that does not declare it: the value stays,
+    // unused by such an instance (`component::run_secrets`), until cleared.
+    let _ok = m
+        .run_unproven(set_secret("a", "API_KEY", "kept", "alice"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(offer_app("a", "notes", "2.0.0", "alice"))
+        .unwrap();
+    assert!(!m
+        .state
+        .deployment_declares(&m.state.deployments["a"], "API_KEY"));
+    assert_eq!(of(&m, "i1").as_deref(), Some("kept"));
+
+    // Deleting the deployment drops its values.
+    let _gone = m.state.apps.remove("i1");
+    let _ok = m.run_unproven(withdraw_app("a", "notes", "alice")).unwrap();
+    let _ok = m.run_unproven(delete_deployment("a", "alice")).unwrap();
+    assert!(!m.state.deployment_secrets.contains_key("a"));
+    assert!(m.state.deployment_secrets.contains_key("o"));
+}
+
+/// Setting or clearing a deployment's secret carries a manager's passkey
+/// consent over exactly that change, once; the consent names the value's
+/// fingerprint, worked out where it applies, so no node swaps the value.
+#[test]
+fn deployment_secrets_carry_their_managers_consent() {
+    let (mut m, mut alice, mut bob) = two_accounts();
+    let _ok = m.run_unproven(install_declaring("alice", "1.0.0")).unwrap();
+    let _ok = m
+        .run_unproven(create_deployment(
+            "d",
+            super::Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(offer_app("d", "notes", "1.0.0", "alice"))
+        .unwrap();
+    let set =
+        |actor: &str, value: &str, consent: serde_json::Value| SystemCmd::SetDeploymentSecret {
+            deployment: "d".into(),
+            name: "API_KEY".into(),
+            value: crate::component::SecretValue(value.into()),
+            actor: actor.into(),
+            at: 20,
+            consent,
+        };
+    let fp = |v: &str| crate::component::SecretValue(v.into()).fingerprint();
+    let args = json!({ "name": "API_KEY", "fingerprint": fp("real") });
+    assert!(m
+        .run(set("alice", "real", serde_json::Value::Null))
+        .is_err());
+    let c = consent(&mut bob, "deployment:d", "__set_secret", &args);
+    assert!(m.run(set("alice", "real", c)).is_err(), "bob's passkey");
+    let c = consent(&mut bob, "deployment:d", "__set_secret", &args);
+    assert!(m.run(set("bob", "real", c)).is_err(), "bob manages nothing");
+    let c = consent(&mut alice, "deployment:other", "__set_secret", &args);
+    assert!(
+        m.run(set("alice", "real", c)).is_err(),
+        "another deployment"
+    );
+    let c = consent(&mut alice, "deployment:d", "__clear_secret", &args);
+    assert!(m.run(set("alice", "real", c)).is_err(), "a clear");
+    let c = consent(&mut alice, "deployment:d", "__set_secret", &args);
+    assert!(
+        m.run(set("alice", "swapped", c.clone())).is_err(),
+        "another value under the consent"
+    );
+    assert!(m.state.deployment_secrets.is_empty());
+    let _ok = m.run(set("alice", "real", c.clone())).unwrap();
+    assert!(m.run(set("alice", "real", c)).is_err(), "used once");
+
+    let clear = |consent: serde_json::Value| SystemCmd::ClearDeploymentSecret {
+        deployment: "d".into(),
+        name: "API_KEY".into(),
+        actor: "alice".into(),
+        consent,
+    };
+    let c = consent(
+        &mut alice,
+        "deployment:d",
+        "__clear_secret",
+        &json!({ "name": "OTHER" }),
+    );
+    assert!(m.run(clear(c)).is_err(), "another name");
+    let c = consent(
+        &mut alice,
+        "deployment:d",
+        "__clear_secret",
+        &json!({ "name": "API_KEY" }),
+    );
+    let _ok = m.run(clear(c)).unwrap();
+    assert!(m.state.deployment_secrets.is_empty());
+}
+
+/// A deployment's secret value is in no `Debug` print of the state or of the
+/// command, and in no answer `apply` gives.
+#[test]
+fn a_deployment_secret_value_never_prints() {
+    const VALUE: &str = "never-printed-value";
+    let mut m = deploying(super::Deployments::Open);
+    let _ok = m.run_unproven(install_declaring("alice", "1.0.0")).unwrap();
+    let _ok = m
+        .run_unproven(create_deployment(
+            "a",
+            super::Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(offer_app("a", "notes", "1.0.0", "alice"))
+        .unwrap();
+    let cmd = set_secret("a", "API_KEY", VALUE, "alice");
+    assert!(!format!("{cmd:?}").contains(VALUE));
+    let out = m.run_unproven(cmd).unwrap();
+    assert!(!out.to_string().contains(VALUE), "{out}");
+    let refused = m
+        .run_unproven(set_secret("a", "OTHER", VALUE, "alice"))
+        .unwrap_err();
+    assert!(!refused.contains(VALUE));
+    assert!(!format!("{:?}", m.state).contains(VALUE));
+    assert!(!format!("{:?}", m.state.deployment_secrets).contains(VALUE));
+    // The snapshot does carry it: the system group's state is sealed at rest.
+    assert!(serde_json::to_string(&m.state).unwrap().contains(VALUE));
+}
+
+/// A system state written before deployment secrets (log entries and
+/// snapshots are JSON) reads with none, and writes back as it was.
+#[test]
+fn state_from_before_deployment_secrets_reads_with_none_and_writes_as_before() {
+    let mut m = deploying(super::Deployments::Open);
+    let _ok = m.run_unproven(install_declaring("alice", "1.0.0")).unwrap();
+    let _ok = m
+        .run_unproven(create_deployment(
+            "a",
+            super::Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let before = serde_json::to_value(&m.state).unwrap();
+    assert!(before.get("deploymentSecrets").is_none(), "{before}");
+    let restored: SystemState = serde_json::from_value(before.clone()).unwrap();
+    assert!(restored.deployment_secrets.is_empty());
+    assert_eq!(serde_json::to_value(&restored).unwrap(), before);
+    // A deletion logged before them applies as it did.
+    let mut m = SystemMachine {
+        state: restored,
+        ..SystemMachine::default()
+    };
+    let _ok = m.run_unproven(delete_deployment("a", "alice")).unwrap();
+    assert!(m.state.deployments.is_empty());
+}
+
 /// An app of `org` (or of alice's personal organization, `p-alice`) in a
 /// machine whose file quota is `quota`.
 fn machine_with_apps(quota: u64, apps: &[(&str, Option<&str>)]) -> SystemMachine {

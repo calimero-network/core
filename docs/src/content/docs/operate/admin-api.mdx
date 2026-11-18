@@ -303,6 +303,9 @@ deployers are who may install where `--deployments granted`.
 | `POST /deployments/{id}/apps` | account holder | `{ app, package, version, confirm? }`: offer an installed release under an app name; `412` first | |
 | `DELETE /deployments/{id}/apps/{app}` | account holder | Withdraw an offer (refused while an instance runs it); `412` first | |
 | `GET /deployments/{id}/orgs` | signed in (its managers) | Each customer organization's id, name, member counts, instances and their releases, and `outsideOrgs` (instances in personal organizations, counted only) | |
+| `GET /deployments/{id}/secrets` | signed in (its managers) | Each secret its offered releases declare or it holds: the apps declaring it, `set`, and when set its fingerprint, `setBy` and `setAt`; never a value | |
+| `PUT /deployments/{id}/secrets/{name}` | account holder (its managers) | `{ value, confirm? }`: the value every instance created from it uses unless the instance set its own; a name an offered release declares (`404 UNDECLARED_SECRET`); `412` first | |
+| `DELETE /deployments/{id}/secrets/{name}` | account holder (its managers) | Remove its value: instances fall back to the operator's; `412` first | |
 | `GET /deployers` | account holder (the cluster's owner) or ops | The deployments and deployers governance, the owner, every grant | |
 | `POST /deployers`, `DELETE /deployers/{key}` | account holder (the cluster's owner, once named) | `{ deployer, until?, confirm? }`: grant, or revoke, a deployer with a passkey; `412` first | |
 

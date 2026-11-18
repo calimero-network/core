@@ -5709,6 +5709,316 @@ async fn a_release_names_the_apps_it_uses_on_its_card() {
     );
 }
 
+/// What `app`'s next enrich request sent for `ECHO_KEY`: the lengths of the values the echo
+/// saw filled in (`secretBytes`), each redacted from what came back.
+async fn echoed_secret(cl: &Client, app: &str, round: &mut u32) -> Value {
+    *round += 1;
+    let key = format!("k{round}");
+    let _r = cl
+        .apps()
+        .call(
+            app,
+            "set",
+            Some(json!({ "key": key, "value": "acme.com" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let _r = cl
+        .apps()
+        .call(app, "startEnrich", Some(json!({ "key": key })), None, None)
+        .await
+        .unwrap();
+    let got = eventually(cl, app, "enrichment", json!({ "key": key }), |v| {
+        v.is_string()
+    })
+    .await;
+    let got = got.as_str().unwrap();
+    assert!(
+        got.starts_with("200 ") && got.contains("[redacted]"),
+        "{got}"
+    );
+    let echo: Value = serde_json::from_str(&got[4..]).unwrap();
+    echo["secretBytes"].clone()
+}
+
+/// A deployment's managers set a value of a secret the release it offers declares: every
+/// instance created from it sends that value, only to the secret's declared host, until the
+/// instance sets its own, which wins; clearing either falls back (the deployment's, then the
+/// operator's). Which value went out is told by its length in the echo (`secretBytes`), never
+/// the value. A non-manager, a manager of another deployment, an undeclared name and a
+/// malformed one or value are refused, and no answer of any route here carries a value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_deployments_secret_reaches_its_instances_unless_they_set_their_own() {
+    const PREFIX: &str = "https://echo.outbound.test/v1/";
+    const HOST: &str = "echo.outbound.test";
+    const PACKAGE: &str = "com.calimero.deployed-echo";
+    const OPERATORS: &str = "operators-value";
+    const DEPLOYMENTS: &str = "the-deployments-value";
+    const OWN: &str = "own-value";
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[23; 32]);
+    let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
+    let settings = calimero_outbound::OutboundSettings {
+        enabled: true,
+        hosts: vec![HOST.to_owned()],
+        testing: Some(calimero_outbound::OutboundTestSettings {
+            echo: true,
+            turnstile: false,
+            secrets: [(
+                "ECHO_KEY".to_owned(),
+                calimero_outbound::TestSecretSettings {
+                    value: OPERATORS.to_owned(),
+                    packages: vec![PACKAGE.to_owned()],
+                    signers: vec![signer],
+                    hosts: vec![HOST.to_owned()],
+                },
+            )]
+            .into(),
+        }),
+        ..calimero_outbound::OutboundSettings::default()
+    };
+    let service = calimero_outbound::OutboundService::from_settings(&settings).unwrap();
+    let c = Cluster::start_with(3, |cfg| cfg.outbound.clone_from(&service)).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let alice_id = alice.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = alice
+        .packages()
+        .upload(mpk_with_secrets(
+            PACKAGE,
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[PREFIX],
+            Some(&[("ECHO_KEY", HOST)]),
+        ))
+        .await
+        .unwrap();
+    let _ = alice
+        .orgs()
+        .outbound_approval(
+            &alice.personal_org().await.unwrap(),
+            PACKAGE,
+            Some(typed(json!("manifest"))),
+            Some(false),
+            Some(&mut pk),
+        )
+        .await
+        .map(wire)
+        .unwrap();
+    let d = alice
+        .deployments()
+        .create("labs", typed(json!({ "account": alice_id })), Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let theirs = bob
+        .deployments()
+        .create(
+            "bobs",
+            typed(json!({ "account": bob_id })),
+            Some(&mut bob_pk),
+        )
+        .await
+        .map(wire)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut answers: Vec<Value> = Vec::new();
+
+    // Nothing offered yet: no release of it declares the name.
+    let e = alice
+        .deployments()
+        .secret_set(&d, "ECHO_KEY", DEPLOYMENTS, Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("UNDECLARED_SECRET"), "{e}");
+    answers.push(
+        alice
+            .deployments()
+            .offer(&d, "echo", PACKAGE, "0.1.0", Some(&mut pk))
+            .await
+            .map(wire)
+            .unwrap(),
+    );
+    let app = alice
+        .apps()
+        .create(AppCreateRequest {
+            name: Some("deployed".to_owned()),
+            deployment: Some(d.clone()),
+            package: Some(PACKAGE.to_owned()),
+            ..AppCreateRequest::default()
+        })
+        .await
+        .unwrap()
+        .app_id;
+    let mut round = 0;
+    let source = |listed: &Value| listed["secrets"]["ECHO_KEY"]["source"].clone();
+
+    // No value set anywhere but the operator's.
+    assert_eq!(
+        echoed_secret(&alice, &app, &mut round).await,
+        json!([OPERATORS.len()])
+    );
+
+    // Refused: a stranger, a manager of another deployment, an undeclared or
+    // malformed name, an empty or oversized value.
+    let e = bob
+        .deployments()
+        .secret_set(&d, "ECHO_KEY", "bobs", Some(&mut bob_pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let e = alice
+        .deployments()
+        .secret_set(&theirs, "ECHO_KEY", "x", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    let e = alice
+        .deployments()
+        .secret_set(&d, "OTHER", "x", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("UNDECLARED_SECRET"), "{e}");
+    let e = alice
+        .deployments()
+        .secret_set(&d, "echo_key", "x", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_SECRET"), "{e}");
+    let e = alice
+        .deployments()
+        .secret_set(&d, "ECHO_KEY", "", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_SECRET"), "{e}");
+    let e = alice
+        .deployments()
+        .secret_set(&d, "ECHO_KEY", &"x".repeat(4097), Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("BAD_SECRET"), "{e}");
+    assert!(bob.deployments().secrets(&d).await.is_err());
+
+    // Set by the deployment's manager: answered by fingerprint, and sent.
+    let set = alice
+        .deployments()
+        .secret_set(&d, "ECHO_KEY", DEPLOYMENTS, Some(&mut pk))
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(set["setBy"], json!(format!("account:{alice_id}")), "{set}");
+    let listed = alice.deployments().secrets(&d).await.map(wire).unwrap();
+    let row = &listed["secrets"]["ECHO_KEY"];
+    assert_eq!(row["set"], json!(true), "{listed}");
+    assert_eq!(row["apps"], json!(["echo"]), "{listed}");
+    assert_eq!(row["fingerprint"], set["fingerprint"]);
+    let instance = alice.apps().secrets(&app).await.map(wire).unwrap();
+    assert_eq!(source(&instance), json!("deployment"), "{instance}");
+    assert!(
+        instance["secrets"]["ECHO_KEY"].get("fingerprint").is_none(),
+        "{instance}"
+    );
+    answers.extend([set, listed, instance]);
+    assert_eq!(
+        echoed_secret(&alice, &app, &mut round).await,
+        json!([DEPLOYMENTS.len()])
+    );
+
+    // The instance's own value wins; cleared, the deployment's is back.
+    answers.push(
+        alice
+            .apps()
+            .secret_set(&app, "ECHO_KEY", OWN, Some(&mut pk))
+            .await
+            .map(wire)
+            .unwrap(),
+    );
+    let instance = alice.apps().secrets(&app).await.map(wire).unwrap();
+    assert_eq!(source(&instance), json!("app"), "{instance}");
+    answers.push(instance);
+    assert_eq!(
+        echoed_secret(&alice, &app, &mut round).await,
+        json!([OWN.len()])
+    );
+    let _ = alice
+        .apps()
+        .secret_clear(&app, "ECHO_KEY", Some(&mut pk))
+        .await
+        .unwrap();
+    assert_eq!(
+        echoed_secret(&alice, &app, &mut round).await,
+        json!([DEPLOYMENTS.len()])
+    );
+
+    // Cleared by the manager (not by a stranger): the operator's again.
+    let e = bob
+        .deployments()
+        .secret_clear(&d, "ECHO_KEY", Some(&mut bob_pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("FORBIDDEN"), "{e}");
+    answers.push(
+        alice
+            .deployments()
+            .secret_clear(&d, "ECHO_KEY", Some(&mut pk))
+            .await
+            .map(wire)
+            .unwrap(),
+    );
+    let e = alice
+        .deployments()
+        .secret_clear(&d, "ECHO_KEY", Some(&mut pk))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
+    let instance = alice.apps().secrets(&app).await.map(wire).unwrap();
+    assert_eq!(source(&instance), json!("cluster"), "{instance}");
+    let listed = alice.deployments().secrets(&d).await.map(wire).unwrap();
+    assert_eq!(
+        listed["secrets"]["ECHO_KEY"]["set"],
+        json!(false),
+        "{listed}"
+    );
+    answers.extend([instance, listed]);
+    assert_eq!(
+        echoed_secret(&alice, &app, &mut round).await,
+        json!([OPERATORS.len()])
+    );
+
+    // Set again: no read anywhere answers the value.
+    let _ = alice
+        .deployments()
+        .secret_set(&d, "ECHO_KEY", DEPLOYMENTS, Some(&mut pk))
+        .await
+        .unwrap();
+    answers.extend([
+        alice.deployments().secrets(&d).await.map(wire).unwrap(),
+        alice.deployments().get(&d).await.map(wire).unwrap(),
+        alice.deployments().list().await.map(wire).unwrap(),
+        alice.deployments().orgs(&d).await.map(wire).unwrap(),
+        alice.apps().secrets(&app).await.map(wire).unwrap(),
+        alice.apps().get(&app).await.map(wire).unwrap(),
+    ]);
+    for answer in &answers {
+        let text = answer.to_string();
+        assert!(!text.contains(DEPLOYMENTS) && !text.contains(OWN), "{text}");
+    }
+}
+
 /// An instance's owner sets its own value of a secret its release declares: no operator
 /// bound one here, so the action that names it fails until the owner sets it, then reaches
 /// the echo host with it (redacted in what comes back). The value is never answered, only

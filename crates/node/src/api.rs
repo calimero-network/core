@@ -111,7 +111,9 @@ use {
     },
     backup_keys::{BackupKeyBody, OpsBackupKeyBody},
     calls::{EventsQuery, IntentBody, MethodBody, PresenceBody, RunsQuery, ViewBody},
-    deployments::{ClusterOwnerBody, DeployerBody, DeploymentBody, OfferBody},
+    deployments::{
+        ClusterOwnerBody, DeployerBody, DeploymentBody, DeploymentSecretBody, OfferBody,
+    },
     files::{BeginUpload, BlobGrant, BlobUploadQuery},
     ops::{BackupQuery, NodeBody, PoolsBody, PricesBody, ReplicaBody},
     orgs::{
@@ -2155,6 +2157,12 @@ fn unix_secs(t: Option<&str>, field: &str) -> Result<Option<u64>, ApiError> {
 
 fn malformed(why: &'static str) -> ApiError {
     ApiError::bad_request("BAD_REQUEST", why)
+}
+
+/// `400 BAD_SECRET`: a secret's value is empty or longer than
+/// [`crate::component::MAX_SECRET_VALUE_BYTES`].
+fn bad_secret_value() -> ApiError {
+    ApiError::bad_request("BAD_SECRET", crate::component::SECRET_VALUE_SIZE)
 }
 
 /// The node's router: every route the sealed envelope may reach.

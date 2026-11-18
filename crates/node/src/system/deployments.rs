@@ -123,6 +123,41 @@ pub(super) fn authorize(
             )?;
             Ok(Some(used))
         }
+        SystemCmd::SetDeploymentSecret {
+            deployment,
+            name,
+            value,
+            actor,
+            consent,
+            ..
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            // The consent names the value's fingerprint, worked out here from the value
+            // the entry carries: no node swaps in another value under it.
+            let fingerprint = value.fingerprint();
+            proofs.states(
+                &st,
+                &format!("deployment:{deployment}"),
+                "__set_secret",
+                &|a| a["name"] == json!(name) && a["fingerprint"] == json!(fingerprint),
+            )?;
+            Ok(Some(used))
+        }
+        SystemCmd::ClearDeploymentSecret {
+            deployment,
+            name,
+            actor,
+            consent,
+        } => {
+            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            proofs.states(
+                &st,
+                &format!("deployment:{deployment}"),
+                "__clear_secret",
+                &|a| a["name"] == json!(name),
+            )?;
+            Ok(Some(used))
+        }
         _ => Ok(None),
     }
 }
@@ -325,7 +360,78 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
                 return Err("an instance created from this deployment still exists");
             }
             let _gone = s.deployments.remove(&deployment);
+            let _secrets = s.deployment_secrets.remove(&deployment);
             Ok(json!({ "deployment": deployment }))
+        }
+        SystemCmd::SetDeploymentSecret {
+            deployment,
+            name,
+            value,
+            actor,
+            at,
+            consent: _,
+        } => {
+            let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
+            s.manages_deployment(d, &actor)?;
+            if !calimero_bundle::is_secret_name(&name) {
+                return Err("a secret's name is A-Z, 0-9 and _, starting with a letter");
+            }
+            if !value.fits() {
+                return Err(crate::component::SECRET_VALUE_SIZE);
+            }
+            if !s.deployment_declares(d, &name) {
+                return Err(UNDECLARED_SECRET);
+            }
+            let held = s.deployment_secrets.get(&deployment);
+            if !held.is_some_and(|h| h.contains_key(&name)) {
+                if held.is_some_and(|h| h.len() >= MAX_SECRETS_PER_DEPLOYMENT) {
+                    return Err("quota exceeded: secrets per deployment");
+                }
+                let all: usize = s.deployment_secrets.values().map(BTreeMap::len).sum();
+                if all >= MAX_DEPLOYMENT_SECRETS {
+                    return Err("quota exceeded: deployment secrets");
+                }
+            }
+            let secret = crate::component::InstanceSecret {
+                fingerprint: value.fingerprint(),
+                value,
+                set_by: format!("account:{actor}"),
+                set_at: at,
+            };
+            // What the routes answer of it: never the value.
+            let out = json!({
+                "deployment": deployment,
+                "name": name,
+                "fingerprint": secret.fingerprint,
+                "setBy": secret.set_by,
+                "setAt": at,
+            });
+            let _prev = s
+                .deployment_secrets
+                .entry(deployment)
+                .or_default()
+                .insert(name, secret);
+            Ok(out)
+        }
+        SystemCmd::ClearDeploymentSecret {
+            deployment,
+            name,
+            actor,
+            consent: _,
+        } => {
+            let d = s.deployments.get(&deployment).ok_or("no such deployment")?;
+            s.manages_deployment(d, &actor)?;
+            let held = s.deployment_secrets.get_mut(&deployment);
+            if held.and_then(|h| h.remove(&name)).is_none() {
+                return Err(NO_DEPLOYMENT_SECRET);
+            }
+            if s.deployment_secrets
+                .get(&deployment)
+                .is_some_and(BTreeMap::is_empty)
+            {
+                let _empty = s.deployment_secrets.remove(&deployment);
+            }
+            Ok(json!({ "deployment": deployment, "name": name }))
         }
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.

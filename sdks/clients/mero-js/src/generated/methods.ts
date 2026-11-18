@@ -857,6 +857,32 @@ export function createRoutes(api: RouteClient) {
       orgs: (args: operations['deployment_orgs']['parameters']['path'], options?: MethodOptions): Promise<operations['deployment_orgs']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/deployments/{id}/orgs","pathParams":["id"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_orgs']['responses'][200]['content']['application/json']>,
       /**
+       * Remove a deployment's value of a secret.
+       *
+       * `DELETE /deployments/{id}/secrets/{name}` (`deployment_secret_clear`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      secretClear: (args: operations['deployment_secret_clear']['parameters']['path'] & Partial<NonNullable<operations['deployment_secret_clear']['requestBody']>['content']['application/json']>, options?: MethodOptions): Promise<operations['deployment_secret_clear']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/deployments/{id}/secrets/{name}","pathParams":["id","name"],"query":[],"body":"fields","optionalBody":true,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_secret_clear']['responses'][200]['content']['application/json']>,
+      /**
+       * A deployment's secrets.
+       *
+       * `GET /deployments/{id}/secrets` (`deployment_secrets`). **Who:** signed in (a session or an API key).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      secrets: (args: operations['deployment_secrets']['parameters']['path'], options?: MethodOptions): Promise<operations['deployment_secrets']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/deployments/{id}/secrets","pathParams":["id"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_secrets']['responses'][200]['content']['application/json']>,
+      /**
+       * Set a deployment's value of a secret.
+       *
+       * `PUT /deployments/{id}/secrets/{name}` (`deployment_secret_set`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      secretSet: (args: operations['deployment_secret_set']['parameters']['path'] & operations['deployment_secret_set']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['deployment_secret_set']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"PUT","path":"/deployments/{id}/secrets/{name}","pathParams":["id","name"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_secret_set']['responses'][200]['content']['application/json']>,
+      /**
        * Issue a cluster sign-up invite.
        *
        * `POST /sign-up/invites` (`sign_up_invite_create`). **Who:** an account holder (a passkey session not bound to an app's frontend).
