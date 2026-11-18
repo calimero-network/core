@@ -1,11 +1,11 @@
 name: App ABI native clients
 
 # The Swift and Kotlin clients `meroctl app codegen` writes, compiled with warnings as
-# errors against the SDK releases they are written for (scripts/check-app-abi-clients.py):
-# swift-sdk's MeroKit on macOS, kotlin-sdk's mero-core on Linux. `cargo test -p
+# errors against this tree's SDKs (scripts/check-app-abi-clients.py): mero-swift's MeroKit
+# on macOS, mero-kotlin's mero-core on Linux (sdks/clients/). `cargo test -p
 # calimero-app-abi` pins what the generator writes (tests/golden); this checks it compiles
 # and runs the round-trip tests of the app types' JSON (tests/native).
-# Only a change to the generator or its goldens runs it.
+# Only a change to the generator, its goldens or those two SDKs runs it.
 
 on:
   pull_request:
@@ -14,6 +14,8 @@ on:
       - "crates/app-abi/**"
       - "scripts/check-app-abi-clients.py"
       - ".github/workflows/app-abi-native-clients.yml"
+      - "sdks/clients/mero-swift/**"
+      - "sdks/clients/mero-kotlin/**"
       # Documentation builds nothing (scripts/tests/ci-paths-test.py).
       - "!**/*.md"
       - "!**/*.mdx"
@@ -23,6 +25,8 @@ on:
       - "crates/app-abi/**"
       - "scripts/check-app-abi-clients.py"
       - ".github/workflows/app-abi-native-clients.yml"
+      - "sdks/clients/mero-swift/**"
+      - "sdks/clients/mero-kotlin/**"
       - "!**/*.md"
       - "!**/*.mdx"
   workflow_dispatch:
@@ -34,13 +38,9 @@ concurrency:
   group: app-abi-native-clients-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  SWIFT_SDK_VERSION: 4.1.0
-  KOTLIN_SDK_REF: v4.0.0
-
 jobs:
   swift:
-    name: Swift clients (swift-sdk)
+    name: Swift clients (mero-swift)
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -53,7 +53,7 @@ jobs:
           python3 scripts/check-app-abi-clients.py swift
 
   kotlin:
-    name: Kotlin clients (kotlin-sdk)
+    name: Kotlin clients (mero-kotlin)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -62,6 +62,6 @@ jobs:
           persist-credentials: false
       - name: Gradle compile and test
         run: |
-          # The runner image's JDK 17 and Android SDK, as kotlin-sdk's own CI uses.
+          # The runner image's JDK 17 and Android SDK, as mero-kotlin's own CI uses.
           export JAVA_HOME="$JAVA_HOME_17_X64"
           python3 scripts/check-app-abi-clients.py kotlin

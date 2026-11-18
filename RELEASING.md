@@ -95,22 +95,20 @@ that must upgrade first. Core declares these through its
   moving or deleting a tag: npm, PyPI, Maven Central and crates.io never take
   a published version back.
 
-### OpenAPI sync pull requests from core
+### SDK regenerate pull requests
 
-The SDKs generate their HTTP clients from core's `docs/public/openapi.json`.
-When it changes on core's master, core's
-[`sdk-openapi-sync.yml`](https://github.com/calimero-network/core/blob/master/.github/workflows/sdk-openapi-sync.yml)
-has each SDK re-vendor it on the machine-owned branch `chore/core-openapi` and
-open (or refresh) one pull request. Core's classifier titles that pull request
-from what changed in the generated surface: `feat(api)!:` when something a
-caller uses was removed or changed, `feat(api):` when something was only
-added, `chore(api):` otherwise (descriptions only), which releases nothing:
-that change reaches consumers with the SDK's next release.
+The SDKs under `sdks/` generate their HTTP clients from `docs/public/openapi.json`.
+When it changes on master,
+[`sdk-regenerate.yml`](.github/workflows/sdk-regenerate.yml) regenerates every
+SDK on the machine-owned branch `chore/sdk-regenerate` and opens (or refreshes)
+one pull request in core. Core's classifier titles it from what changed for
+callers: `feat(sdks)!:` (labelled `api-breaking`) when something a caller uses
+was removed or changed, `feat(sdks):` when something was only added,
+`chore(sdks):` otherwise. The SDKs ship with core's next release either way.
 
-Don't retitle these down: `feat(api)!:` turned into `feat(api):` ships a
-breaking change as a minor to every consumer on a `^` range. Retitle up if the
-classifier missed a break. Don't push to `chore/core-openapi`; the workflow
-force-pushes it. Fix the document or the generator in core instead.
+Don't retitle these down; retitle up if the classifier missed a break. Don't
+push to `chore/sdk-regenerate`; the workflow force-pushes it. Fix the document
+or the generator instead.
 
 ### A major stops the fleet's automatic bumps
 
@@ -192,7 +190,8 @@ All from `release.yml`, on master only:
 | the public crates (`cargo ws publish`) | crates.io |
 | the `merod` image, multi-arch: `X`, plus `latest` for a final or `prerelease` for a pre-release | `ghcr.io/calimero-network/merod` |
 | a `meroctl` formula bump | a pull request in `calimero-network/homebrew-tap` |
-| SDK pin bumps for consumers | pull requests opened by `fleet-bump.yml` (below) |
+| the SDKs under `sdks/`, all at `X`: mero-js and mero-react (npm, `next` for a pre-release), mero-py (PyPI), mero-kotlin (Maven Central), mero-swift (the SwiftPM mirror `calimero-network/swift-sdk`, tagged `X`) | npm, PyPI, Maven Central, GitHub |
+| SDK pin bumps for consumers (cargo, tee, and npm once the JS SDKs are out) | pull requests opened by `fleet-bump.yml` (below) |
 
 Each binary is `<binary>_<target triple>.tar.gz`, e.g.
 `meroctl_x86_64-unknown-linux-gnu.tar.gz`. `meroctl` builds, packs, signs and

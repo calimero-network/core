@@ -15,6 +15,11 @@ on:
         required: false
         default: ""
         type: string
+      surfaces:
+        description: "Comma-separated surfaces to move: cargo and tee with the binaries, npm once the SDKs under sdks/ are published"
+        required: false
+        default: "cargo,tee"
+        type: string
       dry_run:
         description: "Rewrite and print the diff, but push nothing"
         required: false
@@ -30,6 +35,11 @@ on:
         description: "Comma-separated subset of fleet.json repos (blank = all)"
         required: false
         default: ""
+        type: string
+      surfaces:
+        description: "Comma-separated surfaces to move: cargo and tee with the binaries, npm once the SDKs under sdks/ are published"
+        required: false
+        default: "cargo,tee"
         type: string
       dry_run:
         description: "Rewrite and print the diff, but push nothing"
@@ -59,19 +69,23 @@ jobs:
         with:
           persist-credentials: false
 
-      # Two surfaces move on release: `cargo` pins the SDK by git tag; `tee` ships a
-      # merod binary with no SDK link, reached only through this list.
+      # Three surfaces move on release: `cargo` pins the SDK by git tag; `tee` ships a
+      # merod binary with no SDK link, reached only through this list; `npm` pins the
+      # JavaScript SDKs (mero-js, mero-react), which release.yml asks for separately,
+      # once they are published (they ship from sdks/ on core's version).
       - name: Select the targets
         id: pick
         env:
           ONLY: ${{ inputs.only }}
+          SURFACES: ${{ inputs.surfaces }}
         run: |
           set -euo pipefail
-          targets=$(jq -c --arg only "${ONLY:-}" '
-            [ .consumers[]
+          targets=$(jq -c --arg only "${ONLY:-}" --arg surfaces "${SURFACES:-cargo,tee}" '
+            ( $surfaces | split(",") | map(sub("^ +";"") | sub(" +$";"")) ) as $moving
+            | [ .consumers[]
               | . as $c
               | $c.surfaces[]
-              | select(. == "cargo" or . == "tee")
+              | select(. as $s | $moving | index($s))
               | { repo: $c.repo, surface: . } ]
             | if $only == "" then .
               else
@@ -132,6 +146,12 @@ jobs:
       # before it) commits the clients it generates; the bump reruns every
       # package's `codegen` with the release's binary (bump-fleet.sh, "the client
       # generator"), through the repository's pnpm.
+      - name: Set up pnpm for the npm surface
+        if: matrix.surface == 'npm'
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: consumer/package.json
+
       - name: Set up pnpm
         if: matrix.surface == 'cargo' && hashFiles('consumer/scripts/install-meroctl.sh', 'consumer/scripts/install-mero-app-build.sh') != ''
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
@@ -149,8 +169,16 @@ jobs:
           UNCLAIMED_OUT: ${{ runner.temp }}/unclaimed.txt
         run: |
           set +e
-          producer/.github/scripts/bump-fleet.sh \
-            --surface "$SURFACE" --version "$VERSION" --dir consumer
+          args=(--surface "$SURFACE" --version "$VERSION" --dir consumer)
+          if [ "$SURFACE" = npm ]; then
+            # The SDKs core publishes from sdks/, all at the release's version. A
+            # consumer still on an SDK's old major (mero-js 36, mero-react 11, mero-ui 1) is
+            # left for a deliberate migration: bump-fleet.sh skips a major crossing.
+            for pkg in mero-js mero-react mero-ui mero-icons mero-tokens mero-charts; do
+              args+=(--pkg "@calimero-network/$pkg=$VERSION")
+            done
+          fi
+          producer/.github/scripts/bump-fleet.sh "${args[@]}"
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
@@ -203,6 +231,9 @@ jobs:
 
           if [ "$SURFACE" = "tee" ]; then
             title="chore(image): bundle merod $VERSION and cut a new image version"
+          elif [ "$SURFACE" = "npm" ]; then
+            title="chore(deps): pin the Calimero JavaScript SDKs and components to $VERSION"
+            branch="chore/core-sdks-$VERSION"
           else
             title="chore(deps): pin the Calimero SDK to $VERSION"
           fi
