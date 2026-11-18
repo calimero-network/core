@@ -4,6 +4,9 @@
 //! theirs (mero-js's and calimero-client-py's `client.apps.call`, through the app's log, or
 //! `client.apps.view`). No new runtime: the types are the ABI's, mapped as [`crate::openapi`]
 //! maps them, and the transport is the client's.
+//!
+//! [`rust`] is the other direction: the client one app calls another through, from the
+//! ABI it vendored for a reference in its `uses` (`calimero_app_build::uses`).
 
 use crate::abi::AppAbi;
 use crate::openapi::pascal;
@@ -11,6 +14,7 @@ use crate::openapi::pascal;
 mod ident;
 mod kotlin;
 mod python;
+pub mod rust;
 mod swift;
 mod typescript;
 

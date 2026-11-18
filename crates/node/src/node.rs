@@ -27,6 +27,7 @@ use crate::usage::{Meter, Usage};
 pub(crate) mod blob_guards;
 mod cluster_version;
 mod component;
+pub mod digests;
 mod job;
 pub(crate) mod recovery_disk;
 pub(crate) mod restore;
@@ -1319,12 +1320,25 @@ impl Node {
         self.system.read_local(|m, _| f(&m.state))
     }
 
+    /// [`Node::sys`] with the machine, for what it derives from the state
+    /// (`SystemMachine::app_of_group`, `apps_on`, `group_may_hold`).
+    pub fn sys_machine<R>(&self, f: impl FnOnce(&SystemMachine) -> R) -> R {
+        self.system.read_local(|m, _| f(m))
+    }
+
     /// Commit a system command through the system group's leader; `409
     /// FEATURE_NOT_ACTIVE` for one that uses a feature above the cluster
     /// version ([`Node::require_features`]).
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
-        // Nothing is proposed that a node of the cluster would skip.
+        // Nothing is proposed that a node of the cluster cannot apply.
         self.require_features(&cmd.features()).await?;
+        self.sys_propose(cmd).await
+    }
+
+    /// [`Node::sys_write`] past the gate: only for `SetClusterVersion`, which
+    /// the gate itself logs ([`Node::raise_cluster_version_once`] checks it on
+    /// what every node supports).
+    pub(crate) async fn sys_propose(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
         // Long enough to ride out a system leader election, and never longer
         // than `SYSTEM_WRITE_TIMEOUT` in all: bounded by the deadline, not by a
@@ -1428,14 +1442,17 @@ impl Node {
         self.apps.read().ok()?.get(&group).cloned()
     }
 
-    /// The app's group, if this node is one of its replicas. A node the app
-    /// moved off may still hold the group until reconcile drops it; it must
-    /// forward instead of answering from a group it no longer belongs to.
+    /// The app's group, if this node is one of its replicas and its Raft core
+    /// runs. A node the app moved off may still hold the group until reconcile
+    /// drops it; it must forward instead of answering from a group it no longer
+    /// belongs to. So must a replica whose core stopped (a disk error, an entry
+    /// it could not apply): its state stays where the disk left it until the
+    /// group restarts (`calimero_log::RESTART_FIRST`), while the others go on.
     pub(crate) fn replica_group(&self, app: &AppRecord) -> Option<Arc<Group<AppMachine>>> {
         if !app.replicas.contains(&self.config.node_id) {
             return None;
         }
-        self.app_group(app.group)
+        self.app_group(app.group).filter(|g| g.stopped().is_none())
     }
 
     /// The address of a replica of `app` other than this node.
@@ -1870,9 +1887,11 @@ impl Node {
         if group == SYSTEM_GROUP {
             return true;
         }
-        let Some(app) = self.sys(|s| s.apps.values().find(|a| a.group == group).cloned()) else {
+        // Every heartbeat of every app group asks this: an index probe and a
+        // cached decision ([`SystemMachine::group_may_hold`]), no scan or clone.
+        if self.sys_machine(|m| m.app_of_group(group).is_none()) {
             return true;
-        };
+        }
         if self.release_at(addr).is_none() {
             // Not attested yet: any sealed request attests it.
             let _ = self
@@ -1880,7 +1899,9 @@ impl Node {
                 .await;
         }
         let release = self.release_at(addr);
-        self.sys(|s| s.release_may_hold(&app, release.as_deref()))
+        // An app deleted meanwhile has no data left to send.
+        self.sys_machine(|m| m.group_may_hold(group, release.as_deref()))
+            .unwrap_or(true)
     }
 
     /// A session token for `claims`, signed with this node's receipt key
@@ -2045,6 +2066,11 @@ impl Node {
             .write()
             .map_err(|e| eyre::eyre!("{e}"))?
             .insert(app.group, Arc::clone(&g));
+        // Only `replicas[0]` initializes: at creation the node that forms the
+        // group, later one that holds it already (openraft refuses to
+        // initialize a node with a vote or a log, which `initialize` treats as
+        // done). A move keeps the current replicas first (`api::ops::move_replicas`),
+        // so a node that has not joined yet never forms a group of its own.
         if app.replicas.first() == Some(&self.config.node_id) {
             // A restore's seed forms the new group alone: it seeds the state,
             // then adds the others (`restore`).
@@ -2312,14 +2338,22 @@ impl Node {
             }) {
                 let _r = self.sys_write(&SystemCmd::RequireCurrentRules).await;
             }
+            // Likewise sign-in proofs expire with their sessions from here on
+            // (`ExpireProofs`), once the logged cluster version brings it.
+            if self.sys(|s| {
+                !s.expires_proofs
+                    && (s.governance.is_some() || !s.accounts.is_empty())
+                    && cv::check(s.cluster_version.as_deref(), &[Feature::ExpireProofs]).is_ok()
+            }) {
+                let _r = self.sys_write(&SystemCmd::ExpireProofs).await;
+            }
             self.admit_registered_nodes();
             self.promote_learners();
         }
         // An app waiting for its backup (a cluster founded again) is hosted nowhere.
-        let mine: Vec<AppRecord> = self.sys(|s| {
-            s.apps
-                .values()
-                .filter(|a| a.replicas.contains(&self.config.node_id))
+        // Through the replica index: this node's apps, not every app.
+        let mine: Vec<AppRecord> = self.sys_machine(|m| {
+            m.apps_on(self.config.node_id)
                 .filter(|a| !a.restore.as_ref().is_some_and(|r| r.awaits_backup()))
                 .cloned()
                 .collect()
@@ -2357,18 +2391,17 @@ impl Node {
             .map(|a| a.keys().copied().collect())
             .unwrap_or_default();
         for group in hosted {
-            let keep = self.sys(|s| {
-                s.apps
-                    .values()
-                    .any(|a| a.group == group && a.replicas.contains(&self.config.node_id))
+            // One index probe per hosted group, not a scan of every app.
+            let (keep, app) = self.sys_machine(|m| {
+                m.app_of_group(group).map_or((false, None), |a| {
+                    (
+                        a.replicas.contains(&self.config.node_id),
+                        Some(a.app_id.clone()),
+                    )
+                })
             });
             if !keep {
-                if let Some(app) = self.sys(|s| {
-                    s.apps
-                        .values()
-                        .find(|a| a.group == group)
-                        .map(|a| a.app_id.clone())
-                }) {
+                if let Some(app) = app {
                     self.component_search.drop_app(&app);
                 }
                 let stopped = self.apps.write().ok().and_then(|mut a| a.remove(&group));

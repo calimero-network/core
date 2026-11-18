@@ -13,9 +13,10 @@
 //!
 //! Storage (D46): the component's keys are hidden rows of the group's state (sealed,
 //! keyed by an HMAC), and a replica keeps them in memory too,
-//! ordered, as an `Arc<BTreeMap>`: a run gets the current version as its
-//! `StateView` (ordered `range` scans), and `apply` copies it only while a run still
-//! holds the previous one. The map is rebuilt from the rows on a restart and after a
+//! ordered, as a persistent map ([`Kv`]): a run gets the current version as its
+//! `StateView` (ordered `range` scans), and `apply` writes the next one sharing
+//! everything it does not change, so a run holding the previous one costs a write
+//! O(log n) copied nodes, never a copy of the whole state (B7). The map is rebuilt from the rows on a restart and after a
 //! snapshot install. Host records (`last_id`, `timers`, `install_ts_ms`,
 //! `last_ts_ms`, idempotency, blob records, the usage book) are never keys the app sees (D39).
 //!
@@ -822,7 +823,66 @@ fn stamps(raw: &[u8]) -> Option<(u64, u64)> {
 }
 
 /// An app's stored keys and values, shared between the machine and the runs reading it.
-pub type Kv = Arc<BTreeMap<Vec<u8>, Vec<u8>>>;
+///
+/// A persistent ordered map (B7): a clone is O(1) and shares every node, and a
+/// write to a version a run still reads copies only the path to the key it
+/// changes, O(log n), never the whole state. Iterated and ranged in key order,
+/// as a `BTreeMap` is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Kv(imbl::OrdMap<Vec<u8>, Vec<u8>>);
+
+impl std::ops::Deref for Kv {
+    type Target = imbl::OrdMap<Vec<u8>, Vec<u8>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Kv {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl FromIterator<(Vec<u8>, Vec<u8>)> for Kv {
+    fn from_iter<I: IntoIterator<Item = (Vec<u8>, Vec<u8>)>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl host::StateView for Kv {
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        self.0.get(key).cloned()
+    }
+
+    fn range<'s>(
+        &'s self,
+        start: &[u8],
+        end: &[u8],
+        reverse: bool,
+    ) -> Box<dyn Iterator<Item = host::KeyValue> + 's> {
+        use std::ops::Bound;
+        // `[start, end)`, an empty `end` unbounded, as `StateView` says; an empty
+        // range when `start >= end` (which `OrdMap::range` would panic on).
+        let bounds: (Bound<&[u8]>, Bound<&[u8]>) = if end.is_empty() {
+            (Bound::Included(start), Bound::Unbounded)
+        } else if start < end {
+            (Bound::Included(start), Bound::Excluded(end))
+        } else {
+            return Box::new(std::iter::empty());
+        };
+        let iter = self
+            .0
+            .range::<_, [u8]>(bounds)
+            .map(|(k, v)| (k.clone(), v.clone()));
+        if reverse {
+            Box::new(iter.rev())
+        } else {
+            Box::new(iter)
+        }
+    }
+}
 
 /// Whether `n` is zero: a field serde leaves out then.
 const fn is_zero(n: &u64) -> bool {
@@ -975,12 +1035,12 @@ pub struct ComponentState {
 impl ComponentState {
     /// Read the app's storage and blob rows into memory (after a restart or a snapshot install).
     pub fn load(&mut self, state: &GroupState) -> eyre::Result<()> {
-        let mut kv = BTreeMap::new();
+        let mut kv = Kv::default();
         state.scan_hidden(rows::CKV, |k, v| {
             let _prev = kv.insert(k.to_vec(), v.to_vec());
             Ok(true)
         })?;
-        self.kv = Arc::new(kv);
+        self.kv = kv;
         self.blobs.load(state)
     }
 
@@ -1054,7 +1114,7 @@ impl AppMachine {
     /// The state a component's run reads (D46): the current version, shared.
     #[must_use]
     pub fn view(&self) -> Arc<dyn host::StateView> {
-        Arc::clone(&self.state.component.kv) as Arc<dyn host::StateView>
+        Arc::new(self.state.component.kv.clone())
     }
 
     /// The blobs a component's run sees (R8): the current records, shared.
@@ -1205,7 +1265,8 @@ impl AppMachine {
             if !outcome.diff.is_empty() {
                 // References to blobs move with the values that hold them (R8).
                 let mut deltas = BTreeMap::new();
-                let kv = Arc::make_mut(&mut c.kv);
+                // Copies only the paths a run's view still shares (B7).
+                let kv = &mut c.kv;
                 for w in &outcome.diff {
                     // Search catches up from the records an entry touched.
                     if search::record_table(&w.key.0).is_some() {
@@ -1402,11 +1463,18 @@ impl AppMachine {
         match entry_format(command) {
             Some(format) if format <= ENTRY_FORMAT => {}
             format => {
+                // Applied as a no-op, it would leave this replica on a state the
+                // replicas that read it no longer have: the group stops instead.
+                let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::App);
                 tracing::error!(
                     index,
                     ?format,
-                    "an entry in a format this release does not read: applied as a no-op"
+                    undecodable = n,
+                    "an entry in a format this release does not read: the group stops here; run a release that reads it"
                 );
+                tx.fail(format_args!(
+                    "app entry {index} is in format {format:?}, which this release does not read"
+                ));
                 let detail = format.map_or_else(
                     || "entry format marker is not a number".to_owned(),
                     |f| {
@@ -1693,19 +1761,25 @@ impl AppMachine {
             }
             Err(e) => {
                 // As in the system log (`system::cluster_version`): a feature gate keeps
-                // every entry within what each replica applies, so this is a bug.
+                // every entry within what each replica applies, so one this replica cannot
+                // decode was written by a later release. Skipped, it would leave this replica
+                // on a state the others no longer have: the group stops on it instead.
                 let n = crate::metrics::undecodable_entry(crate::metrics::LogKind::App);
                 error!(index, error = %e, undecodable = n,
-                    "an app entry this node cannot decode was skipped: its state now differs from the replicas that applied it");
-                Applied {
+                    "an app entry this node cannot decode: the group stops here; run a release that reads it");
+                tx.fail(format_args!("app entry {index} does not decode: {e}"));
+                return crate::app::applied_bytes(
                     index,
-                    status: Status::Trap,
-                    result: Value::Null,
-                    error: json!({ "kind": "Fault", "detail": format!("not a component's entry: {e}") }),
-                    events: Vec::new(),
-                    conflict: true,
-                    timeout: false,
-                }
+                    &Applied {
+                        index,
+                        status: Status::Trap,
+                        result: Value::Null,
+                        error: json!({ "kind": "Fault", "detail": format!("not a component's entry: {e}") }),
+                        events: Vec::new(),
+                        conflict: true,
+                        timeout: false,
+                    },
+                );
             }
         };
         self.expire_component(tx, entry_ts_ms);
@@ -1726,24 +1800,41 @@ impl AppMachine {
 // `AppMachine` (`outgoing`, `action_record`, `component_replay`) are for the node's
 // routes and its leader's polls, between batches.
 
+/// A row read inside an apply, decoded. A row that does not decode fails the batch
+/// (`StateTx::fail`) and reads as absent: the replica stops on this entry rather than
+/// apply it as if the row were not there, which the other replicas would not do.
+fn decode_in<T: serde::de::DeserializeOwned>(
+    tx: &StateTx<'_>,
+    family: u8,
+    raw: &[u8],
+) -> Option<T> {
+    match serde_json::from_slice(raw) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tx.fail(format_args!(
+                "a row of family {family} does not decode: {e}"
+            ));
+            None
+        }
+    }
+}
+
 /// The outbox's message `seq` as `tx` leaves it.
 fn outgoing_in(tx: &StateTx<'_>, seq: u64) -> Option<xcall::Outgoing> {
     let raw = tx.get_hidden(rows::COUT, &xcall::outbox_key(seq))?;
-    serde_json::from_slice(&raw).ok()
+    decode_in(tx, rows::COUT, &raw)
 }
 
 /// Pending action `id` as `tx` leaves it.
 fn action_in(tx: &StateTx<'_>, id: &str) -> Option<ActionRecord> {
     let raw = tx.get_hidden(rows::CACT, &action::action_key(id))?;
-    serde_json::from_slice(&raw).ok()
+    decode_in(tx, rows::CACT, &raw)
 }
 
 /// The answer remembered for `caller`'s key `key` as `tx` leaves it.
 fn replay_in(tx: &StateTx<'_>, caller: &Caller, key: &str) -> Option<Applied> {
     let raw = tx.get_hidden(rows::CIDEM, idem_key(caller, key).as_bytes())?;
-    serde_json::from_slice::<IdemRecord>(&raw)
-        .ok()
-        .map(|r| r.applied)
+    decode_in::<IdemRecord>(tx, rows::CIDEM, &raw).map(|r| r.applied)
 }
 
 /// A blob id as the host commands carry it (hex).
@@ -1752,13 +1843,14 @@ pub(crate) fn parse_hex32(id: &str) -> Option<[u8; 32]> {
     (hex::encode(raw) == id).then_some(raw)
 }
 
-/// A hidden row of `family` read as JSON; none when absent or unreadable.
+/// A hidden row of `family` read as JSON; none when absent. One that cannot be read
+/// or decoded fails the batch (see `decode_in`).
 pub(crate) fn get_json<T: serde::de::DeserializeOwned>(
     tx: &StateTx<'_>,
     family: u8,
     key: &str,
 ) -> Option<T> {
-    serde_json::from_slice(&tx.get_hidden(family, key.as_bytes())?).ok()
+    decode_in(tx, family, &tx.get_hidden(family, key.as_bytes())?)
 }
 
 /// Writes `value` as the JSON hidden row `key` of `family`.
@@ -1803,7 +1895,7 @@ const SECRETS_ROW: &[u8] = b"all";
 
 fn instance_secrets_in(tx: &StateTx<'_>) -> InstanceSecrets {
     tx.get_hidden(rows::CSECRET, SECRETS_ROW)
-        .and_then(|raw| serde_json::from_slice(&raw).ok())
+        .and_then(|raw| decode_in(tx, rows::CSECRET, &raw))
         .unwrap_or_default()
 }
 
@@ -2085,6 +2177,66 @@ mod tests {
         assert!(!Outcome::default().is_retryable());
     }
 
+    /// Review finding B3: a row an apply read but could not decode read as absent, and
+    /// the batch went on (a pipeline step applied as if its run were unknown, a replayed
+    /// call ran again, an idempotency record was dropped). It now fails the batch.
+    #[test]
+    fn a_row_an_apply_cannot_decode_fails_the_batch() {
+        let rig = Rig::new();
+        let state = rig.engine.group_state(5);
+        let mut tx = StateTx::new(&state);
+        tx.put_hidden(rows::CRUN, b"run-1", b"not json");
+        tx.put_hidden(rows::CIDEM, b"system|k", b"not json");
+        tx.commit().unwrap();
+
+        let tx = StateTx::new(&state);
+        assert!(get_json::<RunRecord>(&tx, rows::CRUN, "run-1").is_none());
+        assert!(
+            tx.failed(),
+            "an undecodable run record reads as an unknown run"
+        );
+
+        let tx = StateTx::new(&state);
+        let caller = Caller::System;
+        let _absent = replay_in(&tx, &caller, "k");
+        assert!(
+            tx.failed(),
+            "an undecodable idempotency record reads as no record"
+        );
+
+        let tx = StateTx::new(&state);
+        assert!(get_json::<RunRecord>(&tx, rows::CRUN, "run-2").is_none());
+        assert!(!tx.failed(), "an absent row is no fault");
+    }
+
+    /// The same for retention: an idempotency record this replica cannot decode is not
+    /// dropped as expired (the others still answer from theirs); the batch fails.
+    #[test]
+    fn an_undecodable_idempotency_record_is_never_expired() {
+        let rig = Rig::new();
+        let state = rig.engine.group_state(5);
+        let mut rings = [idempotency::Ring::default(); 2];
+        let mut tx = StateTx::new(&state);
+        idempotency::record(&mut tx, &IDEM_ROWS, &mut rings, 0, "acct|k", b"not json");
+        tx.commit().unwrap();
+
+        let mut tx = StateTx::new(&state);
+        let limits = idempotency::Limits {
+            keep: [0, 0],
+            ..idempotency::Limits::default()
+        };
+        idempotency::expire(
+            &mut tx,
+            &IDEM_ROWS,
+            &mut rings,
+            limits,
+            Some(u64::MAX),
+            stamps,
+        );
+        assert!(tx.failed(), "the record was dropped as expired");
+        assert_eq!(rings[0].first, 0, "the ring moved past the record");
+    }
+
     /// A machine on a real, empty group state (the log's store, in a temp dir).
     struct Rig {
         _dir: tempfile::TempDir,
@@ -2131,6 +2283,15 @@ mod tests {
             let out = calimero_log::Machine::apply(&mut self.machine, index, cmd, &mut tx);
             tx.commit().unwrap();
             serde_json::from_slice(&out).unwrap()
+        }
+
+        /// Applies `cmd` and answers whether its batch failed to commit, which stops
+        /// a running group's Raft core on that entry.
+        fn apply_stops(&mut self, index: u64, cmd: &[u8]) -> bool {
+            let state = self.engine.group_state(5);
+            let mut tx = StateTx::new(&state);
+            let _out = calimero_log::Machine::apply(&mut self.machine, index, cmd, &mut tx);
+            tx.commit().is_err()
         }
 
         /// Applies `cmds`, the first at index `first`, as one batch, the way a replica
@@ -2301,28 +2462,42 @@ mod tests {
     /// later release marks newer is applied as a no-op that names its format, so a replica
     /// still on this release never applies part of it.
     #[test]
-    fn an_entry_in_a_later_format_is_refused_and_an_unmarked_one_applies() {
+    fn an_entry_in_a_later_format_stops_the_group_and_an_unmarked_one_applies() {
         assert_eq!(entry_format(&init(0)), Some(1));
         let mut r = Rig::new();
         let _i = r.apply(1, &init(0));
         let unmarked = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
         let newer = [&b"{\"v\":2,"[..], &unmarked[1..]].concat();
         assert_eq!(entry_format(&newer), Some(2));
-        let a = r.apply(2, &newer);
-        assert!(a.conflict);
-        let detail = a.error["detail"].as_str().unwrap_or_default();
         assert!(
-            detail.contains("entry format 2") && detail.contains("up to 1"),
-            "{detail}"
+            r.apply_stops(2, &newer),
+            "applied as a no-op, the replica would go on without what the others applied"
         );
         assert!(held(&r).is_empty(), "nothing of it applied");
-        assert_eq!(r.machine.state.last_index, 2, "its position moves");
+        assert_eq!(r.machine.state.last_index, 1, "the group stopped before it");
         let garbled = [&b"{\"v\":\"x\","[..], &unmarked[1..]].concat();
         assert_eq!(entry_format(&garbled), None);
-        assert!(r.apply(3, &garbled).conflict);
-        let ok = file_call(3, 1, Status::Ok, vec![mark(1)], vec![]);
-        assert!(!r.apply(4, &ok).conflict);
+        assert!(r.apply_stops(2, &garbled));
+        let ok = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
+        assert!(!r.apply(2, &ok).conflict);
         assert_eq!(held(&r), [fid(1)]);
+    }
+
+    /// Reproduction (B4): an app entry this replica cannot decode (a later
+    /// release's command) was skipped, and the replica went on serving a state
+    /// the others no longer had. Its batch now fails and the group stops there.
+    #[test]
+    fn an_entry_this_replica_cannot_decode_stops_the_group() {
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let later = br#"{"op":"aCommandOfALaterRelease","baseIndex":1}"#;
+        assert!(
+            r.apply_stops(2, later),
+            "the batch committed: the replica skipped the entry and goes on"
+        );
+        assert_eq!(r.machine.state.last_index, 1, "the group stopped before it");
+        let ok = file_call(1, 1, Status::Ok, vec![mark(1)], vec![]);
+        assert!(!r.apply(2, &ok).conflict);
     }
 
     #[test]
@@ -2693,7 +2868,7 @@ mod tests {
         );
         assert_eq!(r.machine.state.component.head.timers["beat"], 2000);
         // The same slot again (a second leader's proposal), and an older one.
-        let _gone = Arc::make_mut(&mut r.machine.state.component.kv).remove(b"k".as_slice());
+        let _gone = r.machine.state.component.kv.remove(b"k".as_slice());
         assert!(
             r.apply(3, &tick(2, 2000, Status::Ok, vec![w("k", "v")]))
                 .conflict
@@ -2792,6 +2967,104 @@ mod tests {
         let _a = r.apply(3, &call(2, None, vec![w("k", "2")]));
         assert_eq!(held.get(b"k"), Some(b"1".to_vec()));
         assert_eq!(r.machine.view().get(b"k"), Some(b"2".to_vec()));
+    }
+
+    /// The persistent map answers every read as the `BTreeMap` it replaced (B7):
+    /// the same values, ranges in the same order both ways, the same empty and
+    /// unbounded ends, after the same writes and deletes.
+    #[test]
+    fn the_state_reads_as_the_ordered_map_it_replaced() {
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let key = |n: u64| -> Vec<u8> {
+            let len = (n % 4) as usize;
+            (0..len).map(|i| ((n >> (8 * i + 2)) % 5) as u8).collect()
+        };
+        let mut kv = Kv::default();
+        let mut map = BTreeMap::new();
+        for _ in 0..400 {
+            let (k, v) = (key(next()), next().to_be_bytes().to_vec());
+            if next() % 3 == 0 {
+                assert_eq!(kv.remove(&k), map.remove(&k));
+            } else {
+                assert_eq!(kv.insert(k.clone(), v.clone()), map.insert(k, v));
+            }
+            let held = kv.clone();
+            let (start, end) = (key(next()), key(next()));
+            for (s, e) in [(&start, &end), (&start, &Vec::new()), (&end, &start)] {
+                for reverse in [false, true] {
+                    assert_eq!(
+                        host::StateView::range(&held, s, e, reverse).collect::<Vec<_>>(),
+                        host::StateView::range(&map, s, e, reverse).collect::<Vec<_>>(),
+                        "[{s:?}, {e:?}) reverse {reverse}"
+                    );
+                }
+            }
+            assert_eq!(
+                host::StateView::get(&held, &start),
+                host::StateView::get(&map, &start)
+            );
+        }
+        assert!(kv.iter().map(|(k, v)| (k.clone(), v.clone())).eq(map));
+    }
+
+    /// A write while a view holds the state costs about what one with no view
+    /// does: apply shares the unchanged part of a large state with the view
+    /// instead of copying all of it (B7).
+    #[test]
+    fn a_write_under_a_view_does_not_copy_the_whole_state() {
+        const KEYS: usize = 100_000;
+        const WRITES: u64 = 30;
+        let mut r = Rig::new();
+        let _i = r.apply(1, &init(0));
+        let fill = (0..KEYS)
+            .map(|n| w(&format!("key-{n:06}"), &"v".repeat(64)))
+            .collect();
+        let _f = r.apply(2, &call(1, None, fill));
+        assert_eq!(r.machine.view().range(b"", b"", false).count(), KEYS);
+
+        // Each write's median time, `viewing` with a view taken before each
+        // write and held across it, as a replica serving steady reads does.
+        let mut next = 3;
+        let mut median_write = |r: &mut Rig, viewing: bool| {
+            let keys = if viewing {
+                WRITES..2 * WRITES
+            } else {
+                0..WRITES
+            };
+            let mut times = keys
+                .map(|n| {
+                    let key = format!("key-{n:06}");
+                    let held = viewing.then(|| r.machine.view());
+                    let cmd = call(next - 1, None, vec![w(&key, "new")]);
+                    let start = std::time::Instant::now();
+                    assert!(!r.apply(next, &cmd).conflict);
+                    let took = start.elapsed();
+                    next += 1;
+                    if let Some(held) = held {
+                        let before = held.get(key.as_bytes()).map(|v| v.len());
+                        assert_eq!(before, Some(64), "the view moved with the write");
+                    }
+                    took
+                })
+                .collect::<Vec<_>>();
+            times.sort();
+            times[times.len() / 2]
+        };
+        let alone = median_write(&mut r, false);
+        let viewed = median_write(&mut r, true);
+        assert!(
+            viewed < alone * 5 + std::time::Duration::from_millis(2),
+            "a write under a view took {viewed:?}, one with no view {alone:?}"
+        );
+        let view = r.machine.view();
+        assert_eq!(view.get(b"key-000000"), Some(b"new".to_vec()));
+        assert_eq!(view.range(b"", b"", false).count(), KEYS);
     }
 
     fn with_ts(raw: &[u8], ts_ms: u64) -> Vec<u8> {
@@ -3076,7 +3349,7 @@ mod tests {
             Some(crate::types::Executor::Component)
         );
         assert_eq!(fresh.state.component.head, r.machine.state.component.head);
-        assert_eq!(*fresh.state.component.kv, *r.machine.state.component.kv);
+        assert_eq!(fresh.state.component.kv, r.machine.state.component.kv);
         assert!(fresh
             .component_replay(
                 &Caller::Account {
@@ -3304,9 +3577,13 @@ mod tests {
         let mut r = Rig::new();
         let _i = r.apply(1, &init(0));
         // As merod before this release logged an SDK 0.12 app's blob removal.
+        // It decodes as no component entry, so the group stops on it.
         let v1 = serde_json::to_vec(&json!({ "op": "blobForget", "id": "00" })).unwrap();
-        let out = r.apply(2, &v1);
-        assert!(out.conflict, "a wasmer entry applied to a component app");
+        assert!(
+            r.apply_stops(2, &v1),
+            "a wasmer entry applied to a component app"
+        );
+        assert_eq!(r.machine.state.last_index, 1);
     }
 
     #[test]

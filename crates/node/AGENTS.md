@@ -34,11 +34,13 @@ is its command line.
   `a_wasmer_entry_never_applies_to_a_component_app`.
 - **Entry format** (`component::ENTRY_FORMAT`, `entry_format`): a component entry that
   starts `{"v":N,` is format `N`; no marker (every entry so far) is format 1. One newer than
-  this release reads applies as a no-op naming its format (`Trap`/`Fault`, `conflict`), so a
-  replica never applies part of it; a release that raises it writes the new format only once
-  every replica of the group reads it. The store and snapshot formats are `calimero-log`'s
+  this release reads, or a component app's entry that does not decode, stops the group on
+  that replica (`StateTx::fail`: the batch fails, nothing after it applies), so a replica
+  never applies part of it nor goes on without it; a release that raises it writes the new
+  format only once every replica of the group reads it. The store and snapshot formats are `calimero-log`'s
   (`STORE_FORMAT`, `SNAPSHOT_FORMAT`; docs: protocol/storage "Format versions"). Test:
-  `an_entry_in_a_later_format_is_refused_and_an_unmarked_one_applies`.
+  `an_entry_in_a_later_format_stops_the_group_and_an_unmarked_one_applies`,
+  `an_entry_this_replica_cannot_decode_stops_the_group`.
 - **System group** (`system.rs`, group 1): fleet, app directory, bundles, accounts,
   passkeys, API keys, refresh tokens, organizations, teams, invites, used proofs.
   Commands carry their `actor`; `apply` checks authority, so the log decides.
@@ -68,6 +70,13 @@ is its command line.
   caller and, for an app group, an approved release and membership (replicas or
   the group's voters/learners): openraft itself never checks (F4). Outbound,
   blobs (`spread_blob`) and presence go only to peers `may_send` allows.
+  Both Raft checks run per heartbeat of every app group, so they read
+  `SystemMachine::app_of_group` and `group_may_hold` (`system/routing.rs`: a
+  group -> app and node -> apps index and a (group, release) decision cache,
+  derived, dropped on every system apply and restore; `Node::sys_machine`),
+  never a scan of `apps`; `reconcile` uses `apps_on` and `app_of_group` too.
+  Regressions: `system::routing::tests`
+  (`routing_a_raft_message_does_not_scan_the_apps`, a scaling guard).
   No interop with nodes before this (a hard cutover: clusters are recreated).
   Regression (`tests/approval_bypasses.rs`):
   `a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
@@ -205,11 +214,20 @@ is its command line.
   nodes }`, only forward, naming every registered node; `reconcile` ->
   `raise_cluster_version`, at most every 10 s) once every node supports it,
   and admits no node below it to the system group (`joins_at_cluster_version`).
-  Apply never reads it, so a log replays unchanged. A skipped undecodable
-  entry logs an error and counts in `calimero_log_undecodable_entries_total`.
+  Apply never reads it, so a log replays unchanged. The gate judges on the
+  logged version; when every node supports a feature above it, the proposing
+  node logs that version first (`cv::admit` -> `Admission::LogFirst`,
+  `raise_cluster_version_once` through `Node::sys_propose`, the ungated write),
+  so no gated entry precedes the version that keeps older nodes out (only
+  `SetClusterVersion` itself, and floors below rc.16, go on the floor alone).
+  An entry a node cannot decode stops its group there (`StateTx::fail`, B4),
+  logs an error and counts in `calimero_log_undecodable_entries_total`.
   Regressions: `system::cluster_version::tests`
   (`a_feature_is_never_proposed_while_an_older_node_holds_the_log`,
-  `an_entry_an_older_node_cannot_decode_splits_the_state`),
+  `an_entry_an_older_node_cannot_decode_splits_the_state`,
+  `a_feature_is_proposed_only_once_the_version_that_keeps_older_nodes_out_is_logged`,
+  `only_the_cluster_version_itself_is_admitted_before_it_is_logged`,
+  `an_entry_this_node_cannot_decode_stops_the_system_group`),
   `the_cluster_version_rises_to_what_every_node_supports`.
 - **Delegation** (`SystemCmd::SetDelegation`, `SystemState::delegations`,
   `Node::caller_for` and `forwarded` in `node/component.rs`; docs: protocol xcall
@@ -669,7 +687,7 @@ is its command line.
   The bytes are read with the files export.
   The result method takes one argument shaped like the SDK's `ComputeOutcome`: camelCase `run, method, attempt, status, reason, result, outputs: [{ id, size, sha256 }], usage`, where an output `id` is the 64-hex blob id (a `BlobRef`) and 64-bit integers are decimal strings.
   The compute fixture's `onDone` takes that shape (`compute_fixture.rs` in `calimero-app-engine-wasmtime`).
-  The cluster tests' fixture (`apps/v2-fixtures/compute`) takes it as the SDK's `ComputeOutcome` and stores each output's `BlobRef` when the run is done.
+  The cluster tests' fixture (`apps/fixture-compute`) takes it as the SDK's `ComputeOutcome` and stores each output's `BlobRef` when the run is done.
   Every permanent refusal changes nothing and answers `AppError` with the reason as `error`; only a stale `baseIndex` answers `conflict` (retry on the current state) and leaves the run active.
   `init` starts runs on its own bundle.
   The result method runs with `runs_provider(Some(run))`, which leaves out the run that is ending, so its own start of the same job is a new run.
@@ -881,6 +899,15 @@ is its command line.
   `move_app::an_instance_naming_no_organization_goes_to_its_owners_personal_one`.
 - **An org app's owner, while a member** (`SystemState::owner_acts`): an organization's app gives its owner the owner's powers (access, metadata, transfer, delete, upgrade, upgrade keys, files, blob deletes, usage) only while they are a member (`member` or above) of its organization; its admins keep transfer and delete (`manages_app`). Judged at apply; `SetAccess`, `SetAppMetadata`, `TransferApp`, `DeleteApp`, `UpgradeApp` and `CreateApiKey` carry `owner_in_org`, which the API always sets; absent in an entry an earlier release logged, which replays judging ownership alone. Regressions: `an_owner_removed_from_the_organization_no_longer_manages_its_app`, `a_member_owner_and_a_personal_owner_still_manage_their_apps`, `system::tests` (`an_org_apps_owner_manages_it_only_while_a_member`, `an_org_admin_transfers_or_deletes_an_app_whose_owner_left`, `app_commands_logged_before_the_membership_rule_replay_as_they_did`).
 - **An app on a team, its owner while in the team** (`SystemState::owner_acts`, `may_reach`): an app with `team` access is reached and managed by its owner only while they are in that team (`Org::in_team`), so an owner kicked from, leaving, or closed out of an app's team (or a private channel) loses the channels they created there; admins transfer them. The six owner commands above and `ScopeApps` (which finds who reaches an instance) carry `owner_in_team`, which the API always sets; absent, an entry replays judging the owner without the team (`OwnerRule`). Regressions: `an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it`, `system::tests::an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it`.
+- **A stopped group** (`calimero-log` restarts it): a group whose Raft core stopped
+  (a disk error, a machine that panicked, an entry it could not apply) reads its
+  state back from the disk and restarts on its own, after 1 s, up to 5 min as it
+  stops again. Meanwhile `Node::replica_group` answers `None` for it, so the node
+  forwards that app's calls and views to the other replicas as a non-replica does;
+  a stopped system group serves the state of its last checkpoint, and fresh reads
+  wait for it to apply again. `SystemMachine::restore(&[])` is its starting state.
+  Metrics: `calimero_group_stopped`, `calimero_group_restarts_total`. Regression:
+  `a_node_whose_system_group_stopped_on_a_disk_error_rejoins_on_its_own`.
 - **Stopping** (`Running::stop`): cancel the tasks, drain the server (2 s),
   stop the groups, then wait (up to `STOP_WAIT`, 10 s) until the store is
   closed (`Engine::store_watch`): a task still running holds the RocksDB lock
@@ -937,9 +964,15 @@ is its command line.
   leader hands them the app's bundle and the blobs its state marks
   (`Node::hand_over_bytes`, over `internal/blob`): a bundle or blob stored while
   the cluster was one node is held by that node alone ("a majority" of one).
+  Every replica set a move records keeps the current replicas first, in their
+  order, then the new ones (`move_replicas`): `replicas[0]` is the node that
+  initializes the group (`Node::ensure_app_group`), and a sorted union made a
+  newcomer with a lower id form an empty group of its own, which a majority of
+  newcomers elected and which then overwrote the real group's log (B8).
   Regressions: `replica_moves_are_idempotent_and_one_at_a_time`,
   `a_cluster_started_on_one_node_grows_and_survives_losing_it` (node 1 stops
-  after the move; the app still runs and its blob downloads).
+  after the move; the app still runs and its blob downloads),
+  `a_replica_move_onto_lower_id_nodes_never_forms_a_second_group`.
 - **Placement read** (`GET /ops/placement`, `meroctl ops placement`, for mdma's
   rebalancer): each app's id, group and replicas, each node's id, zone,
   attested release (`Node::release_of_node`, at most `PLACEMENT_RELEASE_WAIT`)
@@ -971,6 +1004,16 @@ is its command line.
   `app_versions_and_release_approvals_are_reported_without_names`,
   `an_operator_upgrade_is_reported_as_the_operators`,
   `an_apps_last_write_is_the_same_on_every_node_and_survives_a_restart`.
+- **State digests** (`node/digests.rs`, `calimero_log::digest`): every
+  `DIGEST_COMPARE_EVERY` (60 s, `lib.rs`) the leader of each app group asks each other
+  replica for its digests (`POST /internal/digests { groups }`, `Node::digests_for`: only
+  groups the caller is a voter or learner of, at most `DIGEST_GROUPS_PER_ASK`) and compares
+  them at the latest index both recorded (`Node::compare_digests`). A difference logs an
+  error once per (group, peer) and sets `calimero_group_diverged{group,peer}` (the index)
+  until a comparison agrees (`metrics::digest_compared`); `calimero_group_divergences_total`
+  counts them. A peer that answers `404` (a release before) or another `DIGEST_VERSION` is
+  not compared. The system group is not (in-memory machine). Regression:
+  `a_replica_whose_state_differs_from_its_leaders_is_reported`.
 - **Forwards are bounded**: a call or read forwarded to an app's leader waits at most
   `FORWARD_TIMEOUT` (5 s, `peer_forward`), then retries at whoever leads now; a frozen
   leader would otherwise hold a write for the 30 s HTTP timeout. Calls without a
@@ -1309,7 +1352,7 @@ is its command line.
   sheet is `consent_page::diff`, its methods, events, timers and state version from the
   `calimero:abi` each component embeds, `component::embedded_abi`; regression:
   `an_upgrades_page_names_what_the_components_abis_change` with
-  `apps/v2-fixtures/notes-v1` and `notes-v2`; the plain-language `title`, `points` and
+  `apps/fixture-notes-v1` and `notes-v2`; the plain-language `title`, `points` and
   `attention` the page leads with are the node's too, and the rest sits under
   a collapsed *Details*). `GET /consent/{id}` (static HTML in the
   binary, hash-only CSP, `frame-ancestors 'none'`), `/model`, `/approve`,
@@ -1468,7 +1511,9 @@ is its command line.
   sealed snapshot file with a sealed manifest beside it (`backup::Manifest`: app,
   group, index, SHA-256, `backup::FORMAT`, the `merod` and release that wrote it,
   bound to the app and file name under `HMAC(K_c, "calimero.backup.manifest.v1")`);
-  `backup::find` checks one, `backup::latest` opens one with K_c.
+  `backup::find` checks one, `backup::latest` opens one with K_c. The file and its
+  manifest are synced before the rename that lists the backup, and the directory
+  after it (likewise kept code and the kept cluster key).
 - **Restore** (`node/restore.rs`, `api/restore.rs`, `POST /ops/apps/{app}/restore`):
   operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before the
   signature (`backup::find`, `Found::check_release`, the bundle the backup's head
@@ -1693,9 +1738,12 @@ API and system group:
 - **State** (`component::ComponentState`, D46): the component's stored keys
   (generation prefix included, D39) are hidden rows of the group (`rows::CKV`, sealed
   and HMAC-keyed), and each replica keeps them in memory too as an
-  ordered `Arc<BTreeMap>`: a run gets the current version as its `StateView` (ordered
-  `range` scans, which hidden rows cannot answer); `apply` copies it only while a run
-  still holds the previous one; `restore` (a restart, a snapshot install) reads it
+  ordered persistent map (`component::Kv`, an `imbl::OrdMap`): a run gets the current
+  version as its `StateView` (ordered `range` scans, which hidden rows cannot answer),
+  an O(1) clone; `apply` writes the next version sharing all it does not change, so a
+  write while a run holds the previous one copies O(log n) nodes, never the whole state
+  (B7; `a_write_under_a_view_does_not_copy_the_whole_state`,
+  `the_state_reads_as_the_ordered_map_it_replaced`); `restore` (a restart, a snapshot install) reads it
   back from the rows. Host records (`ComponentHead`: `last_ts_ms`, `last_id`,
   `install_ts_ms`, `timers`, the idempotency rings) live in the group's `Head`.
   `last_write_ms` is the entry timestamp of the newest call that applied with a
@@ -1816,6 +1864,11 @@ API and system group:
   applied them one at a time, did. `XcallDone` read the outbox row committed and lost the
   dead letter on such a replica; `ActionEnd` and a node command's first answer under a key
   had the same hole. Tests: `a_replica_catching_up_*` in `component.rs`.
+  A row such a read cannot read or decode (`decode_in`, `get_json`; an idempotency
+  record retention cannot read) fails the batch (`StateTx::fail`) instead of reading as
+  absent, so that replica stops on the entry rather than apply it differently (B3).
+  Tests: `a_row_an_apply_cannot_decode_fails_the_batch`,
+  `an_undecodable_idempotency_record_is_never_expired`.
 - **Blobs** (R8, `component/blobs.rs`): the cluster's store and routes
   (`store_blob`, a majority, `fetch_blob`, `collect_blob`, `blob_held_strong`), but the
   app holds a blob through a host record (`BlobRecord { size, mime, refs, idleSinceMs }`,
@@ -1901,8 +1954,12 @@ API and system group:
   checks the boundary again and runs it as `xcall-deliver`, so it reaches no further); a
   view through `Node::view` (strong). The run's thread waits at most `SYNC_XCALL_WAIT`
   (3 s) while the runtime runs it; two apps calling each other at once both time out.
-  Test: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
-  (`apps/v2-fixtures/captcha`).
+  A batch (`xcall.batch`, `NodeXcall::batch`) prepares each request as the same call or
+  view would (`prepare_call`, `prepare_view`), spawns them all on the runtime and waits for
+  them with one `SYNC_XCALL_WAIT` deadline (`wait_all`), so a run holds its own proposal lock
+  for the slowest request, not their sum; requests to one target take turns on its lock.
+  Tests: `a_call_verifies_a_captcha_with_another_app_in_the_same_request`
+  (`apps/fixture-captcha`), `joined_sync_calls_run_at_once_and_a_rerun_replays_them`.
 - **Files** (`node/component/files.rs`; tests `component_files.rs`): a file is a sealed blob.
   It shares the blob id namespace and the `BlobRef` type; there is no delete, retention is R8.
   A run's `files` provider (`NodeFiles`) is built per run from the app id, the file key (`backup::file_key`, not the TEE key) and the app's blob records.
@@ -1996,7 +2053,7 @@ rollback epoch in the attested KMS evidence, search indexes that survive a resta
 
 ```bash
 cargo test -p calimero-node    # 3-node cluster in process, sealed, real WASM
-# component fixtures (apps/v2-fixtures/{kv,org-gated}, apps/kv-store-with-shared-storage,
+# component fixtures (apps/fixture-kv, apps/team-space,
 # apps/rooms, any app a scenario installs) are built on first use (harness/cluster.rs::fixture,
 # tests/common/mod.rs) into $CARGO_TARGET_DIR/app-components (needs the wasm32-wasip2 target)
 cargo test --release -p calimero-node --test rooms   # Rooms A1 (shared scenario), A3, A5

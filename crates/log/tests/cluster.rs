@@ -7,26 +7,43 @@ use std::time::Duration;
 use calimero_log::store::Db;
 use calimero_log::types::LogId;
 use calimero_log::{
-    BoxFuture, Config, Engine, Group, GroupId, GroupState, Machine, NodeId, PortableRow, Proposal,
-    RpcRequest, RpcResponse, StateTx, Transport, WriteError,
+    BoxFuture, Comparison, Config, Digests, Engine, Group, GroupId, GroupState, Machine, NodeId,
+    PortableRow, Proposal, RpcRequest, RpcResponse, StateDigest, StateTx, Transport, WriteError,
 };
 
 /// A key-value machine: command `key=value` sets, output is the previous value.
 #[derive(Default)]
 struct Kv {
     map: BTreeMap<String, String>,
+    /// Commands starting with this are ones this node cannot apply (as the
+    /// node's machines meet an entry a later release wrote): it fails the batch.
+    refuses: Option<&'static str>,
+    /// Panic in the next apply, after it changed the map (as a machine with a
+    /// bug would, halfway through an entry).
+    panic_next: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Machine for Kv {
     const IN_MEMORY: bool = true;
 
-    fn apply(&mut self, _index: u64, command: &[u8], _state: &mut StateTx<'_>) -> Vec<u8> {
+    fn apply(&mut self, index: u64, command: &[u8], state: &mut StateTx<'_>) -> Vec<u8> {
+        if self
+            .refuses
+            .is_some_and(|p| command.starts_with(p.as_bytes()))
+        {
+            state.fail(format_args!("entry {index} does not decode here"));
+            return Vec::new();
+        }
         let s = String::from_utf8_lossy(command);
         let (k, v) = s.split_once('=').unwrap_or((&s, ""));
-        self.map
-            .insert(k.to_owned(), v.to_owned())
-            .unwrap_or_default()
-            .into_bytes()
+        let prev = self.map.insert(k.to_owned(), v.to_owned());
+        assert!(
+            !self
+                .panic_next
+                .swap(false, std::sync::atomic::Ordering::SeqCst),
+            "a machine with a bug"
+        );
+        prev.unwrap_or_default().into_bytes()
     }
 
     fn snapshot(&self) -> eyre::Result<Vec<u8>> {
@@ -34,7 +51,11 @@ impl Machine for Kv {
     }
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
-        self.map = serde_json::from_slice(data)?;
+        self.map = if data.is_empty() {
+            BTreeMap::new()
+        } else {
+            serde_json::from_slice(data)?
+        };
         Ok(())
     }
 }
@@ -105,6 +126,15 @@ async fn start_node(
     id: NodeId,
     dir: &tempfile::TempDir,
 ) -> (Arc<Engine>, Arc<Group<Kv>>) {
+    start_node_with(net, id, dir, Kv::default()).await
+}
+
+async fn start_node_with(
+    net: &Arc<Net>,
+    id: NodeId,
+    dir: &tempfile::TempDir,
+    machine: Kv,
+) -> (Arc<Engine>, Arc<Group<Kv>>) {
     let engine = Engine::open(
         id,
         dir.path(),
@@ -113,7 +143,7 @@ async fn start_node(
         config(),
     )
     .unwrap();
-    let group = engine.start_group(1, Kv::default()).await.unwrap();
+    let group = engine.start_group(1, machine).await.unwrap();
     let _prev = net.engines.write().unwrap().insert(id, Arc::clone(&engine));
     (engine, group)
 }
@@ -176,6 +206,64 @@ async fn replicates_to_every_node() {
         assert!(g.wait_applied(index, Duration::from_secs(5)).await);
         assert_eq!(get(g, "a").as_deref(), Some("1"));
     }
+}
+
+/// A node whose machine cannot apply an entry (`StateTx::fail`) stops its
+/// group on it: nothing of it or after it applies there, not even later
+/// entries of the same batch, while the other nodes go on. This is what the
+/// node's machines do with an entry a later release wrote (B4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_batch_stops_that_nodes_group_on_the_entry() {
+    let net = Arc::new(Net::default());
+    let mut dirs = Vec::new();
+    let mut groups = HashMap::new();
+    for id in 1..=3 {
+        let dir = tempfile::tempdir().unwrap();
+        let kv = Kv {
+            refuses: (id == 3).then_some("new:"),
+            ..Kv::default()
+        };
+        let (_e, g) = start_node_with(&net, id, &dir, kv).await;
+        let _prev = groups.insert(id, g);
+        dirs.push(dir);
+    }
+    let voters: BTreeMap<NodeId, String> = (1..=3).map(|i| (i, format!("node-{i}"))).collect();
+    groups[&1].initialize(voters).await.unwrap();
+    let c = Cluster { net, dirs, groups };
+    // Node 3 must not lead: its own proposal would stop the leader.
+    let first = put(&c, "a", "1").await;
+    for g in c.groups.values() {
+        assert!(g.wait_applied(first, Duration::from_secs(5)).await);
+    }
+    let _down = c.net.down.lock().unwrap().insert(3);
+    let refused = put(&c, "new:x", "1").await;
+    let after = put(&c, "b", "2").await;
+    let _up = c.net.down.lock().unwrap().remove(&3);
+    // Both reach node 3 in one append, so one batch holds them.
+    for id in [1, 2] {
+        assert!(
+            c.groups[&id]
+                .wait_applied(after, Duration::from_secs(5))
+                .await
+        );
+        assert_eq!(get(&c.groups[&id], "b").as_deref(), Some("2"));
+    }
+    let stopped = &c.groups[&3];
+    assert!(
+        !stopped.wait_applied(refused, Duration::from_secs(2)).await,
+        "node 3 applied past the entry it cannot apply"
+    );
+    assert_eq!(get(stopped, "new:x"), None);
+    assert_eq!(get(stopped, "b"), None, "an entry after it applied");
+    // The group stops there and, restarted, stops there again: it never
+    // moves past the entry, and says so in its status.
+    let reason = stopped.stopped();
+    assert!(
+        reason.is_some() || stopped.status().restarts > 0,
+        "node 3's group neither stopped nor restarted"
+    );
+    assert!(!stopped.wait_applied(refused, Duration::from_secs(2)).await);
+    assert_eq!(get(stopped, "b"), None, "an entry after it applied");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -309,7 +397,11 @@ impl Machine for Ledger {
     }
 
     fn restore(&mut self, data: &[u8]) -> eyre::Result<()> {
-        *self = serde_json::from_slice(data)?;
+        *self = if data.is_empty() {
+            Self::default()
+        } else {
+            serde_json::from_slice(data)?
+        };
         Ok(())
     }
 }
@@ -590,6 +682,9 @@ fn all_bytes(dir: &std::path::Path) -> String {
 struct DiskKv {
     state: Option<GroupState>,
     applies: Arc<Mutex<Vec<u64>>>,
+    /// Applies differently from every other replica (writes `value!`): what a
+    /// replica that misread a row, or skipped an entry, would hold.
+    skew: bool,
 }
 
 impl DiskKv {
@@ -609,6 +704,11 @@ impl Machine for DiskKv {
         let s = String::from_utf8_lossy(command);
         let (k, v) = s.split_once('=').unwrap_or((&s, ""));
         let prev = state.get_hidden(b'k', k.as_bytes()).unwrap_or_default();
+        let v = if self.skew {
+            format!("{v}!")
+        } else {
+            v.to_owned()
+        };
         state.put_hidden(b'k', k.as_bytes(), v.as_bytes());
         prev
     }
@@ -627,6 +727,8 @@ struct DiskCluster {
     dirs: HashMap<NodeId, tempfile::TempDir>,
     groups: HashMap<NodeId, Arc<Group<DiskKv>>>,
     applies: HashMap<NodeId, Arc<Mutex<Vec<u64>>>>,
+    /// Nodes whose machine applies with `skew`.
+    skewed: BTreeSet<NodeId>,
 }
 
 impl DiskCluster {
@@ -646,6 +748,7 @@ impl DiskCluster {
                 DiskKv {
                     state: None,
                     applies: Arc::clone(&applies),
+                    skew: self.skewed.contains(&id),
                 },
             )
             .await
@@ -663,11 +766,17 @@ impl DiskCluster {
     }
 
     async fn new(n: u64) -> Self {
+        Self::skewed(n, &[]).await
+    }
+
+    /// A cluster whose nodes `skewed` apply differently from the others.
+    async fn skewed(n: u64, skewed: &[NodeId]) -> Self {
         let mut c = Self {
             net: Arc::new(Net::default()),
             dirs: HashMap::new(),
             groups: HashMap::new(),
             applies: HashMap::new(),
+            skewed: skewed.iter().copied().collect(),
         };
         for id in 1..=n {
             let _g = c.start_node(id, tempfile::tempdir().unwrap()).await;
@@ -733,6 +842,36 @@ impl DiskCluster {
         let dir = self.stop(id).await;
         self.start_node(id, dir).await
     }
+}
+
+/// Review finding B3: a state row a replica could not read during an apply read
+/// as absent, and the replica applied the entry anyway, answering (and writing)
+/// differently from the others. The read fault now fails the batch, so that
+/// replica stops on the entry instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_row_a_replica_cannot_read_stops_it_rather_than_applying_differently() {
+    let c = DiskCluster::new(3).await;
+    let first = c.put("a", "1").await;
+    for g in c.groups.values() {
+        assert!(g.wait_applied(first, Duration::from_secs(5)).await);
+    }
+    let leader = c.leader().await;
+    let faulty = (1..=3).find(|id| *id != leader).unwrap();
+    calimero_log::testing::fail_state_reads(c.dirs[&faulty].path(), 1);
+    let second = c.put("a", "2").await;
+    for (id, g) in &c.groups {
+        if *id != faulty {
+            assert!(g.wait_applied(second, Duration::from_secs(5)).await);
+        }
+    }
+    let applied_anyway = c.groups[&faulty]
+        .wait_applied(second, Duration::from_secs(2))
+        .await;
+    calimero_log::testing::heal_state_reads(c.dirs[&faulty].path(), 1);
+    assert!(
+        !applied_anyway,
+        "the replica applied an entry over a row it could not read"
+    );
 }
 
 /// A stopped node's stored commit index (group 1).
@@ -949,10 +1088,12 @@ async fn a_disk_machine_restarts_without_replaying_the_log() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_big_state_streams_to_a_new_node() {
     let mut c = DiskCluster::new(3).await;
-    // ~6 MiB of state: six snapshot chunks, several frames.
-    let value = "v".repeat(2048);
+    // ~6 MiB of state: six snapshot chunks, several frames. Written as 600
+    // values of 10 KiB rather than 3000 of 2 KiB: the same bytes in a fifth of
+    // the Raft rounds, which is where this test spends its time.
+    let value = "v".repeat(10 * 1024);
     let mut last = 0;
-    for i in 0..3000 {
+    for i in 0..600 {
         last = c.put(&format!("key-{i:05}"), &value).await;
     }
     let lid = c.leader().await;
@@ -973,9 +1114,9 @@ async fn a_big_state_streams_to_a_new_node() {
         .await
         .unwrap();
     assert!(g4.wait_applied(last, Duration::from_secs(30)).await);
-    // It installed a snapshot rather than replaying 3000 entries.
-    assert!(c.applies[&4].lock().unwrap().len() < 3000);
-    for i in [0, 1234, 2999] {
+    // It installed a snapshot rather than replaying 600 entries.
+    assert!(c.applies[&4].lock().unwrap().len() < 600);
+    for i in [0, 234, 599] {
         assert_eq!(
             g4.read_local(|m, _| m.get(&format!("key-{i:05}")))
                 .as_deref(),
@@ -985,7 +1126,7 @@ async fn a_big_state_streams_to_a_new_node() {
     drop(g4);
     let g4 = c.restart(4).await;
     assert_eq!(
-        g4.read_local(|m, _| m.get("key-02999")).as_deref(),
+        g4.read_local(|m, _| m.get("key-00599")).as_deref(),
         Some(value.as_str())
     );
     // The snapshot on disk is sealed too.
@@ -1043,6 +1184,7 @@ async fn portable_rows_seed_a_group_under_another_clusters_key() {
             DiskKv {
                 state: None,
                 applies: Arc::default(),
+                skew: false,
             },
         )
         .await
@@ -1102,6 +1244,7 @@ async fn a_backup_seeds_another_group_that_replicas_then_join() {
     let disk = || DiskKv {
         state: None,
         applies: Arc::default(),
+        skew: false,
     };
     let seed = engine(1).start_group(2, disk()).await.unwrap();
     seed.initialize([(1, "node-1".to_owned())].into_iter().collect())
@@ -1154,4 +1297,290 @@ async fn a_backup_seeds_another_group_that_replicas_then_join() {
         c.groups[&lid].read_local(|m, _| m.get("k0")).as_deref(),
         Some("changed")
     );
+}
+
+/// Every replica's digests, once each has applied `index`.
+async fn digests_at(c: &DiskCluster, index: u64) -> BTreeMap<NodeId, Digests> {
+    let mut out = BTreeMap::new();
+    for (id, g) in &c.groups {
+        assert!(g.wait_applied(index, Duration::from_secs(10)).await);
+        let _prev = out.insert(*id, g.digests().expect("a disk machine has digests"));
+    }
+    out
+}
+
+/// Replicas that applied the same entries hold the same digest at the same
+/// index, however they got there: applying entries in different batches,
+/// restarting from disk, taking the digest again from the rows, or installing
+/// a snapshot as a new node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replicas_that_applied_the_same_entries_hold_the_same_digest() {
+    let mut c = DiskCluster::new(3).await;
+    let mut last = 0;
+    for i in 0..40 {
+        last = c.put(&format!("k{}", i % 7), &i.to_string()).await;
+    }
+    let all = digests_at(&c, last).await;
+    let leader = &all[&c.leader().await];
+    assert!(
+        !leader.recorded.is_empty(),
+        "digests were recorded on the way"
+    );
+    for (id, d) in &all {
+        assert!(
+            matches!(leader.compare(d), Comparison::Agree { .. }),
+            "node {id}: {:?}",
+            leader.compare(d)
+        );
+    }
+    // An empty and a written state differ.
+    assert_ne!(leader.applied.digest, StateDigest::default());
+
+    // A restart reads the digest it stored with the applied index.
+    let before = c.groups[&3].digests().unwrap().applied;
+    let g3 = c.restart(3).await;
+    assert!(g3.wait_applied(last, Duration::from_secs(10)).await);
+    assert_eq!(g3.digests().unwrap().applied, before);
+
+    // Rows rewritten outside the log, to what they were: the stored digest is
+    // dropped, and taken again from the rows at the next start, the same.
+    let dir = c.stop(2).await;
+    {
+        let engine = Engine::open(
+            2,
+            dir.path(),
+            &KEY,
+            Arc::new(Wire(Arc::clone(&c.net), 2)),
+            config(),
+        )
+        .unwrap();
+        let state = engine.group_state(1);
+        let mut tx = StateTx::new(&state);
+        let v = tx.get_hidden(b'k', b"k0").unwrap();
+        tx.put_hidden(b'k', b"k0", &v);
+        tx.commit().unwrap();
+        engine.shutdown().await;
+    }
+    // Its store is free again once RocksDB lets go of the lock.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while Db::open(dir.path(), &KEY).is_err() {
+        assert!(std::time::Instant::now() < deadline, "the store stays held");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let g2 = c.start_node(2, dir).await;
+    assert!(g2.wait_applied(last, Duration::from_secs(10)).await);
+    assert_eq!(g2.digests().unwrap().applied, before);
+
+    // A new node that installs a snapshot holds the same state, and digest:
+    // the log it could replay instead is purged.
+    for g in c.groups.values() {
+        g.snapshot_through(last, Duration::from_secs(10))
+            .await
+            .unwrap();
+        g.purge_log_through(last, Duration::from_secs(10))
+            .await
+            .unwrap();
+    }
+    let g4 = c.start_node(4, tempfile::tempdir().unwrap()).await;
+    let lid = c.leader().await;
+    c.groups[&lid]
+        .add_learner(4, "node-4".into())
+        .await
+        .unwrap();
+    last = c.put("after", "join").await;
+    let all = digests_at(&c, last).await;
+    assert!(
+        c.applies[&4].lock().unwrap().len() <= 1,
+        "node 4 came by snapshot: {:?}",
+        c.applies[&4].lock().unwrap()
+    );
+    let leader = &all[&c.leader().await];
+    for (id, d) in &all {
+        assert!(
+            matches!(leader.compare(d), Comparison::Agree { index } if index >= last - 1),
+            "node {id}: {:?}",
+            leader.compare(d)
+        );
+    }
+    drop(g4);
+}
+
+/// A replica that applies an entry differently from the others (as one that
+/// misread a row, or skipped an entry, would) holds another digest from that
+/// entry on, and comparing tells it apart; the replicas that agree still agree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replica_that_applied_differently_is_told_apart() {
+    let c = DiskCluster::skewed(3, &[3]).await;
+    let mut last = 0;
+    for i in 0..20 {
+        last = c.put(&format!("k{i}"), "v").await;
+    }
+    let all = digests_at(&c, last).await;
+    // Every replica answers the same reads but node 3, which nothing else noticed.
+    assert_eq!(
+        c.groups[&3].read_local(|m, _| m.get("k1")).as_deref(),
+        Some("v!")
+    );
+    let (one, two, three) = (&all[&1], &all[&2], &all[&3]);
+    assert!(matches!(one.compare(two), Comparison::Agree { .. }));
+    let Comparison::Differ {
+        index,
+        ours,
+        theirs,
+        ..
+    } = one.compare(three)
+    else {
+        panic!("node 3's state went unnoticed: {:?}", one.compare(three));
+    };
+    assert!(index >= last - 1, "compared at {index}, applied {last}");
+    assert_ne!(ours, theirs);
+    assert!(matches!(three.compare(two), Comparison::Differ { .. }));
+}
+
+/// A row changed under a running replica, outside its log (a disk fault, a
+/// bad tool), shows once an entry rewrites it: the write moves that replica's
+/// digest from the row it holds, not the row the others hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_row_changed_under_a_replica_shows_once_an_entry_rewrites_it() {
+    let c = DiskCluster::new(3).await;
+    let mut last = c.put("k", "1").await;
+    for i in 0..5 {
+        last = c.put(&format!("other{i}"), "x").await;
+    }
+    let all = digests_at(&c, last).await;
+    assert!(matches!(
+        all[&1].compare(&all[&3]),
+        Comparison::Agree { .. }
+    ));
+    // Node 3's row `k` changes behind its log.
+    let state = c.groups[&3].state().clone();
+    let mut tx = StateTx::new(&state);
+    tx.put_hidden(b'k', b"k", b"bad");
+    tx.commit().unwrap();
+    last = c.put("k", "2").await;
+    let all = digests_at(&c, last).await;
+    assert!(matches!(
+        all[&1].compare(&all[&2]),
+        Comparison::Agree { .. }
+    ));
+    assert!(
+        matches!(all[&1].compare(&all[&3]), Comparison::Differ { .. }),
+        "{:?}",
+        all[&1].compare(&all[&3])
+    );
+}
+
+/// Whether `g`'s Raft core has stopped, within `timeout`.
+async fn core_stops<M: Machine>(g: &Group<M>, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        let m = g.raft().metrics();
+        if m.borrow().running_state.is_err() || m.has_changed().is_err() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+/// A follower whose node failed to write an applied batch (`fail`), or whose
+/// machine panicked in one (`!fail`), on entry `b`.
+async fn a_replica_stops_on_a_batch(fail: bool) {
+    let c = cluster(3).await;
+    let first = put(&c, "a", "1").await;
+    for g in c.groups.values() {
+        assert!(g.wait_applied(first, Duration::from_secs(5)).await);
+    }
+    let lead = leader(&c).await;
+    let id = *c.groups.keys().find(|k| **k != lead).unwrap();
+    let g = &c.groups[&id];
+    if fail {
+        calimero_log::testing::fail_applies(c.dirs[usize::try_from(id - 1).unwrap()].path(), 1, 1);
+    } else {
+        g.read_local(|m, _| {
+            m.panic_next
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    let second = put(&c, "b", "2").await;
+    assert!(
+        core_stops(g, Duration::from_secs(5)).await,
+        "the replica's Raft core goes on"
+    );
+    assert_eq!(
+        get(g, "b"),
+        None,
+        "the stopped replica serves an entry it never committed"
+    );
+    assert!(
+        g.applied() < second,
+        "the stopped replica says it applied {} (the entry is {second}), so a read waiting for it goes ahead",
+        g.applied()
+    );
+    // It comes back on its own, from its disk, and catches up.
+    let third = put(&c, "c", "3").await;
+    assert!(
+        g.wait_applied(third, Duration::from_secs(20)).await,
+        "the stopped group stays stopped until the node restarts"
+    );
+    assert_eq!(get(g, "a").as_deref(), Some("1"));
+    assert_eq!(get(g, "b").as_deref(), Some("2"));
+    assert_eq!(get(g, "c").as_deref(), Some("3"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_that_fails_to_commit_stops_the_group_which_reloads_and_restarts() {
+    a_replica_stops_on_a_batch(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_machine_that_panics_stops_the_group_which_reloads_and_restarts() {
+    a_replica_stops_on_a_batch(false).await;
+}
+
+/// A fault that outlasts a restart (a disk that keeps refusing, an entry this
+/// release cannot apply) keeps the group stopped, with a longer wait before
+/// each next restart, and says so in its status; once it clears, the group
+/// comes back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fault_that_outlasts_a_restart_backs_off_and_shows_in_the_status() {
+    let c = cluster(3).await;
+    let first = put(&c, "a", "1").await;
+    for g in c.groups.values() {
+        assert!(g.wait_applied(first, Duration::from_secs(5)).await);
+    }
+    let lead = leader(&c).await;
+    let id = *c.groups.keys().find(|k| **k != lead).unwrap();
+    let g = &c.groups[&id];
+    // The batch fails, and fails again when the restarted core re-applies it.
+    calimero_log::testing::fail_applies(c.dirs[usize::try_from(id - 1).unwrap()].path(), 1, 2);
+    let started = tokio::time::Instant::now();
+    let second = put(&c, "b", "2").await;
+    assert!(core_stops(g, Duration::from_secs(5)).await);
+    let status = g.status();
+    assert!(status.stopped.is_some(), "{status:?}");
+    assert!(
+        g.wait_applied(second, Duration::from_secs(20)).await,
+        "the group never came back once the fault cleared"
+    );
+    // The first restart waits RESTART_FIRST, the second twice that, each give
+    // or take a quarter.
+    let waited = started.elapsed();
+    assert!(
+        waited >= calimero_log::RESTART_FIRST.mul_f64(0.75 * 3.0),
+        "restarted after {waited:?}: the waits do not grow"
+    );
+    // The new core applies what it holds while it starts, before it takes
+    // the old one's place.
+    let mut status = g.status();
+    for _ in 0..100 {
+        if status.stopped.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        status = g.status();
+    }
+    assert_eq!(status.stopped, None, "{status:?}");
+    assert_eq!(status.restarts, 2, "{status:?}");
+    assert_eq!(get(g, "b").as_deref(), Some("2"));
 }

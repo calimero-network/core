@@ -45,30 +45,22 @@ It prints progress as the run reports it, then the result, each output and the u
 
 | App                      | Purpose                | Good Example For       |
 | ------------------------ | ---------------------- | ---------------------- |
-| `kv-store`               | Simple key-value store | `UnorderedMap`, events, a typed error; `TestApp` tests and `scenarios/*.json` |
-| `kv-store-init`          | KV with custom init | `#[app::init]` seeding the first state as the owner |
-| `org-gated`              | Org notes | `env::org_role` / `env::in_team`: gate methods on the caller's organization role and teams; `scenarios/cluster/` changes a team mid-run |
-| `sorted-kv-store`        | Ordered KV store | A `Table` read in key order: range / prefix / page / first / last through its cursor |
-| `sorted-set-store`       | Ordered set | A `Table` whose record is the element: range / prefix / page / min / max |
-| `authored-sorted-kv-store` | Shared noticeboard | Per-note authors checked against `env::caller()`, topic slices through a `Table` index, and why the two go together |
-| `indexed-issue-tracker`  | Issue tracker | `Table` indexes, a label table and maintained counts: filter, count and page by field values without scanning |
-| `indexed-forum`          | Forum  | Tables with compound and optional-field indexes and maintained counts; a tag index as one row per tag; moderation as explicit checks against `env::caller()` and a moderators table |
-| `permissions-showcase`   | Team space | One table per write policy, each an explicit check: values written only in `init`, write-once messages, moderator-removed announcements, author-owned pages and revisions, evidence keyed by its SHA-256 |
-| `name-registry-admin`    | Usernames | Claim, verdict and admin tables: one owner per name, decided by the admins (the first claim applied wins); the app owner is the first admin, `setAdmins` hands the role on, a lost claim is renewed with `rebid` after a release |
-| `components-demo`        | Access-control patterns | An owned cell, a writer set and a role registry, each a table plus a check against `env::caller()` |
-| `kv-store-with-shared-storage` | Writer-set KV | A writer set as table rows plus an explicit check, and its rotation; `crates/node/tests/shared_storage.rs` runs it on a cluster |
-| `kv-store-with-user-and-frozen-storage` | Per-user + immutable KV | `PerUser` values keyed by the caller's account, a `Frozen` content-addressed store with its own `ContentHash` (`sha2`) |
-| `custom-key-store`       | Custom key type | A `ToKeyPart` newtype key (`Slug` over a `String`, normalized), and why a struct without it does not compile |
-| `team-metrics`           | Team metrics with badges | Per-team counts and a bitmask as a plain record |
+| `kv-store`               | Simple key-value store | `UnorderedMap`, events, a typed error, ordered reads (range / prefix / page / first / last through the map's cursor); `TestApp` tests, `scenarios/*.json` and a migration from its shipped release |
+| `wiki`                   | Team wiki | A seeded first state from `#[app::init]`, a `ToKeyPart` newtype key (`Slug`), author-owned pages with revisions, a sorted tag `Set` read by prefix / range / page, per-person drafts in `PerUser`, content-addressed attachments in `Frozen` (`sha2`) |
+| `forum`                  | Forum | Tables with compound and optional-field indexes and maintained counts, a tag index as one row per tag; the author is the caller, write-once chat messages, moderator-removed announcements, a charter written only in `init`, moderators appointing moderators |
+| `issue-tracker`          | Issue tracker | `Table` indexes, a label table and maintained counts: filter, count and page by field values without scanning |
+| `team-space`             | Team space | Access control in layers: organization standing (`env::org_role` / `env::in_team`) for the pinned and team notes, then the app's own rows: an owned config with transfer, one writer-set mechanism (status line, settings, roles) and its rotation; `scenarios/cluster/` changes a team mid-run; also the node's org and writer-set fixture (`crates/node/tests`) |
+| `name-registry`          | Usernames | Claim, verdict and admin tables: one owner per name, decided by the admins (the first claim applied wins); the app owner is the first admin, `setAdmins` hands the role on, a lost claim is renewed with `rebid` after a release |
 | `rooms`                  | Room booking | The node's Rooms tests (`crates/node/tests/rooms.rs`) and the fault test |
 | `calendar`               | Each caller's events | The app the units examples build on: a person's and an app's own events; `env::via()` keeps private events from an app acting for the person |
-| `planner`                | Team planner | `uses` with `mode = "create"`: a calendar created with each instance, read with `env::linked`, called as the planner |
-| `booking`                | Booking page | `uses` with `mode = "attach"` and `methods`: a calendar the owner attaches, called as the person with their grant |
+| `planner`                | Team planner | `uses` with `mode = "create"`: a calendar created with each instance, called as the planner through its generated client (`uses::calendar`) |
+| `booking`                | Booking page | `uses` with `mode = "attach"` and `methods`: a calendar the owner attaches, called as the person with their grant; the calendar's own error comes back typed (`uses::calendar::Error`) |
 | `compute-redact`         | CSV redaction | `#[app::compute]` runs: a preview then one run per part, a queue of at most 4 active runs, the compute component (`meroctl app build --compute-out`) that may import only the compute world; the policy is set by an admin and copied into each job; `share` publishes a done job's outputs (`compute::publish`) and `link` grants a download (`blobs.grant`) |
-| `v2-fixtures/kv`         | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls, actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
-| `v2-fixtures/compute` | The compute fixture | Compute methods that stream files, report progress and break each cap; `crates/node/tests/job_runs.rs` and `crates/meroctl/compute/tests` |
-| `v2-fixtures/notes-v1`, `notes-v2` | Two releases of one app | The consent page's upgrade diff (`an_upgrades_page_names_what_the_components_abis_change` in `crates/node/tests/consent_page.rs`) |
-| `v2-fixtures/org-gated`, `captcha`, `files` | Node test fixtures | What `crates/node/tests` needs that the example apps do not show |
+| `fixture-kv`             | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls (`bumpBoth` joins two synchronous calls, `slowBump` is their slow target), actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
+| `fixture-compute`        | The compute fixture | Compute methods that stream files, report progress and break each cap; `crates/node/tests/job_runs.rs` and `crates/meroctl/compute/tests` |
+| `fixture-notes-v1`, `fixture-notes-v2` | Two releases of one app | The consent page's upgrade diff (`an_upgrades_page_names_what_the_components_abis_change` in `crates/node/tests/consent_page.rs`) |
+| `fixture-captcha`        | Captcha service | Synchronous xcalls (`env::xcall_call`) from other apps of the org, and a Turnstile check with `env::fetch`; `crates/node/tests/component_cluster.rs` |
+| `fixture-files`          | The files fixture | Deterministic files kept by `BlobRef`, and the refusal to stream them back outside a compute run; `crates/node/tests` |
 
 ## Component apps
 
@@ -92,6 +84,24 @@ doc comment. Their end-to-end tests are scenario files:
   crate's build: the new code must read what every shipped release stored
   (`apps/kv-store`; `build/testing.mdx`).
 
+## Apps that use other apps
+
+An app whose release declares `[package.metadata.calimero.uses]` (`planner`, `booking`)
+calls each target through a typed client its `build.rs` generates
+(`calimero_app_build::uses::build()` in `build.rs`, brought in with `app::uses!()`; a build-dependency on `crates/app-build`, which the
+apps already reach as a dev-dependency, so their lockfiles do not change) from two committed
+files: `calimero.lock` and `calimero/abi/<name>.json`. Refresh them after the target changes
+its ABI, then commit both:
+
+```bash
+cd apps/planner && meroctl app uses update calendar --from ../calendar
+meroctl app uses check
+```
+
+A build fails while the lock, the vendored ABI and `Cargo.toml` disagree. The client's methods
+are futures, awaited in `async fn` methods (`app::join!` runs several at once). A call commits in the
+target's log and is not rolled back if the run fails afterwards.
+
 ## App Structure
 
 Each app follows this structure:
@@ -113,8 +123,8 @@ app-name/
 | File                                | Purpose         |
 | ----------------------------------- | --------------- |
 | `kv-store/src/lib.rs`               | Basic component app |
-| `components-demo/src/lib.rs`        | Auth patterns   |
-| `v2-fixtures/kv/src/lib.rs`         | Every host feature the node tests |
+| `team-space/src/lib.rs`             | Auth patterns   |
+| `fixture-kv/src/lib.rs`             | Every host feature the node tests |
 | `crates/sdk/AGENTS.md`          | The SDK itself |
 
 ## Scenarios
@@ -142,12 +152,12 @@ its own. Two formats
 
 ```json
 {
-  "name": "Sorted KV store",
+  "name": "KV store",
   "cluster": { "nodes": 3 },
   "accounts": ["alice", "bob"],
   "steps": [
-    { "type": "create_org", "account": "alice", "org_name": "Sorted", "outputs": { "org": "orgId" } },
-    { "type": "deploy", "account": "alice", "wasm": "{{env.CORE_WASM_DIR}}/sorted_kv_store.wasm",
+    { "type": "create_org", "account": "alice", "org_name": "Kv", "outputs": { "org": "orgId" } },
+    { "type": "deploy", "account": "alice", "wasm": "{{env.CORE_WASM_DIR}}/kv_store.wasm",
       "org": "{{org}}", "outputs": { "app": "appId" } },
     { "type": "call", "account": "alice", "app": "{{app}}", "method": "set", "args": { "key": "a", "value": "1" } },
     { "type": "view", "account": "alice", "app": "{{app}}", "method": "get", "args": { "key": "a" }, "expect": "1" }

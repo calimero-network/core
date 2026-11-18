@@ -1,6 +1,6 @@
 //! Compute runs driven by an app's leader through real job nodes: assignment, polling, restart
 //! on a lost job node, cancel, caps, the result method, usage and the queue. The app is the
-//! `compute` fixture (`apps/v2-fixtures/compute`).
+//! `compute` fixture (`apps/fixture-compute`).
 
 mod common;
 use common::UploadBytes as _;
@@ -67,7 +67,7 @@ impl Rig {
             n.node.set_compute_limits(test_limits());
         }
         let (alice, pk) = signed_up(&c, 0, "alice").await;
-        let both = common::components("compute");
+        let both = common::components("fixture-compute");
         let compute = both.compute.expect("a compute component");
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice

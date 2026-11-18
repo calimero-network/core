@@ -43,7 +43,16 @@ pub struct MockState {
     pub xcalls: Vec<(String, String, Vec<u8>)>,
     /// What `search_query` answers, by table; a table not listed is not searchable.
     pub search: HashMap<String, crate::search::RawPage>,
+    /// What answers synchronous xcalls (the JSON result, or the failure as text); without
+    /// one each is refused.
+    pub sync_xcalls: Option<SyncXcallHandler>,
+    /// Every batch of synchronous xcalls sent (`xcall.batch`), in order.
+    pub sync_batches: Vec<Vec<crate::xcall::Request>>,
 }
+
+/// What answers the mock's synchronous xcalls.
+pub type SyncXcallHandler =
+    std::sync::Arc<dyn Fn(&crate::xcall::Request) -> std::result::Result<Vec<u8>, String>>;
 
 impl Default for MockState {
     fn default() -> Self {
@@ -64,6 +73,8 @@ impl Default for MockState {
             blobs: HashMap::new(),
             search: HashMap::new(),
             xcalls: Vec::new(),
+            sync_xcalls: None,
+            sync_batches: Vec::new(),
         }
     }
 }
@@ -184,15 +195,24 @@ pub fn xcall(app: &str, method: &str, args: &[u8]) -> std::result::Result<(), St
     Ok(())
 }
 
-/// Synchronous xcalls reach other apps only from a component (the harness's `mock_app`).
+/// Without `MockState::sync_xcalls`, synchronous xcalls reach no other app here (the
+/// harness's `mock_app` answers them in a component).
 const NO_SYNC_XCALLS: &str = "synchronous xcalls run only in a component (use the testing harness)";
 
-pub fn xcall_call(_app: &str, _method: &str, _args: &[u8]) -> std::result::Result<Vec<u8>, String> {
-    Err(NO_SYNC_XCALLS.to_owned())
-}
-
-pub fn xcall_view(_app: &str, _method: &str, _args: &[u8]) -> std::result::Result<Vec<u8>, String> {
-    Err(NO_SYNC_XCALLS.to_owned())
+pub fn xcall_batch(
+    requests: &[crate::xcall::Request],
+) -> Vec<std::result::Result<Vec<u8>, String>> {
+    let handler = with_mut(|s| {
+        s.sync_batches.push(requests.to_vec());
+        s.sync_xcalls.clone()
+    });
+    requests
+        .iter()
+        .map(|r| match &handler {
+            Some(answer) => answer(r),
+            None => Err(NO_SYNC_XCALLS.to_owned()),
+        })
+        .collect()
 }
 
 /// Actions run only in a component on the engine (the harness); the host target has none.

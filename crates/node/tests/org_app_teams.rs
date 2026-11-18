@@ -6,7 +6,7 @@
 //! default capabilities, who changes an app's access, and what a member and a
 //! guest see of the organization's people.
 //!
-//! Builds the component kv fixture `apps/v2-fixtures/kv` from this checkout
+//! Builds the component kv fixture `apps/fixture-kv` from this checkout
 //! (see `harness/cluster.rs`).
 
 #![allow(
