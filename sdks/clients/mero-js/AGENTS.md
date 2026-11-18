@@ -86,14 +86,14 @@ Against a released merod instead, build the fixtures with its meroctl, as
 `e2e.yml` does, and point the suite at them:
 
 ```bash
-meroctl app build apps/v2-fixtures/kv --out target/app-components/kv.wasm
-meroctl app build apps/v2-fixtures/compute --out target/app-components/compute-app.wasm \
+meroctl app build apps/fixture-kv --out target/app-components/kv.wasm
+meroctl app build apps/fixture-compute --out target/app-components/compute-app.wasm \
   --compute-out target/app-components/compute.wasm
 meroctl app build apps/rooms --out target/app-components/rooms.wasm
 cd sdks/clients/mero-js
 MEROD_BINARY=<merod> MEROCTL=<meroctl> \
 COMPUTE_WASM=$PWD/../../../target/app-components/compute.wasm \
-COMPUTE_FIXTURE_DIR=$PWD/../../../apps/v2-fixtures/compute MERO_JS_REQUIRE_COMPUTE=1 \
+COMPUTE_FIXTURE_DIR=$PWD/../../../apps/fixture-compute MERO_JS_REQUIRE_COMPUTE=1 \
 ROOMS_WASM=$PWD/../../../target/app-components/rooms.wasm \
   pnpm test:cluster
 ```
@@ -103,7 +103,7 @@ first free ones from 2900 up instead (to keep clear of other local clusters).
 
 Optional: `MEROCTL=<meroctl>` starts a job node, and with
 `COMPUTE_WASM=target/app-components/compute.wasm`
-`COMPUTE_FIXTURE_DIR=apps/v2-fixtures/compute` the pipeline test runs
+`COMPUTE_FIXTURE_DIR=apps/fixture-compute` the pipeline test runs
 (`MERO_JS_REQUIRE_COMPUTE=1` makes it fail instead of skip); `ROOMS_WASM` runs
 the rooms test; `MEROD_V2_LOGS=1` shows the nodes' logs. Core's `e2e.yml`
 (`clients`) sets these against its release build.
