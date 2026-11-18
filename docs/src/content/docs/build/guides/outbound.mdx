@@ -74,7 +74,19 @@ instance alone, instead of the operator:
   for that name.
 - `GET /apps/{app}/secrets` lists each declared secret with `source: app` (its
   fingerprint, who set it and when) or `cluster`, never a value.
-- `DELETE /apps/{app}/secrets/{name}` removes it; the operator's applies again.
+- `DELETE /apps/{app}/secrets/{name}` removes it; the deployment's or the
+  operator's applies again.
+
+A deployment's managers may supply one value for every instance created from
+it (`PUT /deployments/{id}/secrets/{name} { value }`, a passkey step-up over
+`deployment:{id} / __set_secret / { name, fingerprint }`; `GET` answers
+fingerprints, `DELETE` clears it), for a name a release the deployment offers
+declares. It is kept in the system group's state and read by the outbound gate
+on the node that runs the request. A request is filled with the instance's own
+value, else its deployment's, else the operator's, each only for a name the
+release declares and only to its declared hosts; an instance's
+`GET /apps/{app}/secrets` then says `source: deployment`, nothing more of it.
+See [Deployments](/protocol/governance/#deployments).
 
 The app never holds a secret. A request names one as `{{secret:NAME}}` in a
 header value or the body; the node fills it in from **its operator's**

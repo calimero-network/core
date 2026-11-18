@@ -1,0 +1,43 @@
+{
+  "name": "@calimero-network/mero-tokens",
+  "publishConfig": {
+    "access": "public"
+  },
+  "version": "1.0.0-rc.31",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/calimero-network/core.git",
+    "directory": "sdks/components/mero-tokens"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "tokens.json"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --dts --format esm,cjs",
+    "dev": "pnpm build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src test",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.58.0",
+    "@typescript-eslint/parser": "^8.58.0",
+    "eslint": "^10.1.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.12"
+  },
+  "license": "MIT"
+}

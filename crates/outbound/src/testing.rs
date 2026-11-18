@@ -104,6 +104,9 @@ impl Transport for Echo {
             "headers": headers,
             "body": String::from_utf8_lossy(&request.body),
             "secrets": request.secrets.len(),
+            // How long each filled-in value was, so a test tells which value went out
+            // without the echo carrying one.
+            "secretBytes": request.secrets.iter().map(|s| s.len()).collect::<Vec<_>>(),
         });
         Ok((200, serde_json::to_vec(&echo)?))
     }
@@ -231,6 +234,7 @@ mod tests {
         assert_eq!(echo["path"], "/v1/check");
         assert_eq!(echo["query"], "n=1");
         assert_eq!(echo["secrets"], 2);
+        assert_eq!(echo["secretBytes"].as_array().map(Vec::len), Some(2));
         // Substituted on the way out, removed on the way back.
         assert_eq!(echo["body"], "key=[redacted]");
         assert_eq!(echo["headers"]["X-Key"], "[redacted]");

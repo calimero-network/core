@@ -105,13 +105,15 @@ pub struct AppIdentity {
     /// request to one of its hosts (and to a host the operator bound it to). `None`: a
     /// release that declares none, filled from the operator's bindings alone, as before.
     pub secrets: Option<BTreeMap<String, Vec<String>>>,
-    /// Values the instance's owner set for declared names (`PUT /apps/{app}/secrets/{name}`
-    /// in merod): one wins over the operator's for its name, and goes only to that name's
-    /// declared hosts. Empty for a release that declares none.
+    /// Values set for declared names in merod: the instance owner's own (`PUT
+    /// /apps/{app}/secrets/{name}`), else its deployment managers' (`PUT
+    /// /deployments/{id}/secrets/{name}`). One wins over the operator's for its name, and
+    /// goes only to that name's declared hosts. Empty for a release that declares none.
     pub own: OwnSecrets,
 }
 
-/// An instance's own secret values, by name. Its `Debug` names them, never a value.
+/// The secret values an instance's owner or its deployment's managers set, by name. Its
+/// `Debug` names them, never a value.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct OwnSecrets(pub BTreeMap<String, Zeroizing<String>>);
 
@@ -644,7 +646,7 @@ impl OutboundService {
             let provider = self.secrets.as_ref().ok_or_else(|| {
                 eyre!(
                     "no value for secret {name}: this node has no secrets for outbound requests, \
-                     and the app's owner set none"
+                     and neither the app's owner nor its deployment set one"
                 )
             })?;
             let secret = provider

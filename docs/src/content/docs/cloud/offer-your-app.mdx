@@ -101,6 +101,27 @@ Instances already created keep the release they run (see
 [Shipping a new version](#shipping-a-new-version)). A deployment holds at most
 64 apps, and an offered release cannot be uninstalled.
 
+### Supply the secrets your release declares
+
+If the release declares secrets (`[package.metadata.calimero.secrets.NAME]`,
+[Outbound requests](/build/guides/outbound/#secrets)), you can supply their
+values once for every instance created from the deployment, so customers need
+not:
+
+```bash
+meroctl raw put /deployments/<id>/secrets/NEAR_AI_API_KEY '{"value":"sk-…"}' --dev-passkey ./dev-passkey.json
+# { "deployment": "3f2a…", "name": "NEAR_AI_API_KEY", "fingerprint": "9c1e…", … }
+meroctl raw get /deployments/<id>/secrets
+```
+
+The node fills it only into a request to that secret's declared hosts, for an
+instance whose release declares the name; an instance that sets its own value
+(`PUT /apps/{app}/secrets/{name}`) uses that instead, and without either the
+operator's applies. It is never shown again: the listing gives each value's
+fingerprint, who set it and when. `meroctl raw delete
+/deployments/<id>/secrets/NEAR_AI_API_KEY` removes it. A name no release you
+offer declares is refused (`404 UNDECLARED_SECRET`).
+
 ## 4. Share the frontend
 
 The release's frontend opens at your deployment's release on two addresses:

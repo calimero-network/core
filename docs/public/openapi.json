@@ -6766,7 +6766,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "The secrets an app's release declares",
-        "description": "For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.\n\n**Who:** signed in (a session or an API key).",
+        "description": "For each secret the release the instance runs declares (its signed manifest's `secrets`): its hosts, description and whether it is required, and `source`: `app` when the instance has its own value (with its `fingerprint`, the first 16 hex digits of its SHA-256, `setBy` and `setAt`), else `deployment` when the deployment it was created from holds one (`deployment_secret_set`; nothing more of it), else `cluster` (the operator's, if it bound one). Never a value. The owner, or whoever manages the organization's apps.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -6816,6 +6816,7 @@
                             "type": "string",
                             "enum": [
                               "app",
+                              "deployment",
                               "cluster"
                             ]
                           },
@@ -14499,6 +14500,530 @@
             "x-calimero-codes": [
               "UNAUTHENTICATED"
             ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/deployments/{id}/secrets": {
+      "get": {
+        "operationId": "deployment_secrets",
+        "tags": [
+          "Sign-up and deployments"
+        ],
+        "x-calimero-group": "deployments",
+        "summary": "A deployment's secrets",
+        "description": "For its managers, on fresh state: every secret a release the deployment offers declares, and every one it holds a value of. Each row names the deployment's apps whose release declares it (`apps`, empty when none does any more: the value is kept, unused, until cleared) and `set`; a set one adds its `fingerprint` (the first 16 hex digits of the value's SHA-256), `setBy` (`account:<id>`) and `setAt` (Unix seconds). Never a value.\n\n**Who:** signed in (a session or an API key).",
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "apiKey": []
+          }
+        ],
+        "x-calimero-who": "signed in (a session or an API key)",
+        "x-calimero-sealed": true,
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deployment": {
+                      "type": "string"
+                    },
+                    "secrets": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "apps": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "set": {
+                            "type": "boolean"
+                          },
+                          "fingerprint": {
+                            "type": "string"
+                          },
+                          "setBy": {
+                            "type": "string"
+                          },
+                          "setAt": {
+                            "type": "integer",
+                            "format": "int64",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "apps",
+                          "set"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "deployment",
+                    "secrets"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          }
+        }
+      }
+    },
+    "/deployments/{id}/secrets/{name}": {
+      "put": {
+        "operationId": "deployment_secret_set",
+        "tags": [
+          "Sign-up and deployments"
+        ],
+        "x-calimero-group": "deployments",
+        "summary": "Set a deployment's value of a secret",
+        "description": "Every instance created from the deployment uses it unless the instance set its own (`app_secret_set`), and only in a request to the secret's declared hosts, for an instance whose release declares the name; it wins over the operator's. Kept in the system group's state, sealed, never shown again (`deployment_secrets` answers its fingerprint) and out of every app's reach. A manager of the deployment, with a step-up over `deployment:{id} / __set_secret / { name, fingerprint }`: the value is never in the consent. `404 UNDECLARED_SECRET` unless a release the deployment offers declares the name; a name of A-Z, 0-9 and `_` and a value of 1 to 4,096 bytes (`400 BAD_SECRET`); at most 16 per deployment (`429 QUOTA_EXCEEDED`); `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.32.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "confirm": {
+                    "$ref": "#/components/schemas/Confirm"
+                  }
+                },
+                "required": [
+                  "value"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deployment": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "fingerprint": {
+                      "type": "string"
+                    },
+                    "setBy": {
+                      "type": "string"
+                    },
+                    "setAt": {
+                      "type": "integer",
+                      "format": "int64",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "deployment",
+                    "name",
+                    "fingerprint",
+                    "setBy",
+                    "setAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`BAD_SECRET`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "BAD_SECRET",
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see; `UNDECLARED_SECRET`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND",
+              "UNDECLARED_SECRET"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
+          },
+          "421": {
+            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "WRONG_NODE"
+            ]
+          },
+          "429": {
+            "description": "`QUOTA_EXCEEDED`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "QUOTA_EXCEEDED"
+            ]
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deployment_secret_clear",
+        "tags": [
+          "Sign-up and deployments"
+        ],
+        "x-calimero-group": "deployments",
+        "summary": "Remove a deployment's value of a secret",
+        "description": "Its instances that set no value of their own fall back to the operator's. A manager, with a step-up over `deployment:{id} / __clear_secret / { name }`; `404` when the deployment holds no value of it.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
+        "x-calimero-sealed": true,
+        "x-calimero-step-up": true,
+        "x-calimero-user-verification": "required",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmOnly"
+              }
+            }
+          },
+          "description": "May be absent."
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deployment": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "deployment",
+                    "name"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "EXPIRED_CHALLENGE",
+              "UNKNOWN_CHALLENGE"
+            ]
+          },
+          "401": {
+            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "UNAUTHENTICATED"
+            ]
+          },
+          "403": {
+            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FORBIDDEN"
+            ]
+          },
+          "404": {
+            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "NOT_FOUND"
+            ]
+          },
+          "409": {
+            "description": "`FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "FEATURE_NOT_ACTIVE"
+            ],
+            "x-calimero-details": {
+              "FEATURE_NOT_ACTIVE": {
+                "$ref": "#/components/schemas/FeatureNotActive"
+              }
+            }
+          },
+          "412": {
+            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "x-calimero-codes": [
+              "CONFIRM_REQUIRED"
+            ],
+            "x-calimero-details": {
+              "CONFIRM_REQUIRED": {
+                "$ref": "#/components/schemas/ConfirmRequired"
+              }
+            }
           },
           "421": {
             "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",

@@ -446,6 +446,33 @@ is its command line.
   `deployment_changes_carry_their_managers_consent`,
   `state_from_before_deployments_reads_with_none_and_writes_as_before`,
   `a_deployment_deleted_through_the_leader_is_gone_on_a_follower_behind`.
+- **Deployment secrets** (`SystemState::deployment_secrets`, deployment id ->
+  name -> `component::InstanceSecret`; `api/deployments.rs`:
+  `deployment_secrets`, `deployment_secret_set`, `deployment_secret_clear`):
+  a manager sets a value of a secret a release the deployment offers declares
+  (`SetDeploymentSecret`, `PUT /deployments/{id}/secrets/{name} { value }`,
+  `deployment:{id} / __set_secret / { name, fingerprint }`; `authorize` works
+  the fingerprint out again from the value the entry carries, so no node swaps
+  it; refused `404 UNDECLARED_SECRET` otherwise, `system::UNDECLARED_SECRET`)
+  or clears it (`ClearDeploymentSecret`, `__clear_secret / { name }`). Bounds:
+  `component::MAX_SECRET_VALUE_BYTES` (shared with instance secrets),
+  `MAX_SECRETS_PER_DEPLOYMENT`, `MAX_DEPLOYMENT_SECRETS` (the system state is
+  one checkpoint). `DeleteDeployment` drops them. A value whose name no offer
+  declares any more stays, unused, until cleared. `Feature::DeploymentSecrets`
+  (rc.32). Lookup: `Node::outbound_for` -> `component::run_secrets`: the
+  instance's own value, else its deployment's (`SystemState::deployment_secrets_of`,
+  this node's system state at run time, not the app's log), else the operator's
+  in the gate; each only for a name the release declares. Never answered:
+  `GET /deployments/{id}/secrets` gives fingerprints, `setBy`, `setAt`; an
+  instance's `GET /apps/{app}/secrets` only `source: deployment`;
+  `SecretValue`'s `Debug` hides it; `apply`'s answers and refusals never carry
+  it. Regressions: `a_deployments_managers_set_secrets_its_offers_declare`,
+  `deployment_secrets_carry_their_managers_consent`,
+  `a_deployment_secret_value_never_prints`,
+  `state_from_before_deployment_secrets_reads_with_none_and_writes_as_before`
+  (`system::tests`), `a_runs_secrets_are_the_instances_then_its_deployments`,
+  `a_deployments_secret_reaches_its_instances_unless_they_set_their_own`
+  (`component_cluster.rs`).
 - **Sign-up policy** (`Governance::sign_up`, `--sign-up open|invite|closed`,
   left out of the governance JSON when `open`): `CreateAccount { invite }`
   is judged at apply by `SystemState::admits` (`open`: anyone; `invite`: an
@@ -829,7 +856,8 @@ is its command line.
   a call's or tick's run reads it with the state it sees (`RunExtras::secrets`),
   an action reads it on the leader, and `outbound_for` hands it to the gate
   (`calimero_outbound::OwnSecrets`, which wins over the operator's for a
-  declared name, only to its declared hosts). `GET` answers through the leader's
+  declared name, only to its declared hosts; with the instance's deployment's
+  values below its own, `component::run_secrets`, Deployment secrets above). `GET` answers through the leader's
   reserved view `__secrets`: fingerprints, never values. Set or clear only once
   every node runs this release (`require_upgraded_nodes`). Regression:
   `an_owner_sets_its_instances_own_secret_and_it_goes_only_where_declared`.

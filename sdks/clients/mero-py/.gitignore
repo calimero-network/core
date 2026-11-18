@@ -1,0 +1,33 @@
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dylib
+*.dll
+.Python
+
+# Build artifacts
+target/
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+# pytest-cov
+.coverage

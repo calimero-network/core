@@ -491,7 +491,7 @@ Any API route, through the same attested, sealed client. `METHOD` is `get`,
 `post`, `put` or `delete`; `BODY` is JSON (default `{}` for `post` and `put`).
 Use it for what no command covers, such as `POST /auth/apikeys` with
 `methods` or `allowConfirm`. With `--dev-passkey FILE` (development
-clusters) it answers a `412 CONFIRM_REQUIRED` on a `post` or `delete` with
+clusters) it answers a `412 CONFIRM_REQUIRED` on a `post`, `put` or `delete` with
 that passkey and sends the request again; without it, the `412` is printed. It
 does not sign operator decisions (`428 OPERATOR_SIGNATURE_REQUIRED`): use the
 `ops` command. See the [node API reference](/operate/admin-api/).

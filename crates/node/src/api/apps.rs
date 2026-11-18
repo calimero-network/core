@@ -1172,9 +1172,6 @@ async fn app_delegations(
     Ok(Json(json!({ "source": source_id, "delegations": granted })))
 }
 
-/// Most bytes of an instance's own secret value.
-pub(crate) const MAX_SECRET_VALUE_BYTES: usize = 4096;
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SecretBody {
@@ -1238,6 +1235,13 @@ async fn app_secrets(
         })
         .await?
         .result;
+    // The names its deployment holds a value of: the instance's owner learns only that
+    // one is set there, never its fingerprint nor who set it.
+    let from_deployment: std::collections::BTreeSet<String> = node.sys(|s| {
+        s.deployment_secrets_of(&app.app_id)
+            .map(|h| h.keys().cloned().collect())
+            .unwrap_or_default()
+    });
     let secrets: serde_json::Map<String, Value> = declared
         .into_iter()
         .map(|(name, d)| {
@@ -1250,6 +1254,8 @@ async fn app_secrets(
                 row["fingerprint"] = o["fingerprint"].clone();
                 row["setBy"] = o["setBy"].clone();
                 row["setAt"] = o["setAt"].clone();
+            } else if from_deployment.contains(&name) {
+                row["source"] = json!("deployment");
             }
             (name, row)
         })
@@ -1272,15 +1278,13 @@ async fn app_secret_set(
             "the release this app runs declares no such secret",
         ));
     }
-    if body.value.is_empty() || body.value.len() > MAX_SECRET_VALUE_BYTES {
-        return Err(ApiError::bad_request(
-            "BAD_SECRET",
-            &format!("a secret's value is 1 to {MAX_SECRET_VALUE_BYTES} bytes"),
-        ));
+    let value = crate::component::SecretValue(body.value);
+    if !value.fits() {
+        return Err(bad_secret_value());
     }
     // An older node would not apply the command: its replicas would hold no value.
     node.require_upgraded_nodes().await?;
-    let fingerprint = hex::encode(sha256(body.value.as_bytes()))[..16].to_owned();
+    let fingerprint = value.fingerprint();
     let account = p.account()?;
     let _consent = consent(
         &node,
@@ -1298,7 +1302,7 @@ async fn app_secret_set(
                 app.app_id.clone(),
                 "__secret_set",
                 json!({
-                    "name": name, "value": body.value, "fingerprint": fingerprint,
+                    "name": name, "value": value.0, "fingerprint": fingerprint,
                     "by": format!("account:{account}"), "at": now_secs(),
                 }),
                 p.caller,

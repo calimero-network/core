@@ -59,6 +59,13 @@ NOT_COVERED = [
      "set only once every node runs this release; "
      "`an_owner_sets_its_instances_own_secret_and_it_goes_only_where_declared` (`component_cluster.rs`) "
      "covers it on one build. An app without one reads as before"),
+    ("Deployments", "A deployment's value of a declared secret (`/deployments/{id}/secrets`, "
+     "`SystemState::deployment_secrets`)",
+     "needs a deployment offering a release that declares secrets, which the old release's meroctl cannot "
+     "pack, and the value is set only once the cluster version is 1.0.0-rc.32 (`Feature::DeploymentSecrets`); "
+     "`a_deployments_secret_reaches_its_instances_unless_they_set_their_own` (`component_cluster.rs`) covers it "
+     "on one build, and a system state without one reads and writes as before "
+     "(`state_from_before_deployment_secrets_reads_with_none_and_writes_as_before`)"),
     ("Packages", "A release that declares its secrets (`secrets` in the signed manifest, `PackageVersion::secrets`)",
      "the deep fixtures are packed by the old release's meroctl, which writes no `secrets`, and a release that "
      "declares them installs only once every node runs this release (`Feature::DeclaredSecrets`); "
