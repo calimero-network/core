@@ -56,7 +56,7 @@ It prints progress as the run reports it, then the result, each output and the u
 | `planner`                | Team planner | `uses` with `mode = "create"`: a calendar created with each instance, called as the planner through its generated client (`uses::calendar`) |
 | `booking`                | Booking page | `uses` with `mode = "attach"` and `methods`: a calendar the owner attaches, called as the person with their grant; the calendar's own error comes back typed (`uses::calendar::Error`) |
 | `compute-redact`         | CSV redaction | `#[app::compute]` runs: a preview then one run per part, a queue of at most 4 active runs, the compute component (`meroctl app build --compute-out`) that may import only the compute world; the policy is set by an admin and copied into each job; `share` publishes a done job's outputs (`compute::publish`) and `link` grants a download (`blobs.grant`) |
-| `fixture-kv`             | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls, actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
+| `fixture-kv`             | The node's kv fixture | Calls, views, a `confirm` method (`clear`), files, blobs, xcalls (`bumpBoth` joins two synchronous calls, `slowBump` is their slow target), actions, timers; `crates/node/tests` (`harness::kv_wasm`), `meroctl`'s tests, the process suite and the release's `kv-store-test-fixture.mpk` |
 | `fixture-compute`        | The compute fixture | Compute methods that stream files, report progress and break each cap; `crates/node/tests/job_runs.rs` and `crates/meroctl/compute/tests` |
 | `fixture-notes-v1`, `fixture-notes-v2` | Two releases of one app | The consent page's upgrade diff (`an_upgrades_page_names_what_the_components_abis_change` in `crates/node/tests/consent_page.rs`) |
 | `fixture-captcha`        | Captcha service | Synchronous xcalls (`env::xcall_call`) from other apps of the org, and a Turnstile check with `env::fetch`; `crates/node/tests/component_cluster.rs` |
@@ -98,7 +98,8 @@ cd apps/planner && meroctl app uses update calendar --from ../calendar
 meroctl app uses check
 ```
 
-A build fails while the lock, the vendored ABI and `Cargo.toml` disagree. A call commits in the
+A build fails while the lock, the vendored ABI and `Cargo.toml` disagree. The client's methods
+are futures, awaited in `async fn` methods (`app::join!` runs several at once). A call commits in the
 target's log and is not rolled back if the run fails afterwards.
 
 ## App Structure

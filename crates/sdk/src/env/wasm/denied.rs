@@ -74,11 +74,9 @@ pub fn xcall(_app: &str, _method: &str, _args: &[u8]) -> std::result::Result<(),
     denied()
 }
 
-pub fn xcall_call(_app: &str, _method: &str, _args: &[u8]) -> std::result::Result<Vec<u8>, String> {
-    denied()
-}
-
-pub fn xcall_view(_app: &str, _method: &str, _args: &[u8]) -> std::result::Result<Vec<u8>, String> {
+pub fn xcall_batch(
+    _requests: &[crate::xcall::Request],
+) -> Vec<std::result::Result<Vec<u8>, String>> {
     denied()
 }
 

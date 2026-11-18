@@ -844,24 +844,14 @@ impl HostCore {
         method: &str,
         args: &[u8],
     ) -> Result<Result<Vec<u8>, String>, HostDenied> {
-        if self.is_compute()
-            || !matches!(
-                self.inv.kind,
-                InvocationKind::Call | InvocationKind::Timer | InvocationKind::Action
-            )
-        {
+        if !self.may_xcall(crate::xcall::XcallKind::Call) {
             return Err(self.denied("xcall.call"));
         }
         let host = match self.sync_target(app, method, args) {
             Ok(host) => host,
             Err(e) => return Ok(Err(e)),
         };
-        let n = self
-            .sync_occurrences
-            .entry((app.to_owned(), method.to_owned(), sha_args(args)))
-            .or_insert(0);
-        let key = crate::xcall::sync_xcall_key(&host.key(), app, method, args, *n);
-        *n += 1;
+        let key = self.next_sync_key(&host.key(), app, method, args);
         Ok(bounded(host.call(app, method, args, &key)))
     }
 
@@ -874,15 +864,7 @@ impl HostCore {
         method: &str,
         args: &[u8],
     ) -> Result<Result<Vec<u8>, String>, HostDenied> {
-        if self.is_compute()
-            || !matches!(
-                self.inv.kind,
-                InvocationKind::Call
-                    | InvocationKind::Timer
-                    | InvocationKind::Action
-                    | InvocationKind::View
-            )
-        {
+        if !self.may_xcall(crate::xcall::XcallKind::View) {
             return Err(self.denied("xcall.view"));
         }
         let host = match self.sync_target(app, method, args) {
@@ -892,13 +874,114 @@ impl HostCore {
         Ok(bounded(host.view(app, method, args)))
     }
 
-    /// The checks every synchronous xcall makes before it reaches the node, and its count.
-    fn sync_target(
+    /// Runs every request of `requests` at once (the node's [`XcallHost::batch`]) and
+    /// answers each in order, as [`Self::xcall_call`] and [`Self::xcall_view`] would have
+    /// one after another: the same checks per request, each counted as one synchronous
+    /// xcall, a call keyed with the occurrence it would have had in sequence (so a re-run
+    /// replays it). A batch with a call where calls are refused, or any batch where views
+    /// are, is `HostDenied`. A batch that would take the run past
+    /// [`crate::MAX_SYNC_XCALLS`] is refused whole: every request that passed its own
+    /// checks answers [`crate::XCALL_SYNC_TOO_MANY`] and none is counted.
+    ///
+    /// [`XcallHost::batch`]: crate::XcallHost::batch
+    pub fn xcall_batch(
         &mut self,
-        app: &str,
-        method: &str,
-        args: &[u8],
-    ) -> Result<Arc<dyn crate::xcall::XcallHost>, String> {
+        requests: &[crate::xcall::XcallRequest],
+    ) -> Result<Vec<Result<Vec<u8>, String>>, HostDenied> {
+        use crate::xcall::{SyncXcall, XcallKind};
+        if !self.may_xcall(XcallKind::View) {
+            return Err(self.denied("xcall.batch"));
+        }
+        if requests.iter().any(|r| r.kind == XcallKind::Call) && !self.may_xcall(XcallKind::Call) {
+            return Err(self.denied("xcall.call"));
+        }
+        let mut answers: Vec<Option<Result<Vec<u8>, String>>> = requests
+            .iter()
+            .map(|r| self.sync_check(&r.app, &r.method, &r.args).err().map(Err))
+            .collect();
+        let passed = answers.iter().filter(|a| a.is_none()).count();
+        if passed == 0 {
+            return Ok(answers.into_iter().flatten().collect());
+        }
+        let refusal = match &self.xcall_host {
+            None => Some(crate::xcall::XCALL_SYNC_UNAVAILABLE),
+            Some(_)
+                if self.sync_xcalls as usize + passed > crate::xcall::MAX_SYNC_XCALLS as usize =>
+            {
+                Some(crate::xcall::XCALL_SYNC_TOO_MANY)
+            }
+            Some(_) => None,
+        };
+        let Some(host) = self.xcall_host.clone().filter(|_| refusal.is_none()) else {
+            let refusal = refusal.unwrap_or(crate::xcall::XCALL_SYNC_UNAVAILABLE);
+            return Ok(answers
+                .into_iter()
+                .map(|a| a.unwrap_or_else(|| Err(refusal.to_owned())))
+                .collect());
+        };
+        // Within `MAX_SYNC_XCALLS` (checked above), so it fits.
+        self.sync_xcalls += u32::try_from(passed).unwrap_or(crate::xcall::MAX_SYNC_XCALLS);
+        let run_key = host.key();
+        let keys: Vec<Option<String>> = requests
+            .iter()
+            .zip(&answers)
+            .map(|(r, a)| match (a, r.kind) {
+                (None, XcallKind::Call) => {
+                    Some(self.next_sync_key(&run_key, &r.app, &r.method, &r.args))
+                }
+                _ => None,
+            })
+            .collect();
+        let sent: Vec<SyncXcall<'_>> = requests
+            .iter()
+            .zip(&answers)
+            .zip(&keys)
+            .filter(|((_, a), _)| a.is_none())
+            .map(|((r, _), key)| SyncXcall {
+                app: &r.app,
+                method: &r.method,
+                args: &r.args,
+                key: key.as_deref(),
+            })
+            .collect();
+        let mut replies = host.batch(&sent).into_iter();
+        for answer in answers.iter_mut().filter(|a| a.is_none()) {
+            let reply = replies
+                .next()
+                .unwrap_or_else(|| Err("the node gave no answer to this xcall".to_owned()));
+            *answer = Some(bounded(reply));
+        }
+        Ok(answers.into_iter().flatten().collect())
+    }
+
+    /// Whether this run may make a synchronous xcall of `kind`: calls in calls, timers and
+    /// actions; views there and in views; never in a compute run.
+    fn may_xcall(&self, kind: crate::xcall::XcallKind) -> bool {
+        if self.is_compute() {
+            return false;
+        }
+        match self.inv.kind {
+            InvocationKind::Call | InvocationKind::Timer | InvocationKind::Action => true,
+            InvocationKind::View => kind == crate::xcall::XcallKind::View,
+            InvocationKind::XcallDeliver | InvocationKind::Init | InvocationKind::Migrate => false,
+        }
+    }
+
+    /// The key of the next synchronous call of `app`'s `method` with `args` in this run, and
+    /// that call counted for the occurrence of the next identical one.
+    fn next_sync_key(&mut self, run_key: &str, app: &str, method: &str, args: &[u8]) -> String {
+        let n = self
+            .sync_occurrences
+            .entry((app.to_owned(), method.to_owned(), sha_args(args)))
+            .or_insert(0);
+        let key = crate::xcall::sync_xcall_key(run_key, app, method, args, *n);
+        *n += 1;
+        key
+    }
+
+    /// The checks of one synchronous xcall that need nothing from the node: its target and
+    /// the size of its arguments.
+    fn sync_check(&self, app: &str, method: &str, args: &[u8]) -> Result<(), String> {
         let bad = |s: &str| s.is_empty() || s.len() > MAX_XCALL_NAME_BYTES;
         if bad(app) || bad(method) || method.starts_with("__") {
             return Err(XCALL_BAD_TARGET.to_owned());
@@ -909,6 +992,17 @@ impl HostCore {
         if args.len() > crate::xcall::MAX_SYNC_XCALL_ARGS_BYTES {
             return Err("xcall arguments too large".to_owned());
         }
+        Ok(())
+    }
+
+    /// The checks every synchronous xcall makes before it reaches the node, and its count.
+    fn sync_target(
+        &mut self,
+        app: &str,
+        method: &str,
+        args: &[u8],
+    ) -> Result<Arc<dyn crate::xcall::XcallHost>, String> {
+        self.sync_check(app, method, args)?;
         let Some(host) = self.xcall_host.clone() else {
             return Err(crate::xcall::XCALL_SYNC_UNAVAILABLE.to_owned());
         };

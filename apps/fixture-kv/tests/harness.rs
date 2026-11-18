@@ -469,3 +469,55 @@ fn linked_reads_the_apps_linked_now() {
     t.link("calendar", None);
     assert_eq!(linked(&mut t, "calendar"), json!(null));
 }
+
+#[test]
+fn joined_calls_go_to_the_node_in_one_batch() {
+    use std::sync::{Arc, Mutex};
+    let mut t = app();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    for (app, count) in [("a", 7), ("b", 9)] {
+        let seen = Arc::clone(&seen);
+        t.mock_app(app, move |c| {
+            seen.lock()
+                .unwrap()
+                .push((app, c.method.clone(), c.batch, c.view, c.key.clone()));
+            Ok(json!(count))
+        });
+    }
+    let args = json!({ "a": "a", "b": "b", "key": "k", "spins": 1 });
+    assert_eq!(
+        t.as_("owner").call("bumpBoth", args.clone()).unwrap(),
+        json!([7, 9])
+    );
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2);
+    // Both in the run's first batch, both calls, each under a key of its own.
+    for (i, app) in ["a", "b"].into_iter().enumerate() {
+        assert_eq!(
+            (seen[i].0, seen[i].1.as_str(), seen[i].2, seen[i].3),
+            (app, "slowBump", 0, false)
+        );
+    }
+    assert_ne!(seen[0].4, seen[1].4);
+    // A run that stalls after its calls times out: their answers came back first.
+    let mut stall = args;
+    stall["stall"] = json!(true);
+    let e = t.as_("owner").call("bumpBoth", stall).unwrap_err();
+    assert!(matches!(&e, Failure::Trap(_)), "{e:?}");
+}
+
+#[test]
+fn slow_bump_counts_under_its_key() {
+    let mut t = app();
+    for n in 1..=2 {
+        assert_eq!(
+            t.deliver("other", "slowBump", json!({ "key": "k", "spins": 1 }))
+                .unwrap(),
+            json!(n)
+        );
+    }
+    assert_eq!(
+        t.as_("owner").view("get", json!({ "key": "k" })).unwrap(),
+        json!("2")
+    );
+}

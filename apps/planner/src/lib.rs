@@ -9,7 +9,7 @@
 //! `init` is told the members the node created (`links`), and any method reads one with
 //! `env::linked`, here through the client `build.rs` generates from the calendar's vendored
 //! ABI (`uses::calendar`): its methods are typed, so a misspelled method or a wrong argument
-//! does not compile. Upgrading the planner with `upgrade-unit` (or the consent page's
+//! does not compile. They are futures, awaited in `async fn` methods. Upgrading the planner with `upgrade-unit` (or the consent page's
 //! `upgradeUnit`) moves its calendar along, within `^0.1`.
 
 use std::collections::BTreeMap;
@@ -37,15 +37,15 @@ impl Planner {
 
     /// Puts an event on the team's calendar, as the planner. The calendar commits it in its
     /// own log first: if this run failed after that, the event would stay.
-    pub fn schedule(&mut self, title: String, at: String) -> app::Result<()> {
-        uses::calendar()?.add_event(&title, &at, None)?;
+    pub async fn schedule(&mut self, title: String, at: String) -> app::Result<()> {
+        uses::calendar()?.add_event(&title, &at, None).await?;
         let _total = self.scheduled.increment()?;
         Ok(())
     }
 
     /// The team's agenda: the planner's own events on its calendar.
     #[app::view]
-    pub fn agenda(&self) -> app::Result<Vec<uses::calendar::Event>> {
-        Ok(uses::calendar()?.my_events()?)
+    pub async fn agenda(&self) -> app::Result<Vec<uses::calendar::Event>> {
+        Ok(uses::calendar()?.my_events().await?)
     }
 }

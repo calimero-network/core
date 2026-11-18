@@ -5,6 +5,7 @@ Oct 27, 2026 · @Xabi
 Changes proposed after v0.14, in this repository (for @Xabi to fold into the current spec; D76 is a placeholder number, after the D53–D75 that later versions use):
 
 - D76: calls, timers and xcall deliveries may make outbound HTTP, recorded in their log entry so followers and retries never fetch again; S9 reworded, D12 narrowed. This reverses v0.6's "`Outcome` loses its `outbound` field".
+- Section 4: `xcall` gains `batch` (0.5.4): a run's synchronous calls and views sent together and run at once, each checked, counted and keyed as alone; the SDK's synchronous xcalls become futures, awaited in `async fn` methods and joined with `app::join!` / `app::join_all`, all through `batch`.
 - Section 4: `xcall` gains synchronous `call` and `view`, which wait for another app's answer within the run (one hop, not atomic with the caller); the SDK table gains `env::xcall_call`, `env::xcall_view` and `env::fetch`.
 
 Changes in v0.14, from the G1 contract review:
@@ -308,7 +309,7 @@ State access (D46): the host core reads app state through a `StateView` trait, `
 Apps import nine Calimero interfaces (including types) and a fixed set of WASI interfaces that the host implements or stubs, and export one dispatcher; nothing else crosses the boundary.
 
 ```wit
-package calimero:app@0.5.3;
+package calimero:app@0.5.4;
 
 interface types {
   type account-id = string;
@@ -420,6 +421,11 @@ interface xcall {
   call: func(app: string, method: string, args: list<u8>) -> result<list<u8>, string>;
   // Synchronous read of the target's latest committed state. Calls, timers, views, actions.
   view: func(app: string, method: string, args: list<u8>) -> result<list<u8>, string>;
+  // 0.5.4: every request at once, answered in order; each one counts, is checked and keyed
+  // as the same call or view alone. The SDK sends every synchronous xcall through it.
+  enum request-kind { call, view }
+  record request { kind: request-kind, app: string, method: string, args: list<u8> }
+  batch: func(requests: list<request>) -> list<result<list<u8>, string>>;
 }
 
 // Available only while handling kind = action (D12, D17)
@@ -524,7 +530,7 @@ A component built against 0.5.0 keeps installing and running: the engine accepts
 
 A method declares itself a compute method in the ABI with `"kind": "compute"` and `"compute": { "fuel": u64, "memoryMib": u32, "wallSecs": u32, "result": "<method>" }`; `fuel` is required, memory defaults to 4,096 MiB and wall time to 900 s.
 `result` names a method of the app component's ABI that carries `"computeResult": true`.
-The compute component's ABI (world `calimero:app/compute@0.5.3`) lists the compute methods only, so the host does not look for the result methods there.
+The compute component's ABI (world `calimero:app/compute@0.5.4`) lists the compute methods only, so the host does not look for the result methods there.
 The host refuses at install (`BadAbi`) a compute method whose fuel is over 10^12, memory over 4,096 MiB or wall time over 900 s, or whose `result` is not a `computeResult` method; so does `compute` on any other kind.
 The SDK writes them from `#[app::compute(fuel = N, memory_mib = M, wall_secs = S, result = "method")]` on a method without `self`, and `#[app::compute_result]` on a call method.
 The node never lets a client reach either: `/intents` and `/views` answer `WrongKind` for a compute method and for a `computeResult` method, whoever the caller is.
@@ -1149,8 +1155,8 @@ Every host capability, with where it may be called; calling one from a disallowe
 | Applied index | `env::applied_index()` | `env.appliedIndex()` | u64 | all |
 | Emit event | `env::emit(e, audience)` | `env.emit(e, audience)` | — | call, timer, init, xcall delivery |
 | Cross-app call | `env::xcall(app, method, args)` | `env.xcall(app, method, args)` | —, delivered after commit | call, timer |
-| Synchronous cross-app call | `env::xcall_call(app, method, args)` | `env.xcallCall(app, method, args)` | the target's result; committed in the target's log first, not atomic with the caller; one hop | call, timer, action |
-| Synchronous cross-app read | `env::xcall_view(app, method, args)` | `env.xcallView(app, method, args)` | the target view's result, on its latest state | call, timer, view, action |
+| Synchronous cross-app call | `env::xcall_call(app, method, args).await` | `env.xcallCall(app, method, args)` | the target's result; committed in the target's log first, not atomic with the caller; one hop | call, timer, action |
+| Synchronous cross-app read | `env::xcall_view(app, method, args).await` | `env.xcallView(app, method, args)` | the target view's result, on its latest state | call, timer, view, action |
 | Outbound HTTP | `env::fetch(request)` (actions: `ctx.fetch`) | `fetch(…)` | the response; recorded in the entry (D76) | call, timer, xcall delivery, action |
 | App log | `env::log!(…)`, stdout | `console.log(…)` | owner-only log | all |
 | State | collections and tables | collections and tables | — | read: all except action; write: call, timer, init, xcall delivery; migrate writes through `rebuild` only |

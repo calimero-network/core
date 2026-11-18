@@ -10,7 +10,8 @@
 //! Without a grant the same calls run as booking itself, on booking's own events there.
 //!
 //! The calendar is called through `uses::calendar`, the client `build.rs` generates from its
-//! vendored ABI: typed methods, and the calendar's own errors as an enum
+//! vendored ABI: typed methods (futures, awaited in `async fn` methods), and the calendar's
+//! own errors as an enum
 //! (`uses::calendar::Error::PrivateThroughApp`).
 //!
 //! The grant covers a person's own calls of `book` and `busy`: a timer or another app's call
@@ -42,8 +43,13 @@ pub enum Error {
 
 /// When the person (or, without a grant, booking itself) already has something: the
 /// calendar's events, typed from its ABI (`uses::calendar::Event`).
-fn busy_times(calendar: &uses::calendar::Client) -> app::Result<Vec<String>> {
-    Ok(calendar.my_events()?.into_iter().map(|e| e.at).collect())
+async fn busy_times(calendar: &uses::calendar::Client) -> app::Result<Vec<String>> {
+    Ok(calendar
+        .my_events()
+        .await?
+        .into_iter()
+        .map(|e| e.at)
+        .collect())
 }
 
 #[app::logic]
@@ -66,14 +72,19 @@ impl Booking {
     /// Books `at` for the caller: an event in their own calendar (with their grant), private
     /// when `private` says so. The calendar commits it in its own log first: if this run
     /// failed after that, the event would stay.
-    pub fn book(&mut self, at: String, title: String, private: Option<bool>) -> app::Result<()> {
+    pub async fn book(
+        &mut self,
+        at: String,
+        title: String,
+        private: Option<bool>,
+    ) -> app::Result<()> {
         // The calendar the owner attached, read on every call: they may attach another later.
         let calendar = uses::calendar()?;
         let offered = self.slots.contains(&at)?;
-        if !offered || busy_times(&calendar)?.contains(&at) {
+        if !offered || busy_times(&calendar).await?.contains(&at) {
             app::bail!(Error::SlotTaken { at });
         }
-        match calendar.add_event(&title, &at, private) {
+        match calendar.add_event(&title, &at, private).await {
             Ok(()) => Ok(()),
             // The calendar's own error, typed: answered as booking's.
             Err(uses::calendar::Error::PrivateThroughApp) => app::bail!(Error::PrivateNotAllowed),
@@ -84,8 +95,8 @@ impl Booking {
 
     /// The offered slots the caller is still free at.
     #[app::view]
-    pub fn free_slots(&self) -> app::Result<Vec<String>> {
-        let busy = busy_times(&uses::calendar()?)?;
+    pub async fn free_slots(&self) -> app::Result<Vec<String>> {
+        let busy = busy_times(&uses::calendar()?).await?;
         let mut free = Vec::new();
         for slot in self.slots.iter() {
             let slot = slot?;
