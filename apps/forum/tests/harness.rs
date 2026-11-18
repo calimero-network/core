@@ -656,15 +656,25 @@ fn retagging_drops_every_old_tag_row_past_a_page() {
                     "createdAt": "10" }),
         ))
     };
-    let deleted = {
+    // The references held one tag first: a table that has held a row keeps its
+    // length (zero) once emptied, so they compare against what one tag leaves.
+    let once_tagged = |then: &str| {
         let mut t = common::app(Org::new().members(["alice"]));
         let post = untagged_post(&mut t);
-        ok(t.as_("alice").call("deletePost", json!({ "id": post })));
+        ok(t.as_("alice")
+            .call("retag", json!({ "id": post, "tags": ["t0000"] })));
+        match then {
+            "untag" => ok(t
+                .as_("alice")
+                .call("retag", json!({ "id": post, "tags": [] }))),
+            _ => ok(t.as_("alice").call("deletePost", json!({ "id": post }))),
+        };
         t.export_state()
     };
+    let deleted = once_tagged("delete");
+    let untagged = once_tagged("untag");
     let mut t = common::app(Org::new().members(["alice"]));
     let post = untagged_post(&mut t);
-    let untagged = t.export_state();
     let tags: Vec<String> = (0..1200).map(|i| format!("t{i:04}")).collect();
     ok(t.as_("alice")
         .call("retag", json!({ "id": post, "tags": tags.clone() })));
