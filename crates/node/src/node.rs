@@ -904,6 +904,12 @@ pub fn unknown_capabilities() -> ApiError {
     )
 }
 
+/// `404 UNDECLARED_SECRET`: no release the deployment offers declares the secret.
+#[must_use]
+pub fn undeclared_secret() -> ApiError {
+    ApiError::new(404, "UNDECLARED_SECRET", crate::system::UNDECLARED_SECRET)
+}
+
 pub fn rejected(reason: &str) -> ApiError {
     if reason.starts_with(crate::system::QUOTA_PREFIX) {
         ApiError::new(429, QUOTA_EXCEEDED, reason)
@@ -919,6 +925,10 @@ pub fn rejected(reason: &str) -> ApiError {
         cannot_grant_unheld()
     } else if reason == crate::system::UNKNOWN_CAPABILITIES {
         unknown_capabilities()
+    } else if reason == crate::system::UNDECLARED_SECRET {
+        undeclared_secret()
+    } else if reason == crate::system::NO_DEPLOYMENT_SECRET {
+        ApiError::not_found(reason)
     } else if reason == crate::system::MODULE_IN_USE {
         ApiError::new(409, "MODULE_IN_USE", reason)
     } else if let Some(code) = recovery_code(reason) {
@@ -2539,14 +2549,13 @@ impl Node {
                             .map(|(name, s)| (name.clone(), s.hosts.clone()))
                             .collect()
                     }),
-                    // The owner's own values, for names the release still declares.
-                    own: calimero_outbound::OwnSecrets(
-                        own.iter()
-                            .filter(|(name, _)| release.version.secrets.contains_key(*name))
-                            .map(|(name, s)| {
-                                (name.clone(), zeroize::Zeroizing::new(s.value.0.clone()))
-                            })
-                            .collect(),
+                    // The owner's own values, then the deployment's (read from this
+                    // node's system state at run time), for names the release still
+                    // declares.
+                    own: crate::component::run_secrets(
+                        own,
+                        s.deployment_secrets_of(app_id),
+                        &release.version.secrets,
                     ),
                 },
                 approval,

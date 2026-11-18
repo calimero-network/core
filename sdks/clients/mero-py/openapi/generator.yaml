@@ -1,0 +1,15 @@
+# openapi-python-client's settings for calimero_client_py/openapi
+# (scripts/generate_openapi_client.py passes this file; see that script for
+# the version it pins).
+project_name_override: calimero_openapi
+package_name_override: calimero_openapi
+# The script runs black itself, the formatter this repository checks with.
+post_hooks: []
+# `POST /bundles` takes the component as `application/wasm`, which the
+# generator does not know: read it as bytes, and the generated call still
+# sends `Content-Type: application/wasm`.
+content_type_overrides:
+  application/wasm: application/octet-stream
+# `GET /apps/{app}/blobs/{id}` answers the blob under the MIME type it was
+# stored with (`*/*`): read it as bytes.
+  "*/*": application/octet-stream

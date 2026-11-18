@@ -25,11 +25,6 @@ banned=(
   'stage_target_blob'
 )
 
-# The SDKs under sdks/ came from their own repositories with their history
-# (CHANGELOGs, docs) and talk to the node's API, not to the engine's bytecode
-# names: this gate is core's, so they are not scanned.
-readonly NOT_SCANNED=':(exclude)sdks/'
-
 status=0
 report() {
   echo "retired bytecode naming still present ($1):"
@@ -37,14 +32,18 @@ report() {
   status=1
 }
 
+# sdks/ is left out: the SDKs keep their own public API names and the history
+# (CHANGELOG.md) they had as separate repositories, which spells v1's `app_key`.
+readonly NOT_SDKS=':(exclude)sdks/'
+
 for name in "${banned[@]}"; do
-  if hits=$(git grep -nIE -e "$name" -- '*.rs' "$NOT_SCANNED" | grep -vE "$DELIBERATE"); then
+  if hits=$(git grep -nIE -e "$name" -- '*.rs' "$NOT_SDKS" | grep -vE "$DELIBERATE"); then
     report "$name" "$hits"
   fi
 done
 
 # Prose spells the same concept its own ways: appKey, app-key, app key.
-if hits=$(git grep -nIEi -e 'app[-_ ]?key' -- '*.md' '*.mdx' '*.yml' "$NOT_SCANNED" \
+if hits=$(git grep -nIEi -e 'app[-_ ]?key' -- '*.md' '*.mdx' '*.yml' "$NOT_SDKS" \
           | grep -vE "$DELIBERATE"); then
   report "app key in docs" "$hits"
 fi

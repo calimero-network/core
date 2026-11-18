@@ -1,0 +1,45 @@
+import * as React from "react";
+
+export type IconProps = React.SVGProps<SVGSVGElement> & {
+  size?: number | string;
+  strokeWidth?: number | string;
+  absoluteStrokeWidth?: boolean;
+};
+
+const Clock = React.forwardRef<SVGSVGElement, IconProps>(
+  (
+    { size = 24, strokeWidth = 1.5, absoluteStrokeWidth = false, ...props },
+    ref,
+  ) => {
+    // Calculate the actual stroke width based on absoluteStrokeWidth setting
+    // When absoluteStrokeWidth is false, stroke width scales with size (24px = 1.5, so scale proportionally)
+    // When absoluteStrokeWidth is true, stroke width remains constant
+    const actualStrokeWidth = absoluteStrokeWidth
+      ? strokeWidth
+      : (Number(size) / 24) * Number(strokeWidth);
+
+    return (
+      <svg
+        ref={ref}
+        width={size}
+        height={size}
+        viewBox="0 0 48 48"
+        role="presentation"
+        aria-hidden={true}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={actualStrokeWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        {...props}
+      >
+        <path d="M6 24C6 26.3638 6.46558 28.7044 7.37017 30.8883C8.27475 33.0722 9.60062 35.0565 11.2721 36.7279C12.9435 38.3994 14.9278 39.7252 17.1117 40.6298C19.2956 41.5344 21.6362 42 24 42C26.3638 42 28.7044 41.5344 30.8883 40.6298C33.0722 39.7252 35.0565 38.3994 36.7279 36.7279C38.3994 35.0565 39.7252 33.0722 40.6298 30.8883C41.5344 28.7044 42 26.3638 42 24C42 19.2261 40.1036 14.6477 36.7279 11.2721C33.3523 7.89642 28.7739 6 24 6C19.2261 6 14.6477 7.89642 11.2721 11.2721C7.89642 14.6477 6 19.2261 6 24Z" />
+        <path d="M24 16V24" />
+        <path d="M24 32H24.02" />
+      </svg>
+    );
+  },
+);
+
+Clock.displayName = "Clock";
+export { Clock };

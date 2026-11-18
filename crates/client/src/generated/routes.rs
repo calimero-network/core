@@ -1606,6 +1606,68 @@ impl Deployments<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Remove a deployment's value of a secret.
+    ///
+    /// `DELETE /deployments/{id}/secrets/{name}` (`deployment_secret_clear`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn secret_clear(
+        self,
+        id: &str,
+        name: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<DeploymentSecretClearResponse> {
+        let body = Value::Object(Map::new());
+        let req = Request::new(
+            Method::DELETE,
+            format!(
+                "deployments/{}/secrets/{}",
+                route::segment(id),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Set a deployment's value of a secret.
+    ///
+    /// `PUT /deployments/{id}/secrets/{name}` (`deployment_secret_set`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn secret_set(
+        self,
+        id: &str,
+        name: &str,
+        value: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<DeploymentSecretSetResponse> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "value", &value)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::PUT,
+            format!(
+                "deployments/{}/secrets/{}",
+                route::segment(id),
+                route::segment(name)
+            ),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// A deployment's secrets.
+    ///
+    /// `GET /deployments/{id}/secrets` (`deployment_secrets`). Who: signed in (a session or an API key).
+    pub async fn secrets(self, id: &str) -> Result<DeploymentSecretsResponse> {
+        let req = Request::new(
+            Method::GET,
+            format!("deployments/{}/secrets", route::segment(id)),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// Issue a cluster sign-up invite.
     ///
     /// `POST /sign-up/invites` (`sign_up_invite_create`). Who: an account holder (a passkey session not bound to an app's frontend).

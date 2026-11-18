@@ -29,7 +29,7 @@ not one app's own data:
 | `operator_releases`, `operator_outbound` | The operator's approvals, where governance gives it those decisions |
 | `release_deadlines` | The operator's end-of-new-work deadline per mero-tee release ([Release deadlines](/protocol/governance/#release-deadlines)) |
 | `publishers`, `unbound_publishers` | Package signing key → the organization it is bound to, and its binding generation, kept when the organization goes ([Publishers](/protocol/governance/#publishers)) |
-| `deployers`, `cluster_owner`, `deployments` | Deployer grants, the cluster's owner once named, and owners' lists of offered apps ([Deployers](/protocol/governance/#deployers)) |
+| `deployers`, `cluster_owner`, `deployments`, `deployment_secrets` | Deployer grants, the cluster's owner once named, owners' lists of offered apps, and the secret values each deployment's managers set for its instances (only the outbound gate reads a value; no answer carries one) ([Deployers](/protocol/governance/#deployers)) |
 | `backup_keys` | Each backup holder's X25519 public key for the recovery disk: the operator's, an organization's or an account's ([Encryption](/protocol/encryption/#the-recovery-disk)) |
 | `cluster_version`, `session_proofs_from`, `current_rules_from`, `attributes_by_release` | The logged [cluster version](/protocol/upgrades/#the-cluster-version), and the marks from which later rules hold (below) |
 
