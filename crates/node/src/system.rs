@@ -30,6 +30,7 @@ mod fleet;
 mod orgs;
 mod packages;
 mod recovery;
+mod routing;
 mod sign_up;
 
 /// Per-account limits, replicated so every node enforces the same ones at apply.
@@ -5846,6 +5847,10 @@ pub struct SystemMachine {
     /// against at apply. It is fixed for a cluster's life (the storage key is
     /// derived from it), so every replica and every replay judges alike.
     cluster: String,
+    /// Indexes and approval decisions derived from `state`, for the Raft
+    /// messages of every app group ([`routing`]); dropped whenever `state`
+    /// changes through [`Machine::apply`] or [`Machine::restore`].
+    routing: routing::Routing,
 }
 
 impl SystemMachine {
@@ -5856,6 +5861,31 @@ impl SystemMachine {
             cluster,
             ..Self::default()
         }
+    }
+
+    /// The app group `group` replicates: an index probe, not a scan.
+    #[must_use]
+    pub fn app_of_group(&self, group: u64) -> Option<&AppRecord> {
+        self.routing.app_of_group(&self.state, group)
+    }
+
+    /// The apps that name `node` a replica, by app id.
+    pub fn apps_on(&self, node: u64) -> impl Iterator<Item = &AppRecord> + '_ {
+        self.routing.apps_on(&self.state, node)
+    }
+
+    /// [`SystemState::release_may_hold`] for the app `group` replicates,
+    /// cached until the state next changes; `None` for a group no app has.
+    #[must_use]
+    pub fn group_may_hold(&self, group: u64, release: Option<&str>) -> Option<bool> {
+        self.routing.group_may_hold(&self.state, group, release)
+    }
+
+    /// Drop what [`Self::app_of_group`], [`Self::apps_on`] and
+    /// [`Self::group_may_hold`] derived: for a change to `state` made
+    /// outside the log (tests).
+    pub fn forget_routing(&mut self) {
+        self.routing.forget();
     }
 }
 
@@ -6021,6 +6051,8 @@ impl Machine for SystemMachine {
         state: &mut calimero_log::StateTx<'_>,
     ) -> Vec<u8> {
         self.index = index;
+        // Whatever the entry changes, what was derived from the state goes.
+        self.routing.forget();
         match serde_json::from_slice::<SystemCmd>(command) {
             Ok(cmd) => match self.run(cmd) {
                 Ok(v) => ok(v),
@@ -6056,6 +6088,7 @@ impl Machine for SystemMachine {
         } else {
             serde_json::from_slice(data)?
         };
+        self.routing.forget();
         Ok(())
     }
 }
