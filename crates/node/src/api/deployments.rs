@@ -575,6 +575,152 @@ async fn deployment_get(State(node): State<Arc<Node>>, Path(id): Path<String>) -
     .ok_or_else(|| ApiError::not_found("no such deployment"))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DeploymentSecretBody {
+    value: String,
+    /// The manager's passkey, once the node asked for it (`412`).
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// A deployment's secrets as its managers read them: every name a release it
+/// offers declares, and every name it holds a value of, each with the apps
+/// whose release declares it (none: the value is kept, unused, until cleared)
+/// and, when it holds a value, its fingerprint, who set it and when. Never a
+/// value.
+fn deployment_secrets_json(s: &crate::system::SystemState, d: &Deployment) -> Value {
+    let held = s.deployment_secrets.get(&d.id);
+    let mut rows: BTreeMap<String, Value> = BTreeMap::new();
+    for (app, o) in &d.apps {
+        let Some(v) = s.offered_release(o) else {
+            continue;
+        };
+        for name in v.secrets.keys() {
+            let row = rows
+                .entry(name.clone())
+                .or_insert_with(|| json!({ "apps": [], "set": false }));
+            if let Some(apps) = row["apps"].as_array_mut() {
+                apps.push(json!(app));
+            }
+        }
+    }
+    for (name, secret) in held.into_iter().flatten() {
+        let row = rows
+            .entry(name.clone())
+            .or_insert_with(|| json!({ "apps": [], "set": false }));
+        row["set"] = json!(true);
+        row["fingerprint"] = json!(secret.fingerprint);
+        row["setBy"] = json!(secret.set_by);
+        row["setAt"] = json!(secret.set_at);
+    }
+    json!({ "deployment": d.id, "secrets": rows })
+}
+
+/// The deployment's secrets, for its managers ([`deployment_secrets_json`]),
+/// on fresh state: fingerprints, never values.
+async fn deployment_secrets(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult {
+    let p = signed_in(&node, &headers).await?;
+    p.unbound()?;
+    let d = managed_deployment(&node, &p, &id).await?;
+    Ok(Json(node.sys(|s| deployment_secrets_json(s, &d))))
+}
+
+/// Set the deployment's value of a secret a release it offers declares: every
+/// instance created from it uses the value unless it set its own, only toward
+/// that secret's declared hosts. With a passkey assertion over
+/// `deployment:{id} / __set_secret / { name, fingerprint }` (never the value).
+async fn deployment_secret_set(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((id, name)): Path<(String, String)>,
+    Json(body): Json<DeploymentSecretBody>,
+) -> ApiResult {
+    if !calimero_bundle::is_secret_name(&name) {
+        return Err(ApiError::bad_request(
+            "BAD_SECRET",
+            "a secret's name is A-Z, 0-9 and _, starting with a letter",
+        ));
+    }
+    let value = crate::component::SecretValue(body.value);
+    if !value.fits() {
+        return Err(bad_secret_value());
+    }
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let d = managed_deployment(&node, &p, &id).await?;
+    if !node.sys(|s| s.deployment_declares(&d, &name)) {
+        return Err(crate::node::undeclared_secret());
+    }
+    node.require_features(&[Feature::DeploymentSecrets]).await?;
+    let consent = consent(
+        &node,
+        &p,
+        &format!("deployment:{id}"),
+        "__set_secret",
+        &json!({ "name": name, "fingerprint": value.fingerprint() }),
+        body.confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::SetDeploymentSecret {
+            deployment: id,
+            name,
+            value,
+            actor: account,
+            at: now_secs(),
+            consent,
+        })
+        .await?,
+    ))
+}
+
+/// Remove the deployment's value of a secret, with a passkey assertion over
+/// `deployment:{id} / __clear_secret / { name }`: its instances that set none
+/// of their own fall back to the operator's.
+async fn deployment_secret_clear(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path((id, name)): Path<(String, String)>,
+    body: Option<Json<ConfirmOnlyBody>>,
+) -> ApiResult {
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let _d = managed_deployment(&node, &p, &id).await?;
+    let held = node.sys(|s| {
+        s.deployment_secrets
+            .get(&id)
+            .is_some_and(|h| h.contains_key(&name))
+    });
+    if !held {
+        return Err(ApiError::not_found(crate::system::NO_DEPLOYMENT_SECRET));
+    }
+    node.require_features(&[Feature::DeploymentSecrets]).await?;
+    let confirm = body.and_then(|Json(b)| b.confirm);
+    let consent = consent(
+        &node,
+        &p,
+        &format!("deployment:{id}"),
+        "__clear_secret",
+        &json!({ "name": name }),
+        confirm,
+    )
+    .await?;
+    Ok(Json(
+        node.sys_write(&SystemCmd::ClearDeploymentSecret {
+            deployment: id,
+            name,
+            actor: account,
+            consent,
+        })
+        .await?,
+    ))
+}
+
 /// One customer organization of a deployment, as its listing counts it.
 struct Customer<'a> {
     instances: u64,
@@ -679,4 +825,9 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/deployments/{id}/apps", post(deployment_offer))
         .route("/deployments/{id}/apps/{app}", delete(deployment_withdraw))
         .route("/deployments/{id}/orgs", get(deployment_orgs))
+        .route("/deployments/{id}/secrets", get(deployment_secrets))
+        .route(
+            "/deployments/{id}/secrets/{name}",
+            put(deployment_secret_set).delete(deployment_secret_clear),
+        )
 }

@@ -1874,6 +1874,29 @@ impl std::fmt::Debug for SecretValue {
     }
 }
 
+/// Most bytes of a secret's value: an instance's own, or its deployment's.
+pub const MAX_SECRET_VALUE_BYTES: usize = 4096;
+
+/// Why a value is refused that is not [`SecretValue::fits`].
+pub const SECRET_VALUE_SIZE: &str = "a secret's value is 1 to 4096 bytes";
+
+impl SecretValue {
+    /// The first 16 hex digits of the value's SHA-256: what the routes answer and a
+    /// consent names, to tell values apart without showing one.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        let mut hex = hex::encode(calimero_identity::sha256(self.0.as_bytes()));
+        hex.truncate(16);
+        hex
+    }
+
+    /// Whether it is 1 to [`MAX_SECRET_VALUE_BYTES`] bytes.
+    #[must_use]
+    pub fn fits(&self) -> bool {
+        !self.0.is_empty() && self.0.len() <= MAX_SECRET_VALUE_BYTES
+    }
+}
+
 /// An instance's own value of a declared secret ([`rows::CSECRET`]): the value, and what
 /// the routes answer of it (never the value).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1890,6 +1913,25 @@ pub struct InstanceSecret {
 
 /// The instance's own secrets, by name.
 pub type InstanceSecrets = BTreeMap<String, InstanceSecret>;
+
+/// The values that fill `{{secret:NAME}}` for a run, ahead of the operator's: for each
+/// name the release declares, the instance's own value, else the one its deployment's
+/// managers set (`SystemState::deployment_secrets_of`). A name the release does not
+/// declare gets neither; the outbound gate still sends each only to its declared hosts.
+#[must_use]
+pub fn run_secrets(
+    own: &InstanceSecrets,
+    deployment: Option<&InstanceSecrets>,
+    declared: &BTreeMap<String, calimero_bundle::BundleSecret>,
+) -> calimero_outbound::OwnSecrets {
+    let mut out = BTreeMap::new();
+    for (name, s) in own.iter().chain(deployment.into_iter().flatten()) {
+        if declared.contains_key(name) && !out.contains_key(name) {
+            let _first = out.insert(name.clone(), zeroize::Zeroizing::new(s.value.0.clone()));
+        }
+    }
+    calimero_outbound::OwnSecrets(out)
+}
 
 const SECRETS_ROW: &[u8] = b"all";
 
@@ -2054,6 +2096,61 @@ mod tests {
     mod pipelines;
     mod runs;
     use crate::component::blobs::BLOB_IDLE_MS;
+
+    /// A run's secrets: the instance's own value first, then its deployment's, each only
+    /// for a name the release declares; none for a name it does not.
+    #[test]
+    fn a_runs_secrets_are_the_instances_then_its_deployments() {
+        let secret = |v: &str| InstanceSecret {
+            value: SecretValue(v.into()),
+            fingerprint: SecretValue(v.into()).fingerprint(),
+            set_by: "account:a".into(),
+            set_at: 1,
+        };
+        let declared: BTreeMap<String, calimero_bundle::BundleSecret> = ["A", "B", "C"]
+            .into_iter()
+            .map(|n| {
+                (
+                    n.to_owned(),
+                    calimero_bundle::BundleSecret {
+                        hosts: vec!["api.example.com".into()],
+                        description: String::new(),
+                        required: false,
+                    },
+                )
+            })
+            .collect();
+        let own =
+            InstanceSecrets::from([("A".into(), secret("own-a")), ("X".into(), secret("own-x"))]);
+        let deployment = InstanceSecrets::from([
+            ("A".into(), secret("dep-a")),
+            ("B".into(), secret("dep-b")),
+            ("Y".into(), secret("dep-y")),
+        ]);
+        let got = |own: &InstanceSecrets, d: Option<&InstanceSecrets>| -> Vec<(String, String)> {
+            run_secrets(own, d, &declared)
+                .0
+                .into_iter()
+                .map(|(k, v)| (k, v.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            got(&own, Some(&deployment)),
+            [("A".into(), "own-a".into()), ("B".into(), "dep-b".into())]
+        );
+        assert_eq!(
+            got(&InstanceSecrets::new(), Some(&deployment)),
+            [("A".into(), "dep-a".into()), ("B".into(), "dep-b".into())]
+        );
+        assert_eq!(got(&own, None), [("A".into(), "own-a".into())]);
+        assert!(got(&InstanceSecrets::new(), None).is_empty());
+        // Its `Debug` names them, never a value.
+        let printed = format!("{:?}", run_secrets(&own, Some(&deployment), &declared));
+        assert!(
+            !printed.contains("own-a") && !printed.contains("dep-b"),
+            "{printed}"
+        );
+    }
 
     #[test]
     fn a_mark_listing_uppercase_hex_is_not_well_formed() {
