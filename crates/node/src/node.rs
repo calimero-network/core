@@ -2322,6 +2322,15 @@ impl Node {
             }) {
                 let _r = self.sys_write(&SystemCmd::RequireCurrentRules).await;
             }
+            // Likewise sign-in proofs expire with their sessions from here on
+            // (`ExpireProofs`), once the logged cluster version brings it.
+            if self.sys(|s| {
+                !s.expires_proofs
+                    && (s.governance.is_some() || !s.accounts.is_empty())
+                    && cv::check(s.cluster_version.as_deref(), &[Feature::ExpireProofs]).is_ok()
+            }) {
+                let _r = self.sys_write(&SystemCmd::ExpireProofs).await;
+            }
             self.admit_registered_nodes();
             self.promote_learners();
         }
