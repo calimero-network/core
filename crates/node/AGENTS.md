@@ -1723,9 +1723,12 @@ API and system group:
 - **State** (`component::ComponentState`, D46): the component's stored keys
   (generation prefix included, D39) are hidden rows of the group (`rows::CKV`, sealed
   and HMAC-keyed), and each replica keeps them in memory too as an
-  ordered `Arc<BTreeMap>`: a run gets the current version as its `StateView` (ordered
-  `range` scans, which hidden rows cannot answer); `apply` copies it only while a run
-  still holds the previous one; `restore` (a restart, a snapshot install) reads it
+  ordered persistent map (`component::Kv`, an `imbl::OrdMap`): a run gets the current
+  version as its `StateView` (ordered `range` scans, which hidden rows cannot answer),
+  an O(1) clone; `apply` writes the next version sharing all it does not change, so a
+  write while a run holds the previous one copies O(log n) nodes, never the whole state
+  (B7; `a_write_under_a_view_does_not_copy_the_whole_state`,
+  `the_state_reads_as_the_ordered_map_it_replaced`); `restore` (a restart, a snapshot install) reads it
   back from the rows. Host records (`ComponentHead`: `last_ts_ms`, `last_id`,
   `install_ts_ms`, `timers`, the idempotency rings) live in the group's `Head`.
   `last_write_ms` is the entry timestamp of the newest call that applied with a
