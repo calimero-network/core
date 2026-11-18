@@ -5,6 +5,12 @@
 //! long as the disk takes, and every other group's heartbeats, elections and
 //! RPCs wait behind it. The runtime here has one worker, so any blocking call
 //! shows as the whole of its delay.
+//!
+//! Whether the healthy group's writes wait for the slow group's syncs is not
+//! told from their latency: a write's own fsync on a loaded disk (CI) can take
+//! as long as the slow group's delay. It is told from the order: a slow synced
+//! write held on a node, the healthy group's writes reach every node, that
+//! node included, while the same write still waits.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
@@ -23,6 +29,9 @@ const HEALTHY: GroupId = 2;
 const SYNC_DELAY: Duration = Duration::from_millis(250);
 /// The most a 10 ms tick may run late while the slow group writes.
 const MAX_LATE: Duration = Duration::from_millis(100);
+/// The longest a held synced write of the slow group waits: far past any
+/// write's own disk time, so a write that waits for it cannot finish first.
+const HOLD: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 struct Kv(BTreeMap<String, String>);
@@ -87,7 +96,8 @@ async fn leader(groups: &Groups) -> NodeId {
     panic!("no leader");
 }
 
-async fn put(groups: &Groups, key: &str) {
+/// Write `key` through the group's leader; the index it was appended at.
+async fn put(groups: &Groups, key: &str) -> u64 {
     for _ in 0..50 {
         let id = leader(groups).await;
         let cmd = format!("{key}=v").into_bytes();
@@ -95,7 +105,7 @@ async fn put(groups: &Groups, key: &str) {
             .propose(|_m, _applied| Proposal::Append(cmd.clone()))
             .await
         {
-            Ok(_) => return,
+            Ok(p) => return p.index,
             Err(WriteError::NotLeader { .. } | WriteError::Unavailable(_)) => {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
@@ -113,7 +123,9 @@ fn terms(groups: &Groups) -> Vec<u64> {
 
 /// One worker thread, as a node under load has none to spare: before synced
 /// writes left the workers, every append of the slow group stopped the ticker
-/// (and every other group) for the whole fsync.
+/// (and every other group) for the whole fsync. Then, a synced write of the
+/// slow group held on each node in turn, the healthy group's writes reach every
+/// node before it goes on.
 #[tokio::test(flavor = "current_thread")]
 async fn a_slow_disk_under_one_group_does_not_stall_the_others() {
     let net = Arc::new(Net::default());
@@ -147,8 +159,8 @@ async fn a_slow_disk_under_one_group_does_not_stall_the_others() {
     let voters: BTreeMap<NodeId, String> = (1..=3).map(|i| (i, format!("node-{i}"))).collect();
     slow[&1].initialize(voters.clone()).await.unwrap();
     healthy[&1].initialize(voters).await.unwrap();
-    put(&slow, "warm").await;
-    put(&healthy, "warm").await;
+    let _index = put(&slow, "warm").await;
+    let _index = put(&healthy, "warm").await;
     // Let every follower learn the healthy group's leader before its terms are taken.
     tokio::time::sleep(Duration::from_millis(200)).await;
     let healthy_terms = terms(&healthy);
@@ -170,21 +182,17 @@ async fn a_slow_disk_under_one_group_does_not_stall_the_others() {
         })
     };
     let started = Instant::now();
-    let (_, healthy_writes) = tokio::join!(
+    let ((), ()) = tokio::join!(
         async {
             for i in 0..4 {
-                put(&slow, &format!("slow{i}")).await;
+                let _index = put(&slow, &format!("slow{i}")).await;
             }
         },
         async {
-            let mut longest = Duration::ZERO;
             while started.elapsed() < SYNC_DELAY * 6 {
-                let at = Instant::now();
-                put(&healthy, "beside").await;
-                longest = longest.max(at.elapsed());
+                let _index = put(&healthy, "beside").await;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            longest
         }
     );
     ticking.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -192,18 +200,63 @@ async fn a_slow_disk_under_one_group_does_not_stall_the_others() {
     for dir in &dirs {
         testing::heal_synced_writes(dir.path(), SLOW);
     }
-
     assert!(
         late < MAX_LATE,
         "a worker stalled {late:?} on the slow group's disk (at most {MAX_LATE:?})"
     );
-    assert!(
-        healthy_writes < MAX_LATE,
-        "a write to the healthy group took {healthy_writes:?} beside the slow one"
-    );
+
+    // On each node in turn: hold one synced write of the slow group (the
+    // leader's append, or a follower's), and write to the healthy group until
+    // every node, the held one too, has applied its writes. The held write must
+    // still be the one waiting then; a healthy write that queued behind it (a
+    // lock, a shared thread, RocksDB) would finish only once it was let go.
+    for (node, dir) in (1..=3).zip(&dirs) {
+        testing::slow_synced_writes(dir.path(), SLOW, HOLD);
+        let held_put = {
+            let slow = slow.clone();
+            tokio::spawn(async move { put(&slow, &format!("held{node}")).await })
+        };
+        let held = {
+            let at = Instant::now();
+            loop {
+                if let Some(n) = testing::synced_write_waiting(dir.path(), SLOW) {
+                    break n;
+                }
+                assert!(
+                    at.elapsed() < HOLD,
+                    "no synced write of the slow group was seen waiting on node {node} \
+                     (one held on this test's only worker never is)"
+                );
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        };
+        let past = tokio::time::timeout(HOLD, async {
+            for i in 0..3 {
+                let index = put(&healthy, &format!("past{node}.{i}")).await;
+                for g in healthy.values() {
+                    let _applied = g.wait_applied(index, HOLD).await;
+                }
+            }
+        })
+        .await;
+        assert!(
+            past.is_ok(),
+            "the healthy group's writes did not reach every node in {HOLD:?} \
+             while node {node} held a synced write of the slow group"
+        );
+        assert_eq!(
+            testing::synced_write_waiting(dir.path(), SLOW),
+            Some(held),
+            "the healthy group's writes reached every node only after node {node}'s \
+             held synced write of the slow group went on: they waited for it"
+        );
+        testing::heal_synced_writes(dir.path(), SLOW);
+        let _index = held_put.await.unwrap();
+    }
+
     assert_eq!(
         terms(&healthy),
         healthy_terms,
-        "the healthy group elected a new leader while the other's disk was slow"
+        "the healthy group elected a new leader while the other's disk was slow or held"
     );
 }

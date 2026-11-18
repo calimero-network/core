@@ -56,7 +56,9 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   before it records its file (`machine::build_races`);
   `testing::slow_synced_writes(dir, group, delay)` / `heal_synced_writes` make
   a group's synced writes (appends, votes, purges) block for `delay` longer, as a
-  slow disk's fsync would (`tests/slow_disk.rs`).
+  slow disk's fsync would (a heal lets one waiting now go on), and
+  `synced_write_waiting` names the write waiting there, so a test holds one and
+  checks what finishes meanwhile (`tests/slow_disk.rs`).
 - Disk work never runs on an async worker: every group of a node shares them, so
   a slow fsync or a long apply there would hold up the other groups' heartbeats
   and start elections across the cluster. `RaftLogStorage`'s append, `save_vote`,
@@ -67,7 +69,10 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   still awaited, so an append is durable before its callback and a vote before
   the reply. Log reads, `save_committed` (unsynced) and the small snapshot file
   opens stay inline. Regression: `a_slow_disk_under_one_group_does_not_stall_the_others`
-  (one worker thread; a group's synced writes slowed 250 ms stalled it 750 ms before).
+  (one worker thread; a group's synced writes slowed 250 ms stalled it 750 ms before;
+  then, with one synced write of the slow group held on each node in turn, the
+  other group's writes reach every node while it still waits: told by order, not
+  latency, since a write's own fsync on a loaded CI disk can take 300 ms).
 - `Engine::store_watch` reports the store open until RocksDB has closed and
   released its lock (`Db::closed`, the last field), not merely until the last
   `Arc<Db>` starts dropping.

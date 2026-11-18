@@ -364,6 +364,17 @@ pub(crate) static FAILING_READS: std::sync::Mutex<Vec<(PathBuf, GroupId)>> =
 pub(crate) static SLOW_SYNCS: std::sync::Mutex<Vec<(PathBuf, GroupId, std::time::Duration)>> =
     std::sync::Mutex::new(Vec::new());
 
+/// The slowed synced writes waiting now, by node directory and group, each
+/// with its own number (feature `testing`; see
+/// [`crate::testing::synced_write_waiting`]).
+#[cfg(feature = "testing")]
+pub(crate) static SYNCS_WAITING: std::sync::Mutex<Vec<(PathBuf, GroupId, u64)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The number the next slowed synced write takes (feature `testing`).
+#[cfg(feature = "testing")]
+static NEXT_SLOWED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// How long closing a store waits first, by the directory it was opened in
 /// (feature `testing`; see [`crate::testing::slow_close`]).
 #[cfg(feature = "testing")]
@@ -474,18 +485,36 @@ impl Db {
     }
 
     /// Wait as long as [`crate::testing::slow_synced_writes`] slows `group`'s
-    /// synced writes on this node (feature `testing`). Blocks the calling
-    /// thread, as a slow fsync does.
+    /// synced writes on this node, or until they are healed (feature
+    /// `testing`). Blocks the calling thread, as a slow fsync does, and shows
+    /// in [`crate::testing::synced_write_waiting`] meanwhile.
     fn slow_sync(&self, group: GroupId) {
         #[cfg(feature = "testing")]
         {
-            let delay = SLOW_SYNCS.lock().ok().and_then(|s| {
-                s.iter()
-                    .find(|(d, g, _)| *g == group && *d == self.dir)
-                    .map(|(_, _, delay)| *delay)
-            });
-            if let Some(delay) = delay {
-                std::thread::sleep(delay);
+            let slowed = || {
+                SLOW_SYNCS.lock().ok().and_then(|s| {
+                    s.iter()
+                        .find(|(d, g, _)| *g == group && *d == self.dir)
+                        .map(|(_, _, delay)| *delay)
+                })
+            };
+            let Some(delay) = slowed() else {
+                return;
+            };
+            let started = std::time::Instant::now();
+            let n = NEXT_SLOWED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if let Ok(mut w) = SYNCS_WAITING.lock() {
+                w.push((self.dir.clone(), group, n));
+            }
+            while slowed().is_some() {
+                let left = delay.saturating_sub(started.elapsed());
+                if left.is_zero() {
+                    break;
+                }
+                std::thread::sleep(left.min(std::time::Duration::from_millis(1)));
+            }
+            if let Ok(mut w) = SYNCS_WAITING.lock() {
+                w.retain(|(_, _, m)| *m != n);
             }
         }
         #[cfg(not(feature = "testing"))]
