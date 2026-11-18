@@ -9,7 +9,7 @@ import { SoftPasskey } from './soft-passkey.js';
 
 const ORIGIN = 'http://localhost:3000';
 const FILE_PART_BYTES = 16 * 1024 * 1024;
-// The compute fixture's component and its directory (core's apps/v2-fixtures/compute); the package test needs both.
+// The compute fixture's component and its directory (core's apps/fixture-compute); the package test needs both.
 const COMPUTE_WASM = process.env.COMPUTE_WASM;
 const COMPUTE_DIR = process.env.COMPUTE_FIXTURE_DIR;
 const sha256 = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
