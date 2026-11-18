@@ -42,7 +42,7 @@ fn on_done(
     files: &MemoryFiles,
     outcome: &serde_json::Value,
 ) -> calimero_app_host::Outcome {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/fixture-compute");
     let component = build_in_repo_cache(&dir)
         .unwrap_or_else(|e| panic!("build compute fixture: {e}"))
         .app

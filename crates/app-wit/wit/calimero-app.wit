@@ -1,4 +1,4 @@
-package calimero:app@0.5.3;
+package calimero:app@0.5.4;
 
 interface types {
   type account-id = string;
@@ -128,6 +128,12 @@ interface xcall {
   call: func(app: string, method: string, args: list<u8>) -> result<list<u8>, string>;
   // Synchronous read of the target's latest committed state. Calls, timers, views and actions.
   view: func(app: string, method: string, args: list<u8>) -> result<list<u8>, string>;
+  // One synchronous call or view of a batch.
+  enum request-kind { call, view }
+  record request { kind: request-kind, app: string, method: string, args: list<u8> }
+  // Runs every request at once and answers in order; each counts as one synchronous xcall
+  // and gets the same checks, key and replay as `call`/`view`. 0.5.4.
+  batch: func(requests: list<request>) -> list<result<list<u8>, string>>;
 }
 
 // Available only while handling kind = action (D12, D17)

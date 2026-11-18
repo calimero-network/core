@@ -12,11 +12,19 @@ use std::time::Instant;
 const GUEST_DIRS: &[&str] = &[
     "crates/app-engine-wasmtime/tests/guests",
     "crates/sdk/tests/guests",
-    "apps/v2-fixtures",
 ];
 
 /// Single guests the tests build, relative to the repository root.
-const GUESTS: &[&str] = &["apps/rooms"];
+const GUESTS: &[&str] = &[
+    "apps/fixture-captcha",
+    "apps/fixture-compute",
+    "apps/fixture-files",
+    "apps/fixture-kv",
+    "apps/fixture-notes-v1",
+    "apps/fixture-notes-v2",
+    "apps/rooms",
+    "apps/team-space",
+];
 
 fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

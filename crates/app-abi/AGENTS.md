@@ -58,6 +58,21 @@
   leaves the companion's `serializer()` to the kotlinx.serialization plugin, which would clash
   with a hand-written one. One without a shape stays `JSONValue` (Swift, a nested alias) /
   `JsonElement` (Kotlin, under no alias: a top-level one clashes with app types in the package).
+- `codegen::rust::uses_module` writes the Rust client one app calls another through, from the
+  ABI it vendored for a reference in its `uses` (`calimero-app-build`'s `uses::generate`, in the
+  app's `build.rs`): `pub mod uses { pub mod <name> { .. } pub fn <name>() .. }`. A `Client`
+  (`linked()`, `at(id)`, `send()`) has one method per method `codegen::rust::callable` admits: a
+  call or view (`client_callable`) with no `confirm` and a non-empty `allowApps`, and one of the
+  reference's `methods` when it lists any; calls and views answer `calimero_sdk::xcall::Pending` futures (awaited in `async fn` methods, batched by the SDK's executor),
+  `Sender` (`send()`) `env::xcall`. Arguments are borrowed in the signature and serialized by a
+  local `Args` struct; the module declares every described type (serde derives through
+  `calimero_sdk::__private::serde`, boxing a field that holds its own type inline), a type the
+  ABI names without a shape as `serde_json::Value`, and `Error`: the target's errors (decoded
+  from `XcallFailed { code, fields }` through a private `__Wire` enum) plus `Other(AppError)`, and
+  back to the same `XcallFailed` shape for `?`. D20 at the top level of an argument, result or
+  field goes through `calimero_sdk::json`'s `with` modules; nested, it fails generation. An app
+  type named like one the module declares (`Client`, `Error`, `Sender`, ..) gets `_` appended.
+  Golden: `tests/golden/kitchen-sink.uses.rs` (every method opened to apps).
 - Every client leaves an unset optional argument out (TypeScript sends `args` as given; Python,
   Swift and Kotlin skip `None`/`nil`/`null`): the SDK reads missing and `null` alike as `None`.
   Python puts fields the JSON may leave out in a `total=False` `TypedDict` part.
@@ -73,7 +88,7 @@
 - The JSON forms in the type table (u64/i64 decimal strings, bytes base64url) are the SDK's
   (`crates/sdk-macros/src/types.rs`, D20); change them only with it.
 - Generated output is pinned by golden files: `tests/fixtures/<app>.abi.json` (ABIs of
-  `apps/kv-store`, `apps/rooms`, `apps/permissions-showcase`, and a crafted `kitchen-sink`)
+  `apps/kv-store`, `apps/rooms`, `apps/forum`, and a crafted `kitchen-sink`)
   against `tests/golden/` (plus `kitchen-sink.plugin.kt`, the Kotlin client for the
   serialization plugin). Refresh a fixture from a build: extract the component's
   `calimero:abi` section.

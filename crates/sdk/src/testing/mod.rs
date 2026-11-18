@@ -201,10 +201,52 @@ pub struct OtherAppCall {
     /// as them, `env::via()` naming the calling app, when they granted the calling app this
     /// method of the target; else as the calling app.
     pub on_behalf_of: Option<crate::env::Caller>,
+    /// Which of the run's batches (`xcall.batch`) it came in, from 0: xcalls the app awaited
+    /// together (`app::join!`, `join_all`) share one, and a node runs them at once.
+    pub batch: u32,
 }
 
-/// `mock_app`'s handlers, by app, and the person the run that calls them serves.
-struct HarnessApps(BTreeMap<String, AppHandler>, Option<HostCaller>);
+/// `mock_app`'s handlers, by app, the person the run that calls them serves, and the run's
+/// batches so far.
+struct HarnessApps(
+    BTreeMap<String, AppHandler>,
+    Option<HostCaller>,
+    std::sync::atomic::AtomicU32,
+);
+
+impl HarnessApps {
+    fn new(apps: BTreeMap<String, AppHandler>, person: Option<HostCaller>) -> Self {
+        Self(apps, person, std::sync::atomic::AtomicU32::new(0))
+    }
+
+    /// The batch an xcall made now is in: a lone `call` or `view` (a component built before
+    /// `xcall.batch`) is a batch of its own.
+    fn this_batch(&self) -> u32 {
+        self.2.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn sync(
+        &self,
+        app: &str,
+        method: &str,
+        args: &[u8],
+        key: Option<&str>,
+        batch: u32,
+    ) -> Result<Vec<u8>, String> {
+        let args: Value = serde_json::from_slice(args).map_err(|e| e.to_string())?;
+        self.answer(
+            app,
+            &OtherAppCall {
+                view: key.is_none(),
+                method: method.to_owned(),
+                args,
+                key: key.unwrap_or_default().to_owned(),
+                on_behalf_of: self.1.as_ref().map(sdk_caller),
+                batch,
+            },
+        )
+    }
+}
 
 /// The person a run's calls to other apps may run as (with their grant): its own caller
 /// when that is an account or an API key, else none. A run another app called serves no one
@@ -247,31 +289,21 @@ impl calimero_app_host::XcallHost for HarnessApps {
     }
 
     fn call(&self, app: &str, method: &str, args: &[u8], key: &str) -> Result<Vec<u8>, String> {
-        let args: Value = serde_json::from_slice(args).map_err(|e| e.to_string())?;
-        self.answer(
-            app,
-            &OtherAppCall {
-                view: false,
-                method: method.to_owned(),
-                args,
-                key: key.to_owned(),
-                on_behalf_of: self.1.as_ref().map(sdk_caller),
-            },
-        )
+        self.sync(app, method, args, Some(key), self.this_batch())
     }
 
     fn view(&self, app: &str, method: &str, args: &[u8]) -> Result<Vec<u8>, String> {
-        let args: Value = serde_json::from_slice(args).map_err(|e| e.to_string())?;
-        self.answer(
-            app,
-            &OtherAppCall {
-                view: true,
-                method: method.to_owned(),
-                args,
-                key: String::new(),
-                on_behalf_of: self.1.as_ref().map(sdk_caller),
-            },
-        )
+        self.sync(app, method, args, None, self.this_batch())
+    }
+
+    /// One after another, as `mock_app`'s handlers are plain functions; each sees the batch
+    /// it came in. The host core has already applied the node's limits and keys.
+    fn batch(&self, requests: &[calimero_app_host::SyncXcall<'_>]) -> Vec<Result<Vec<u8>, String>> {
+        let batch = self.this_batch();
+        requests
+            .iter()
+            .map(|r| self.sync(r.app, r.method, r.args, r.key, batch))
+            .collect()
     }
 }
 
@@ -705,7 +737,8 @@ impl TestApp {
         let _prev = self.http.insert(host.to_owned(), Arc::new(handler));
     }
 
-    /// Answers the app's synchronous xcalls (`env::xcall_call`, `env::xcall_view`) to `app`
+    /// Answers the app's synchronous xcalls (`env::xcall_call`, `env::xcall_view`, typed
+    /// clients) to `app`
     /// with `handler`; one to an app without a handler fails in the run. The target's own
     /// checks (its organization, `allow(app = ..)`) and the replay of its keys are the
     /// node's.
@@ -751,7 +784,7 @@ impl TestApp {
         };
         let (engine, prepared) = (self.engine, self.prepared.clone());
         let http = Arc::new(HarnessHttp(self.http.clone()));
-        let apps = Arc::new(HarnessApps(self.apps.clone(), None));
+        let apps = Arc::new(HarnessApps::new(self.apps.clone(), None));
         let dir = Arc::new(HarnessDir(self.org.clone()));
         // The action lends the harness to its own sub-calls while it runs.
         let blank = self.blank();
@@ -977,7 +1010,7 @@ impl TestApp {
         .expect("harness builds valid invocations")
         .with_blobs(Arc::new(HarnessBlobs(self.blobs.clone())))
         .with_search(search)
-        .with_xcall_host(Arc::new(HarnessApps(self.apps.clone(), forward.clone())))
+        .with_xcall_host(Arc::new(HarnessApps::new(self.apps.clone(), forward.clone())))
         .with_http(Arc::new(HarnessHttp(self.http.clone())))
         .with_files(Arc::new(self.files.clone()));
         let budget = if is_view {

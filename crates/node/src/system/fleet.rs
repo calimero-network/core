@@ -205,6 +205,13 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, &'st
             s.current_rules_from = Some(index);
             Ok(Value::Null)
         }
+        SystemCmd::ExpireProofs => {
+            if s.expires_proofs {
+                return Err("sign-in proofs expire already");
+            }
+            s.expires_proofs = true;
+            Ok(Value::Null)
+        }
         SystemCmd::SetClusterVersion { version, nodes } => {
             cluster_version::apply(s, version, &nodes)
         }

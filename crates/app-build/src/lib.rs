@@ -17,6 +17,7 @@ use wasmparser::Payload;
 
 pub mod abi_tools;
 pub mod codegen;
+pub mod uses;
 
 /// Name of the custom section carrying the app's ABI JSON.
 pub const ABI_SECTION: &str = "calimero:abi";

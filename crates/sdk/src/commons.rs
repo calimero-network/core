@@ -7,7 +7,7 @@ use crate::encoding::key::{self, KeyPart};
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{check_key, RangeCursor, Store, MAX_RANGE_BATCH, MAX_SDK_KEY_BYTES};
-use crate::table::{FindOpts, DEFAULT_LIMIT, MAX_LIMIT};
+use crate::table::{FindOpts, Iter, DEFAULT_LIMIT, MAX_LIMIT};
 
 /// One key-value entry read from the store.
 pub(crate) type Entry = (Vec<u8>, Vec<u8>);
@@ -19,13 +19,66 @@ pub(crate) fn encode(parts: &[KeyPart]) -> Result<Vec<u8>, StorageError> {
     Ok(encoded)
 }
 
-/// The key `(name, kind, rest..)` of a collection, checked.
+/// Where a collection's keys start.
+///
+/// A state field's collection starts at its name, `(name)`, so its keys are
+/// `(name, kind, rest..)` as they always were. A collection that is the value of a map
+/// (`UnorderedMap<K, Vector<T>>`) starts at the map's path, then `"c"` and its key encoded as
+/// one bytes part: `(name, "c", key)`, and so on for each level.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyPath {
+    label: String,
+    parts: Vec<KeyPart>,
+}
+
+impl KeyPath {
+    /// A state field's path: its name.
+    pub fn root(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            parts: vec![KeyPart::Str(name.clone())],
+            label: name,
+        }
+    }
+
+    /// The path of the collection nested under the key `key` here.
+    pub(crate) fn child(&self, key: &[KeyPart]) -> Self {
+        let mut parts = self.parts.clone();
+        parts.push(KeyPart::Str(NESTED.into()));
+        parts.push(KeyPart::Bytes(key::encode(key)));
+        Self {
+            label: self.label.clone(),
+            parts,
+        }
+    }
+
+    /// The state field this path starts at, for error messages.
+    pub(crate) fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// The key parts every key of the collection starts with.
+    pub(crate) fn parts(&self) -> &[KeyPart] {
+        &self.parts
+    }
+
+    /// Whether this is a nested collection's path rather than a state field's.
+    pub(crate) fn is_nested(&self) -> bool {
+        self.parts.len() > 1
+    }
+}
+
+/// The kind part under which a map of collections keeps each key's collection.
+pub(crate) const NESTED: &str = "c";
+
+/// The key `(path.., kind, rest..)` of a collection, checked.
 pub(crate) fn collection_key(
-    name: &str,
+    path: &KeyPath,
     kind: &str,
     rest: &[KeyPart],
 ) -> Result<Vec<u8>, StorageError> {
-    let mut parts = vec![KeyPart::Str(name.into()), KeyPart::Str(kind.into())];
+    let mut parts = path.parts().to_vec();
+    parts.push(KeyPart::Str(kind.into()));
     parts.extend_from_slice(rest);
     encode(&parts)
 }
@@ -63,6 +116,26 @@ pub(crate) fn clear_prefix<S: Store>(store: &mut S, prefix: &[u8]) -> u64 {
     }
 }
 
+/// Delete at most `max` keys under `prefix`, in key order, a batch at a time; returns how
+/// many were deleted and whether none is left.
+pub(crate) fn delete_some<S: Store>(store: &mut S, prefix: &[u8], max: u64) -> (u64, bool) {
+    let (start, end) = bounds(prefix);
+    let mut removed = 0;
+    while removed < max {
+        // A fresh cursor per batch: the previous batch is gone, so this one starts after it.
+        let want = (max - removed).min(u64::from(MAX_RANGE_BATCH)) as u32;
+        let batch = store.range(&start, &end, false).next(want);
+        if batch.is_empty() {
+            return (removed, true);
+        }
+        for (k, _) in batch {
+            store.delete(&k);
+            removed += 1;
+        }
+    }
+    (removed, store.range(&start, &end, false).next(1).is_empty())
+}
+
 /// Read up to `limit + 1` entries under the encoded `base` and cut the page at `limit`.
 ///
 /// `from` and `to` are further parts after `base`; the cursor is the base64url of the last
@@ -72,11 +145,34 @@ pub(crate) fn read_page<S: Store>(
     base: &[u8],
     opts: &FindOpts,
 ) -> Result<(Vec<Entry>, Option<String>), StorageError> {
-    check_key(base)?;
     let limit = opts.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_LIMIT) as usize;
     if limit == 0 {
+        check_key(base)?;
         return Ok((Vec::new(), None));
     }
+    let (start, end) = read_bounds(base, opts)?;
+    let mut cursor = store.range(&start, &end, opts.reverse);
+    let mut entries = Vec::with_capacity(limit + 1);
+    while entries.len() <= limit {
+        let want = (limit + 1 - entries.len()).min(MAX_RANGE_BATCH as usize);
+        let batch = cursor.next(want as u32);
+        if batch.is_empty() {
+            break;
+        }
+        entries.extend(batch);
+    }
+    let next = if entries.len() > limit {
+        entries.truncate(limit);
+        entries.last().map(|(k, _)| URL_SAFE_NO_PAD.encode(k))
+    } else {
+        None
+    };
+    Ok((entries, next))
+}
+
+/// The `[start, end)` a read under `base` covers with `opts`' `from`, `to` and `cursor`.
+fn read_bounds(base: &[u8], opts: &FindOpts) -> Result<(Vec<u8>, Vec<u8>), StorageError> {
+    check_key(base)?;
     let (mut start, mut end) = bounds(base);
     if let Some(from) = &opts.from {
         start = [base, &key::encode(from)].concat();
@@ -100,23 +196,32 @@ pub(crate) fn read_page<S: Store>(
             start = [last.as_slice(), &[0x00]].concat();
         }
     }
-    let mut cursor = store.range(&start, &end, opts.reverse);
-    let mut entries = Vec::with_capacity(limit + 1);
-    while entries.len() <= limit {
-        let want = (limit + 1 - entries.len()).min(MAX_RANGE_BATCH as usize);
-        let batch = cursor.next(want as u32);
-        if batch.is_empty() {
-            break;
-        }
-        entries.extend(batch);
-    }
-    let next = if entries.len() > limit {
-        entries.truncate(limit);
-        entries.last().map(|(k, _)| URL_SAFE_NO_PAD.encode(k))
-    } else {
-        None
+    Ok((start, end))
+}
+
+/// Every entry under `base` within `opts`' bounds, decoded, through one cursor: one range
+/// open, then one host call per batch of `opts.limit` (1,000 unset), with no entry read
+/// twice and none read ahead of the batch.
+pub(crate) fn iter_entries<'a, S: Store, T: 'a>(
+    store: &'a S,
+    base: &[u8],
+    opts: &FindOpts,
+    mut decode: impl FnMut(Entry) -> Result<T, StorageError> + 'a,
+) -> Iter<'a, T> {
+    let batch = opts
+        .limit
+        .unwrap_or(MAX_RANGE_BATCH)
+        .clamp(1, MAX_RANGE_BATCH);
+    let (start, end) = match read_bounds(base, opts) {
+        Ok(b) => b,
+        Err(e) => return Iter::failed(e),
     };
-    Ok((entries, next))
+    let reverse = opts.reverse;
+    let mut cursor: Option<S::Range> = None;
+    Iter::from_batches(move || {
+        let cursor = cursor.get_or_insert_with(|| store.range(&start, &end, reverse));
+        cursor.next(batch).into_iter().map(&mut decode).collect()
+    })
 }
 
 /// The parts of a stored key after its `base` bytes; `Decode` when they are not a key.

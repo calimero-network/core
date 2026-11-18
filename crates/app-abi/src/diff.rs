@@ -563,7 +563,7 @@ mod tests {
     fn abi_with(methods: Value, errors: Value, events: Value, state: Value) -> AppAbi {
         AppAbi::from_json(&json!({
             "abiVersion": 1,
-            "world": "calimero:app@0.5.3",
+            "world": "calimero:app@0.5.4",
             "methods": methods,
             "errors": errors,
             "events": events,
@@ -796,7 +796,7 @@ mod tests {
     fn world_patch_is_compatible_minor_breaks() {
         let mut a = abi(json!({}));
         let mut b = a.clone();
-        b.world = Some("calimero:app@0.5.3".into());
+        b.world = Some("calimero:app@0.5.4".into());
         assert!(!diff(&a, &b).is_breaking());
         a.world = Some("calimero:app@0.6.0".into());
         assert!(diff(&b, &a).is_breaking());

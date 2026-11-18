@@ -1268,7 +1268,7 @@ fn a_compute_run_reads_its_run_id_through_the_job_interface() {
 fn compute_fixture() -> &'static BuiltApp {
     static BUILT: OnceLock<BuiltApp> = OnceLock::new();
     BUILT.get_or_init(|| {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/v2-fixtures/compute");
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/fixture-compute");
         build_in_repo_cache(&dir).unwrap_or_else(|e| panic!("build fixture: {e}"))
     })
 }
@@ -1391,7 +1391,7 @@ fn each_engine_refuses_an_abi_of_the_other_world() {
     });
     let compute_abi = serde_json::json!({
         "abiVersion": 1,
-        "world": "calimero:app/compute@0.5.3",
+        "world": "calimero:app/compute@0.5.4",
         "methods": {},
     });
     let job = calimero_app_build::with_abi(&guest("compute_probe"), &plain).expect("patch");

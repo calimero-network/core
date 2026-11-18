@@ -13,7 +13,7 @@ through meroctl, and stops it.
     python3 -I crates/node/tests/fault/suite.py --list
 
 Needs release merod and meroctl (`cargo build --release -p merod -p meroctl`, or
-`--merod`/`--meroctl`), the kv component (`meroctl app build apps/v2-fixtures/kv --out
+`--merod`/`--meroctl`), the kv component (`meroctl app build apps/fixture-kv --out
 target/app-components/kv.wasm`) and, for
 `packages`, two signed releases of it (`meroctl app pack --wasm
 target/app-components/kv.wasm --package com.calimero.kv-store --app-version 1.0.0
@@ -642,7 +642,7 @@ def main(argv=None):
     need(rv2.CLI, "meroctl", "cargo build --release -p meroctl, or --meroctl PATH")
     if set(names) - {"rooms-fault"}:
         need(args.kv_wasm, "the kv component",
-             "meroctl app build apps/v2-fixtures/kv "
+             "meroctl app build apps/fixture-kv "
              "--out target/app-components/kv.wasm, or --kv-wasm")
     if "packages" in names:
         how = ("meroctl app pack --wasm <kv.wasm> --package com.calimero.kv-store "

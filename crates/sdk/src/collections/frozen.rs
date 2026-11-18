@@ -8,11 +8,12 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::app::StateField;
-use crate::commons::collection_key;
+use crate::commons::{collection_key, iter_entries, key_after, read_page, Entry, KeyPath};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{DefaultStore, Store};
+use crate::table::{FindOpts, Iter, Page};
 
 /// How a [`Frozen`] addresses a value: the 32 bytes it is stored under.
 pub trait ContentHash<T> {
@@ -32,7 +33,7 @@ impl<T: Serialize> ContentHash<T> for CborSha256 {
 /// Immutable values under their content hash: nothing changes or removes one, and inserting
 /// the same content again stores nothing. Hashes travel as 64 lowercase hex digits.
 pub struct Frozen<T, H = CborSha256, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _types: PhantomData<fn() -> (T, H)>,
 }
@@ -52,7 +53,7 @@ impl<T: Serialize + DeserializeOwned, H: ContentHash<T>, S: Store> Frozen<T, H, 
     /// A frozen store on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _types: PhantomData,
         }
@@ -99,6 +100,46 @@ impl<T: Serialize + DeserializeOwned, H: ContentHash<T>, S: Store> Frozen<T, H, 
     }
 }
 
+impl<T: DeserializeOwned, H, S: Store> Frozen<T, H, S> {
+    /// Every value as `(hex hash, value)`, in hash order, one page of at most 1,000.
+    pub fn page(&self, opts: FindOpts) -> Result<Page<(String, T)>, StorageError> {
+        let base = collection_key(&self.name, "f", &[])?;
+        let (entries, next) = read_page(&self.store, &base, &opts)?;
+        let items = entries
+            .into_iter()
+            .map(|e| decode_hashed(&base, e))
+            .collect::<Result<_, StorageError>>()?;
+        Ok(Page { items, next })
+    }
+
+    /// Every value, in hash order, through one cursor as the loop reaches it.
+    pub fn iter(&self) -> Iter<'_, (String, T)> {
+        match collection_key(&self.name, "f", &[]) {
+            Ok(base) => {
+                let under = base.clone();
+                iter_entries(&self.store, &base, &FindOpts::default(), move |e| {
+                    decode_hashed(&under, e)
+                })
+            }
+            Err(e) => Iter::failed(e),
+        }
+    }
+}
+
+/// A stored `(hex hash, value)` under `base`.
+fn decode_hashed<T: DeserializeOwned>(
+    base: &[u8],
+    (k, v): Entry,
+) -> Result<(String, T), StorageError> {
+    match key_after(&k, base)?.as_slice() {
+        [KeyPart::Bytes(hash)] if hash.len() == 32 => Ok((
+            hash.iter().map(|b| format!("{b:02x}")).collect(),
+            value::from_slice(&v)?,
+        )),
+        _ => Err(StorageError::Decode("not a content hash".into())),
+    }
+}
+
 fn to_hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -114,6 +155,16 @@ fn from_hex(text: &str) -> Option<[u8; 32]> {
         *byte = u8::from_str_radix(pair, 16).ok()?;
     }
     Some(out)
+}
+
+impl<T, H, S: Store> crate::collections::Nestable<S> for Frozen<T, H, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _types: PhantomData,
+        }
+    }
 }
 
 #[cfg(test)]

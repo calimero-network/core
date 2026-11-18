@@ -17,6 +17,56 @@ structures, not CRDTs: there is nothing to merge. The exception is `Text`,
 which stays a sequence CRDT so that edits typed against a stale view still land
 where they were meant (see [Collaborative text](/build/guides/collaborative-text/)).
 
+## Choosing a type
+
+Pick by how the data is read and how it grows.
+
+| You need | Use | Why |
+| --- | --- | --- |
+| Records found by more than their key: by owner, by date, by status; values that must be unique; counts per group; full-text search | `Table<R>` | Indexes, unique constraints and counts are kept on every write, so a lookup by any declared field is one range read, never a scan. |
+| A value per key, read and written by that key | `UnorderedMap<K, V>` | One read or write per key, a stored count, and reads in key order (it is also the sorted map). Tuple keys give two-level keys. |
+| Whether something is in a group: members, tags, likes, seen ids | `Set<T>` | Membership is one read; elements come back sorted. |
+| Items in the order they arrived: a log, a feed, a history | `Vector<T>` | Append, read by position and the last items are one call each. Insert in the middle rewrites everything after it: keep it append-mostly. |
+| An order people change: a to-do list, a playlist, a board's cards, ranked items | `List<T>` | Insert anywhere and move an item are a few writes wherever it is, and each item keeps its id through moves. |
+| One value: settings, a config record, the current round | `Cell<T>` | One read, one write. Keep the value small: it is written whole. |
+| A number many runs change | `Counter` | `add` never reads the value first. |
+| A value per account that each person writes for themselves | `PerUser<T>` | Writes go to the caller's own value, so no method can write anyone else's. |
+| Content stored once and referred to by hash | `Frozen<T>` | The same content is stored once; nothing changes or removes it. |
+| Text several people edit at once | `Text`, `RichText` | Edits typed against a stale view still land where they were meant. |
+| A list, set or map per key, per position or per account | A collection inside a map, `Vector` or `PerUser` | Each one costs what a state field's does ([Collections inside collections](#collections-inside-collections)). |
+
+A rule of thumb: a `Table` when you query by fields, a map when you look up by
+one key, a `Set` when the element is the whole fact, a `Vector` when the order
+of arrival matters, a `List` when people reorder it.
+
+### Why not `Vec`, `HashMap` or `BTreeMap`
+
+A state field has to be a table or a collection: `#[app::state]` builds each one
+from its name, so `items: Vec<Item>` as a field does not compile. A standard
+collection still fits in as a value, `Cell<Vec<Item>>` or
+`UnorderedMap<String, Vec<Item>>`, and then it is one stored value:
+
+- **Every change reads and writes all of it.** Adding one item to a
+  `Cell<Vec<Item>>` decodes the whole list, appends, encodes it and writes it
+  back. With 10,000 items that is 10,000 items read and written per call, where
+  `Vector::push` writes one row and a length.
+- **It runs into a run's limits.** A run writes at most 1 MiB, and a stored
+  value is written whole, so a list grows into a ceiling: past it, every call
+  that changes it fails. A `Vec<u8>` is stored as a CBOR list of numbers, about
+  twice its size: store bytes as `calimero_sdk::Bytes`, one byte per byte.
+- **Reads cannot be partial.** There is no page, range, `first` or `contains`
+  without loading everything; a view that shows ten items still reads them all.
+- **`HashMap` has no order.** Its iteration order is not stable between runs, so
+  anything that depends on it (the first match, the page a client sees) can
+  change from one call to the next. Use `BTreeMap` inside a value, or an
+  `UnorderedMap`, which reads in key order.
+
+A standard collection is the right choice when the data is small, bounded and
+always read together: a record's handful of labels, a poll's options, a method's
+arguments and results, an event's payload. If it grows with users or with time,
+make it a collection: a `Vector` per key or a `Set` per key costs a write per
+item however large it gets.
+
 ## Tables
 
 A `Table<R>` holds [records](/build/sdk-macros/#deriverecord-and-table):
@@ -49,6 +99,11 @@ pub struct Booking {
 | `remove(&key)` | Removes the record and its index, unique and count entries; `false` when absent. |
 | `find(index, &prefix, opts)` | Records whose index fields start with `prefix`, in index order, one page at a time. |
 | `scan(opts)` | All records in key order, one page at a time. |
+| `clear()` | Removes every record with its index, unique and count entries; returns how many records there were. |
+| `retain(\|r\| keep)` | Keeps the records `keep` accepts; reads each record once and removes the rest without reading them again. |
+| `remove_by(index, &prefix, max)` | Removes at most `max` of the records `find` would answer; answers a `Progress { removed, done }`. |
+| `clear_some(max)` | Removes at most `max` records; `done` once the table is empty. |
+| `iter()` / `scan_iter(opts)` / `find_iter(index, &prefix, opts)` | The same reads over every page, as an iterator (see [Iterating](#iterating)). |
 | `count(name, &prefix)` | A maintained count: one read when `prefix` names every field of the count. |
 | `search(text, SearchOpts)` | Full-text search over `#[table(search = [..])]` fields, best match first (views only). |
 
@@ -75,22 +130,115 @@ Every multi-row read returns a `Page { items, next }`. `FindOpts` sets
 `next`), `reverse`, and `from` (inclusive) / `to` (exclusive) bounds after the
 prefix. A page reads at most `limit + 1` entries.
 
+### Iterating
+
+Every type with pages also iterates: `iter()` from the start, `iter_with(opts)`
+(`reverse`, `from`, `to`, a starting `cursor`), and on maps and sets
+`prefix_iter(&prefix, opts)` (whole key parts, like `prefix`) and
+`starts_with_iter(&prefix, opts)` (the last string or bytes part as a prefix,
+like `starts_with`; `from` and `to` do not apply). The iterator yields
+`Result<T, StorageError>` and reads through one host cursor: one call to open
+it, then one call per batch of `limit` entries (1,000 when unset), and only
+when the loop reaches the batch, so `take`, `find` or `break` stop the reads.
+No entry is read twice. A failed read is yielded once as `Err` and ends the
+iteration. On a node the cursor reads the state as of its first batch, so
+writes the loop makes are not met again.
+
+```rust
+for entry in self.items.iter() {
+    let (key, value) = entry?;
+    // ..
+}
+let first_ten: Vec<Booking> = self.bookings.iter().take(10).collect::<Result<_, _>>()?;
+let recent = self.log.iter_with(FindOpts::default().reverse().limit(20)).take(20);
+// "user:1" and "user:22" alike, a batch at a time.
+let users: BTreeMap<String, String> = self
+    .entries
+    .starts_with_iter(&["user:".to_key_part()], FindOpts::default())
+    .collect::<Result<_, _>>()?;
+```
+
+Each run is metered, so walking a large collection in one call costs fuel for
+every entry it reads. A view that answers a client should still return one
+`Page` and its `next`.
+
 ## Collections
 
 | Type | Operations |
 | --- | --- |
-| `Cell<T>` | `get`, `set`, `clear` |
-| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last` |
-| `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `page`, `range`, `prefix`, `starts_with`, `first`, `last` |
-| `Vector<T>` | `push` (returns the position), `get`, `set` (`OutOfBounds` past the end), `pop`, `len`, `is_empty`, `page`, `clear` |
-| `Counter` | `get`, `add`, `increment` |
-| `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of` |
-| `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` reads another's |
+| `Cell<T>` | `get`, `set`, `clear`, `is_set`, `get_or_default`, `replace` and `take` (return the old value), `update(\|old\| new)` |
+| `UnorderedMap<K, V>` | `get`, `contains`, `insert` / `remove` (return the old value), `len`, `is_empty`, `clear`; `get_or_insert_with(&k, \|\| v)`, `clear_some(max)`, `update(&k, \|old\| new)` (`None` removes), `extend` (returns how many keys were new); with `K: FromKey`: `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `starts_with_iter`, `keys`, `values`, `retain`; a value can be a collection ([Collections inside collections](#collections-inside-collections)) |
+| `Set<T>` | `insert`, `remove` (bool), `contains`, `len`, `is_empty`, `clear`, `extend` (returns how many were new), `clear_some(max)`, `page`, `range`, `prefix`, `starts_with`, `first`, `last`, `iter`, `iter_with`, `prefix_iter`, `starts_with_iter`, `retain` |
+| `Vector<T>` | A collection per position ([Collections inside collections](#collections-inside-collections)), or values: `push` (returns the position), `extend`, `get`, `first`, `last`, `set` (`OutOfBounds` past the end), `pop`, `insert(i, v)` and `remove(i)` (shift the tail), `swap_remove(i)` (the last element takes its place), `swap`, `update(i, \|old\| new)`, `retain`, `contains` (a scan), `truncate(len)`, `clear_some(max)` (from the end), `len`, `is_empty`, `page`, `iter`, `iter_with`, `clear` |
+| `Counter` | `get`, `add`, `increment`, `decrement` (stops at zero), `reset` |
+| `List<T>` | An ordered list with stable item ids: `push_back` / `push_front` / `insert_after(id, v)` / `insert_before(id, v)` (return the new id), `get(id)`, `set(id, v)`, `remove(id)`, `move_after(id, other)`, `move_before`, `move_to_front`, `move_to_back`, `len`, `is_empty`, `first`, `last`, `iter` / `iter_with` as `(id, value)` in order, `clear`, `clear_some(max)` |
+| `Frozen<T, H = CborSha256>` | Content-addressed and write-once: `insert` (returns the hex hash and whether it was new), `get(hex)`, `contains(hex)`, `hash_of`, `page` and `iter` as `(hex, value)` in hash order |
+| `PerUser<T>` | `get`, `set`, `remove` on the caller's own value; `get_for(account)` and `contains_for(account)` read another's, `remove_for(account)` removes it (the app checks who may); `page`, `iter` and `iter_with` list `(account, value)` in account order |
 | `Text` | `insert_after(id, str)`, `delete_ids`, `insert(index, str)`, `delete(index, n)`, `read`, `chars`, `id_at`, `index_of`, `len`, `clear` |
 | `RichText` | `text()` / `text_mut()` (a `Text`), `mark(start, end, key, value, expand)`, `mark_ids`, `marks`, `spans`, `clear` |
 
 Despite its name, `UnorderedMap` reads in key order (`page`, `range`, `first`,
-`last`), so it also serves as a sorted map; tuple keys make nested maps.
+`last`), so it also serves as a sorted map.
+
+### Collections inside collections
+
+Any container with a slot per key can hold a whole collection in each slot: a
+map per key, a `Vector` per position, a `PerUser` per account. The collection
+can be any collection or a `Table`, and so on as deep as you like: a `Vector`
+per account, a `Set` per tag, a map of maps, a `Table` per team, a grid as a
+`Vector<Vector<T>>`. Write the type and use it; there is nothing to declare.
+
+```rust
+#[app::state(version = 1)]
+pub struct Feed {
+    posts: UnorderedMap<String, Vector<Post>>,
+    boards: UnorderedMap<String, UnorderedMap<u64, UnorderedMap<String, String>>>,
+}
+
+let mut mine = self.posts.get(&account)?; // this account's Vector<Post>
+mine.push(&post)?;                        // one row and its length
+let n = mine.len()?;                      // one read: this account's length
+for post in mine.iter() { let post = post?; /* .. */ }
+```
+
+For a collection value, the map's methods answer per key:
+
+| Method | For a collection value |
+| --- | --- |
+| `get(&k)` | `k`'s collection: a handle that reads nothing until used; an absent key's is empty. |
+| `contains(&k)` / `is_empty()` | Whether `k`'s collection, or any, holds anything: one cursor read. |
+| `remove(&k)` / `clear()` | Removes `k`'s whole collection, or every one; returns how many stored entries there were. |
+| `iter()` / `keys()` | Every key that holds anything, in key order, with its collection: two host calls per key, however large its collection. |
+
+A `Vector` of collections appends with `push_new()`, which returns the
+position and its empty collection; `get(i)` answers `Option<C>`, `pop()`
+removes the last collection whole, and `iter()` reads only the length. A
+`PerUser` of collections answers the caller's own with `get()` and anyone's
+with `get_for(account)`; `remove()` removes the caller's whole collection.
+
+```rust
+rounds: Vector<Set<String>>,          // a set of players per round
+inbox: PerUser<Vector<Message>>,      // each account's own messages
+
+let (round, mut players) = self.rounds.push_new()?;
+players.insert(&account)?;
+self.inbox.get()?.push(&message)?;    // the caller's own inbox
+```
+
+A `Set`, a `Frozen` and a `Cell` cannot hold collections: a set's elements are
+its keys, with no slot beside them (use a map from the element to its
+collection), a frozen value is addressed by its own content, and a cell is a
+single slot (`Cell<Vector<T>>` is just a `Vector`).
+
+A key whose collection was emptied no longer counts: `contains`, `is_empty`
+and `keys` skip it (its stored length stays at 0 until `remove` clears it).
+
+Each key's collection costs exactly what a state field's does: a write per
+element, its own stored length, reads through its own cursor. Nothing is
+serialized whole, as a `Vec<T>` value would be on every change. `insert`,
+`len`, `page` and `range` are for plain values; a map of collections keeps no
+count of its keys. A `Table` value keeps its indexes, unique constraints and
+counts, but full-text `search` covers only the state's own tables.
 
 ```rust
 #[app::state(version = 1)]
@@ -107,11 +255,32 @@ pub struct Store {
 - Lengths and counts are stored and kept with an atomic add on every write, so
   `len` and `count` are one read, never a scan.
 - `clear` deletes in batches of at most 1,000 until nothing is left.
+- Removing a table record costs `1 + indexes + uniques + counts` writes, so a
+  run removes a few thousand at most. Past that, remove a slice per run:
+  `clear_some(max)` on a `Table`, `UnorderedMap`, `Set` or `Vector`, and
+  `Table::remove_by(index, &prefix, max)`, answer `Progress { removed, done }`;
+  call them from a timer until `done`.
+- A run makes at most 10,000 writes, and every `put`, `delete` and `add` is
+  one. The batch operations keep to a write per element and one `add` for the
+  length: `extend` on a vector, map or set (a `push` or `insert` per value
+  costs twice the writes), `retain`, `truncate` and `clear`.
+- `Vector::set`, `update` and `swap` are a read and a write per element;
+  `swap_remove` at most three of each.
+- `Vector::insert` and `remove` read the tail through one cursor and write each
+  element once: a write per element after the position. A `List` inserts and
+  moves anywhere for a few reads and three writes, however long it is. `Vector::contains` is
+  a scan; a `Set` answers the same in one read.
+- `retain` reads everything once through one cursor; a map or set deletes
+  each rejected entry, and a vector writes only the elements that move down.
 - A key over 1 KiB is refused (`KeyTooLong`) before any store call.
 - Values are deterministic CBOR; keys are order-preserving tuples, the
   contract the TypeScript SDK produces the same bytes for.
-- `Text` reads and edits load every node (1,000 per host read); its `len` is
-  one read.
+- `Text` stores runs of characters in a tree, so an edit, `id_at` and
+  `index_of` cost about the same at any length (some 10 to 15 host calls and a
+  few hundred bytes), a 10,000-character paste is about 15 writes, and a
+  delete is a write per run it touches. `read` and `chars` read the whole text
+  once; `len` is one read. An edit too large for one run (10,000 writes or
+  1 MiB) is refused with `EditTooLarge` before anything is written.
 
 <Aside type="tip">
   Prefer `env::unique_id()` to a `Counter` for ids: it needs no read and no

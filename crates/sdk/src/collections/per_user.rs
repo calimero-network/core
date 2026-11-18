@@ -6,19 +6,23 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::app::StateField;
-use crate::commons::collection_key;
+use crate::commons::{collection_key, iter_entries, read_page, KeyPath};
 use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::env::{self, Caller};
 use crate::error::{AppError, StorageError};
 use crate::store::{DefaultStore, Store};
+use crate::table::{FindOpts, Iter, Page};
+
+use super::slots::{decode_account, UserValue};
 
 /// A value per account. Writes always go to the caller's own value (`env::caller()`'s
-/// account, or the account an API key acts for), so no method can name anyone else's; any
-/// account's value can be read with [`PerUser::get_for`]. Callers that are not an account
+/// account, or the account an API key acts for); any account's value can be read with
+/// [`PerUser::get_for`], and removed with [`PerUser::remove_for`] when the app's own rules
+/// allow it (an admin removing a member who left). Callers that are not an account
 /// (system, public, another app) get `LoginRequired`.
 pub struct PerUser<T, S: Store = DefaultStore> {
-    name: String,
+    name: KeyPath,
     store: S,
     _type: PhantomData<fn() -> T>,
 }
@@ -35,18 +39,18 @@ fn caller_account() -> Result<String, AppError> {
     }
 }
 
-impl<T: Serialize + DeserializeOwned, S: Store + Default> PerUser<T, S> {
+impl<T, S: Store + Default> PerUser<T, S> {
     /// A per-account store on the default store.
     pub fn new(name: impl Into<String>) -> Self {
         Self::with_store(name, S::default())
     }
 }
 
-impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
+impl<T, S: Store> PerUser<T, S> {
     /// A per-account store on a given store.
     pub fn with_store(name: impl Into<String>, store: S) -> Self {
         Self {
-            name: name.into(),
+            name: KeyPath::root(name),
             store,
             _type: PhantomData,
         }
@@ -55,18 +59,73 @@ impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
     fn storage_key(&self, account: &str) -> Result<Vec<u8>, StorageError> {
         collection_key(&self.name, "u", &[KeyPart::Str(account.into())])
     }
+}
 
-    /// `account`'s value.
-    pub fn get_for(&self, account: &str) -> Result<Option<T>, StorageError> {
-        self.store
-            .get(&self.storage_key(account)?)
-            .map(|bytes| value::from_slice(&bytes))
-            .transpose()
+impl<T: UserValue<S>, S: Store> PerUser<T, S> {
+    /// `account`'s value (`Option<T>`), or for collections `account`'s collection (a handle
+    /// that reads nothing until used). Reading anyone's is allowed; writing goes through
+    /// [`PerUser::get`], the caller's own.
+    pub fn get_for(&self, account: &str) -> Result<T::Get, StorageError> {
+        T::get(&self.store, &self.name, account)
     }
 
-    /// The caller's own value.
-    pub fn get(&self) -> Result<Option<T>, AppError> {
-        Ok(self.get_for(&caller_account()?)?)
+    /// Whether `account` has a value, or a collection with anything in it.
+    pub fn contains_for(&self, account: &str) -> Result<bool, StorageError> {
+        T::contains(&self.store, &self.name, account)
+    }
+
+    /// The caller's own value, or the caller's own collection to read and write.
+    pub fn get(&self) -> Result<T::Get, AppError> {
+        Ok(T::get(&self.store, &self.name, &caller_account()?)?)
+    }
+
+    /// Remove the caller's own value and return it; for collections, remove the caller's
+    /// collection whole and answer how many stored entries it had.
+    pub fn remove(&mut self) -> Result<T::Removed, AppError> {
+        let account = caller_account()?;
+        Ok(T::remove(&mut self.store, &self.name, &account)?)
+    }
+
+    /// Remove `account`'s value and return it (for collections, its whole collection and how
+    /// many stored entries it had). Every other write goes to the caller's own value; this one
+    /// is for the app's own rules, an admin removing a member who left, so check who may call
+    /// it before you do.
+    pub fn remove_for(&mut self, account: &str) -> Result<T::Removed, StorageError> {
+        T::remove(&mut self.store, &self.name, account)
+    }
+
+    /// Every account's value (or collection), in account order, through one cursor; for
+    /// collections it skips over each account's rows, two host calls per account.
+    pub fn iter(&self) -> Iter<'_, (String, T::Item)> {
+        T::entries(&self.store, &self.name)
+    }
+}
+
+impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
+    /// Every account's value as `(account, value)`, in account order (last first with
+    /// `reverse`), one page of at most 1,000; `from` and `to` take accounts as
+    /// `KeyPart::Str`.
+    pub fn page(&self, opts: FindOpts) -> Result<Page<(String, T)>, StorageError> {
+        let base = collection_key(&self.name, "u", &[])?;
+        let (entries, next) = read_page(&self.store, &base, &opts)?;
+        let items = entries
+            .into_iter()
+            .map(|e| decode_account(&base, e))
+            .collect::<Result<_, StorageError>>()?;
+        Ok(Page { items, next })
+    }
+
+    /// [`PerUser::page`] over every page from `opts` on.
+    pub fn iter_with(&self, opts: FindOpts) -> Iter<'_, (String, T)> {
+        match collection_key(&self.name, "u", &[]) {
+            Ok(base) => {
+                let under = base.clone();
+                iter_entries(&self.store, &base, &opts, move |e| {
+                    decode_account(&under, e)
+                })
+            }
+            Err(e) => Iter::failed(e),
+        }
     }
 
     /// Set the caller's own value; returns the caller's account.
@@ -76,16 +135,15 @@ impl<T: Serialize + DeserializeOwned, S: Store> PerUser<T, S> {
         self.store.put(&key, &value::to_vec(v)?);
         Ok(account)
     }
+}
 
-    /// Remove the caller's own value, returning it.
-    pub fn remove(&mut self) -> Result<Option<T>, AppError> {
-        let account = caller_account()?;
-        let old = self.get_for(&account)?;
-        if old.is_some() {
-            let key = self.storage_key(&account)?;
-            self.store.delete(&key);
+impl<T, S: Store> crate::collections::Nestable<S> for PerUser<T, S> {
+    fn at(path: KeyPath, store: S) -> Self {
+        Self {
+            name: path,
+            store,
+            _type: PhantomData,
         }
-        Ok(old)
     }
 }
 

@@ -77,8 +77,9 @@ Events are delivered once the entry commits. See [Events](/build/guides/events/)
 | Function | Does |
 | --- | --- |
 | `env::xcall(app, method, &args)` | Sends a message delivered after this run commits, only if it succeeds, at least once and in order per sending app. The target must be in the same organization and allow this app. At most 100 per run. |
-| `env::xcall_call::<T>(app, method, &args)` | Calls the target now (one call in its own log, not atomic with this run) and decodes its result as `T`. Calls, timers and actions. |
-| `env::xcall_view::<T>(app, method, &args)` | Reads the target's latest committed state now. Calls, timers, views and actions. |
+| `env::xcall_call::<T>(app, method, &args)` | A future: calls the target (one call in its own log, not atomic with this run) and decodes its result as `T`. Calls, timers and actions. |
+| `env::xcall_view::<T>(app, method, &args)` | A future: reads the target's latest committed state. Calls, timers, views and actions. |
+| `app::join!(a, b, ..)`, `app::join_all(v)` | Awaits futures together: their xcalls go to the node in one batch, which it runs at once. `app::block_on(fut)` runs a future from a plain `fn`; an `async fn` app method needs none. |
 
 A failed `xcall_call`/`xcall_view` is `AppError` `XcallFailed` carrying the
 target's error. See [Cross-app calls](/build/guides/cross-context/).
@@ -115,7 +116,7 @@ host keeps 64 KiB per run.
 
 ## The world underneath
 
-An app is a component of the world `calimero:app@0.5.3`
+An app is a component of the world `calimero:app@0.5.4`
 (`crates/app-wit/wit/calimero-app.wit`). It exports one function,
 `handle(kind, method, args) -> result<list<u8>, app-error>`, which
 `#[app::logic]` generates, and imports the interfaces below. The node refuses at
@@ -131,7 +132,7 @@ system, a socket or the network except through these.
 | `blobs` | `BlobRef::info`, `BlobRef::grant` (`env::blob_info`, `env::blob_grant`) |
 | `search` | `Table::search` (`env::search_query`), views only |
 | `files` | `files::create`, `files::open`, `files::info` |
-| `xcall` (`send`, `call`, `view`) | `env::xcall`, `env::xcall_call`, `env::xcall_view` |
+| `xcall` (`send`, `batch`; `call` and `view` for components built before 0.5.4) | `env::xcall`; `env::xcall_call`, `env::xcall_view` and typed clients, awaited, through `batch` |
 | `action` | `ActionCtx::key`, `view`, `call` inside an `#[app::action]` |
 | `runs` | `compute::start`, `cancel`, `publish`, `files::uploader` |
 | `wasi:clocks`, `wasi:random` | `env::time_now`, `env::random_bytes` (and `std`'s clock and `HashMap` seed), served by the host so a logged run is deterministic |
