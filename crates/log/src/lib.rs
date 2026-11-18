@@ -242,17 +242,18 @@ impl<M: Machine> Group<M> {
         let old = self.raft();
         let _stopped = old.shutdown().await;
         {
-            let mut st = self
-                .shared
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            self.shared.clear_poison();
-            machine::reload(
-                &self.reopen.db,
-                &self.state,
-                &mut st,
-                &self.reopen.applied_tx,
-            )?;
+            // A std lock and a read of the whole state: on the blocking pool.
+            let shared = Arc::clone(&self.shared);
+            let (db, state) = (Arc::clone(&self.reopen.db), self.state.clone());
+            let applied_tx = Arc::clone(&self.reopen.applied_tx);
+            tokio::task::spawn_blocking(move || {
+                let mut st = shared
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                shared.clear_poison();
+                machine::reload(&db, &state, &mut st, &applied_tx)
+            })
+            .await??;
         }
         let sm = machine::StateMachine::reopened(
             self.id,
@@ -1074,12 +1075,15 @@ impl Engine {
         let config = Arc::new(config);
         let (applied_tx, applied_rx) = watch::channel(0);
         let applied_tx = Arc::new(applied_tx);
-        let sm = machine::StateMachine::open(
-            id,
-            Arc::clone(&self.db),
-            machine,
-            Arc::clone(&applied_tx),
-        )?;
+        // Reads the group's state from the disk (an in-memory machine's whole
+        // checkpoint): on the blocking pool, not an async worker.
+        let sm = {
+            let (db, applied_tx) = (Arc::clone(&self.db), Arc::clone(&applied_tx));
+            tokio::task::spawn_blocking(move || {
+                machine::StateMachine::open(id, db, machine, applied_tx)
+            })
+            .await??
+        };
         let shared = sm.shared();
         let state = sm.state();
         let log = LogStore::new(id, Arc::clone(&self.db));

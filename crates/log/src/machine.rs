@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::digest::{DigestAt, StateDigest, DIGEST_EVERY, DIGEST_KEPT};
-use crate::store::{load_generation, Db, GroupState, StateTx, Transaction};
+use crate::store::{load_generation, off_workers, Db, GroupState, StateTx, Transaction};
 use crate::types::{
     Bytes, Entry, GroupId, LogId, SnapshotMeta, StorageError, StoredMembership, TypeConfig,
 };
@@ -401,6 +401,22 @@ pub struct StateMachine<M: Machine> {
     snapshots_built: u64,
     /// The file the snapshot being received is written to.
     receiving: Option<PathBuf>,
+}
+
+impl<M: Machine> Clone for StateMachine<M> {
+    /// Another handle on the same group state, to run disk work on tokio's
+    /// blocking pool ([`crate::store::off_workers`]).
+    fn clone(&self) -> Self {
+        Self {
+            group: self.group,
+            db: Arc::clone(&self.db),
+            state: self.state.clone(),
+            shared: Arc::clone(&self.shared),
+            applied_tx: Arc::clone(&self.applied_tx),
+            snapshots_built: self.snapshots_built,
+            receiving: self.receiving.clone(),
+        }
+    }
 }
 
 impl<M: Machine> StateMachine<M> {
@@ -832,7 +848,11 @@ pub struct Builder<M: Machine> {
 
 impl<M: Machine> RaftSnapshotBuilder<TypeConfig> for Builder<M> {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError> {
-        self.inner.build().map_err(io)
+        // The file is written on the blocking pool, not on an async worker.
+        let mut inner = self.inner.clone();
+        let (built, inner) = off_workers(move || Ok((inner.build().map_err(io), inner))).await?;
+        self.inner = inner;
+        built
     }
 }
 
@@ -840,8 +860,13 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
     type SnapshotBuilder = Builder<M>;
 
     async fn applied_state(&mut self) -> Result<(Option<LogId>, StoredMembership), StorageError> {
-        let st = self.shared.read().map_err(io)?;
-        Ok((st.last_applied, st.membership.clone()))
+        // A std lock: never waited for on an async worker.
+        let shared = Arc::clone(&self.shared);
+        off_workers(move || {
+            let st = shared.read().map_err(io)?;
+            Ok((st.last_applied, st.membership.clone()))
+        })
+        .await
     }
 
     async fn apply<I>(&mut self, entries: I) -> Result<Vec<Bytes>, StorageError>
@@ -853,23 +878,25 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
         while self.db.apply_held(self.group) {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
-        let (out, last) = {
-            let mut st = self.shared.write().map_err(io)?;
-            match self.apply_batch(&mut st, entries) {
-                Ok(applied) => applied,
-                Err(e) => {
-                    // The core stops on this error ([`crate::Group`] restarts
-                    // it); until then nothing may read what never committed.
-                    tracing::error!(group = self.group, error = %e,
-                        "a batch did not apply: this group's Raft core stops, and restarts from the disk");
-                    if let Err(r) = reload(&self.db, &self.state, &mut st, &self.applied_tx) {
-                        tracing::error!(group = self.group, error = %r,
-                            "the group's state could not be read again from the disk");
-                    }
-                    return Err(e);
+        // On the blocking pool: the write lock waits for readers (a proposal
+        // built under the read lock may run a WASM call), and the machine and
+        // the commit may take long; neither may hold an async worker.
+        let entries: Vec<Entry> = entries.into_iter().collect();
+        let sm = self.clone();
+        let (out, last) = off_workers(move || {
+            let mut st = sm.shared.write().map_err(io)?;
+            sm.apply_batch(&mut st, entries).inspect_err(|e| {
+                // The core stops on this error ([`crate::Group`] restarts
+                // it); until then nothing may read what never committed.
+                tracing::error!(group = sm.group, error = %e,
+                    "a batch did not apply: this group's Raft core stops, and restarts from the disk");
+                if let Err(r) = reload(&sm.db, &sm.state, &mut st, &sm.applied_tx) {
+                    tracing::error!(group = sm.group, error = %r,
+                        "the group's state could not be read again from the disk");
                 }
-            }
-        };
+            })
+        })
+        .await?;
         if last > 0 {
             let _ = self.applied_tx.send(last);
         }
@@ -916,7 +943,11 @@ impl<M: Machine> RaftStateMachine<TypeConfig> for StateMachine<M> {
             file.flush().await.map_err(io)?;
             file.sync_all().await.map_err(io)?;
         }
-        self.install(meta).map_err(io)?;
+        // Reads the file and writes the next generation on the blocking pool.
+        let mut sm = self.clone();
+        self.receiving = None;
+        let owned = meta.clone();
+        off_workers(move || sm.install(&owned).map_err(io)).await?;
         let _ = self
             .applied_tx
             .send(meta.last_log_id.map_or(0, |l| l.index));

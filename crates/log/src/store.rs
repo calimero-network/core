@@ -358,6 +358,12 @@ pub(crate) static HELD_BUILDS: std::sync::Mutex<Vec<crate::testing::HeldBuild>> 
 pub(crate) static FAILING_READS: std::sync::Mutex<Vec<(PathBuf, GroupId)>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Groups whose synced writes take longer, by the directory their node opened
+/// (feature `testing`; see [`crate::testing::slow_synced_writes`]).
+#[cfg(feature = "testing")]
+pub(crate) static SLOW_SYNCS: std::sync::Mutex<Vec<(PathBuf, GroupId, std::time::Duration)>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// How long closing a store waits first, by the directory it was opened in
 /// (feature `testing`; see [`crate::testing::slow_close`]).
 #[cfg(feature = "testing")]
@@ -467,6 +473,25 @@ impl Db {
         }
     }
 
+    /// Wait as long as [`crate::testing::slow_synced_writes`] slows `group`'s
+    /// synced writes on this node (feature `testing`). Blocks the calling
+    /// thread, as a slow fsync does.
+    fn slow_sync(&self, group: GroupId) {
+        #[cfg(feature = "testing")]
+        {
+            let delay = SLOW_SYNCS.lock().ok().and_then(|s| {
+                s.iter()
+                    .find(|(d, g, _)| *g == group && *d == self.dir)
+                    .map(|(_, _, delay)| *delay)
+            });
+            if let Some(delay) = delay {
+                std::thread::sleep(delay);
+            }
+        }
+        #[cfg(not(feature = "testing"))]
+        let _ = group;
+    }
+
     /// Whether `group`'s unsynced writes are being dropped (feature `testing`).
     #[must_use]
     pub(crate) fn losing_unsynced(&self, group: GroupId) -> bool {
@@ -569,6 +594,7 @@ impl Db {
     ) -> eyre::Result<()> {
         let mut tx = Transaction::default();
         self.stage_meta(&mut tx, group, name, value)?;
+        self.slow_sync(group);
         self.write(&tx, true)
     }
 
@@ -656,6 +682,7 @@ impl Db {
                 serde_json::to_vec(e)?,
             );
         }
+        self.slow_sync(group);
         self.write(&tx, true)
     }
 
@@ -1230,6 +1257,18 @@ pub(crate) fn io(e: impl std::fmt::Display) -> StorageError {
     StorageIOError::write_logs(AnyError::error(e.to_string())).into()
 }
 
+/// Run `f`, which waits on the disk (a synced write, a snapshot file), on
+/// tokio's blocking pool and wait for it there. Every group of a node shares
+/// the async workers: a slow fsync run on one of them would hold up the other
+/// groups' heartbeats and elections for as long as it takes. The caller still
+/// awaits `f`, so what openraft relies on (an append durable before its
+/// callback, a vote before the reply) holds as before.
+pub(crate) async fn off_workers<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, StorageError> + Send + 'static,
+) -> Result<T, StorageError> {
+    tokio::task::spawn_blocking(f).await.map_err(io)?
+}
+
 /// One group's view of the log storage.
 #[derive(Clone)]
 pub struct LogStore {
@@ -1284,7 +1323,8 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn save_vote(&mut self, vote: &Vote) -> Result<(), StorageError> {
-        self.db.put_meta(self.group, "vote", vote).map_err(io)
+        let (db, group, vote) = (Arc::clone(&self.db), self.group, *vote);
+        off_workers(move || db.put_meta(group, "vote", &vote).map_err(io)).await
     }
 
     async fn read_vote(&mut self) -> Result<Option<Vote>, StorageError> {
@@ -1325,7 +1365,10 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         I::IntoIter: OptionalSend,
     {
         let entries: Vec<Entry> = entries.into_iter().collect();
-        let res = self.db.put_entries(self.group, &entries);
+        let (db, group) = (Arc::clone(&self.db), self.group);
+        // Synced before the callback: openraft counts the entries as this
+        // node's only once they are on the disk.
+        let res = off_workers(move || db.put_entries(group, &entries).map_err(io)).await;
         match res {
             Ok(()) => {
                 callback.log_io_completed(Ok(()));
@@ -1333,22 +1376,23 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             }
             Err(e) => {
                 callback.log_io_completed(Err(std::io::Error::other(e.to_string())));
-                Err(io(e))
+                Err(e)
             }
         }
     }
 
     async fn truncate(&mut self, log_id: LogId) -> Result<(), StorageError> {
-        self.db
-            .delete_log(self.group, log_id.index, u64::MAX)
-            .map_err(io)
+        let (db, group) = (Arc::clone(&self.db), self.group);
+        off_workers(move || db.delete_log(group, log_id.index, u64::MAX).map_err(io)).await
     }
 
     async fn purge(&mut self, log_id: LogId) -> Result<(), StorageError> {
-        self.db
-            .put_meta(self.group, "purged", &log_id)
-            .map_err(io)?;
-        self.db.delete_log(self.group, 0, log_id.index).map_err(io)
+        let (db, group) = (Arc::clone(&self.db), self.group);
+        off_workers(move || {
+            db.put_meta(group, "purged", &log_id).map_err(io)?;
+            db.delete_log(group, 0, log_id.index).map_err(io)
+        })
+        .await
     }
 }
 
