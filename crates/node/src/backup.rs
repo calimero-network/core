@@ -174,8 +174,20 @@ pub fn keep_code(
     std::fs::create_dir_all(&path)?;
     let tmp = path.join(format!(".{hash}.tmp"));
     std::fs::write(&tmp, code_sealer(cluster_key).seal(hash.as_bytes(), bytes)?)?;
+    std::fs::File::open(&tmp)?.sync_all()?;
     std::fs::rename(&tmp, path.join(hash))?;
+    sync_dir(&path)?;
     Ok(true)
+}
+
+/// Make the names in `dir` (a file renamed or written into it) durable: a
+/// rename reaches the disk with the directory, not with the file.
+fn sync_dir(dir: &Path) -> eyre::Result<()> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 /// The code a backup directory keeps: `(hash, bytes)` for every file that
@@ -562,15 +574,21 @@ pub fn write(
     }
     // The manifest first, the file it names last: a backup is listed only
     // once both are there.
+    // Each on the disk before the rename names it: a crash then never leaves a
+    // backup listed whose file or manifest is empty or short.
     let tmp = path.join(format!(".{name}.tmp"));
     let _bytes = std::fs::copy(snapshot, &tmp)?;
+    std::fs::File::open(&tmp)?.sync_all()?;
     let mut manifest = manifest.clone();
     manifest.sha256 = file_sha256(&tmp)?;
+    let manifest_path = path.join(format!("{name}{MANIFEST_SUFFIX}"));
     std::fs::write(
-        path.join(format!("{name}{MANIFEST_SUFFIX}")),
+        &manifest_path,
         seal_manifest(cluster_key, &name, &manifest)?,
     )?;
+    std::fs::File::open(&manifest_path)?.sync_all()?;
     std::fs::rename(&tmp, &out)?;
+    sync_dir(&path)?;
     Ok(true)
 }
 

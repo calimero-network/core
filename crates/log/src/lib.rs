@@ -173,6 +173,9 @@ struct Reopen {
 trait RpcTarget: Send + Sync {
     fn handle(&self, request: RpcRequest) -> BoxFuture<RpcResponse>;
     fn shutdown(&self) -> BoxFuture<()>;
+    /// Delete the group's data from this node (after [`Self::shutdown`]): a
+    /// snapshot build openraft still runs records nothing for it after.
+    fn drop_data(&self) -> eyre::Result<()>;
 }
 
 /// One Raft group on this node.
@@ -831,6 +834,20 @@ impl<M: Machine> RpcTarget for Group<M> {
             let _ = raft.shutdown().await;
         })
     }
+
+    fn drop_data(&self) -> eyre::Result<()> {
+        // openraft does not wait for a snapshot build when its core shuts
+        // down. Under both locks no build is between its check and its write
+        // (`StateMachine::refuse_if_removed`), so one that runs on finds the
+        // group removed and leaves no checkpoint, record or file behind.
+        let _record = self.state.lock_snapshot_record();
+        let _applied = self
+            .shared
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.state.removed.store(true, Ordering::Release);
+        self.state.db.drop_group(self.id)
+    }
 }
 
 /// Watch a group's Raft core and start it again from the disk whenever it
@@ -940,6 +957,7 @@ impl Engine {
                 store::store_path(dir).display()
             ))
         })?;
+        machine::clean_snapshot_dir(&db)?;
         Ok(Arc::new(Self {
             node,
             db,
@@ -1134,10 +1152,13 @@ impl Engine {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&id);
-        if let Some(t) = target {
-            t.shutdown().await;
+        match target {
+            Some(t) => {
+                t.shutdown().await;
+                t.drop_data()
+            }
+            None => self.db.drop_group(id),
         }
-        self.db.drop_group(id)
     }
 
     /// Whether the store is still open: it closes, releasing its lock, once
