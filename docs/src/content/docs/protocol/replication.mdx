@@ -259,7 +259,15 @@ rest, deleting their data from that node.
   peer, `Node::may_send` checks that the peer's attested mero-tee release is
   one approved to hold that app's data ([Deployment
   governance](/protocol/governance/#release-approvals)). The system group goes
-  to every attested peer.
+  to every attested peer. The receiving node makes the same check, and that the
+  sender is a member of the group (`api::internal_raft`). Both ends run it for
+  every heartbeat of every app group, so neither scans the directory: the
+  system machine keeps an index from group to app and from node to its apps,
+  and caches each (group, release) decision, all derived from the applied
+  state and dropped when the next system entry applies or a snapshot restores
+  (`SystemMachine::app_of_group`, `apps_on`, `group_may_hold`). Nothing of it
+  is stored or replicated. `reconcile` reads the same index, so a pass costs
+  this node's groups, not groups times apps.
 
 ## Replica moves
 

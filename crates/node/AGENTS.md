@@ -70,6 +70,13 @@ is its command line.
   caller and, for an app group, an approved release and membership (replicas or
   the group's voters/learners): openraft itself never checks (F4). Outbound,
   blobs (`spread_blob`) and presence go only to peers `may_send` allows.
+  Both Raft checks run per heartbeat of every app group, so they read
+  `SystemMachine::app_of_group` and `group_may_hold` (`system/routing.rs`: a
+  group -> app and node -> apps index and a (group, release) decision cache,
+  derived, dropped on every system apply and restore; `Node::sys_machine`),
+  never a scan of `apps`; `reconcile` uses `apps_on` and `app_of_group` too.
+  Regressions: `system::routing::tests`
+  (`routing_a_raft_message_does_not_scan_the_apps`, a scaling guard).
   No interop with nodes before this (a hard cutover: clusters are recreated).
   Regression (`tests/approval_bypasses.rs`):
   `a_node_on_an_unapproved_release_reaches_no_app_through_internal_routes`.
