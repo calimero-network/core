@@ -7024,8 +7024,11 @@ async fn a_replica_whose_state_differs_from_its_leaders_is_reported() {
     c.restart(follower).await;
 
     let mut differ = None;
+    let mut seen = Vec::new();
     for _ in 0..100 {
-        differ = compare(&c).await.into_iter().find(|x| {
+        let all = compare(&c).await;
+        seen.push(format!("lead={:?} {:?}", c.app_leader(&app), all.iter().filter(|x| x.group == id).map(|x| (x.peer, x.outcome)).collect::<Vec<_>>()));
+        differ = all.into_iter().find(|x| {
             x.group == id
                 && x.peer == peer
                 && matches!(x.outcome, calimero_log::Comparison::Differ { .. })
@@ -7037,7 +7040,7 @@ async fn a_replica_whose_state_differs_from_its_leaders_is_reported() {
     }
     assert!(
         differ.is_some(),
-        "the leader never noticed node {peer}'s state"
+        "the leader never noticed node {peer}'s state: leader {leader}, {seen:#?}"
     );
     let mut metrics = String::new();
     calimero_node::metrics::render(&mut metrics);
