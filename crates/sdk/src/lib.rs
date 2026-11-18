@@ -34,6 +34,7 @@ pub mod json;
 pub mod search;
 pub mod store;
 pub mod table;
+pub mod xcall;
 
 #[cfg(all(feature = "testing", not(target_arch = "wasm32")))]
 pub mod testing;
@@ -77,15 +78,16 @@ pub use abi::AbiType;
 pub use action::{ActionCtx, Request, Response};
 pub use blob::{BlobInfo, BlobRef};
 pub use collections::{
-    CborSha256, Cell, ContentHash, Counter, Frozen, Mark, PerUser, RichText, Set, Span, Text,
+    CborSha256, Cell, ContentHash, Counter, Frozen, List, Mark, PerUser, RichText, Set, Span, Text,
     UnorderedMap, Vector,
 };
 pub use encoding::key::{FromKey, FromKeyPart, KeyPart, ToKey, ToKeyPart};
 pub use env::{Audience, Caller, OrgRole};
 pub use error::{AppError, Result, StorageError, TableError};
+pub use json::Bytes;
 pub use search::{Found, SearchMode, SearchOpts, SearchResults};
 pub use store::{MemStore, RangeCursor, Store};
-pub use table::{FindOpts, Page, Record, Table};
+pub use table::{FindOpts, Iter, Page, Progress, Record, Table};
 
 #[cfg(target_arch = "wasm32")]
 pub use store::HostStore;
@@ -97,8 +99,8 @@ pub mod prelude {
     pub use crate::app::{self, AppEvent, AppState};
     pub use crate::{
         env, guards, AbiType, ActionCtx, AppError, Audience, BlobRef, Caller, Cell, ContentHash,
-        Counter, FindOpts, Found, FromKey, FromKeyPart, Frozen, KeyPart, Page, PerUser, Record,
-        RichText, SearchMode, SearchOpts, Set, Span, Table, Text, ToKey, ToKeyPart, UnorderedMap,
-        Vector,
+        Counter, FindOpts, Found, FromKey, FromKeyPart, Frozen, KeyPart, List, Page, PerUser,
+        Record, RichText, SearchMode, SearchOpts, Set, Span, Table, Text, ToKey, ToKeyPart,
+        UnorderedMap, Vector,
     };
 }

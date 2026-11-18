@@ -1,5 +1,5 @@
 //! Starting and cancelling compute runs from app code on a cluster, through the `compute`
-//! fixture (`apps/v2-fixtures/compute`). No job node is registered, so a run stays queued.
+//! fixture (`apps/fixture-compute`). No job node is registered, so a run stays queued.
 
 mod common;
 use common::UploadBytes as _;
@@ -23,7 +23,7 @@ struct Releases {
 }
 
 fn releases() -> Releases {
-    let both = common::components("compute");
+    let both = common::components("fixture-compute");
     let first = both.compute.clone().expect("a compute component");
     let mut abi = calimero_app_build::abi_of(&first).unwrap().expect("an ABI");
     abi["build"] = json!(2);
@@ -205,7 +205,7 @@ async fn a_start_on_an_app_without_a_compute_component_is_refused_and_records_no
     let (alice, _pk) = signed_up(&c, 0, "alice").await;
     let bundle = alice
         .packages()
-        .bundle_put(common::component("compute"))
+        .bundle_put(common::component("fixture-compute"))
         .await
         .map(|b| b.hash)
         .unwrap();

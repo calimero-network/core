@@ -78,24 +78,38 @@ impl Node {
     }
 
     /// The gate every proposal goes through ([`Node::sys_write`]): `409
-    /// FEATURE_NOT_ACTIVE` unless every feature is active, judged on the
-    /// logged cluster version, or, when that is below, on what every node
-    /// supports now.
+    /// FEATURE_NOT_ACTIVE` unless every feature is active on the logged
+    /// cluster version. When that is below but every node supports them now,
+    /// the version is logged first ([`cv::admit`]): an entry is never in the
+    /// log before the version that keeps older nodes out of the system group
+    /// (`joins_at_cluster_version`).
     pub async fn require_features(&self, features: &[Feature]) -> Result<(), ApiError> {
         if features.is_empty() {
             return Ok(());
         }
+        let not_active = |refused: cv::NotActive| {
+            ApiError::new(409, FEATURE_NOT_ACTIVE, &refused.message())
+                .with_details(refused.details())
+        };
         let logged = self.sys(|s| s.cluster_version.clone());
         if cv::check(logged.as_deref(), features).is_ok() {
             return Ok(());
         }
         let advertised = self.advertised_versions().await;
         let floor = cv::floor(advertised.values().map(Option::as_deref));
-        let active = cv::effective(logged.as_deref(), floor.as_deref());
-        cv::check(active.as_deref(), features).map_err(|refused| {
-            ApiError::new(409, FEATURE_NOT_ACTIVE, &refused.message())
-                .with_details(refused.details())
-        })
+        match cv::admit(logged.as_deref(), floor.as_deref(), features) {
+            cv::Admission::Admitted => Ok(()),
+            cv::Admission::Refused(refused) => Err(not_active(refused)),
+            cv::Admission::LogFirst(version) => {
+                if let Err(why) = self.raise_cluster_version_once().await {
+                    warn!(%version, %why, "could not log the cluster version a proposal needs");
+                }
+                // Whoever logged it, this node judges on its own copy of the log.
+                let _fresh = self.sys_fresh().await;
+                let logged = self.sys(|s| s.cluster_version.clone());
+                cv::check(logged.as_deref(), features).map_err(not_active)
+            }
+        }
     }
 
     /// On the system leader: log the cluster version every registered node
@@ -158,7 +172,7 @@ impl Node {
             .filter_map(|id| advertised.get(&id).cloned().flatten().map(|v| (id, v)))
             .collect();
         let _out = self
-            .sys_write(&SystemCmd::SetClusterVersion {
+            .sys_propose(&SystemCmd::SetClusterVersion {
                 version: version.clone(),
                 nodes: nodes.clone(),
             })

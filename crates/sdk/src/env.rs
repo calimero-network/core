@@ -199,6 +199,11 @@ pub fn xcall<T: Serialize + ?Sized>(app: &str, method: &str, args: &T) -> Result
 /// `allow(app = "<this app>")` or `allow(app = "*")`. Calls, timers and actions only; a
 /// delivered xcall makes none.
 ///
+/// It is a future: `.await` it in an `async fn` app method. Awaited one after another,
+/// xcalls run one after another; joined (`app::join!`, `xcall::join_all`), the node runs
+/// them at once, at most 16 per run in all (`MAX_SYNC_XCALLS`). For a target known at build
+/// time, prefer the typed client a release's `uses` generates (`app::uses!()`).
+///
 /// Not atomic: the target's call commits whatever this run does next, so a target method
 /// should be safe to have run (a captcha's `verify` spends the challenge either way). A
 /// re-run of this call (a client's retry, a leader change) replays the target's answer:
@@ -208,14 +213,14 @@ pub fn xcall<T: Serialize + ?Sized>(app: &str, method: &str, args: &T) -> Result
 /// # Errors
 ///
 /// `XcallFailed` with the fields of the failure: the target's app error (`code`,
-/// `fields`), a refusal or a timeout (`message`); `BadOutput` when the result is not a `T`.
+/// `fields`), a refusal or a timeout (`message`); `BadOutput` when the result is not a `T`;
+/// `BadArgs` when `args` do not serialize.
 pub fn xcall_call<T: DeserializeOwned, A: Serialize + ?Sized>(
     app: &str,
     method: &str,
     args: &A,
-) -> Result<T> {
-    let args = sync_args(args)?;
-    decode_sync(backend::xcall_call(app, method, &args))
+) -> crate::xcall::Pending<Result<T>> {
+    crate::xcall::Pending::call(app, method, args, crate::xcall::decode::<T>)
 }
 
 /// Run view `method` of app `app` on its latest committed state and decode its JSON
@@ -228,38 +233,31 @@ pub fn xcall_view<T: DeserializeOwned, A: Serialize + ?Sized>(
     app: &str,
     method: &str,
     args: &A,
-) -> Result<T> {
-    let args = sync_args(args)?;
-    decode_sync(backend::xcall_view(app, method, &args))
+) -> crate::xcall::Pending<Result<T>> {
+    crate::xcall::Pending::view(app, method, args, crate::xcall::decode::<T>)
 }
 
-fn sync_args<A: Serialize + ?Sized>(args: &A) -> Result<Vec<u8>> {
-    serde_json::to_vec(args)
-        .map_err(|e| AppError::with_fields("BadArgs", json!({ "message": e.to_string() })))
-}
-
-/// A synchronous xcall's answer: the result decoded, or `XcallFailed` with the failure's
-/// JSON fields (a message that is not a JSON object becomes `{"message": ..}`).
-fn decode_sync<T: DeserializeOwned>(answer: std::result::Result<Vec<u8>, String>) -> Result<T> {
-    match answer {
-        Ok(out) => {
-            let out = if out.is_empty() {
-                b"null".to_vec()
-            } else {
-                out
-            };
-            serde_json::from_slice(&out).map_err(|e| {
-                AppError::with_fields("BadOutput", json!({ "message": e.to_string() }))
-            })
-        }
-        Err(message) => {
-            let fields = match serde_json::from_str::<serde_json::Value>(&message) {
-                Ok(v @ serde_json::Value::Object(_)) => v,
-                _ => json!({ "message": message }),
-            };
-            Err(AppError::with_fields("XcallFailed", fields))
-        }
+/// Send `requests` to the node as one batch (WIT `xcall.batch`): it runs them at once and
+/// answers each in order, with the checks of [`xcall_call`] and [`xcall_view`] per request.
+/// The executor behind `.await` calls it; call it yourself only to batch by hand.
+pub fn xcall_batch(requests: &[crate::xcall::Request]) -> Vec<crate::xcall::Answer> {
+    if requests.is_empty() {
+        return Vec::new();
     }
+    backend::xcall_batch(requests)
+        .into_iter()
+        .map(|answer| answer.map_err(|message| xcall_failure(&message)))
+        .collect()
+}
+
+/// A synchronous xcall's failure: `XcallFailed` with the failure's JSON fields (a message
+/// that is not a JSON object becomes `{"message": ..}`).
+fn xcall_failure(message: &str) -> AppError {
+    let fields = match serde_json::from_str::<serde_json::Value>(message) {
+        Ok(v @ serde_json::Value::Object(_)) => v,
+        _ => json!({ "message": message }),
+    };
+    AppError::with_fields("XcallFailed", fields)
 }
 
 /// Send `request` over `wasi:http` from a call, a timer or a delivery (D76), as an action's

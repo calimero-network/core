@@ -25,6 +25,41 @@ pub const XCALL_SYNC_SELF: &str = "a synchronous xcall cannot target the app its
 /// The node gave the run no way to make one.
 pub const XCALL_SYNC_UNAVAILABLE: &str = "synchronous xcalls are not available to this run";
 
+/// Whether a synchronous xcall is a call (logged in the target) or a view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum XcallKind {
+    /// `xcall.call`: one logged call of the target, under a key derived from the run's.
+    Call,
+    /// `xcall.view`: a read of the target's latest committed state.
+    View,
+}
+
+/// One request of a run's batch (`xcall.batch`), as the guest made it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XcallRequest {
+    /// A call or a view.
+    pub kind: XcallKind,
+    /// The target app.
+    pub app: String,
+    /// The target method.
+    pub method: String,
+    /// The JSON arguments.
+    pub args: Vec<u8>,
+}
+
+/// One request of a batch the host core checked and keyed, as the node is handed it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SyncXcall<'a> {
+    /// The target app.
+    pub app: &'a str,
+    /// The target method.
+    pub method: &'a str,
+    /// The JSON arguments.
+    pub args: &'a [u8],
+    /// The call's idempotency key ([`sync_xcall_key`]); `None` for a view.
+    pub key: Option<&'a str>,
+}
+
 /// What the node lets a run reach in other apps, as `Caller::App(<this app>)`.
 pub trait XcallHost: Send + Sync {
     /// The run's own key, the base of every call's key: the same on every re-run.
@@ -35,6 +70,19 @@ pub trait XcallHost: Send + Sync {
     /// Run view `method` of `app` on its latest committed state; the JSON result, or the
     /// failure as JSON text.
     fn view(&self, app: &str, method: &str, args: &[u8]) -> Result<Vec<u8>, String>;
+    /// Run every request of a batch and answer each, in order: a request with a key as
+    /// [`Self::call`], one without as [`Self::view`]. This default runs them one after
+    /// another; a host that can should run them at once, so the run waits for the slowest
+    /// rather than for their sum.
+    fn batch(&self, requests: &[SyncXcall<'_>]) -> Vec<Result<Vec<u8>, String>> {
+        requests
+            .iter()
+            .map(|r| match r.key {
+                Some(key) => self.call(r.app, r.method, r.args, key),
+                None => self.view(r.app, r.method, r.args),
+            })
+            .collect()
+    }
 }
 
 /// The key of the `occurrence`-th synchronous call of `app`'s `method` with `args` in the

@@ -351,7 +351,7 @@ jobs:
           target_commit: ${{ needs.prepare.outputs.target_commit }}
 
   # Dev-signed kv .mpk (kv-store-test-fixture.mpk, package com.calimero.kv-store):
-  # the kv component (apps/v2-fixtures/kv: set, get, len, and `clear`, a confirm
+  # the kv component (apps/fixture-kv: set, get, len, and `clear`, a confirm
   # method), which the clients' cluster tests run against a released merod
   # (mero-js scripts/download-released-merod.sh). Dev-signed bundles are
   # registry-refused, so this can't leak into real distribution. Only when this
@@ -385,7 +385,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release -p meroctl
-          "${CARGO_TARGET_DIR:-target}/release/meroctl" app build apps/v2-fixtures/kv --out dist/kv.wasm
+          "${CARGO_TARGET_DIR:-target}/release/meroctl" app build apps/fixture-kv --out dist/kv.wasm
           "${CARGO_TARGET_DIR:-target}/release/meroctl" app pack --wasm dist/kv.wasm \
             --package com.calimero.kv-store --app-version "${NEEDS_PREPARE_OUTPUTS_VERSION}" \
             --out dist/kv-store-test-fixture.mpk
@@ -564,7 +564,7 @@ jobs:
           mkdir -p target/image-e2e
           target_dir="${CARGO_TARGET_DIR:-target}"
           "$target_dir/release/meroctl" app build \
-            apps/v2-fixtures/kv --out target/image-e2e/kv.wasm
+            apps/fixture-kv --out target/image-e2e/kv.wasm
           cp "$target_dir/release/meroctl" target/image-e2e/
           for v in 1.0.0 1.1.0; do
             "$target_dir/release/meroctl" app pack --wasm target/image-e2e/kv.wasm \

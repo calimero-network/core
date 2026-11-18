@@ -26,7 +26,7 @@ typed answer serialized back to JSON; `raw` and `proxy` send any route through
 | `team ...` | teams: members, metadata, reparent, subteams, settings; `team upgrade trigger/status/retry` (org-wide runs) | `/orgs/{org}/teams*`, `/orgs/{org}/upgrade*` |
 | `account ...` | the account: devices (passkeys), API keys, usage, approvals | `/auth/*` |
 | `dev start/watch` | install, create, keep pushing a build | |
-| (new) `app new/build/codegen/abi show\|diff/signer new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone, plus an `AGENTS.md` for coding agents (`agents_md`) and a `CLAUDE.md` importing it; test `dev_new_starts_a_project_from_an_app_of_the_apps_repo`), `calimero-app-build`'s builder and `abi_tools`, `meroctl-sign`, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), `pack --service NAME=PATH` (or the crate's `services`) writes a multi-service manifest, and `pack` opens what it wrote with `VerifiedBundle` before writing it; the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
+| (new) `app new/build/codegen/abi show\|diff/uses update\|check/signer new\|id/pack/sign/inspect/publish` | no node: start from `calimero-network/apps` (`dev.rs::new`, a sparse clone, plus an `AGENTS.md` for coding agents (`agents_md`) and a `CLAUDE.md` importing it; test `dev_new_starts_a_project_from_an_app_of_the_apps_repo`), `calimero-app-build`'s builder and `abi_tools`, `uses update NAME --from <crate\|.mpk\|.wasm\|abi.json>` (`make/uses.rs`: checks the package, the semver range and the listed methods, then `calimero_app_build::uses::vendor` writes `calimero.lock` and `calimero/abi/NAME.json`) and `uses check` (`uses::check` plus the range), `meroctl-sign`, `calimero-bundle` (the frontend checked with `validate` and `check_frontend_html`), `pack --service NAME=PATH` (or the crate's `services`) writes a multi-service manifest, and `pack` opens what it wrote with `VerifiedBundle` before writing it; the registry's `POST /api/bundles/push` (`--org`: the Cloud's `POST /api/registry/token` first) | registry, Cloud |
 | (new) `local up/down/status/dev/test/compute run` | `merod local` (the release's image by default, `docker_ready` checking Docker first; `--local` or `MEROD`: the binary; `--registry-url`, default the public registry) in the background, state in `--dir`/`meroctl-local.json`, saved as node `local`; `dev` builds, uploads a raw bundle as a fresh deployer, writes `app/.env.development.local`, runs `pnpm dev` on :5173 and rebuilds on save; `compute run` is `mero-compute` (feature `compute`, default on) | `/bundles` |
 | (new) `cloud login/logout/orgs/clusters list\|create/use`, `cloud compute pipeline\|logs` | the Cloud manager (mdma) with a console session in `{home}/meroctl/cloud.json` (refreshed from `X-MDMA-Session-Refresh`); `use` saves a cluster's node as the default | `/api/orgs`, `/api/clusters` |
 | `network status` | `/health` | |
@@ -108,7 +108,7 @@ device), `peers` (no gossip), `tee fleet-join` (`ops add-node`).
   `a_cluster_that_started_over_refuses_the_old_passkey_file_and_says_what_to_do`.
 
 ```bash
-cargo test -p meroctl        # every command group against an in-process 3-node cluster (builds apps/v2-fixtures/kv)
+cargo test -p meroctl        # every command group against an in-process 3-node cluster (builds apps/fixture-kv)
 cargo test -p meroctl --test app_offline --test cloud --test dev_new   # no node, no network
 cargo run -p meroctl -- --help
 ```

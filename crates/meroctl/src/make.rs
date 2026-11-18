@@ -1,5 +1,5 @@
 //! `meroctl app` without a node: start a project, build it, generate its
-//! clients, compare its ABI, make a signing key (`signer`), pack and sign an `.mpk`,
+//! clients, pin and vendor the apps it uses (`uses`, in `make/uses.rs`), compare its ABI, make a signing key (`signer`), pack and sign an `.mpk`,
 //! inspect one, and publish it to a registry. Each calls the library the
 //! tool it replaced was built on (`calimero-app-build`, `calimero-app-abi`,
 //! `meroctl-sign`, `calimero-bundle`), so the formats are the node's own.
@@ -18,6 +18,8 @@ use clap::{Args, Subcommand, ValueEnum};
 use eyre::{bail, eyre, WrapErr};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
+
+pub mod uses;
 
 /// The default component file names, as `mero-app-build` wrote them.
 pub const APP_FILE: &str = "app.component.wasm";

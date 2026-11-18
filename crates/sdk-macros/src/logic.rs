@@ -19,9 +19,9 @@ use crate::types::{
 };
 
 /// The world the app component's ABI names.
-const WORLD: &str = "calimero:app@0.5.3";
+const WORLD: &str = "calimero:app@0.5.4";
 /// The world the compute component's ABI names.
-const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.3";
+const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.4";
 /// The ABI version this SDK writes (D51).
 const ABI_VERSION: u64 = 1;
 
@@ -72,6 +72,8 @@ struct Method {
     returns_result: bool,
     /// The method's `///` comment, for the people reading the ABI.
     doc: Option<String>,
+    /// An `async fn`: its body runs under the SDK's xcall executor (`xcall::block_on`).
+    is_async: bool,
 }
 
 /// The `app::<name>` attribute name, if `attr` is one (`app::x`, or `<sdk>::app::x` for the
@@ -273,8 +275,8 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
     }
     let sig = &f.sig;
     let fail = |msg: &str| Err(syn::Error::new_spanned(&sig.ident, msg));
-    if sig.asyncness.is_some() || !sig.generics.params.is_empty() {
-        return fail("app methods are synchronous and take no generics");
+    if !sig.generics.params.is_empty() {
+        return fail("app methods take no generics");
     }
 
     let mut receiver_mut = None;
@@ -330,6 +332,9 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
             return fail("`init`, `view`, `every`, `action` and `compute` exclude each other");
         }
     };
+    if sig.asyncness.is_some() && kind == Kind::Compute {
+        return fail("a compute method calls no other app: it is not `async`");
+    }
     if attrs.compute_result && kind != Kind::Call {
         return fail("`compute_result` goes on a plain call method");
     }
@@ -390,6 +395,7 @@ fn method(f: &mut ImplItemFn) -> syn::Result<Option<Method>> {
         ok,
         returns_result,
         doc: doc_comment(&f.attrs),
+        is_async: sig.asyncness.is_some(),
     }))
 }
 
@@ -471,18 +477,35 @@ fn run_arm(index: usize, m: &Method, state: &Type) -> TokenStream {
     });
     let names: Vec<_> = m.params.iter().map(|(name, _)| name).collect();
     let rust = &m.rust;
+    // An `async fn` runs under the xcall executor, which batches the xcalls it awaits.
+    let run = |call: TokenStream| {
+        if m.is_async {
+            quote! { #sdk::xcall::block_on(#call) }
+        } else {
+            call
+        }
+    };
     let call = match m.receiver_mut {
-        None if m.kind == Kind::Action => quote! {
-            <#state>::#rust(&mut #sdk::ActionCtx::current(), #(#names),*)
-        },
-        None => quote! { <#state>::#rust(#(#names),*) },
-        Some(_) => quote! {
-            {
-                #[allow(unused_mut)]
-                let mut __state = <#state as #sdk::app::AppState>::load();
-                __state.#rust(#(#names),*)
+        None if m.kind == Kind::Action => {
+            let call = run(quote! { <#state>::#rust(&mut __ctx, #(#names),*) });
+            quote! {
+                {
+                    let mut __ctx = #sdk::ActionCtx::current();
+                    #call
+                }
             }
-        },
+        }
+        None => run(quote! { <#state>::#rust(#(#names),*) }),
+        Some(_) => {
+            let call = run(quote! { __state.#rust(#(#names),*) });
+            quote! {
+                {
+                    #[allow(unused_mut)]
+                    let mut __state = <#state as #sdk::app::AppState>::load();
+                    #call
+                }
+            }
+        }
     };
     let call = if m.returns_result {
         quote! { #call.map_err(::core::convert::Into::<#sdk::AppError>::into)? }
@@ -870,6 +893,29 @@ mod tests {
         assert_eq!(doc_of(f).as_deref(), Some("Lists.\na\nb"));
     }
 
+    #[test]
+    fn an_async_method_runs_under_the_xcall_executor_and_a_compute_one_is_refused() {
+        let item: ItemImpl = parse_quote! {
+            impl S {
+                pub async fn both(&mut self, a: String) -> app::Result<u32> { Ok(1) }
+                #[app::view]
+                pub async fn look(&self) -> app::Result<u32> { Ok(1) }
+                pub fn plain(&mut self) -> app::Result<()> { Ok(()) }
+            }
+        };
+        let out = expand(item).unwrap().to_string();
+        assert_eq!(out.matches("xcall :: block_on").count(), 2, "{out}");
+        let msg = refused(parse_quote! {
+            impl S {
+                #[app::compute(fuel = 1, result = "done")]
+                pub async fn work() -> app::Result<()> { Ok(()) }
+                #[app::compute_result]
+                pub fn done(&mut self, o: String) -> app::Result<()> { Ok(()) }
+            }
+        });
+        assert!(msg.contains("not `async`"), "{msg}");
+    }
+
     fn refused(item: ItemImpl) -> String {
         match expand(item) {
             Ok(_) => panic!("expected a compile error"),
@@ -951,12 +997,12 @@ mod tests {
         assert!(out.contains(&compute_methods), "{out}");
         assert!(
             out.contains(
-                r#",\"world\":\"calimero:app/compute@0.5.3\"}"#.replace(r#"\""#, "\"").as_str()
+                r#",\"world\":\"calimero:app/compute@0.5.4\"}"#.replace(r#"\""#, "\"").as_str()
             ),
             "{out}"
         );
         assert!(
-            out.contains(r#",\"world\":\"calimero:app@0.5.3\"}"#.replace(r#"\""#, "\"").as_str()),
+            out.contains(r#",\"world\":\"calimero:app@0.5.4\"}"#.replace(r#"\""#, "\"").as_str()),
             "{out}"
         );
     }
