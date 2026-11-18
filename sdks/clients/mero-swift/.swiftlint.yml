@@ -1,0 +1,71 @@
+included:
+  - Sources
+  - Tests
+  - examples
+
+excluded:
+  - .build
+  # Written by scripts/generate-openapi.sh; never edited by hand.
+  - Sources/MeroAPI/Generated
+  - Sources/MeroKit/Api/Generated
+  - examples/MeroSampleApp/MeroSampleApp.xcodeproj
+
+# Keep the ruleset practical for an SDK with large hand-ported DTO files.
+disabled_rules:
+  - todo
+  - trailing_comma
+  - opening_brace
+  # `String(decoding:as:)` is the idiomatic, non-optional UTF-8 conversion used
+  # throughout the transport layer — the failable initializer isn't wanted here.
+  - optional_data_string_conversion
+  # `URLProtocol` overrides (canInit/canonicalRequest) must be `class func`.
+  - static_over_final_class
+  # Test fixtures use `try!` deliberately for known-good literals.
+  - force_try
+
+opt_in_rules:
+  - empty_count
+  - closure_spacing
+  - explicit_init
+  - redundant_nil_coalescing
+
+line_length:
+  warning: 140
+  error: 200
+  ignores_comments: true
+  ignores_urls: true
+
+type_body_length:
+  warning: 1200
+  error: 2000
+
+file_length:
+  warning: 1200
+  error: 2000
+  ignore_comment_only_lines: true
+
+function_body_length:
+  warning: 120
+  error: 200
+
+function_parameter_count:
+  warning: 8
+  error: 12
+
+cyclomatic_complexity:
+  warning: 20
+  error: 30
+
+identifier_name:
+  min_length: 1
+  max_length:
+    warning: 60
+    error: 80
+
+type_name:
+  max_length:
+    warning: 60
+    error: 80
+
+nesting:
+  type_level: 3

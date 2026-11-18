@@ -1,0 +1,97 @@
+# XcodeGen spec for the MeroKit sample app + its XCUITest suite.
+# Generate the Xcode project with:  xcodegen generate
+# Run the UI tests with:
+#   xcodebuild test -project MeroSampleApp.xcodeproj -scheme MeroSampleApp \
+#     -destination 'platform=iOS Simulator,name=iPhone 17'
+name: MeroSampleApp
+
+options:
+  bundleIdPrefix: network.calimero.merokit
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+packages:
+  MeroKit:
+    path: ../..
+
+targets:
+  MeroSampleApp:
+    type: application
+    info:
+      path: Sources/Generated-Info.plist
+      properties:
+        UILaunchScreen: {}
+        # The scheme the node's consent page returns to
+        # (`mero-sample://consent?request_id=…&result=…`).
+        # ASWebAuthenticationSession intercepts it itself; registering it also
+        # lets `onOpenURL` read a return that arrives outside the sheet.
+        CFBundleURLTypes:
+          - CFBundleURLName: network.calimero.merokit.sample.consent
+            CFBundleURLSchemes: [mero-sample]
+        # The Calimero Cloud cluster the sign-in screen prefills (a node URL
+        # from the console). Empty: the person enters one.
+        CalimeroClusterURL: ""
+        # The development cluster a fresh launch prefills ("Manually enter node
+        # URL"): `merod local`'s first node. It MUST stay a loopback URL (the
+        # simulator shares the host's network; ui.yml checks it).
+        # generate-ios.sh rewrites it to the Mac's LAN IP for a physical-device
+        # install and restores this file afterwards.
+        DefaultNodeURL: "http://localhost:2501"
+        NSLocalNetworkUsageDescription: "Connect to a Calimero node running on your Mac over the local network for development."
+        # http only to a node on the local network (localhost, *.local, an
+        # IP literal such as the Mac's LAN IP generate-ios.sh bakes in for a
+        # phone); everything else stays https under ATS.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    platform: iOS
+    sources:
+      - Sources
+      - Resources
+    # A passkey on a real cluster belongs to its relying party (the node's
+    # --rp-id): to sign in with the device's passkey, add an entitlements file
+    # with `com.apple.developer.associated-domains: [webcredentials:<rp-id>]`
+    # (and serve apple-app-site-association there). A development cluster
+    # (`merod local`) uses a software passkey and needs neither.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: network.calimero.merokit.sample
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.9"
+    dependencies:
+      - package: MeroKit
+        product: MeroKit
+      - package: MeroKit
+        product: MeroKitUI
+      - package: MeroKit
+        product: MeroAPI
+      # `-uitest-mock` runs the UI against an in-app cluster (FakeCloud).
+      - package: MeroKit
+        product: MeroKitTestSupport
+
+  MeroSampleAppUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - UITests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: network.calimero.merokit.sample.uitests
+        SWIFT_VERSION: "5.9"
+        # A test bundle is code-signed like any other, and signing needs an
+        # Info.plist. The app target gets one from its `info:` block; this one
+        # has nothing to declare, so let Xcode synthesize it rather than
+        # committing a file whose only purpose is to exist.
+        GENERATE_INFOPLIST_FILE: "YES"
+    dependencies:
+      - target: MeroSampleApp
+
+schemes:
+  MeroSampleApp:
+    build:
+      targets:
+        MeroSampleApp: all
+        MeroSampleAppUITests: [test]
+    test:
+      targets:
+        - MeroSampleAppUITests

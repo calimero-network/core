@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://calimero-network.github.io/swift-sdk/sitemap-index.xml

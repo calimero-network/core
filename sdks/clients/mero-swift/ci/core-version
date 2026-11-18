@@ -1,0 +1,8 @@
+# The calimero-network/core release this SDK is developed and tested against.
+#
+# Single source of truth for the jobs that boot a node (e2e.yml). Calimero 1.0
+# nodes run in clusters; for development, `merod local` starts three nodes on
+# 127.0.0.1:2501-2503 with mock attestation.
+#
+# Shell:  set -a; . ci/core-version; set +a   ->  $CORE_TAG
+CORE_TAG=1.0.0-rc.30

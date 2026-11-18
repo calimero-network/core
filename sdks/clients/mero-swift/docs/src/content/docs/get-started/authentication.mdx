@@ -1,0 +1,126 @@
+---
+title: Authentication
+description: Passkeys, sessions and refresh tokens, API keys, step-up confirmations, and moving between nodes.
+sidebar:
+  order: 2
+---
+
+There is no auth service: the node registers passkeys, mints sessions and
+checks API keys, all inside the sealed channel.
+
+| Who | Credential | Lifetime |
+| --- | --- | --- |
+| A person | a passkey, which opens a session `v2.…` | 15 minutes, refresh token `rt_…` 30 days |
+| A service | an API key `cal_…` (`useApiKey`) | up to 365 days |
+
+## Passkeys
+
+- `signUp(passkey, name:invite:origin:)`: `POST /auth/passkey/register/{begin,finish}`.
+  A sign-up prompts twice (core rc.9+): once to make the passkey, once for that
+  passkey to sign the account it creates (the finish's `412 CONFIRM_REQUIRED`,
+  which `signUp` answers).
+- `signIn(passkey, origin:)`: `POST /auth/passkey/login/{begin,finish}`. Begin and finish reach the same node.
+- `PasskeyProvider` is what holds the key: `PlatformPasskey` (MeroKitUI,
+  `ASAuthorizationPlatformPublicKeyCredentialProvider`) or `SoftPasskey`
+  (software, development clusters; the same JSON as `meroctl --dev-passkey`).
+- A dismissed prompt throws `PasskeyCancelled`; in a confirmation it surfaces as `ConfirmCancelled`.
+
+## Who may sign up
+
+A cluster's sign-up policy (core rc.9+) is `open`, `invite` (an organization
+invite or a cluster sign-up invite) or `closed` (a sign-up invite only). Read it
+without a session, before any passkey prompt, and sign up with an invite:
+
+```swift
+let policy = try await client.deployments.signUpPublic()   // GET /sign-up
+if policy.inviteRequired { /* ask for the invite */ }
+try await client.signUp(PlatformPasskey(), name: "bob", invite: token)
+```
+
+With an organization invite the new account joins that organization at the
+invite's role. A refused sign-up is `SignUpRefused` with a `reason`
+(`.inviteOnly`, `.closed`, `.unknownInvite`, `.expiredInvite`, `.orgGone`,
+`.other`), thrown by `begin` before a passkey is made.
+
+## Sign-in from a registered web origin
+
+A package's manager may register web origins its frontend signs people in
+from (core rc.9+), approved with their passkey:
+
+```swift
+try await client.addPackageOrigin("com.example.chat", origin: "https://chat.example.com", passkey: passkey)
+try await client.packageOrigins("com.example.chat")   // [PackageOrigin]
+try await client.removePackageOrigin("com.example.chat", origin: "https://chat.example.com", passkey: passkey)
+```
+
+`signUp` and `signIn` take that `origin:` for a ceremony that runs there (a web
+view, say): the passkey is made for the origin's relying party and the session
+is bound to the package (`me().app`, `me().origin`). An origin the cluster does
+not know is `OriginNotRegistered`. A native app sends none. Removing the origin
+ends the sessions opened there.
+
+## API keys
+
+```swift
+let (keyId, key) = try await client.createApiKey(label: "agent", readOnly: true, passkey: passkey)
+try await client.listApiKeys()                      // never the keys themselves
+try await client.revokeApiKey(keyId, passkey: passkey)   // approved with the passkey (core rc.9+)
+```
+
+An **upgrade key** (core rc.10+) is made once, with the passkey, for one app:
+it upgrades that app to signed releases of its package with no passkey, for a
+CI job, and the node refuses it everything else (`403 UPGRADE_KEY_ONLY`).
+
+```swift
+let (_, ciKey) = try await client.createApiKey(
+    label: "ci", ttlSecs: 90 * 86_400, upgrades: UpgradeKeyScope(app: appId), passkey: passkey)
+// In CI:
+ci.useApiKey(ciKey)
+try await ci.upgradeApp(appId, version: "1.4.0")
+```
+
+## Sessions
+
+`CalimeroClient` holds the session (`useSession`, `session`). `onSessionChange`
+reports every new one (sign-in, refresh, sign-out) so a mobile app can keep it
+in the Keychain (`KeychainCloudSessionStore`); `MeroClient` does this for you.
+
+- A `401` to a request that carried a session triggers **one** refresh
+  (`POST /auth/refresh`), shared by every request that needs it at that moment:
+  a refresh token is used once, and reusing one revokes the session. The
+  request is then repeated. A refused refresh surfaces as `LoginRequired`.
+- `421 WRONG_NODE`: this node's release may not serve the account. The client
+  moves to the next node in `nodes` and repeats the request (a refresh tries
+  each node once; a sign-in is the caller's to repeat).
+- `421 NOT_LEADER`: repeated at `details.leaderUrl` when that is one of `nodes`.
+
+## Step-up confirmations
+
+`412 CONFIRM_REQUIRED` asks for a passkey assertion over the exact request:
+`callConfirmed`, `postConfirmed` and every facade method the document marks
+`x-calimero-step-up` (`orgs.delete`, `apps.upgrade`, `orgs.releaseApproval`,
+…) answer it with the `passkey:` you give them (else the client's
+`useStepUp` passkey) and send the request once more with `confirm`. On core rc.7+ these
+are step-ups too, so they take a `passkey:`: adding (`addPasskey(_:approver:)`,
+approved by a passkey the account already has) and removing passkeys, creating
+API keys, setting and removing members and team members, capabilities, and
+creating invites. On core rc.9+ revoking an API key, registering and removing
+a package origin, and setting an organization's recovery key, cancelling and
+finishing a recovery are too. Redeeming an invite is not. `CalimeroAppBackend` takes the
+signed-in passkey (`MeroAppSession` passes it) for its member and invite calls.
+
+The consent page shows a confirmation code (`XXX-XXX`): `ConsentStarted.code`.
+`openConsentPage(_:options:)` and `MeroAppSession.requestConsent(_:confirm:)`
+check it is `confirmationCode(requestId)` (else `CONSENT_CODE_MISMATCH`) and
+let the app show it before the page opens.
+
+## Approvals happen on the node's consent page
+
+Release, upgrade and outbound approvals are never made inside an app:
+
+```swift
+let request = upgradeConsent(app: app, toVersion: "1.2.0", returnTo: "myapp://consent")
+let started = try await client.consent.pageCreate(body: try request.generated())
+// open started.url in the system browser (MeroClient.requestConsent uses ASWebAuthenticationSession)
+let result = try await client.consent.pageResult(request: started.requestId)   // .status: approved, …
+```
